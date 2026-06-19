@@ -13,7 +13,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm ci
+      # npm install (not ci): esbuild ships platform-specific optional binaries;
+      # install resolves the runner's platform and skips the others, where a
+      # cross-platform-pinned lockfile would make `npm ci` fail EBADPLATFORM.
+      - run: npm install --no-audit --no-fund
       - name: Test (vitest + coverage gate)
         run: npm test
       - name: Build single-file SPA

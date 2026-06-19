@@ -13,7 +13,7 @@ dev: build     ## build + serve dist/ locally
 	npm run dev
 
 install-deps:
-	npm ci
+	npm install
 
 clean:
 	rm -rf dist coverage

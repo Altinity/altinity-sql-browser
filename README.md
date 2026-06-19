@@ -28,7 +28,7 @@ only moving parts are ClickHouse's HTTP handlers and your OAuth provider.
 ## Quick start (development)
 
 ```bash
-npm ci                 # or: ln -s ../some-project/node_modules node_modules
+npm install            # esbuild ships platform-specific binaries; use install, not ci
 npm test               # vitest + 100% coverage gate
 npm run build          # → dist/sql.html (single file)
 npm run dev            # build + serve dist/ at http://localhost:8900
