@@ -90,26 +90,32 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: '?', target: null }), makeApp())).toBe('shortcuts');
   });
 
-  it('⌘A inside a raw result pane selects just that text', () => {
+  it('⌘A selects a raw result pane even when it is not focused (macOS body target)', () => {
     const app = makeApp();
     const box = document.createElement('div');
     box.className = 'raw-text-view';
     box.textContent = 'a\tb\nc\td';
     document.body.appendChild(box);
-    const e = ev({ metaKey: true, key: 'a', target: box });
+    // target is <body> (pane not focused — the macOS WebKit case), pane on screen
+    const e = ev({ metaKey: true, key: 'a', target: document.body });
     expect(handleKeydown(e, app)).toBe('selectAll');
     expect(e.preventDefault).toHaveBeenCalled();
     expect(box.ownerDocument.defaultView.getSelection().toString()).toBe('a\tb\nc\td');
   });
 
-  it('⌘A elsewhere falls through to the native select-all', () => {
+  it('⌘A while editing keeps the native select-all (editor / inputs)', () => {
     const app = makeApp();
-    // editor textarea (no raw-pane ancestor) → not handled
+    document.body.appendChild(document.createElement('div')).className = 'raw-text-view';
     const ta = document.createElement('textarea');
     const e = ev({ metaKey: true, key: 'A', target: ta });
     expect(handleKeydown(e, app)).toBeNull();
     expect(e.preventDefault).not.toHaveBeenCalled();
-    // no target at all
+    expect(handleKeydown(ev({ metaKey: true, key: 'a', target: { tagName: 'INPUT' } }), app)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, key: 'a', target: { isContentEditable: true } }), app)).toBeNull();
+  });
+
+  it('⌘A with no raw pane on screen falls through to native select-all', () => {
+    const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, key: 'a', target: null }), app)).toBeNull();
   });
 });

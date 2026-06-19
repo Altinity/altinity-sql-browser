@@ -355,19 +355,23 @@ body {
 .result-view-tab.active { color: var(--fg); background: var(--bg-hover); border-color: var(--border); }
 
 /* ------------ json view ------------ */
+/* height:100% (not flex:1) — .res-body is a relatively-positioned block, not a
+   flex container, so flex had no effect and the pane grew to content height with
+   no vertical scroll (only horizontal worked). A bounded height + overflow:auto
+   scrolls both axes, matching .res-table-wrap. */
 .json-view {
-  flex: 1; overflow: auto; padding: 12px 14px;
+  height: 100%; overflow: auto; padding: 12px 14px;
   font-family: var(--mono); font-size: 11.5px;
   color: var(--fg); white-space: pre;
   background: var(--bg);
 }
 .raw-text-view {
-  flex: 1; overflow: auto; padding: 10px 12px;
+  height: 100%; overflow: auto; padding: 10px 12px;
   font-family: var(--mono); font-size: 11.5px;
   color: var(--fg); white-space: pre;
   background: var(--bg);
 }
-/* Focusable (tabindex) so a click scopes ⌘A to the pane's text; no focus ring. */
+/* tabindex makes the pane keyboard-scrollable; suppress the focus ring. */
 .raw-text-view:focus, .json-view:focus { outline: none; }
 
 /* ------------ chart placeholder ------------ */

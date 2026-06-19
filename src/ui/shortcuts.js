@@ -74,11 +74,15 @@ export function handleKeydown(e, app) {
     return 'toggleSaved';
   }
   if (mod && e.key.toLowerCase() === 'a') {
-    // Inside a raw result pane (TSV / JSON output), select just that text so it
-    // can be copied — not the whole page. Elsewhere (e.g. the editor textarea)
-    // fall through to the browser's native select-all.
+    // When a raw result pane (TSV / JSON output) is on screen and the user isn't
+    // typing, ⌘/Ctrl+A selects just that text so it can be copied — not the whole
+    // page. Keyed off "not editing + pane present" rather than pane focus, because
+    // macOS WebKit doesn't focus a tabindex <div> on click (so e.target stays
+    // <body>). A focused editor/input keeps the native select-all (whole query).
     const t = e.target;
-    const box = t && t.closest && t.closest('.raw-text-view, .json-view');
+    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)) return null;
+    const doc = (t && t.ownerDocument) || document;
+    const box = doc.querySelector('.raw-text-view, .json-view');
     if (!box) return null;
     e.preventDefault();
     box.ownerDocument.defaultView.getSelection().selectAllChildren(box);
