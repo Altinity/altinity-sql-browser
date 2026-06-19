@@ -7,8 +7,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "node build/build.mjs",
-    "test": "vitest run --coverage",
-    "test:watch": "vitest",
+    "test": "vitest run --coverage --config tests/vitest.config.ts",
+    "test:watch": "vitest --config tests/vitest.config.ts",
     "dev": "node build/build.mjs && python3 -m http.server -d dist 8900"
   },
   "devDependencies": {
