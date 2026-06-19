@@ -407,6 +407,7 @@ body {
 .tree-row.mono { font-family: var(--mono); }
 .tree-row.small { height: 22px; font-size: 11px; }
 .tree-row:hover { background: var(--bg-hover); }
+.tree-row:active { cursor: grabbing; }
 .tree-row.match { background: var(--bg-highlight); }
 .tree-row .chev {
   width: 10px; color: var(--fg-faint); display: flex; flex-shrink: 0;

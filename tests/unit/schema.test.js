@@ -1,9 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { renderSchema } from '../../src/ui/schema.js';
+import { IDENT_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
+// Fire a dragstart with a stub dataTransfer and return what setData captured.
+const dragstart = (el) => {
+  const e = new Event('dragstart', { bubbles: true });
+  let captured = null;
+  e.dataTransfer = { setData: (mime, value) => { captured = { mime, value }; } };
+  el.dispatchEvent(e);
+  return captured;
+};
 
 function withSchema() {
   const app = makeApp();
@@ -106,6 +115,30 @@ describe('renderSchema tree', () => {
       .find((r) => r.querySelector('.label').textContent === 'id');
     click(colRow);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id');
+  });
+});
+
+describe('renderSchema drag sources', () => {
+  it('dragging a db carries the bare database name', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const dbRow = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
+    expect(dragstart(dbRow)).toEqual({ mime: IDENT_MIME, value: 'db1' });
+  });
+  it('dragging a table carries the qualified name', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
+    expect(dragstart(ordersRow)).toEqual({ mime: IDENT_MIME, value: 'db1.orders' });
+  });
+  it('dragging a column carries the bare column name', () => {
+    const app = withSchema();
+    app.state.schema[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    app.state.expandedTables.add('db1.orders');
+    renderSchema(app);
+    const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+      .find((r) => r.querySelector('.label').textContent === 'id');
+    expect(dragstart(colRow)).toEqual({ mime: IDENT_MIME, value: 'id' });
   });
 });
 

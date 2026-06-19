@@ -4,6 +4,15 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
+import { IDENT_MIME } from './editor.js';
+
+// Make a tree row a drag source carrying `text` as the schema identifier, so it
+// can be dropped onto the editor (see editor.js drop handler). Click behavior is
+// unaffected — drag is a separate gesture.
+const dragProps = (text) => ({
+  draggable: 'true',
+  ondragstart: (e) => e.dataTransfer.setData(IDENT_MIME, text),
+});
 
 export function renderSchema(app) {
   const list = app.dom.schemaList;
@@ -32,6 +41,7 @@ export function renderSchema(app) {
     list.appendChild(h('div', {
       class: 'tree-row bold',
       onclick: () => { db.expanded = !db.expanded; renderSchema(app); },
+      ...dragProps(db.db),
     },
       h('span', { class: 'chev' }, db.expanded ? Icon.chevDown() : Icon.chev()),
       h('span', { class: 'icon' }, Icon.database()),
@@ -50,12 +60,13 @@ export function renderSchema(app) {
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
-        : 'Click to expand/collapse · double-click to insert';
+        : 'Click to expand/collapse · double-click or drag to insert';
 
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
         style: { paddingLeft: '24px' },
         title,
+        ...dragProps(db.db + '.' + tb.name),
         onclick: () => {
           if (state.expandedTables.has(key)) state.expandedTables.delete(key);
           else state.expandedTables.add(key);
@@ -82,8 +93,9 @@ export function renderSchema(app) {
         list.appendChild(h('div', {
           class: 'tree-row small mono' + (filter && matches(c.name) ? ' match' : ''),
           style: { paddingLeft: '38px' },
-          title: (c.comment && c.comment.trim()) || 'Click to insert ' + c.name,
+          title: (c.comment && c.comment.trim()) || 'Click or drag to insert ' + c.name,
           onclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(c.name); },
+          ...dragProps(c.name),
         },
           h('span', { class: 'chev' }),
           h('span', { class: 'icon', style: { color: 'var(--fg-faint)' } }, Icon.col()),

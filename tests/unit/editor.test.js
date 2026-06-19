@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHighlightInto, mountEditor, insertAtCursor } from '../../src/ui/editor.js';
+import { renderHighlightInto, mountEditor, insertAtCursor, IDENT_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 describe('renderHighlightInto', () => {
@@ -59,6 +59,39 @@ describe('mountEditor', () => {
     const before = ta.value;
     ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' }));
     expect(ta.value).toBe(before);
+  });
+  it('dragover prevents default so the textarea accepts drops', () => {
+    const { ta } = mount();
+    const e = new Event('dragover', { cancelable: true });
+    ta.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+  });
+  it('dropping a schema identifier inserts it at the cursor', () => {
+    const { app, ta } = mount();
+    ta.value = 'SELECT  FROM t';
+    ta.selectionStart = ta.selectionEnd = 7;
+    const e = new Event('drop', { cancelable: true });
+    e.dataTransfer = { getData: (m) => (m === IDENT_MIME ? 'db.tbl' : '') };
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('SELECT db.tbl FROM t');
+    expect(e.defaultPrevented).toBe(true);
+  });
+  it('a drop without our identifier is left to native handling', () => {
+    const { ta } = mount();
+    const before = ta.value;
+    const e = new Event('drop', { cancelable: true });
+    e.dataTransfer = { getData: () => '' };
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe(before);
+    expect(e.defaultPrevented).toBe(false);
+  });
+  it('a drop with no dataTransfer is a no-op', () => {
+    const { ta } = mount();
+    const before = ta.value;
+    const e = new Event('drop', { cancelable: true });
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe(before);
+    expect(e.defaultPrevented).toBe(false);
   });
 });
 

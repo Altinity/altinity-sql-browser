@@ -5,6 +5,11 @@ import { h } from './dom.js';
 import { tokenize } from '../core/sql-highlight.js';
 import { activeTab } from '../state.js';
 
+// dataTransfer MIME used when dragging a schema identifier onto the editor.
+// A dedicated type (not text/plain) scopes the drop handler to schema-tree
+// drags, leaving native text drag-within-the-textarea untouched.
+export const IDENT_MIME = 'application/x-asb-identifier';
+
 /** Paint tokenized SQL into `preEl` (whitespace as text, tokens as spans). */
 export function renderHighlightInto(preEl, sql) {
   preEl.replaceChildren();
@@ -70,6 +75,14 @@ export function mountEditor(app, container) {
     ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
     ta.selectionStart = ta.selectionEnd = s + 2;
     ta.dispatchEvent(new Event('input'));
+  });
+  // Accept schema identifiers dragged from the tree; insert at the cursor.
+  ta.addEventListener('dragover', (e) => e.preventDefault());
+  ta.addEventListener('drop', (e) => {
+    const text = e.dataTransfer && e.dataTransfer.getData(IDENT_MIME);
+    if (!text) return; // not our drag — leave native behavior alone
+    e.preventDefault();
+    insertAtCursor(app, text);
   });
 
   app.dom.editorTextarea = ta;
