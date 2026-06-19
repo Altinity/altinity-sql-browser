@@ -519,6 +519,25 @@ describe('exhaustive controller coverage', () => {
     expect(decodeURIComponent(escape(atob(auth.slice(6))))).toMatch(/^me@example\.com:/);
   });
 
+  it('shows and dismisses the auth-failure banner', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.updateBanner();
+    expect(app.dom.banner.style.display).toBe('none'); // no error → hidden
+    app.state.schemaError = 'Token authentication is not configured';
+    app.updateBanner();
+    expect(app.dom.banner.style.display).toBe('');
+    expect(app.dom.banner.textContent).toContain('Token authentication is not configured');
+    app.dom.banner.querySelector('.auth-banner-x').dispatchEvent(new Event('click'));
+    expect(app.dom.banner.style.display).toBe('none');
+    app.updateBanner(); // dismissed for this error → stays hidden
+    expect(app.dom.banner.style.display).toBe('none');
+  });
+  it('updateBanner is a no-op before renderApp', () => {
+    const app = createApp(env());
+    expect(() => app.updateBanner()).not.toThrow();
+  });
+
   it('renders history into the side panel after a successful run', async () => {
     const e = env({
       window: fakeWin(),

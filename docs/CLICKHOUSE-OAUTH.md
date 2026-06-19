@@ -54,10 +54,11 @@ JWKS and validates signature, `iss`, `exp`, and (optionally) `aud`.
 </clickhouse>
 ```
 
-### B. Explicit JWKS
+### B. Explicit JWKS (self-managed Altinity 26.3+)
 
-When you'd rather point at a JWKS URL directly (e.g. Google) instead of OIDC
-discovery:
+When you'd rather point at a JWKS URL directly (e.g. Google, or a self-managed
+IdP) instead of OIDC discovery. Self-managed Altinity 26.3 supports
+`jwt_dynamic_jwks` natively:
 
 ```xml
 <clickhouse>
@@ -65,7 +66,15 @@ discovery:
     <my_jwks>
       <type>jwt_dynamic_jwks</type>
       <jwks_uri>https://issuer.example.com/.well-known/jwks.json</jwks_uri>
+      <expected_issuer>https://issuer.example.com/</expected_issuer>
+      <!-- For id_tokens this is the OAuth client_id; for API access tokens it's
+           the API audience. Must match the token's `aud`. -->
+      <expected_audience>YOUR_CLIENT_ID</expected_audience>
       <username_claim>email</username_claim>
+      <!-- Suppresses the "expected_typ is not configured" startup warning and
+           pins the token type (RFC 8725): `JWT` for OIDC id_tokens,
+           `at+jwt` for OAuth 2.0 access tokens. -->
+      <expected_typ>JWT</expected_typ>
       <token_cache_lifetime>60</token_cache_lifetime>
       <!-- Some Antalya builds' strict parser also requires a userinfo /
            introspection endpoint to be present even when validation is
@@ -76,6 +85,11 @@ discovery:
   </token_processors>
 </clickhouse>
 ```
+
+> **`expected_typ`** — the Altinity build logs `TokenAuthentication: expected_typ
+> is not configured` at WARNING on every startup until you set it. Use `JWT` for
+> id_tokens (the default `bearer` path) or `at+jwt` for access tokens; this also
+> follows RFC 8725. It can be added to the OIDC-discovery processor (§A) too.
 
 ---
 

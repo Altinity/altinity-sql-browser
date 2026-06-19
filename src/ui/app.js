@@ -171,7 +171,30 @@ export function createApp(env = {}) {
       app.state.schemaError = String((e && e.message) || e);
     }
     renderSchema(app);
+    updateBanner();
   };
+  // A prominent, dismissible banner for schema/auth failures — the schema-panel
+  // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
+  function updateBanner() {
+    const b = app.dom.banner;
+    if (!b) return;
+    const err = app.state.schemaError;
+    if (!err || app._bannerDismissedFor === err) {
+      b.style.display = 'none';
+      return;
+    }
+    b.style.display = '';
+    b.replaceChildren(
+      h('span', { class: 'auth-banner-msg' },
+        'ClickHouse rejected the request — JWT auth may not be configured: ' + err),
+      h('button', {
+        class: 'auth-banner-x',
+        title: 'Dismiss',
+        onclick: () => { app._bannerDismissedFor = err; b.style.display = 'none'; },
+      }, '×'),
+    );
+  }
+  app.updateBanner = updateBanner;
   async function loadColumns(db, table, tableObj) {
     tableObj.columns = 'loading';
     renderSchema(app);
@@ -375,7 +398,8 @@ export function renderApp(app, helpers) {
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });
 
   const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
-  app.root.replaceChildren(header, h('div', { class: 'main-row' }, sidebar, sideHandle, workbench));
+  app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
+  app.root.replaceChildren(header, app.dom.banner, h('div', { class: 'main-row' }, sidebar, sideHandle, workbench));
 
   mountEditor(app, app.dom.editorRegion);
   renderTabs(app);

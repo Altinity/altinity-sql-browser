@@ -14,13 +14,15 @@
   to accept the JWT (token_processor / JWKS, or a delegated http_authentication
   verifier) — see README "Installing on any ClickHouse cluster".
 
-  Each <rule> carries a unique <name> to dodge the ClickHouse config.d merge
-  bug (#70636) where unnamed sibling rules overwrite each other.
+  Each <rule> carries a unique `name=` attribute to dodge the ClickHouse
+  config.d merge bug (#70636) where unnamed sibling rules overwrite each other.
+  NOTE: it must be the `name=` attribute, not a <name> child element — ClickHouse
+  26.3.x rejects a <name> child with "Unknown element in config:
+  http_handlers.rule.name" and fails to start.
 -->
 <clickhouse>
   <http_handlers>
-    <rule>
-      <name>sql_browser_spa</name>
+    <rule name="sql_browser_spa">
       <url>regex:^/sql/?$</url>
       <methods>GET</methods>
       <handler>
@@ -33,8 +35,7 @@
       </handler>
     </rule>
 
-    <rule>
-      <name>sql_browser_config</name>
+    <rule name="sql_browser_config">
       <url>regex:^/sql/config\.json$</url>
       <methods>GET</methods>
       <handler>

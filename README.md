@@ -42,9 +42,15 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   --ch-user admin \
   --client-id <your-oauth-client-id> \
   [--issuer https://accounts.google.com] \
-  [--audience <api-audience>] \
-  [--cluster <cluster-name>]   # omit for single-node
+  [--audience <api-audience>] \   # audience-gated CH → also sends the access_token
+  [--ch-auth basic] \             # OSS CH + ch-jwt-verify → JWT as Basic password
+  [--cluster <cluster-name>]      # single-shard multi-replica only (else per-node)
 ```
+
+With **no** `--audience`, the IdP returns an **id_token** (its `aud` is the
+client_id) and the browser sends that as the bearer — so ClickHouse's
+`expected_audience` must be the **client_id**, not an API audience. Passing
+`--audience` switches to the **access_token** path. See `docs/CLICKHOUSE-OAUTH.md`.
 
 The installer builds `dist/sql.html`, renders `config.json`, and uploads both
 into ClickHouse `user_files/`. Then:

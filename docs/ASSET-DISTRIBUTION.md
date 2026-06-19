@@ -39,7 +39,11 @@ replica's local `user_files/`**. The handler serves them with a `type=static`
   an unauthenticated bootstrap page needs. Simple; pure `clickhouse-client`.
 - **Con:** `user_files/` is node-local, so a replica **added or replaced later
   starts empty** — you re-run `install.sh` after a scale-out. The install also
-  assumes every replica is up at the time it runs.
+  assumes every replica is up at the time it runs. **Multi-shard:**
+  `clusterAllReplicas` can't write to a target with more than one shard, so
+  `install.sh --cluster` only works on a single shard; on a multi-shard cluster
+  run the installer **per node** (omit `--cluster`, point `--ch-host` at each
+  node) or use option B. `install.sh` detects this and stops with guidance.
 
 ### B. Store the asset in a Replicated table + `predefined_query_handler`
 
