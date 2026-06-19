@@ -32,6 +32,14 @@ export async function loadOAuthConfig(fetchFn, basePath = '') {
     audience: cfg.audience || '',
     authUri: disc.authorization_endpoint,
     tokenUri: disc.token_endpoint,
+    // Which token to send to ClickHouse: 'id_token' (default; forward-mode CH
+    // that doesn't enforce audience) or 'access_token' (audience-gated CH).
+    bearer: cfg.bearer === 'access_token' ? 'access_token' : 'id_token',
+    // Extra params merged into the /authorize request (e.g. Auth0
+    // { "organization": "org_…" }). Pass-through, no interpretation.
+    authorizeParams: cfg.authorize_params && typeof cfg.authorize_params === 'object'
+      ? cfg.authorize_params
+      : {},
   };
 }
 

@@ -44,6 +44,11 @@ describe('buildAuthorizeUrl', () => {
     expect(q.get('audience')).toBe('https://api.example/');
     expect(q.get('access_type')).toBeNull();
   });
+  it('merges extra authorizeParams (e.g. Auth0 organization)', () => {
+    const cfg = { ...otherCfg, authorizeParams: { organization: 'org_x' } };
+    const url = new URL(buildAuthorizeUrl(cfg, { redirectUri: 'r', challenge: 'c', state: 's' }));
+    expect(url.searchParams.get('organization')).toBe('org_x');
+  });
 });
 
 const tokenResp = (ok, body, status = ok ? 200 : 400) => ({
@@ -98,10 +103,15 @@ describe('refreshTokens', () => {
 });
 
 describe('bearerFromTokens', () => {
-  it('prefers id_token, then access_token, then null', () => {
+  it('defaults to id_token, then access_token, then null', () => {
     expect(bearerFromTokens({ id_token: 'i', access_token: 'a' })).toBe('i');
     expect(bearerFromTokens({ access_token: 'a' })).toBe('a');
     expect(bearerFromTokens({})).toBeNull();
     expect(bearerFromTokens(null)).toBeNull();
+  });
+  it('prefers access_token when asked, falling back to id_token', () => {
+    expect(bearerFromTokens({ id_token: 'i', access_token: 'a' }, 'access_token')).toBe('a');
+    expect(bearerFromTokens({ id_token: 'i' }, 'access_token')).toBe('i');
+    expect(bearerFromTokens({}, 'access_token')).toBeNull();
   });
 });

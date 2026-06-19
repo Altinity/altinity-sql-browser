@@ -97,7 +97,7 @@ export function createApp(env = {}) {
   async function refresh() {
     const cfg = await loadConfig();
     const tokens = await oauth.refreshTokens(fetchFn, cfg, app.refreshToken);
-    const bearer = oauth.bearerFromTokens(tokens);
+    const bearer = oauth.bearerFromTokens(tokens, cfg.bearer);
     if (!bearer) return false;
     setTokens(bearer, tokens.refresh_token);
     return true;

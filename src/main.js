@@ -29,7 +29,7 @@ export async function bootstrap(app, env) {
           verifier: ss.getItem('oauth_verifier'),
           redirectUri: loc.origin + loc.pathname,
         });
-        const bearer = bearerFromTokens(tokens);
+        const bearer = bearerFromTokens(tokens, cfg.bearer);
         if (!bearer) throw new Error('Token response missing bearer token');
         app.setTokens(bearer, tokens.refresh_token);
       } catch (e) {

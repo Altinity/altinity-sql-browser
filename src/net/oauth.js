@@ -25,6 +25,8 @@ export function buildAuthorizeUrl(cfg, p) {
   };
   if (cfg.audience) params.audience = cfg.audience;
   if (google) params.access_type = 'offline';
+  // Extra pass-through params (e.g. Auth0 `organization`).
+  for (const [k, v] of Object.entries(cfg.authorizeParams || {})) params[k] = v;
   return cfg.authUri + '?' + new URLSearchParams(params).toString();
 }
 
@@ -72,7 +74,14 @@ export async function refreshTokens(fetchFn, cfg, refreshToken) {
   }
 }
 
-/** Pull the usable bearer token out of a token response (id_token preferred). */
-export function bearerFromTokens(tokens) {
-  return (tokens && (tokens.id_token || tokens.access_token)) || null;
+/**
+ * Pull the bearer token to send to ClickHouse out of a token response.
+ * `prefer` is 'id_token' (default) or 'access_token'; each falls back to the
+ * other so a provider that returns only one still works.
+ */
+export function bearerFromTokens(tokens, prefer = 'id_token') {
+  if (!tokens) return null;
+  return prefer === 'access_token'
+    ? tokens.access_token || tokens.id_token || null
+    : tokens.id_token || tokens.access_token || null;
 }

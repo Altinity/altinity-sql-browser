@@ -34,10 +34,12 @@ describe('loadOAuthConfig', () => {
       audience: 'aud',
       authUri: okDisc.authorization_endpoint,
       tokenUri: okDisc.token_endpoint,
+      bearer: 'id_token',
+      authorizeParams: {},
     });
     expect(f.mock.calls[0][0]).toBe('/sql/config.json');
   });
-  it('defaults clientSecret/audience to empty', async () => {
+  it('defaults clientSecret/audience/bearer/authorizeParams', async () => {
     const f = fetcher([
       [/config\.json$/, resp(true, { issuer: 'https://i', client_id: 'c' })],
       [/openid-configuration$/, resp(true, okDisc)],
@@ -45,6 +47,29 @@ describe('loadOAuthConfig', () => {
     const cfg = await loadOAuthConfig(f, '');
     expect(cfg.clientSecret).toBe('');
     expect(cfg.audience).toBe('');
+    expect(cfg.bearer).toBe('id_token');
+    expect(cfg.authorizeParams).toEqual({});
+  });
+  it('honours bearer=access_token and authorize_params object', async () => {
+    const f = fetcher([
+      [/config\.json$/, resp(true, {
+        issuer: 'https://i', client_id: 'c', bearer: 'access_token',
+        authorize_params: { organization: 'org_x' },
+      })],
+      [/openid-configuration$/, resp(true, okDisc)],
+    ]);
+    const cfg = await loadOAuthConfig(f, '');
+    expect(cfg.bearer).toBe('access_token');
+    expect(cfg.authorizeParams).toEqual({ organization: 'org_x' });
+  });
+  it('ignores a non-object authorize_params and an unknown bearer', async () => {
+    const f = fetcher([
+      [/config\.json$/, resp(true, { issuer: 'https://i', client_id: 'c', bearer: 'weird', authorize_params: 'nope' })],
+      [/openid-configuration$/, resp(true, okDisc)],
+    ]);
+    const cfg = await loadOAuthConfig(f, '');
+    expect(cfg.bearer).toBe('id_token');
+    expect(cfg.authorizeParams).toEqual({});
   });
   it('throws when config.json is not ok', async () => {
     const f = fetcher([[/config\.json$/, resp(false, null, 404)]]);
