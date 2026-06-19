@@ -43,11 +43,12 @@ validate it. Two supported shapes:
   `<token_processors>` entry pointing at your IdP's JWKS with `username_claim`,
   and a `<token>` user-directory so users are created on first query. Full
   step-by-step with generic examples: [CLICKHOUSE-OAUTH.md](CLICKHOUSE-OAUTH.md).
-- **Delegated verifier**: run a JWT-verifier service (e.g. Altinity's
-  [ch-jwt-verify](https://github.com/Altinity/ch-jwt-verify)) referenced from
-  `<http_authentication_servers>` and define users `IDENTIFIED WITH http SERVER
-  … SCHEME 'BASIC'`. In this shape the bearer is wrapped as Basic by an upstream
-  layer.
+- **Delegated verifier (stock/OSS ClickHouse)**: run a JWT-verifier service
+  (e.g. Altinity's [ch-jwt-verify](https://github.com/Altinity/ch-jwt-verify))
+  referenced from `<http_authentication_servers>`, define users `IDENTIFIED WITH
+  http SERVER … SCHEME 'BASIC'`, and set `"ch_auth": "basic"` in the browser
+  `config.json` so the JWT is sent as the Basic password. Full guide with generic
+  examples: [CLICKHOUSE-OSS-OAUTH.md](CLICKHOUSE-OSS-OAUTH.md).
 
 Either way, the app itself is unchanged — it only sends the bearer.
 

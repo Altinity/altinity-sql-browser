@@ -35,6 +35,7 @@ describe('loadOAuthConfig', () => {
       authUri: okDisc.authorization_endpoint,
       tokenUri: okDisc.token_endpoint,
       bearer: 'id_token',
+      chAuth: 'bearer',
       authorizeParams: {},
     });
     expect(f.mock.calls[0][0]).toBe('/sql/config.json');
@@ -48,7 +49,16 @@ describe('loadOAuthConfig', () => {
     expect(cfg.clientSecret).toBe('');
     expect(cfg.audience).toBe('');
     expect(cfg.bearer).toBe('id_token');
+    expect(cfg.chAuth).toBe('bearer');
     expect(cfg.authorizeParams).toEqual({});
+  });
+  it('honours ch_auth=basic', async () => {
+    const f = fetcher([
+      [/config\.json$/, resp(true, { issuer: 'https://i', client_id: 'c', ch_auth: 'basic' })],
+      [/openid-configuration$/, resp(true, okDisc)],
+    ]);
+    const cfg = await loadOAuthConfig(f, '');
+    expect(cfg.chAuth).toBe('basic');
   });
   it('honours bearer=access_token and authorize_params object', async () => {
     const f = fetcher([

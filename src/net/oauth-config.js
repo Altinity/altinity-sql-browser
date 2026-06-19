@@ -35,6 +35,11 @@ export async function loadOAuthConfig(fetchFn, basePath = '') {
     // Which token to send to ClickHouse: 'id_token' (default; forward-mode CH
     // that doesn't enforce audience) or 'access_token' (audience-gated CH).
     bearer: cfg.bearer === 'access_token' ? 'access_token' : 'id_token',
+    // How the token reaches ClickHouse: 'bearer' (default; Authorization:
+    // Bearer <jwt>, for a CH token_processor) or 'basic' (Authorization: Basic
+    // base64(email:jwt), for OSS CH behind an http_authentication_servers
+    // verifier such as ch-jwt-verify where the JWT is the Basic password).
+    chAuth: cfg.ch_auth === 'basic' ? 'basic' : 'bearer',
     // Extra params merged into the /authorize request (e.g. Auth0
     // { "organization": "org_…" }). Pass-through, no interpretation.
     authorizeParams: cfg.authorize_params && typeof cfg.authorize_params === 'object'

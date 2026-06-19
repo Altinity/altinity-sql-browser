@@ -498,6 +498,27 @@ describe('exhaustive controller coverage', () => {
     expect(e.window.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('#'));
   });
 
+  it('ch_auth=basic sends Authorization: Basic base64(email:token)', async () => {
+    const e = env({
+      window: fakeWin(),
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid', ch_auth: 'basic' } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://a', token_endpoint: 'https://t' } })],
+        [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })],
+      ]),
+    });
+    const app = createApp(e);
+    app.renderApp();
+    await app.ensureConfig();
+    expect(app.chAuth).toBe('basic');
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    const q = e.fetch.mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1');
+    const auth = q[1].headers.Authorization;
+    expect(auth).toMatch(/^Basic /);
+    expect(decodeURIComponent(escape(atob(auth.slice(6))))).toMatch(/^me@example\.com:/);
+  });
+
   it('renders history into the side panel after a successful run', async () => {
     const e = env({
       window: fakeWin(),

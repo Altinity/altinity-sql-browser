@@ -95,7 +95,7 @@ build/        esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
 tests/        vitest + happy-dom, one spec per module
 docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
-              CLICKHOUSE-OAUTH.md
+              CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
 ```
 
 ## Testing

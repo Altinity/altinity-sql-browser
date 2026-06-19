@@ -35,11 +35,14 @@ export async function authedFetch(ctx, url, sql, signal) {
   }
   let bearer = token;
   let attempt = 0;
+  // ctx.authHeader(token) lets the app pick the scheme (Bearer vs Basic);
+  // default to Bearer so the seam stays optional.
+  const authHeader = ctx.authHeader || ((t) => 'Bearer ' + t);
   for (;;) {
     const resp = await ctx.fetch(url, {
       method: 'POST',
       body: sql,
-      headers: { Authorization: 'Bearer ' + bearer },
+      headers: { Authorization: authHeader(bearer) },
       signal,
     });
     let authExpired = resp.status === 401 || resp.status === 403;

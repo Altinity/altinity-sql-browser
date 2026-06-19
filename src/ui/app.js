@@ -112,18 +112,44 @@ export function createApp(env = {}) {
   }
 
   // --- ClickHouse context ------------------------------------------------
+  // How the token is presented to CH. 'bearer' (token_processor) or 'basic'
+  // (OSS + a verifier like ch-jwt-verify, where the JWT is the Basic password
+  // and the username is the token's email). Resolved from config by ensureConfig.
+  app.chAuth = 'bearer';
+  function authHeader(token) {
+    if (app.chAuth !== 'basic') return 'Bearer ' + token;
+    const p = decodeJwtPayload(token);
+    const user = p.email || p.preferred_username || p.sub || '';
+    return 'Basic ' + btoa(unescape(encodeURIComponent(user + ':' + token)));
+  }
   const chCtx = {
     fetch: fetchFn,
     origin: loc.origin,
     getToken,
     refresh,
+    authHeader,
     onSignedOut: () => { clearTokens(); renderLogin(app, 'Session expired'); },
   };
   app.chCtx = chCtx;
 
+  // Load config (once) and apply the CH auth mode before any query runs.
+  // Fail-soft: if config can't be loaded we keep the current mode (bearer)
+  // rather than blocking the query.
+  async function ensureConfig() {
+    try {
+      const cfg = await loadConfig();
+      app.chAuth = cfg.chAuth;
+      return cfg;
+    } catch {
+      return null;
+    }
+  }
+  app.ensureConfig = ensureConfig;
+
   // --- data loaders ------------------------------------------------------
   app.loadVersion = async () => {
     try {
+      await ensureConfig();
       app.state.serverVersion = await ch.loadServerVersion(chCtx);
       setConn(true);
     } catch {
@@ -138,6 +164,7 @@ export function createApp(env = {}) {
   }
   app.loadSchema = async () => {
     try {
+      await ensureConfig();
       app.state.schema = await ch.loadSchema(chCtx);
       app.state.schemaError = null;
     } catch (e) {
@@ -149,6 +176,7 @@ export function createApp(env = {}) {
     tableObj.columns = 'loading';
     renderSchema(app);
     try {
+      await ensureConfig();
       tableObj.columns = await ch.loadColumns(chCtx, db, table, sqlString);
     } catch {
       tableObj.columns = [];
@@ -164,6 +192,7 @@ export function createApp(env = {}) {
     }
     const tab = app.activeTab();
     if (!tab.sql.trim()) return;
+    await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
     const fmt = app.state.outputFormat || 'Table';

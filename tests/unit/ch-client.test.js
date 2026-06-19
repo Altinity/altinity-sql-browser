@@ -97,6 +97,13 @@ describe('authedFetch', () => {
     const r = await authedFetch(ctx, 'u', 'sql');
     expect(r.status).toBe(400);
   });
+  it('uses a provided authHeader (e.g. Basic) instead of Bearer', async () => {
+    const ctx = ctxWith(async () => jsonResp({ ok: 1 }), {
+      authHeader: (t) => 'Basic ' + t.toUpperCase(),
+    });
+    await authedFetch(ctx, 'u', 'sql');
+    expect(ctx.fetch.mock.calls[0][1].headers.Authorization).toBe('Basic TOK');
+  });
 });
 
 describe('queryJson', () => {
