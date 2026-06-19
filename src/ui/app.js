@@ -67,6 +67,10 @@ export function createApp(env = {}) {
       app.refreshToken = refresh;
       ss.setItem('oauth_refresh_token', refresh);
     }
+    // The PKCE verifier + CSRF state are one-shot — done with them once we hold
+    // tokens. (The refresh path also lands here; they're already gone → no-op.)
+    ss.removeItem('oauth_verifier');
+    ss.removeItem('oauth_state');
   }
   function clearTokens() {
     app.token = null;

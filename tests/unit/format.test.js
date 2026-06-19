@@ -62,6 +62,11 @@ describe('sqlString', () => {
     expect(sqlString("a'b")).toBe("'a''b'");
     expect(sqlString(42)).toBe("'42'");
   });
+  it('escapes backslashes so a trailing one cannot break out of the literal', () => {
+    expect(sqlString('a\\b')).toBe("'a\\\\b'");
+    expect(sqlString('x\\')).toBe("'x\\\\'");
+    expect(sqlString("\\'")).toBe("'\\\\'''");
+  });
 });
 
 describe('inferQueryName', () => {
