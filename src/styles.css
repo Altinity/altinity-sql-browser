@@ -675,6 +675,17 @@ table.res-table th {
   padding: 7px 12px;
   cursor: pointer;
 }
+table.res-table th .col-resize-h {
+  position: absolute; top: 0; right: 0; z-index: 2;
+  width: 7px; height: 100%;
+  cursor: col-resize;
+}
+table.res-table th .col-resize-h:hover { background: var(--accent); opacity: .45; }
+/* Once any column is resized the table is laid out fixed so the per-column px
+   widths are honored exactly; clip overflow so a narrowed column ellipsizes
+   instead of spilling. */
+table.res-table.fixed { table-layout: fixed; }
+table.res-table.fixed th, table.res-table.fixed td { overflow: hidden; text-overflow: ellipsis; }
 table.res-table th .h-inner { display: flex; align-items: center; gap: 5px; }
 table.res-table th .h-name { color: var(--fg); }
 table.res-table th .h-type { font-size: 9.5px; color: var(--fg-faint); font-weight: 400; }

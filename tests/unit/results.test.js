@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, colResizeWidth } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 
@@ -127,6 +127,65 @@ describe('renderTable', () => {
     r.rows = Array.from({ length: 5001 }, (_, i) => [String(i)]);
     const el = renderTable(makeApp(), r);
     expect(el.textContent).toContain('more rows truncated');
+  });
+});
+
+describe('column resize', () => {
+  it('colResizeWidth converts client px via scale and clamps to the floor', () => {
+    expect(colResizeWidth(100, 50, 1)).toBe(150);
+    expect(colResizeWidth(100, -90, 1)).toBe(48);    // floored at MIN_COL
+    expect(colResizeWidth(100, 120, 1.2)).toBe(200); // zoom: 100 + 120/1.2
+    expect(colResizeWidth(100, 0, 0)).toBe(100);     // scale 0 → /1
+    expect(colResizeWidth(100, 0, NaN)).toBe(100);   // NaN → /1
+  });
+
+  it('puts a resize handle on each data column; the handle does not sort', () => {
+    const app = appWithResult(tableResult());
+    renderResults(app);
+    const handles = app.dom.resultsRegion.querySelectorAll('.res-table th .col-resize-h');
+    expect(handles).toHaveLength(2); // one per data column, none on the '#' column
+    const before = { ...app.state.resultSort };
+    handles[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(app.state.resultSort).toEqual(before); // stopPropagation → no sort
+  });
+
+  it('dragging a handle fixes the layout and updates widths; re-drag reuses them', () => {
+    const app = appWithResult(tableResult());
+    renderResults(app);
+    const r = app.activeTab().result;
+    const region = app.dom.resultsRegion;
+    let handle = region.querySelectorAll('.res-table th .col-resize-h')[0];
+    const win = handle.ownerDocument.defaultView;
+    // first drag: colWidths empty → measure all columns, switch to fixed layout
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 200, bubbles: true }));
+    const table = region.querySelector('.res-table');
+    expect(table.classList.contains('fixed')).toBe(true);
+    expect(Object.keys(r.colWidths)).toContain('idx');
+    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 320 }));
+    expect(r.colWidths[0]).toBe(120); // startW 0 + 120/1 (scale NaN→1 in jsdom)
+    win.dispatchEvent(new MouseEvent('mouseup', {}));
+    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 999 }));
+    expect(r.colWidths[0]).toBe(120); // listeners removed on mouseup
+
+    // second drag on column 1: colWidths already populated → measure skipped
+    handle = region.querySelectorAll('.res-table th .col-resize-h')[1];
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
+    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 180 }));
+    expect(r.colWidths[1]).toBe(80);
+    win.dispatchEvent(new MouseEvent('mouseup', {}));
+  });
+
+  it('reapplies stored widths on re-render (survives sort / streaming)', () => {
+    const r = tableResult();
+    r.colWidths = { idx: 36, 0: 90, 1: 70 };
+    const app = appWithResult(r);
+    renderResults(app);
+    const table = app.dom.resultsRegion.querySelector('.res-table');
+    expect(table.classList.contains('fixed')).toBe(true);
+    const cells = table.querySelectorAll('thead th');
+    expect(cells[1].style.width).toBe('90px');
+    expect(cells[2].style.width).toBe('70px');
+    expect(table.style.width).toBe('196px'); // 36 + 90 + 70
   });
 });
 
