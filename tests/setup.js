@@ -3,6 +3,11 @@
 // state (saved queries, history, mounted DOM) never leaks across cases.
 import { beforeEach } from 'vitest';
 
+// main.js auto-starts the app when `document` exists. happy-dom defines
+// `document`, so without this flag importing main.js in a test would boot the
+// real app (and crash on a missing #root). setupFiles run before test imports.
+globalThis.__ASB_NO_AUTOSTART__ = true;
+
 beforeEach(() => {
   try {
     if (globalThis.localStorage && typeof globalThis.localStorage.clear === 'function') {
