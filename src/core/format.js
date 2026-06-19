@@ -44,7 +44,10 @@ export function timeAgo(ts, now = Date.now()) {
 
 /** Quote + escape a string as a ClickHouse SQL string literal. */
 export function sqlString(s) {
-  return "'" + String(s).replace(/'/g, "''") + "'";
+  // Escape the backslash first (CH honors backslash escapes in string literals,
+  // so a trailing `\` would otherwise escape the closing quote and break out),
+  // then double the single quote.
+  return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "''") + "'";
 }
 
 /**

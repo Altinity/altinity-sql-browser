@@ -89,4 +89,27 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: 'x' }), app)).toBeNull();
     expect(handleKeydown(ev({ key: '?', target: null }), makeApp())).toBe('shortcuts');
   });
+
+  it('⌘A inside a raw result pane selects just that text', () => {
+    const app = makeApp();
+    const box = document.createElement('div');
+    box.className = 'raw-text-view';
+    box.textContent = 'a\tb\nc\td';
+    document.body.appendChild(box);
+    const e = ev({ metaKey: true, key: 'a', target: box });
+    expect(handleKeydown(e, app)).toBe('selectAll');
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(box.ownerDocument.defaultView.getSelection().toString()).toBe('a\tb\nc\td');
+  });
+
+  it('⌘A elsewhere falls through to the native select-all', () => {
+    const app = makeApp();
+    // editor textarea (no raw-pane ancestor) → not handled
+    const ta = document.createElement('textarea');
+    const e = ev({ metaKey: true, key: 'A', target: ta });
+    expect(handleKeydown(e, app)).toBeNull();
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    // no target at all
+    expect(handleKeydown(ev({ metaKey: true, key: 'a', target: null }), app)).toBeNull();
+  });
 });

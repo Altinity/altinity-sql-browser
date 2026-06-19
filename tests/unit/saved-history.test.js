@@ -56,6 +56,31 @@ describe('renderSavedHistory', () => {
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('From history', 'SELECT 1');
   });
 
+  it('history: per-row delete removes just that entry without loading it', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'history';
+    app.state.history = [
+      { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
+      { id: 'h2', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 2 },
+    ];
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.history-row .del'));
+    expect(app.state.history.map((e) => e.id)).toEqual(['h2']);
+    expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
+    expect(app.dom.savedList.querySelectorAll('.history-row')).toHaveLength(1);
+  });
+
+  it('history: clear button empties all history', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 }];
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.clear-btn'));
+    expect(app.state.history).toEqual([]);
+    expect(app.saveJSON).toHaveBeenCalled();
+    expect(app.dom.savedList.textContent).toContain('No history yet.');
+  });
+
   it('switching panels persists the choice', () => {
     const app = makeApp();
     app.state.sidePanel = 'saved';

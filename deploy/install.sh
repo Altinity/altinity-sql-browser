@@ -2,8 +2,9 @@
 # Install the Altinity SQL Browser onto a ClickHouse cluster:
 #   1. build the single-file SPA (dist/sql.html)
 #   2. render config.json from the OAuth args
-#   3. upload both into ClickHouse user_files/ (sql.html, sql-config.json)
-#   4. print the http_handlers config to enable /sql
+#   3. render dist/http_handlers.xml (CSP connect-src filled from OIDC discovery)
+#   4. upload the SPA + config into ClickHouse user_files/ (sql.html, sql-config.json)
+#   5. print the next step to enable /sql with the rendered http_handlers.xml
 #
 # The password is read from the CLICKHOUSE_PASSWORD env var or prompted — never
 # passed on the command line (it would leak via `ps`/shell history).
@@ -17,13 +18,14 @@
 #     [--audience <aud>] \         # audience-gated CH → also sends access_token
 #     [--ch-auth basic] \          # OSS CH + ch-jwt-verify → JWT as Basic password
 #     [--cluster my_cluster] \     # single-shard multi-replica only
-#     [--secure]
+#     [--secure] \
+#     [--dry-run]                  # build + render config.json + http_handlers.xml, print, no CH contact
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CH_HOST="" CH_USER="default" ISSUER="https://accounts.google.com"
-CLIENT_ID="" AUDIENCE="" CLUSTER="" SECURE=0 CH_AUTH=""
+CLIENT_ID="" AUDIENCE="" CLUSTER="" SECURE=0 CH_AUTH="" DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ch-host) CH_HOST="$2"; shift 2 ;;
@@ -34,14 +36,16 @@ while [[ $# -gt 0 ]]; do
     --ch-auth) CH_AUTH="$2"; shift 2 ;;
     --cluster) CLUSTER="$2"; shift 2 ;;
     --secure) SECURE=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;   # build + render config.json + http_handlers.xml, print, no ClickHouse contact
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-[[ -n "$CH_HOST" ]] || { echo "--ch-host is required" >&2; exit 2; }
 [[ -n "$CLIENT_ID" ]] || { echo "--client-id is required" >&2; exit 2; }
+# --ch-host is only needed to reach ClickHouse; a --dry-run just renders artifacts.
+[[ -n "$CH_HOST" || "$DRY_RUN" == 1 ]] || { echo "--ch-host is required" >&2; exit 2; }
 
-if [[ -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
+if [[ "$DRY_RUN" != 1 && -z "${CLICKHOUSE_PASSWORD:-}" ]]; then
   read -r -s -p "ClickHouse password for $CH_USER@$CH_HOST: " CLICKHOUSE_PASSWORD
   echo
 fi
@@ -52,7 +56,7 @@ CH=(clickhouse-client --host "$CH_HOST" --user "$CH_USER")
 
 # user_files is node-local, and clusterAllReplicas cannot write to a multi-shard
 # Distributed target, so a --cluster install only works on a single shard.
-if [[ -n "$CLUSTER" ]]; then
+if [[ "$DRY_RUN" != 1 && -n "$CLUSTER" ]]; then
   SHARDS=$("${CH[@]}" --query "SELECT max(shard_num) FROM system.clusters WHERE cluster = '${CLUSTER}'" 2>/dev/null || true)
   if [[ "$SHARDS" =~ ^[0-9]+$ ]] && (( SHARDS > 1 )); then
     echo "ERROR: cluster '${CLUSTER}' has ${SHARDS} shards. clusterAllReplicas can't" >&2
@@ -84,6 +88,44 @@ CONFIG_FILE="$(mktemp)"
 trap 'rm -f "$CONFIG_FILE"' EXIT
 printf '%s\n' "$CONFIG_JSON" > "$CONFIG_FILE"
 
+echo "==> Rendering http_handlers.xml (CSP connect-src from OIDC discovery)"
+# The CSP connect-src must allow same-origin ('self', for ClickHouse + config.json)
+# plus the IdP origins the browser fetches: OIDC discovery (issuer origin) and the
+# token endpoint (exchange + refresh). The OAuth /authorize step is a top-level
+# navigation, not a fetch, so it needs no connect-src entry. Resolve the real
+# origins from the issuer's discovery document; fail soft to the Google default.
+ISSUER_ORIGIN="$(printf '%s' "$ISSUER" | grep -oiE '^https?://[^/]+' || true)"
+CONNECT_HOSTS="https://accounts.google.com https://oauth2.googleapis.com"
+DISC_URL="${ISSUER%/}/.well-known/openid-configuration"
+if DISC_JSON="$(curl -fsS --max-time 10 "$DISC_URL" 2>/dev/null)"; then
+  # Pull the origin (scheme://host[:port]) of token/authorization endpoints, add
+  # the issuer origin, dedupe. Tolerates whitespace variations in the JSON.
+  EP_ORIGINS="$(printf '%s' "$DISC_JSON" \
+    | grep -oE '"(token_endpoint|authorization_endpoint)"[[:space:]]*:[[:space:]]*"[^"]+"' \
+    | grep -oiE 'https?://[^/"]+' || true)"
+  CONNECT_HOSTS="$(printf '%s\n%s\n' "$ISSUER_ORIGIN" "$EP_ORIGINS" \
+    | sed '/^$/d' | sort -u | paste -sd' ' -)"
+  echo "    connect-src origins: $CONNECT_HOSTS"
+else
+  echo "WARN: could not fetch $DISC_URL — using the Google default connect-src." >&2
+  echo "      If your IdP is not Google, edit connect-src in dist/http_handlers.xml." >&2
+fi
+# Rewrite only the connect-src host list in the committed template; everything else
+# (the rest of the CSP, the other headers) is copied verbatim.
+HANDLERS_OUT="$ROOT/dist/http_handlers.xml"
+sed -E "s#(connect-src 'self')[^;]*#\1 ${CONNECT_HOSTS}#" \
+  "$ROOT/deploy/http_handlers.xml" > "$HANDLERS_OUT"
+
+if [[ "$DRY_RUN" == 1 ]]; then
+  echo
+  echo "==> DRY RUN — no ClickHouse contact. Rendered artifacts:"
+  echo "--- config.json ---"
+  cat "$CONFIG_FILE"
+  echo "--- dist/http_handlers.xml ---"
+  cat "$HANDLERS_OUT"
+  exit 0
+fi
+
 # Upload raw bytes via FORMAT RawBLOB on stdin — no base64, no command-line
 # length limit, written as the clickhouse process so perms are correct.
 upload() {  # upload <local-file> <user_files-filename>
@@ -113,9 +155,10 @@ cat <<EOF
 
 ==> Assets uploaded to ClickHouse user_files/.
 
-Final step — enable the HTTP routes. Add deploy/http_handlers.xml to the
-server config.d/ (or push it as an ACM cluster setting named
-"config.d/sql-browser.xml") and reload ClickHouse. Then open:
+Final step — enable the HTTP routes. Add the rendered dist/http_handlers.xml
+(its CSP connect-src is filled in for your issuer) to the server config.d/ (or
+push it as an ACM cluster setting named "config.d/sql-browser.xml") and reload
+ClickHouse. Then open:
 
     http${SECURE:+s}://$CH_HOST/sql
 

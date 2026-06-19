@@ -255,15 +255,34 @@ body {
 }
 .saved-row:hover .del { display: inline-flex; }
 .saved-row .del:hover { color: var(--fg); background: var(--bg-hover); }
+.list-head {
+  display: flex; justify-content: flex-end;
+  padding: 5px 8px; border-bottom: 1px solid var(--border-faint);
+}
+.clear-btn {
+  border: none; background: transparent; color: var(--fg-faint);
+  font-size: 10.5px; cursor: pointer; padding: 3px 7px; border-radius: 4px;
+}
+.clear-btn:hover { color: var(--error-fg); background: var(--bg-hover); }
 .history-row {
+  position: relative;
   padding: 8px 10px; cursor: pointer; user-select: none;
   border-bottom: 1px solid var(--border-faint);
   display: flex; flex-direction: column; gap: 3px;
 }
 .history-row:hover { background: var(--bg-hover); }
+.history-row .del {
+  position: absolute; top: 6px; right: 8px;
+  width: 18px; height: 18px; border: none; background: transparent;
+  color: var(--fg-faint); cursor: pointer; border-radius: 3px;
+  display: none; align-items: center; justify-content: center; padding: 0;
+}
+.history-row:hover .del { display: inline-flex; }
+.history-row .del:hover { color: var(--fg); background: var(--bg-hover); }
 .history-row .sql {
   font-size: 11px; font-family: var(--mono); color: var(--fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-right: 20px;
 }
 .history-row .meta {
   display: flex; gap: 10px;
@@ -348,6 +367,8 @@ body {
   color: var(--fg); white-space: pre;
   background: var(--bg);
 }
+/* Focusable (tabindex) so a click scopes ⌘A to the pane's text; no focus ring. */
+.raw-text-view:focus, .json-view:focus { outline: none; }
 
 /* ------------ chart placeholder ------------ */
 .chart-view {
@@ -532,7 +553,12 @@ body {
   position: relative;
   display: flex; width: 100%; height: 100%;
   font-family: var(--mono);
-  font-size: 13px; line-height: 1.7;
+  /* Integer px line-height (not unitless): the editor overlays a <textarea> on a
+     highlight <pre>, and a fractional line box (1.7 * 13px = 22.1px) was rounded
+     differently by the textarea's internal layout vs the block <pre>, so the
+     native selection drifted upward from the painted glyphs, growing with line
+     number. An integer line-height makes both lay out identically. */
+  font-size: 13px; line-height: 22px;
   background: var(--bg-editor); color: var(--fg);
   overflow: hidden;
 }
@@ -546,7 +572,7 @@ body {
   overflow: hidden;
   font-variant-numeric: tabular-nums;
 }
-.sql-gutter > div { height: 1.7em; }
+.sql-gutter > div { height: 22px; }
 .sql-area { position: relative; flex: 1; overflow: hidden; }
 .sql-pre {
   position: absolute; inset: 0; margin: 0;
@@ -668,6 +694,17 @@ table.res-table th {
   padding: 7px 12px;
   cursor: pointer;
 }
+table.res-table th .col-resize-h {
+  position: absolute; top: 0; right: 0; z-index: 2;
+  width: 7px; height: 100%;
+  cursor: col-resize;
+}
+table.res-table th .col-resize-h:hover { background: var(--accent); opacity: .45; }
+/* Once any column is resized the table is laid out fixed so the per-column px
+   widths are honored exactly; clip overflow so a narrowed column ellipsizes
+   instead of spilling. */
+table.res-table.fixed { table-layout: fixed; }
+table.res-table.fixed th, table.res-table.fixed td { overflow: hidden; text-overflow: ellipsis; }
 table.res-table th .h-inner { display: flex; align-items: center; gap: 5px; }
 table.res-table th .h-name { color: var(--fg); }
 table.res-table th .h-type { font-size: 9.5px; color: var(--fg-faint); font-weight: 400; }

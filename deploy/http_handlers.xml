@@ -30,6 +30,15 @@
         <content_type>text/html; charset=UTF-8</content_type>
         <http_response_headers>
           <Cache-Control>no-store</Cache-Control>
+          <!-- connect-src OIDC origins: install.sh rewrites the https:// hosts from
+               the issuer (via OIDC discovery). For a manual install with a non-Google
+               IdP, replace the two https:// hosts below with your issuer + token
+               endpoint origins. script-src/style-src need 'unsafe-inline' because the
+               JS + CSS are inlined into this single HTML file; the real protection is
+               connect-src, which bounds where the sessionStorage tokens can be sent. -->
+          <Content-Security-Policy>default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com; base-uri 'none'; frame-ancestors 'none'</Content-Security-Policy>
+          <X-Content-Type-Options>nosniff</X-Content-Type-Options>
+          <Referrer-Policy>no-referrer</Referrer-Policy>
         </http_response_headers>
         <response_content>file://sql.html</response_content>
       </handler>
@@ -43,6 +52,8 @@
         <content_type>application/json; charset=UTF-8</content_type>
         <http_response_headers>
           <Cache-Control>no-store</Cache-Control>
+          <X-Content-Type-Options>nosniff</X-Content-Type-Options>
+          <Referrer-Policy>no-referrer</Referrer-Policy>
         </http_response_headers>
         <response_content>file://sql-config.json</response_content>
       </handler>

@@ -68,6 +68,26 @@ describe('bootstrap', () => {
     expect(app.showLogin).toHaveBeenCalledWith('OAuth state mismatch — please try again.');
   });
 
+  it('surfaces an IdP error callback with its description', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: { href: 'https://ch/sql?error=access_denied&error_description=User+denied', origin: 'https://ch', pathname: '/sql', search: '?error=access_denied&error_description=User+denied', hash: '' },
+    });
+    await bootstrap(app, env);
+    expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: User denied');
+    expect(env.history.replaceState).toHaveBeenCalled();
+    expect(app.renderApp).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the error code when no description is given', async () => {
+    const app = fakeApp();
+    const env = fakeEnv({
+      location: { href: 'https://ch/sql?error=access_denied', origin: 'https://ch', pathname: '/sql', search: '?error=access_denied', hash: '' },
+    });
+    await bootstrap(app, env);
+    expect(app.showLogin).toHaveBeenCalledWith('Sign-in failed: access_denied');
+  });
+
   it('reports a token-exchange failure', async () => {
     const app = fakeApp();
     const env = fakeEnv({

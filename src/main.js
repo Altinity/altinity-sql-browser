@@ -16,9 +16,14 @@ export async function bootstrap(app, env) {
   const u = new URL(loc.href);
   const code = u.searchParams.get('code');
   const stateParam = u.searchParams.get('state');
+  const errorParam = u.searchParams.get('error');
   let callbackError = null;
 
-  if (code && stateParam) {
+  if (errorParam) {
+    // The IdP bounced back with an error (e.g. ?error=access_denied) instead of
+    // a code — surface it rather than dropping silently onto the login screen.
+    callbackError = 'Sign-in failed: ' + (u.searchParams.get('error_description') || errorParam);
+  } else if (code && stateParam) {
     if (stateParam !== ss.getItem('oauth_state')) {
       callbackError = 'OAuth state mismatch — please try again.';
     } else {
@@ -36,7 +41,10 @@ export async function bootstrap(app, env) {
         callbackError = 'OAuth token exchange failed: ' + ((e && e.message) || e);
       }
     }
-    ['code', 'state', 'scope', 'authuser', 'prompt'].forEach((k) => u.searchParams.delete(k));
+  }
+  if (errorParam || (code && stateParam)) {
+    ['code', 'state', 'scope', 'authuser', 'prompt', 'error', 'error_description', 'error_uri']
+      .forEach((k) => u.searchParams.delete(k));
     const qs = u.searchParams.toString();
     hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
   }

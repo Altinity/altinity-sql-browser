@@ -4,7 +4,8 @@ A zero-dependency, OAuth-gated **SQL browser for any ClickHouse cluster** —
 schema explorer, tabbed SQL editor with syntax highlighting, streaming results
 with table / JSON / chart views, saved queries, history, and shareable links.
 It ships as a **single self-contained HTML file served from ClickHouse itself**
-(no Node server, no CDN, no runtime dependencies).
+(no Node server, no CDN, no external fonts, no runtime dependencies) — the page
+makes **zero third-party requests** and renders in the OS's native UI font.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase
 held at **100% test coverage**.
@@ -52,11 +53,13 @@ client_id) and the browser sends that as the bearer — so ClickHouse's
 `expected_audience` must be the **client_id**, not an API audience. Passing
 `--audience` switches to the **access_token** path. See `docs/CLICKHOUSE-OAUTH.md`.
 
-The installer builds `dist/sql.html`, renders `config.json`, and uploads both
-into ClickHouse `user_files/`. Then:
+The installer builds `dist/sql.html`, renders `config.json`, renders
+`dist/http_handlers.xml` (with the CSP `connect-src` filled in for your issuer —
+see "Security headers" below), and uploads the SPA + config into ClickHouse
+`user_files/`. Then:
 
-1. Add `deploy/http_handlers.xml` to the server's `config.d/` (or push it as an
-   ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
+1. Add the rendered `dist/http_handlers.xml` to the server's `config.d/` (or push
+   it as an ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
 2. Register the redirect URI `https://<ch-host>/sql` with your OAuth IdP.
 3. Make sure ClickHouse accepts the bearer JWT — either a CH
    `<token_processors>` entry validating your IdP's JWKS, or a delegated
@@ -84,6 +87,33 @@ on your IdP and threat model. Common, all valid, variants:
 
 The code treats `client_secret` as optional, so any of these is a config-only
 choice.
+
+### Security headers
+
+`deploy/http_handlers.xml` sends a strict **Content-Security-Policy** plus
+`X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` on the SPA
+response. The CSP is `default-src 'none'` with everything re-allowed explicitly:
+
+- `script-src`/`style-src 'unsafe-inline'` — the JS and CSS are inlined into the
+  single HTML file, so they can't be matched by `'self'`. (No `eval`, no remote
+  scripts; the real protection below is `connect-src`.)
+- `connect-src 'self' <issuer-origins>` — the one that matters: it bounds where
+  the page can send data, so an injected script can't exfiltrate the
+  `sessionStorage` tokens to an attacker. `'self'` covers ClickHouse queries +
+  `config.json`; the IdP origins cover OIDC discovery and the token endpoint.
+- `img-src data:`, `frame-ancestors 'none'` (anti-clickjacking), `base-uri 'none'`.
+
+`install.sh` fills `connect-src` automatically: it fetches your issuer's OIDC
+discovery document and rewrites the host list to your real issuer + token-endpoint
+origins (falling back to the Google default if discovery is unreachable). For a
+**manual install with a non-Google IdP**, edit the `connect-src` line in
+`deploy/http_handlers.xml` to list your issuer + token-endpoint origins.
+
+Preview the rendered artifacts without touching ClickHouse:
+
+```bash
+./deploy/install.sh --dry-run --client-id <id> [--issuer https://your-idp]
+```
 
 ## Layout
 

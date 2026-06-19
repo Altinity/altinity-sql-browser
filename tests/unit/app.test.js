@@ -110,6 +110,15 @@ describe('renderApp shell', () => {
     expect(e.sessionStorage.getItem('oauth_id_token')).toBeNull();
     expect(app.root.querySelector('.login-screen')).not.toBeNull();
   });
+  it('setTokens clears the one-shot pkce verifier and csrf state', () => {
+    const e = env({ sessionStorage: memSession({ oauth_verifier: 'v', oauth_state: 's' }) });
+    const app = createApp(e);
+    app.setTokens('tok');
+    expect(app.token).toBe('tok');
+    expect(e.sessionStorage.getItem('oauth_id_token')).toBe('tok');
+    expect(e.sessionStorage.getItem('oauth_verifier')).toBeNull();
+    expect(e.sessionStorage.getItem('oauth_state')).toBeNull();
+  });
   it('changing the format select persists the choice', () => {
     const { app } = rendered();
     app.dom.fmtSelect.value = 'JSON';

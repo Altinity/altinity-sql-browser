@@ -73,6 +73,17 @@ export function handleKeydown(e, app) {
     app.actions.toggleSaved();
     return 'toggleSaved';
   }
+  if (mod && e.key.toLowerCase() === 'a') {
+    // Inside a raw result pane (TSV / JSON output), select just that text so it
+    // can be copied — not the whole page. Elsewhere (e.g. the editor textarea)
+    // fall through to the browser's native select-all.
+    const t = e.target;
+    const box = t && t.closest && t.closest('.raw-text-view, .json-view');
+    if (!box) return null;
+    e.preventDefault();
+    box.ownerDocument.defaultView.getSelection().selectAllChildren(box);
+    return 'selectAll';
+  }
   if (e.key === '?' && !mod) {
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return null;

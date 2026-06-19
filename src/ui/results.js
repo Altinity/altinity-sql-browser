@@ -10,6 +10,64 @@ import { pickChartAxes, chartSeries } from '../core/chart-data.js';
 
 const VIS_CAP = 5000;
 const NS = 'http://www.w3.org/2000/svg';
+const MIN_COL = 48; // px floor for a resized column
+
+/**
+ * New width (px) for a column dragged by `dx` client px. `scale` converts client
+ * px → CSS px under the page `zoom` (computed per element); 0/NaN falls back to
+ * 1. Clamped to MIN_COL. Pure — exported for tests.
+ */
+export function colResizeWidth(startW, dx, scale) {
+  return Math.max(MIN_COL, Math.round(startW + dx / (scale || 1)));
+}
+
+/**
+ * Pin every column of `table` to the px widths in `r.colWidths` (key 'idx' for
+ * the row-number column, then 0-based data-column indices) and switch it to
+ * fixed layout so columns honor those widths exactly (and the wrap scrolls).
+ */
+function applyFixedWidths(table, r) {
+  table.classList.add('fixed');
+  const cells = table.querySelectorAll('thead th');
+  let total = 0;
+  for (let k = 0; k < cells.length; k++) {
+    const w = r.colWidths[k === 0 ? 'idx' : k - 1];
+    cells[k].style.width = w + 'px';
+    total += w;
+  }
+  table.style.width = total + 'px';
+  table.style.minWidth = '0';
+}
+
+/** Begin dragging the right edge of header `th` (a data column) to resize it. */
+function startColumnResize(r, th, ev) {
+  ev.preventDefault();
+  ev.stopPropagation(); // don't let the handle's mousedown reach the sort header
+  const table = th.closest('table');
+  const cells = table.querySelectorAll('thead th');
+  const colIndex = [].indexOf.call(cells, th) - 1; // 'idx' is cell 0
+  // First resize: freeze every column at its current rendered width, then fix.
+  if (!Object.keys(r.colWidths).length) {
+    for (let k = 0; k < cells.length; k++) {
+      r.colWidths[k === 0 ? 'idx' : k - 1] = cells[k].offsetWidth;
+    }
+  }
+  applyFixedWidths(table, r);
+  const win = th.ownerDocument.defaultView;
+  const scale = th.getBoundingClientRect().width / th.offsetWidth;
+  const startX = ev.clientX;
+  const startW = r.colWidths[colIndex];
+  const onMove = (m) => {
+    r.colWidths[colIndex] = colResizeWidth(startW, m.clientX - startX, scale);
+    applyFixedWidths(table, r);
+  };
+  const onUp = () => {
+    win.removeEventListener('mousemove', onMove);
+    win.removeEventListener('mouseup', onUp);
+  };
+  win.addEventListener('mousemove', onMove);
+  win.addEventListener('mouseup', onUp);
+}
 
 export function renderResults(app) {
   const region = app.dom.resultsRegion;
@@ -33,7 +91,7 @@ export function renderResults(app) {
   } else if (r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r.rawText != null) {
-    inner.appendChild(h('div', { class: 'raw-text-view' }, r.rawText));
+    inner.appendChild(h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText));
   } else if (r.rows.length === 0) {
     inner.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.')));
   } else if (app.state.resultView === 'json') {
@@ -87,12 +145,13 @@ export function renderJson(r) {
     r.columns.forEach((c, i) => { o[c.name] = row[i]; });
     return o;
   });
-  return h('div', { class: 'json-view' }, JSON.stringify(arr, null, 2));
+  return h('div', { class: 'json-view', tabindex: '0' }, JSON.stringify(arr, null, 2));
 }
 
 export function renderTable(app, r) {
   const { col, dir } = app.state.resultSort;
   const rows = sortRows(r.rows, col, dir);
+  r.colWidths = r.colWidths || {}; // persists across re-renders (sort/streaming)
   const wrap = h('div', { class: 'res-table-wrap' });
   const table = document.createElement('table');
   table.className = 'res-table';
@@ -101,7 +160,7 @@ export function renderTable(app, r) {
   trh.appendChild(h('th', { style: { textAlign: 'center', color: 'var(--fg-faint)', minWidth: '36px' } }, '#'));
   r.columns.forEach((c, i) => {
     const isSort = col === i;
-    trh.appendChild(h('th', {
+    const th = h('th', {
       onclick: () => {
         if (isSort) app.state.resultSort.dir = dir === 'asc' ? 'desc' : 'asc';
         else { app.state.resultSort.col = i; app.state.resultSort.dir = 'asc'; }
@@ -111,11 +170,20 @@ export function renderTable(app, r) {
       h('span', { class: 'h-name' }, c.name),
       h('span', { class: 'h-type' }, c.type),
       h('span', { style: { flex: '1' } }),
-      isSort ? h('span', { class: 'h-sort' }, dir === 'asc' ? Icon.sortAsc() : Icon.sortDesc()) : null)));
+      isSort ? h('span', { class: 'h-sort' }, dir === 'asc' ? Icon.sortAsc() : Icon.sortDesc()) : null),
+      // drag the right edge to resize; swallow the click so it doesn't sort.
+      h('span', {
+        class: 'col-resize-h',
+        title: 'Drag to resize column',
+        onmousedown: (e) => startColumnResize(r, th, e),
+        onclick: (e) => e.stopPropagation(),
+      }));
+    trh.appendChild(th);
   });
   const thead = document.createElement('thead');
   thead.appendChild(trh);
   table.appendChild(thead);
+  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r);
 
   const tbody = document.createElement('tbody');
   rows.slice(0, VIS_CAP).forEach((row, ri) => {

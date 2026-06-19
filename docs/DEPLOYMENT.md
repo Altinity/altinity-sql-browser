@@ -29,10 +29,19 @@ env var or prompted — never placed on the command line.
 
 ## 3. HTTP routes
 
-Add `deploy/http_handlers.xml` to ClickHouse `config.d/` (or push it through
+Add the http_handlers fragment to ClickHouse `config.d/` (or push it through
 your control plane as `config.d/sql-browser.xml`) and reload. It adds static
 rules for `/sql` and `/sql/config.json` and keeps `<defaults/>` so the dynamic
-query handler at `/` still works.
+query handler at `/` still works. The SPA rule also sends a strict
+Content-Security-Policy (`default-src 'none'`, `frame-ancestors 'none'`, and a
+`connect-src` scoped to same-origin + your IdP) plus `nosniff` and
+`Referrer-Policy: no-referrer` — see README "Security headers".
+
+`deploy/http_handlers.xml` is the committed default (Google `connect-src`).
+`install.sh` renders `dist/http_handlers.xml` with `connect-src` filled in for
+your `--issuer`; deploy that rendered file. For a manual install with a
+non-Google IdP, edit the `connect-src` line to your issuer + token-endpoint
+origins.
 
 ## 4. Make ClickHouse accept the JWT
 

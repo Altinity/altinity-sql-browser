@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, newTabObj, createState, activeTab, allocTabId,
-  findSavedBySql, toggleSaved, deleteSaved, recordHistory, clearHistory,
+  findSavedBySql, toggleSaved, deleteSaved, recordHistory, clearHistory, deleteHistory,
 } from '../../src/state.js';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -154,6 +154,14 @@ describe('history', () => {
     expect(s.history).toEqual([]);
     expect(save).toHaveBeenCalledWith(KEYS.history, []);
   });
+  it('deleteHistory removes one entry + persists', () => {
+    const s = createState(reader());
+    s.history = [{ id: 'h1' }, { id: 'h2' }];
+    const save = vi.fn();
+    deleteHistory(s, 'h1', save);
+    expect(s.history.map((h) => h.id)).toEqual(['h2']);
+    expect(save).toHaveBeenCalledWith(KEYS.history, s.history);
+  });
 });
 
 describe('default persistence', () => {
@@ -163,6 +171,7 @@ describe('default persistence', () => {
     toggleSaved(s, 'SELECT 9');
     recordHistory(s, { sql: 'SELECT 9', result: { rawText: null, rows: [], progress: { elapsed_ns: 0 } } });
     deleteSaved(s, 'nope');
+    deleteHistory(s, 'nope');
     clearHistory(s);
     expect(s.history).toEqual([]);
   });

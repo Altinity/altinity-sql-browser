@@ -116,3 +116,9 @@ export function clearHistory(state, save = saveJSON) {
   state.history = [];
   save(KEYS.history, state.history);
 }
+
+/** Delete one history entry by id. */
+export function deleteHistory(state, id, save = saveJSON) {
+  state.history = state.history.filter((h) => h.id !== id);
+  save(KEYS.history, state.history);
+}
