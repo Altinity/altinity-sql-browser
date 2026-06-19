@@ -19,6 +19,14 @@ For a multi-replica cluster pass `--cluster <name>`; the installer fans the
 bytes to every replica via `clusterAllReplicas`. The password is read from the
 env var or prompted — never placed on the command line.
 
+> **`user_files/` is node-local — re-run `install.sh` after a scale-out.**
+> ClickHouse does not replicate `user_files/`, so a replica added or replaced
+> later starts without the assets. This is a deliberate trade-off (the bootstrap
+> page is then served statically, with no auth). See
+> [ASSET-DISTRIBUTION.md](ASSET-DISTRIBUTION.md) for the options (push to
+> `user_files`, a replicated table + `predefined_query_handler`, or shipping the
+> asset through config distribution) and their trade-offs.
+
 ## 3. HTTP routes
 
 Add `deploy/http_handlers.xml` to ClickHouse `config.d/` (or push it through
@@ -34,7 +42,8 @@ validate it. Two supported shapes:
 - **Native token processor** (ClickHouse with JWT auth): add a
   `<token_processors>` entry pointing at your IdP's JWKS with `username_claim`,
   and a `<token>` user-directory so users are created on first query.
-- **Delegated verifier**: run a small JWT-verifier service referenced from
+- **Delegated verifier**: run a JWT-verifier service (e.g. Altinity's
+  [ch-jwt-verify](https://github.com/Altinity/ch-jwt-verify)) referenced from
   `<http_authentication_servers>` and define users `IDENTIFIED WITH http SERVER
   … SCHEME 'BASIC'`. In this shape the bearer is wrapped as Basic by an upstream
   layer.
