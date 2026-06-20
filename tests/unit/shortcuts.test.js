@@ -42,6 +42,15 @@ describe('openShortcuts', () => {
     openShortcuts(app);
     expect(document.querySelector('.modal-card')).not.toBeNull();
   });
+  it('lists keyboard shortcuts plus a schema-tree gestures section', () => {
+    const app = makeApp({ document });
+    openShortcuts(app);
+    const text = document.querySelector('.modal-card').textContent;
+    expect(text).toContain('Format query');
+    expect(document.querySelector('.modal-card .section-label')).not.toBeNull();
+    expect(text).toContain('Double-click');
+    expect(text).toContain('Shift-click');
+  });
 });
 
 describe('handleKeydown', () => {
