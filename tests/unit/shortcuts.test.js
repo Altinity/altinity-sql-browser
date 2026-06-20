@@ -59,14 +59,15 @@ describe('handleKeydown', () => {
     expect(app.actions.newTab).not.toHaveBeenCalled();
     expect(app.actions.closeTab).not.toHaveBeenCalled();
   });
-  it('⌘⇧F formats the query; gated by sign-in', () => {
+  it('⌘⇧↵ formats the query; gated by sign-in', () => {
     const app = makeApp();
-    const e = ev({ metaKey: true, shiftKey: true, key: 'F' });
+    const e = ev({ metaKey: true, shiftKey: true, key: 'Enter' });
     expect(handleKeydown(e, app)).toBe('formatQuery');
     expect(app.actions.formatQuery).toHaveBeenCalled();
+    expect(app.actions.run).not.toHaveBeenCalled();
     expect(e.preventDefault).toHaveBeenCalled();
     const out = makeApp({ isSignedIn: () => false });
-    expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'f' }), out)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), out)).toBeNull();
   });
   it('⌘⇧S shares; ⌘S toggles saved', () => {
     const app = makeApp();

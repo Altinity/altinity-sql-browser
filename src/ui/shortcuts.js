@@ -4,7 +4,7 @@ import { h } from './dom.js';
 
 const SHORTCUTS = [
   ['Run query', '⌘↵'],
-  ['Format query', '⌘⇧F'],
+  ['Format query', '⌘⇧↵'],
   ['Save / unsave query', '⌘S'],
   ['Share query', '⌘⇧S'],
   ['Undo', '⌘Z'],
@@ -46,15 +46,16 @@ export function handleKeydown(e, app) {
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
   if (mod && e.key === 'Enter') {
+    // ⌘/Ctrl+Shift+Enter = format (gated by sign-in); ⌘/Ctrl+Enter = run.
+    if (e.shiftKey) {
+      if (!signedIn) return null;
+      e.preventDefault();
+      app.actions.formatQuery();
+      return 'formatQuery';
+    }
     e.preventDefault();
     app.actions.run();
     return 'run';
-  }
-  if (mod && e.shiftKey && e.key.toLowerCase() === 'f') {
-    if (!signedIn) return null;
-    e.preventDefault();
-    app.actions.formatQuery();
-    return 'formatQuery';
   }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
     if (!signedIn) return null;
