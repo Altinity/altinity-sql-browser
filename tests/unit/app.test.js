@@ -648,6 +648,31 @@ describe('exhaustive controller coverage', () => {
     expect(decodeURIComponent(escape(atob(auth.slice(6))))).toMatch(/^me@example\.com:/);
   });
 
+  it('ch_auth=basic with basic_user_claim maps the Basic username to that claim', async () => {
+    const tok = jwt({ email: 'me@example.com', nickname: 'BorisT', exp: Math.floor(Date.now() / 1000) + 3600 });
+    const e = env({
+      window: fakeWin(),
+      sessionStorage: memSession({ oauth_id_token: tok }),
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { issuer: 'https://accounts.google.com', client_id: 'cid', ch_auth: 'basic', basic_user_claim: 'nickname' } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://a', token_endpoint: 'https://t' } })],
+        [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })],
+      ]),
+    });
+    const app = createApp(e);
+    app.renderApp();
+    await app.ensureConfig();
+    expect(app.basicUserClaim).toBe('nickname');
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    const q = e.fetch.mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1');
+    const auth = q[1].headers.Authorization;
+    // username segment is the nickname claim, not the email
+    expect(decodeURIComponent(escape(atob(auth.slice(6))))).toMatch(/^BorisT:/);
+    // the header identity matches the CH user (nickname), not the email claim
+    expect(app.email()).toBe('BorisT');
+  });
+
   it('shows and dismisses the auth-failure banner', () => {
     const app = createApp(env());
     app.renderApp();

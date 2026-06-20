@@ -30,9 +30,15 @@ function normalizeEntry(e) {
     // or 'access_token' (audience-gated CH).
     bearer: e.bearer === 'access_token' ? 'access_token' : 'id_token',
     // How the token reaches ClickHouse: 'bearer' (default; Authorization: Bearer
-    // <jwt>) or 'basic' (Authorization: Basic base64(email:jwt), for OSS CH
+    // <jwt>) or 'basic' (Authorization: Basic base64(user:jwt), for OSS CH
     // behind a verifier such as ch-jwt-verify).
     chAuth: e.ch_auth === 'basic' ? 'basic' : 'bearer',
+    // For ch_auth=basic, which JWT claim becomes the Basic username (= the CH
+    // user the verifier must return). Empty → default chain (email →
+    // preferred_username → sub). Set e.g. 'nickname' when an IdP must map to a
+    // CH username distinct from another IdP's (avoids same-name collisions —
+    // e.g. a token-directory Bearer user vs. a static http user on Antalya CH).
+    basicUserClaim: e.basic_user_claim || '',
     // Extra params merged into /authorize (e.g. Auth0 { organization: 'org_…' }).
     authorizeParams: e.authorize_params && typeof e.authorize_params === 'object'
       ? e.authorize_params

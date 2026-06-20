@@ -32,6 +32,7 @@ describe('loadConfigDoc', () => {
       id: 'accounts.google.com', label: 'accounts.google.com',
       issuer: 'https://accounts.google.com', clientId: 'cid', clientSecret: 'sek',
       audience: 'aud', bearer: 'id_token', chAuth: 'bearer', authorizeParams: {},
+      basicUserClaim: '',
     }]);
     expect(f.mock.calls[0][0]).toBe('/sql/config.json');
   });
@@ -59,14 +60,16 @@ describe('loadConfigDoc', () => {
     expect(idp.bearer).toBe('id_token');
     expect(idp.chAuth).toBe('bearer');
     expect(idp.authorizeParams).toEqual({});
+    expect(idp.basicUserClaim).toBe('');
   });
-  it('honours ch_auth=basic, bearer=access_token, and an authorize_params object', async () => {
+  it('honours ch_auth=basic, bearer=access_token, basic_user_claim, and an authorize_params object', async () => {
     const [idp] = await docOf({
       issuer: 'https://i', client_id: 'c', ch_auth: 'basic', bearer: 'access_token',
-      authorize_params: { organization: 'org_x' },
+      basic_user_claim: 'nickname', authorize_params: { organization: 'org_x' },
     });
     expect(idp.chAuth).toBe('basic');
     expect(idp.bearer).toBe('access_token');
+    expect(idp.basicUserClaim).toBe('nickname');
     expect(idp.authorizeParams).toEqual({ organization: 'org_x' });
   });
   it('ignores a non-object authorize_params and an unknown bearer', async () => {
