@@ -12,6 +12,7 @@ function fakeApp(over = {}) {
     token: null,
     state: { tabs: [{ id: 't1', sql: '', name: 'Untitled' }] },
     loadConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' })),
+    ensureConfig: vi.fn(async () => ({})),
     setTokens: vi.fn(function (id) { this.token = id; }),
     renderApp: vi.fn(),
     showLogin: vi.fn(),

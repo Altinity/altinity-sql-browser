@@ -70,10 +70,16 @@ export function createApp(env = {}) {
   app.host = () => loc.host || 'clickhouse';
   app.activeTab = () => activeTab(app.state);
   app.isSignedIn = () => !!app.token && !isTokenExpired(app.token, 0);
-  app.email = () => {
-    const p = decodeJwtPayload(app.token);
-    return p.email || p.preferred_username || p.sub || '';
-  };
+  // The CH-facing identity for the current token — what currentUser() will be:
+  // for ch_auth=basic it's the Basic username (honouring basicUserClaim); for
+  // bearer it's the email the token-processor keys on. Shared by authHeader and
+  // the header display so the UI never shows a different claim than CH sees.
+  function chUsername(p) {
+    return (app.chAuth === 'basic' && app.basicUserClaim && p[app.basicUserClaim])
+      || p.email || p.preferred_username || p.sub || '';
+  }
+  app.chUsername = chUsername;
+  app.email = () => chUsername(decodeJwtPayload(app.token));
 
   function setTokens(id, refresh) {
     app.token = id;
@@ -137,10 +143,12 @@ export function createApp(env = {}) {
   // (OSS + a verifier like ch-jwt-verify, where the JWT is the Basic password
   // and the username is the token's email). Resolved from config by ensureConfig.
   app.chAuth = 'bearer';
+  // Which claim becomes the Basic username (per-IdP, from config). Empty → the
+  // default chain. Lets one IdP map to a CH username distinct from another's.
+  app.basicUserClaim = '';
   function authHeader(token) {
     if (app.chAuth !== 'basic') return 'Bearer ' + token;
-    const p = decodeJwtPayload(token);
-    const user = p.email || p.preferred_username || p.sub || '';
+    const user = chUsername(decodeJwtPayload(token));
     return 'Basic ' + btoa(unescape(encodeURIComponent(user + ':' + token)));
   }
   const chCtx = {
@@ -160,6 +168,7 @@ export function createApp(env = {}) {
     try {
       const cfg = await resolveConfig();
       app.chAuth = cfg.chAuth;
+      app.basicUserClaim = cfg.basicUserClaim || '';
       return cfg;
     } catch {
       return null;

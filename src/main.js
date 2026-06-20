@@ -63,6 +63,9 @@ export async function bootstrap(app, env) {
 
   if (app.token && !isTokenExpired(app.token, 0)) {
     ss.removeItem('oauth_shared_sql'); // consumed
+    // Resolve config first so the header shows the real CH identity (the
+    // ch_auth=basic username, not the raw email claim) on first paint.
+    await app.ensureConfig();
     app.renderApp();
   } else {
     app.showLogin(callbackError);
