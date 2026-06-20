@@ -219,6 +219,94 @@ describe('query run', () => {
   });
 });
 
+describe('formatQuery', () => {
+  function appFor(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+  it('replaces the editor with the server-formatted SQL', async () => {
+    const { app } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT\n  1' }] } })],
+    ]);
+    app.activeTab().sql = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toBe('SELECT\n  1');
+  });
+  it('no-ops on empty SQL', async () => {
+    const { app, e } = appFor([]);
+    await Promise.resolve(); // let render's loadVersion/loadSchema settle
+    e.fetch.mockClear();
+    app.activeTab().sql = '   ';
+    await app.actions.formatQuery();
+    expect(e.fetch).not.toHaveBeenCalled();
+  });
+  it('signs out when there is no usable token', async () => {
+    const { app } = appFor([], { sessionStorage: memSession({}) }); // no token
+    app.activeTab().sql = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.login-screen')).not.toBeNull();
+  });
+  it('surfaces a format failure without changing the editor', async () => {
+    const { app } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: syntax"}' })],
+    ]);
+    app.activeTab().sql = 'select 1';
+    app.dom.editorTextarea.value = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toBe('select 1'); // unchanged
+    expect(document.body.querySelector('.share-toast')).not.toBeNull();
+  });
+});
+
+describe('insertCreate', () => {
+  function appFor(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+  it('fetches DDL, formats it, and inserts as a top line', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [{ statement: 'CREATE TABLE db.t (a Int)' }] } })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE db.t\n(\n  a Int\n)' }] } })],
+    ]);
+    await app.actions.insertCreate('db.t');
+    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE db.t\n(\n  a Int\n)');
+  });
+  it('falls back to the raw DDL when formatting fails', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [{ statement: 'CREATE TABLE db.t (a Int)' }] } })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"x"}' })],
+    ]);
+    await app.actions.insertCreate('db.t');
+    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE db.t (a Int)');
+  });
+  it('no-ops when SHOW CREATE returns no statement', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [] } })],
+    ]);
+    app.dom.editorTextarea.value = 'keep';
+    await app.actions.insertCreate('db.t');
+    expect(app.dom.editorTextarea.value).toBe('keep');
+  });
+  it('surfaces a SHOW CREATE failure without changing the editor', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: no table"}' })],
+    ]);
+    app.dom.editorTextarea.value = 'keep';
+    await app.actions.insertCreate('db.t');
+    expect(app.dom.editorTextarea.value).toBe('keep');
+    expect(document.body.querySelector('.share-toast')).not.toBeNull();
+  });
+  it('signs out when there is no usable token', async () => {
+    const { app } = appFor([], { sessionStorage: memSession({}) });
+    await app.actions.insertCreate('db.t');
+    expect(app.root.querySelector('.login-screen')).not.toBeNull();
+  });
+});
+
 describe('auth flows', () => {
   it('login builds the redirect URL and stashes pkce/state', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' };

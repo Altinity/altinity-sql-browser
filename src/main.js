@@ -49,15 +49,24 @@ export async function bootstrap(app, env) {
     hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
   }
 
-  const sharedSql = decodeSqlFromHash(loc.hash);
+  // A shared query rides in the URL hash, which is lost through the OAuth
+  // redirect (and we strip it below). Stash it in sessionStorage so it survives
+  // the round-trip and restore it once we're back, signed in.
+  let sharedSql = decodeSqlFromHash(loc.hash);
+  if (sharedSql) ss.setItem('oauth_shared_sql', sharedSql);
+  else sharedSql = ss.getItem('oauth_shared_sql') || '';
   if (sharedSql) {
     app.state.tabs[0].sql = sharedSql;
     app.state.tabs[0].name = 'Shared query';
     hist.replaceState(null, '', loc.pathname + loc.search);
   }
 
-  if (app.token && !isTokenExpired(app.token, 0)) app.renderApp();
-  else app.showLogin(callbackError);
+  if (app.token && !isTokenExpired(app.token, 0)) {
+    ss.removeItem('oauth_shared_sql'); // consumed
+    app.renderApp();
+  } else {
+    app.showLogin(callbackError);
+  }
   return { callbackError, signedIn: app.isSignedIn() };
 }
 

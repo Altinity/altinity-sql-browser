@@ -4,12 +4,21 @@ import { h } from './dom.js';
 
 const SHORTCUTS = [
   ['Run query', '⌘↵'],
-  ['New tab', '⌘T'],
-  ['Close tab', '⌘W'],
+  ['Format query', '⌘⇧↵'],
   ['Save / unsave query', '⌘S'],
   ['Share query', '⌘⇧S'],
+  ['Undo', '⌘Z'],
+  ['Redo', '⌘⇧Z'],
   ['Show this dialog', '?'],
   ['Close dialog', 'Esc'],
+];
+
+// Mouse gestures on the schema tree (db / table / column). Kept terse — the
+// per-row tooltips carry the detail; this just signals the gestures exist.
+const GESTURES = [
+  ['Expand / collapse', 'Click'],
+  ['Insert into editor', 'Double-click'],
+  ['Insert DDL / col::type', 'Shift-click'],
 ];
 
 /** Open the shortcuts modal. Idempotent while open (tracked on state). */
@@ -26,10 +35,13 @@ export function openShortcuts(app) {
     if (e.key === 'Escape') close();
   };
   doc.addEventListener('keydown', escHandler);
+  const rowOf = ([label, key]) =>
+    h('div', { class: 'row' }, h('span', { class: 'label' }, label), h('kbd', null, key));
   const card = h('div', { class: 'modal-card', onclick: (e) => e.stopPropagation() },
     h('h2', null, 'Keyboard shortcuts'),
-    ...SHORTCUTS.map(([label, key]) =>
-      h('div', { class: 'row' }, h('span', { class: 'label' }, label), h('kbd', null, key))),
+    ...SHORTCUTS.map(rowOf),
+    h('div', { class: 'section-label' }, 'Schema tree — database · table · column'),
+    ...GESTURES.map(rowOf),
     h('div', { class: 'close-row' }, h('button', { class: 'close-btn', onclick: close }, 'Close')),
   );
   const backdrop = h('div', { class: 'modal-backdrop', onclick: close }, card);
@@ -45,21 +57,16 @@ export function handleKeydown(e, app) {
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
   if (mod && e.key === 'Enter') {
+    // ⌘/Ctrl+Shift+Enter = format (gated by sign-in); ⌘/Ctrl+Enter = run.
+    if (e.shiftKey) {
+      if (!signedIn) return null;
+      e.preventDefault();
+      app.actions.formatQuery();
+      return 'formatQuery';
+    }
     e.preventDefault();
     app.actions.run();
     return 'run';
-  }
-  if (mod && e.key.toLowerCase() === 't') {
-    if (!signedIn) return null;
-    e.preventDefault();
-    app.actions.newTab();
-    return 'newTab';
-  }
-  if (mod && e.key.toLowerCase() === 'w') {
-    if (!signedIn || app.state.tabs.length <= 1) return null;
-    e.preventDefault();
-    app.actions.closeTab(app.state.activeTabId);
-    return 'closeTab';
   }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
     if (!signedIn) return null;

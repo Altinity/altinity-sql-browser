@@ -71,10 +71,7 @@ export function mountEditor(app, container) {
   ta.addEventListener('keydown', (e) => {
     if (e.key !== 'Tab') return;
     e.preventDefault();
-    const { selectionStart: s, selectionEnd: en } = ta;
-    ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
-    ta.selectionStart = ta.selectionEnd = s + 2;
-    ta.dispatchEvent(new Event('input'));
+    applyEdit(ta, '  ');
   });
   // Accept schema identifiers dragged from the tree; insert at the cursor.
   ta.addEventListener('dragover', (e) => e.preventDefault());
@@ -92,13 +89,45 @@ export function mountEditor(app, container) {
   sync();
 }
 
-/** Insert `text` at the textarea cursor and fire an input event. */
-export function insertAtCursor(app, text) {
-  const ta = app.dom.editorTextarea;
-  if (!ta) return;
+/**
+ * Replace the textarea's current selection with `text`. Uses
+ * execCommand('insertText') so the edit joins the native undo stack (⌘Z / ⌘⇧Z);
+ * falls back to a manual splice + 'input' dispatch where execCommand is absent
+ * (older browsers, happy-dom). execCommand fires 'input' itself, so either path
+ * runs the input listener that syncs tab.sql + repaints.
+ */
+function applyEdit(ta, text) {
+  ta.focus();
+  let ok = false;
+  try { ok = ta.ownerDocument.execCommand('insertText', false, text); } catch { ok = false; }
+  if (ok) return;
   const { selectionStart: s, selectionEnd: e } = ta;
   ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
   ta.selectionStart = ta.selectionEnd = s + text.length;
-  ta.focus();
   ta.dispatchEvent(new Event('input'));
+}
+
+/** Insert `text` at the textarea cursor (undoable). */
+export function insertAtCursor(app, text) {
+  const ta = app.dom.editorTextarea;
+  if (!ta) return;
+  applyEdit(ta, text);
+}
+
+/** Prepend `text` as a new first line (does not replace existing content). */
+export function insertTopLine(app, text) {
+  const ta = app.dom.editorTextarea;
+  if (!ta) return;
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = 0;
+  applyEdit(ta, text + (ta.value ? '\n' : ''));
+}
+
+/** Replace the whole editor content with `text` (undoable). */
+export function replaceEditor(app, text) {
+  const ta = app.dom.editorTextarea;
+  if (!ta) return;
+  ta.focus();
+  ta.select();
+  applyEdit(ta, text);
 }

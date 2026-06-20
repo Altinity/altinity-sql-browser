@@ -18,7 +18,7 @@ import { generatePKCE, randomState } from '../core/pkce.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
-import { mountEditor, insertAtCursor } from './editor.js';
+import { mountEditor, insertAtCursor, insertTopLine, replaceEditor } from './editor.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
@@ -264,6 +264,42 @@ export function createApp(env = {}) {
       running ? null : h('kbd', null, '⌘↵'));
   }
 
+  // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place.
+  async function formatQuery() {
+    const sql = (app.activeTab().sql || '').trim();
+    if (!sql) return;
+    await ensureConfig();
+    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    try {
+      const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(sql) + ') AS q FORMAT JSON');
+      const q = (json.data && json.data[0] && json.data[0].q) || '';
+      if (q) replaceEditor(app, q);
+    } catch (e) {
+      flashToast('Format failed: ' + String((e && e.message) || e), { document: doc });
+    }
+  }
+
+  // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
+  // SHOW CREATE, pretty-print it through formatQuery(), and drop it in as a top
+  // line. Two round-trips by design; if formatting fails the raw DDL is used.
+  async function insertCreate(target) {
+    await ensureConfig();
+    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    try {
+      const show = await ch.queryJson(chCtx, 'SHOW CREATE ' + target + ' FORMAT JSON');
+      const stmt = (show.data && show.data[0] && show.data[0].statement) || '';
+      if (!stmt) return;
+      let out = stmt;
+      try {
+        const fmt = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
+        out = (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
+      } catch { /* formatting is best-effort — fall back to the raw DDL */ }
+      insertTopLine(app, out);
+    } catch (e) {
+      flashToast('SHOW CREATE failed: ' + String((e && e.message) || e), { document: doc });
+    }
+  }
+
   // --- saved / history bridges ------------------------------------------
   app.recordHistory = (tab) => {
     recordHistory(app.state, tab, saveJSON);
@@ -315,8 +351,11 @@ export function createApp(env = {}) {
     login,
     share,
     toggleSaved: toggleSavedActive,
+    formatQuery,
+    insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),
+    insertTopLine: (text) => insertTopLine(app, text),
     loadColumns,
     rerenderTabs: () => renderTabs(app),
     rerenderResults: () => renderResults(app),
@@ -387,7 +426,7 @@ export function renderApp(app, helpers) {
 
   app.dom.qtabsInner = h('div', { class: 'qtabs-inner' });
   const qtabsRow = h('div', { class: 'qtabs' }, app.dom.qtabsInner,
-    h('button', { class: 'new-tab', title: 'New query (⌘T)', onclick: () => app.actions.newTab() }, Icon.plus()));
+    h('button', { class: 'new-tab', title: 'New query', onclick: () => app.actions.newTab() }, Icon.plus()));
 
   app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
   app.dom.fmtSelect = h('select', {

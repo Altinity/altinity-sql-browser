@@ -120,7 +120,7 @@ describe('bootstrap', () => {
     expect(app.showLogin).toHaveBeenCalledWith('OAuth token exchange failed: plain failure');
   });
 
-  it('seeds the first tab from a share-link hash', async () => {
+  it('seeds the first tab from a share-link hash (and stashes it for login)', async () => {
     const app = fakeApp();
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
@@ -128,6 +128,19 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs[0].sql).toBe('SELECT 1');
     expect(app.state.tabs[0].name).toBe('Shared query');
+    expect(env.sessionStorage.getItem('oauth_shared_sql')).toBe('SELECT 1'); // survives a login redirect
+  });
+
+  it('restores a shared query from sessionStorage after the OAuth round-trip', async () => {
+    // The hash is gone after the IdP redirect; the stash carries it through.
+    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
+    env.sessionStorage.setItem('oauth_shared_sql', 'SELECT 42');
+    await bootstrap(app, env);
+    expect(app.state.tabs[0].sql).toBe('SELECT 42');
+    expect(app.state.tabs[0].name).toBe('Shared query');
+    expect(app.renderApp).toHaveBeenCalled();
+    expect(env.sessionStorage.getItem('oauth_shared_sql')).toBeNull(); // consumed on render
   });
 
   it('preserves extra query params while stripping oauth ones', async () => {

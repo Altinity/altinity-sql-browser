@@ -5,6 +5,8 @@ import { makeApp } from '../helpers/fake-app.js';
 
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
+const shiftClick = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+const dblclick = (el) => el.dispatchEvent(new Event('dblclick', { bubbles: true }));
 // Fire a dragstart with a stub dataTransfer and return what setData captured.
 const dragstart = (el) => {
   const e = new Event('dragstart', { bubbles: true });
@@ -72,6 +74,21 @@ describe('renderSchema tree', () => {
     click(db2Row);
     expect(app.state.schema[1].expanded).toBe(true);
   });
+  it('shift-clicking a db inserts its formatted DDL without expanding', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+    shiftClick(db2Row);
+    expect(app.actions.insertCreate).toHaveBeenCalledWith('DATABASE db2');
+    expect(app.state.schema[1].expanded).toBe(false);
+  });
+  it('double-clicking a db inserts its name', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db1Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
+    dblclick(db1Row);
+    expect(app.actions.insertAtCursor).toHaveBeenCalledWith('db1');
+  });
   it('expanding a table with no columns triggers loadColumns', () => {
     const app = withSchema();
     renderSchema(app);
@@ -89,12 +106,21 @@ describe('renderSchema tree', () => {
     click(ordersRow); // collapse
     expect(app.state.expandedTables.has('db1.orders')).toBe(false);
   });
-  it('double-clicking a table inserts its qualified name', () => {
+  it('double-clicking a table inserts a SELECT * as a top line', () => {
     const app = withSchema();
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
-    ordersRow.dispatchEvent(new Event('dblclick', { bubbles: true }));
-    expect(app.actions.insertAtCursor).toHaveBeenCalledWith('db1.orders');
+    dblclick(ordersRow);
+    expect(app.actions.insertTopLine).toHaveBeenCalledWith('SELECT * FROM db1.orders LIMIT 100');
+  });
+  it('shift-clicking a table inserts its formatted DDL without expanding', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    shiftClick(eventsRow);
+    expect(app.actions.insertCreate).toHaveBeenCalledWith('db1.events');
+    expect(app.state.expandedTables.has('db1.events')).toBe(false);
+    expect(app.actions.loadColumns).not.toHaveBeenCalled();
   });
   it('shows a loading row while columns load', () => {
     const app = withSchema();
@@ -103,18 +129,22 @@ describe('renderSchema tree', () => {
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('loading columns…');
   });
-  it('renders columns (with + without comment) and inserts on click', () => {
+  it('columns: plain click inserts nothing; double-click inserts name; shift-click inserts ::type', () => {
     const app = withSchema();
     app.state.schema[0].tables[0].columns = [
-      { name: 'id', type: 'UInt64', comment: 'pk' },
-      { name: 'ts', type: 'DateTime', comment: '' },
+      { name: 'id', type: 'UInt64', comment: 'pk' },     // comment → title branch
+      { name: 'ts', type: 'DateTime', comment: '' },     // no comment → default title branch
     ];
     app.state.expandedTables.add('db1.orders');
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
     click(colRow);
+    expect(app.actions.insertAtCursor).not.toHaveBeenCalled(); // single click does nothing
+    dblclick(colRow);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id');
+    shiftClick(colRow);
+    expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id::UInt64');
   });
 });
 
