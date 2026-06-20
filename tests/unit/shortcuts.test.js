@@ -52,21 +52,21 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
     expect(app.actions.run).toHaveBeenCalled();
   });
-  it('⌘T new tab; gated by sign-in', () => {
+  it('⌘T / ⌘W are no longer intercepted (browser keeps them)', () => {
     const app = makeApp();
-    expect(handleKeydown(ev({ ctrlKey: true, key: 't' }), app)).toBe('newTab');
-    const out = makeApp({ isSignedIn: () => false });
-    expect(handleKeydown(ev({ ctrlKey: true, key: 'T' }), out)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, key: 't' }), app)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, key: 'w' }), app)).toBeNull();
+    expect(app.actions.newTab).not.toHaveBeenCalled();
+    expect(app.actions.closeTab).not.toHaveBeenCalled();
   });
-  it('⌘W closes only with >1 tab and signed in', () => {
+  it('⌘⇧F formats the query; gated by sign-in', () => {
     const app = makeApp();
-    app.state.tabs.push({ id: 't2' });
-    expect(handleKeydown(ev({ metaKey: true, key: 'w' }), app)).toBe('closeTab');
-    const single = makeApp();
-    expect(handleKeydown(ev({ metaKey: true, key: 'w' }), single)).toBeNull();
+    const e = ev({ metaKey: true, shiftKey: true, key: 'F' });
+    expect(handleKeydown(e, app)).toBe('formatQuery');
+    expect(app.actions.formatQuery).toHaveBeenCalled();
+    expect(e.preventDefault).toHaveBeenCalled();
     const out = makeApp({ isSignedIn: () => false });
-    out.state.tabs.push({ id: 't2' });
-    expect(handleKeydown(ev({ metaKey: true, key: 'w' }), out)).toBeNull();
+    expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'f' }), out)).toBeNull();
   });
   it('⌘⇧S shares; ⌘S toggles saved', () => {
     const app = makeApp();

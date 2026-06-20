@@ -4,10 +4,11 @@ import { h } from './dom.js';
 
 const SHORTCUTS = [
   ['Run query', '⌘↵'],
-  ['New tab', '⌘T'],
-  ['Close tab', '⌘W'],
+  ['Format query', '⌘⇧F'],
   ['Save / unsave query', '⌘S'],
   ['Share query', '⌘⇧S'],
+  ['Undo', '⌘Z'],
+  ['Redo', '⌘⇧Z'],
   ['Show this dialog', '?'],
   ['Close dialog', 'Esc'],
 ];
@@ -49,17 +50,11 @@ export function handleKeydown(e, app) {
     app.actions.run();
     return 'run';
   }
-  if (mod && e.key.toLowerCase() === 't') {
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'f') {
     if (!signedIn) return null;
     e.preventDefault();
-    app.actions.newTab();
-    return 'newTab';
-  }
-  if (mod && e.key.toLowerCase() === 'w') {
-    if (!signedIn || app.state.tabs.length <= 1) return null;
-    e.preventDefault();
-    app.actions.closeTab(app.state.activeTabId);
-    return 'closeTab';
+    app.actions.formatQuery();
+    return 'formatQuery';
   }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
     if (!signedIn) return null;

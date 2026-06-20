@@ -40,7 +40,13 @@ export function renderSchema(app) {
   for (const db of state.schema) {
     list.appendChild(h('div', {
       class: 'tree-row bold',
-      onclick: () => { db.expanded = !db.expanded; renderSchema(app); },
+      title: 'Click to expand · double-click to insert · shift-click for SHOW CREATE',
+      onclick: (e) => {
+        if (e.shiftKey) { app.actions.insertTopLine('SHOW CREATE DATABASE ' + db.db); return; }
+        db.expanded = !db.expanded;
+        renderSchema(app);
+      },
+      ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(db.db); },
       ...dragProps(db.db),
     },
       h('span', { class: 'chev' }, db.expanded ? Icon.chevDown() : Icon.chev()),
@@ -60,20 +66,21 @@ export function renderSchema(app) {
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
-        : 'Click to expand/collapse · double-click or drag to insert';
+        : 'Click to expand · double-click for SELECT * · shift-click for SHOW CREATE';
 
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
         style: { paddingLeft: '24px' },
         title,
-        ...dragProps(db.db + '.' + tb.name),
-        onclick: () => {
+        ...dragProps(key),
+        onclick: (e) => {
+          if (e.shiftKey) { app.actions.insertTopLine('SHOW CREATE ' + key); return; }
           if (state.expandedTables.has(key)) state.expandedTables.delete(key);
           else state.expandedTables.add(key);
           if (state.expandedTables.has(key) && tb.columns == null) app.actions.loadColumns(db.db, tb.name, tb);
           else renderSchema(app);
         },
-        ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(db.db + '.' + tb.name); },
+        ondblclick: (e) => { e.stopPropagation(); app.actions.insertTopLine('SELECT * FROM ' + key + ' LIMIT 100'); },
       },
         h('span', { class: 'chev' }, isOpen ? Icon.chevDown() : Icon.chev()),
         h('span', { class: 'icon', style: { color: 'var(--accent)' } }, Icon.table()),
@@ -93,8 +100,10 @@ export function renderSchema(app) {
         list.appendChild(h('div', {
           class: 'tree-row small mono' + (filter && matches(c.name) ? ' match' : ''),
           style: { paddingLeft: '38px' },
-          title: (c.comment && c.comment.trim()) || 'Click or drag to insert ' + c.name,
-          onclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(c.name); },
+          title: (c.comment && c.comment.trim())
+            || ('Double-click or drag to insert ' + c.name + ' · shift-click for ' + c.name + '::' + c.type),
+          onclick: (e) => { e.stopPropagation(); if (e.shiftKey) app.actions.insertAtCursor(c.name + '::' + c.type); },
+          ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(c.name); },
           ...dragProps(c.name),
         },
           h('span', { class: 'chev' }),

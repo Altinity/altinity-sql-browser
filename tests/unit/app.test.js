@@ -219,6 +219,47 @@ describe('query run', () => {
   });
 });
 
+describe('formatQuery', () => {
+  function appFor(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+  it('replaces the editor with the server-formatted SQL', async () => {
+    const { app } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT\n  1' }] } })],
+    ]);
+    app.activeTab().sql = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toBe('SELECT\n  1');
+  });
+  it('no-ops on empty SQL', async () => {
+    const { app, e } = appFor([]);
+    await Promise.resolve(); // let render's loadVersion/loadSchema settle
+    e.fetch.mockClear();
+    app.activeTab().sql = '   ';
+    await app.actions.formatQuery();
+    expect(e.fetch).not.toHaveBeenCalled();
+  });
+  it('signs out when there is no usable token', async () => {
+    const { app } = appFor([], { sessionStorage: memSession({}) }); // no token
+    app.activeTab().sql = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.login-screen')).not.toBeNull();
+  });
+  it('surfaces a format failure without changing the editor', async () => {
+    const { app } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: syntax"}' })],
+    ]);
+    app.activeTab().sql = 'select 1';
+    app.dom.editorTextarea.value = 'select 1';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toBe('select 1'); // unchanged
+    expect(document.body.querySelector('.share-toast')).not.toBeNull();
+  });
+});
+
 describe('auth flows', () => {
   it('login builds the redirect URL and stashes pkce/state', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' };

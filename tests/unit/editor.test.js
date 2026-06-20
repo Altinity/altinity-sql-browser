@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHighlightInto, mountEditor, insertAtCursor, IDENT_MIME } from '../../src/ui/editor.js';
+import { renderHighlightInto, mountEditor, insertAtCursor, insertTopLine, replaceEditor, IDENT_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 describe('renderHighlightInto', () => {
@@ -109,5 +109,51 @@ describe('insertAtCursor', () => {
   it('no-ops without a textarea', () => {
     const app = makeApp();
     expect(() => insertAtCursor(app, 'x')).not.toThrow();
+  });
+  it('uses execCommand(insertText) when available, skipping the manual splice', () => {
+    const app = makeApp();
+    mountEditor(app, document.createElement('div'));
+    const ta = app.dom.editorTextarea;
+    ta.value = 'AB';
+    ta.selectionStart = ta.selectionEnd = 1;
+    const spy = vi.fn(() => true);
+    document.execCommand = spy;
+    try {
+      insertAtCursor(app, 'x');
+      expect(spy).toHaveBeenCalledWith('insertText', false, 'x');
+      expect(ta.value).toBe('AB'); // execCommand owns the insert; manual splice skipped
+    } finally {
+      delete document.execCommand;
+    }
+  });
+});
+
+describe('insertTopLine / replaceEditor', () => {
+  function mounted(sql = '') {
+    const app = makeApp();
+    app.activeTab().sql = sql;
+    mountEditor(app, document.createElement('div'));
+    return { app, ta: app.dom.editorTextarea };
+  }
+  it('insertTopLine prepends a new first line above existing content', () => {
+    const { app, ta } = mounted('SELECT 1');
+    insertTopLine(app, 'SHOW CREATE db.t');
+    expect(ta.value).toBe('SHOW CREATE db.t\nSELECT 1');
+    expect(app.activeTab().sql).toBe('SHOW CREATE db.t\nSELECT 1');
+  });
+  it('insertTopLine on an empty editor adds no trailing newline', () => {
+    const { ta, app } = mounted('');
+    insertTopLine(app, 'SELECT 1');
+    expect(ta.value).toBe('SELECT 1');
+  });
+  it('replaceEditor swaps the whole content', () => {
+    const { ta, app } = mounted('select 1');
+    replaceEditor(app, 'SELECT\n  1');
+    expect(ta.value).toBe('SELECT\n  1');
+  });
+  it('insertTopLine / replaceEditor no-op without a textarea', () => {
+    const app = makeApp();
+    expect(() => insertTopLine(app, 'x')).not.toThrow();
+    expect(() => replaceEditor(app, 'x')).not.toThrow();
   });
 });
