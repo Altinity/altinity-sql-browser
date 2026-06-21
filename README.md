@@ -121,6 +121,9 @@ response. The CSP is `default-src 'none'` with everything re-allowed explicitly:
   `sessionStorage` tokens to an attacker. `'self'` covers ClickHouse queries +
   `config.json`; the IdP origins cover OIDC discovery and the token endpoint.
 - `img-src data:`, `frame-ancestors 'none'` (anti-clickjacking), `base-uri 'none'`.
+- `frame-src 'self'` — lets the result cell-detail drawer preview an HTML value
+  in a `sandbox=""` (script-less, inert) `srcdoc` iframe. The sandbox blocks any
+  script/form/navigation, so the relaxation can't run injected code.
 
 `install.sh` fills `connect-src` automatically: it fetches your issuer's OIDC
 discovery document and rewrites the host list to your real issuer + token-endpoint

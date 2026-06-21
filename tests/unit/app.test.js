@@ -443,6 +443,15 @@ describe('share + star + columns', () => {
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(document.querySelector('.save-popover')).toBeNull();
   });
+  it('restoring a saved query links the tab → Save button reads "Saved"', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [{ id: 's9', name: 'Fav', sql: 'SELECT 9', favorite: false }];
+    app.actions.loadIntoNewTab('Fav', 'SELECT 9', 's9');
+    expect(app.activeTab().savedId).toBe('s9');
+    expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
+    expect(app.dom.saveBtn.textContent).toContain('Saved');
+  });
   it('loadColumns fills the table object', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });
     const app = createApp(e);
@@ -484,7 +493,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     app.root.querySelector('.new-tab').dispatchEvent(new Event('click'));
-    app.root.querySelectorAll('.hd-btn')[0].dispatchEvent(new Event('click')); // shortcuts
+    app.root.querySelector('.hd-btn[title^="Keyboard"]').dispatchEvent(new Event('click')); // shortcuts
     app.activeTab().sql = 'SELECT 1'; // set sql on the now-active tab
     app.dom.saveBtn.dispatchEvent(new Event('click')); // open save popover
     document.querySelector('.save-popover .sp-input').value = 'Q';

@@ -11,7 +11,7 @@ import {
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion } from '../core/format.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
 import { encodeSqlForHash } from '../core/share.js';
@@ -190,8 +190,12 @@ export function createApp(env = {}) {
   function setConn(online) {
     if (!app.dom.connStatus) return;
     app.dom.connStatus.classList.toggle('dim', !online);
+    const full = app.state.serverVersion;
+    // Show a short version (e.g. 26.3.10); full string on hover so the header
+    // doesn't crowd/overflow on a narrow window.
+    app.dom.connStatus.title = online ? 'ClickHouse ' + full : '';
     app.dom.connStatus.replaceChildren(h('span', { class: 'ver' },
-      online ? 'ClickHouse ' + app.state.serverVersion : 'offline'));
+      online ? 'ClickHouse ' + shortVersion(full) : 'offline'));
   }
   app.loadSchema = async () => {
     try {
@@ -467,7 +471,7 @@ export function createApp(env = {}) {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (name, sql) => loadIntoNewTab(app, name, sql),
+    loadIntoNewTab: (name, sql, savedId) => loadIntoNewTab(app, name, sql, savedId),
     login: (idpId) => login(idpId),
     share,
     copyResult,
@@ -505,14 +509,14 @@ export function renderApp(app, helpers) {
     h('div', { class: 'env-chip' }, app.host()),
     h('div', { style: { flex: '1' } }),
     app.dom.connStatus,
-    h('button', { class: 'hd-btn', title: 'Keyboard shortcuts (?)', onclick: () => app.actions.openShortcuts() }, Icon.shortcuts()),
-    app.dom.themeBtn,
-    h('div', { class: 'user-email', title: app.email() }, app.email()),
-    h('button', { class: 'hd-btn text', title: 'Log out', onclick: () => app.signOut() }, 'Log Out'),
     h('a', {
       class: 'hd-btn', href: 'https://github.com/Altinity/altinity-sql-browser',
       target: '_blank', rel: 'noopener noreferrer', title: 'View source on GitHub',
-    }, Icon.github()));
+    }, Icon.github()),
+    h('button', { class: 'hd-btn', title: 'Keyboard shortcuts (?)', onclick: () => app.actions.openShortcuts() }, Icon.shortcuts()),
+    app.dom.themeBtn,
+    h('div', { class: 'user-email', title: app.email() }, app.email()),
+    h('button', { class: 'hd-btn text', title: 'Log out', onclick: () => app.signOut() }, 'Log Out'));
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',
@@ -562,7 +566,7 @@ export function renderApp(app, helpers) {
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
-  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, h('div', { style: { flex: '1' } }), app.dom.saveBtn, app.dom.shareBtn, app.dom.fmtSelect);
+  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn, app.dom.fmtSelect);
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });

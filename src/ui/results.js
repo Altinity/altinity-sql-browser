@@ -5,6 +5,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
+import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
 import { pickChartAxes, chartSeries } from '../core/chart-data.js';
 
@@ -171,6 +172,7 @@ export function renderTable(app, r) {
   r.columns.forEach((c, i) => {
     const isSort = col === i;
     const th = h('th', {
+      title: c.type || '', // type exposed on hover, not shown inline
       onclick: () => {
         if (isSort) app.state.resultSort.dir = dir === 'asc' ? 'desc' : 'asc';
         else { app.state.resultSort.col = i; app.state.resultSort.dir = 'asc'; }
@@ -200,7 +202,14 @@ export function renderTable(app, r) {
     tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
     row.forEach((v, ci) => {
       const isNum = isNumericType(r.columns[ci].type);
-      tr.appendChild(h('td', { class: isNum ? 'num' : '' }, v == null ? '' : String(v)));
+      const text = v == null ? '' : String(v);
+      // Truncate in-cell (CSS max-width + ellipsis); click opens the full value
+      // in a side drawer so one fat column (e.g. HTML blobs) can't dominate.
+      tr.appendChild(h('td', {
+        class: 'cell' + (isNum ? ' num' : ''),
+        title: text.length > 100 ? text.slice(0, 100) + '…' : text,
+        onclick: () => openCellDetail(app, r.columns[ci].name, r.columns[ci].type, v),
+      }, h('div', { class: 'cell-val' }, text)));
     });
     tbody.appendChild(tr);
   });
@@ -212,6 +221,59 @@ export function renderTable(app, r) {
     }, '… + ' + (rows.length - VIS_CAP) + ' more rows truncated for display.'));
   }
   return wrap;
+}
+
+/**
+ * Open a right-side drawer with one cell's full value: pretty-printed (JSON is
+ * reindented), and for HTML a Rendered (sandboxed iframe) ↔ Source toggle.
+ * Escape or a backdrop/✕ click closes it. Exported for tests.
+ */
+export function openCellDetail(app, name, type, value) {
+  const doc = app.document || document;
+  const text = value == null ? '' : String(value);
+  let backdrop;
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  function close() {
+    if (backdrop) backdrop.remove();
+    doc.removeEventListener('keydown', onKey, true);
+  }
+
+  const body = h('div', { class: 'cd-body' });
+  const showSource = () => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
+
+  const head = h('div', { class: 'cd-head' },
+    h('div', { class: 'cd-title' },
+      h('span', { class: 'cd-name' }, name),
+      type ? h('span', { class: 'cd-type' }, type) : null),
+    h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
+
+  const panel = h('div', { class: 'cd-panel', onclick: (e) => e.stopPropagation() }, head);
+
+  if (looksLikeHtml(text)) {
+    const seg = h('div', { class: 'cd-toggle' });
+    const setMode = (mode) => {
+      seg.replaceChildren(
+        h('button', { class: 'cd-seg' + (mode === 'rendered' ? ' on' : ''), onclick: () => setMode('rendered') }, 'Rendered'),
+        h('button', { class: 'cd-seg' + (mode === 'source' ? ' on' : ''), onclick: () => setMode('source') }, 'Source'));
+      if (mode === 'rendered') {
+        const frame = h('iframe', { class: 'cd-frame', sandbox: '' });
+        frame.setAttribute('srcdoc', text);
+        body.replaceChildren(frame);
+      } else {
+        showSource();
+      }
+    };
+    panel.append(seg, body);
+    setMode('rendered');
+  } else {
+    panel.appendChild(body);
+    showSource();
+  }
+
+  backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
+  doc.body.appendChild(backdrop);
+  doc.addEventListener('keydown', onKey, true);
+  return backdrop;
 }
 
 export function renderChart(r) {

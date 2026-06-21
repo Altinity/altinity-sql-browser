@@ -65,3 +65,13 @@ export function inferQueryName(sql) {
 export function isNumericType(type) {
   return /^(U?Int|Float|Decimal)/.test(type || '');
 }
+
+/**
+ * Short form of a ClickHouse version for the header: the first three
+ * dot-segments (e.g. '26.3.10.20001.altinityantalya' → '26.3.10'). The full
+ * string is shown on hover. Empty/short inputs pass through unchanged.
+ */
+export function shortVersion(v) {
+  const parts = String(v || '').split('.');
+  return parts.length > 3 ? parts.slice(0, 3).join('.') : String(v || '');
+}

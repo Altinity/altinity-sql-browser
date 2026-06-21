@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -99,5 +99,17 @@ describe('isNumericType', () => {
     expect(isNumericType('String')).toBe(false);
     expect(isNumericType('')).toBe(false);
     expect(isNumericType(null)).toBe(false);
+  });
+});
+
+describe('shortVersion', () => {
+  it('keeps the first three dot-segments of a long version', () => {
+    expect(shortVersion('26.3.10.20001.altinityantalya')).toBe('26.3.10');
+  });
+  it('passes through short versions and empty/nullish input', () => {
+    expect(shortVersion('26.3.1')).toBe('26.3.1');
+    expect(shortVersion('26.3')).toBe('26.3');
+    expect(shortVersion('')).toBe('');
+    expect(shortVersion(null)).toBe('');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 
@@ -138,13 +138,23 @@ describe('renderTable', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.querySelectorAll('.res-act')).toHaveLength(0);
   });
-  it('header shows column names only, not types', () => {
+  it('header shows column names only, with the type as a hover tooltip', () => {
     const el = renderTable(appWithResult(tableResult()), tableResult());
     const ths = el.querySelectorAll('thead th');
     expect(ths[1].querySelector('.h-name').textContent).toBe('n');
     expect(el.querySelector('.h-type')).toBeNull();
-    expect(ths[1].textContent).not.toContain('UInt64'); // type not rendered
-    expect(ths[2].textContent).not.toContain('String');
+    expect(ths[1].textContent).not.toContain('UInt64'); // type not rendered inline
+    expect(ths[1].getAttribute('title')).toBe('UInt64'); // exposed on hover
+    expect(ths[2].getAttribute('title')).toBe('String');
+  });
+  it('data cells truncate (.cell-val) and open the detail drawer on click', () => {
+    const app = appWithResult(tableResult());
+    const el = renderTable(app, app.activeTab().result);
+    const cell = el.querySelector('tbody td.cell');
+    expect(cell.querySelector('.cell-val')).not.toBeNull();
+    click(cell);
+    expect(app.document.querySelector('.cd-backdrop')).not.toBeNull();
+    app.document.querySelector('.cd-backdrop').remove(); // cleanup
   });
   it('truncates very large result sets', () => {
     const r = newResult('Table');
@@ -211,6 +221,55 @@ describe('column resize', () => {
     expect(cells[1].style.width).toBe('90px');
     expect(cells[2].style.width).toBe('70px');
     expect(table.style.width).toBe('196px'); // 36 + 90 + 70
+  });
+});
+
+describe('openCellDetail', () => {
+  it('text value → pretty <pre>, no toggle; closes via ✕', () => {
+    const app = makeApp();
+    openCellDetail(app, 'col', 'String', '{"a":1}');
+    const bd = document.querySelector('.cd-backdrop');
+    expect(bd).not.toBeNull();
+    expect(bd.querySelector('.cd-name').textContent).toBe('col');
+    expect(bd.querySelector('.cd-type').textContent).toBe('String');
+    expect(bd.querySelector('.cd-pre').textContent).toBe('{\n  "a": 1\n}');
+    expect(bd.querySelector('.cd-toggle')).toBeNull();
+    click(bd.querySelector('.cd-close'));
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+  });
+  it('null value + no type → empty pre, no type chip', () => {
+    openCellDetail(makeApp(), 'c', '', null);
+    const bd = document.querySelector('.cd-backdrop');
+    expect(bd.querySelector('.cd-type')).toBeNull();
+    expect(bd.querySelector('.cd-pre').textContent).toBe('');
+    bd.remove();
+  });
+  it('HTML value → Rendered (sandboxed iframe srcdoc) ↔ Source toggle', () => {
+    openCellDetail(makeApp(), 'html', 'String', '<b>hi</b>');
+    const bd = document.querySelector('.cd-backdrop');
+    expect([...bd.querySelectorAll('.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
+    const frame = bd.querySelector('iframe.cd-frame');
+    expect(frame.getAttribute('sandbox')).toBe('');
+    expect(frame.getAttribute('srcdoc')).toBe('<b>hi</b>');
+    click(bd.querySelectorAll('.cd-seg')[1]); // → Source
+    expect(bd.querySelector('iframe')).toBeNull();
+    expect(bd.querySelector('.cd-pre').textContent).toBe('<b>hi</b>');
+    click(bd.querySelectorAll('.cd-seg')[0]); // → Rendered again
+    expect(bd.querySelector('iframe.cd-frame')).not.toBeNull();
+    bd.remove();
+  });
+  it('Escape closes; backdrop click closes; panel click does not', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    openCellDetail(app, 'c', 'String', 'x');
+    click(document.querySelector('.cd-backdrop'));
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    openCellDetail(app, 'c', 'String', 'x');
+    click(document.querySelector('.cd-panel')); // stopPropagation → stays open
+    expect(document.querySelector('.cd-backdrop')).not.toBeNull();
+    document.querySelector('.cd-backdrop').remove();
   });
 });
 
