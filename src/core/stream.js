@@ -79,3 +79,18 @@ export function parseExceptionText(text) {
 export function isAuthExpiredBody(text) {
   return /token_verification_exception|token expired/i.test(text);
 }
+
+/**
+ * Build the login-screen message shown when ClickHouse rejects a *valid* login
+ * (HTTP 401/403 with a non-expired token) — an authorization/identity problem,
+ * not session expiry. `reason` is ClickHouse's own text (already run through
+ * parseExceptionText); it's trimmed/collapsed and appended only when present.
+ */
+export function authDeniedMessage(status, reason) {
+  const base =
+    'ClickHouse denied your account (HTTP ' + status + "). You're signed in, " +
+    'but this server is not authorizing you — your identity may have no ' +
+    'ClickHouse user or the required grants.';
+  const r = String(reason || '').replace(/\s+/g, ' ').trim();
+  return r ? base + ' Server: ' + r : base;
+}

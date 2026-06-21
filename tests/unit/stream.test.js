@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   newResult, applyStreamLine, splitBuffer, parseExceptionText, isAuthExpiredBody,
+  authDeniedMessage,
 } from '../../src/core/stream.js';
 
 describe('newResult', () => {
@@ -85,5 +86,22 @@ describe('isAuthExpiredBody', () => {
     expect(isAuthExpiredBody('... token_verification_exception ...')).toBe(true);
     expect(isAuthExpiredBody('Token Expired')).toBe(true);
     expect(isAuthExpiredBody('syntax error')).toBe(false);
+  });
+});
+
+describe('authDeniedMessage', () => {
+  it('interpolates the status and appends a collapsed server reason', () => {
+    const m = authDeniedMessage(403, '  Code: 516.\n DB::Exception: Authentication failed  ');
+    expect(m).toContain('HTTP 403');
+    expect(m).toContain('not authorizing you');
+    expect(m).toContain('Server: Code: 516. DB::Exception: Authentication failed');
+    expect(m).not.toContain('\n');
+  });
+  it('omits the Server tail when there is no reason', () => {
+    const m = authDeniedMessage(401, '');
+    expect(m).toContain('HTTP 401');
+    expect(m).not.toContain('Server:');
+    expect(authDeniedMessage(401, '   ')).toBe(m); // whitespace-only is treated as empty
+    expect(authDeniedMessage(401)).toBe(m); // undefined reason
   });
 });
