@@ -1,54 +1,32 @@
 // Inline SVG icons. `svg`/`svgFilled` build single-path icons; `iconEl` builds
 // multi-element icons from an innerHTML body. `Icon` is the named set the UI
-// uses. All return detached SVG elements.
+// uses. All return detached SVG elements (built via the `s()` SVG hyperscript).
 
-const NS = 'http://www.w3.org/2000/svg';
+import { s } from './dom.js';
+
+// Shared stroke attributes for the outlined icons.
+const stroked = (stroke) => ({
+  stroke: 'currentColor', 'stroke-width': stroke,
+  'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+});
 
 /** Single-path stroked icon. */
 export function svg(d, w = 12, hgt = 12, opts = {}) {
   const { stroke = 1.4, fill = 'none' } = opts;
-  const el = document.createElementNS(NS, 'svg');
-  el.setAttribute('width', w);
-  el.setAttribute('height', hgt);
-  el.setAttribute('viewBox', `0 0 ${w} ${hgt}`);
-  if (fill) el.setAttribute('fill', fill);
-  el.setAttribute('stroke', 'currentColor');
-  el.setAttribute('stroke-width', stroke);
-  el.setAttribute('stroke-linecap', 'round');
-  el.setAttribute('stroke-linejoin', 'round');
-  const path = document.createElementNS(NS, 'path');
-  path.setAttribute('d', d);
-  el.appendChild(path);
-  return el;
+  return s('svg', { width: w, height: hgt, viewBox: `0 0 ${w} ${hgt}`, fill: fill || null, ...stroked(stroke) },
+    s('path', { d }));
 }
 
 /** Single-path filled icon. `vbW`/`vbH` default to the display size, but can
  *  differ when the path is authored in a different coordinate space. */
 export function svgFilled(d, w = 12, hgt = 12, vbW = w, vbH = hgt) {
-  const el = document.createElementNS(NS, 'svg');
-  el.setAttribute('width', w);
-  el.setAttribute('height', hgt);
-  el.setAttribute('viewBox', `0 0 ${vbW} ${vbH}`);
-  el.setAttribute('fill', 'currentColor');
-  const path = document.createElementNS(NS, 'path');
-  path.setAttribute('d', d);
-  el.appendChild(path);
-  return el;
+  return s('svg', { width: w, height: hgt, viewBox: `0 0 ${vbW} ${vbH}`, fill: 'currentColor' },
+    s('path', { d }));
 }
 
 /** Multi-element stroked icon from an innerHTML body. */
 export function iconEl(body, w = 14, hgt = 14, stroke = 1.4) {
-  const el = document.createElementNS(NS, 'svg');
-  el.setAttribute('width', w);
-  el.setAttribute('height', hgt);
-  el.setAttribute('viewBox', `0 0 ${w} ${hgt}`);
-  el.setAttribute('fill', 'none');
-  el.setAttribute('stroke', 'currentColor');
-  el.setAttribute('stroke-width', stroke);
-  el.setAttribute('stroke-linecap', 'round');
-  el.setAttribute('stroke-linejoin', 'round');
-  el.innerHTML = body;
-  return el;
+  return s('svg', { width: w, height: hgt, viewBox: `0 0 ${w} ${hgt}`, fill: 'none', ...stroked(stroke), html: body });
 }
 
 export const Icon = {

@@ -14,6 +14,15 @@ const dragProps = (text) => ({
   ondragstart: (e) => e.dataTransfer.setData(IDENT_MIME, text),
 });
 
+// The four spans every tree row shares: chevron, icon, label, meta. `expanded`
+// null → an empty chevron (column rows); true/false → the open/closed chevron.
+const treeRow = (icon, label, meta, { expanded, iconColor } = {}) => [
+  h('span', { class: 'chev' }, expanded == null ? null : (expanded ? Icon.chevDown() : Icon.chev())),
+  h('span', { class: 'icon', style: iconColor ? { color: iconColor } : null }, icon),
+  h('span', { class: 'label' }, label),
+  h('span', { class: 'meta' }, meta),
+];
+
 export function renderSchema(app) {
   const list = app.dom.schemaList;
   if (!list) return;
@@ -49,10 +58,7 @@ export function renderSchema(app) {
       ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(db.db); },
       ...dragProps(db.db),
     },
-      h('span', { class: 'chev' }, db.expanded ? Icon.chevDown() : Icon.chev()),
-      h('span', { class: 'icon' }, Icon.database()),
-      h('span', { class: 'label' }, db.db),
-      h('span', { class: 'meta' }, String(db.tables.length)),
+      ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: db.expanded }),
     ));
     if (!db.expanded) continue;
 
@@ -82,10 +88,7 @@ export function renderSchema(app) {
         },
         ondblclick: (e) => { e.stopPropagation(); app.actions.insertTopLine('SELECT * FROM ' + key + ' LIMIT 100'); },
       },
-        h('span', { class: 'chev' }, isOpen ? Icon.chevDown() : Icon.chev()),
-        h('span', { class: 'icon', style: { color: 'var(--accent)' } }, Icon.table()),
-        h('span', { class: 'label' }, tb.name),
-        h('span', { class: 'meta' }, formatRows(tb.total_rows)),
+        ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),
       ));
 
       if (!isOpen && !(filter && visibleCols.length > 0)) continue;
@@ -106,10 +109,7 @@ export function renderSchema(app) {
           ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(c.name); },
           ...dragProps(c.name),
         },
-          h('span', { class: 'chev' }),
-          h('span', { class: 'icon', style: { color: 'var(--fg-faint)' } }, Icon.col()),
-          h('span', { class: 'label' }, c.name),
-          h('span', { class: 'meta' }, c.type),
+          ...treeRow(Icon.col(), c.name, c.type, { expanded: null, iconColor: 'var(--fg-faint)' }),
         ));
       }
     }

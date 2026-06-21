@@ -2,7 +2,7 @@
 // view for TSV/JSON output) plus the renderers. Heavy logic (sorting, axis
 // selection) lives in core/ and is reused here.
 
-import { h } from './dom.js';
+import { h, s } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
@@ -10,7 +10,6 @@ import { sortRows } from '../core/sort.js';
 import { pickChartAxes, chartSeries } from '../core/chart-data.js';
 
 const VIS_CAP = 5000;
-const NS = 'http://www.w3.org/2000/svg';
 const MIN_COL = 48; // px floor for a resized column
 
 /**
@@ -292,27 +291,14 @@ export function renderChart(r) {
   const step = innerW / Math.max(values.length, 1);
   const barW = step * 0.7;
 
-  const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-  svg.style.width = '100%';
-  svg.style.height = '100%';
+  const svg = s('svg', {
+    viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet',
+    style: { width: '100%', height: '100%' },
+  });
 
-  const line = (x1, y1, x2, y2) => {
-    const el = document.createElementNS(NS, 'line');
-    el.setAttribute('x1', x1); el.setAttribute('y1', y1);
-    el.setAttribute('x2', x2); el.setAttribute('y2', y2);
-    el.setAttribute('stroke', 'currentColor'); el.setAttribute('opacity', '0.25');
-    return el;
-  };
-  const text = (x, y, anchor, str) => {
-    const el = document.createElementNS(NS, 'text');
-    el.setAttribute('x', x); el.setAttribute('y', y);
-    el.setAttribute('text-anchor', anchor); el.setAttribute('font-size', '10');
-    el.setAttribute('fill', 'currentColor'); el.setAttribute('opacity', '0.6');
-    el.textContent = str;
-    return el;
-  };
+  const line = (x1, y1, x2, y2) => s('line', { x1, y1, x2, y2, stroke: 'currentColor', opacity: '0.25' });
+  const text = (x, y, anchor, str) =>
+    s('text', { x, y, 'text-anchor': anchor, 'font-size': '10', fill: 'currentColor', opacity: '0.6' }, str);
 
   svg.appendChild(line(P.l, P.t + innerH, P.l + innerW, P.t + innerH));
   svg.appendChild(text(P.l - 6, P.t + 10, 'end', formatRows(max)));
@@ -321,14 +307,9 @@ export function renderChart(r) {
   values.forEach((v, i) => {
     const x = P.l + i * step + (step - barW) / 2;
     const hgt = max > 0 ? (v / max) * innerH : 0;
-    const rect = document.createElementNS(NS, 'rect');
-    rect.setAttribute('x', x); rect.setAttribute('y', P.t + innerH - hgt);
-    rect.setAttribute('width', barW); rect.setAttribute('height', hgt);
-    rect.setAttribute('fill', 'var(--accent)'); rect.setAttribute('rx', '1.5');
-    const t = document.createElementNS(NS, 'title');
-    t.textContent = labels[i] + ': ' + v;
-    rect.appendChild(t);
-    svg.appendChild(rect);
+    svg.appendChild(s('rect', {
+      x, y: P.t + innerH - hgt, width: barW, height: hgt, fill: 'var(--accent)', rx: '1.5',
+    }, s('title', null, labels[i] + ': ' + v)));
   });
 
   const every = Math.max(1, Math.ceil(labels.length / 12));

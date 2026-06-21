@@ -419,6 +419,30 @@ export function createApp(env = {}) {
     app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
     app.dom.saveBtn.title = clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
   };
+  // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
+  // button, Esc + click-outside close (capture listeners), stored at
+  // app.dom[refKey] and cleared on close. Returns { close }.
+  function anchoredPopover(node, anchorEl, refKey) {
+    const close = () => {
+      doc.removeEventListener('keydown', onKey, true);
+      doc.removeEventListener('mousedown', onOutside, true);
+      if (app.dom[refKey]) { app.dom[refKey].remove(); app.dom[refKey] = null; }
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    const onOutside = (e) => {
+      if (app.dom[refKey] && !node.contains(e.target) && !anchorEl.contains(e.target)) close();
+    };
+    app.dom[refKey] = node;
+    const r = anchorEl.getBoundingClientRect();
+    node.style.position = 'fixed';
+    node.style.top = (r.bottom + 6) + 'px';
+    node.style.right = Math.max(8, (win.innerWidth || 0) - r.right) + 'px';
+    doc.body.appendChild(node);
+    doc.addEventListener('keydown', onKey, true);
+    doc.addEventListener('mousedown', onOutside, true);
+    return { close };
+  }
+
   // Name popover anchored under the Save button. Prefill with the tab's name (or
   // a name inferred from the SQL); Enter/Save → saveQuery (create or update in
   // place) + relink the tab; Esc / click-outside cancels.
@@ -429,11 +453,7 @@ export function createApp(env = {}) {
     const entry = savedForTab(app.state, tab);
     const prefill = entry ? entry.name : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));
     const input = h('input', { class: 'sp-input', value: prefill });
-    const close = () => {
-      doc.removeEventListener('keydown', onKey, true);
-      doc.removeEventListener('mousedown', onOutside, true);
-      if (app.dom.savePopover) { app.dom.savePopover.remove(); app.dom.savePopover = null; }
-    };
+    let close;
     const commit = () => {
       if (!input.value.trim()) return;
       saveQuery(app.state, tab, input.value, saveJSON);
@@ -443,23 +463,14 @@ export function createApp(env = {}) {
       renderSavedHistory(app);
       flashToast('Saved', { document: doc });
     };
-    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    const onOutside = (e) => { if (app.dom.savePopover && !app.dom.savePopover.contains(e.target) && e.target !== app.dom.saveBtn) close(); };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     const pop = h('div', { class: 'save-popover' },
       h('div', { class: 'sp-label' }, 'Save query as'),
       input,
       h('div', { class: 'sp-actions' },
-        h('button', { class: 'sp-cancel', onclick: close }, 'Cancel'),
+        h('button', { class: 'sp-cancel', onclick: () => close() }, 'Cancel'),
         h('button', { class: 'sp-save', onclick: commit }, 'Save')));
-    app.dom.savePopover = pop;
-    const r = app.dom.saveBtn.getBoundingClientRect();
-    pop.style.position = 'fixed';
-    pop.style.top = (r.bottom + 6) + 'px';
-    pop.style.right = Math.max(8, (win.innerWidth || 0) - r.right) + 'px';
-    doc.body.appendChild(pop);
-    doc.addEventListener('keydown', onKey, true);
-    doc.addEventListener('mousedown', onOutside, true);
+    ({ close } = anchoredPopover(pop, app.dom.saveBtn, 'savePopover'));
     setTimeout(() => { input.focus(); input.select(); });
   }
   app.openSavePopover = openSavePopover;
@@ -468,24 +479,11 @@ export function createApp(env = {}) {
   // a Log out item. Same close model as the save popover (Esc + outside click).
   function openUserMenu() {
     if (app.dom.userMenu) return;
-    const close = () => {
-      doc.removeEventListener('keydown', onKey, true);
-      doc.removeEventListener('mousedown', onOutside, true);
-      if (app.dom.userMenu) { app.dom.userMenu.remove(); app.dom.userMenu = null; }
-    };
-    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    const onOutside = (e) => { if (app.dom.userMenu && !app.dom.userMenu.contains(e.target) && e.target !== app.dom.userBtn && !app.dom.userBtn.contains(e.target)) close(); };
+    let close;
     const menu = h('div', { class: 'user-menu' },
       h('div', { class: 'um-id' }, app.email()),
       h('button', { class: 'um-item danger', onclick: () => { close(); app.signOut(); } }, Icon.logout(), h('span', null, 'Log out')));
-    app.dom.userMenu = menu;
-    const r = app.dom.userBtn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.top = (r.bottom + 6) + 'px';
-    menu.style.right = Math.max(8, (win.innerWidth || 0) - r.right) + 'px';
-    doc.body.appendChild(menu);
-    doc.addEventListener('keydown', onKey, true);
-    doc.addEventListener('mousedown', onOutside, true);
+    ({ close } = anchoredPopover(menu, app.dom.userBtn, 'userMenu'));
   }
   app.openUserMenu = openUserMenu;
 

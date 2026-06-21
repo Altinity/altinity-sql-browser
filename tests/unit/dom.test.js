@@ -1,5 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h } from '../../src/ui/dom.js';
+import { h, s } from '../../src/ui/dom.js';
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+describe('s (SVG namespace)', () => {
+  it('creates elements in the SVG namespace with attrs, style, events, and children', () => {
+    const onclick = vi.fn();
+    const el = s('svg', { viewBox: '0 0 10 10', class: 'c', style: { width: '100%' }, onclick, title: null },
+      s('path', { d: 'M0 0' }), 'x');
+    expect(el.namespaceURI).toBe(SVG_NS);
+    expect(el.getAttribute('viewBox')).toBe('0 0 10 10');
+    expect(el.getAttribute('class')).toBe('c');
+    expect(el.style.width).toBe('100%');
+    expect(el.hasAttribute('title')).toBe(false); // null skipped
+    expect(el.firstChild.namespaceURI).toBe(SVG_NS); // child path is namespaced
+    expect(el.textContent).toContain('x');
+    el.dispatchEvent(new Event('click'));
+    expect(onclick).toHaveBeenCalled();
+  });
+});
 
 describe('h', () => {
   it('builds an element with no props', () => {
