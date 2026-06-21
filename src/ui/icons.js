@@ -81,7 +81,8 @@ export const Icon = {
   shortcuts: () => iconEl('<rect x="1.5" y="3" width="9" height="6" rx="1"/><path d="M3.5 5h.01M6 5h.01M8.5 5h.01M3.5 7h5"/>', 12, 12, 1.3),
   copy: () => iconEl('<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><path d="M2 8.5V2.5a1 1 0 0 1 1-1h6"/>', 12, 12),
   download: () => iconEl('<path d="M6 1.5v6.5M3.5 5.5L6 8l2.5-2.5"/><path d="M2 10h8"/>', 12, 12),
-  braces: () => svg('M4.5 1.5C3 1.5 3.5 3.5 2.5 4.5c1 1 .5 3 2 3M7.5 1.5c1.5 0 1 2 2 3-1 1-.5 3-2 3', 12, 12),
+  // Same glyph as the JSON view tab so the Format button's { } matches it.
+  braces: () => svg('M4 1.5C2.5 1.5 2.5 3 2.5 4S2.5 5 1.5 6c1 1 1 2 1 2s0 1.5 1.5 1.5M8 1.5c1.5 0 1.5 1.5 1.5 2.5s0 1 1 2c-1 1-1 2-1 2s0 1.5-1.5 1.5', 12, 12),
   bookmark: () => iconEl('<path d="M3.5 1.8h5a.6.6 0 0 1 .6.6v8.2l-3.1-2-3.1 2V2.4a.6.6 0 0 1 .6-.6z"/>', 12, 12, 1.3),
   pencil: () => iconEl('<path d="M2 10l.6-2.5 5-5 1.9 1.9-5 5z"/><path d="M7 3.1l1.9 1.9"/>', 12, 12),
   trash: () => iconEl('<path d="M2.5 3.5h7"/><path d="M4 3.5V2.4h3v1.1"/><path d="M3.4 3.5l.45 6.6a.6.6 0 0 0 .6.5h2.9a.6.6 0 0 0 .6-.5l.45-6.6"/>', 12, 12, 1.2),
