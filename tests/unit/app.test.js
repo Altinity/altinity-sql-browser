@@ -385,6 +385,16 @@ describe('auth flows', () => {
     const app = createApp(e);
     expect(await app.chCtx.getToken()).toBeNull();
   });
+  it('onSignedOut shows the given message, else a session-expired default', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    // authorization denial: CH-supplied message is shown verbatim on the login screen
+    app.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
+    expect(app.root.querySelector('.login-error').textContent).toContain('denied your account');
+    // genuine expiry: no detail → the reworded default
+    app.chCtx.onSignedOut();
+    expect(app.root.querySelector('.login-error').textContent).toContain('session expired');
+  });
 });
 
 describe('share + star + columns', () => {

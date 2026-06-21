@@ -7,7 +7,7 @@
 //     onSignedOut() }
 // so the whole module is unit-testable with plain stubs.
 
-import { parseExceptionText, isAuthExpiredBody } from '../core/stream.js';
+import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 
 /** Build a ClickHouse HTTP URL with query-string options. Pure. */
 export function chUrl(origin, opts = {}) {
@@ -56,7 +56,12 @@ export async function authedFetch(ctx, url, sql, signal) {
         attempt++;
         continue;
       }
-      ctx.onSignedOut();
+      // getToken() already guaranteed a non-expired token above, so a 401/403
+      // that survives the one refresh-retry means CH rejected a *valid* login —
+      // an authorization/identity problem, not session expiry. Surface CH's own
+      // reason so it's diagnosable.
+      const reason = parseExceptionText(await resp.clone().text());
+      ctx.onSignedOut(authDeniedMessage(resp.status, reason));
       throw new Error('signed out');
     }
     return resp;

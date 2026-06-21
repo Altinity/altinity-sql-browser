@@ -78,10 +78,17 @@ describe('authedFetch', () => {
     expect(r.ok).toBe(true);
     expect(ctx.refresh).toHaveBeenCalledTimes(1);
   });
-  it('signs out when refresh fails on 403', async () => {
-    const ctx = ctxWith(async () => jsonResp({}, false, 403), { refresh: async () => false });
+  it('signs out with an authorization message + server reason when CH rejects a valid token (403)', async () => {
+    const ctx = ctxWith(
+      async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 403),
+      { refresh: async () => false },
+    );
     await expect(authedFetch(ctx, 'u', 'sql')).rejects.toThrow('signed out');
-    expect(ctx.onSignedOut).toHaveBeenCalled();
+    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
+    const msg = ctx.onSignedOut.mock.calls[0][0];
+    expect(msg).toContain('HTTP 403');
+    expect(msg).toContain('not authorizing you');
+    expect(msg).toContain('Server: Code: 516. DB::Exception: Authentication failed');
   });
   it('treats a token_verification body as auth-expired', async () => {
     let n = 0;

@@ -159,7 +159,12 @@ export function createApp(env = {}) {
     getToken,
     refresh,
     authHeader,
-    onSignedOut: () => { clearTokens(); renderLogin(app, 'Session expired'); },
+    // detail is set when CH rejects a *valid* login (authorization denial); the
+    // no-arg calls (no token / expired + refresh failed) fall back to expiry.
+    onSignedOut: (detail) => {
+      clearTokens();
+      renderLogin(app, detail || 'Your session expired — please sign in again.');
+    },
   };
   app.chCtx = chCtx;
 
