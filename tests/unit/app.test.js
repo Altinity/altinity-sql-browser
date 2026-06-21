@@ -443,6 +443,15 @@ describe('share + star + columns', () => {
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(document.querySelector('.save-popover')).toBeNull();
   });
+  it('restoring a saved query links the tab → Save button reads "Saved"', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [{ id: 's9', name: 'Fav', sql: 'SELECT 9', favorite: false }];
+    app.actions.loadIntoNewTab('Fav', 'SELECT 9', 's9');
+    expect(app.activeTab().savedId).toBe('s9');
+    expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
+    expect(app.dom.saveBtn.textContent).toContain('Saved');
+  });
   it('loadColumns fills the table object', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });
     const app = createApp(e);

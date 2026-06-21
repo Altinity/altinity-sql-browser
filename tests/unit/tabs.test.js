@@ -73,17 +73,18 @@ describe('newTab / loadIntoNewTab', () => {
     expect(app.activeTab().name).toBe('Untitled');
     expect(app.dom.editorTextarea.focus).toHaveBeenCalled();
   });
-  it('loadIntoNewTab seeds name + sql and focuses the editor', () => {
+  it('loadIntoNewTab seeds name + sql, links savedId, and focuses the editor', () => {
     const app = makeApp();
     app.dom.editorTextarea = { focus: vi.fn() };
-    loadIntoNewTab(app, 'Saved', 'SELECT 1');
-    expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1' });
+    loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1');
+    expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1', savedId: 's1' });
     expect(app.dom.editorTextarea.focus).toHaveBeenCalled();
   });
-  it('loadIntoNewTab defaults the name', () => {
+  it('loadIntoNewTab defaults the name and leaves savedId null (history restore)', () => {
     const app = makeApp();
     loadIntoNewTab(app, '', 'SELECT 2');
     expect(app.activeTab().name).toBe('Untitled');
+    expect(app.activeTab().savedId).toBeNull();
   });
 });
 

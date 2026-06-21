@@ -47,12 +47,17 @@ export function newTab(app) {
   if (app.dom.editorTextarea) app.dom.editorTextarea.focus();
 }
 
-/** Open a tab pre-seeded with `name`/`sql` (used by saved/history). */
-export function loadIntoNewTab(app, name, sql) {
+/**
+ * Open a tab pre-seeded with `name`/`sql` (used by saved/history). `savedId`
+ * links it to a saved query so the Save button reads "Saved" (restoring a saved
+ * query); omit it for history entries, which aren't saved.
+ */
+export function loadIntoNewTab(app, name, sql, savedId = null) {
   const id = allocTabId(app.state);
   const tab = newTabObj(id);
   tab.name = name || 'Untitled';
   tab.sql = sql;
+  tab.savedId = savedId;
   app.state.tabs.push(tab);
   app.state.activeTabId = id;
   refresh(app);

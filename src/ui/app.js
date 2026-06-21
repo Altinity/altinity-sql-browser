@@ -471,7 +471,7 @@ export function createApp(env = {}) {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (name, sql) => loadIntoNewTab(app, name, sql),
+    loadIntoNewTab: (name, sql, savedId) => loadIntoNewTab(app, name, sql, savedId),
     login: (idpId) => login(idpId),
     share,
     copyResult,
