@@ -45,21 +45,28 @@ export async function authedFetch(ctx, url, sql, signal) {
       headers: { Authorization: authHeader(bearer) },
       signal,
     });
+    // A 2xx confirms the credentials are good for the rest of the session.
+    if (resp.ok) ctx.authConfirmed = true;
     let authExpired = resp.status === 401 || resp.status === 403;
     if (!authExpired && !resp.ok) {
       const peek = await resp.clone().text();
       if (isAuthExpiredBody(peek)) authExpired = true;
     }
     if (authExpired) {
+      // Once this session has authenticated successfully, the same credentials
+      // are still valid — so a later 401/403 is a *query-level* error ClickHouse
+      // maps to that HTTP status (ACCESS_DENIED, or UNKNOWN_USER from e.g.
+      // `SHOW CREATE USER <missing>`), not a sign-in problem. Return it so the
+      // caller shows it as a normal query error instead of force-logging-out.
+      if (ctx.authConfirmed) return resp;
       if (attempt === 0 && (await ctx.refresh())) {
         bearer = await ctx.getToken();
         attempt++;
         continue;
       }
-      // getToken() already guaranteed a non-expired token above, so a 401/403
-      // that survives the one refresh-retry means CH rejected a *valid* login —
-      // an authorization/identity problem, not session expiry. Surface CH's own
-      // reason so it's diagnosable.
+      // First-contact 401/403 with a non-expired token: CH rejected the login
+      // itself — an authorization/identity problem, not session expiry. Surface
+      // CH's own reason so it's diagnosable.
       const reason = parseExceptionText(await resp.clone().text());
       ctx.onSignedOut(authDeniedMessage(resp.status, reason));
       throw new Error('signed out');

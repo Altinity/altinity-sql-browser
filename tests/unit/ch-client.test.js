@@ -90,6 +90,20 @@ describe('authedFetch', () => {
     expect(msg).toContain('not authorizing you');
     expect(msg).toContain('Server: Code: 516. DB::Exception: Authentication failed');
   });
+  it('marks the ctx authenticated on a successful response', async () => {
+    const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
+    await authedFetch(ctx, 'u', 'sql');
+    expect(ctx.authConfirmed).toBe(true);
+  });
+  it('once authenticated, a later 403 is returned as a query error (no sign-out)', async () => {
+    // e.g. SHOW CREATE USER <missing> → HTTP 403 / UNKNOWN_USER, mid-session.
+    const ctx = ctxWith(async () => textResp('Code: 192. DB::Exception: There is no user x', false, 403),
+      { authConfirmed: true });
+    const resp = await authedFetch(ctx, 'u', 'sql');
+    expect(resp.status).toBe(403);
+    expect(ctx.onSignedOut).not.toHaveBeenCalled();
+    expect(ctx.refresh).not.toHaveBeenCalled();
+  });
   it('treats a token_verification body as auth-expired', async () => {
     let n = 0;
     const ctx = ctxWith(

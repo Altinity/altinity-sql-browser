@@ -120,6 +120,7 @@ export function createApp(env = {}) {
     app.idpId = null;
     app.authMode = 'oauth';
     chCtx.origin = loc.origin;
+    chCtx.authConfirmed = false; // a fresh sign-in starts unconfirmed again
     ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp',
       'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin'].forEach((k) => ss.removeItem(k));
   }
@@ -187,6 +188,9 @@ export function createApp(env = {}) {
     // Where queries POST: the serving origin for OAuth, or the (possibly
     // cross-origin) target chosen at credential sign-in for basic mode.
     origin: app.authMode === 'basic' ? (ss.getItem('ch_basic_origin') || loc.origin) : loc.origin,
+    // Flips true after the first 2xx; gates whether a later 401/403 is treated
+    // as a sign-in failure (only before auth is confirmed) or a query error.
+    authConfirmed: false,
     getToken,
     refresh,
     authHeader,
