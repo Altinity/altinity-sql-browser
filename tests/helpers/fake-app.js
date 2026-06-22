@@ -48,7 +48,7 @@ export function makeApp(over = {}) {
       insertCreate: vi.fn(),
       openShortcuts: vi.fn(),
       insertAtCursor: vi.fn(),
-      insertTopLine: vi.fn(),
+      replaceEditor: vi.fn(),
       loadColumns: vi.fn(),
       rerenderTabs: vi.fn(),
       rerenderResults: vi.fn(),

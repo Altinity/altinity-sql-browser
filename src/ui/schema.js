@@ -86,7 +86,7 @@ export function renderSchema(app) {
           if (state.expandedTables.has(key) && tb.columns == null) app.actions.loadColumns(db.db, tb.name, tb);
           else renderSchema(app);
         },
-        ondblclick: (e) => { e.stopPropagation(); app.actions.insertTopLine('SELECT * FROM ' + key + ' LIMIT 100'); },
+        ondblclick: (e) => { e.stopPropagation(); app.actions.replaceEditor('SELECT * FROM ' + key + ' LIMIT 100'); },
       },
         ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),
       ));

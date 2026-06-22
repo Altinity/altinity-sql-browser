@@ -114,15 +114,6 @@ export function insertAtCursor(app, text) {
   applyEdit(ta, text);
 }
 
-/** Prepend `text` as a new first line (does not replace existing content). */
-export function insertTopLine(app, text) {
-  const ta = app.dom.editorTextarea;
-  if (!ta) return;
-  ta.focus();
-  ta.selectionStart = ta.selectionEnd = 0;
-  applyEdit(ta, text + (ta.value ? '\n' : ''));
-}
-
 /** Replace the whole editor content with `text` (undoable). */
 export function replaceEditor(app, text) {
   const ta = app.dom.editorTextarea;

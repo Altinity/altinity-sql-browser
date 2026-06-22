@@ -20,7 +20,7 @@ import { generatePKCE, randomState } from '../core/pkce.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
-import { mountEditor, insertAtCursor, insertTopLine, replaceEditor } from './editor.js';
+import { mountEditor, insertAtCursor, replaceEditor } from './editor.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
@@ -317,8 +317,9 @@ export function createApp(env = {}) {
   }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
-  // SHOW CREATE, pretty-print it through formatQuery(), and drop it in as a top
-  // line. Two round-trips by design; if formatting fails the raw DDL is used.
+  // SHOW CREATE, pretty-print it through formatQuery(), and drop it into the
+  // editor (replacing its content — undo restores the prior query). Two
+  // round-trips by design; if formatting fails the raw DDL is used.
   async function insertCreate(target) {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
@@ -331,7 +332,7 @@ export function createApp(env = {}) {
         const fmt = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
         out = (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
       } catch { /* formatting is best-effort — fall back to the raw DDL */ }
-      insertTopLine(app, out);
+      replaceEditor(app, out);
     } catch (e) {
       flashToast('SHOW CREATE failed: ' + String((e && e.message) || e), { document: doc });
     }
@@ -539,7 +540,7 @@ export function createApp(env = {}) {
     insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),
-    insertTopLine: (text) => insertTopLine(app, text),
+    replaceEditor: (text) => replaceEditor(app, text),
     loadColumns,
     rerenderTabs: () => renderTabs(app),
     rerenderResults: () => renderResults(app),

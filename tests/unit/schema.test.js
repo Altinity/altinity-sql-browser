@@ -106,12 +106,12 @@ describe('renderSchema tree', () => {
     click(ordersRow); // collapse
     expect(app.state.expandedTables.has('db1.orders')).toBe(false);
   });
-  it('double-clicking a table inserts a SELECT * as a top line', () => {
+  it('double-clicking a table replaces the editor with a SELECT *', () => {
     const app = withSchema();
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
     dblclick(ordersRow);
-    expect(app.actions.insertTopLine).toHaveBeenCalledWith('SELECT * FROM db1.orders LIMIT 100');
+    expect(app.actions.replaceEditor).toHaveBeenCalledWith('SELECT * FROM db1.orders LIMIT 100');
   });
   it('shift-clicking a table inserts its formatted DDL without expanding', () => {
     const app = withSchema();
