@@ -151,7 +151,12 @@ export async function runQuery(ctx, sql, o = {}) {
       : 'JSONCompact';
   const url = chUrl(ctx.origin, {
     format: fmtParam,
-    extra: { wait_end_of_query: 1, add_http_cors_header: 1 },
+    // wait_end_of_query buffers the whole response server-side so the HTTP
+    // status reflects errors — but it defeats progressive streaming (first rows
+    // wait for the query to finish: ~16s vs ~0.5s on a 1.3M-row scan). Keep it
+    // only for raw modes (read whole anyway); the streaming Table path drops it
+    // and surfaces mid-stream errors via the in-band `exception` line instead.
+    extra: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), add_http_cors_header: 1 },
     // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
     params: o.queryId ? { query_id: o.queryId } : {},
   });

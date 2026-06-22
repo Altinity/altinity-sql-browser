@@ -223,6 +223,14 @@ describe('runQuery', () => {
     await runQuery(ctx, 'x', { queryId: 'abc-123' });
     expect(ctx.fetch.mock.calls[0][0]).toContain('query_id=abc-123');
   });
+  it('streams without wait_end_of_query; raw modes keep it for clean error status', async () => {
+    const s = ctxWith(async () => streamResp(['{"row":{}}\n']));
+    await runQuery(s, 'x', { format: 'Table' });
+    expect(s.fetch.mock.calls[0][0]).not.toContain('wait_end_of_query'); // progressive first rows
+    const raw = ctxWith(async () => textResp('a\tb'));
+    await runQuery(raw, 'x', { format: 'TSV' });
+    expect(raw.fetch.mock.calls[0][0]).toContain('wait_end_of_query=1');
+  });
 });
 
 describe('killQuery', () => {
