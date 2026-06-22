@@ -18,6 +18,7 @@ export function makeApp(over = {}) {
     savePref: vi.fn(),
     saveJSON: vi.fn(),
     updateSaveBtn: vi.fn(),
+    elapsedMs: () => 0,
     editingSavedId: null,
     showLogin: vi.fn(),
     signOut: vi.fn(),
@@ -33,6 +34,7 @@ export function makeApp(over = {}) {
     },
     actions: {
       run: vi.fn(),
+      cancel: vi.fn(),
       newTab: vi.fn(),
       selectTab: vi.fn(),
       closeTab: vi.fn(),

@@ -38,6 +38,7 @@ export const Icon = {
   play: () => svgFilled('M3 2l7 4-7 4z'),
   plus: () => svg('M6 2v8M2 6h8', 12, 12, { stroke: 1.6 }),
   close: () => svg('M2 2l6 6M8 2l-6 6', 10, 10, { stroke: 1.6 }),
+  spinner: () => svg('M6 1.2a4.8 4.8 0 1 1-4.8 4.8', 12, 12, { stroke: 1.6 }),
   search: () => iconEl('<circle cx="5" cy="5" r="3"/><path d="M7.5 7.5L10 10"/>', 12, 12, 1.5),
   sun: () => iconEl('<circle cx="7" cy="7" r="2.4"/><path d="M7 1.5v1.4M7 11.1v1.4M1.5 7h1.4M11.1 7h1.4M3 3l1 1M10 10l1 1M11 3l-1 1M4 10l-1 1"/>'),
   moon: () => svg('M11 7.5A4 4 0 1 1 6.5 3a3.2 3.2 0 0 0 4.5 4.5z', 14, 14),

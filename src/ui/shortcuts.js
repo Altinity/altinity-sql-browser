@@ -56,6 +56,12 @@ export function openShortcuts(app) {
 export function handleKeydown(e, app) {
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
+  // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
+  if (e.key === 'Escape' && app.state.running) {
+    e.preventDefault();
+    app.actions.cancel();
+    return 'cancel';
+  }
   if (mod && e.key === 'Enter') {
     // ⌘/Ctrl+Shift+Enter = format (gated by sign-in); ⌘/Ctrl+Enter = run.
     if (e.shiftKey) {

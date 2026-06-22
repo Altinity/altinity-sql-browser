@@ -61,6 +61,15 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
     expect(app.actions.run).toHaveBeenCalled();
   });
+  it('Escape cancels a running query, and is a no-op otherwise', () => {
+    const app = makeApp();
+    app.state.running = false;
+    expect(handleKeydown(ev({ key: 'Escape' }), app)).toBeNull();
+    expect(app.actions.cancel).not.toHaveBeenCalled();
+    app.state.running = true;
+    expect(handleKeydown(ev({ key: 'Escape' }), app)).toBe('cancel');
+    expect(app.actions.cancel).toHaveBeenCalled();
+  });
   it('⌘T / ⌘W are no longer intercepted (browser keeps them)', () => {
     const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, key: 't' }), app)).toBeNull();

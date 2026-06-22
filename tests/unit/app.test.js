@@ -206,12 +206,47 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result).toBeNull();
   });
-  it('aborts a running query on a second invocation', async () => {
+  it('run() while already running is a no-op (cancel is separate)', async () => {
     const { app } = appForRun([]);
     app.state.running = true;
-    app.state.abortController = { abort: vi.fn() };
+    const ac = { abort: vi.fn() };
+    app.state.abortController = ac;
     await app.actions.run();
-    expect(app.state.abortController).toBeTruthy();
+    expect(ac.abort).not.toHaveBeenCalled(); // re-running no longer aborts
+    expect(app.state.running).toBe(true);
+  });
+  it('setRunBtn: "Running…" with no trailing "null"; "Run" + kbd when idle', () => {
+    const { app } = appForRun([]);
+    app.setRunBtn(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.textContent).toBe('Running…'); // regression: not "Running…null"
+    app.setRunBtn(false);
+    expect(app.dom.runBtn.disabled).toBe(false);
+    expect(app.dom.runBtn.textContent).toContain('Run');
+    expect(app.dom.runBtn.querySelector('kbd')).not.toBeNull();
+  });
+  it('tickElapsed updates the live ms readout, and no-ops without the element', () => {
+    const { app } = appForRun([]);
+    app.state.runT0 = 0;
+    app.dom.runElapsedEl = document.createElement('span');
+    app.tickElapsed(); // env.now → 0
+    expect(app.dom.runElapsedEl.textContent).toBe('0 ms');
+    app.dom.runElapsedEl = null;
+    expect(() => app.tickElapsed()).not.toThrow();
+  });
+  it('cancel() aborts + issues KILL QUERY when running; no-op when idle', async () => {
+    const { app, e } = appForRun([]);
+    app.actions.cancel(); // idle → no-op, no throw
+    const abort = vi.fn();
+    app.state.running = true;
+    app.state.abortController = { abort, signal: {} };
+    app.state.runQueryId = 'qid-1';
+    app.actions.cancel();
+    expect(abort).toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r)); // let the fire-and-forget KILL QUERY run
+    const kill = e.fetch.mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''));
+    expect(kill).toBeTruthy();
+    expect(kill[1].body).toContain("query_id = 'qid-1'");
   });
   it('surfaces a query error', async () => {
     const { app } = appForRun([
@@ -589,13 +624,15 @@ describe('exhaustive controller coverage', () => {
     await app.actions.run();
     expect(app.activeTab().result.error).toBe('Network error');
   });
-  it('run(): AbortError → "Query was cancelled"', async () => {
+  it('run(): AbortError marks the result cancelled (keeps partial rows, no error)', async () => {
     const e = env({ fetch: vi.fn(async () => { const err = new Error('x'); err.name = 'AbortError'; throw err; }) });
     const app = createApp(e);
     app.renderApp();
     app.activeTab().sql = 'SELECT 1';
     await app.actions.run();
-    expect(app.activeTab().result.error).toBe('Query was cancelled');
+    expect(app.activeTab().result.cancelled).toBe(true);
+    expect(app.activeTab().result.error).toBeNull();
+    expect(app.state.history.length).toBe(0); // cancelled runs are not recorded
   });
   it('run(): generic error → message', async () => {
     const e = env({ fetch: vi.fn(async () => { throw new Error('weird'); }) });

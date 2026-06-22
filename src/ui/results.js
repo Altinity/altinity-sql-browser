@@ -78,12 +78,14 @@ export function renderResults(app) {
   body.appendChild(buildToolbar(app, r));
 
   const inner = h('div', { class: 'res-body' });
+  // While running, pin a streaming strip to the top of the body: a determinate
+  // fill at read/total when known, else an indeterminate sweep.
+  if (app.state.running) inner.appendChild(streamStrip(r));
   const streamingBlank = app.state.running && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
-    inner.appendChild(h('div', { class: 'progress-bar', style: { '--progress': (r ? r.pct : 0) + '%' } }, h('i')));
-    inner.appendChild(h('div', { class: 'placeholder' },
-      h('div', null, 'Streaming results…'),
-      r ? h('code', null, formatRows(r.progress.rows) + ' rows · ' + formatBytes(r.progress.bytes)) : null));
+    inner.appendChild(h('div', { class: 'placeholder starting' },
+      h('span', { class: 'spin' }, Icon.spinner()),
+      h('div', null, 'Starting query…')));
   } else if (!r) {
     inner.appendChild(h('div', { class: 'empty-results' },
       h('div', { class: 'chip' }, Icon.play()),
@@ -100,12 +102,17 @@ export function renderResults(app) {
     inner.appendChild(renderChart(r));
   } else {
     inner.appendChild(renderTable(app, r));
-    if (app.state.running) {
-      inner.appendChild(h('div', { class: 'progress-bar', style: { '--progress': r.pct + '%' } }, h('i')));
-    }
   }
   body.appendChild(inner);
   region.replaceChildren(body);
+}
+
+// 2px progress strip atop the results body while a query streams.
+function streamStrip(r) {
+  return h('div', { class: 'stream-strip' },
+    r && r.pct > 0
+      ? h('i', { class: 'fill', style: { width: r.pct + '%' } })
+      : h('i', { class: 'sweep' }));
 }
 
 function buildToolbar(app, r) {
@@ -128,7 +135,23 @@ function buildToolbar(app, r) {
   }
   toolbar.appendChild(tabs);
   toolbar.appendChild(h('div', { style: { flex: '1' } }));
-  if (r) {
+  if (app.state.running) {
+    // Live counters (accent, mono) + Cancel — replaces the static stats while
+    // streaming. The ms element is updated in place by app.tickElapsed().
+    app.dom.runElapsedEl = h('span', { class: 'v' }, app.elapsedMs().toFixed(0) + ' ms');
+    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()), app.dom.runElapsedEl));
+    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.rows()),
+      h('span', { class: 'v' }, formatRows(r ? r.progress.rows : 0) + ' rows')));
+    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.bytes()),
+      h('span', { class: 'v' }, formatBytes(r ? r.progress.bytes : 0))));
+    toolbar.appendChild(h('button', {
+      class: 'res-act cancel-act', title: 'Cancel query (Esc)',
+      onclick: () => app.actions.cancel(),
+    }, Icon.close(), h('span', null, 'Cancel'), h('kbd', null, 'Esc')));
+  } else if (r) {
+    if (r.cancelled) {
+      toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · partial'));
+    }
     const ms = (r.progress.elapsed_ns / 1e6).toFixed(0);
     toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()), h('span', { class: 'v' }, ms + ' ms')));
     toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()),

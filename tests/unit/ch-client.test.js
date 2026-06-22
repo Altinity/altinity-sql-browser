@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, runQuery,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, runQuery, killQuery,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -217,5 +217,27 @@ describe('runQuery', () => {
     const signal = { aborted: false };
     await runQuery(ctx, 'x', { signal });
     expect(ctx.fetch.mock.calls[0][1].signal).toBe(signal);
+  });
+  it('tags the run request with query_id when given', async () => {
+    const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
+    await runQuery(ctx, 'x', { queryId: 'abc-123' });
+    expect(ctx.fetch.mock.calls[0][0]).toContain('query_id=abc-123');
+  });
+});
+
+describe('killQuery', () => {
+  it('POSTs KILL QUERY for the query_id', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [] }));
+    await killQuery(ctx, 'abc-123', sqlString);
+    expect(ctx.fetch.mock.calls[0][1].body).toBe("KILL QUERY WHERE query_id = 'abc-123' ASYNC");
+  });
+  it('no-ops without a query_id', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [] }));
+    await killQuery(ctx, null, sqlString);
+    expect(ctx.fetch).not.toHaveBeenCalled();
+  });
+  it('swallows errors (cancellation must never throw)', async () => {
+    const ctx = ctxWith(async () => { throw new Error('boom'); });
+    await expect(killQuery(ctx, 'q', sqlString)).resolves.toBeUndefined();
   });
 });

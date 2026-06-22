@@ -16,6 +16,7 @@ export function newResult(fmt) {
     rawFormat: fmt,
     progress: { rows: 0, bytes: 0, elapsed_ns: 0 },
     error: null,
+    cancelled: false,
     pct: 0,
   };
 }

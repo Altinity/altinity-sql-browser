@@ -31,19 +31,28 @@ describe('renderResults states', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.textContent).toContain('to run query');
   });
-  it('streaming-blank with a partial result shows progress', () => {
+  it('streaming-blank shows "Starting query…", a determinate strip, live counters + Cancel, and no "null"', () => {
     const r = newResult('Table');
     r.pct = 40;
     r.progress = { rows: 10, bytes: 50, elapsed_ns: 0 };
     const app = appWithResult(r, { running: true });
     renderResults(app);
-    expect(app.dom.resultsRegion.querySelector('.progress-bar')).not.toBeNull();
-    expect(app.dom.resultsRegion.textContent).toContain('Streaming results…');
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.stream-strip .fill')).not.toBeNull(); // pct>0 → determinate
+    expect(region.textContent).toContain('Starting query…');
+    expect(region.textContent).not.toMatch(/null/i); // regression: no "Loading/Streaming null"
+    // live counters (rows/bytes) + Cancel in the toolbar
+    expect(region.textContent).toContain('10 rows');
+    const cancel = region.querySelector('.cancel-act');
+    expect(cancel).not.toBeNull();
+    click(cancel);
+    expect(app.actions.cancel).toHaveBeenCalled();
   });
-  it('streaming-blank with no result object', () => {
+  it('streaming-blank with no result object uses an indeterminate sweep', () => {
     const app = appWithResult(null, { running: true });
     renderResults(app);
-    expect(app.dom.resultsRegion.querySelector('.progress-bar')).not.toBeNull();
+    expect(app.dom.resultsRegion.querySelector('.stream-strip .sweep')).not.toBeNull();
+    expect(app.dom.resultsRegion.textContent).toContain('Starting query…');
   });
   it('renders an error', () => {
     const r = newResult('Table');
@@ -76,11 +85,20 @@ describe('renderResults states', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.textContent).toContain('Query returned 0 rows.');
   });
-  it('table view (default) renders rows + progress bar while running', () => {
+  it('table view (default) renders partial rows + streaming strip while running', () => {
     const app = appWithResult(tableResult(), { running: true, resultView: 'table' });
     renderResults(app);
     expect(app.dom.resultsRegion.querySelectorAll('.res-table tbody tr')).toHaveLength(2);
-    expect(app.dom.resultsRegion.querySelector('.progress-bar')).not.toBeNull();
+    expect(app.dom.resultsRegion.querySelector('.stream-strip')).not.toBeNull();
+  });
+  it('a cancelled result shows the "Cancelled · partial" badge with Copy/Export', () => {
+    const r = tableResult();
+    r.cancelled = true;
+    const app = appWithResult(r, { resultView: 'table' });
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.cancelled-badge').textContent).toContain('Cancelled · partial');
+    expect([...region.querySelectorAll('.res-act')].some((b) => /Copy/.test(b.textContent))).toBe(true);
   });
   it('json view', () => {
     const app = appWithResult(tableResult(), { resultView: 'json' });

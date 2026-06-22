@@ -75,6 +75,18 @@ export async function queryJson(ctx, sql) {
   return resp.json();
 }
 
+/**
+ * Best-effort `KILL QUERY` for the given query_id (the client also aborts the
+ * stream; this stops the server-side work). Swallows errors — cancellation must
+ * never throw at the call site, and the user lacking the privilege is non-fatal.
+ */
+export async function killQuery(ctx, queryId, sqlString) {
+  if (!queryId) return;
+  try {
+    await queryJson(ctx, 'KILL QUERY WHERE query_id = ' + sqlString(queryId) + ' ASYNC');
+  } catch { /* best-effort */ }
+}
+
 /** Fetch `version()` + `uptime()`. Returns the version string ('' on shape miss). */
 export async function loadServerVersion(ctx) {
   const json = await queryJson(ctx, 'SELECT version() AS v, uptime() AS u FORMAT JSON');
@@ -140,6 +152,8 @@ export async function runQuery(ctx, sql, o = {}) {
   const url = chUrl(ctx.origin, {
     format: fmtParam,
     extra: { wait_end_of_query: 1, add_http_cors_header: 1 },
+    // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
+    params: o.queryId ? { query_id: o.queryId } : {},
   });
   const resp = await authedFetch(ctx, url, sql, o.signal);
 

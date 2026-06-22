@@ -249,29 +249,41 @@ export function createApp(env = {}) {
   }
 
   // --- query run ---------------------------------------------------------
+  const now = () => (env.now || (() => win.performance.now()))();
+  // Milliseconds since the running query started (0 when idle). Used for the
+  // live counter, computed fresh so each render/tick shows the current value.
+  app.elapsedMs = () => (app.state.runT0 != null ? now() - app.state.runT0 : 0);
+  // Update only the live elapsed-ms readout (no table re-render). Driven by an
+  // interval while running so it ticks even for queries that emit no rows (sleep).
+  function tickElapsed() {
+    if (app.dom.runElapsedEl) app.dom.runElapsedEl.textContent = app.elapsedMs().toFixed(0) + ' ms';
+  }
+  app.tickElapsed = tickElapsed;
+
   async function run() {
-    if (app.state.running) {
-      if (app.state.abortController) app.state.abortController.abort();
-      return;
-    }
+    if (app.state.running) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
     if (!tab.sql.trim()) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
     const fmt = app.state.outputFormat || 'Table';
-    const t0 = (env.now || (() => win.performance.now()))();
+    const t0 = now();
     tab.result = newResult(fmt);
     app.state.resultSort = { col: null, dir: 'asc' };
     app.state.resultView = 'table';
     app.state.running = true;
+    app.state.runT0 = t0;
+    app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0;
     setRunBtn(true);
     renderResults(app);
     app.state.abortController = new AbortController();
+    app.state.runTick = setInterval(tickElapsed, 100);
 
     try {
       const out = await ch.runQuery(chCtx, tab.sql, {
         format: fmt,
+        queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
@@ -282,24 +294,39 @@ export function createApp(env = {}) {
         tab.result.progress.bytes = out.raw.length;
       }
     } catch (e) {
-      if (e.name === 'AbortError') tab.result.error = 'Query was cancelled';
+      // Cancel = abort: keep whatever streamed in, flag it partial (no error).
+      if (e.name === 'AbortError') tab.result.cancelled = true;
       else if (e instanceof TypeError) tab.result.error = 'Network error';
       else tab.result.error = String((e && e.message) || e);
     } finally {
+      clearInterval(app.state.runTick);
+      app.state.runTick = null;
       app.state.running = false;
       app.state.abortController = null;
-      tab.result.progress.elapsed_ns = ((env.now || (() => win.performance.now()))() - t0) * 1e6;
+      app.state.runQueryId = null;
+      app.state.runT0 = null;
+      tab.result.progress.elapsed_ns = (now() - t0) * 1e6;
       setRunBtn(false);
       renderResults(app);
-      if (!tab.result.error) app.recordHistory(tab);
+      if (!tab.result.error && !tab.result.cancelled) app.recordHistory(tab);
     }
+  }
+  // Stop an in-flight query: abort the stream and KILL QUERY on the server.
+  function cancel() {
+    if (!app.state.running) return;
+    if (app.state.abortController) app.state.abortController.abort();
+    ch.killQuery(chCtx, app.state.runQueryId, sqlString);
   }
   function setRunBtn(running) {
     if (!app.dom.runBtn) return;
     app.dom.runBtn.disabled = running;
-    app.dom.runBtn.replaceChildren(Icon.play(), h('span', null, running ? 'Running…' : 'Run'),
-      running ? null : h('kbd', null, '⌘↵'));
+    // Build the children and drop the null (replaceChildren would otherwise
+    // coerce a null arg into a "null" text node → "Running…null").
+    app.dom.runBtn.replaceChildren(
+      ...[Icon.play(), h('span', null, running ? 'Running…' : 'Run'),
+        running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
+  app.setRunBtn = setRunBtn;
 
   // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place.
   async function formatQuery() {
@@ -524,6 +551,7 @@ export function createApp(env = {}) {
   // --- actions registry --------------------------------------------------
   app.actions = {
     run,
+    cancel,
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),

@@ -866,17 +866,37 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border-radius: 4px; color: var(--fg-mute);
 }
 
-/* progress */
-.progress-bar {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 2px; background: transparent;
-  overflow: hidden; pointer-events: none;
+/* streaming progress strip + live run state */
+.stream-strip {
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 2px; background: var(--bg-chip);
+  overflow: hidden; pointer-events: none; z-index: 2;
 }
-.progress-bar > i {
-  display: block; height: 100%;
-  background: var(--accent);
-  width: var(--progress, 0%);
-  transition: width .15s linear;
+.stream-strip > i { display: block; height: 100%; background: var(--accent); }
+.stream-strip > i.fill { transition: width .3s linear; }
+.stream-strip > i.sweep { width: 40%; animation: runsweep 1.1s ease-in-out infinite; }
+@keyframes runsweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(310%); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { display: inline-flex; animation: spin .8s linear infinite; }
+.placeholder.starting { color: var(--fg-mute); }
+.placeholder.starting .spin { color: var(--accent); }
+/* live run counters (accent) shown in the results toolbar while streaming */
+.stat.live, .stat.live .ic, .stat.live .v { color: var(--accent); }
+.res-act.cancel-act:hover {
+  background: color-mix(in oklab, #ef4444 14%, transparent);
+  color: #ef4444; border-color: transparent;
+}
+.res-act kbd {
+  font-family: var(--mono); font-size: 9.5px; opacity: .7;
+  padding: 1px 4px; background: var(--bg-chip); border-radius: 3px; margin-left: 2px;
+}
+.cancelled-badge {
+  font-family: var(--mono); font-size: 10.5px; color: #ef4444;
+  padding: 2px 7px; border-radius: 4px;
+  background: color-mix(in oklab, #ef4444 12%, transparent);
 }
 
 /* scrollbars */
