@@ -65,6 +65,8 @@ export function allocTabId(state) {
 }
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
+const makeId = (prefix, now) => prefix + now + rnd();
+const tabsForSaved = (state, id) => state.tabs.filter((t) => t.savedId === id);
 
 /** The saved query a tab is linked to (via tab.savedId), or null. */
 export function savedForTab(state, tab) {
@@ -86,7 +88,7 @@ export function saveQuery(state, tab, name, save = saveJSON, now = Date.now()) {
     entry.name = nm;
     entry.sql = sql;
   } else {
-    entry = { id: 's' + now + rnd(), name: nm, sql, favorite: false };
+    entry = { id: makeId('s', now), name: nm, sql, favorite: false };
     state.savedQueries.unshift(entry);
     tab.savedId = entry.id;
   }
@@ -101,7 +103,7 @@ export function renameSaved(state, id, name, save = saveJSON) {
   const entry = state.savedQueries.find((q) => q.id === id);
   if (!entry || !nm) return;
   entry.name = nm;
-  for (const t of state.tabs) if (t.savedId === id) t.name = nm;
+  for (const t of tabsForSaved(state, id)) t.name = nm;
   save(KEYS.saved, state.savedQueries);
 }
 
@@ -125,7 +127,7 @@ export function sortedSaved(state) {
  * Merge imported queries into savedQueries (dedupe by content, update by id,
  * else add). Returns { added, updated, skipped }.
  */
-export function importSaved(state, queries, save = saveJSON, genId = () => 's' + Date.now() + rnd()) {
+export function importSaved(state, queries, save = saveJSON, genId = () => makeId('s', Date.now())) {
   const { merged, added, updated, skipped } = mergeSaved(state.savedQueries, queries, genId);
   state.savedQueries = merged;
   save(KEYS.saved, state.savedQueries);
@@ -135,7 +137,7 @@ export function importSaved(state, queries, save = saveJSON, genId = () => 's' +
 /** Delete a saved query by id and clear any tab pointer to it. */
 export function deleteSaved(state, id, save = saveJSON) {
   state.savedQueries = state.savedQueries.filter((q) => q.id !== id);
-  for (const t of state.tabs) if (t.savedId === id) t.savedId = null;
+  for (const t of tabsForSaved(state, id)) t.savedId = null;
   save(KEYS.saved, state.savedQueries);
 }
 
@@ -144,7 +146,7 @@ export function recordHistory(state, tab, save = saveJSON, now = Date.now()) {
   const sql = String(tab.sql || '').trim();
   if (!sql) return;
   state.history.unshift({
-    id: 'h' + now + rnd(),
+    id: makeId('h', now),
     sql,
     ts: now,
     rows: tab.result.rawText != null ? null : tab.result.rows.length,
