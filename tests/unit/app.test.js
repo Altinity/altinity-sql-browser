@@ -73,6 +73,11 @@ describe('createApp basics', () => {
     const app = createApp(env({ location: { host: '', origin: 'o', pathname: '/sql' } }));
     expect(app.host()).toBe('clickhouse');
   });
+  it('reads the ?host= URL param into app.hostHint (empty when absent)', () => {
+    expect(createApp(env()).hostHint).toBe('');
+    const app = createApp(env({ location: { host: 'h', origin: 'https://h', pathname: '/sql', search: '?host=antalya.demo:9000' } }));
+    expect(app.hostHint).toBe('antalya.demo:9000');
+  });
 });
 
 describe('renderApp shell', () => {

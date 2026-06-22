@@ -83,6 +83,9 @@ export function createApp(env = {}) {
     ? originHost(chCtx.origin) || 'clickhouse'
     : loc.host || 'clickhouse');
   app.activeTab = () => activeTab(app.state);
+  // A `?host=` query param pre-fills the credential server address on the login
+  // screen (and disables SSO, which only targets the serving host).
+  app.hostHint = new URLSearchParams(loc.search || '').get('host') || '';
   app.isSignedIn = () => (app.authMode === 'basic'
     ? !!basicCreds()
     : !!app.token && !isTokenExpired(app.token, 0));

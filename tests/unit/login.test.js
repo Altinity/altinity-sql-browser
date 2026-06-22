@@ -15,11 +15,12 @@ function appWith(over = {}) {
 }
 
 describe('renderLogin — structure', () => {
-  it('renders brand, headings, credentials, target row, and footer', () => {
+  it('renders brand, credentials, target row, and footer — no "Sign in" title/subtitle', () => {
     const app = appWith();
     renderLogin(app);
     expect(app.root.querySelector('.login-brand-name').textContent).toContain('Altinity');
-    expect(app.root.querySelector('.login-h1').textContent).toBe('Sign in');
+    expect(app.root.querySelector('.login-h1')).toBeNull(); // title removed
+    expect(app.root.querySelector('.login-sub')).toBeNull(); // subtitle removed
     expect(app.root.querySelectorAll('.login-input')).toHaveLength(3); // user, pass, host
     expect(app.root.querySelector('.login-target .lt-as').textContent).toBe('via SSO');
     expect(app.root.querySelector('.login-foot-link[href*="github.com"]')).not.toBeNull();
@@ -48,12 +49,12 @@ describe('renderLogin — SSO section', () => {
     expect(app.root.querySelector('.login-divider').style.display).toBe('none');
     expect(app.root.querySelector('.login-creds')).not.toBeNull();
   });
-  it('one IdP → a single "Continue with SSO" button + divider shown', async () => {
+  it('one IdP → a single IdP-labelled button + divider shown', async () => {
     const app = appWith({ loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: true }) });
     renderLogin(app);
     await tick();
     const btns = [...app.root.querySelectorAll('.login-sso .login-btn')];
-    expect(btns.map((b) => b.textContent)).toEqual(['Continue with SSO']);
+    expect(btns.map((b) => b.textContent)).toEqual(['Continue with Google']);
     expect(app.root.querySelector('.login-divider').style.display).toBe('');
     expect(app.root.querySelector('.login-sso-note').textContent).toContain('Authenticates on');
   });
@@ -77,6 +78,54 @@ describe('renderLogin — SSO section', () => {
     await tick();
     expect(app.root.querySelector('.login-creds')).not.toBeNull();
     expect(app.root.querySelectorAll('.login-sso .login-btn')).toHaveLength(0);
+  });
+});
+
+describe('renderLogin — footer tag adapts to available methods', () => {
+  const ver = (app) => app.root.querySelector('.login-foot-ver').textContent;
+  const render = async (over) => { const app = appWith(over); renderLogin(app); await tick(); return app; };
+
+  it('SSO + credentials', async () => {
+    expect(ver(await render({ loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: true }) }))).toBe('OAuth · credentials');
+  });
+  it('SSO only (basic_login:false)', async () => {
+    expect(ver(await render({ loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: false }) }))).toBe('OAuth');
+  });
+  it('credentials only (no IdPs)', async () => {
+    expect(ver(await render({ loadIdps: async () => ({ idps: [], basicLogin: true }) }))).toBe('credentials');
+  });
+  it('neither method configured', async () => {
+    expect(ver(await render({ loadIdps: async () => ({ idps: [], basicLogin: false }) }))).toBe('—');
+  });
+  it('config load failure → credentials-only', async () => {
+    expect(ver(await render({ loadIdps: async () => { throw new Error('x'); } }))).toBe('credentials');
+  });
+});
+
+describe('renderLogin — ?host= URL hint', () => {
+  it('pre-fills the server address, opens Advanced, disables SSO, targets credentials', async () => {
+    const app = appWith({
+      hostHint: 'antalya.demo:9000',
+      loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: true }),
+    });
+    renderLogin(app);
+    await tick();
+    const hostInput = app.root.querySelectorAll('.login-input')[2];
+    expect(hostInput.value).toBe('antalya.demo:9000');
+    expect(app.root.querySelector('.login-adv-field').style.display).toBe(''); // opened
+    const sso = app.root.querySelector('.login-sso .login-btn');
+    expect(sso.disabled).toBe(true); // SSO can't target a custom host
+    expect(app.root.querySelector('.lt-host').textContent).toBe('antalya.demo:9000');
+    expect(app.root.querySelector('.lt-as').textContent).toBe('credentials');
+  });
+  it('typing a host (no URL hint) also disables SSO', async () => {
+    const app = appWith({ loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: true }) });
+    renderLogin(app);
+    await tick();
+    const sso = app.root.querySelector('.login-sso .login-btn');
+    expect(sso.disabled).toBe(false);
+    type(app.root.querySelectorAll('.login-input')[2], 'other:9000');
+    expect(sso.disabled).toBe(true);
   });
 });
 

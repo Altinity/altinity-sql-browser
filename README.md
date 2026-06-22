@@ -139,7 +139,11 @@ entirely; the SSO buttons disappear and only the username/password form shows
 Credentials authenticate against the **serving host** by default. The login
 screen's **Advanced → Server address** field can aim the credential path at a
 **different** `host:port` (a bare host defaults to `https://…:8443`); SSO always
-stays on the serving host. The same-origin path needs no extra setup, but a
+stays on the serving host. You can pre-fill that field with a **`?host=` URL
+param** — e.g. `…/sql?host=other.example:9000` opens Advanced with the address
+filled in and **disables the SSO buttons** (SSO can only target the serving
+host), so the link drops you straight into credential sign-in for that server.
+The same-origin path needs no extra setup, but a
 **cross-origin** target has two requirements:
 
 - **The SPA's own CSP.** `deploy/http_handlers.xml` sets `connect-src 'self'`

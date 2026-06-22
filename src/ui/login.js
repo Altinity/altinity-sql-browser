@@ -1,14 +1,15 @@
 // The sign-in screen. Two auth paths, encoded directly in the UI:
 //   • SSO  — the existing OAuth flow, bound to the serving host. One button per
-//     configured IdP (a single IdP shows one "Continue with SSO"). Hidden when
-//     no IdP is configured.
+//     configured IdP, labelled with the IdP ("Continue with Google"). Hidden
+//     when no IdP is configured.
 //   • Credentials — a ClickHouse username/password (HTTP Basic), optionally
 //     against another host via the "Advanced" disclosure. Hidden when the
 //     deployment sets `basic_login: false`.
-// When both username and password are non-empty the UI flips: Connect becomes
-// the primary button and SSO demotes to a secondary outline — visually encoding
-// "credentials are used instead of SSO". A live "Target" row always resolves the
-// combined state (effective host + as <user> / via SSO).
+// When credentials are in play (both fields filled, or a custom host is set —
+// including via a `?host=` URL param, which pre-fills Advanced) the UI favours
+// credentials: Connect becomes primary and the SSO buttons demote, and disable
+// entirely for a custom host (SSO can only target the serving host). A live
+// "Target" row resolves the combined state (effective host + as <user> / via SSO).
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -25,7 +26,11 @@ export function renderLogin(app, errorMsg) {
   const cur = app.host();
   let busy = null; // 'sso' | 'creds' — guards against double-submit
   let showPw = false;
-  let advOpen = false;
+  // A `?host=` URL param pre-fills the credential server address. A non-empty
+  // host means credential-only (SSO can only target the serving host), so
+  // Advanced opens and the SSO buttons disable.
+  const hostHint = app.hostHint || '';
+  let advOpen = !!hostHint;
   let ssoBtns = [];
 
   const hasCreds = () => userInput.value.trim().length > 0 && passInput.value.length > 0;
@@ -37,7 +42,7 @@ export function renderLogin(app, errorMsg) {
   });
   const userInput = fld({ placeholder: 'default' });
   const passInput = fld({ type: 'password', placeholder: '••••••••' });
-  const hostInput = fld({ placeholder: cur + ':8443' });
+  const hostInput = fld({ placeholder: cur + ':8443', value: hostHint });
 
   const eyeBtn = h('button', {
     class: 'login-eye', type: 'button', tabindex: '-1', title: 'Show password',
@@ -65,7 +70,8 @@ export function renderLogin(app, errorMsg) {
       advChev.style.transform = advOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
     },
   }, advChev, h('span', null, 'Advanced — connect to another server'));
-  advChev.style.transform = 'rotate(-90deg)';
+  advChev.style.transform = advOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+  if (advOpen) advField.style.display = '';
 
   // --- connect button + live target row ---
   const connectBtn = h('button', { class: 'login-btn btn-ghost', disabled: true, onclick: doConnect },
@@ -93,14 +99,17 @@ export function renderLogin(app, errorMsg) {
       h('span', { style: { flex: '1' } }),
       targetAsEl));
 
+  // Footer tag adapts to which methods are available (set by applyChrome once
+  // the IdP list / basic_login flag resolve). The brand block is heading enough,
+  // so there's no separate "Sign in" title or subtitle.
+  const footVer = h('span', { class: 'mono login-foot-ver' }, 'OAuth · credentials');
+
   const card = h('div', { class: 'login-card login-card-wide' },
     h('div', { class: 'login-brand' },
       h('div', { class: 'login-logo' }, 'A'),
       h('div', { class: 'login-brand-text' },
         h('div', { class: 'login-brand-name' }, 'Altinity SQL Browser'),
         h('div', { class: 'login-brand-sub mono' }, 'ClickHouse query console'))),
-    h('div', { class: 'login-h1' }, 'Sign in'),
-    h('div', { class: 'login-sub' }, 'Use single sign-on for this server, or connect with ClickHouse credentials.'),
     ssoSection,
     credSection,
     errorMsg ? h('div', { class: 'login-error' }, errorMsg) : null,
@@ -110,7 +119,7 @@ export function renderLogin(app, errorMsg) {
         target: '_blank', rel: 'noopener noreferrer',
       }, Icon.github(), h('span', null, 'Source')),
       h('span', { style: { flex: '1' } }),
-      h('span', { class: 'mono login-foot-ver' }, 'OAuth · credentials')));
+      footVer));
 
   app.root.replaceChildren(h('div', { class: 'login-screen' }, card));
   update();
@@ -119,11 +128,19 @@ export function renderLogin(app, errorMsg) {
   // sections are shown. On failure keep credentials visible (fail-open — OAuth
   // can't work without config anyway) and show no SSO.
   app.loadIdps().then(({ idps, basicLogin }) => {
-    if (basicLogin === false) credSection.remove();
+    const credsShown = basicLogin !== false;
+    if (!credsShown) credSection.remove();
     populateSso(idps);
-    divider.style.display = (ssoBtns.length && basicLogin !== false) ? '' : 'none';
+    applyChrome(ssoBtns.length > 0, credsShown);
     update();
-  }).catch(() => { /* no config → credentials only */ });
+  }).catch(() => applyChrome(false, true)); // no config → credentials only
+
+  // Reconcile subtitle, footer tag, and the SSO/credentials divider with which
+  // sign-in methods are actually offered.
+  function applyChrome(hasSso, credsShown) {
+    divider.style.display = (hasSso && credsShown) ? '' : 'none';
+    footVer.textContent = [hasSso && 'OAuth', credsShown && 'credentials'].filter(Boolean).join(' · ') || '—';
+  }
 
   function populateSso(idps) {
     ssoBtns = [];
@@ -134,9 +151,9 @@ export function renderLogin(app, errorMsg) {
       ssoBtns.push(b);
       return b;
     };
-    const btns = idps.length === 1
-      ? [mk(idps[0].id, 'Continue with SSO')]
-      : idps.map((i) => mk(i.id, 'Continue with ' + i.label));
+    // Always label the button with the IdP — "Continue with Google" reads
+    // better than a generic "SSO", and disambiguates when several are configured.
+    const btns = idps.map((i) => mk(i.id, 'Continue with ' + i.label));
     ssoSection.replaceChildren(
       ...btns,
       h('div', { class: 'login-sso-note' },
@@ -147,15 +164,21 @@ export function renderLogin(app, errorMsg) {
   // with the field values — updated in place so focus/caret are preserved.
   function update() {
     const has = hasCreds();
+    // A custom server address means credential-only — SSO authenticates only on
+    // the serving host — so disable the SSO buttons and treat credentials as the
+    // active path even before both fields are filled.
+    const customHost = hostInput.value.trim().length > 0;
+    const credsFocus = has || customHost;
     connectBtn.classList.toggle('btn-primary', has);
     connectBtn.classList.toggle('btn-ghost', !has);
     connectBtn.disabled = !has || !!busy;
     for (const b of ssoBtns) {
-      b.classList.toggle('btn-primary', !has);
-      b.classList.toggle('btn-ghost', has);
+      b.classList.toggle('btn-primary', !credsFocus);
+      b.classList.toggle('btn-ghost', credsFocus);
+      b.disabled = customHost;
     }
     targetHostEl.textContent = hostInput.value.trim() || cur;
-    targetAsEl.textContent = has ? 'as ' + userInput.value.trim() : 'via SSO';
+    targetAsEl.textContent = has ? 'as ' + userInput.value.trim() : (customHost ? 'credentials' : 'via SSO');
   }
 
   function onCredsKey(e) { if (e.key === 'Enter' && hasCreds()) doConnect(); }

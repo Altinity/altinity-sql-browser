@@ -29,7 +29,7 @@ describe('loadConfigDoc', () => {
     })]]);
     const { idps } = await loadConfigDoc(f, '/sql');
     expect(idps).toEqual([{
-      id: 'accounts.google.com', label: 'accounts.google.com',
+      id: 'accounts.google.com', label: 'Google', // issuer host → friendly name
       issuer: 'https://accounts.google.com', clientId: 'cid', clientSecret: 'sek',
       audience: 'aud', bearer: 'id_token', chAuth: 'bearer', authorizeParams: {},
       basicUserClaim: '',
@@ -51,7 +51,21 @@ describe('loadConfigDoc', () => {
       { issuer: 'weird', client_id: 'c' },
     ] });
     expect(idps[0].id).toBe('acme.auth0.com');
+    expect(idps[0].label).toBe('acme.auth0.com'); // unknown host, no connection → host
     expect(idps[1].id).toBe('weird'); // new URL('weird') throws → raw fallback
+  });
+  it('derives a friendly label from an Auth0 connection or a known issuer host', async () => {
+    const idps = await docOf({ idps: [
+      // Auth0 brokering GitHub: tenant host is uninformative → use the connection.
+      { issuer: 'https://altinity.auth0.com', client_id: 'c', authorize_params: { connection: 'github' } },
+      // Unknown connection → capitalized.
+      { issuer: 'https://x', client_id: 'c', authorize_params: { connection: 'okta-prod' } },
+      // Direct Google issuer, no label/connection → mapped.
+      { issuer: 'https://accounts.google.com', client_id: 'c' },
+      // Explicit label always wins.
+      { issuer: 'https://accounts.google.com', client_id: 'c', label: 'Staff SSO' },
+    ] });
+    expect(idps.map((i) => i.label)).toEqual(['GitHub', 'Okta-prod', 'Google', 'Staff SSO']);
   });
   it('defaults clientSecret/audience/bearer/chAuth/authorizeParams', async () => {
     const [idp] = await docOf({ issuer: 'https://i', client_id: 'c' });

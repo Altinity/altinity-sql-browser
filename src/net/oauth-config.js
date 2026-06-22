@@ -14,6 +14,27 @@ function idpHost(issuer) {
   }
 }
 
+// Friendly provider names so the sign-in button reads "Continue with GitHub"
+// rather than "Continue with altinity.auth0.com" when a config sets no `label`.
+const CONNECTION_NAMES = { github: 'GitHub', google: 'Google', 'google-oauth2': 'Google', gitlab: 'GitLab' };
+const ISSUER_NAMES = { 'accounts.google.com': 'Google', 'login.microsoftonline.com': 'Microsoft', 'github.com': 'GitHub' };
+
+/**
+ * Button label for an IdP. Prefers an explicit `label`; else derives one from an
+ * Auth0-style `authorize_params.connection` (e.g. github → "GitHub"), then a
+ * known issuer host (accounts.google.com → "Google"); finally the issuer host.
+ */
+function idpLabel(e) {
+  if (e.label) return e.label;
+  const conn = e.authorize_params && e.authorize_params.connection;
+  if (conn) {
+    const c = String(conn).toLowerCase();
+    return CONNECTION_NAMES[c] || (c.charAt(0).toUpperCase() + c.slice(1));
+  }
+  const host = idpHost(e.issuer);
+  return ISSUER_NAMES[host] || host;
+}
+
 /** Map one raw config.json entry to the canonical (pre-discovery) IdP descriptor. */
 function normalizeEntry(e) {
   if (!e || !e.issuer || !e.client_id) {
@@ -21,7 +42,7 @@ function normalizeEntry(e) {
   }
   return {
     id: e.id || idpHost(e.issuer),
-    label: e.label || idpHost(e.issuer),
+    label: idpLabel(e),
     issuer: e.issuer,
     clientId: e.client_id,
     clientSecret: e.client_secret || '',
