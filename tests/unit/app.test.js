@@ -674,6 +674,7 @@ describe('exhaustive controller coverage', () => {
     app.state.tabs.push({ id: 'tx', name: 'X', sql: '', dirty: false, result: null, savedId: null });
     app.actions.selectTab('tx');
     app.actions.insertAtCursor('zz');
+    app.actions.replaceEditor('SELECT 9');
     app.actions.loadIntoNewTab('n', 'SELECT 2');
     app.actions.rerenderTabs();
     app.actions.rerenderResults();
