@@ -132,7 +132,7 @@ describe('bootstrap', () => {
     expect(app.showLogin).toHaveBeenCalledWith('OAuth token exchange failed: plain failure');
   });
 
-  it('seeds the first tab from a share-link hash (and stashes it for login)', async () => {
+  it('seeds the first tab from a legacy (SQL-only) share-link hash', async () => {
     const app = fakeApp();
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
@@ -140,19 +140,43 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs[0].sql).toBe('SELECT 1');
     expect(app.state.tabs[0].name).toBe('Shared query');
-    expect(env.sessionStorage.getItem('oauth_shared_sql')).toBe('SELECT 1'); // survives a login redirect
+    expect(app.state.tabs[0].chartCfg).toBeFalsy(); // legacy hash carries no chart
+    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: 'SELECT 1', chart: null }); // survives a login redirect
   });
 
-  it('restores a shared query from sessionStorage after the OAuth round-trip', async () => {
+  it('seeds SQL + chart config from a tagged share-link hash', async () => {
+    const app = fakeApp();
+    const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
+    const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT a, b FROM t', chart }))));
+    const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
+    await bootstrap(app, env);
+    expect(app.state.tabs[0].sql).toBe('SELECT a, b FROM t');
+    expect(app.state.tabs[0].chartCfg).toEqual(chart.cfg);
+    expect(app.state.tabs[0].chartCfg).not.toBe(chart.cfg); // cloned, not aliased
+    expect(app.state.tabs[0].chartKey).toBe(chart.key);
+  });
+
+  it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {
     // The hash is gone after the IdP redirect; the stash carries it through.
     const app = fakeApp({ token: valid, isSignedIn: () => true });
     const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
-    env.sessionStorage.setItem('oauth_shared_sql', 'SELECT 42');
+    const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({ sql: 'SELECT 42', chart }));
     await bootstrap(app, env);
     expect(app.state.tabs[0].sql).toBe('SELECT 42');
     expect(app.state.tabs[0].name).toBe('Shared query');
+    expect(app.state.tabs[0].chartCfg).toEqual(chart.cfg);
     expect(app.renderApp).toHaveBeenCalled();
-    expect(env.sessionStorage.getItem('oauth_shared_sql')).toBeNull(); // consumed on render
+    expect(env.sessionStorage.getItem('oauth_shared')).toBeNull(); // consumed on render
+  });
+
+  it('falls back to no shared query when the sessionStorage stash is corrupt', async () => {
+    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
+    env.sessionStorage.setItem('oauth_shared', '{not json');
+    await bootstrap(app, env);
+    expect(app.state.tabs[0].sql).toBe('');
+    expect(app.state.tabs[0].name).toBe('Untitled');
   });
 
   it('preserves extra query params while stripping oauth ones', async () => {

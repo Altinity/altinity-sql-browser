@@ -19,8 +19,16 @@ ClickHouse. No framework, no runtime deps. Quality is held by tests.
    to browsers: prefer a PKCE public client; if an IdP requires a
    `client_secret` there, lock the redirect URI and treat the file as public
    (see README "Configuring OAuth").
-4. **The build is esbuild only.** Source files are the tested files; esbuild
-   bundles `src/main.js` → `dist/sql.html`. Don't add a runtime dependency.
+4. **The build is esbuild only; runtime deps are rare and deliberate.** Source
+   files are the tested files; esbuild bundles `src/main.js` → `dist/sql.html`.
+   The **one** bundled runtime dependency is **Chart.js** (the Chart result
+   view) — inlined into the artifact, so the page still makes zero third-party
+   requests. Adding *another* runtime dependency is a deliberate decision (it
+   grows the single served file) — don't do it casually. When a feature needs a
+   library, keep the testable logic pure in `src/core/` (chart axis/role/pivot
+   math lives in `src/core/chart-data.js`, 100%-covered) and make the library
+   call an **injected seam** (`app.Chart`, like the fetch/crypto seams) so the
+   DOM wrapper stays fully tested rather than dropping below the coverage gate.
 
 ## How to add a result view / panel / feature
 

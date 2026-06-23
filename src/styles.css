@@ -516,24 +516,61 @@ body {
 /* tabindex makes the pane keyboard-scrollable; suppress the focus ring. */
 .raw-text-view:focus, .json-view:focus { outline: none; }
 
-/* ------------ chart placeholder ------------ */
+/* ------------ chart view ------------ */
+/* `.res-body` is display:block, so height:100% (not flex:1) is what lets the
+   chart fill it — otherwise the view collapses to the config bar and the
+   canvas renders ~0px tall. */
 .chart-view {
-  flex: 1; overflow: auto; padding: 14px;
-  display: flex; flex-direction: column; min-height: 0;
+  height: 100%; background: var(--bg-table);
+  display: flex; flex-direction: column;
+  /* When the pane is dragged short and the wrap-able config bar grows tall, let
+     the view scroll instead of crushing the canvas (which has a min-height) to
+     ~0px with no way to reach it. */
+  overflow: auto;
 }
-.chart-controls {
-  display: flex; align-items: center; gap: 8px;
-  padding-bottom: 10px; flex-shrink: 0;
-  font-size: 11.5px; color: var(--fg-mute);
+.chart-config {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 7px 14px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border-faint);
 }
-.chart-controls select {
-  height: 26px;
+.chart-field { display: flex; align-items: center; gap: 6px; }
+.chart-field-label {
+  font-size: 10.5px; color: var(--fg-faint);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.chart-select {
+  height: 24px; max-width: 170px;
   background: var(--bg-input); border: 1px solid var(--border);
   border-radius: 5px; color: var(--fg);
   font-family: inherit; font-size: 11.5px;
-  padding: 0 6px; outline: none;
+  padding: 0 6px; outline: none; cursor: pointer;
 }
-.chart-area { flex: 1; min-height: 0; display: flex; align-items: stretch; }
+.chart-toggle {
+  height: 24px; padding: 0 9px;
+  background: transparent; color: var(--fg-mute);
+  border: 1px solid var(--border); border-radius: 5px;
+  font-family: inherit; font-size: 11.5px; cursor: pointer;
+  white-space: nowrap; transition: background .12s, color .12s;
+}
+.chart-toggle:hover { background: var(--bg-hover); color: var(--fg); }
+.chart-cap-note {
+  margin-left: auto; font-family: var(--mono);
+  font-size: 10.5px; color: var(--fg-faint); white-space: nowrap;
+}
+/* The canvas fills the remaining space; Chart.js is responsive within it. The
+   min-height floor keeps it visible (and lets .chart-view scroll) when a tall
+   wrapped config bar would otherwise leave it 0px. */
+.chart-canvas-wrap { flex: 1; min-height: 180px; position: relative; padding: 12px 14px; }
+.chart-empty {
+  height: 100%; background: var(--bg-table);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 24px; text-align: center;
+  color: var(--fg-faint); font-size: 12px;
+}
+.chart-empty .chip {
+  width: 36px; height: 36px; border-radius: 18px; background: var(--bg-chip);
+  display: flex; align-items: center; justify-content: center;
+}
 
 /* ------------ schema tree ------------ */
 .schema-search {

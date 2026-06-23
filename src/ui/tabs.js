@@ -4,6 +4,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { activeTab, allocTabId, newTabObj } from '../state.js';
+import { cloneChartCfg } from '../core/chart-data.js';
 
 /** Paint the tab strip into app.dom.qtabsInner. */
 export function renderTabs(app) {
@@ -50,14 +51,20 @@ export function newTab(app) {
 /**
  * Open a tab pre-seeded with `name`/`sql` (used by saved/history). `savedId`
  * links it to a saved query so the Save button reads "Saved" (restoring a saved
- * query); omit it for history entries, which aren't saved.
+ * query); omit it for history entries, which aren't saved. `chart` is the saved
+ * chart config `{ cfg, key }`, cloned onto the tab. (The result view is a global
+ * setting restored via `run({ view })` by the caller, since `run` resets it.)
  */
-export function loadIntoNewTab(app, name, sql, savedId = null) {
+export function loadIntoNewTab(app, name, sql, savedId = null, chart = null) {
   const id = allocTabId(app.state);
   const tab = newTabObj(id);
   tab.name = name || 'Untitled';
   tab.sql = sql;
   tab.savedId = savedId;
+  if (chart && chart.cfg) {
+    tab.chartCfg = cloneChartCfg(chart.cfg);
+    tab.chartKey = chart.key ?? null;
+  }
   app.state.tabs.push(tab);
   app.state.activeTabId = id;
   refresh(app);

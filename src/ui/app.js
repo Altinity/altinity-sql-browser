@@ -7,7 +7,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, importSaved,
+  createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, importSaved, tabChart,
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
@@ -16,7 +16,7 @@ import { resolveTarget } from '../core/target.js';
 import { buildExportDoc, parseImportDoc } from '../core/saved-io.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
-import { encodeSqlForHash } from '../core/share.js';
+import { encodeShare } from '../core/share.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
@@ -46,6 +46,10 @@ export function createApp(env = {}) {
     doc,
     token: ss.getItem('oauth_id_token'),
     refreshToken: ss.getItem('oauth_refresh_token'),
+    // Charting seam: the Chart.js constructor (injected so tests stub it) and a
+    // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
+    Chart: env.Chart || win.Chart,
+    cssVar: env.cssVar || ((name) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
   };
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
@@ -324,7 +328,7 @@ export function createApp(env = {}) {
   }
   app.tickElapsed = tickElapsed;
 
-  async function run() {
+  async function run(opts) {
     if (app.state.running) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
     if (!tab.sql.trim()) return;
@@ -335,7 +339,8 @@ export function createApp(env = {}) {
     const t0 = now();
     tab.result = newResult(fmt);
     app.state.resultSort = { col: null, dir: 'asc' };
-    app.state.resultView = 'table';
+    // Start in Table unless a caller restores a remembered view (saved-query open).
+    app.state.resultView = (opts && opts.view === 'json') || (opts && opts.view === 'chart') ? opts.view : 'table';
     app.state.running = true;
     app.state.runT0 = t0;
     app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0;
@@ -437,9 +442,10 @@ export function createApp(env = {}) {
 
   // --- share + star ------------------------------------------------------
   function share() {
-    const sql = (app.activeTab().sql || '').trim();
+    const tab = app.activeTab();
+    const sql = (tab.sql || '').trim();
     if (!sql) return;
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeSqlForHash(sql);
+    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, tabChart(tab));
     win.history && win.history.replaceState && win.history.replaceState(null, '', url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
@@ -619,7 +625,7 @@ export function createApp(env = {}) {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (name, sql, savedId) => loadIntoNewTab(app, name, sql, savedId),
+    loadIntoNewTab: (name, sql, savedId, chart) => loadIntoNewTab(app, name, sql, savedId, chart),
     login: (idpId) => login(idpId),
     connect,
     share,

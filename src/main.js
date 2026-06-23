@@ -3,10 +3,12 @@
 // `env` so it is integration-tested. The module-level block at the bottom is
 // the real side-effect that runs in the browser (and is coverage-ignored).
 
+import Chart from 'chart.js/auto';
 import { createApp } from './ui/app.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
-import { decodeSqlFromHash } from './core/share.js';
+import { decodeShare } from './core/share.js';
+import { cloneChartCfg } from './core/chart-data.js';
 
 export async function bootstrap(app, env) {
   const loc = env.location;
@@ -48,21 +50,29 @@ export async function bootstrap(app, env) {
     hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
   }
 
-  // A shared query rides in the URL hash, which is lost through the OAuth
-  // redirect (and we strip it below). Stash it in sessionStorage so it survives
-  // the round-trip and restore it once we're back, signed in.
-  let sharedSql = decodeSqlFromHash(loc.hash);
-  if (sharedSql) ss.setItem('oauth_shared_sql', sharedSql);
-  else sharedSql = ss.getItem('oauth_shared_sql') || '';
-  if (sharedSql) {
-    app.state.tabs[0].sql = sharedSql;
-    app.state.tabs[0].name = 'Shared query';
+  // A shared query (SQL + chart config) rides in the URL hash, which is lost
+  // through the OAuth redirect (and we strip it below). Stash it in
+  // sessionStorage so it survives the round-trip and restore it once we're back.
+  let shared = decodeShare(loc.hash);
+  if (shared.sql) ss.setItem('oauth_shared', JSON.stringify(shared));
+  else {
+    try { shared = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '', chart: null }; }
+    catch { shared = { sql: '', chart: null }; }
+  }
+  if (shared.sql) {
+    const t0 = app.state.tabs[0];
+    t0.sql = shared.sql;
+    t0.name = 'Shared query';
+    if (shared.chart && shared.chart.cfg) {
+      t0.chartCfg = cloneChartCfg(shared.chart.cfg);
+      t0.chartKey = shared.chart.key ?? null;
+    }
     hist.replaceState(null, '', loc.pathname + loc.search);
   }
 
   if (app.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.
-    ss.removeItem('oauth_shared_sql'); // consumed
+    ss.removeItem('oauth_shared'); // consumed
     // Resolve config first so the header shows the real CH identity (the
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
@@ -76,7 +86,7 @@ export async function bootstrap(app, env) {
 
 /* c8 ignore start -- browser entry side-effect, exercised via the live app */
 if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
-  const app = createApp();
+  const app = createApp({ Chart });
   document.addEventListener('keydown', (e) => handleKeydown(e, app));
   bootstrap(app, {
     location: window.location,

@@ -4,6 +4,17 @@
 import { vi } from 'vitest';
 import { createState, activeTab } from '../../src/state.js';
 
+// A stand-in for the Chart.js constructor: records its canvas + config and
+// exposes a destroy() spy, so the chart glue is testable without a real canvas.
+export class FakeChart {
+  constructor(canvas, config) {
+    this.canvas = canvas;
+    this.config = config;
+    this.destroyed = false;
+  }
+  destroy() { this.destroyed = true; }
+}
+
 export function makeApp(over = {}) {
   const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
   const root = document.createElement('div');
@@ -11,6 +22,9 @@ export function makeApp(over = {}) {
     state,
     root,
     document,
+    Chart: FakeChart,
+    cssVar: () => '', // blank → chartColors() uses its dark-theme fallbacks
+    chart: null,
     host: () => 'test.host',
     activeTab: () => activeTab(state),
     isSignedIn: () => true,

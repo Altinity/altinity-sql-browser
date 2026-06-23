@@ -1,11 +1,12 @@
 # Altinity SQL Browser
 
-A zero-dependency, OAuth-gated **SQL browser for any ClickHouse cluster** —
-schema explorer, tabbed SQL editor with syntax highlighting, streaming results
-with table / JSON / chart views, saved queries, history, and shareable links.
-It ships as a **single self-contained HTML file served from ClickHouse itself**
-(no Node server, no CDN, no external fonts, no runtime dependencies) — the page
-makes **zero third-party requests** and renders in the OS's native UI font.
+An OAuth-gated **SQL browser for any ClickHouse cluster** — schema explorer,
+tabbed SQL editor with syntax highlighting, streaming results with table / JSON
+/ chart views, saved queries, history, and shareable links. It ships as a
+**single self-contained HTML file served from ClickHouse itself** (no Node
+server, no CDN, no external fonts) — the page makes **zero third-party
+requests** and renders in the OS's native UI font. Its only bundled runtime
+dependency is **Chart.js** (the chart result view), inlined into that one file.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase
 held at **100% test coverage**.
@@ -196,7 +197,8 @@ Preview the rendered artifacts without touching ClickHouse:
 ```
 src/
   core/      pure logic — format, jwt, pkce, sql-highlight, share, sort,
-             stream, storage, chart-data (no DOM, no globals)
+             stream, storage, chart-data (roles/autoChart/pivot + Chart.js
+             config builder; no DOM, no globals)
   net/       oauth-config, oauth, ch-client (injected fetch seam)
   ui/        dom (hyperscript), icons, + render modules (login, editor, tabs,
              schema, results, saved-history, shortcuts, splitters, toast, app)

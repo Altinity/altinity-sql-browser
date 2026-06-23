@@ -68,7 +68,7 @@ function renderSaved(app, list) {
       nameEl = h('span', { class: 'name' }, q.name);
     }
 
-    const row = h('div', { class: 'saved-row', onclick: () => { if (!editing) app.actions.loadIntoNewTab(q.name, q.sql, q.id); } },
+    const row = h('div', { class: 'saved-row', onclick: () => { if (!editing) { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } } },
       h('div', { class: 'top' },
         star,
         nameEl,
@@ -112,7 +112,7 @@ function renderHistory(app, list) {
     return;
   }
   for (const ent of state.history) {
-    list.appendChild(h('div', { class: 'history-row', onclick: () => app.actions.loadIntoNewTab('From history', ent.sql) },
+    list.appendChild(h('div', { class: 'history-row', onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); app.actions.run(); } },
       h('button', {
         class: 'sv-act del', title: 'Delete',
         onclick: (e) => { e.stopPropagation(); deleteHistory(state, ent.id, app.saveJSON); renderSavedHistory(app); },

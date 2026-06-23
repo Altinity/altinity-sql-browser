@@ -2,12 +2,12 @@
 // view for TSV/JSON output) plus the renderers. Heavy logic (sorting, axis
 // selection) lives in core/ and is reused here.
 
-import { h, s } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
-import { pickChartAxes, chartSeries } from '../core/chart-data.js';
+import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, CHART_ROW_CAP } from '../core/chart-data.js';
 
 const VIS_CAP = 5000;
 const MIN_COL = 48; // px floor for a resized column
@@ -72,6 +72,9 @@ function startColumnResize(r, th, ev) {
 export function renderResults(app) {
   const region = app.dom.resultsRegion;
   if (!region) return;
+  // Tear down any live Chart.js instance before the DOM is rebuilt, so a view
+  // switch / re-render can't leak its canvas observers (renderChart re-creates).
+  if (app.chart) { app.chart.destroy(); app.chart = null; }
   const tab = app.activeTab();
   const r = tab.result;
   const body = h('div', { class: 'results' });
@@ -99,7 +102,7 @@ export function renderResults(app) {
   } else if (app.state.resultView === 'json') {
     inner.appendChild(renderJson(r));
   } else if (app.state.resultView === 'chart') {
-    inner.appendChild(renderChart(r));
+    inner.appendChild(renderChart(app, r));
   } else {
     inner.appendChild(renderTable(app, r));
   }
@@ -298,52 +301,88 @@ export function openCellDetail(app, name, type, value) {
   return backdrop;
 }
 
-export function renderChart(r) {
-  const { xIdx, yIdx, ok } = pickChartAxes(r.columns);
-  if (!ok) return h('div', { class: 'placeholder' }, h('div', null, 'No numeric columns to chart.'));
-  const { labels, values, max } = chartSeries(r.rows, xIdx, yIdx);
+/**
+ * Per-tab chart config: derive defaults via autoChart the first time (or when
+ * the result schema changes), then keep the user's overrides. A config restored
+ * from a saved query / share link carries the schema key it was built for, so
+ * when the re-run result matches that schema the restored config sticks. Returns
+ * null when the result has nothing chartable.
+ */
+function chartCfgFor(tab, columns) {
+  const key = schemaKey(columns);
+  if (tab.chartKey !== key) {
+    tab.chartKey = key;
+    tab.chartCfg = autoChart(columns);
+  } else if (tab.chartCfg && !chartCfgValid(tab.chartCfg, columns)) {
+    // Key matches but the config doesn't fit (a hand-edited share link or a
+    // corrupted import) — fall back to a safe default rather than crash.
+    tab.chartCfg = autoChart(columns);
+  }
+  // Fold cross-field invariants on whatever we ended up with (a restored config
+  // can be in-range yet self-contradictory, e.g. a multi-measure pie).
+  return normalizeChartCfg(tab.chartCfg);
+}
 
-  const wrap = h('div', { class: 'chart-view' });
-  wrap.appendChild(h('div', { class: 'chart-controls' },
-    h('span', null, 'X: ', h('strong', { style: { color: 'var(--fg)' } }, r.columns[xIdx].name)),
-    h('span', null, 'Y: ', h('strong', { style: { color: 'var(--fg)' } }, r.columns[yIdx].name)),
-    h('span', { style: { color: 'var(--fg-faint)' } }, '(showing first ' + values.length + ' rows)')));
+/** A labelled <select> for the config bar. */
+function chartSelect(label, value, options, onChange) {
+  const sel = h('select', { class: 'chart-select', onchange: (e) => onChange(e.target.value) });
+  for (const o of options) {
+    const opt = h('option', { value: o.value }, o.label);
+    if (o.value === value) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  return h('label', { class: 'chart-field' }, h('span', { class: 'chart-field-label' }, label), sel);
+}
 
-  const W = 600, H = 280, P = { l: 50, r: 12, t: 10, b: 36 };
-  const innerW = W - P.l - P.r, innerH = H - P.t - P.b;
-  const step = innerW / Math.max(values.length, 1);
-  const barW = step * 0.7;
+function chartEmpty(icon, msg) {
+  return h('div', { class: 'chart-empty' }, h('div', { class: 'chip' }, icon), h('div', null, msg));
+}
 
-  const svg = s('svg', {
-    viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'xMidYMid meet',
-    style: { width: '100%', height: '100%' },
-  });
+export function renderChart(app, r) {
+  const tab = app.activeTab();
+  // Gate on run state BEFORE deriving the config: while a query streams its
+  // columns can be empty (pre-meta), and letting chartCfgFor see that empty
+  // schema would clobber a restored saved/shared config with autoChart(null).
+  if (app.state.running) return chartEmpty(Icon.spinner(), 'Chart renders when the query completes.');
+  const cfg = chartCfgFor(tab, r.columns);
+  if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 
-  const line = (x1, y1, x2, y2) => s('line', { x1, y1, x2, y2, stroke: 'currentColor', opacity: '0.25' });
-  const text = (x, y, anchor, str) =>
-    s('text', { x, y, 'text-anchor': anchor, 'font-size': '10', fill: 'currentColor', opacity: '0.6' }, str);
+  const f = chartFieldOptions(r.columns, cfg);
+  const rerender = () => renderResults(app);
 
-  svg.appendChild(line(P.l, P.t + innerH, P.l + innerW, P.t + innerH));
-  svg.appendChild(text(P.l - 6, P.t + 10, 'end', formatRows(max)));
-  svg.appendChild(text(P.l - 6, P.t + innerH + 4, 'end', '0'));
+  // Each handler mutates the shared cfg (= tab.chartCfg) and re-renders;
+  // chartCfgFor folds the cross-field invariants (pie → single measure,
+  // series ≠ X) on the way back in, so the handlers don't normalize themselves.
+  const bar = h('div', { class: 'chart-config' });
+  bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; rerender(); }));
+  bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); rerender(); }));
+  bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; rerender(); }));
+  if (f.showMulti) {
+    bar.appendChild(h('button', {
+      class: 'chart-toggle', title: 'Plot every numeric column as its own series',
+      onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; rerender(); },
+    }, f.multiActive ? 'Single series' : 'All measures'));
+  }
+  if (f.showSeries) {
+    bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
+      cfg.series = v === '' ? null : Number(v);
+      rerender();
+    }));
+  }
+  // The chart plots at most CHART_ROW_CAP points; say so when the result is
+  // bigger (the table still shows everything) — no silent truncation.
+  if (r.rows.length > CHART_ROW_CAP) {
+    bar.appendChild(h('span', { class: 'chart-cap-note' },
+      'first ' + CHART_ROW_CAP + ' of ' + formatRows(r.rows.length) + ' rows'));
+  }
 
-  values.forEach((v, i) => {
-    const x = P.l + i * step + (step - barW) / 2;
-    const hgt = max > 0 ? (v / max) * innerH : 0;
-    svg.appendChild(s('rect', {
-      x, y: P.t + innerH - hgt, width: barW, height: hgt, fill: 'var(--accent)', rx: '1.5',
-    }, s('title', null, labels[i] + ': ' + v)));
-  });
+  const canvas = document.createElement('canvas');
+  // Plot in result (query) order — independent of the table's sort, which is a
+  // global, cross-tab setting; applying it here would reorder the X axis (a
+  // time series would zig-zag) and change which rows the CHART_ROW_CAP keeps,
+  // contradicting the "first N rows" note. It would also sort up to VIS_CAP
+  // rows just to discard all but the first CHART_ROW_CAP.
+  app.chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar)));
 
-  const every = Math.max(1, Math.ceil(labels.length / 12));
-  labels.forEach((lab, i) => {
-    if (i % every !== 0) return;
-    const short = lab.length > 12 ? lab.slice(0, 11) + '…' : lab;
-    svg.appendChild(text(P.l + i * step + step / 2, P.t + innerH + 16, 'middle', short));
-  });
-
-  const area = h('div', { class: 'chart-area' });
-  area.appendChild(svg);
-  wrap.appendChild(area);
-  return wrap;
+  return h('div', { class: 'chart-view' }, bar, h('div', { class: 'chart-canvas-wrap' }, canvas));
 }
