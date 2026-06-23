@@ -13,7 +13,6 @@ const TIME_RE = /^(Date|DateTime)/;
 // `monthly_revenue` / `minutes_watched` / `dayrate` stays a measure rather
 // than being misclassified by a mere prefix and dropped from autoChart.
 const ORDINAL_RE = /^(year|quarter|month|week|day|dayofweek|dow|hour|minute)s?$/i;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
 
 // Plots past this get unreadable, so the chart shows the first N (the table
 // stays full). Exported so the renderer can surface the truncation to the user.
@@ -146,14 +145,17 @@ export function chartNumFmt(v) {
 }
 
 /**
- * Format an X label. An ISO datetime is trimmed to its date (YYYY-MM-DD) so the
- * tick is readable without dropping day granularity; everything else
- * stringifies. NOTE: this is display only — `buildChartData` groups on the raw
- * cell value, so two distinct timestamps on the same day stay distinct buckets.
+ * Format an X label. A date-like value is trimmed to a readable tick: just the
+ * date (YYYY-MM-DD) for a Date or a midnight DateTime (day-level aggregations),
+ * and date + HH:MM when it carries an actual intraday time, so two timestamps on
+ * the same day don't collapse to the same tick. Anything else stringifies.
+ * Display only — `buildChartData` groups on the raw cell value regardless.
  */
 export function chartLabel(v) {
   const sv = String(v);
-  return ISO_DATE_RE.test(sv) ? sv.slice(0, 10) : sv;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/.exec(sv);
+  if (!m) return sv;
+  return m[1] && m[2] && m[2] !== '00:00' ? `${m[1]} ${m[2]}` : m[1];
 }
 
 /**

@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "node build/build.mjs",
-    "pretest": "pkill -f 'tests/vitest.config.ts' 2>/dev/null || true",
+    "pretest": "pkill -f 'vitest.*--config tests/vitest.config.ts' 2>/dev/null || true",
     "test": "vitest run --coverage --config tests/vitest.config.ts",
     "test:watch": "vitest --config tests/vitest.config.ts",
     "test:e2e": "playwright test",

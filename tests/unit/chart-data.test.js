@@ -134,9 +134,15 @@ describe('chartNumFmt', () => {
 });
 
 describe('chartLabel', () => {
-  it('trims an ISO datetime to its date (keeps day granularity) and stringifies the rest', () => {
-    expect(chartLabel('2026-06-21 12:00:00')).toBe('2026-06-21');
+  it('keeps date-only for a Date or midnight DateTime', () => {
     expect(chartLabel('2026-06-21')).toBe('2026-06-21');
+    expect(chartLabel('2026-06-21 00:00:00')).toBe('2026-06-21'); // day-level aggregation
+  });
+  it('keeps date + HH:MM for an intraday timestamp (so same-day buckets stay distinct)', () => {
+    expect(chartLabel('2026-06-21 12:30:45')).toBe('2026-06-21 12:30');
+    expect(chartLabel('2026-06-21T09:05:00')).toBe('2026-06-21 09:05'); // ISO 'T' separator
+  });
+  it('stringifies non-date values', () => {
     expect(chartLabel('B6')).toBe('B6');
     expect(chartLabel(7)).toBe('7');
   });
@@ -247,8 +253,8 @@ describe('buildChartData', () => {
     const c = [{ name: 'ts', type: 'DateTime' }, { name: 'n', type: 'UInt64' }];
     const rows = [['2026-06-15 09:00:00', '1'], ['2026-06-15 17:00:00', '2']];
     const out = buildChartData(c, rows, { type: 'line', x: 0, y: [1], series: null });
-    expect(out.labels).toEqual(['2026-06-15', '2026-06-15']); // both ticks read the date
-    expect(out.datasets[0].data).toEqual([1, 2]); // but the two points survive (no merge)
+    expect(out.labels).toEqual(['2026-06-15 09:00', '2026-06-15 17:00']); // distinct intraday ticks
+    expect(out.datasets[0].data).toEqual([1, 2]); // and the two points survive (no merge)
   });
 });
 

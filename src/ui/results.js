@@ -350,13 +350,12 @@ export function renderChart(app, r) {
   const f = chartFieldOptions(r.columns, cfg);
   const rerender = () => renderResults(app);
 
+  // Each handler mutates the shared cfg (= tab.chartCfg) and re-renders;
+  // chartCfgFor folds the cross-field invariants (pie → single measure,
+  // series ≠ X) on the way back in, so the handlers don't normalize themselves.
   const bar = h('div', { class: 'chart-config' });
-  bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => {
-    cfg.type = v;
-    normalizeChartCfg(cfg); // pie drops series + extra measures
-    rerender();
-  }));
-  bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); normalizeChartCfg(cfg); rerender(); }));
+  bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; rerender(); }));
+  bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); rerender(); }));
   bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; rerender(); }));
   if (f.showMulti) {
     bar.appendChild(h('button', {
@@ -367,7 +366,6 @@ export function renderChart(app, r) {
   if (f.showSeries) {
     bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
       cfg.series = v === '' ? null : Number(v);
-      normalizeChartCfg(cfg);
       rerender();
     }));
   }
