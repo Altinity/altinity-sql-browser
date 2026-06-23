@@ -63,4 +63,22 @@ describe('bracketEdit', () => {
     expect(bracketEdit('ab', 1, 1, 'x')).toBeNull();
     expect(bracketEdit('ab', 1, 1, 'Tab')).toBeNull();
   });
+  describe('inLiteral suppresses auto-pairing but not type-over (#2 review)', () => {
+    it('does not auto-close an opener inside a string/comment', () => {
+      expect(bracketEdit("'O'", 2, 2, '(', true)).toBeNull(); // type '(' literally, no stray ')'
+    });
+    it('does not wrap a selection with an opener inside a literal', () => {
+      expect(bracketEdit("'abc'", 1, 4, '(', true)).toBeNull();
+    });
+    it('does not auto-pair a quote inside a literal', () => {
+      expect(bracketEdit("'ab", 3, 3, "'", true)).toBeNull();
+    });
+    it('still types over an existing quote inside a literal (closes it)', () => {
+      expect(bracketEdit("'ab'", 3, 3, "'", true)).toEqual({ value: "'ab'", selStart: 4, selEnd: 4 });
+    });
+    it('still types over a closer, and still pair-deletes, inside a literal', () => {
+      expect(bracketEdit('()', 1, 1, ')', true)).toEqual({ value: '()', selStart: 2, selEnd: 2 });
+      expect(bracketEdit('()', 1, 1, 'Backspace', true)).toEqual({ value: '', selStart: 0, selEnd: 0 });
+    });
+  });
 });

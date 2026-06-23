@@ -402,6 +402,19 @@ describe('bracket matching + auto-close (#24)', () => {
     press(ta, 'Backspace');
     expect(ta.value).toBe('');
   });
+  it('does not auto-close a bracket typed inside a string literal (#2 review)', () => {
+    const { ta } = mounted("''");
+    ta.selectionStart = ta.selectionEnd = 1; // caret inside the string
+    const e = press(ta, '(');
+    expect(e.defaultPrevented).toBe(false); // not handled as a bracket → the '(' types literally
+    expect(ta.value).toBe("''");            // no stray ')' inserted
+  });
+  it('matches the real bracket pair, not one inside a string (#2 review)', () => {
+    const { app, ta } = mounted("'(' (a)");
+    ta.selectionStart = ta.selectionEnd = 4; // caret on the real '(' (index 4); the string's is masked
+    ta.dispatchEvent(new MouseEvent('click')); // repaint at the caret (not gated, keeps the caret)
+    expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(2);
+  });
   it('a non-bracket key falls through — Tab still inserts two spaces', () => {
     const { ta } = mounted('ab');
     ta.selectionStart = ta.selectionEnd = 1;
@@ -621,6 +634,13 @@ describe('autocomplete dropdown (#26)', () => {
     ta.dispatchEvent(new Event('scroll'));
     expect(dropdown(container)).toBeNull();
   });
+  it('a tab switch (editorSync) dismisses an open dropdown (#7 review)', () => {
+    const { app, container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    expect(dropdown(container)).not.toBeNull();
+    app.dom.editorSync(); // switching tabs reassigns ta.value
+    expect(dropdown(container)).toBeNull();
+  });
   it('tolerates an unset app.completions (defaults to empty, no crash)', () => {
     const app = makeApp(); // no app.completions
     const container = document.createElement('div');
@@ -665,6 +685,7 @@ describe('signature help + hover docs (#27)', () => {
       sum: { kind: 'agg', sig: 'sum(x)', ret: 'numeric', desc: 'Sum of values.' },
       substring: { kind: 'fn', sig: 'substring(s, off, len)', ret: 'String', desc: 'A substring.' },
       now: { kind: 'fn', sig: 'now()', ret: 'DateTime', desc: '' }, // signature, no description
+      CAST: { kind: 'cast', sig: 'CAST(x, T)', ret: '', desc: '' }, // canonically uppercase
     },
     keywordDocs: { PREWHERE: 'Filter applied before reading other columns.' },
     keywordSet: new Set(['PREWHERE']),
@@ -722,6 +743,24 @@ describe('signature help + hover docs (#27)', () => {
     ta.dispatchEvent(e);
     expect(sig(container)).toBeNull();
     expect(e.defaultPrevented).toBe(true);
+  });
+  it('resolves the function case-insensitively — UPPER and lower (#3 review)', () => {
+    const a = mounted('SUM(x'); // typed upper; canonical key is lowercase 'sum'
+    caretMove(a.ta, 4);
+    expect(sig(a.container)).not.toBeNull();
+    expect(sig(a.container).querySelector('.sig-name').textContent).toBe('SUM');
+    const b = mounted('cast(x'); // typed lower; canonical key is uppercase 'CAST'
+    caretMove(b.ta, 5);
+    expect(sig(b.container)).not.toBeNull();
+    expect(sig(b.container).textContent).toContain('x, T'); // CAST(x, T) metadata resolved via toUpperCase
+  });
+  it('ignores a comma inside a string literal when counting arguments (#2 review)', () => {
+    const v = "substring('a, b', "; // the real 2nd-arg comma is the one after the string
+    const { container, ta } = mounted(v);
+    caretMove(ta, v.length);
+    const el = sig(container);
+    expect(el).not.toBeNull();
+    expect(el.querySelector('.sig-arg.on').textContent).toBe('off'); // arg index 1, not miscounted by the string's comma
   });
 
   describe('hover docs', () => {

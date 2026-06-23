@@ -104,3 +104,18 @@ export function tokenize(sql, { keywords = SQL_KEYWORDS, funcs = SQL_FUNCS } = {
   }
   return out;
 }
+
+// A same-length copy of `sql` with every string-literal, comment, and
+// backtick-quoted-identifier character replaced by NUL ('\0'). Bracket matching
+// (#24), signature help (#27), and auto-close decisions run on this so that
+// brackets/quotes/commas inside literals don't pair, count as arguments, or
+// trigger auto-close. NUL is none of `(),;\n`, so the raw-char scanners skip it.
+// Offsets are preserved (same length), so indices map back to the real text.
+export function maskLiterals(sql) {
+  let out = '';
+  for (const [t, v] of tokenize(sql)) {
+    const literal = t === 'string' || t === 'comment' || (t === 'ident' && v[0] === '`');
+    out += literal ? '\0'.repeat(v.length) : v;
+  }
+  return out;
+}

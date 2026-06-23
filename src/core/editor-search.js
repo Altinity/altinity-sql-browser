@@ -2,24 +2,22 @@
 
 /**
  * All matches of `query` in `value`, in order, as [{start, end}]. Plain mode
- * escapes the query (optionally fenced by `\b` word boundaries); regex mode
- * compiles it directly. Case-insensitive unless `caseSensitive`. An empty query
- * or an invalid regex yields [] (the panel surfaces the error separately). A
- * zero-width match advances by one so the scan can't loop forever, and the
- * total is capped so a pathological pattern can't hang the keystroke path.
+ * escapes the query; regex mode compiles it directly. Whole-word fences the
+ * pattern with `\b…\b` in BOTH modes (regex is wrapped in a non-capturing group
+ * so the boundaries apply to the whole pattern). Case-insensitive unless
+ * `caseSensitive`. An empty query or an invalid regex yields [] (the panel
+ * surfaces the error separately). Zero-width matches (e.g. `a*`, `^`, `$`) are
+ * skipped — they have no text to highlight or replace — while still advancing
+ * the scan; the total is capped so a pathological pattern can't hang typing.
  */
 export function findMatches(value, query, opts = {}) {
   if (!query) return [];
   const { caseSensitive = false, regex = false, wholeWord = false } = opts;
   let re;
   try {
-    if (regex) {
-      re = new RegExp(query, caseSensitive ? 'g' : 'gi');
-    } else {
-      let pat = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (wholeWord) pat = '\\b' + pat + '\\b';
-      re = new RegExp(pat, caseSensitive ? 'g' : 'gi');
-    }
+    let pat = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (wholeWord) pat = '\\b' + (regex ? '(?:' + pat + ')' : pat) + '\\b';
+    re = new RegExp(pat, caseSensitive ? 'g' : 'gi');
   } catch {
     return [];
   }
@@ -27,9 +25,9 @@ export function findMatches(value, query, opts = {}) {
   let m;
   let guard = 0;
   while ((m = re.exec(value)) !== null) {
-    if (m.index === re.lastIndex) re.lastIndex++; // zero-width guard
-    matches.push({ start: m.index, end: m.index + m[0].length });
     if (++guard > 10000) break;
+    if (m.index === re.lastIndex) { re.lastIndex++; continue; } // skip zero-width, keep advancing
+    matches.push({ start: m.index, end: m.index + m[0].length });
   }
   return matches;
 }

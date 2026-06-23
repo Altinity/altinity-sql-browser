@@ -36,3 +36,12 @@ export function h(tag, props, ...children) {
 export function s(tag, props, ...children) {
   return apply(document.createElementNS(SVG_NS, tag), props, children);
 }
+
+// The page's CSS `zoom` factor as seen by `el`: getBoundingClientRect() is in
+// post-zoom px while layout (offsetWidth) is pre-zoom CSS px, so their ratio is
+// the zoom. The single source of truth for bridging `html{zoom}` when mapping
+// between client coords and CSS px (editor popovers, results column-resize).
+// Falls back to 1 when the element isn't laid out (offsetWidth 0 → NaN).
+export function zoomScale(el) {
+  return (el.getBoundingClientRect().width / el.offsetWidth) || 1;
+}

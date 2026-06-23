@@ -763,6 +763,7 @@ body {
   font-family: inherit; font-size: inherit; line-height: inherit;
   color: inherit;
   white-space: pre;
+  tab-size: 2; /* match .sql-textarea so tabs in pasted SQL align with the glyphs */
   overflow: hidden;
   pointer-events: none;
 }
@@ -808,6 +809,7 @@ body {
   font-family: inherit; font-size: inherit; line-height: inherit;
   color: transparent;
   white-space: pre;
+  tab-size: 2; /* match .sql-textarea so highlights line up on tabbed lines */
   overflow: hidden;
   pointer-events: none;
 }

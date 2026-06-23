@@ -28,14 +28,18 @@ export function caretXY(value, pos, m) {
 /**
  * Inverse of caretXY for hover (#27): the text offset at a point, where relX/relY
  * are already in CSS px relative to the text origin (after padding + scroll).
- * Returns null when the point is outside the text's lines. The column is clamped
- * to the line so a click past the end of a short line maps to its end.
+ * Returns null when the point is outside the text's lines, OR past the end of a
+ * short line's glyphs — otherwise a dwell in the blank space right of e.g.
+ * `SELECT count` would map to the end of `count` and pop a phantom hover card
+ * nowhere near a token (#27). A half-column tolerance keeps the last glyph live.
  */
 export function offsetFromXY(value, relX, relY, m) {
   const lines = value.split('\n');
   const line = Math.floor(relY / m.lhPx);
   if (line < 0 || line >= lines.length) return null;
-  const col = Math.max(0, Math.min(Math.round(relX / m.charWidth), lines[line].length));
+  const rawCol = relX / m.charWidth;
+  if (rawCol > lines[line].length + 0.5) return null; // beyond the line's glyphs
+  const col = Math.max(0, Math.min(Math.round(rawCol), lines[line].length));
   let pos = 0;
   for (let k = 0; k < line; k++) pos += lines[k].length + 1;
   return pos + col;

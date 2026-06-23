@@ -6,6 +6,7 @@
 //
 // host = {
 //   textarea,
+//   maskedValue(),          // () => the text with string/comment chars masked (#2)
 //   getFunctions(),         // () => { name: {sig, ret, kind} }
 //   getKeywordDocs(),       // () => { KEYWORD: doc }
 //   fetchDoc(name),         // () => Promise<string> — lazy, cached hover doc for a function
@@ -31,12 +32,30 @@ export function createIntel(host) {
   const hideHover = () => { if (hoverEl) { hoverEl.remove(); hoverEl = null; } };
   const hide = () => { hideSig(); hideHover(); };
 
+  // Functions are keyed by the server's canonical name (usually lowercase: count,
+  // substring; a few uppercase: CAST). SQL is case-insensitive for function calls,
+  // so resolve the typed word against exact/lower/upper — matching autocomplete,
+  // which lower-cases both sides (#27). Returns { name: canonical, meta } or null.
+  const lookupFn = (word) => {
+    const fns = host.getFunctions();
+    if (fns[word]) return { name: word, meta: fns[word] };
+    const lo = word.toLowerCase();
+    if (fns[lo]) return { name: lo, meta: fns[lo] };
+    const up = word.toUpperCase();
+    if (fns[up]) return { name: up, meta: fns[up] };
+    return null;
+  };
+
   // ── signature help (caret-driven) ──────────────────────────────────────────
   const refreshSignature = () => {
     if (host.suppressed() || ta.selectionStart !== ta.selectionEnd) { hideSig(); return; }
-    const ctx = signatureContext(ta.value, ta.selectionStart);
-    const meta = ctx && host.getFunctions()[ctx.name];
-    if (!meta) { hideSig(); return; }
+    // Scan the string/comment-masked text so a comma inside a literal isn't
+    // counted as an argument separator (#2 review). Function names are code, so
+    // ctx.name is intact in the mask.
+    const ctx = signatureContext(host.maskedValue(), ta.selectionStart);
+    const found = ctx && lookupFn(ctx.name);
+    if (!found) { hideSig(); return; }
+    const meta = found.meta;
     const sig = meta.sig; // always "name(…)" — the loader guarantees a () fallback
     const inner = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
     const args = inner.split(',');
@@ -66,15 +85,16 @@ export function createIntel(host) {
       const w = pos == null ? null : wordAt(ta.value, pos);
       if (!w) { hideHover(); return; }
       const token = ++hoverToken;
-      const fn = host.getFunctions()[w.word];
+      const found = lookupFn(w.word);
       const kw = host.getKeywordDocs()[w.word.toUpperCase()];
-      if (fn) {
-        // Show the signature immediately; the description is fetched on demand
-        // (a separate query, cached per entity) and filled in when it arrives —
-        // unless the pointer has since moved to another token.
-        renderHover({ sig: fn.sig, ret: fn.ret, doc: '', x: cx, y: cy });
-        Promise.resolve(host.fetchDoc(w.word)).then((doc) => {
-          if (doc && token === hoverToken && hoverEl) renderHover({ sig: fn.sig, ret: fn.ret, doc, x: cx, y: cy });
+      if (found) {
+        // Show the signature immediately; the description is fetched on demand by
+        // the canonical name (a separate query, cached per entity) and filled in
+        // when it arrives — unless the pointer has since moved to another token.
+        const meta = found.meta;
+        renderHover({ sig: meta.sig, ret: meta.ret, doc: '', x: cx, y: cy });
+        Promise.resolve(host.fetchDoc(found.name)).then((doc) => {
+          if (doc && token === hoverToken && hoverEl) renderHover({ sig: meta.sig, ret: meta.ret, doc, x: cx, y: cy });
         });
       } else if (kw) {
         renderHover({ sig: w.word.toUpperCase(), doc: kw, x: cx, y: cy });

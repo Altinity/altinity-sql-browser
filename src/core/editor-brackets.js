@@ -48,9 +48,12 @@ export function matchBracketAt(value, caret) {
  *   • quote: wrap a selection, type over an existing quote, else auto-close
  *   • closer: type over an existing matching closer
  *   • Backspace inside an empty ()/[]/'' pair: delete both halves
+ * When `inLiteral` (the caret sits inside a string/comment), auto-pairing is
+ * suppressed — typing `(` in 'O(' must not insert a stray `)` — but type-over of
+ * an existing quote/closer still works so the literal can be closed normally.
  */
-export function bracketEdit(value, s, e, key) {
-  if (OPEN[key]) {
+export function bracketEdit(value, s, e, key, inLiteral = false) {
+  if (OPEN[key] && !inLiteral) {
     const close = OPEN[key];
     if (s !== e) {
       return { value: value.slice(0, s) + key + value.slice(s, e) + close + value.slice(e), selStart: s + 1, selEnd: e + 1 };
@@ -58,13 +61,16 @@ export function bracketEdit(value, s, e, key) {
     return { value: value.slice(0, s) + key + close + value.slice(e), selStart: s + 1, selEnd: s + 1 };
   }
   if (QUOTES.has(key)) {
-    if (s !== e) {
-      return { value: value.slice(0, s) + key + value.slice(s, e) + key + value.slice(e), selStart: s + 1, selEnd: e + 1 };
+    if (s === e && value[s] === key) {
+      return { value, selStart: s + 1, selEnd: s + 1 }; // type over an existing quote (closes the literal)
     }
-    if (value[s] === key) {
-      return { value, selStart: s + 1, selEnd: s + 1 }; // type over the auto-inserted quote
+    if (!inLiteral) {
+      if (s !== e) {
+        return { value: value.slice(0, s) + key + value.slice(s, e) + key + value.slice(e), selStart: s + 1, selEnd: e + 1 };
+      }
+      return { value: value.slice(0, s) + key + key + value.slice(e), selStart: s + 1, selEnd: s + 1 };
     }
-    return { value: value.slice(0, s) + key + key + value.slice(e), selStart: s + 1, selEnd: s + 1 };
+    // inside a literal and not a type-over → let the quote type normally
   }
   if (CLOSERS.has(key) && s === e && value[s] === key) {
     return { value, selStart: s + 1, selEnd: s + 1 }; // type over the auto-inserted closer

@@ -1,8 +1,8 @@
 // The SQL editor: a textarea overlaid on a syntax-highlighted <pre>, with a
 // line-number gutter. Highlighting reuses the pure tokenizer in core.
 
-import { h } from './dom.js';
-import { tokenize } from '../core/sql-highlight.js';
+import { h, zoomScale } from './dom.js';
+import { tokenize, maskLiterals } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
 import { caretXY, offsetFromXY } from '../core/editor-geometry.js';
@@ -78,13 +78,23 @@ export function mountEditor(app, container) {
     renderHighlightInto(pre, sql, ref ? { keywords: ref.keywordSet, funcs: ref.funcSet } : undefined);
     gutter.replaceChildren(...gutterLines(sql));
   };
+  // The text with string/comment/backtick-ident chars masked to NUL, cached by
+  // value so caret moves and keydowns reuse it (recomputed only when the text
+  // changes). Bracket matching, signature help, and the auto-close decision run
+  // on this so literals' brackets/quotes/commas don't pair or count (#2 review).
+  let maskVal = null;
+  let maskOut = '';
+  const masked = () => {
+    if (ta.value !== maskVal) { maskVal = ta.value; maskOut = maskLiterals(ta.value); }
+    return maskOut;
+  };
   // All highlight sources, aggregated for the overlay: search matches (#23) or,
   // when search is closed and the caret is collapsed, the bracket pair adjacent
   // to the caret (#24).
   const computeMarks = () => {
     const marks = search.marks();
     if (!search.isOpen() && ta.selectionStart === ta.selectionEnd) {
-      const bp = matchBracketAt(ta.value, ta.selectionStart);
+      const bp = matchBracketAt(masked(), ta.selectionStart);
       if (bp) {
         marks.push({ start: bp[0], end: bp[0] + 1, cls: 'bracket' });
         marks.push({ start: bp[1], end: bp[1] + 1, cls: 'bracket' });
@@ -127,15 +137,31 @@ export function mountEditor(app, container) {
     ta.selectionEnd = end;
     applyEdit(ta, text);
   };
-  // Apply a structural bracket edit (#24). Unlike applyEdit's
-  // execCommand('insertText'), these place the caret *inside* a new pair or
-  // remove both halves, which needs a direct splice — a coarser undo step than
-  // typing, matching the prototype's behavior. Fires input so the rest syncs.
+  // Apply a structural bracket edit (#24) while PRESERVING the native undo stack.
+  // A direct `ta.value = …` assignment wipes ⌘Z, so instead express the edit as a
+  // single execCommand over the changed range (insertText, or delete for an
+  // empty-pair Backspace) — the same undo-friendly path applyEdit uses — derived
+  // by diffing the old/new value. Type-over (no value change) is a pure caret
+  // move. Then place the structural caret and re-sync the caret-driven UI
+  // (execCommand fired 'input' at the post-edit caret; a type-over fires none).
   const applyBracketEdit = (edit) => {
-    ta.value = edit.value;
+    const before = ta.value;
+    if (before !== edit.value) {
+      const { from, to, ins } = bracketDiff(before, edit.value);
+      ta.focus();
+      ta.selectionStart = from;
+      ta.selectionEnd = to;
+      let ok = false;
+      try {
+        ok = ins ? ta.ownerDocument.execCommand('insertText', false, ins)
+          : ta.ownerDocument.execCommand('delete', false);
+      } catch { ok = false; }
+      if (!ok) { ta.value = edit.value; ta.dispatchEvent(new Event('input')); }
+    }
     ta.selectionStart = edit.selStart;
     ta.selectionEnd = edit.selEnd;
-    ta.dispatchEvent(new Event('input'));
+    paintMarks();
+    intel.refreshSignature();
   };
 
   const search = createSearch({
@@ -151,8 +177,8 @@ export function mountEditor(app, container) {
     });
     const rect = ta.getBoundingClientRect();
     // getBoundingClientRect is in post-zoom px while x/y are CSS px; bridge the
-    // html{zoom} gap the same way results.js does for column resize.
-    const scale = (rect.width / ta.offsetWidth) || 1;
+    // html{zoom} gap via the shared zoomScale helper (also used by results.js).
+    const scale = zoomScale(ta);
     return { x: rect.left / scale + x, y: rect.top / scale + y, lineHeight: LINE_HEIGHT_PX };
   };
   const complete = createComplete({
@@ -170,7 +196,7 @@ export function mountEditor(app, container) {
   // caretAnchor's html{zoom} handling, inverted.
   const offsetAt = (clientX, clientY) => {
     const rect = ta.getBoundingClientRect();
-    const scale = (rect.width / ta.offsetWidth) || 1;
+    const scale = zoomScale(ta);
     const relX = (clientX - rect.left) / scale - PAD_X + ta.scrollLeft;
     const relY = (clientY - rect.top) / scale - PAD_Y + ta.scrollTop;
     return offsetFromXY(ta.value, relX, relY, { charWidth: CHAR_WIDTH_PX, lhPx: LINE_HEIGHT_PX });
@@ -180,12 +206,12 @@ export function mountEditor(app, container) {
   // paint; divide by the same scale offsetAt/caretAnchor use so the hover card
   // lands on the cursor (#27).
   const clientToLocal = (clientX, clientY) => {
-    const rect = ta.getBoundingClientRect();
-    const scale = (rect.width / ta.offsetWidth) || 1;
+    const scale = zoomScale(ta);
     return { x: clientX / scale, y: clientY / scale };
   };
   const intel = createIntel({
     textarea: ta,
+    maskedValue: masked, // string/comment-masked text for signatureContext (#2 review)
     getFunctions: () => (app.refData ? app.refData.functions : {}),
     getKeywordDocs: () => (app.refData ? app.refData.keywordDocs : {}),
     fetchDoc: (name) => app.entityDoc(name),
@@ -197,6 +223,10 @@ export function mountEditor(app, container) {
   });
 
   const sync = () => {
+    // A tab switch reassigns ta.value; dismiss the autocomplete dropdown and the
+    // signature popover so their tracked offsets can't act on the new tab's text.
+    complete.hide();
+    intel.hide();
     const tab = activeTab(app.state);
     ta.value = tab.sql;
     paintTokens(tab.sql);
@@ -231,7 +261,11 @@ export function mountEditor(app, container) {
     if (e.isComposing || e.metaKey || (e.ctrlKey && !altGraph)) return;
     // Bracket auto-close / wrap / type-over / pair-delete (#24) takes priority;
     // a non-bracket key returns null and falls through to the Tab handler.
-    const edit = bracketEdit(ta.value, ta.selectionStart, ta.selectionEnd, e.key);
+    // Suppress auto-pairing inside a string/comment (the char before the caret is
+    // masked to NUL) so e.g. typing `(` in 'O(' doesn't insert a stray `)`.
+    const s = ta.selectionStart;
+    const inLiteral = s > 0 && masked()[s - 1] === '\0';
+    const edit = bracketEdit(ta.value, s, ta.selectionEnd, e.key, inLiteral);
     if (edit) {
       e.preventDefault();
       applyBracketEdit(edit);
@@ -246,7 +280,10 @@ export function mountEditor(app, container) {
   // highlight (#24) tracks the caret. A mouse click also moves the caret, which
   // makes any open completion's tracked word range stale, so dismiss it there.
   const onCaretMove = () => { paintMarks(); intel.refreshSignature(); };
-  ta.addEventListener('keyup', onCaretMove);
+  // keyup only handles caret-only moves; a printable key already repainted via
+  // 'input', and selection changes fire 'select' — so don't repaint twice here.
+  const CARET_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown']);
+  ta.addEventListener('keyup', (e) => { if (CARET_KEYS.has(e.key)) onCaretMove(); });
   ta.addEventListener('click', () => { complete.hide(); paintMarks(); intel.refreshSignature(); });
   ta.addEventListener('select', onCaretMove);
   // Accept schema identifiers dragged from the tree; insert at the cursor.
@@ -285,6 +322,17 @@ function applyEdit(ta, text) {
   ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
   ta.selectionStart = ta.selectionEnd = s + text.length;
   ta.dispatchEvent(new Event('input'));
+}
+
+// Minimal prefix/suffix diff: the replaced range in `a` and the inserted text
+// that turns it into `b`. Lets applyBracketEdit apply a bracket edit as one
+// execCommand over a range (undo-preserving) instead of a `.value =` assignment.
+function bracketDiff(a, b) {
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let s = 0;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  return { from: p, to: a.length - s, ins: b.slice(p, b.length - s) };
 }
 
 /** Insert `text` at the textarea cursor (undoable). */

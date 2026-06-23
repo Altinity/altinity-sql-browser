@@ -31,9 +31,10 @@ describe('offsetFromXY', () => {
     expect(offsetFromXY('abc\ndef', 16, 0, m)).toBe(2);  // line 0, col 2
     expect(offsetFromXY('abc\ndef', 8, 22, m)).toBe(5);  // line 1, col 1 → 'abc\n' (4) + 1
   });
-  it('clamps the column to the line length', () => {
-    expect(offsetFromXY('ab\ncdef', 800, 0, m)).toBe(2);  // past end of 'ab'
-    expect(offsetFromXY('ab\ncdef', -50, 0, m)).toBe(0);  // negative → col 0
+  it('returns null well past a short line (no phantom hover), clamps a small overshoot (#10)', () => {
+    expect(offsetFromXY('ab\ncdef', 800, 0, m)).toBeNull();   // far past 'ab' → no token here
+    expect(offsetFromXY('ab\ncdef', 8 * 2 + 2, 0, m)).toBe(2); // within ½ char of the end → clamps to end
+    expect(offsetFromXY('ab\ncdef', -50, 0, m)).toBe(0);       // negative → col 0
   });
   it('returns null above or below the text', () => {
     expect(offsetFromXY('abc', 0, -5, m)).toBeNull();

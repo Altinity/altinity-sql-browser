@@ -20,6 +20,11 @@ describe('findMatches', () => {
   it('wholeWord fences with boundaries', () => {
     expect(findMatches('cat category', 'cat', { wholeWord: true })).toEqual([{ start: 0, end: 3 }]);
   });
+  it('wholeWord fences in regex mode too (#4)', () => {
+    // \d+ as a whole word: matches the standalone 12 and 34, not the 12 inside a12
+    expect(findMatches('12 a12 34', '\\d+', { regex: true, wholeWord: true }))
+      .toEqual([{ start: 0, end: 2 }, { start: 7, end: 9 }]);
+  });
   it('regex mode compiles the pattern', () => {
     expect(findMatches('a1b2', '\\d', { regex: true })).toEqual([{ start: 1, end: 2 }, { start: 3, end: 4 }]);
   });
@@ -29,13 +34,14 @@ describe('findMatches', () => {
   it('an invalid regex yields []', () => {
     expect(findMatches('abc', '(', { regex: true })).toEqual([]);
   });
-  it('advances past zero-width matches instead of looping forever', () => {
-    const m = findMatches('ab', 'x*', { regex: true });
-    expect(m.length).toBeGreaterThan(0);
-    expect(m.every((r) => r.start === r.end)).toBe(true);
+  it('drops zero-width matches (nothing to highlight or replace) without looping (#6)', () => {
+    expect(findMatches('ab', 'x*', { regex: true })).toEqual([]); // every match is zero-width
+    expect(findMatches('a\nb', '$', { regex: true })).toEqual([]);
+    // real matches around a zero-width-capable pattern are still kept
+    expect(findMatches('xax', 'a*', { regex: true })).toEqual([{ start: 1, end: 2 }]);
   });
   it('caps the match count to guard the keystroke path', () => {
-    expect(findMatches('a'.repeat(20000), 'a').length).toBe(10001);
+    expect(findMatches('a'.repeat(20000), 'a').length).toBe(10000);
   });
 });
 
