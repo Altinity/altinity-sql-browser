@@ -335,3 +335,84 @@ describe('in-editor find/replace (#23)', () => {
     expect(app.dom.editorMarkPre.textContent).toContain('a a a a');
   });
 });
+
+describe('bracket matching + auto-close (#24)', () => {
+  function mounted(sql = '') {
+    const app = makeApp();
+    app.activeTab().sql = sql;
+    const container = document.createElement('div');
+    mountEditor(app, container);
+    const ta = app.dom.editorTextarea;
+    ta.value = sql;
+    return { app, container, ta };
+  }
+  const press = (ta, k, opts = {}) => {
+    const e = new KeyboardEvent('keydown', { key: k, cancelable: true, ...opts });
+    ta.dispatchEvent(e);
+    return e;
+  };
+
+  it('auto-closes an opener and places the caret inside', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    const e = press(ta, '(');
+    expect(e.defaultPrevented).toBe(true);
+    expect(ta.value).toBe('()');
+    expect(ta.selectionStart).toBe(1);
+  });
+  it('wraps a selection with the opener', () => {
+    const { ta } = mounted('abc');
+    ta.selectionStart = 0; ta.selectionEnd = 3;
+    press(ta, '[');
+    expect(ta.value).toBe('[abc]');
+    expect(ta.selectionStart).toBe(1);
+    expect(ta.selectionEnd).toBe(4);
+  });
+  it('auto-closes a quote, then types over the closer', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    press(ta, "'");
+    expect(ta.value).toBe("''");
+    expect(ta.selectionStart).toBe(1);
+    press(ta, "'"); // step over
+    expect(ta.value).toBe("''");
+    expect(ta.selectionStart).toBe(2);
+  });
+  it('types over an existing closing bracket', () => {
+    const { ta } = mounted('()');
+    ta.selectionStart = ta.selectionEnd = 1;
+    press(ta, ')');
+    expect(ta.value).toBe('()');
+    expect(ta.selectionStart).toBe(2);
+  });
+  it('Backspace inside an empty pair deletes both halves', () => {
+    const { ta } = mounted('()');
+    ta.selectionStart = ta.selectionEnd = 1;
+    press(ta, 'Backspace');
+    expect(ta.value).toBe('');
+  });
+  it('a non-bracket key falls through — Tab still inserts two spaces', () => {
+    const { ta } = mounted('ab');
+    ta.selectionStart = ta.selectionEnd = 1;
+    const e = press(ta, 'Tab');
+    expect(e.defaultPrevented).toBe(true);
+    expect(ta.value).toBe('a  b');
+  });
+  it('highlights the bracket pair adjacent to the caret on caret moves', () => {
+    const { app, ta } = mounted('(a)');
+    ta.selectionStart = ta.selectionEnd = 0; // caret before '('
+    ta.dispatchEvent(new Event('keyup'));
+    expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(2);
+    ta.selectionStart = ta.selectionEnd = 1; // between '(' and a → not adjacent in match sense
+    ta.dispatchEvent(new MouseEvent('click'));
+    // caret after 'a' is not on a bracket boundary; no pair highlight
+    expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(0);
+  });
+  it('suppresses bracket marks while the search panel is open', () => {
+    const { app, ta } = mounted('(a)');
+    press(ta, 'f', { metaKey: true }); // open search
+    ta.selectionStart = ta.selectionEnd = 0;
+    app.dom.editorSync(); // repaint overlay
+    expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(0);
+  });
+});

@@ -4,6 +4,7 @@
 import { h } from './dom.js';
 import { tokenize } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
+import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
 import { createSearch } from './editor-search.js';
 import { activeTab } from '../state.js';
 
@@ -70,8 +71,20 @@ export function mountEditor(app, container) {
     renderHighlightInto(pre, sql, ref ? { keywords: ref.keywordSet, funcs: ref.funcSet } : undefined);
     gutter.replaceChildren(...gutterLines(sql));
   };
-  // All highlight sources, aggregated for the overlay. #24 adds bracket marks.
-  const computeMarks = () => search.marks();
+  // All highlight sources, aggregated for the overlay: search matches (#23) or,
+  // when search is closed and the caret is collapsed, the bracket pair adjacent
+  // to the caret (#24).
+  const computeMarks = () => {
+    const marks = search.marks();
+    if (!search.isOpen() && ta.selectionStart === ta.selectionEnd) {
+      const bp = matchBracketAt(ta.value, ta.selectionStart);
+      if (bp) {
+        marks.push({ start: bp[0], end: bp[0] + 1, cls: 'bracket' });
+        marks.push({ start: bp[1], end: bp[1] + 1, cls: 'bracket' });
+      }
+    }
+    return marks;
+  };
   const paintMarks = () => {
     markPre.replaceChildren();
     for (const seg of buildMarkSegments(ta.value, computeMarks())) {
@@ -100,6 +113,16 @@ export function mountEditor(app, container) {
     ta.selectionEnd = end;
     applyEdit(ta, text);
   };
+  // Apply a structural bracket edit (#24). Unlike applyEdit's
+  // execCommand('insertText'), these place the caret *inside* a new pair or
+  // remove both halves, which needs a direct splice — a coarser undo step than
+  // typing, matching the prototype's behavior. Fires input so the rest syncs.
+  const applyBracketEdit = (edit) => {
+    ta.value = edit.value;
+    ta.selectionStart = edit.selStart;
+    ta.selectionEnd = edit.selEnd;
+    ta.dispatchEvent(new Event('input'));
+  };
 
   const search = createSearch({
     area, textarea: ta, padY: PAD_Y, lineHeightPx: LINE_HEIGHT_PX,
@@ -126,10 +149,25 @@ export function mountEditor(app, container) {
   });
   ta.addEventListener('scroll', syncScroll);
   ta.addEventListener('keydown', (e) => {
-    if (e.key !== 'Tab') return;
-    e.preventDefault();
-    applyEdit(ta, '  ');
+    // Bracket auto-close / wrap / type-over / pair-delete (#24) takes priority;
+    // a non-bracket key returns null and falls through to the Tab handler.
+    const edit = bracketEdit(ta.value, ta.selectionStart, ta.selectionEnd, e.key);
+    if (edit) {
+      e.preventDefault();
+      applyBracketEdit(edit);
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      applyEdit(ta, '  ');
+    }
   });
+  // Caret moves (arrows, click, selection) don't fire 'input' — repaint the
+  // overlay so the bracket-pair highlight (#24) tracks the caret.
+  const onCaretMove = () => paintMarks();
+  ta.addEventListener('keyup', onCaretMove);
+  ta.addEventListener('click', onCaretMove);
+  ta.addEventListener('select', onCaretMove);
   // Accept schema identifiers dragged from the tree; insert at the cursor.
   ta.addEventListener('dragover', (e) => e.preventDefault());
   ta.addEventListener('drop', (e) => {
