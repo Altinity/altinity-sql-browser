@@ -16,6 +16,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { findMatches, validRegex } from '../core/editor-search.js';
+import { caretLineCol } from '../core/editor-geometry.js';
 
 export function createSearch(host) {
   const ta = host.textarea;
@@ -45,12 +46,15 @@ export function createSearch(host) {
     : []);
 
   const refresh = () => { recompute(); host.repaintMarks(); };
+  // A new query / option set invalidates the current position — start at the
+  // first match so the active highlight + count don't point at a stale index.
+  const refreshFromStart = () => { state.active = 0; refresh(); };
 
   const scrollToActive = () => {
-    const m = state.matches[state.active]; // goto guarantees a match before calling
-    const line = ta.value.slice(0, m.start).split('\n').length - 1;
-    const top = line * host.lineHeightPx;
-    if (top < ta.scrollTop + host.padY || top > ta.scrollTop + ta.clientHeight - host.lineHeightPx - host.padY) {
+    const m = state.matches[state.active]; // goto/doReplace guarantee a match first
+    const { line } = caretLineCol(ta.value, m.start);
+    const top = host.padY + line * host.lineHeightPx; // pixel top within the scrolled content
+    if (top < ta.scrollTop || top + host.lineHeightPx > ta.scrollTop + ta.clientHeight) {
       ta.scrollTop = Math.max(0, top - ta.clientHeight / 2);
       host.syncScroll();
     }
@@ -68,6 +72,7 @@ export function createSearch(host) {
     const m = state.matches[state.active];
     if (!m) return;
     host.replaceRange(m.start, m.end, state.replace); // fires input → editor recomputes
+    if (state.matches.length) scrollToActive(); // bring the now-active match into view
     panel.input.focus();
   };
   const doReplaceAll = () => {
@@ -97,7 +102,7 @@ export function createSearch(host) {
   function buildPanel() {
     const input = h('input', {
       class: 'srch-field', placeholder: 'Find', spellcheck: 'false',
-      oninput: (e) => { state.query = e.target.value; refresh(); },
+      oninput: (e) => { state.query = e.target.value; refreshFromStart(); },
       onkeydown: (e) => {
         if (e.key === 'Enter') { e.preventDefault(); goto(state.active + (e.shiftKey ? -1 : 1)); }
         else if (e.key === 'Escape') { e.preventDefault(); close(); }
@@ -107,7 +112,7 @@ export function createSearch(host) {
     const navBtn = (label, title, onclick) => h('button', { class: 'srch-nav', title, onclick }, label);
     const togBtn = (key, label, title) => h('button', {
       class: 'srch-tog', title,
-      onclick: () => { state.opts[key] = !state.opts[key]; refresh(); },
+      onclick: () => { state.opts[key] = !state.opts[key]; refreshFromStart(); },
     }, label);
     const toggles = {
       caseSensitive: togBtn('caseSensitive', 'Aa', 'Match case'),

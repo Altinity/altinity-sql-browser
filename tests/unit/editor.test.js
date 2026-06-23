@@ -334,6 +334,17 @@ describe('in-editor find/replace (#23)', () => {
     expect(count(container)).toBe('1/4');
     expect(app.dom.editorMarkPre.textContent).toContain('a a a a');
   });
+
+  it('editing the query resets the active match to the first', () => {
+    const { container, ta } = mounted('a a a');
+    key(ta, 'f', { metaKey: true });
+    const input = findInput(container);
+    type(input, 'a');
+    key(input, 'Enter'); key(input, 'Enter'); // → 3/3
+    expect(count(container)).toBe('3/3');
+    type(input, 'a'); // re-typing the query re-searches from the top
+    expect(count(container)).toBe('1/3');
+  });
 });
 
 describe('bracket matching + auto-close (#24)', () => {
@@ -414,6 +425,38 @@ describe('bracket matching + auto-close (#24)', () => {
     ta.selectionStart = ta.selectionEnd = 0;
     app.dom.editorSync(); // repaint overlay
     expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(0);
+  });
+  it('a ⌘ chord is not bracket input (lets the shortcut through)', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    const e = press(ta, '[', { metaKey: true });
+    expect(e.defaultPrevented).toBe(false);
+    expect(ta.value).toBe('');
+  });
+  it('a plain Ctrl chord is not bracket input (no AltGraph)', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    const e = new KeyboardEvent('keydown', { key: '[', ctrlKey: true, cancelable: true });
+    Object.defineProperty(e, 'getModifierState', { value: undefined }); // env without the API
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('');
+  });
+  it('an AltGr-typed bracket still auto-closes (real input, not a chord)', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    const e = new KeyboardEvent('keydown', { key: '(', ctrlKey: true, altKey: true, cancelable: true });
+    e.getModifierState = (k) => k === 'AltGraph';
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('()');
+  });
+  it('an IME composition keydown does not auto-close', () => {
+    const { ta } = mounted('');
+    ta.selectionStart = ta.selectionEnd = 0;
+    const e = new KeyboardEvent('keydown', { key: '(', cancelable: true });
+    Object.defineProperty(e, 'isComposing', { value: true });
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('');
+    expect(e.defaultPrevented).toBe(false);
   });
 });
 
@@ -548,5 +591,33 @@ describe('autocomplete dropdown (#26)', () => {
     const ta = app.dom.editorTextarea;
     expect(() => typeAt(ta, 'co', 2)).not.toThrow();
     expect(container.querySelector('.ac-dropdown')).toBeNull();
+  });
+  it('a modified Enter (⌘↵) dismisses without accepting, so it bubbles to Run', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    const e = press(ta, 'Enter', { metaKey: true });
+    expect(ta.value).toBe('co');            // no token spliced in
+    expect(dropdown(container)).toBeNull(); // dismissed
+    expect(e.defaultPrevented).toBe(false); // not consumed → global Run shortcut fires
+  });
+  it('a caret-moving key (ArrowLeft) dismisses the dropdown', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    press(ta, 'ArrowLeft');
+    expect(dropdown(container)).toBeNull();
+  });
+  it('clicking in the editor dismisses the dropdown', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    ta.dispatchEvent(new MouseEvent('click'));
+    expect(dropdown(container)).toBeNull();
+  });
+  it('anchors the popover in CSS px, bridging html{zoom} via the rect/offsetWidth scale', () => {
+    const { container, ta } = mounted();
+    ta.getBoundingClientRect = () => ({ left: 120, top: 60, width: 120, height: 24, right: 240, bottom: 84 });
+    Object.defineProperty(ta, 'offsetWidth', { value: 100, configurable: true });
+    typeAt(ta, 'co', 2);
+    // scale = 120/100 = 1.2; x = 14 + 2*7.8 = 29.6; left = round(120/1.2 + 29.6) = 130
+    expect(dropdown(container).style.left).toBe('130px');
   });
 });

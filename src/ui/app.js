@@ -329,6 +329,7 @@ export function createApp(env = {}) {
     } catch {
       tableObj.columns = [];
     }
+    app.rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
     renderSchema(app);
   }
 

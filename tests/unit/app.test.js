@@ -218,6 +218,15 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     await expect(app.loadReference()).resolves.toBeUndefined();
     expect(app.refData).toBeTruthy();
   });
+  it('loadColumns folds the newly-loaded columns into the completion list (#26)', async () => {
+    const e = env({ fetch: makeFetch([
+      [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })],
+    ]) });
+    const app = createApp(e); // no renderApp → loadSchema can't clobber our schema mid-test
+    app.state.schema = [{ db: 'd', expanded: true, tables: [{ name: 't', columns: null }] }];
+    await app.actions.loadColumns('d', 't', app.state.schema[0].tables[0]);
+    expect(app.completions.some((c) => c.kind === 'column' && c.label === 'id' && c.parent === 't')).toBe(true);
+  });
 });
 
 describe('query run', () => {

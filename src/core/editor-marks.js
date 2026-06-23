@@ -10,29 +10,21 @@
 
 /**
  * @param value the full editor text
- * @param marks [{start, end, cls}] — half-open ranges. Overlaps resolve by
- *   priority: 'active' > 'match' > the first cls present (e.g. 'bracket').
+ * @param marks [{start, end, cls}] — half-open ranges, **sorted by start and
+ *   non-overlapping**. They always are here: search matches come back in order
+ *   and disjoint, and the bracket pair (the only other source, never mixed with
+ *   search marks) is two sorted width-1 ranges. The single linear pass keeps the
+ *   keystroke path off a quadratic per-segment scan.
  * @returns [{text, cls|null}] covering the whole string in order.
  */
 export function buildMarkSegments(value, marks) {
-  if (!marks.length) return [{ text: value, cls: null }];
-  const points = new Set([0, value.length]);
-  for (const m of marks) { points.add(m.start); points.add(m.end); }
-  const sorted = [...points].filter((p) => p >= 0 && p <= value.length).sort((a, b) => a - b);
   const out = [];
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const a = sorted[i];
-    const b = sorted[i + 1];
-    const text = value.slice(a, b);
-    const cover = marks.filter((m) => m.start <= a && m.end >= b);
-    if (cover.length) {
-      const cls = cover.some((m) => m.cls === 'active') ? 'active'
-        : cover.some((m) => m.cls === 'match') ? 'match'
-          : cover[0].cls;
-      out.push({ text, cls });
-    } else {
-      out.push({ text, cls: null });
-    }
+  let pos = 0;
+  for (const m of marks) {
+    if (m.start > pos) out.push({ text: value.slice(pos, m.start), cls: null });
+    out.push({ text: value.slice(m.start, m.end), cls: m.cls });
+    pos = m.end;
   }
+  if (pos < value.length || !out.length) out.push({ text: value.slice(pos), cls: null });
   return out;
 }

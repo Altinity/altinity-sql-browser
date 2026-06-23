@@ -65,12 +65,22 @@ export function createComplete(host) {
     render();
   };
 
+  const CARET_MOVERS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']);
   const handleKeydown = (e) => {
     if (!state.open) return false;
     if (e.key === 'ArrowDown') { e.preventDefault(); move(1); return true; }
     if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); return true; }
-    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); accept(state.items[state.active]); return true; }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      // A modified Enter/Tab is a run/format/blur chord, not "accept" — dismiss
+      // and let it bubble (otherwise ⌘↵ would splice a token *and* run).
+      if (e.metaKey || e.ctrlKey || e.altKey) { hide(); return false; }
+      e.preventDefault(); accept(state.items[state.active]); return true;
+    }
     if (e.key === 'Escape') { e.preventDefault(); hide(); return true; }
+    // A caret-moving key makes the tracked word range stale (refresh only runs
+    // on input) — dismiss and let the caret move, so a later accept can't
+    // overwrite text at the old position.
+    if (CARET_MOVERS.has(e.key)) { hide(); return false; }
     return false;
   };
 

@@ -92,8 +92,15 @@ export function mountEditor(app, container) {
     return marks;
   };
   const paintMarks = () => {
+    const marks = computeMarks();
+    // Common case (no search, caret not on a bracket): keep the keystroke path
+    // cheap — clear the overlay once and skip rebuilding a full-document node.
+    if (!marks.length) {
+      if (markPre.firstChild) markPre.replaceChildren();
+      return;
+    }
     markPre.replaceChildren();
-    for (const seg of buildMarkSegments(ta.value, computeMarks())) {
+    for (const seg of buildMarkSegments(ta.value, marks)) {
       if (seg.cls) {
         const sp = document.createElement('span');
         sp.className = 'mark-' + seg.cls;
@@ -142,7 +149,10 @@ export function mountEditor(app, container) {
       scrollTop: ta.scrollTop, scrollLeft: ta.scrollLeft,
     });
     const rect = ta.getBoundingClientRect();
-    return { x: rect.left + x, y: rect.top + y, lineHeight: LINE_HEIGHT_PX };
+    // getBoundingClientRect is in post-zoom px while x/y are CSS px; bridge the
+    // html{zoom} gap the same way results.js does for column resize.
+    const scale = (rect.width / ta.offsetWidth) || 1;
+    return { x: rect.left / scale + x, y: rect.top / scale + y, lineHeight: LINE_HEIGHT_PX };
   };
   const complete = createComplete({
     textarea: ta,
@@ -176,6 +186,11 @@ export function mountEditor(app, container) {
   ta.addEventListener('keydown', (e) => {
     // Autocomplete nav (↑/↓/Enter/Tab/Esc while the dropdown is open) wins first.
     if (complete.handleKeydown(e)) return;
+    // A command chord (⌘/Ctrl) or an IME composition isn't bracket/Tab input —
+    // leave it for the global shortcuts (run/format) or the IME. AltGr (Ctrl+Alt
+    // on some EU layouts) *does* type real brackets, so don't treat it as a chord.
+    const altGraph = typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+    if (e.isComposing || e.metaKey || (e.ctrlKey && !altGraph)) return;
     // Bracket auto-close / wrap / type-over / pair-delete (#24) takes priority;
     // a non-bracket key returns null and falls through to the Tab handler.
     const edit = bracketEdit(ta.value, ta.selectionStart, ta.selectionEnd, e.key);
@@ -189,11 +204,12 @@ export function mountEditor(app, container) {
       applyEdit(ta, '  ');
     }
   });
-  // Caret moves (arrows, click, selection) don't fire 'input' — repaint the
-  // overlay so the bracket-pair highlight (#24) tracks the caret.
+  // Caret moves don't fire 'input' — repaint the overlay so the bracket-pair
+  // highlight (#24) tracks the caret. A mouse click also moves the caret, which
+  // makes any open completion's tracked word range stale, so dismiss it there.
   const onCaretMove = () => paintMarks();
   ta.addEventListener('keyup', onCaretMove);
-  ta.addEventListener('click', onCaretMove);
+  ta.addEventListener('click', () => { complete.hide(); paintMarks(); });
   ta.addEventListener('select', onCaretMove);
   // Accept schema identifiers dragged from the tree; insert at the cursor.
   ta.addEventListener('dragover', (e) => e.preventDefault());
