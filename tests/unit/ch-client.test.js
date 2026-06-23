@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, runQuery, killQuery,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -206,16 +206,17 @@ describe('loadReferenceData', () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadReferenceData(ctx)).toEqual({ keywords: [], functions: {} });
   });
-  it('uses syntax + first-line description when the server exposes the doc columns (#27)', async () => {
+  it('uses the syntax column for signatures; descriptions are NOT bulk-loaded (lazy, #27)', async () => {
     const ctx = ctxWith(async (url, o) => (
       o.body.includes('system.keywords')
         ? jsonResp({ data: [{ keyword: 'SELECT' }] })
-        : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)', description: 'Converts to a Date.\nMore.' }] })
+        : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)' }] })
     ));
     const ref = await loadReferenceData(ctx);
-    expect(ref.functions.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: 'Converts to a Date.' });
+    // desc stays '' here — hover docs are fetched on demand via loadEntityDoc.
+    expect(ref.functions.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
   });
-  it('falls back to the minimal function query when doc columns are absent (older CH)', async () => {
+  it('falls back to the minimal function query when the syntax column is absent (older CH)', async () => {
     const ctx = ctxWith(async (url, o) => {
       if (o.body.includes('system.keywords')) return jsonResp({ data: [{ keyword: 'SELECT' }] });
       if (o.body.includes('syntax')) return textResp('Code: 47. DB::Exception: Unknown identifier syntax', false, 500);
@@ -223,6 +224,24 @@ describe('loadReferenceData', () => {
     });
     const ref = await loadReferenceData(ctx);
     expect(ref.functions.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
+  });
+});
+
+describe('loadEntityDoc (#27 — lazy hover docs)', () => {
+  it('returns the first NON-empty line (CH descriptions begin with a blank line)', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ description: '\nCalculates a hash.\nMore detail here.' }] }));
+    expect(await loadEntityDoc(ctx, 'BLAKE3', sqlString)).toBe('Calculates a hash.');
+  });
+  it('escapes the name through sqlString and queries system.functions', async () => {
+    const fetchImpl = vi.fn(async () => jsonResp({ data: [{ description: 'doc' }] }));
+    const ctx = ctxWith(fetchImpl);
+    await loadEntityDoc(ctx, "o'brien", sqlString);
+    expect(fetchImpl.mock.calls[0][1].body).toContain("WHERE name = 'o''brien'");
+  });
+  it('returns "" for an unknown name, no rows, an all-blank description, or an error (best-effort)', async () => {
+    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [] })), 'nope', sqlString)).toBe('');
+    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [{ description: '\n   \n' }] })), 'blank', sqlString)).toBe('');
+    expect(await loadEntityDoc(ctxWith(async () => textResp('boom', false, 500)), 'x', sqlString)).toBe('');
   });
 });
 

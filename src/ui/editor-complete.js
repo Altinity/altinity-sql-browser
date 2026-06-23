@@ -11,10 +11,17 @@
 //   caretAnchor(),                    // () => {x, y, lineHeight} in screen px
 //   appendPopover(el),                // mount the dropdown
 //   suppressed(),                     // () => true to stay hidden (e.g. find open)
+//   fetchDoc(name),                   // () => Promise<string> — lazy, cached function doc
+//   getKeywordDocs(),                 // () => { KEYWORD: doc } for the footer
 // }
 
 import { h } from './dom.js';
 import { completionContext, rankCompletions } from '../core/completions.js';
+
+// Debounce the footer's function-description fetch so holding ↓ through a long
+// list doesn't fire a query per row — only the row you settle on is fetched
+// (then cached). Keyword docs are static and render with no delay.
+const FOOTER_DOC_DELAY = 150;
 
 // Kind → glyph + color for the row chip (presentation; the data is in core).
 const KIND_META = {
@@ -32,11 +39,25 @@ export function createComplete(host) {
   const state = { open: false, items: [], active: 0, ctx: null };
   let pop = null;          // { el, list, footer } — built lazily
   let accepting = false;   // guards the input fired by our own accept edit
+  let footerTimer = null;  // debounce for the lazy function-doc fetch
+  let footerSeq = 0;       // ignore a doc fetch that resolves after the active row moved
 
   const hide = () => {
     if (!state.open) return;
     state.open = false;
+    clearTimeout(footerTimer);
     if (pop) { pop.el.remove(); pop = null; }
+  };
+
+  // Render the footer's description line (or hide the footer when there's none).
+  const setFooter = (doc) => {
+    pop.footer.replaceChildren();
+    if (doc) {
+      pop.footer.appendChild(h('div', { class: 'ac-doc' }, doc));
+      pop.footer.style.display = '';
+    } else {
+      pop.footer.style.display = 'none';
+    }
   };
 
   // Re-evaluate completion at the caret and show/hide the dropdown.
@@ -95,28 +116,42 @@ export function createComplete(host) {
     pop.el.style.left = Math.round(anchor.x) + 'px';
     pop.el.style.top = Math.round(anchor.y + anchor.lineHeight) + 'px';
 
+    // replaceChildren resets scrollTop to 0; track the active row so we can pull
+    // it back into view below (otherwise it stays hidden below the fold).
     pop.list.replaceChildren();
+    let activeRow = null;
     state.items.forEach((it, i) => {
       const meta = KIND_META[it.kind] || KIND_META.fn;
-      pop.list.appendChild(h('div', {
+      const row = h('div', {
         class: 'ac-row' + (i === state.active ? ' on' : ''),
         // mousedown (not click) so we beat the textarea's blur-driven hide.
         onmousedown: (ev) => { ev.preventDefault(); accept(it); },
       },
         h('span', { class: 'ac-chip', style: { color: meta.color } }, meta.glyph),
         h('span', { class: 'ac-label' }, it.label),
-        h('span', { class: 'ac-detail' }, it.detail || '')));
+        h('span', { class: 'ac-detail' }, it.detail || ''));
+      if (i === state.active) activeRow = row;
+      pop.list.appendChild(row);
     });
+    if (activeRow) activeRow.scrollIntoView({ block: 'nearest' });
 
+    // Footer = the active entry's DESCRIPTION (the params already show in the row's
+    // detail column, so we don't repeat them). Keyword docs are static; function
+    // docs are fetched lazily + cached, debounced so navigating doesn't spam queries.
     const cur = state.items[state.active];
-    pop.footer.replaceChildren();
-    const sig = cur.kind !== 'keyword' && cur.detail ? cur.detail + (cur.ret ? ' → ' + cur.ret : '') : '';
-    if (sig || cur.doc) {
-      if (sig) pop.footer.appendChild(h('div', { class: 'ac-sig' }, sig));
-      if (cur.doc) pop.footer.appendChild(h('div', { class: 'ac-doc' }, cur.doc));
-      pop.footer.style.display = '';
+    clearTimeout(footerTimer);
+    if (cur.kind === 'keyword') {
+      setFooter(host.getKeywordDocs()[cur.label.toUpperCase()] || '');
+    } else if (cur.kind === 'fn' || cur.kind === 'agg' || cur.kind === 'cast') {
+      setFooter(''); // hide until the lazily-fetched description arrives
+      const seq = ++footerSeq;
+      footerTimer = setTimeout(() => {
+        Promise.resolve(host.fetchDoc(cur.label)).then((doc) => {
+          if (doc && seq === footerSeq && pop) setFooter(doc);
+        });
+      }, FOOTER_DOC_DELAY);
     } else {
-      pop.footer.style.display = 'none';
+      setFooter(''); // tables/columns/db: the detail column already shows what we know
     }
   }
 

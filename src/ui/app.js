@@ -292,9 +292,23 @@ export function createApp(env = {}) {
     app.completions = buildCompletions(app.refData, app.state.schema);
   };
   app.rebuildCompletions();
+  // Hover docs (#27) are fetched on demand per entity and cached for reuse —
+  // descriptions are large, so they stay out of the bulk reference load. The
+  // cache holds the resolved string (incl. '' for no-doc / error) so each entity
+  // is queried at most once per connection; an in-flight promise is cached too
+  // to dedupe concurrent hovers of the same word.
+  app.docCache = new Map();
+  app.entityDoc = (name) => {
+    if (app.docCache.has(name)) return Promise.resolve(app.docCache.get(name));
+    const p = ensureConfig().then(() => ch.loadEntityDoc(chCtx, name, sqlString));
+    app.docCache.set(name, p);
+    p.then((doc) => app.docCache.set(name, doc)); // collapse the promise to its value
+    return p;
+  };
   app.loadReference = async () => {
     await ensureConfig();
     app.refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
+    app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
     app.rebuildCompletions();
     if (app.dom.editorSync) app.dom.editorSync(); // re-highlight with server keywords
   };

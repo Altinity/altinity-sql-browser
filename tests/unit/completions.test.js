@@ -66,6 +66,7 @@ describe('buildCompletions', () => {
       count: { kind: 'agg', sig: 'count([x])', ret: 'UInt64', desc: 'counts' },
       toDate: { kind: 'cast', sig: 'toDate(x)', ret: 'Date', desc: 'casts' },
       lower: { kind: 'fn', sig: '', ret: '', desc: '' }, // missing sig → fallback name()
+      plus: { kind: 'fn', sig: 'a + b', ret: '', desc: '' }, // operator syntax, no '(' → kept as-is
     },
   };
   const schema = [
@@ -79,9 +80,11 @@ describe('buildCompletions', () => {
   it('maps keywords, function kinds, and schema (loaded columns only)', () => {
     const items = buildCompletions(ref, schema);
     expect(items.find((i) => i.label === 'SELECT')).toMatchObject({ kind: 'keyword', insert: 'SELECT' });
-    expect(items.find((i) => i.label === 'count')).toMatchObject({ kind: 'agg', insert: 'count(', detail: 'count([x])', ret: 'UInt64' });
-    expect(items.find((i) => i.label === 'toDate')).toMatchObject({ kind: 'cast' });
-    expect(items.find((i) => i.label === 'lower')).toMatchObject({ kind: 'fn', detail: 'lower()' }); // sig fallback
+    // detail shows only the params (the label already shows the name) — #26
+    expect(items.find((i) => i.label === 'count')).toMatchObject({ kind: 'agg', insert: 'count(', detail: '([x])', ret: 'UInt64' });
+    expect(items.find((i) => i.label === 'toDate')).toMatchObject({ kind: 'cast', detail: '(x)' });
+    expect(items.find((i) => i.label === 'lower')).toMatchObject({ kind: 'fn', detail: '()' }); // sig fallback → just ()
+    expect(items.find((i) => i.label === 'plus')).toMatchObject({ kind: 'fn', detail: 'a + b' }); // no '(' → sig kept as-is
     expect(items.find((i) => i.label === 'airline')).toMatchObject({ kind: 'db' });
     expect(items.find((i) => i.label === 'ontime')).toMatchObject({ kind: 'table', parent: 'airline' });
     expect(items.find((i) => i.label === 'Year')).toMatchObject({ kind: 'column', parent: 'ontime', detail: 'UInt16' });

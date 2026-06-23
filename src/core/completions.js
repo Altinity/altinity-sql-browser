@@ -61,7 +61,11 @@ export function buildCompletions(ref, schema) {
   }
   for (const [name, m] of Object.entries(ref.functions)) {
     const kind = m.kind === 'agg' ? 'agg' : m.kind === 'cast' ? 'cast' : 'fn';
-    items.push({ label: name, kind, insert: name + '(', detail: m.sig || name + '()', doc: m.desc || '', ret: m.ret || '' });
+    // The label already shows the function name, so the detail column shows only
+    // the parenthesised params — `(s, offset[, …])`, not `substring(s, …)` (#26).
+    const sig = m.sig || name + '()';
+    const paren = sig.indexOf('(');
+    items.push({ label: name, kind, insert: name + '(', detail: paren >= 0 ? sig.slice(paren) : sig, doc: m.desc || '', ret: m.ret || '' });
   }
   for (const db of schema || []) {
     items.push({ label: db.db, kind: 'db', insert: db.db, detail: 'database' });

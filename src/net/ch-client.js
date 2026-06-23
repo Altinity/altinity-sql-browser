@@ -151,31 +151,38 @@ async function tryQueryData(ctx, sql) {
 }
 
 // First non-empty line of a (possibly multi-line / Markdown) cell, trimmed.
-// system.functions.syntax/description are short docs; we want a one-liner.
+// ClickHouse doc cells (system.functions.syntax/description) frequently begin
+// with a blank line, so skip leading empties and return the first line that
+// actually has content — taking the literal first line yields '' for them.
 function firstLine(s) {
   if (!s) return '';
-  const nl = s.indexOf('\n');
-  return (nl === -1 ? s : s.slice(0, nl)).trim();
+  for (const line of String(s).split('\n')) {
+    const t = line.trim();
+    if (t) return t;
+  }
+  return '';
 }
 
 /**
  * Load editor reference data once per connection: the server's keyword list and
- * function metadata (name, kind, and — where the server exposes them — the
- * `syntax` signature + `description` for signature help / hover docs, #27), so
- * highlighting + autocomplete + intelligence are version-correct. This is the
- * ONLY reference fetch — everything then runs off this in-memory data, never a
- * query per keystroke (the keystroke rule, #25). Each source is best-effort; a
- * missing/denied system table yields null for that piece and the caller
- * (assembleReferenceData) falls back to the built-in set.
+ * function metadata (name, kind, and — where the server exposes it — the
+ * `syntax` signature for signature help, #27), so highlighting + autocomplete +
+ * signature help are version-correct. This is the only *bulk* reference fetch;
+ * everything then runs off this in-memory data, never a query per keystroke (the
+ * keystroke rule, #25). Hover descriptions are NOT loaded here — they are large
+ * and most are never read — they're fetched on demand per entity and cached
+ * (loadEntityDoc, #27). Each source is best-effort; a missing/denied system
+ * table yields null for that piece and the caller (assembleReferenceData) falls
+ * back to the built-in set.
  * Returns { keywords: string[]|null, functions: {name:{kind,sig,ret,desc}}|null }.
  */
 export async function loadReferenceData(ctx) {
   const kw = await tryQueryData(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON');
   const keywords = kw ? kw.map((r) => r.keyword) : null;
-  // Prefer the doc columns (modern ClickHouse); fall back to the minimal shape
-  // when `syntax`/`description` don't exist (older servers) so we still get
+  // Prefer the `syntax` column (modern ClickHouse) for signature help; fall back
+  // to the minimal shape when it doesn't exist (older servers) so we still get
   // names for highlighting + completion.
-  const fn = await tryQueryData(ctx, 'SELECT name, is_aggregate, syntax, description FROM system.functions FORMAT JSON')
+  const fn = await tryQueryData(ctx, 'SELECT name, is_aggregate, syntax FROM system.functions FORMAT JSON')
     || await tryQueryData(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON');
   let functions = null;
   if (fn) {
@@ -185,11 +192,28 @@ export async function loadReferenceData(ctx) {
         kind: r.is_aggregate ? 'agg' : 'fn',
         sig: firstLine(r.syntax) || r.name + '()',
         ret: '',
-        desc: firstLine(r.description),
+        desc: '', // hover docs are fetched lazily per entity + cached (loadEntityDoc, #27)
       };
     }
   }
   return { keywords, functions };
+}
+
+/**
+ * Fetch one function's documentation on demand for hover docs (#27). Kept OUT of
+ * the bulk reference load: descriptions are large and most are never hovered, so
+ * loading every one would bloat connect time. The caller (app.entityDoc) caches
+ * the result so each entity is queried at most once per connection. Best-effort:
+ * returns '' on error, an unknown name, or an older server without the
+ * `description` column. Returns the first non-empty line (CH descriptions begin
+ * with a blank line).
+ */
+export async function loadEntityDoc(ctx, name, sqlString) {
+  const rows = await tryQueryData(
+    ctx,
+    'SELECT description FROM system.functions WHERE name = ' + sqlString(name) + ' LIMIT 1 FORMAT JSON',
+  );
+  return rows && rows[0] ? firstLine(rows[0].description) : '';
 }
 
 /**

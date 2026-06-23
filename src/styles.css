@@ -892,7 +892,9 @@ body {
   font-size: 11px; color: var(--fg-mute); line-height: 1.45;
   display: flex; flex-direction: column; gap: 3px;
 }
-.ac-sig { font-family: var(--mono); color: var(--fg); }
+/* The footer shows the active entry's description (#27). Clamp it so a long
+   description can't balloon the footer and squeeze the scrolling list. */
+.ac-doc { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* Signature help + hover docs (#27) — fixed-positioned near the caret/mouse. */
 .sig-help {

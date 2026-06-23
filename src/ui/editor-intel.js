@@ -6,12 +6,14 @@
 //
 // host = {
 //   textarea,
-//   getFunctions(),    // () => { name: {sig, ret, desc, kind} }
-//   getKeywordDocs(),  // () => { KEYWORD: doc }
-//   caretAnchor(),     // () => {x, y, lineHeight} in screen px (shared with #26)
-//   offsetAt(cx, cy),  // map mouse client coords → text offset (or null)
+//   getFunctions(),         // () => { name: {sig, ret, kind} }
+//   getKeywordDocs(),       // () => { KEYWORD: doc }
+//   fetchDoc(name),         // () => Promise<string> — lazy, cached hover doc for a function
+//   caretAnchor(),          // () => {x, y, lineHeight} in screen px (shared with #26)
+//   offsetAt(cx, cy),       // map mouse client coords → text offset (or null)
+//   clientToLocal(cx, cy),  // map mouse client coords → the popover's local CSS px (zoom)
 //   appendPopover(el),
-//   suppressed(),      // () => true to stay hidden (find / autocomplete open)
+//   suppressed(),           // () => true to stay hidden (find / autocomplete open)
 // }
 
 const HOVER_DWELL_MS = 350;
@@ -52,7 +54,8 @@ export function createIntel(host) {
     sigEl.style.top = Math.round(Math.max(4, anchor.y - anchor.lineHeight - 6)) + 'px'; // above the caret
   };
 
-  // ── hover docs (mouse-driven, dwell) ───────────────────────────────────────
+  // ── hover docs (mouse-driven, dwell; doc text fetched lazily + cached) ──────
+  let hoverToken = 0; // bumped each dwell so a late doc fetch for a stale word is ignored
   const onMouseMove = (e) => {
     clearTimeout(hoverTimer);
     if (host.suppressed()) { hideHover(); return; }
@@ -62,23 +65,35 @@ export function createIntel(host) {
       const pos = host.offsetAt(cx, cy);
       const w = pos == null ? null : wordAt(ta.value, pos);
       if (!w) { hideHover(); return; }
+      const token = ++hoverToken;
       const fn = host.getFunctions()[w.word];
       const kw = host.getKeywordDocs()[w.word.toUpperCase()];
-      if (fn && (fn.sig || fn.desc)) showHover({ sig: fn.sig, ret: fn.ret, doc: fn.desc, x: cx, y: cy });
-      else if (kw) showHover({ sig: w.word.toUpperCase(), doc: kw, x: cx, y: cy });
-      else hideHover();
+      if (fn) {
+        // Show the signature immediately; the description is fetched on demand
+        // (a separate query, cached per entity) and filled in when it arrives —
+        // unless the pointer has since moved to another token.
+        renderHover({ sig: fn.sig, ret: fn.ret, doc: '', x: cx, y: cy });
+        Promise.resolve(host.fetchDoc(w.word)).then((doc) => {
+          if (doc && token === hoverToken && hoverEl) renderHover({ sig: fn.sig, ret: fn.ret, doc, x: cx, y: cy });
+        });
+      } else if (kw) {
+        renderHover({ sig: w.word.toUpperCase(), doc: kw, x: cx, y: cy });
+      } else {
+        hideHover();
+      }
     }, HOVER_DWELL_MS);
   };
   const onMouseLeave = () => { clearTimeout(hoverTimer); hideHover(); };
 
-  function showHover({ sig, ret, doc, x, y }) {
+  function renderHover({ sig, ret, doc, x, y }) {
     if (!hoverEl) { hoverEl = h('div', { class: 'hover-card' }); host.appendPopover(hoverEl); }
-    hoverEl.replaceChildren(
+    hoverEl.replaceChildren(...[
       h('div', { class: 'hover-sig' }, sig, ret ? h('span', { class: 'hover-ret' }, ' → ' + ret) : null),
       doc ? h('div', { class: 'hover-doc' }, doc) : null,
-    );
-    hoverEl.style.left = Math.round(x) + 'px';
-    hoverEl.style.top = Math.round(y + 16) + 'px';
+    ].filter(Boolean));
+    const loc = host.clientToLocal(x, y);
+    hoverEl.style.left = Math.round(loc.x) + 'px';
+    hoverEl.style.top = Math.round(loc.y + 16) + 'px';
   }
 
   // Esc dismisses the signature popover (only when it's showing, so a running

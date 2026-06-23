@@ -38,6 +38,7 @@ export function makeApp(over = {}) {
     signOut: vi.fn(),
     loadVersion: vi.fn(),
     loadSchema: vi.fn(),
+    entityDoc: vi.fn(async () => ''), // lazy hover-doc loader (#27); overridden per test
     loadIdps: async () => ({ idps: [], basicLogin: true }),
     dom: {
       qtabsInner: document.createElement('div'),

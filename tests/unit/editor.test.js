@@ -555,16 +555,53 @@ describe('autocomplete dropdown (#26)', () => {
     expect(ta.value).toBe('ontime');
     expect(dropdown(container)).toBeNull();
   });
-  it('the footer shows the active signature/doc, with sig-only and hidden variants', () => {
-    const { container, ta } = mounted();
-    typeAt(ta, 'cou', 3); // count → sig + doc
-    expect(container.querySelector('.ac-sig').textContent).toContain('count([x]) → UInt64');
-    expect(container.querySelector('.ac-doc')).not.toBeNull();
-    typeAt(ta, 'conc', 4); // concat → sig, no doc
-    expect(container.querySelector('.ac-sig')).not.toBeNull();
-    expect(container.querySelector('.ac-doc')).toBeNull();
-    typeAt(ta, 'SEL', 3); // keyword → footer hidden
-    expect(container.querySelector('.ac-footer').style.display).toBe('none');
+  describe('footer description (#27 — lazy + cached; not the params)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+    const acDoc = (c) => c.querySelector('.ac-doc');
+
+    it('shows a function description (lazy + debounced) and never repeats the params', async () => {
+      const { app, container, ta } = mounted();
+      app.entityDoc = vi.fn(async (n) => (n === 'count' ? 'Counts rows.' : ''));
+      typeAt(ta, 'cou', 3); // 'count' is the active match
+      expect(container.querySelector('.ac-sig')).toBeNull(); // params no longer duplicated below
+      expect(acDoc(container)).toBeNull();                   // debounced — not fetched yet
+      vi.advanceTimersByTime(200);
+      await flush();
+      expect(app.entityDoc).toHaveBeenCalledWith('count');
+      expect(acDoc(container).textContent).toBe('Counts rows.');
+    });
+    it('shows a keyword doc from the static map (no fetch)', () => {
+      const { app, container, ta } = mounted();
+      app.refData = { keywordDocs: { SELECT: 'Selects rows.' } };
+      typeAt(ta, 'SEL', 3);
+      expect(acDoc(container).textContent).toBe('Selects rows.');
+      expect(app.entityDoc).not.toHaveBeenCalled();
+    });
+    it('hides the footer for a function whose description is empty', async () => {
+      const { app, container, ta } = mounted();
+      app.entityDoc = vi.fn(async () => '');
+      typeAt(ta, 'conc', 4); // 'concat' → fn, empty doc
+      vi.advanceTimersByTime(200);
+      await flush();
+      expect(acDoc(container)).toBeNull();
+      expect(container.querySelector('.ac-footer').style.display).toBe('none');
+    });
+    it('hides the footer for entries with no description source (table/column)', () => {
+      const { container, ta } = mounted();
+      typeAt(ta, 'ont', 3); // 'ontime' → table
+      expect(container.querySelector('.ac-footer').style.display).toBe('none');
+    });
+    it('ignores a doc fetch that resolves after the dropdown closed', async () => {
+      const { app, container, ta } = mounted();
+      app.entityDoc = vi.fn(async () => 'late doc');
+      typeAt(ta, 'cou', 3);
+      vi.advanceTimersByTime(200); // fetch now in flight
+      press(ta, 'Escape');         // close before it resolves
+      await flush();
+      expect(dropdown(container)).toBeNull(); // no crash, nothing resurrected
+    });
   });
   it('no matching candidates → no dropdown', () => {
     const { container, ta } = mounted();
@@ -633,9 +670,12 @@ describe('signature help + hover docs (#27)', () => {
     keywordSet: new Set(['PREWHERE']),
     funcSet: new Set(['sum', 'substring']),
   };
+  // Hover descriptions are fetched lazily per entity (#27); stub the loader.
+  const DOCS = { sum: 'Sum of values.', substring: 'A substring.' };
   function mounted(sql = '') {
     const app = makeApp();
     app.refData = REF;
+    app.entityDoc = vi.fn(async (name) => DOCS[name] || '');
     app.completions = []; // no candidates → no dropdown to suppress signature help
     app.activeTab().sql = sql;
     const container = document.createElement('div');
@@ -644,6 +684,8 @@ describe('signature help + hover docs (#27)', () => {
     ta.value = sql;
     return { app, container, ta };
   }
+  // Flush the microtasks the lazy doc fetch resolves on (fake timers don't fake promises).
+  const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
   const sig = (c) => c.querySelector('.sig-help');
   const card = (c) => c.querySelector('.hover-card');
   const caretMove = (ta, pos) => { ta.selectionStart = ta.selectionEnd = pos; ta.dispatchEvent(new Event('keyup')); };
@@ -687,15 +729,28 @@ describe('signature help + hover docs (#27)', () => {
     afterEach(() => vi.useRealTimers());
     const move = (ta, clientX, clientY = 14) => ta.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY }));
 
-    it('hovering a function token shows its signature + description after the dwell', () => {
-      const { container, ta } = mounted('sum(x)');
+    it('shows the signature immediately and fills in the lazily-fetched description', async () => {
+      const { app, container, ta } = mounted('sum(x)');
       // equal rect/offsetWidth → scale 1 via the real ratio (not the fallback)
       ta.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, right: 100, bottom: 24, height: 24 });
       Object.defineProperty(ta, 'offsetWidth', { value: 100, configurable: true });
       move(ta, 22); // → col 1 → the 'sum' token
       vi.advanceTimersByTime(360);
-      expect(card(container).textContent).toContain('sum(x)');
-      expect(card(container).textContent).toContain('Sum of values.');
+      expect(card(container).textContent).toContain('sum(x)'); // signature shown synchronously
+      expect(card(container).querySelector('.hover-doc')).toBeNull(); // doc not fetched yet
+      await flush();
+      expect(app.entityDoc).toHaveBeenCalledWith('sum');
+      expect(card(container).textContent).toContain('Sum of values.'); // lazy doc filled in
+    });
+    it('ignores a late doc fetch once the pointer has left the token', async () => {
+      const { container, ta } = mounted('sum(x)');
+      ta.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, right: 100, bottom: 24, height: 24 });
+      Object.defineProperty(ta, 'offsetWidth', { value: 100, configurable: true });
+      move(ta, 22);
+      vi.advanceTimersByTime(360); // sig shown, doc fetch in flight
+      ta.dispatchEvent(new MouseEvent('mouseleave')); // hover dismissed
+      await flush(); // the doc resolves but must not resurrect the card
+      expect(card(container)).toBeNull();
     });
     it('hovering a keyword shows its built-in doc', () => {
       const { container, ta } = mounted('PREWHERE x');
@@ -724,13 +779,15 @@ describe('signature help + hover docs (#27)', () => {
       vi.advanceTimersByTime(360);
       expect(card(container)).toBeNull(); // suppressed while find open
     });
-    it('a function with no description shows just its signature', () => {
+    it('a function whose lazy doc is empty shows just its signature (no stray text)', async () => {
       const { container, ta } = mounted('now()');
       move(ta, 14 + 1 * 7.8); // → 'now'
       vi.advanceTimersByTime(360);
+      await flush(); // entityDoc('now') → '' → no doc div added, no literal "null"
       const el = card(container);
-      expect(el.textContent).toContain('now()');
-      expect(el.querySelector('.hover-doc')).toBeNull(); // no description div
+      expect(el.textContent).toBe('now() → DateTime'); // signature only, nothing appended
+      expect(el.textContent).not.toContain('null'); // the #2 regression: a null child was rendered as "null"
+      expect(el.querySelector('.hover-doc')).toBeNull();
     });
     it('tolerates hovering before reference data has loaded (no refData)', () => {
       const app = makeApp(); // no app.refData → getFunctions/getKeywordDocs default to {}

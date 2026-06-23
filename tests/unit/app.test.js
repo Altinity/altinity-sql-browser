@@ -227,6 +227,19 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     await app.actions.loadColumns('d', 't', app.state.schema[0].tables[0]);
     expect(app.completions.some((c) => c.kind === 'column' && c.label === 'id' && c.parent === 't')).toBe(true);
   });
+  it('entityDoc fetches a hover description on demand and caches it (#27)', async () => {
+    const fetch = makeFetch([
+      [(u, sql) => /system\.functions/.test(sql) && /description/.test(sql),
+        resp({ json: { data: [{ description: '\nCounts rows.' }] } })],
+    ]);
+    const app = createApp(env({ fetch }));
+    const first = await app.entityDoc('count');
+    const second = await app.entityDoc('count'); // served from cache, no second query
+    expect(first).toBe('Counts rows.'); // first non-empty line (CH leading blank stripped)
+    expect(second).toBe('Counts rows.');
+    const docQueries = fetch.mock.calls.filter(([, init]) => init && /system\.functions/.test(init.body) && /description/.test(init.body));
+    expect(docQueries.length).toBe(1);
+  });
 });
 
 describe('query run', () => {

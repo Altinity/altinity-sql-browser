@@ -162,6 +162,8 @@ export function mountEditor(app, container) {
     caretAnchor,
     appendPopover: (el) => area.appendChild(el),
     suppressed: () => search.isOpen(),
+    fetchDoc: (name) => app.entityDoc(name), // lazy + cached function description (#27)
+    getKeywordDocs: () => (app.refData ? app.refData.keywordDocs : {}),
   });
 
   // Map a mouse position to a text offset for hover docs (#27). Mirrors
@@ -173,12 +175,23 @@ export function mountEditor(app, container) {
     const relY = (clientY - rect.top) / scale - PAD_Y + ta.scrollTop;
     return offsetFromXY(ta.value, relX, relY, { charWidth: CHAR_WIDTH_PX, lhPx: LINE_HEIGHT_PX });
   };
+  // Client (post-zoom) coords → the popover's local CSS px. The popovers are
+  // fixed children of the html{zoom} tree, so their left/top are scaled on
+  // paint; divide by the same scale offsetAt/caretAnchor use so the hover card
+  // lands on the cursor (#27).
+  const clientToLocal = (clientX, clientY) => {
+    const rect = ta.getBoundingClientRect();
+    const scale = (rect.width / ta.offsetWidth) || 1;
+    return { x: clientX / scale, y: clientY / scale };
+  };
   const intel = createIntel({
     textarea: ta,
     getFunctions: () => (app.refData ? app.refData.functions : {}),
     getKeywordDocs: () => (app.refData ? app.refData.keywordDocs : {}),
+    fetchDoc: (name) => app.entityDoc(name),
     caretAnchor,
     offsetAt,
+    clientToLocal,
     appendPopover: (el) => area.appendChild(el),
     suppressed: () => search.isOpen() || complete.isOpen(),
   });
