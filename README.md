@@ -1,8 +1,9 @@
 # Altinity SQL Browser
 
 An OAuth-gated **SQL browser for any ClickHouse cluster** — schema explorer,
-tabbed SQL editor with syntax highlighting, streaming results with table / JSON
-/ chart views, saved queries, history, and shareable links. It ships as a
+tabbed SQL editor with syntax highlighting, find/replace, bracket matching, and
+schema-aware autocomplete, streaming results with table / JSON / chart views,
+saved queries, history, and shareable links. It ships as a
 **single self-contained HTML file served from ClickHouse itself** (no Node
 server, no CDN, no external fonts) — the page makes **zero third-party
 requests** and renders in the OS's native UI font. Its only bundled runtime
@@ -26,6 +27,36 @@ ClickHouse  POST /  Authorization: Bearer <id_token>   ← every query
 The browser never holds a static credential — each user authenticates with your
 IdP and ClickHouse sees their JWT. There is **no app-specific backend**: the
 only moving parts are ClickHouse's HTTP handlers and your OAuth provider.
+
+## SQL editor
+
+The editor is a hand-rolled `<textarea>` over a syntax-highlighted `<pre>` (no
+editor library — it adds nothing to the single served file). On top of that:
+
+- **Find / replace** — `Cmd/Ctrl+F` opens a panel with a live match count,
+  prev/next (Enter / Shift+Enter), case / whole-word / regex toggles, and a
+  replace row. Matches highlight via a transparent overlay layered below the
+  syntax tokens, so highlighting and search never interfere.
+- **Bracket matching + auto-close** — typing `(` `[` or a quote inserts the
+  pair (or wraps the selection); typing a closer or quote steps over it;
+  Backspace inside an empty pair deletes both. The pair adjacent to the caret
+  is highlighted. (`{`/`}` auto-close is intentionally omitted.)
+- **Autocomplete** — typing a word (or after `table.`) opens a ranked dropdown
+  of keywords, functions, databases, tables, and already-loaded columns;
+  ↑/↓/Enter/Tab/Esc and click to accept; functions insert `name(`.
+
+**The keystroke rule:** none of this runs SQL while you type. Reference data —
+the server's keyword and function lists — is fetched **once per connection**
+from `system.keywords` and `system.functions` (best-effort; it falls back to a
+built-in set on older ClickHouse), cached in memory, and merged with the
+in-memory schema. Highlighting then tracks the connected server's actual
+keyword/function set, so it's version-correct. Folding and multi-cursor are out
+of scope for a textarea and tracked separately (CodeMirror, issue #21).
+
+> Design source of truth: the handoff bundle under `design/` (imported from the
+> "Altinity Play" Claude Design project) — read `design/README.md` before UI
+> work. The `.jsx` files there are React prototypes; production is the vanilla
+> ES-module code under `src/`.
 
 ## Quick start (development)
 
@@ -197,16 +228,20 @@ Preview the rendered artifacts without touching ClickHouse:
 ```
 src/
   core/      pure logic — format, jwt, pkce, sql-highlight, share, sort,
-             stream, storage, chart-data (roles/autoChart/pivot + Chart.js
-             config builder; no DOM, no globals)
+             stream, storage, chart-data, and the editor logic: completions
+             (reference data + ranking), editor-search (find), editor-brackets
+             (match/auto-close), editor-marks (overlay), editor-geometry
+             (caret) — no DOM, no globals
   net/       oauth-config, oauth, ch-client (injected fetch seam)
-  ui/        dom (hyperscript), icons, + render modules (login, editor, tabs,
-             schema, results, saved-history, shortcuts, splitters, toast, app)
+  ui/        dom (hyperscript), icons, + render modules (login, editor +
+             editor-search/editor-complete, tabs, schema, results,
+             saved-history, shortcuts, splitters, toast, app)
   state.js   state model + pure operations
   main.js    bootstrap (OAuth callback, share-links, initial render)
   styles.css
 build/        esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
+design/       imported design handoff bundle (UI spec; reference only, not built)
 tests/        vitest + happy-dom, one spec per module
 docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
               CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
