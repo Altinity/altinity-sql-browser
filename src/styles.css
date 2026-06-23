@@ -800,6 +800,67 @@ body {
 .sql-ident { color: var(--fg); }
 .sql-op { color: var(--fg-mute); }
 
+/* Mark overlay (#23 search highlights, #24 bracket pair): transparent <pre>
+   below the token <pre>; only the marked spans paint a background. */
+.sql-mark-overlay {
+  position: absolute; inset: 0; margin: 0;
+  padding: 12px 14px;
+  font-family: inherit; font-size: inherit; line-height: inherit;
+  color: transparent;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+}
+.mark-match { background: color-mix(in oklab, var(--accent) 24%, transparent); border-radius: 2px; }
+.mark-active { background: color-mix(in oklab, var(--accent) 55%, transparent); border-radius: 2px; }
+.mark-bracket { background: color-mix(in oklab, var(--accent) 34%, transparent); border-radius: 2px; }
+
+/* Find/replace panel (#23) — floats over the top-right of the editor. */
+.sql-search {
+  position: absolute; top: 8px; right: 14px; z-index: 5;
+  display: flex; gap: 6px; align-items: flex-start;
+  background: var(--bg-modal); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .32); padding: 7px;
+}
+.srch-disc {
+  width: 18px; align-self: stretch; border: none; background: transparent;
+  color: var(--fg-faint); cursor: pointer; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transform: rotate(-90deg); transition: transform .15s;
+}
+.srch-disc.open { transform: none; }
+.srch-rows { display: flex; flex-direction: column; gap: 6px; }
+.srch-row { display: flex; align-items: center; gap: 4px; }
+.srch-field {
+  width: 180px; height: 26px; padding: 0 8px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font-size: 12px; font-family: var(--mono); outline: none;
+}
+.srch-field.bad { border-color: #ef4444; }
+.srch-count {
+  min-width: 50px; text-align: center; font-size: 11px;
+  font-family: var(--mono); color: var(--fg-faint);
+}
+.srch-count.bad { color: #ef4444; }
+.srch-nav {
+  width: 24px; height: 22px; border: none; border-radius: 4px;
+  background: transparent; color: var(--fg-mute); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+.srch-nav:hover { background: var(--bg-hover); color: var(--fg); }
+.srch-togs { display: flex; gap: 2px; margin-left: 2px; }
+.srch-tog {
+  width: 24px; height: 22px; border: none; border-radius: 4px;
+  background: var(--bg-chip); color: var(--fg-mute); cursor: pointer;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+}
+.srch-tog.on { background: var(--accent); color: #fff; }
+.srch-btn {
+  height: 22px; padding: 0 8px; border: none; border-radius: 4px;
+  background: var(--bg-chip); color: var(--fg); cursor: pointer; font-size: 11px;
+}
+.srch-btn.primary { background: var(--accent); color: #fff; }
+
 /* ------------ results ------------ */
 .results { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .res-toolbar {

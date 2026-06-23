@@ -167,3 +167,171 @@ describe('replaceEditor', () => {
     expect(() => replaceEditor(app, 'x')).not.toThrow();
   });
 });
+
+describe('in-editor find/replace (#23)', () => {
+  function mounted(sql = 'select a from t') {
+    const app = makeApp();
+    app.activeTab().sql = sql;
+    const container = document.createElement('div');
+    mountEditor(app, container);
+    return { app, container, ta: app.dom.editorTextarea };
+  }
+  const panel = (c) => c.querySelector('.sql-search');
+  const findInput = (c) => c.querySelector('.sql-search .srch-field');
+  const count = (c) => c.querySelector('.srch-count').textContent;
+  const type = (input, v) => { input.value = v; input.dispatchEvent(new Event('input')); };
+  const key = (el, k, opts = {}) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, cancelable: true, ...opts }));
+
+  it('Cmd+F (and Ctrl+F / uppercase F) opens the panel', () => {
+    const { container, ta } = mounted();
+    expect(panel(container)).toBeNull();
+    key(ta, 'f', { metaKey: true });
+    expect(panel(container)).not.toBeNull();
+    const b = mounted();
+    key(b.ta, 'F', { ctrlKey: true });
+    expect(panel(b.container)).not.toBeNull();
+  });
+
+  it('typing a query highlights matches in the overlay and shows the count', () => {
+    const { app, container, ta } = mounted('a a a');
+    key(ta, 'f', { metaKey: true });
+    type(findInput(container), 'a');
+    expect(count(container)).toBe('1/3');
+    expect(app.dom.editorMarkPre.querySelector('.mark-active')).not.toBeNull();
+    expect(app.dom.editorMarkPre.querySelectorAll('.mark-match').length).toBe(2);
+  });
+
+  it('next/prev cycle the active match (Enter, Shift+Enter, and the buttons)', () => {
+    const { container, ta } = mounted('a a a');
+    key(ta, 'f', { metaKey: true });
+    const input = findInput(container);
+    type(input, 'a');
+    key(input, 'Enter');                       // → 2/3
+    expect(count(container)).toBe('2/3');
+    key(input, 'Enter', { shiftKey: true });   // → 1/3
+    expect(count(container)).toBe('1/3');
+    container.querySelector('.srch-nav[title^="Previous"]').dispatchEvent(new Event('click')); // wrap → 3/3
+    expect(count(container)).toBe('3/3');
+    container.querySelector('.srch-nav[title^="Next"]').dispatchEvent(new Event('click'));      // wrap → 1/3
+    expect(count(container)).toBe('1/3');
+  });
+
+  it('next with no matches is a no-op', () => {
+    const { container, ta } = mounted('abc');
+    key(ta, 'f', { metaKey: true });
+    expect(() => container.querySelector('.srch-nav[title^="Next"]').dispatchEvent(new Event('click'))).not.toThrow();
+    expect(count(container)).toBe('0/0');
+  });
+
+  it('case / whole-word / regex toggles re-filter and reflect state', () => {
+    const { container, ta } = mounted('a A a');
+    key(ta, 'f', { metaKey: true });
+    type(findInput(container), 'a');
+    expect(count(container)).toBe('1/3');
+    const aa = container.querySelector('.srch-tog[title="Match case"]');
+    aa.dispatchEvent(new Event('click'));
+    expect(aa.classList.contains('on')).toBe(true);
+    expect(count(container)).toBe('1/2'); // only the two lowercase a's
+
+    const ww = mounted('cat category');
+    key(ww.ta, 'f', { metaKey: true });
+    type(findInput(ww.container), 'cat');
+    expect(count(ww.container)).toBe('1/2');
+    ww.container.querySelector('.srch-tog[title="Whole word"]').dispatchEvent(new Event('click'));
+    expect(count(ww.container)).toBe('1/1');
+  });
+
+  it('regex toggle + invalid pattern shows the bad-re state', () => {
+    const { container, ta } = mounted('a1 b2');
+    key(ta, 'f', { metaKey: true });
+    container.querySelector('.srch-tog[title="Regular expression"]').dispatchEvent(new Event('click'));
+    const input = findInput(container);
+    type(input, '\\d');
+    expect(count(container)).toBe('1/2');
+    type(input, '(');                          // invalid regex
+    expect(count(container)).toBe('bad re');
+    expect(input.classList.contains('bad')).toBe(true);
+  });
+
+  it('replace swaps the active match; replace-all swaps the rest', () => {
+    const { container, ta } = mounted('a a a');
+    key(ta, 'f', { metaKey: true });
+    type(findInput(container), 'a');
+    container.querySelector('.srch-disc').dispatchEvent(new Event('click')); // reveal replace row
+    const replaceInput = container.querySelectorAll('.sql-search .srch-field')[1];
+    type(replaceInput, 'X');
+    container.querySelector('.srch-btn').dispatchEvent(new Event('click'));  // Replace active
+    expect(ta.value).toBe('X a a');
+    container.querySelector('.srch-btn.primary').dispatchEvent(new Event('click')); // Replace all
+    expect(ta.value).toBe('X X X');
+  });
+
+  it('replace via Enter in the replace field, and replace/all no-op without matches', () => {
+    const { container, ta } = mounted('a a');
+    key(ta, 'f', { metaKey: true });
+    type(findInput(container), 'a');
+    container.querySelector('.srch-disc').dispatchEvent(new Event('click'));
+    const replaceInput = container.querySelectorAll('.sql-search .srch-field')[1];
+    type(replaceInput, 'Z');
+    key(replaceInput, 'Enter');
+    expect(ta.value).toBe('Z a');
+
+    const none = mounted('abc');
+    key(none.ta, 'f', { metaKey: true });
+    none.container.querySelector('.srch-disc').dispatchEvent(new Event('click'));
+    const before = none.ta.value;
+    none.container.querySelector('.srch-btn').dispatchEvent(new Event('click'));
+    none.container.querySelector('.srch-btn.primary').dispatchEvent(new Event('click'));
+    expect(none.ta.value).toBe(before);
+  });
+
+  it('Escape and the close button close the panel and clear highlights', () => {
+    const { app, container, ta } = mounted('a a');
+    expect(app.dom.editorSearch.isOpen()).toBe(false);
+    key(ta, 'f', { metaKey: true });
+    expect(app.dom.editorSearch.isOpen()).toBe(true);
+    type(findInput(container), 'a');
+    expect(app.dom.editorMarkPre.querySelector('.mark-active')).not.toBeNull();
+    key(findInput(container), 'Escape');
+    expect(app.dom.editorSearch.isOpen()).toBe(false);
+    expect(panel(container)).toBeNull();
+    expect(app.dom.editorMarkPre.querySelector('.mark-active')).toBeNull();
+    // reopen (reuses the panel element) and close via the × button
+    key(ta, 'f', { metaKey: true });
+    expect(panel(container)).not.toBeNull();
+    key(ta, 'f', { metaKey: true }); // already open → just refocus
+    container.querySelector('.srch-nav[title^="Close"]').dispatchEvent(new Event('click'));
+    expect(panel(container)).toBeNull();
+  });
+
+  it('Escape in the replace field closes the panel', () => {
+    const { container, ta } = mounted('a');
+    key(ta, 'f', { metaKey: true });
+    container.querySelector('.srch-disc').dispatchEvent(new Event('click'));
+    key(container.querySelectorAll('.sql-search .srch-field')[1], 'Escape');
+    expect(panel(container)).toBeNull();
+  });
+
+  it('toggling the replace disclosure shows then hides the replace row', () => {
+    const { container, ta } = mounted('a');
+    key(ta, 'f', { metaKey: true });
+    const disc = container.querySelector('.srch-disc');
+    expect(container.querySelectorAll('.sql-search .srch-field').length).toBe(1);
+    disc.dispatchEvent(new Event('click'));
+    expect(container.querySelectorAll('.sql-search .srch-field').length).toBe(2);
+    expect(disc.classList.contains('open')).toBe(true);
+    disc.dispatchEvent(new Event('click'));
+    expect(container.querySelectorAll('.sql-search .srch-field').length).toBe(1);
+  });
+
+  it('editing the text recomputes matches and the overlay mirrors the value', () => {
+    const { app, container, ta } = mounted('a a');
+    key(ta, 'f', { metaKey: true });
+    type(findInput(container), 'a');
+    expect(count(container)).toBe('1/2');
+    ta.value = 'a a a a'; // user types in the editor
+    ta.dispatchEvent(new Event('input'));
+    expect(count(container)).toBe('1/4');
+    expect(app.dom.editorMarkPre.textContent).toContain('a a a a');
+  });
+});

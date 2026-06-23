@@ -3,7 +3,14 @@
 
 import { h } from './dom.js';
 import { tokenize } from '../core/sql-highlight.js';
+import { buildMarkSegments } from '../core/editor-marks.js';
+import { createSearch } from './editor-search.js';
 import { activeTab } from '../state.js';
+
+// Editor layout metrics (kept in lockstep with .sql-editor in styles.css):
+// integer line-height so the textarea and overlay <pre>s lay out identically.
+const LINE_HEIGHT_PX = 22;
+const PAD_Y = 12;
 
 // dataTransfer MIME used when dragging a schema identifier onto the editor.
 // A dedicated type (not text/plain) scopes the drop handler to schema-tree
@@ -42,40 +49,82 @@ function gutterLines(sql) {
  */
 export function mountEditor(app, container) {
   const gutter = h('div', { class: 'sql-gutter' });
+  // Mark overlay: a transparent <pre> below the token <pre>, carrying only the
+  // search/bracket highlight backgrounds (#23/#24) — the token render path is
+  // never touched. DOM order = paint order: overlay, then tokens, then textarea.
+  const markPre = document.createElement('pre');
+  markPre.className = 'sql-mark-overlay';
+  markPre.setAttribute('aria-hidden', 'true');
   const pre = document.createElement('pre');
   pre.className = 'sql-pre';
   const ta = document.createElement('textarea');
   ta.className = 'sql-textarea';
   ta.spellcheck = false;
-  const area = h('div', { class: 'sql-area' }, pre, ta);
+  const area = h('div', { class: 'sql-area' }, markPre, pre, ta);
   container.replaceChildren(h('div', { class: 'sql-editor' }, gutter, area));
 
-  const paint = (sql) => {
+  const paintTokens = (sql) => {
     // Highlight with the connection's reference keyword/function sets when
     // they've loaded (#25); before that, the tokenizer's built-ins.
     const ref = app.refData;
     renderHighlightInto(pre, sql, ref ? { keywords: ref.keywordSet, funcs: ref.funcSet } : undefined);
     gutter.replaceChildren(...gutterLines(sql));
   };
+  // All highlight sources, aggregated for the overlay. #24 adds bracket marks.
+  const computeMarks = () => search.marks();
+  const paintMarks = () => {
+    markPre.replaceChildren();
+    for (const seg of buildMarkSegments(ta.value, computeMarks())) {
+      if (seg.cls) {
+        const sp = document.createElement('span');
+        sp.className = 'mark-' + seg.cls;
+        sp.textContent = seg.text;
+        markPre.appendChild(sp);
+      } else {
+        markPre.appendChild(document.createTextNode(seg.text));
+      }
+    }
+    markPre.appendChild(document.createTextNode('\n'));
+  };
+  const syncScroll = () => {
+    pre.scrollTop = ta.scrollTop;
+    pre.scrollLeft = ta.scrollLeft;
+    markPre.scrollTop = ta.scrollTop;
+    markPre.scrollLeft = ta.scrollLeft;
+    gutter.scrollTop = ta.scrollTop;
+  };
+  // Set the textarea selection to a range and replace it (undoable, fires input).
+  const replaceRange = (start, end, text) => {
+    ta.focus();
+    ta.selectionStart = start;
+    ta.selectionEnd = end;
+    applyEdit(ta, text);
+  };
+
+  const search = createSearch({
+    area, textarea: ta, padY: PAD_Y, lineHeightPx: LINE_HEIGHT_PX,
+    replaceRange, syncScroll, repaintMarks: paintMarks,
+  });
+
   const sync = () => {
     const tab = activeTab(app.state);
     ta.value = tab.sql;
-    paint(tab.sql);
+    paintTokens(tab.sql);
+    search.recompute();
+    paintMarks();
   };
 
   ta.addEventListener('input', () => {
     const tab = activeTab(app.state);
     tab.sql = ta.value;
     tab.dirty = true;
-    paint(ta.value);
+    paintTokens(ta.value);
+    search.recompute(); // text changed → refresh match positions, then overlay
+    paintMarks();
     app.actions.rerenderTabs();
     app.actions.updateSaveBtn();
   });
-  ta.addEventListener('scroll', () => {
-    pre.scrollTop = ta.scrollTop;
-    pre.scrollLeft = ta.scrollLeft;
-    gutter.scrollTop = ta.scrollTop;
-  });
+  ta.addEventListener('scroll', syncScroll);
   ta.addEventListener('keydown', (e) => {
     if (e.key !== 'Tab') return;
     e.preventDefault();
@@ -92,7 +141,9 @@ export function mountEditor(app, container) {
 
   app.dom.editorTextarea = ta;
   app.dom.editorPre = pre;
+  app.dom.editorMarkPre = markPre;
   app.dom.editorGutter = gutter;
+  app.dom.editorSearch = search;
   app.dom.editorSync = sync;
   sync();
 }
