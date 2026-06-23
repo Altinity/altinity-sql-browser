@@ -44,6 +44,11 @@ editor library — it adds nothing to the single served file). On top of that:
 - **Autocomplete** — typing a word (or after `table.`) opens a ranked dropdown
   of keywords, functions, databases, tables, and already-loaded columns;
   ↑/↓/Enter/Tab/Esc and click to accept; functions insert `name(`.
+- **Signature help + hover docs** — inside a function call, a popover shows the
+  signature with the active argument bolded; hovering a function or a
+  ClickHouse keyword shows its signature/description. Both read the same cached
+  reference data — `system.functions.{syntax,description}` (loaded with #25) and
+  a small built-in keyword-doc set — so they never query on the keystroke path.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

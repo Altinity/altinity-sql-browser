@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHighlightInto, mountEditor, insertAtCursor, replaceEditor, IDENT_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
@@ -619,5 +619,128 @@ describe('autocomplete dropdown (#26)', () => {
     typeAt(ta, 'co', 2);
     // scale = 120/100 = 1.2; x = 14 + 2*7.8 = 29.6; left = round(120/1.2 + 29.6) = 130
     expect(dropdown(container).style.left).toBe('130px');
+  });
+});
+
+describe('signature help + hover docs (#27)', () => {
+  const REF = {
+    functions: {
+      sum: { kind: 'agg', sig: 'sum(x)', ret: 'numeric', desc: 'Sum of values.' },
+      substring: { kind: 'fn', sig: 'substring(s, off, len)', ret: 'String', desc: 'A substring.' },
+      now: { kind: 'fn', sig: 'now()', ret: 'DateTime', desc: '' }, // signature, no description
+    },
+    keywordDocs: { PREWHERE: 'Filter applied before reading other columns.' },
+    keywordSet: new Set(['PREWHERE']),
+    funcSet: new Set(['sum', 'substring']),
+  };
+  function mounted(sql = '') {
+    const app = makeApp();
+    app.refData = REF;
+    app.completions = []; // no candidates → no dropdown to suppress signature help
+    app.activeTab().sql = sql;
+    const container = document.createElement('div');
+    mountEditor(app, container);
+    const ta = app.dom.editorTextarea;
+    ta.value = sql;
+    return { app, container, ta };
+  }
+  const sig = (c) => c.querySelector('.sig-help');
+  const card = (c) => c.querySelector('.hover-card');
+  const caretMove = (ta, pos) => { ta.selectionStart = ta.selectionEnd = pos; ta.dispatchEvent(new Event('keyup')); };
+
+  it('shows signature help with the active argument bolded inside a call', () => {
+    const { container, ta } = mounted('substring(a, b');
+    caretMove(ta, 'substring(a, '.length); // caret on the 2nd argument
+    const el = sig(container);
+    expect(el).not.toBeNull();
+    expect(el.querySelector('.sig-name').textContent).toBe('substring');
+    expect(el.querySelector('.sig-arg.on').textContent).toBe('off'); // arg index 1
+    expect(el.textContent).toContain('→ String');
+  });
+  it('dismisses signature help when the caret leaves the call', () => {
+    const { container, ta } = mounted('sum(a)');
+    caretMove(ta, 4);
+    expect(sig(container)).not.toBeNull();
+    caretMove(ta, 6); // after the ')'
+    expect(sig(container)).toBeNull();
+  });
+  it('is suppressed while the autocomplete dropdown is open', () => {
+    const { app, container, ta } = mounted();
+    app.completions = [{ label: 'avg', kind: 'agg', insert: 'avg(', detail: 'avg(x)' }];
+    ta.value = 'sum(a'; ta.selectionStart = ta.selectionEnd = 5;
+    ta.dispatchEvent(new Event('input'));
+    expect(container.querySelector('.ac-dropdown')).not.toBeNull();
+    expect(sig(container)).toBeNull();
+  });
+  it('Esc dismisses the signature popover (and is consumed)', () => {
+    const { container, ta } = mounted('sum(a');
+    caretMove(ta, 5);
+    expect(sig(container)).not.toBeNull();
+    const e = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    ta.dispatchEvent(e);
+    expect(sig(container)).toBeNull();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  describe('hover docs', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+    const move = (ta, clientX, clientY = 14) => ta.dispatchEvent(new MouseEvent('mousemove', { clientX, clientY }));
+
+    it('hovering a function token shows its signature + description after the dwell', () => {
+      const { container, ta } = mounted('sum(x)');
+      // equal rect/offsetWidth → scale 1 via the real ratio (not the fallback)
+      ta.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, right: 100, bottom: 24, height: 24 });
+      Object.defineProperty(ta, 'offsetWidth', { value: 100, configurable: true });
+      move(ta, 22); // → col 1 → the 'sum' token
+      vi.advanceTimersByTime(360);
+      expect(card(container).textContent).toContain('sum(x)');
+      expect(card(container).textContent).toContain('Sum of values.');
+    });
+    it('hovering a keyword shows its built-in doc', () => {
+      const { container, ta } = mounted('PREWHERE x');
+      move(ta, 14 + 2 * 7.8); // → col 2 → 'PREWHERE'
+      vi.advanceTimersByTime(360);
+      expect(card(container).textContent).toContain('Filter applied before reading');
+    });
+    it('no card over an unknown word, or above the text; mouseleave clears it', () => {
+      const { container, ta } = mounted('sum(zzz)');
+      move(ta, 14 + 5 * 7.8); // → 'zzz' (unknown)
+      vi.advanceTimersByTime(360);
+      expect(card(container)).toBeNull();
+      move(ta, 22, -100); // above the text → offset null
+      vi.advanceTimersByTime(360);
+      expect(card(container)).toBeNull();
+      move(ta, 22); // 'sum' → shows
+      vi.advanceTimersByTime(360);
+      expect(card(container)).not.toBeNull();
+      ta.dispatchEvent(new MouseEvent('mouseleave'));
+      expect(card(container)).toBeNull();
+    });
+    it('hover is suppressed while find is open, and the scroll handler hides popovers', () => {
+      const { container, ta } = mounted('sum(x)');
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, cancelable: true })); // open find
+      move(ta, 22);
+      vi.advanceTimersByTime(360);
+      expect(card(container)).toBeNull(); // suppressed while find open
+    });
+    it('a function with no description shows just its signature', () => {
+      const { container, ta } = mounted('now()');
+      move(ta, 14 + 1 * 7.8); // → 'now'
+      vi.advanceTimersByTime(360);
+      const el = card(container);
+      expect(el.textContent).toContain('now()');
+      expect(el.querySelector('.hover-doc')).toBeNull(); // no description div
+    });
+    it('tolerates hovering before reference data has loaded (no refData)', () => {
+      const app = makeApp(); // no app.refData → getFunctions/getKeywordDocs default to {}
+      const container = document.createElement('div');
+      mountEditor(app, container);
+      const ta = app.dom.editorTextarea;
+      ta.value = 'sum(x)';
+      ta.dispatchEvent(new MouseEvent('mousemove', { clientX: 22, clientY: 14 }));
+      vi.advanceTimersByTime(360);
+      expect(container.querySelector('.hover-card')).toBeNull();
+    });
   });
 });

@@ -150,24 +150,43 @@ async function tryQueryData(ctx, sql) {
   }
 }
 
+// First non-empty line of a (possibly multi-line / Markdown) cell, trimmed.
+// system.functions.syntax/description are short docs; we want a one-liner.
+function firstLine(s) {
+  if (!s) return '';
+  const nl = s.indexOf('\n');
+  return (nl === -1 ? s : s.slice(0, nl)).trim();
+}
+
 /**
  * Load editor reference data once per connection: the server's keyword list and
- * function metadata, so syntax highlighting + autocomplete are version-correct.
- * This is the ONLY reference fetch — completion then runs off this in-memory
- * data, never a query per keystroke (the keystroke rule, #25). Each source is
- * best-effort; a missing/denied system table yields null for that piece and the
- * caller (assembleReferenceData) falls back to the built-in set.
+ * function metadata (name, kind, and — where the server exposes them — the
+ * `syntax` signature + `description` for signature help / hover docs, #27), so
+ * highlighting + autocomplete + intelligence are version-correct. This is the
+ * ONLY reference fetch — everything then runs off this in-memory data, never a
+ * query per keystroke (the keystroke rule, #25). Each source is best-effort; a
+ * missing/denied system table yields null for that piece and the caller
+ * (assembleReferenceData) falls back to the built-in set.
  * Returns { keywords: string[]|null, functions: {name:{kind,sig,ret,desc}}|null }.
  */
 export async function loadReferenceData(ctx) {
   const kw = await tryQueryData(ctx, 'SELECT keyword FROM system.keywords FORMAT JSON');
   const keywords = kw ? kw.map((r) => r.keyword) : null;
-  const fn = await tryQueryData(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON');
+  // Prefer the doc columns (modern ClickHouse); fall back to the minimal shape
+  // when `syntax`/`description` don't exist (older servers) so we still get
+  // names for highlighting + completion.
+  const fn = await tryQueryData(ctx, 'SELECT name, is_aggregate, syntax, description FROM system.functions FORMAT JSON')
+    || await tryQueryData(ctx, 'SELECT name, is_aggregate FROM system.functions FORMAT JSON');
   let functions = null;
   if (fn) {
     functions = {};
     for (const r of fn) {
-      functions[r.name] = { kind: r.is_aggregate ? 'agg' : 'fn', sig: r.name + '()', ret: '', desc: '' };
+      functions[r.name] = {
+        kind: r.is_aggregate ? 'agg' : 'fn',
+        sig: firstLine(r.syntax) || r.name + '()',
+        ret: '',
+        desc: firstLine(r.description),
+      };
     }
   }
   return { keywords, functions };

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   assembleReferenceData, buildCompletions, completionContext, rankCompletions,
+  wordAt, signatureContext,
 } from '../../src/core/completions.js';
 import { SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-highlight.js';
 
@@ -27,6 +28,34 @@ describe('assembleReferenceData', () => {
     const ref = assembleReferenceData({ keywords: [], functions: {} });
     expect(ref.keywords).toEqual([...SQL_KEYWORDS]);
     expect(Object.keys(ref.functions).length).toBe(SQL_FUNCS.size);
+  });
+  it('exposes a built-in keyword-docs map for hover (#27)', () => {
+    expect(assembleReferenceData(null).keywordDocs.PREWHERE).toContain('before reading');
+  });
+});
+
+describe('wordAt', () => {
+  it('returns the identifier surrounding a position', () => {
+    expect(wordAt('select count(x)', 9)).toEqual({ word: 'count', from: 7, to: 12 });
+  });
+  it('returns null when the position is not inside a word', () => {
+    expect(wordAt('a (b)', 2)).toBeNull(); // on the space
+  });
+});
+
+describe('signatureContext', () => {
+  it('finds the enclosing function and the active argument index', () => {
+    expect(signatureContext('sum(a', 5)).toEqual({ name: 'sum', argIdx: 0 });
+    expect(signatureContext('sum(a, b', 8)).toEqual({ name: 'sum', argIdx: 1 });
+  });
+  it('counts only commas at the call depth (skips nested calls)', () => {
+    expect(signatureContext('if(x, foo(a,b), ', 16)).toEqual({ name: 'if', argIdx: 2 });
+  });
+  it('returns null outside a call, for an anonymous (, and across ; or newline', () => {
+    expect(signatureContext('select 1', 8)).toBeNull();
+    expect(signatureContext('(a', 2)).toBeNull();         // no name before '('
+    expect(signatureContext('sum(a); x', 9)).toBeNull();  // ';' at depth 0 stops the scan
+    expect(signatureContext('a\nb', 3)).toBeNull();        // newline at depth 0 stops the scan
   });
 });
 

@@ -5,9 +5,10 @@ import { h } from './dom.js';
 import { tokenize } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
-import { caretXY } from '../core/editor-geometry.js';
+import { caretXY, offsetFromXY } from '../core/editor-geometry.js';
 import { createSearch } from './editor-search.js';
 import { createComplete } from './editor-complete.js';
+import { createIntel } from './editor-intel.js';
 import { activeTab } from '../state.js';
 
 // Editor layout metrics (kept in lockstep with .sql-editor in styles.css):
@@ -163,6 +164,25 @@ export function mountEditor(app, container) {
     suppressed: () => search.isOpen(),
   });
 
+  // Map a mouse position to a text offset for hover docs (#27). Mirrors
+  // caretAnchor's html{zoom} handling, inverted.
+  const offsetAt = (clientX, clientY) => {
+    const rect = ta.getBoundingClientRect();
+    const scale = (rect.width / ta.offsetWidth) || 1;
+    const relX = (clientX - rect.left) / scale - PAD_X + ta.scrollLeft;
+    const relY = (clientY - rect.top) / scale - PAD_Y + ta.scrollTop;
+    return offsetFromXY(ta.value, relX, relY, { charWidth: CHAR_WIDTH_PX, lhPx: LINE_HEIGHT_PX });
+  };
+  const intel = createIntel({
+    textarea: ta,
+    getFunctions: () => (app.refData ? app.refData.functions : {}),
+    getKeywordDocs: () => (app.refData ? app.refData.keywordDocs : {}),
+    caretAnchor,
+    offsetAt,
+    appendPopover: (el) => area.appendChild(el),
+    suppressed: () => search.isOpen() || complete.isOpen(),
+  });
+
   const sync = () => {
     const tab = activeTab(app.state);
     ta.value = tab.sql;
@@ -179,13 +199,18 @@ export function mountEditor(app, container) {
     search.recompute(); // text changed → refresh match positions, then overlay
     paintMarks();
     complete.refresh(); // re-evaluate autocomplete at the new caret (#26)
+    intel.refreshSignature(); // and signature help (#27)
     app.actions.rerenderTabs();
     app.actions.updateSaveBtn();
   });
-  ta.addEventListener('scroll', syncScroll);
+  ta.addEventListener('scroll', () => { syncScroll(); intel.hide(); });
+  ta.addEventListener('mousemove', (e) => intel.onMouseMove(e));
+  ta.addEventListener('mouseleave', () => intel.onMouseLeave());
   ta.addEventListener('keydown', (e) => {
     // Autocomplete nav (↑/↓/Enter/Tab/Esc while the dropdown is open) wins first.
     if (complete.handleKeydown(e)) return;
+    if (intel.handleKeydown(e)) return; // Esc dismisses signature help
+    // (handled below: command-chord / IME guard, then brackets, then Tab)
     // A command chord (⌘/Ctrl) or an IME composition isn't bracket/Tab input —
     // leave it for the global shortcuts (run/format) or the IME. AltGr (Ctrl+Alt
     // on some EU layouts) *does* type real brackets, so don't treat it as a chord.
@@ -207,9 +232,9 @@ export function mountEditor(app, container) {
   // Caret moves don't fire 'input' — repaint the overlay so the bracket-pair
   // highlight (#24) tracks the caret. A mouse click also moves the caret, which
   // makes any open completion's tracked word range stale, so dismiss it there.
-  const onCaretMove = () => paintMarks();
+  const onCaretMove = () => { paintMarks(); intel.refreshSignature(); };
   ta.addEventListener('keyup', onCaretMove);
-  ta.addEventListener('click', () => { complete.hide(); paintMarks(); });
+  ta.addEventListener('click', () => { complete.hide(); paintMarks(); intel.refreshSignature(); });
   ta.addEventListener('select', onCaretMove);
   // Accept schema identifiers dragged from the tree; insert at the cursor.
   ta.addEventListener('dragover', (e) => e.preventDefault());
@@ -226,6 +251,7 @@ export function mountEditor(app, container) {
   app.dom.editorGutter = gutter;
   app.dom.editorSearch = search;
   app.dom.editorComplete = complete;
+  app.dom.editorIntel = intel;
   app.dom.editorSync = sync;
   sync();
 }

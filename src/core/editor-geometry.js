@@ -24,3 +24,19 @@ export function caretXY(value, pos, m) {
     y: m.padY + line * m.lhPx - (m.scrollTop || 0),
   };
 }
+
+/**
+ * Inverse of caretXY for hover (#27): the text offset at a point, where relX/relY
+ * are already in CSS px relative to the text origin (after padding + scroll).
+ * Returns null when the point is outside the text's lines. The column is clamped
+ * to the line so a click past the end of a short line maps to its end.
+ */
+export function offsetFromXY(value, relX, relY, m) {
+  const lines = value.split('\n');
+  const line = Math.floor(relY / m.lhPx);
+  if (line < 0 || line >= lines.length) return null;
+  const col = Math.max(0, Math.min(Math.round(relX / m.charWidth), lines[line].length));
+  let pos = 0;
+  for (let k = 0; k < line; k++) pos += lines[k].length + 1;
+  return pos + col;
+}

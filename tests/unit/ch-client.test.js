@@ -206,6 +206,24 @@ describe('loadReferenceData', () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadReferenceData(ctx)).toEqual({ keywords: [], functions: {} });
   });
+  it('uses syntax + first-line description when the server exposes the doc columns (#27)', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('system.keywords')
+        ? jsonResp({ data: [{ keyword: 'SELECT' }] })
+        : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)', description: 'Converts to a Date.\nMore.' }] })
+    ));
+    const ref = await loadReferenceData(ctx);
+    expect(ref.functions.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: 'Converts to a Date.' });
+  });
+  it('falls back to the minimal function query when doc columns are absent (older CH)', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('system.keywords')) return jsonResp({ data: [{ keyword: 'SELECT' }] });
+      if (o.body.includes('syntax')) return textResp('Code: 47. DB::Exception: Unknown identifier syntax', false, 500);
+      return jsonResp({ data: [{ name: 'now', is_aggregate: 0 }] }); // minimal columns only
+    });
+    const ref = await loadReferenceData(ctx);
+    expect(ref.functions.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
+  });
 });
 
 describe('runQuery', () => {

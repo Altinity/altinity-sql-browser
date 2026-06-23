@@ -11,6 +11,18 @@ import { SQL_KEYWORDS, SQL_FUNCS } from './sql-highlight.js';
 const BUILTIN_KEYWORDS = [...SQL_KEYWORDS];
 const BUILTIN_FUNCS = [...SQL_FUNCS];
 
+// Built-in hover docs for a few ClickHouse-specific keywords (#27). There's no
+// server table for keyword docs, so this static set covers the high-value ones;
+// function docs come from system.functions (loaded per connection).
+const KEYWORD_DOCS = {
+  PREWHERE: 'ClickHouse filter applied before reading other columns — an optimization over WHERE for selective predicates.',
+  FINAL: 'Merges rows with the same key at read time (ReplacingMergeTree etc.). Expensive; avoid on hot paths.',
+  SAMPLE: 'Reads a deterministic fraction of data for approximate results. Requires a SAMPLE BY key on the table.',
+  LIMIT: 'Caps the number of returned rows. LIMIT n BY expr limits per group.',
+  SETTINGS: 'Per-query settings override, e.g. SETTINGS max_threads = 4.',
+  FORMAT: 'Sets the output format of the query, e.g. FORMAT JSONEachRow.',
+};
+
 /**
  * Turn a loaded reference payload (or null) into the editor's in-memory shape:
  *   { keywords: string[],            // completion candidates
@@ -30,6 +42,7 @@ export function assembleReferenceData(loaded) {
   return {
     keywords,
     functions,
+    keywordDocs: KEYWORD_DOCS, // for hover docs (#27); static built-in set
     keywordSet: new Set(keywords.map((k) => k.toUpperCase())),
     funcSet: new Set(Object.keys(functions)),
   };
@@ -110,4 +123,44 @@ export function rankCompletions(items, ctx) {
   }
   scored.sort((a, b) => a.score - b.score || a.it.label.localeCompare(b.it.label));
   return scored.slice(0, 50).map((s) => s.it);
+}
+
+/**
+ * The identifier word containing `pos` (expands in both directions). Used by
+ * hover docs (#27) to find the token under the mouse. Returns {word, from, to}
+ * or null when `pos` isn't inside a word.
+ */
+export function wordAt(value, pos) {
+  let s = pos;
+  let e = pos;
+  while (s > 0 && /[A-Za-z0-9_]/.test(value[s - 1])) s--;
+  while (e < value.length && /[A-Za-z0-9_]/.test(value[e])) e++;
+  if (s === e) return null;
+  return { word: value.slice(s, e), from: s, to: e };
+}
+
+/**
+ * If `pos` is inside a function call `name(… )`, return {name, argIdx} — the
+ * enclosing function and which argument the caret is on (commas counted at
+ * depth 0). Used by signature help (#27). Returns null outside a call; a `;` or
+ * newline at depth 0 ends the search (don't cross statements/lines).
+ */
+export function signatureContext(value, pos) {
+  let depth = 0;
+  let argIdx = 0;
+  for (let i = pos - 1; i >= 0; i--) {
+    const c = value[i];
+    if (c === ')') depth++;
+    else if (c === '(') {
+      if (depth === 0) {
+        let e = i;
+        while (e > 0 && /[A-Za-z0-9_]/.test(value[e - 1])) e--;
+        const name = value.slice(e, i);
+        return name ? { name, argIdx } : null;
+      }
+      depth--;
+    } else if (c === ',' && depth === 0) argIdx++;
+    else if ((c === ';' || c === '\n') && depth === 0) return null;
+  }
+  return null;
 }
