@@ -861,6 +861,39 @@ body {
 }
 .srch-btn.primary { background: var(--accent); color: #fff; }
 
+/* Autocomplete dropdown (#26) — fixed-positioned at the caret. */
+.ac-dropdown {
+  position: fixed; z-index: 50; width: 320px; max-height: 248px;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-modal); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 12px 34px rgba(0, 0, 0, .4);
+  font-family: var(--ui);
+}
+.ac-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; }
+.ac-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 5px 8px; border-radius: 5px; cursor: pointer;
+}
+.ac-row.on { background: color-mix(in oklab, var(--accent) 20%, transparent); }
+.ac-chip {
+  width: 17px; height: 17px; flex-shrink: 0; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-chip); font-family: var(--mono); font-size: 11px; font-weight: 700;
+}
+.ac-label { font-family: var(--mono); font-size: 12.5px; color: var(--fg); flex-shrink: 0; }
+.ac-detail {
+  margin-left: auto; max-width: 150px; text-align: right;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ac-footer {
+  flex-shrink: 0; padding: 7px 10px; background: var(--bg-chip);
+  border-top: 1px solid var(--border-faint);
+  font-size: 11px; color: var(--fg-mute); line-height: 1.45;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.ac-sig { font-family: var(--mono); color: var(--fg); }
+
 /* ------------ results ------------ */
 .results { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .res-toolbar {

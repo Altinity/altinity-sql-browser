@@ -416,3 +416,137 @@ describe('bracket matching + auto-close (#24)', () => {
     expect(app.dom.editorMarkPre.querySelectorAll('.mark-bracket').length).toBe(0);
   });
 });
+
+describe('autocomplete dropdown (#26)', () => {
+  const CANDIDATES = [
+    { label: 'SELECT', kind: 'keyword', insert: 'SELECT', detail: 'keyword' },
+    { label: 'count', kind: 'agg', insert: 'count(', detail: 'count([x])', ret: 'UInt64', doc: 'Counts rows.' },
+    { label: 'concat', kind: 'fn', insert: 'concat(', detail: 'concat(s, …)', ret: 'String' }, // sig, no doc
+    { label: 'cobalt', kind: 'mystery', insert: 'cobalt', detail: '?' }, // unknown kind → glyph fallback
+    { label: 'ontime', kind: 'table', insert: 'ontime', detail: 'table', parent: 'airline' },
+    { label: 'Year', kind: 'column', insert: 'Year', detail: 'UInt16', parent: 'ontime' },
+    { label: 'Month', kind: 'column', insert: 'Month', detail: 'UInt8', parent: 'ontime' },
+  ];
+  function mounted(sql = '', completions = CANDIDATES) {
+    const app = makeApp();
+    app.completions = completions;
+    app.activeTab().sql = sql;
+    const container = document.createElement('div');
+    mountEditor(app, container);
+    const ta = app.dom.editorTextarea;
+    ta.value = sql;
+    return { app, container, ta };
+  }
+  const dropdown = (c) => c.querySelector('.ac-dropdown');
+  const rows = (c) => [...c.querySelectorAll('.ac-row')];
+  const labels = (c) => rows(c).map((r) => r.querySelector('.ac-label').textContent);
+  const typeAt = (ta, value, pos) => {
+    ta.value = value; ta.selectionStart = ta.selectionEnd = pos;
+    ta.dispatchEvent(new Event('input'));
+  };
+  const press = (ta, k, opts = {}) => {
+    const e = new KeyboardEvent('keydown', { key: k, cancelable: true, ...opts });
+    ta.dispatchEvent(e);
+    return e;
+  };
+
+  it('shows ranked candidates after typing ≥1 word char', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    expect(dropdown(container)).not.toBeNull();
+    expect(labels(container)).toEqual(expect.arrayContaining(['concat', 'count', 'cobalt']));
+    expect(labels(container)).not.toContain('Year'); // no 'co'
+  });
+  it('does not trigger on an empty word', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'select ', 7); // caret after the space → empty word
+    expect(dropdown(container)).toBeNull();
+  });
+  it('does not complete over a non-empty selection', () => {
+    const { container, ta } = mounted();
+    ta.value = 'count'; ta.selectionStart = 0; ta.selectionEnd = 5;
+    ta.dispatchEvent(new Event('input'));
+    expect(dropdown(container)).toBeNull();
+  });
+  it('a qualified word (table.) lists only that table\'s columns', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'ontime.', 7);
+    expect(labels(container).sort()).toEqual(['Month', 'Year']);
+  });
+  it('arrows move the active row (wrapping); Enter accepts and a function inserts name(', () => {
+    const { app, container, ta } = mounted();
+    expect(app.dom.editorComplete.isOpen()).toBe(false);
+    typeAt(ta, 'co', 2);
+    expect(app.dom.editorComplete.isOpen()).toBe(true);
+    expect(rows(container)[0].classList.contains('on')).toBe(true);
+    press(ta, 'ArrowUp'); // wrap to last
+    expect(rows(container)[rows(container).length - 1].classList.contains('on')).toBe(true);
+    press(ta, 'ArrowDown'); // wrap back to first
+    expect(rows(container)[0].classList.contains('on')).toBe(true);
+    const accepted = labels(container)[0];
+    press(ta, 'Enter');
+    expect(app.dom.editorComplete.isOpen()).toBe(false);
+    expect(dropdown(container)).toBeNull();
+    expect(ta.value).toContain(accepted + '('); // count/concat → name(
+  });
+  it('Tab accepts a column as-is; Escape dismisses', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'Yea', 3);
+    press(ta, 'Escape');
+    expect(dropdown(container)).toBeNull();
+    typeAt(ta, 'Yea', 3);
+    press(ta, 'Tab');
+    expect(ta.value).toBe('Year');
+  });
+  it('a non-nav key while open falls through and leaves the dropdown up', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    press(ta, 'x'); // not consumed by the dropdown
+    expect(dropdown(container)).not.toBeNull();
+  });
+  it('clicking (mousedown) a row accepts it', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'ont', 3);
+    rows(container).find((r) => r.querySelector('.ac-label').textContent === 'ontime')
+      .dispatchEvent(new MouseEvent('mousedown', { cancelable: true }));
+    expect(ta.value).toBe('ontime');
+    expect(dropdown(container)).toBeNull();
+  });
+  it('the footer shows the active signature/doc, with sig-only and hidden variants', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'cou', 3); // count → sig + doc
+    expect(container.querySelector('.ac-sig').textContent).toContain('count([x]) → UInt64');
+    expect(container.querySelector('.ac-doc')).not.toBeNull();
+    typeAt(ta, 'conc', 4); // concat → sig, no doc
+    expect(container.querySelector('.ac-sig')).not.toBeNull();
+    expect(container.querySelector('.ac-doc')).toBeNull();
+    typeAt(ta, 'SEL', 3); // keyword → footer hidden
+    expect(container.querySelector('.ac-footer').style.display).toBe('none');
+  });
+  it('no matching candidates → no dropdown', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'zzz', 3);
+    expect(dropdown(container)).toBeNull();
+  });
+  it('is suppressed while the search panel is open', () => {
+    const { container, ta } = mounted();
+    press(ta, 'f', { metaKey: true }); // open search
+    typeAt(ta, 'co', 2);
+    expect(dropdown(container)).toBeNull();
+  });
+  it('scroll dismisses; blur is wired', () => {
+    const { container, ta } = mounted();
+    typeAt(ta, 'co', 2);
+    ta.dispatchEvent(new Event('blur')); // covers the deferred-hide listener
+    ta.dispatchEvent(new Event('scroll'));
+    expect(dropdown(container)).toBeNull();
+  });
+  it('tolerates an unset app.completions (defaults to empty, no crash)', () => {
+    const app = makeApp(); // no app.completions
+    const container = document.createElement('div');
+    mountEditor(app, container);
+    const ta = app.dom.editorTextarea;
+    expect(() => typeAt(ta, 'co', 2)).not.toThrow();
+    expect(container.querySelector('.ac-dropdown')).toBeNull();
+  });
+});

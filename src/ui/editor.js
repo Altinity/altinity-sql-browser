@@ -5,13 +5,19 @@ import { h } from './dom.js';
 import { tokenize } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
+import { caretXY } from '../core/editor-geometry.js';
 import { createSearch } from './editor-search.js';
+import { createComplete } from './editor-complete.js';
 import { activeTab } from '../state.js';
 
 // Editor layout metrics (kept in lockstep with .sql-editor in styles.css):
 // integer line-height so the textarea and overlay <pre>s lay out identically.
 const LINE_HEIGHT_PX = 22;
 const PAD_Y = 12;
+const PAD_X = 14;
+// Width of one monospace glyph at the editor's 13px font — a constant (the font
+// is fixed) used only to anchor the autocomplete popover near the caret (#26).
+const CHAR_WIDTH_PX = 7.8;
 
 // dataTransfer MIME used when dragging a schema identifier onto the editor.
 // A dedicated type (not text/plain) scopes the drop handler to schema-tree
@@ -129,6 +135,24 @@ export function mountEditor(app, container) {
     replaceRange, syncScroll, repaintMarks: paintMarks,
   });
 
+  // Screen-space caret position for the autocomplete popover.
+  const caretAnchor = () => {
+    const { x, y } = caretXY(ta.value, ta.selectionStart, {
+      charWidth: CHAR_WIDTH_PX, lhPx: LINE_HEIGHT_PX, padX: PAD_X, padY: PAD_Y,
+      scrollTop: ta.scrollTop, scrollLeft: ta.scrollLeft,
+    });
+    const rect = ta.getBoundingClientRect();
+    return { x: rect.left + x, y: rect.top + y, lineHeight: LINE_HEIGHT_PX };
+  };
+  const complete = createComplete({
+    textarea: ta,
+    getCompletions: () => app.completions || [],
+    replaceRange,
+    caretAnchor,
+    appendPopover: (el) => area.appendChild(el),
+    suppressed: () => search.isOpen(),
+  });
+
   const sync = () => {
     const tab = activeTab(app.state);
     ta.value = tab.sql;
@@ -144,11 +168,14 @@ export function mountEditor(app, container) {
     paintTokens(ta.value);
     search.recompute(); // text changed → refresh match positions, then overlay
     paintMarks();
+    complete.refresh(); // re-evaluate autocomplete at the new caret (#26)
     app.actions.rerenderTabs();
     app.actions.updateSaveBtn();
   });
   ta.addEventListener('scroll', syncScroll);
   ta.addEventListener('keydown', (e) => {
+    // Autocomplete nav (↑/↓/Enter/Tab/Esc while the dropdown is open) wins first.
+    if (complete.handleKeydown(e)) return;
     // Bracket auto-close / wrap / type-over / pair-delete (#24) takes priority;
     // a non-bracket key returns null and falls through to the Tab handler.
     const edit = bracketEdit(ta.value, ta.selectionStart, ta.selectionEnd, e.key);
@@ -182,6 +209,7 @@ export function mountEditor(app, container) {
   app.dom.editorMarkPre = markPre;
   app.dom.editorGutter = gutter;
   app.dom.editorSearch = search;
+  app.dom.editorComplete = complete;
   app.dom.editorSync = sync;
   sync();
 }
