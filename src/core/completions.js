@@ -36,10 +36,12 @@ const KEYWORD_DOCS = {
  * Turn a loaded reference payload (or null) into the editor's in-memory shape:
  *   { keywords: string[],            // completion candidates
  *     functions: { name: {kind,sig,ret,desc} },
+ *     formats: string[],             // output formats for FORMAT-clause completion
+ *     keywordDocs: { KW: doc },      // static hover docs
  *     keywordSet: Set<UPPER>,        // tokenizer highlight lookup
  *     funcSet: Set<name> }           // tokenizer highlight lookup
  * Missing pieces fall back to the built-in sets so highlighting + keyword/
- * function completion still work offline / on older ClickHouse.
+ * function/format completion still work offline / on older ClickHouse.
  */
 export function assembleReferenceData(loaded) {
   const keywords = loaded && loaded.keywords && loaded.keywords.length
@@ -96,8 +98,10 @@ export function buildCompletions(ref, schema) {
 }
 
 /**
- * The word being typed at the caret, and whether it is qualified (after a dot —
- * `table.` → that table's columns). Returns {word, from, to, qualified, parent}.
+ * The word being typed at the caret, whether it is qualified (after a dot —
+ * `table.` → that table's columns), and whether it sits inside a FORMAT clause
+ * (`afterFormat` — the preceding token is FORMAT → complete output-format names).
+ * Returns {word, from, to, qualified, parent, afterFormat}.
  */
 export function completionContext(value, pos) {
   let s = pos;
