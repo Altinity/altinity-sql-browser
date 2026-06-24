@@ -32,6 +32,7 @@ const KIND_META = {
   table: { glyph: '▦', color: 'var(--accent)' },
   column: { glyph: '▪', color: '#92E1D8' },
   db: { glyph: '◈', color: '#A0A0A8' },
+  format: { glyph: '≡', color: '#A0A0A8' },
 };
 
 export function createComplete(host) {

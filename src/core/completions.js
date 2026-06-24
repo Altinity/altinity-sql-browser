@@ -11,6 +11,15 @@ import { SQL_KEYWORDS, SQL_FUNCS } from './sql-highlight.js';
 const BUILTIN_KEYWORDS = [...SQL_KEYWORDS];
 const BUILTIN_FUNCS = [...SQL_FUNCS];
 
+// Common ClickHouse output formats — the fallback for FORMAT-clause completion
+// when system.formats isn't available (offline / old server / denied). The live
+// set (all is_output formats) replaces this once a connection loads.
+const BUILTIN_FORMATS = [
+  'CSV', 'CSVWithNames', 'JSON', 'JSONCompact', 'JSONEachRow', 'Markdown', 'Null',
+  'Parquet', 'Pretty', 'PrettyCompact', 'TabSeparated', 'TabSeparatedWithNames',
+  'TSV', 'TSVWithNames', 'Values', 'Vertical', 'XML',
+];
+
 // Built-in hover docs for a few ClickHouse-specific keywords (#27). There's no
 // server table for keyword docs, so this static set covers the high-value ones;
 // function docs come from system.functions (loaded per connection).
@@ -39,9 +48,11 @@ export function assembleReferenceData(loaded) {
   const functions = loaded && loaded.functions && Object.keys(loaded.functions).length
     ? loaded.functions
     : Object.fromEntries(BUILTIN_FUNCS.map((name) => [name, { kind: 'fn', sig: name + '()', ret: '', desc: '' }]));
+  const formats = loaded && loaded.formats && loaded.formats.length ? loaded.formats : BUILTIN_FORMATS;
   return {
     keywords,
     functions,
+    formats,
     keywordDocs: KEYWORD_DOCS, // for hover docs (#27); static built-in set
     keywordSet: new Set(keywords.map((k) => k.toUpperCase())),
     funcSet: new Set(Object.keys(functions)),
@@ -67,6 +78,9 @@ export function buildCompletions(ref, schema) {
     const paren = sig.indexOf('(');
     items.push({ label: name, kind, insert: name + '(', detail: paren >= 0 ? sig.slice(paren) : sig, doc: m.desc || '', ret: m.ret || '' });
   }
+  for (const name of ref.formats || []) {
+    items.push({ label: name, kind: 'format', insert: name, detail: 'format' });
+  }
   for (const db of schema || []) {
     items.push({ label: db.db, kind: 'db', insert: db.db, detail: 'database' });
     for (const tb of db.tables || []) {
@@ -89,6 +103,13 @@ export function completionContext(value, pos) {
   let s = pos;
   while (s > 0 && /[A-Za-z0-9_]/.test(value[s - 1])) s--;
   const word = value.slice(s, pos);
+  // Inside a FORMAT clause? (the identifier just before the word is `FORMAT`) →
+  // complete output-format names instead of the general candidate set.
+  let b = s;
+  while (b > 0 && /\s/.test(value[b - 1])) b--;
+  let pf = b;
+  while (pf > 0 && /[A-Za-z0-9_]/.test(value[pf - 1])) pf--;
+  const afterFormat = value.slice(pf, b).toUpperCase() === 'FORMAT';
   let qualified = false;
   let parent = null;
   if (value[s - 1] === '.') {
@@ -100,7 +121,7 @@ export function completionContext(value, pos) {
     // and an empty dropdown — fall back to normal completion instead (#4 review).
     if (name) { qualified = true; parent = name; }
   }
-  return { word, from: s, to: pos, qualified, parent };
+  return { word, from: s, to: pos, qualified, parent, afterFormat };
 }
 
 /**
@@ -115,11 +136,18 @@ export function rankCompletions(items, ctx) {
     const cols = items.filter((it) => it.kind === 'column' && it.parent === ctx.parent);
     return (w ? cols.filter((c) => c.label.toLowerCase().includes(w)) : cols).slice(0, 50);
   }
+  if (ctx.afterFormat) {
+    // FORMAT clause: only output-format names, prefix matches first.
+    const fmts = items.filter((it) => it.kind === 'format' && (!w || it.label.toLowerCase().includes(w)));
+    if (w) fmts.sort((a, b) => a.label.toLowerCase().indexOf(w) - b.label.toLowerCase().indexOf(w) || a.label.localeCompare(b.label));
+    return fmts.slice(0, 50);
+  }
   if (!w) {
     return items.filter((it) => it.kind === 'keyword' || it.kind === 'table').slice(0, 40);
   }
   const scored = [];
   for (const it of items) {
+    if (it.kind === 'format') continue; // formats only inside a FORMAT clause
     const l = it.label.toLowerCase();
     const idx = l.indexOf(w);
     if (idx === -1) continue;

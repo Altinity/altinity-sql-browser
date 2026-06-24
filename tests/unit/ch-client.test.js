@@ -200,11 +200,11 @@ describe('loadReferenceData', () => {
   });
   it('returns null pieces when a system table is missing/denied (best-effort)', async () => {
     const ctx = ctxWith(async () => textResp('Code: 60. DB::Exception: Unknown table', false, 500));
-    expect(await loadReferenceData(ctx)).toEqual({ keywords: null, functions: null });
+    expect(await loadReferenceData(ctx)).toEqual({ keywords: null, functions: null, formats: null });
   });
   it('tolerates an empty data shape', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
-    expect(await loadReferenceData(ctx)).toEqual({ keywords: [], functions: {} });
+    expect(await loadReferenceData(ctx)).toEqual({ keywords: [], functions: {}, formats: [] });
   });
   it('uses the syntax column for signatures; descriptions are NOT bulk-loaded (lazy, #27)', async () => {
     const ctx = ctxWith(async (url, o) => (

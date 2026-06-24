@@ -100,13 +100,13 @@ describe('buildCompletions', () => {
 
 describe('completionContext', () => {
   it('reads the word at the caret', () => {
-    expect(completionContext('SELECT cou', 10)).toEqual({ word: 'cou', from: 7, to: 10, qualified: false, parent: null });
+    expect(completionContext('SELECT cou', 10)).toEqual({ word: 'cou', from: 7, to: 10, qualified: false, parent: null, afterFormat: false });
   });
   it('detects a qualified word after a dot and its parent', () => {
-    expect(completionContext('ontime.Ye', 9)).toEqual({ word: 'Ye', from: 7, to: 9, qualified: true, parent: 'ontime' });
+    expect(completionContext('ontime.Ye', 9)).toEqual({ word: 'Ye', from: 7, to: 9, qualified: true, parent: 'ontime', afterFormat: false });
   });
   it('qualified with empty word right after the dot', () => {
-    expect(completionContext('ontime.', 7)).toEqual({ word: '', from: 7, to: 7, qualified: true, parent: 'ontime' });
+    expect(completionContext('ontime.', 7)).toEqual({ word: '', from: 7, to: 7, qualified: true, parent: 'ontime', afterFormat: false });
   });
   it('word at the very start', () => {
     expect(completionContext('SEL', 3)).toMatchObject({ word: 'SEL', from: 0, qualified: false });
@@ -149,5 +149,38 @@ describe('rankCompletions', () => {
     // 'ontime','Origin','Month'(substring 'o'),'substring'? no. prefix: ontime/Origin
     expect(r.map((i) => i.label)).toContain('ontime');
     expect(r).not.toContainEqual(expect.objectContaining({ label: 'SELECT' }));
+  });
+});
+
+describe('FORMAT-clause completion', () => {
+  it('assembleReferenceData uses loaded formats, falling back to a built-in set', () => {
+    expect(assembleReferenceData({ formats: ['Vertical', 'CSV'] }).formats).toEqual(['Vertical', 'CSV']);
+    const fb = assembleReferenceData(null).formats;
+    expect(fb).toContain('JSONEachRow');
+    expect(fb).toContain('Vertical');
+    expect(assembleReferenceData({ formats: [] }).formats).toEqual(fb); // empty → fallback
+  });
+  it('buildCompletions includes format candidates', () => {
+    const ref = assembleReferenceData({ keywords: ['SELECT'], formats: ['Vertical', 'TSV'] });
+    const fmts = buildCompletions(ref, []).filter((it) => it.kind === 'format');
+    expect(fmts.map((f) => f.label)).toEqual(['Vertical', 'TSV']);
+    expect(fmts[0]).toMatchObject({ insert: 'Vertical', detail: 'format' });
+  });
+  it('completionContext flags a word inside a FORMAT clause', () => {
+    expect(completionContext('SELECT 1 FORMAT Ver', 19).afterFormat).toBe(true);
+    expect(completionContext('SELECT 1 FORMAT ', 16).afterFormat).toBe(true); // empty word after FORMAT
+    expect(completionContext('SELECT format', 13).afterFormat).toBe(false);   // FORMAT is the word being typed
+    expect(completionContext('SELECT 1 FROM t', 15).afterFormat).toBe(false);
+  });
+  it('rankCompletions: a FORMAT clause shows only formats (prefix first); excluded elsewhere', () => {
+    const items = buildCompletions(assembleReferenceData({ keywords: ['SELECT', 'FORMAT'], formats: ['JSONEachRow', 'JSONCompact', 'Vertical'] }), []);
+    // empty word inside FORMAT → every format, source order
+    expect(rankCompletions(items, { word: '', qualified: false, afterFormat: true }).map((i) => i.label))
+      .toEqual(['JSONEachRow', 'JSONCompact', 'Vertical']);
+    // typed word → filtered; both prefix-match, so alpha order
+    expect(rankCompletions(items, { word: 'json', qualified: false, afterFormat: true }).map((i) => i.label))
+      .toEqual(['JSONCompact', 'JSONEachRow']);
+    // general completion never surfaces formats
+    expect(rankCompletions(items, { word: 'json', qualified: false, afterFormat: false }).some((i) => i.kind === 'format')).toBe(false);
   });
 });
