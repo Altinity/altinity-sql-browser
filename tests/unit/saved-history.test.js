@@ -134,36 +134,18 @@ describe('renderSavedHistory', () => {
     expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
-  it('saved: Export/Import row — Export disabled when empty, enabled with queries, wired', () => {
+  it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
     const app = makeApp();
     app.state.sidePanel = 'saved';
-    renderSavedHistory(app);
-    let exportBtn = [...app.dom.savedList.querySelectorAll('.sv-io')].find((b) => /Export/.test(b.textContent));
-    expect(exportBtn.disabled).toBe(true); // empty list
     app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
     renderSavedHistory(app);
-    exportBtn = [...app.dom.savedList.querySelectorAll('.sv-io')].find((b) => /Export/.test(b.textContent));
-    expect(exportBtn.disabled).toBe(false);
-    click(exportBtn);
-    expect(app.actions.exportSaved).toHaveBeenCalled();
-  });
-  it('saved: Import button opens the file input; change with a file imports it', () => {
-    const app = makeApp();
-    app.state.sidePanel = 'saved';
-    renderSavedHistory(app);
-    const input = app.dom.savedList.querySelector('.saved-actions input[type="file"]');
-    input.click = vi.fn();
-    const importBtn = [...app.dom.savedList.querySelectorAll('.sv-io')].find((b) => /Import/.test(b.textContent));
-    click(importBtn);
-    expect(input.click).toHaveBeenCalled();
-    // change with a file → importSavedFile(file); without → no call
-    const file = { name: 'q.json' };
-    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.actions.importSavedFile).toHaveBeenCalledWith(file);
-    Object.defineProperty(input, 'files', { configurable: true, value: [] });
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.actions.importSavedFile).toHaveBeenCalledTimes(1);
+    const savedTab = app.dom.savedTabsRow.querySelectorAll('.side-tab')[0];
+    expect(savedTab.textContent).toContain('Library');
+    expect(savedTab.textContent).not.toContain('Saved');
+    expect(savedTab.querySelector('.side-count').textContent).toContain('1');
+    // the old bottom Export/Import row is gone (moved to the header File menu)
+    expect(app.dom.savedList.querySelector('.saved-actions')).toBeNull();
+    expect(app.dom.savedList.querySelector('.sv-io')).toBeNull();
   });
   it('history: empty state', () => {
     const app = makeApp();

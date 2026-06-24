@@ -63,6 +63,38 @@ of scope for a textarea and tracked separately (CodeMirror, issue #21).
 > work. The `.jsx` files there are React prototypes; production is the vanilla
 > ES-module code under `src/`.
 
+## Saved queries & the Library
+
+Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**
+panel. Each carries a name, an optional **description**, and — when set — its
+remembered result view and chart config. Saving or editing a query opens a small
+form with both a name and a description field; the description shows under the
+row and is included in Markdown/SQL exports.
+
+The whole collection is treated as a **document — the Library** — with a name and
+an unsaved-changes dot, managed from the header **File ▾** menu:
+
+- **New Library** — clears to an empty, default-named library (confirms first
+  when non-empty). Open editor tabs are unaffected.
+- **Save JSON** (`.json`) — downloads the whole Library in the versioned
+  `altinity-sql-browser/saved-queries` envelope (lossless: keeps id, name,
+  description, sql, favorite, chart, view). The filename derives from the Library
+  name; saving clears the unsaved-changes dot.
+- **Replace… / Append…** — load a `.json` file: Replace swaps the Library and
+  adopts the file's base name (confirms when the current Library is non-empty);
+  Append merges via the existing dedupe and reports `Added N · updated N ·
+  skipped N`. **JSON is the only importable format**, and imported SQL is never
+  run automatically.
+- **Share / publish** — **Download Markdown** (`.md`, a `### heading` + fenced
+  ` ```sql ` cookbook) and **Download SQL** (`.sql`, `/* name + description */`
+  comment blocks, `;`-delimited). Both are **one-way** — lossy by design (no ids,
+  chart, or view), so JSON stays the canonical round-trip format.
+
+The Library name is editable inline (click it in the header) and is persisted
+separately from the queries. The **•** dot appears after any change that hasn't
+been written to a file yet (save/rename/delete/favorite/append/rename) and clears
+on Save JSON / Replace / New.
+
 ## Quick start (development)
 
 ```bash

@@ -17,7 +17,7 @@ export function renderSavedHistory(app) {
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'saved' ? ' active' : ''),
       onclick: () => { state.sidePanel = 'saved'; app.savePref('sidePanel', 'saved'); renderSavedHistory(app); },
-    }, Icon.star(state.sidePanel === 'saved'), h('span', null, 'Saved'),
+    }, Icon.star(state.sidePanel === 'saved'), h('span', null, 'Library'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'history' ? ' active' : ''),
@@ -40,7 +40,7 @@ function renderSaved(app, list) {
     if (app.editingSavedId === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
     const star = h('button', {
       class: 'sv-star' + (q.favorite ? ' on' : ''), title: q.favorite ? 'Unfavorite' : 'Favorite',
-      onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
+      onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); app.updateLibraryTitle(); },
     }, Icon.star(q.favorite));
 
     const row = h('div', { class: 'saved-row', onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
@@ -53,13 +53,12 @@ function renderSaved(app, list) {
         }, Icon.pencil()),
         h('button', {
           class: 'sv-act', title: 'Delete',
-          onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); },
+          onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); app.updateLibraryTitle(); },
         }, Icon.trash())),
       q.description ? h('div', { class: 'desc' }, q.description) : null,
       h('div', { class: 'preview' }, q.sql.split('\n')[0]));
     list.appendChild(row);
   }
-  list.appendChild(savedActions(app));
 }
 
 /**
@@ -84,6 +83,7 @@ function savedEditForm(app, q) {
     }
     app.editingSavedId = null;
     renderSavedHistory(app);
+    app.updateLibraryTitle();
   };
   nameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }
@@ -102,25 +102,6 @@ function savedEditForm(app, q) {
     h('div', { class: 'sv-edit-actions' },
       h('button', { class: 'sv-edit-cancel', onclick: () => finish(false) }, 'Cancel'),
       h('button', { class: 'sv-edit-save', onclick: () => finish(true) }, 'Save')));
-}
-
-/** Export / Import row pinned at the bottom of the Saved panel. */
-function savedActions(app) {
-  const empty = app.state.savedQueries.length === 0;
-  const fileInput = h('input', {
-    type: 'file', accept: 'application/json,.json', style: { display: 'none' },
-    onchange: (e) => { const f = e.target.files && e.target.files[0]; if (f) app.actions.importSavedFile(f); e.target.value = ''; },
-  });
-  return h('div', { class: 'saved-actions' },
-    h('button', {
-      class: 'sv-io', disabled: empty ? true : null, title: 'Download all saved queries as JSON',
-      onclick: () => app.actions.exportSaved(),
-    }, Icon.download(), h('span', null, 'Export')),
-    h('button', {
-      class: 'sv-io', title: 'Import saved queries from a JSON file',
-      onclick: () => fileInput.click(),
-    }, Icon.upload(), h('span', null, 'Import')),
-    fileInput);
 }
 
 function renderHistory(app, list) {

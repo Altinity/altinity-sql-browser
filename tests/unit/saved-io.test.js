@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExportDoc, parseImportDoc, mergeSaved } from '../../src/core/saved-io.js';
+import { buildExportDoc, parseImportDoc, mergeSaved, buildMarkdownDoc, buildSqlDoc } from '../../src/core/saved-io.js';
 
 describe('buildExportDoc', () => {
   it('wraps queries in the envelope, keeps only id/name/sql/favorite, coerces favorite', () => {
@@ -141,5 +141,39 @@ describe('mergeSaved', () => {
     expect('description' in r.merged.find((q) => q.id === 's1')).toBe(false);
     expect(r.merged.find((q) => q.id === 's2').description).toBe('new');
     expect(r.merged.find((q) => q.name === 'C').description).toBe('added');
+  });
+});
+
+describe('buildMarkdownDoc', () => {
+  it('renders a ### heading, an optional description paragraph, and a fenced sql block', () => {
+    const md = buildMarkdownDoc([
+      { name: 'A', sql: 'SELECT 1', description: 'does A' },
+      { name: 'B', sql: 'SELECT 2' },
+    ]);
+    expect(md).toContain('### A');
+    expect(md).toContain('does A');
+    expect(md).toContain('```sql\nSELECT 1\n```');
+    expect(md).toMatch(/### B\n\n```sql/); // B has no description paragraph
+  });
+  it('widens the fence to four backticks when the sql contains a triple backtick', () => {
+    const md = buildMarkdownDoc([{ name: 'C', sql: 'SELECT ```x```' }]);
+    expect(md).toContain('````sql\n');
+    expect(md).toContain('\n````');
+  });
+});
+
+describe('buildSqlDoc', () => {
+  it('renders a /* name + description */ comment then the statement, ;-terminated (trailing ; trimmed)', () => {
+    const out = buildSqlDoc([
+      { name: 'A', sql: 'SELECT 1;;  ', description: 'does A' },
+      { name: 'B', sql: 'SELECT 2' },
+    ]);
+    expect(out).toContain('/* A\ndoes A */\nSELECT 1;');
+    expect(out).toContain('/* B */\nSELECT 2;');
+    expect(out).not.toContain(';;');
+  });
+  it('defangs a */ sequence inside the comment so the block cannot close early', () => {
+    const out = buildSqlDoc([{ name: 'edge */ name', sql: 'SELECT 1' }]);
+    expect(out).toContain('/* edge * / name */');
   });
 });

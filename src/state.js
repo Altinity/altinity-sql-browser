@@ -5,7 +5,7 @@
 import { clamp } from './core/format.js';
 import { mergeSaved } from './core/saved-io.js';
 import { cloneChartCfg } from './core/chart-data.js';
-import { loadJSON, saveJSON, loadStr } from './core/storage.js';
+import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 
 /** A tab's chart state as a persistable payload `{ cfg, key }`, or null. */
 export function tabChart(tab) {
@@ -24,7 +24,11 @@ export const KEYS = {
   sidePanel: 'asb:sidePanel',
   saved: 'asb:saved',
   history: 'asb:history',
+  libraryName: 'asb:libraryName',
 };
+
+/** Default name for a fresh / unnamed saved-query library. */
+export const DEFAULT_LIBRARY_NAME = 'SQL Library';
 
 /** A blank query tab. `chartCfg`/`chartKey` hold the per-tab chart config and
  * the schema signature it was derived for (re-derived when the schema changes). */
@@ -60,6 +64,11 @@ export function createState(read = { loadJSON, loadStr }) {
     sidePanel: read.loadStr(KEYS.sidePanel, 'saved'),
     savedQueries: read.loadJSON(KEYS.saved, []),
     history: read.loadJSON(KEYS.history, []),
+    // The saved-query collection treated as a named document ("the Library").
+    // `libraryName` is persisted; `libraryDirty` (unsaved changes since the last
+    // file Save/Replace/New) is session-only and resets on reload.
+    libraryName: read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME),
+    libraryDirty: false,
     shortcutsOpen: false,
   };
 }
@@ -115,6 +124,7 @@ export function saveQuery(state, tab, name, description, save = saveJSON, now = 
     tab.savedId = entry.id;
   }
   tab.name = nm;
+  state.libraryDirty = true;
   save(KEYS.saved, state.savedQueries);
   return entry;
 }
@@ -134,6 +144,7 @@ export function renameSaved(state, id, name, description, save = saveJSON) {
     if (desc) entry.description = desc; else delete entry.description;
   }
   for (const t of tabsForSaved(state, id)) t.name = nm;
+  state.libraryDirty = true;
   save(KEYS.saved, state.savedQueries);
 }
 
@@ -142,6 +153,7 @@ export function toggleFavorite(state, id, save = saveJSON) {
   const entry = state.savedQueries.find((q) => q.id === id);
   if (!entry) return;
   entry.favorite = !entry.favorite;
+  state.libraryDirty = true;
   save(KEYS.saved, state.savedQueries);
 }
 
@@ -160,6 +172,7 @@ export function sortedSaved(state) {
 export function importSaved(state, queries, save = saveJSON, genId = () => makeId('s', Date.now())) {
   const { merged, added, updated, skipped } = mergeSaved(state.savedQueries, queries, genId);
   state.savedQueries = merged;
+  state.libraryDirty = true;
   save(KEYS.saved, state.savedQueries);
   return { added, updated, skipped };
 }
@@ -168,7 +181,66 @@ export function importSaved(state, queries, save = saveJSON, genId = () => makeI
 export function deleteSaved(state, id, save = saveJSON) {
   state.savedQueries = state.savedQueries.filter((q) => q.id !== id);
   for (const t of tabsForSaved(state, id)) t.savedId = null;
+  state.libraryDirty = true;
   save(KEYS.saved, state.savedQueries);
+}
+
+// ── Library document ops ────────────────────────────────────────────────────
+// The saved-query collection is a named, savable document. These ops back the
+// header File menu (New / Save / Replace / Append) and the editable library
+// name + unsaved-changes dot.
+
+/** Clear tab→saved links whose entry no longer exists (after New/Replace), so a
+ *  kept tab doesn't show "Saved" against a query that's gone. */
+function pruneTabLinks(state) {
+  const ids = new Set(state.savedQueries.map((q) => q.id));
+  for (const t of state.tabs) if (t.savedId && !ids.has(t.savedId)) t.savedId = null;
+}
+
+/** Rename the library (blank → the default name). Marks dirty; persists name. */
+export function renameLibrary(state, name, saveName = saveStr) {
+  state.libraryName = String(name || '').trim() || DEFAULT_LIBRARY_NAME;
+  state.libraryDirty = true;
+  saveName(KEYS.libraryName, state.libraryName);
+}
+
+/** Start an empty, default-named library. Clears dirty; open tabs are kept
+ *  (their now-dangling saved links are pruned). */
+export function newLibrary(state, save = saveJSON, saveName = saveStr) {
+  state.savedQueries = [];
+  pruneTabLinks(state);
+  state.libraryName = DEFAULT_LIBRARY_NAME;
+  state.libraryDirty = false;
+  save(KEYS.saved, state.savedQueries);
+  saveName(KEYS.libraryName, state.libraryName);
+}
+
+/** Replace the library with `queries`, adopting the loaded file's base name.
+ *  Original ids are kept (lossless round-trip); id-less entries get a fresh id.
+ *  Clears dirty; open tabs are kept (dangling links pruned). */
+export function replaceLibrary(state, queries, fileName, save = saveJSON, saveName = saveStr, genId = () => makeId('s', Date.now())) {
+  state.savedQueries = queries.map((q) => ({
+    id: q.id || genId(), name: q.name, sql: q.sql, favorite: !!q.favorite,
+    ...(q.description ? { description: q.description } : {}),
+    ...(q.chart ? { chart: q.chart } : {}), ...(q.view ? { view: q.view } : {}),
+  }));
+  pruneTabLinks(state);
+  const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
+  state.libraryName = base || DEFAULT_LIBRARY_NAME;
+  state.libraryDirty = false;
+  save(KEYS.saved, state.savedQueries);
+  saveName(KEYS.libraryName, state.libraryName);
+}
+
+/** Append `queries` into the library via the standard merge dedupe (sets dirty
+ *  through importSaved). Returns { added, updated, skipped }. */
+export function appendLibrary(state, queries, save = saveJSON, genId = () => makeId('s', Date.now())) {
+  return importSaved(state, queries, save, genId);
+}
+
+/** Mark the library as saved to a file (clears the unsaved-changes dot). */
+export function markLibrarySaved(state) {
+  state.libraryDirty = false;
 }
 
 /** Record a successful run in history (most-recent first, capped at 50). */

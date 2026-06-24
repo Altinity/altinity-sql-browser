@@ -7,13 +7,12 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, importSaved, tabChart,
+  createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, tabChart,
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
-import { buildExportDoc, parseImportDoc } from '../core/saved-io.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
@@ -27,6 +26,7 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
 import { renderSavedHistory } from './saved-history.js';
+import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
@@ -81,7 +81,14 @@ export function createApp(env = {}) {
 
   // --- persistence -------------------------------------------------------
   app.saveJSON = saveJSON;
+  app.saveStr = saveStr;
   app.savePref = (name, value) => saveStr(KEYS[name], String(value));
+  app.FileReader = env.FileReader || win.FileReader;
+  // Exposed seams for the header File menu (file-menu.js): the file-download
+  // helper (defined below) and a library-title refresh (dirty dot + name) run
+  // after a library mutation made outside file-menu.js (e.g. the save popover).
+  app.downloadFile = downloadFile;
+  app.updateLibraryTitle = () => renderLibraryTitle(app);
 
   // --- identity ----------------------------------------------------------
   app.host = () => (app.authMode === 'basic'
@@ -597,6 +604,7 @@ export function createApp(env = {}) {
       app.updateSaveBtn();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
+      app.updateLibraryTitle();
       flashToast('Saved', { document: doc });
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
@@ -627,32 +635,6 @@ export function createApp(env = {}) {
   }
   app.openUserMenu = openUserMenu;
 
-  // --- export / import saved queries -------------------------------------
-  function exportSaved() {
-    const qs = app.state.savedQueries;
-    if (!qs.length) { flashToast('Nothing to export', { document: doc }); return; }
-    const nowISO = new Date().toISOString();
-    downloadFile('sql-browser-queries-' + nowISO.slice(0, 10) + '.json', 'application/json',
-      JSON.stringify(buildExportDoc(qs, nowISO), null, 2));
-    flashToast('Exported ' + qs.length + (qs.length === 1 ? ' query' : ' queries'), { document: doc });
-  }
-  function importSavedFile(file) {
-    const reader = new (env.FileReader || win.FileReader)();
-    reader.onload = () => {
-      try {
-        const { queries } = parseImportDoc(String(reader.result));
-        const { added, updated, skipped } = importSaved(app.state, queries, saveJSON);
-        app.updateSaveBtn();
-        renderSavedHistory(app);
-        flashToast('Added ' + added + ' · updated ' + updated + ' · skipped ' + skipped, { document: doc });
-      } catch (e) {
-        flashToast('✕ ' + ((e && e.message) || e), { document: doc });
-      }
-    };
-    reader.onerror = () => flashToast('✕ Could not read file', { document: doc });
-    reader.readAsText(file);
-  }
-
   function toggleTheme() {
     app.state.theme = app.state.theme === 'dark' ? 'light' : 'dark';
     app.savePref('theme', app.state.theme);
@@ -675,8 +657,6 @@ export function createApp(env = {}) {
     exportResult,
     save: openSavePopover,
     openUserMenu,
-    exportSaved,
-    importSavedFile,
     formatQuery,
     insertCreate,
     openShortcuts: () => openShortcuts(app),
@@ -709,6 +689,8 @@ export function renderApp(app, helpers) {
     h('div', { class: 'logo-mark' }, 'A'),
     h('div', { class: 'logo-name' }, 'Altinity SQL Browser'),
     h('div', { class: 'env-chip' }, app.host()),
+    h('div', { class: 'hd-divider' }),
+    ...libraryControls(app),
     h('div', { style: { flex: '1' } }),
     app.dom.connStatus,
     h('a', {

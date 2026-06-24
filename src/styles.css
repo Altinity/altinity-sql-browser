@@ -284,6 +284,79 @@ body {
 .user-menu .um-item.danger { color: #ef4444; }
 .user-menu .um-item.danger:hover { background: color-mix(in oklab, #ef4444 12%, transparent); }
 
+/* ------------ header File menu + library title ------------ */
+.hd-divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+.hd-file-btn {
+  display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border: none; border-radius: 6px; background: transparent; color: var(--fg-mute);
+  cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 500; flex-shrink: 0;
+}
+.hd-file-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.lib-title { display: flex; align-items: center; min-width: 0; }
+.lib-name {
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px;
+  border: none; border-radius: 6px; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; font-weight: 500; color: var(--fg);
+  max-width: 280px; min-width: 0;
+}
+.lib-name:hover { background: var(--bg-hover); }
+.lib-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-dirty { width: 6px; height: 6px; border-radius: 3px; background: var(--accent); flex-shrink: 0; }
+.lib-name-input {
+  height: 24px; min-width: 120px; max-width: 280px; padding: 0 8px;
+  background: var(--bg-input); border: 1px solid var(--accent); border-radius: 6px;
+  color: var(--fg); font-family: inherit; font-size: 12.5px; outline: none;
+}
+/* File dropdown */
+.fm-overlay { position: fixed; inset: 0; z-index: 60; }
+.file-menu {
+  z-index: 61; width: 252px; padding-bottom: 4px;
+  background: var(--bg-modal); border: 1px solid var(--border);
+  border-radius: 9px; box-shadow: 0 12px 36px rgba(0,0,0,.35); overflow: hidden;
+}
+.fm-item {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 12px;
+  border: none; background: transparent; color: var(--fg); font-family: inherit;
+  font-size: 12.5px; cursor: pointer; text-align: left;
+}
+.fm-item:hover { background: var(--bg-hover); }
+.fm-icon { display: flex; width: 15px; justify-content: center; color: var(--fg-mute); flex-shrink: 0; }
+.fm-label { flex: 1; white-space: nowrap; }
+.fm-meta { font-size: 10px; color: var(--fg-faint); font-family: var(--mono); flex-shrink: 0; }
+.fm-sep { height: 1px; background: var(--border-faint); margin: 5px 0; }
+.fm-section {
+  font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--fg-faint); padding: 9px 12px 4px;
+}
+.fm-count {
+  margin-top: 4px; padding: 8px 12px; border-top: 1px solid var(--border-faint);
+  font-size: 10.5px; color: var(--fg-faint); font-family: var(--mono);
+}
+/* Replace / New confirm dialog */
+.fm-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 130; background: rgba(0,0,0,.5);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+.fm-dialog-card {
+  width: 392px; max-width: calc(100vw - 32px);
+  background: var(--bg-modal); border: 1px solid var(--border); border-radius: 11px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 20px 22px;
+}
+.fm-dialog-title { font-size: 14.5px; font-weight: 600; color: var(--fg); margin-bottom: 6px; }
+.fm-dialog-body { font-size: 12.5px; color: var(--fg-mute); line-height: 1.55; margin-bottom: 18px; }
+.fm-dialog-body b { color: var(--fg); }
+.fm-mono { color: var(--fg); font-family: var(--mono); }
+.fm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.fm-dialog-cancel, .fm-dialog-confirm {
+  height: 30px; padding: 0 14px; border-radius: 6px; font-family: inherit;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.fm-dialog-cancel { border: 1px solid var(--border); background: transparent; color: var(--fg); }
+.fm-dialog-cancel:hover { background: var(--bg-hover); }
+.fm-dialog-confirm { border: none; background: var(--accent); color: #fff; font-weight: 600; }
+.fm-dialog-confirm:hover { filter: brightness(1.08); }
+
 /* ------------ main row ------------ */
 .main-row { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 .sidebar {

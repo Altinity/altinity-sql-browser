@@ -698,44 +698,6 @@ describe('share + star + columns', () => {
     expect(document.querySelector('.save-popover')).toBeNull(); // committed + closed
     expect(app.state.savedQueries[0].description).toBe('updated reason');
   });
-  const fakeReader = (content, fail) => class {
-    readAsText() { this.result = content; if (fail) this.onerror && this.onerror(); else this.onload && this.onload(); }
-  };
-  it('exportSaved downloads the envelope; empty list → toast only', () => {
-    const download = vi.fn();
-    const app = createApp(env({ download }));
-    app.renderApp();
-    app.actions.exportSaved(); // empty
-    expect(download).not.toHaveBeenCalled();
-    expect(document.querySelector('.share-toast').textContent).toBe('Nothing to export');
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: true }];
-    app.actions.exportSaved();
-    const [fname, mime, content] = download.mock.calls[0];
-    expect(fname).toMatch(/^sql-browser-queries-\d{4}-\d{2}-\d{2}\.json$/);
-    expect(mime).toBe('application/json');
-    const docObj = JSON.parse(content);
-    expect(docObj.format).toBe('altinity-sql-browser/saved-queries');
-    expect(docObj.queries).toEqual([{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: true }]);
-    expect(document.querySelector('.share-toast').textContent).toBe('Exported 1 query');
-  });
-  it('importSavedFile merges a valid file and toasts counts', () => {
-    const text = JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries: [{ id: 'x1', name: 'New', sql: 'SELECT 9' }] });
-    const app = createApp(env({ FileReader: fakeReader(text) }));
-    app.renderApp();
-    app.actions.importSavedFile({});
-    expect(app.state.savedQueries.some((q) => q.name === 'New')).toBe(true);
-    expect(document.querySelector('.share-toast').textContent).toBe('Added 1 · updated 0 · skipped 0');
-  });
-  it('importSavedFile reports parse errors and read errors with ✕', () => {
-    const bad = createApp(env({ FileReader: fakeReader('{not json') }));
-    bad.renderApp();
-    bad.actions.importSavedFile({});
-    expect(document.querySelector('.share-toast').textContent).toBe('✕ Not a valid JSON file');
-    const err = createApp(env({ FileReader: fakeReader('', true) }));
-    err.renderApp();
-    err.actions.importSavedFile({});
-    expect(document.querySelector('.share-toast').textContent).toBe('✕ Could not read file');
-  });
   it('loadColumns fills the table object', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });
     const app = createApp(e);
