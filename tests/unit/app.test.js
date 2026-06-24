@@ -189,6 +189,74 @@ describe('loadVersion / loadSchema', () => {
   });
 });
 
+describe('loadReference / rebuildCompletions (#25)', () => {
+  it('loads server keywords + functions into refData and the completion list', async () => {
+    const e = env({ fetch: makeFetch([
+      [(u, sql) => /system\.keywords/.test(sql), resp({ json: { data: [{ keyword: 'PREWHERE' }] } })],
+      [(u, sql) => /system\.functions/.test(sql), resp({ json: { data: [{ name: 'toDate', is_aggregate: 0 }] } })],
+    ]) });
+    const app = createApp(e);
+    app.renderApp();
+    await app.loadReference();
+    expect(app.refData.keywordSet.has('PREWHERE')).toBe(true); // drives the tokenizer too
+    expect(app.refData.funcSet.has('toDate')).toBe(true);
+    expect(app.completions.some((c) => c.label === 'PREWHERE')).toBe(true);
+  });
+  it('starts with the built-in fallback before any load', () => {
+    const app = createApp(env());
+    expect(app.refData.keywordSet.has('SELECT')).toBe(true);
+    expect(app.completions.length).toBeGreaterThan(0);
+  });
+  it('rebuildCompletions folds in already-loaded schema columns', () => {
+    const app = createApp(env());
+    app.state.schema = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'c', type: 'UInt8' }] }] }];
+    app.rebuildCompletions();
+    expect(app.completions.some((c) => c.kind === 'column' && c.label === 'c' && c.parent === 't')).toBe(true);
+  });
+  it('loadReference tolerates being called before the editor mounts', async () => {
+    const app = createApp(env()); // no renderApp → no app.dom.editorSync
+    await expect(app.loadReference()).resolves.toBeUndefined();
+    expect(app.refData).toBeTruthy();
+  });
+  it('loadColumns folds the newly-loaded columns into the completion list (#26)', async () => {
+    const e = env({ fetch: makeFetch([
+      [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })],
+    ]) });
+    const app = createApp(e); // no renderApp → loadSchema can't clobber our schema mid-test
+    app.state.schema = [{ db: 'd', expanded: true, tables: [{ name: 't', columns: null }] }];
+    await app.actions.loadColumns('d', 't', app.state.schema[0].tables[0]);
+    expect(app.completions.some((c) => c.kind === 'column' && c.label === 'id' && c.parent === 't')).toBe(true);
+  });
+  it('entityDoc fetches a hover description on demand and caches it (#27)', async () => {
+    const fetch = makeFetch([
+      [(u, sql) => /system\.functions/.test(sql) && /description/.test(sql),
+        resp({ json: { data: [{ description: '\nCounts rows.' }] } })],
+    ]);
+    const app = createApp(env({ fetch }));
+    const first = await app.entityDoc('count');
+    const second = await app.entityDoc('count'); // served from cache, no second query
+    expect(first).toBe('Counts rows.'); // first non-empty line (CH leading blank stripped)
+    expect(second).toBe('Counts rows.');
+    const docQueries = fetch.mock.calls.filter(([, init]) => init && /system\.functions/.test(init.body) && /description/.test(init.body));
+    expect(docQueries.length).toBe(1);
+  });
+  it('does not cache a FAILED doc fetch — it retries on the next hover (#8 review)', async () => {
+    let calls = 0;
+    const fetch = makeFetch([
+      [(u, sql) => /system\.functions/.test(sql) && /description/.test(sql), () => {
+        calls += 1;
+        return calls === 1
+          ? resp({ ok: false, status: 500, text: 'boom' })            // transient failure
+          : resp({ json: { data: [{ description: 'Now works.' }] } }); // later succeeds
+      }],
+    ]);
+    const app = createApp(env({ fetch }));
+    expect(await app.entityDoc('count')).toBeNull(); // failed → null, not cached
+    expect(await app.entityDoc('count')).toBe('Now works.'); // retried, not served from a cached error
+    expect(calls).toBe(2);
+  });
+});
+
 describe('query run', () => {
   function appForRun(routes, over) {
     const e = env({ fetch: makeFetch(routes), ...over });

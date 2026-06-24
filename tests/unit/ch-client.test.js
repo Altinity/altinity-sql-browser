@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, runQuery, killQuery,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -183,6 +183,67 @@ describe('loadColumns', () => {
   it('handles missing data', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadColumns(ctx, 'db', 't', sqlString)).toEqual([]);
+  });
+});
+
+describe('loadReferenceData', () => {
+  it('loads keywords + function metadata from system tables', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('system.keywords')
+        ? jsonResp({ data: [{ keyword: 'SELECT' }, { keyword: 'PREWHERE' }] })
+        : jsonResp({ data: [{ name: 'count', is_aggregate: 1 }, { name: 'toDate', is_aggregate: 0 }] })
+    ));
+    const ref = await loadReferenceData(ctx);
+    expect(ref.keywords).toEqual(['SELECT', 'PREWHERE']);
+    expect(ref.functions.count).toEqual({ kind: 'agg', sig: 'count()', ret: '', desc: '' });
+    expect(ref.functions.toDate.kind).toBe('fn'); // is_aggregate 0 → plain function
+  });
+  it('returns null pieces when a system table is missing/denied (best-effort)', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 60. DB::Exception: Unknown table', false, 500));
+    expect(await loadReferenceData(ctx)).toEqual({ keywords: null, functions: null });
+  });
+  it('tolerates an empty data shape', async () => {
+    const ctx = ctxWith(async () => jsonResp({}));
+    expect(await loadReferenceData(ctx)).toEqual({ keywords: [], functions: {} });
+  });
+  it('uses the syntax column for signatures; descriptions are NOT bulk-loaded (lazy, #27)', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('system.keywords')
+        ? jsonResp({ data: [{ keyword: 'SELECT' }] })
+        : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)' }] })
+    ));
+    const ref = await loadReferenceData(ctx);
+    // desc stays '' here — hover docs are fetched on demand via loadEntityDoc.
+    expect(ref.functions.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
+  });
+  it('falls back to the minimal function query when the syntax column is absent (older CH)', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('system.keywords')) return jsonResp({ data: [{ keyword: 'SELECT' }] });
+      if (o.body.includes('syntax')) return textResp('Code: 47. DB::Exception: Unknown identifier syntax', false, 500);
+      return jsonResp({ data: [{ name: 'now', is_aggregate: 0 }] }); // minimal columns only
+    });
+    const ref = await loadReferenceData(ctx);
+    expect(ref.functions.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
+  });
+});
+
+describe('loadEntityDoc (#27 — lazy hover docs)', () => {
+  it('returns the first NON-empty line (CH descriptions begin with a blank line)', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ description: '\nCalculates a hash.\nMore detail here.' }] }));
+    expect(await loadEntityDoc(ctx, 'BLAKE3', sqlString)).toBe('Calculates a hash.');
+  });
+  it('escapes the name through sqlString and queries system.functions', async () => {
+    const fetchImpl = vi.fn(async () => jsonResp({ data: [{ description: 'doc' }] }));
+    const ctx = ctxWith(fetchImpl);
+    await loadEntityDoc(ctx, "o'brien", sqlString);
+    expect(fetchImpl.mock.calls[0][1].body).toContain("WHERE name = 'o''brien'");
+  });
+  it('returns "" when the query succeeds but there is no description (unknown name / blank)', async () => {
+    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [] })), 'nope', sqlString)).toBe('');
+    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [{ description: '\n   \n' }] })), 'blank', sqlString)).toBe('');
+  });
+  it('returns null when the query FAILS, so the caller can retry rather than cache it (#8 review)', async () => {
+    expect(await loadEntityDoc(ctxWith(async () => textResp('boom', false, 500)), 'x', sqlString)).toBeNull();
   });
 });
 

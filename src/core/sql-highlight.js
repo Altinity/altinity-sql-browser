@@ -26,8 +26,14 @@ export const SQL_FUNCS = new Set([
  * Tokenize SQL into [type, text] pairs. Types: comment, string, ident,
  * number, keyword, func, op, ws, other. The `ident` type covers backtick /
  * double-quoted identifiers and bare words that are neither keyword nor func.
+ *
+ * The optional second arg lets a caller override the keyword/function sets
+ * (#25) — e.g. the server's `system.keywords` / `system.functions` — so
+ * highlighting is version-correct. It is backward-compatible: existing callers
+ * pass nothing and get the built-in sets. `keywords` is matched
+ * case-insensitively (uppercased lookup); `funcs` is matched as-is.
  */
-export function tokenize(sql) {
+export function tokenize(sql, { keywords = SQL_KEYWORDS, funcs = SQL_FUNCS } = {}) {
   const out = [];
   let i = 0;
   const n = sql.length;
@@ -75,8 +81,8 @@ export function tokenize(sql) {
       const word = sql.slice(i, j);
       const upper = word.toUpperCase();
       let type = 'ident';
-      if (SQL_KEYWORDS.has(upper)) type = 'keyword';
-      else if (SQL_FUNCS.has(word)) type = 'func';
+      if (keywords.has(upper)) type = 'keyword';
+      else if (funcs.has(word)) type = 'func';
       out.push([type, word]);
       i = j;
       continue;
@@ -97,4 +103,28 @@ export function tokenize(sql) {
     i++;
   }
   return out;
+}
+
+// A same-length copy of `sql` with every string-literal, comment, and
+// backtick-quoted-identifier character replaced by NUL ('\0'). Bracket matching
+// (#24), signature help (#27), and auto-close decisions run on this so that
+// brackets/quotes/commas inside literals don't pair, count as arguments, or
+// trigger auto-close. NUL is none of `(),;\n`, so the raw-char scanners skip it.
+// Offsets are preserved (same length), so indices map back to the real text.
+export function maskFromTokens(tokens) {
+  let out = '';
+  for (const [t, v] of tokens) {
+    const literal = t === 'string' || t === 'comment' || (t === 'ident' && v[0] === '`');
+    out += literal ? '\0'.repeat(v.length) : v;
+  }
+  return out;
+}
+
+// Convenience wrapper that tokenizes then masks. Callers on the keystroke path
+// that already tokenized for highlighting should reuse maskFromTokens with that
+// token list instead, to avoid a second pass (#5 review). String/comment
+// classification is independent of the keyword/func sets, so a token list built
+// with server keyword overrides yields the same mask.
+export function maskLiterals(sql) {
+  return maskFromTokens(tokenize(sql));
 }

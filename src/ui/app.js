@@ -17,6 +17,7 @@ import { buildExportDoc, parseImportDoc } from '../core/saved-io.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
+import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
@@ -279,8 +280,42 @@ export function createApp(env = {}) {
     } catch (e) {
       app.state.schemaError = String((e && e.message) || e);
     }
+    app.rebuildCompletions();
     renderSchema(app);
     updateBanner();
+  };
+  // Editor reference data + autocomplete candidates. Loaded once per connection
+  // (the keystroke rule, #25): keywords/functions drive both version-correct
+  // highlighting and the autocomplete list; completion then runs client-side.
+  app.refData = assembleReferenceData(null); // built-in fallback until loaded
+  app.rebuildCompletions = () => {
+    app.completions = buildCompletions(app.refData, app.state.schema);
+  };
+  app.rebuildCompletions();
+  // Hover docs (#27) are fetched on demand per entity and cached for reuse —
+  // descriptions are large, so they stay out of the bulk reference load. The
+  // cache holds the resolved string (incl. '' for no-doc / error) so each entity
+  // is queried at most once per connection; an in-flight promise is cached too
+  // to dedupe concurrent hovers of the same word.
+  app.docCache = new Map();
+  app.entityDoc = (name) => {
+    if (app.docCache.has(name)) return Promise.resolve(app.docCache.get(name));
+    const p = ensureConfig().then(() => ch.loadEntityDoc(chCtx, name, sqlString));
+    app.docCache.set(name, p); // dedupe concurrent hovers of the same name
+    p.then((doc) => {
+      // Cache a resolved doc ('' included = genuinely no doc), but DROP a failed
+      // fetch (null) so a transient error doesn't suppress it for the session (#8).
+      if (doc === null) app.docCache.delete(name);
+      else app.docCache.set(name, doc);
+    });
+    return p;
+  };
+  app.loadReference = async () => {
+    await ensureConfig();
+    app.refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
+    app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
+    app.rebuildCompletions();
+    if (app.dom.editorSync) app.dom.editorSync(); // re-highlight with server keywords
   };
   // A prominent, dismissible banner for schema/auth failures — the schema-panel
   // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
@@ -313,6 +348,7 @@ export function createApp(env = {}) {
     } catch {
       tableObj.columns = [];
     }
+    app.rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
     renderSchema(app);
   }
 
@@ -742,4 +778,5 @@ export function renderApp(app, helpers) {
   app.updateSaveBtn();
   app.loadVersion();
   app.loadSchema();
+  app.loadReference();
 }

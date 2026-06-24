@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tokenize, SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-highlight.js';
+import { tokenize, maskLiterals, SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-highlight.js';
 
 const types = (sql) => tokenize(sql).map((t) => t[0]);
 const text = (sql) => tokenize(sql).map((t) => t[1]).join('');
@@ -47,11 +47,39 @@ describe('tokenize', () => {
   it('emits "other" for unknown single chars', () => {
     expect(tokenize('@')).toEqual([['other', '@']]);
   });
+  it('accepts dynamic keyword/func sets, overriding the built-ins (#25)', () => {
+    const keywords = new Set(['FOO']);
+    const funcs = new Set(['bar']);
+    const toks = tokenize('FOO bar SELECT count', { keywords, funcs });
+    expect(toks).toContainEqual(['keyword', 'FOO']); // keyword match is case-insensitive
+    expect(toks).toContainEqual(['func', 'bar']);
+    // built-ins no longer classify once overridden
+    expect(toks).toContainEqual(['ident', 'SELECT']);
+    expect(toks).toContainEqual(['ident', 'count']);
+  });
 });
 
 describe('keyword/func sets', () => {
   it('expose the expected members', () => {
     expect(SQL_KEYWORDS.has('SELECT')).toBe(true);
     expect(SQL_FUNCS.has('count')).toBe(true);
+  });
+});
+
+describe('maskLiterals (#2 review)', () => {
+  const NUL = '\0';
+  it('replaces string, comment, and backtick-ident chars with NUL, keeping code + length', () => {
+    const src = "a('(', b) -- )\n`c,d` /* x */";
+    const out = maskLiterals(src);
+    expect(out.length).toBe(src.length);          // offsets preserved
+    expect(out.slice(0, 2)).toBe('a(');           // code untouched
+    expect(out.slice(2, 5)).toBe(NUL.repeat(3));  // the string '(' → NUL (its bracket won't pair)
+    expect(out[5]).toBe(',');                     // the comma OUTSIDE the string stays code
+    expect(out.includes('c,d')).toBe(false);      // the comma inside the backtick ident is masked
+    expect(out.includes('--')).toBe(false);       // line comment masked
+    expect(out.includes('/*')).toBe(false);       // block comment masked
+  });
+  it('leaves a string of pure code unchanged', () => {
+    expect(maskLiterals('count(x, y)')).toBe('count(x, y)');
   });
 });

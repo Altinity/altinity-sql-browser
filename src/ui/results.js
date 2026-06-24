@@ -2,7 +2,7 @@
 // view for TSV/JSON output) plus the renderers. Heavy logic (sorting, axis
 // selection) lives in core/ and is reused here.
 
-import { h } from './dom.js';
+import { h, zoomScale } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
@@ -54,7 +54,7 @@ function startColumnResize(r, th, ev) {
   }
   applyFixedWidths(table, r);
   const win = th.ownerDocument.defaultView;
-  const scale = th.getBoundingClientRect().width / th.offsetWidth;
+  const scale = zoomScale(th);
   const startX = ev.clientX;
   const startW = r.colWidths[colIndex];
   const onMove = (m) => {

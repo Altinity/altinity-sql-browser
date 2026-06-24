@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Altinity Play — Redesigned</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  #root { width: 100%; height: 100vh; }
+
+  :root {
+    --ui: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+  }
+
+  /* DARK theme (default) */
+  [data-theme='dark'] {
+    --bg: #0E0E10;
+    --bg-header: #131316;
+    --bg-side: #131316;
+    --bg-tabs: #131316;
+    --bg-toolbar: #15151A;
+    --bg-editor: #0E0E10;
+    --bg-gutter: #131316;
+    --bg-table: #0E0E10;
+    --bg-th: #15151A;
+    --bg-input: #1A1A20;
+    --bg-chip: #1F1F26;
+    --bg-hover: rgba(255, 255, 255, .04);
+    --bg-highlight: rgba(255, 107, 53, .08);
+    --bg-modal: #1A1A20;
+    --fg: #E6E6E8;
+    --fg-mute: #A0A0A8;
+    --fg-faint: #6B6B74;
+    --num: #92E1D8;
+    --border: #1F1F26;
+    --border-faint: #1A1A20;
+  }
+
+  /* LIGHT theme */
+  [data-theme='light'] {
+    --bg: #FAFAFA;
+    --bg-header: #FFFFFF;
+    --bg-side: #F5F5F4;
+    --bg-tabs: #F5F5F4;
+    --bg-toolbar: #FAFAF9;
+    --bg-editor: #FFFFFF;
+    --bg-gutter: #FAFAF9;
+    --bg-table: #FFFFFF;
+    --bg-th: #F5F5F4;
+    --bg-input: #FFFFFF;
+    --bg-chip: #EEECE8;
+    --bg-hover: rgba(0, 0, 0, .04);
+    --bg-highlight: rgba(255, 107, 53, .12);
+    --bg-modal: #FFFFFF;
+    --fg: #1A1A1F;
+    --fg-mute: #57575E;
+    --fg-faint: #94949C;
+    --num: #0F766E;
+    --border: #E5E3DE;
+    --border-faint: #EEECE7;
+  }
+
+  /* SQL syntax */
+  .sql-keyword { color: #C586C0; font-weight: 500; }
+  [data-theme='light'] .sql-keyword { color: #AF00DB; }
+  .sql-func { color: #DCDCAA; }
+  [data-theme='light'] .sql-func { color: #795E26; }
+  .sql-string { color: #CE9178; }
+  [data-theme='light'] .sql-string { color: #A31515; }
+  .sql-number { color: #B5CEA8; }
+  [data-theme='light'] .sql-number { color: #098658; }
+  .sql-comment { color: #6A9955; font-style: italic; }
+  [data-theme='light'] .sql-comment { color: #008000; font-style: italic; }
+  .sql-ident { color: var(--fg); }
+  .sql-op { color: var(--fg-mute); }
+
+  /* Toolbar buttons */
+  .tb-btn {
+    height: 26px;
+    padding: 0 9px;
+    background: transparent;
+    color: var(--fg-mute);
+    border: 1px solid transparent;
+    border-radius: 5px;
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background .12s, color .12s;
+  }
+  .tb-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .tb-select {
+    height: 26px;
+    padding: 0 22px 0 9px;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    color: var(--fg-mute);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  [data-theme='dark'] .tb-select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path fill='%23A0A0A8' d='M0 0h8L4 5z'/></svg>");
+  }
+  [data-theme='light'] .tb-select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path fill='%2357575E' d='M0 0h8L4 5z'/></svg>");
+  }
+  .tb-select:hover { color: var(--fg); }
+
+  /* Header buttons */
+  .hd-btn {
+    width: 26px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    color: var(--fg-mute);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+  }
+  .hd-btn:hover { background: var(--bg-hover); color: var(--fg); }
+
+  /* Row hover */
+  table.results tbody tr:hover td { background: var(--bg-hover); }
+  tr.row:hover td { background: var(--bg-hover); }
+
+  /* Scrollbars */
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 5px;
+    border: 2px solid transparent; background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: var(--fg-faint); background-clip: content-box; border: 2px solid transparent; }
+
+  /* Compact density tweaks */
+  [data-density='compact'] .qtabs { height: 28px; }
+
+  /* Query-running loader */
+  @keyframes twk-spin { to { transform: rotate(360deg); } }
+  .spin { animation: twk-spin .8s linear infinite; }
+  @keyframes twk-indet {
+    0% { left: -40%; }
+    100% { left: 100%; }
+  }
+  .indet { animation: twk-indet 1.1s ease-in-out infinite; }
+  @keyframes twk-runsweep {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+  }
+  .runsweep { animation: twk-runsweep 1.1s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "accent": "#3B82F6",
+  "density": "comfortable",
+  "sidebar": true,
+  "slowQuery": true
+}/*EDITMODE-END*/;
+window.TWEAK_DEFAULTS = TWEAK_DEFAULTS;
+</script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="data.jsx?v=6"></script>
+<script type="text/babel" src="editor-data.jsx?v=6"></script>
+<script type="text/babel" src="editor-search.jsx?v=6"></script>
+<script type="text/babel" src="editor-complete.jsx?v=7"></script>
+<script type="text/babel" src="sql-editor.jsx?v=7"></script>
+<script type="text/babel" src="components.jsx?v=6"></script>
+<script type="text/babel" src="app.jsx?v=6"></script>
+
+<script type="text/babel">
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App />);
+</script>
+</body>
+</html>

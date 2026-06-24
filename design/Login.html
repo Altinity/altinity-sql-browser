@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Altinity SQL Browser — Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  #root { width: 100%; min-height: 100vh; }
+
+  :root {
+    --ui: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+  }
+
+  [data-theme='dark'] {
+    --bg: #0E0E10;
+    --bg-2: #131316;
+    --bg-card: #15151A;
+    --bg-input: #0E0E10;
+    --bg-chip: #1F1F26;
+    --bg-hover: rgba(255,255,255,.05);
+    --fg: #E6E6E8;
+    --fg-mute: #A0A0A8;
+    --fg-faint: #6B6B74;
+    --border: #26262E;
+    --border-faint: #1C1C22;
+    --shadow: 0 24px 70px rgba(0,0,0,.55);
+  }
+  [data-theme='light'] {
+    --bg: #F4F3F0;
+    --bg-2: #FFFFFF;
+    --bg-card: #FFFFFF;
+    --bg-input: #FFFFFF;
+    --bg-chip: #EEECE8;
+    --bg-hover: rgba(0,0,0,.04);
+    --fg: #1A1A1F;
+    --fg-mute: #57575E;
+    --fg-faint: #94949C;
+    --border: #E2E0DA;
+    --border-faint: #EDEBE6;
+    --shadow: 0 24px 70px rgba(40,30,20,.14);
+  }
+
+  .fld {
+    width: 100%; height: 38px; padding: 0 11px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--fg); font-size: 13px; outline: none;
+    font-family: var(--ui); transition: border-color .12s, box-shadow .12s;
+  }
+  .fld::placeholder { color: var(--fg-faint); }
+  .fld:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
+  .fld.mono { font-family: var(--mono); font-size: 12.5px; }
+
+  .btn {
+    width: 100%; height: 42px; border-radius: 9px; border: 1px solid transparent;
+    font-family: var(--ui); font-size: 13.5px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    transition: background .14s, border-color .14s, opacity .14s, transform .04s;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: color-mix(in oklab, var(--accent) 88%, #000); }
+  .btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-ghost:hover { background: var(--bg-hover); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn:disabled:active { transform: none; }
+
+  .icon-btn {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 28px; height: 28px; border: none; background: transparent;
+    color: var(--fg-faint); cursor: pointer; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--fg-mute); }
+
+  .lbl { font-size: 11.5px; font-weight: 500; color: var(--fg-mute); display: block; margin-bottom: 6px; }
+  .disc {
+    appearance: none; background: transparent; border: none; cursor: pointer;
+    color: var(--fg-mute); font-family: var(--ui); font-size: 12px; font-weight: 500;
+    display: flex; align-items: center; gap: 6px; padding: 4px 0;
+  }
+  .disc:hover { color: var(--fg); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "accent": "#3B82F6"
+}/*EDITMODE-END*/;
+window.TWEAK_DEFAULTS = TWEAK_DEFAULTS;
+</script>
+
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+// The server currently serving this page (where SSO is configured).
+const CURRENT_HOST = 'otel.demo.altinity.cloud';
+
+const I = {
+  shield: (p={}) => <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M9 1.5l6 2.2v4.1c0 3.6-2.5 6.6-6 7.7-3.5-1.1-6-4.1-6-7.7V3.7z"/><path d="M6.4 9l1.9 1.9 3.4-3.6"/></svg>,
+  eye: (p={}) => <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>,
+  eyeOff: (p={}) => <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M6.2 3.7A6.6 6.6 0 0 1 8 3.5C12 3.5 14.5 8 14.5 8a11 11 0 0 1-2 2.4M9.8 9.8A2 2 0 0 1 6.2 6.2M1.5 8S4 3.5 8 3.5m-6.5 4.5a11 11 0 0 0 2 2.4M2 2l12 12"/></svg>,
+  chev: (p={}) => <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M2 4l3.5 3.5L9 4"/></svg>,
+  server: (p={}) => <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" {...p}><rect x="2" y="2" width="10" height="4" rx="1"/><rect x="2" y="8" width="10" height="4" rx="1"/><path d="M4.5 4h.01M4.5 10h.01"/></svg>,
+  arrow: (p={}) => <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...p}><path d="M2.5 7h9M8 3.5L11.5 7 8 10.5"/></svg>,
+  github: (p={}) => <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" {...p}><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>,
+};
+
+function Field({ label, type='text', value, onChange, placeholder, mono, autoFocus, right, onKeyDown }) {
+  return (
+    <div>
+      {label && <label className="lbl">{label}</label>}
+      <div style={{ position: 'relative' }}>
+        <input className={'fld' + (mono ? ' mono' : '')} type={type} value={value}
+          onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+          autoFocus={autoFocus} onKeyDown={onKeyDown} spellCheck={false}
+          autoComplete="off" style={right ? { paddingRight: 38 } : undefined} />
+        {right}
+      </div>
+    </div>
+  );
+}
+
+function Login() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [host, setHost] = useState('');
+  const [advOpen, setAdvOpen] = useState(false);
+  const [busy, setBusy] = useState(null); // 'sso' | 'creds' | null
+
+  const hasCreds = username.trim().length > 0 && password.length > 0;
+  const hostOverride = host.trim();
+  const effectiveHost = hostOverride || CURRENT_HOST;
+
+  const go = (mode) => {
+    setBusy(mode);
+    setTimeout(() => setBusy(null), 1600); // demo only
+  };
+  const onCredsKey = (e) => { if (e.key === 'Enter' && hasCreds) go('creds'); };
+
+  return (
+    <div data-theme={t.theme} style={{
+      '--accent': t.accent,
+      minHeight: '100vh', width: '100%', background: 'var(--bg)', color: 'var(--fg)',
+      fontFamily: 'var(--ui)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 24, position: 'relative', overflow: 'hidden',
+    }}>
+      {/* subtle backdrop */}
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none',
+        background: 'radial-gradient(700px 380px at 50% -8%, color-mix(in oklab, var(--accent) 13%, transparent), transparent 70%)' }} />
+
+      <div style={{
+        position: 'relative', width: 400, maxWidth: '100%', background: 'var(--bg-card)',
+        border: '1px solid var(--border)', borderRadius: 16, boxShadow: 'var(--shadow)',
+        padding: '30px 30px 22px',
+      }}>
+        {/* Brand */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 22 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8,
+            background: 'linear-gradient(135deg, var(--accent), color-mix(in oklab, var(--accent) 62%, #000))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', fontWeight: 700, fontSize: 15 }}>A</div>
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Altinity SQL Browser</span>
+            <span style={{ fontSize: 11, color: 'var(--fg-faint)', fontFamily: 'var(--mono)' }}>ClickHouse query console</span>
+          </div>
+        </div>
+
+        <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: -.3, marginBottom: 4 }}>Sign in</div>
+        <div style={{ fontSize: 12.5, color: 'var(--fg-mute)', marginBottom: 20, lineHeight: 1.5 }}>
+          Use single sign-on for this server, or connect with ClickHouse credentials.
+        </div>
+
+        {/* SSO */}
+        <button className={'btn ' + (hasCreds ? 'btn-ghost' : 'btn-primary')}
+          onClick={() => go('sso')} disabled={!!busy}>
+          {I.shield()} {busy === 'sso' ? 'Redirecting…' : 'Continue with SSO'}
+        </button>
+        <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginTop: 7, display: 'flex', alignItems: 'center', gap: 5, justifyContent: 'center' }}>
+          {I.server()} Authenticates on <span style={{ color: 'var(--fg-mute)', fontFamily: 'var(--mono)' }}>{CURRENT_HOST}</span>
+        </div>
+
+        {/* divider */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--border-faint)' }} />
+          <span style={{ fontSize: 10.5, color: 'var(--fg-faint)', textTransform: 'uppercase', letterSpacing: '.07em' }}>or use credentials</span>
+          <div style={{ flex: 1, height: 1, background: 'var(--border-faint)' }} />
+        </div>
+
+        {/* Credentials */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+          <Field label="Username" value={username} onChange={setUsername}
+            placeholder="default" mono onKeyDown={onCredsKey} />
+          <Field label="Password" value={password} onChange={setPassword}
+            type={showPw ? 'text' : 'password'} placeholder="••••••••" mono onKeyDown={onCredsKey}
+            right={<button className="icon-btn" onClick={() => setShowPw(s => !s)}
+              tabIndex={-1} title={showPw ? 'Hide' : 'Show'}>{showPw ? I.eyeOff() : I.eye()}</button>} />
+        </div>
+
+        {/* Advanced: host override */}
+        <div style={{ marginTop: 12 }}>
+          <button className="disc" onClick={() => setAdvOpen(o => !o)}>
+            <span style={{ display: 'flex', transform: advOpen ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform .15s' }}>{I.chev()}</span>
+            Advanced — connect to another server
+          </button>
+          {advOpen && (
+            <div style={{ marginTop: 10 }}>
+              <Field label="Server address (host:port)" value={host} onChange={setHost}
+                placeholder={CURRENT_HOST + ':8443'} mono onKeyDown={onCredsKey} />
+              <div style={{ fontSize: 11, color: 'var(--fg-faint)', marginTop: 6, lineHeight: 1.5 }}>
+                Leave blank to use this server. A custom host applies to credential
+                sign-in only — SSO always authenticates on <span style={{ fontFamily: 'var(--mono)' }}>{CURRENT_HOST}</span>.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Connect with credentials */}
+        <button className={'btn ' + (hasCreds ? 'btn-primary' : 'btn-ghost')}
+          style={{ marginTop: 16 }}
+          onClick={() => go('creds')} disabled={!hasCreds || !!busy}>
+          {busy === 'creds' ? 'Connecting…' : <>Connect{I.arrow()}</>}
+        </button>
+
+        {/* Live target summary */}
+        <div style={{
+          marginTop: 14, padding: '9px 11px', background: 'var(--bg-input)',
+          border: '1px solid var(--border-faint)', borderRadius: 8,
+          fontSize: 11, color: 'var(--fg-mute)', fontFamily: 'var(--mono)',
+          display: 'flex', alignItems: 'center', gap: 7, lineHeight: 1.4,
+        }}>
+          <span style={{ width: 6, height: 6, borderRadius: 3, background: '#22c55e',
+            boxShadow: '0 0 6px #22c55e', flexShrink: 0 }} />
+          <span style={{ color: 'var(--fg-faint)' }}>Target</span>
+          <span style={{ color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {effectiveHost}
+          </span>
+          <span style={{ flex: 1 }} />
+          <span style={{ color: 'var(--fg-faint)' }}>
+            {hasCreds ? `as ${username.trim()}` : 'via SSO'}
+          </span>
+        </div>
+
+        {/* Footer */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border-faint)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          fontSize: 11, color: 'var(--fg-faint)' }}>
+          <a href="https://github.com/Altinity/altinity-sql-browser" target="_blank" rel="noopener noreferrer"
+            style={{ color: 'var(--fg-mute)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            {I.github()} Source
+          </a>
+          <span style={{ fontFamily: 'var(--mono)' }}>ClickHouse 26.3.10</span>
+        </div>
+      </div>
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Theme">
+          <TweakRadio label="Mode" value={t.theme} options={['dark', 'light']}
+            onChange={(v) => setTweak('theme', v)} />
+          <TweakColor label="Accent" value={t.accent} onChange={(v) => setTweak('accent', v)} />
+          <div style={{ display: 'flex', gap: 6, padding: '2px 0' }}>
+            {['#3B82F6', '#FF6B35', '#10B981', '#F0A500', '#EC4899'].map(c => (
+              <button key={c} onClick={() => setTweak('accent', c)}
+                style={{ flex: 1, height: 22, border: 'none', background: c, borderRadius: 4,
+                  cursor: 'pointer', outline: t.accent === c ? '2px solid rgba(125,125,125,.7)' : 'none', outlineOffset: 1 }}
+                title={c} />
+            ))}
+          </div>
+        </TweakSection>
+      </TweaksPanel>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Login />);
+</script>
+</body>
+</html>
