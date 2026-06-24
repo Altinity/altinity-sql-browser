@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderSchema } from '../../src/ui/schema.js';
 import { IDENT_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -6,7 +6,11 @@ import { makeApp } from '../helpers/fake-app.js';
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 const shiftClick = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
-const dblclick = (el) => el.dispatchEvent(new Event('dblclick', { bubbles: true }));
+// A double-click is two quick clicks on the same row — the app detects it itself
+// rather than via the native `dblclick` event (which Firefox drops when the row
+// re-renders between clicks). Clicking the same captured node twice works even
+// though the first click detaches it: the listener + per-app state still fire.
+const dblclick = (el) => { click(el); click(el); };
 // Fire a dragstart with a stub dataTransfer and return what setData captured.
 const dragstart = (el) => {
   const e = new Event('dragstart', { bubbles: true });
@@ -129,7 +133,7 @@ describe('renderSchema tree', () => {
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('loading columns…');
   });
-  it('columns: plain click inserts nothing; double-click inserts name; shift-click inserts ::type', () => {
+  it('columns: a plain click inserts nothing, a quick repeat (double-click) inserts the name', () => {
     const app = withSchema();
     app.state.schema[0].tables[0].columns = [
       { name: 'id', type: 'UInt64', comment: 'pk' },     // comment → title branch
@@ -140,11 +144,46 @@ describe('renderSchema tree', () => {
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
     click(colRow);
-    expect(app.actions.insertAtCursor).not.toHaveBeenCalled(); // single click does nothing
-    dblclick(colRow);
+    expect(app.actions.insertAtCursor).not.toHaveBeenCalled(); // first click does nothing
+    click(colRow); // quick repeat → double-click
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id');
+  });
+  it('columns: shift-click inserts name::type', () => {
+    const app = withSchema();
+    app.state.schema[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: 'pk' }];
+    app.state.expandedTables.add('db1.orders');
+    renderSchema(app);
+    const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+      .find((r) => r.querySelector('.label').textContent === 'id');
     shiftClick(colRow);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id::UInt64');
+  });
+  it('two quick clicks on different rows are two single clicks, not a double', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db1Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
+    const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+    click(db1Row); // single: collapses db1
+    click(db2Row); // different row → single: expands db2 (not an insert)
+    expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
+    expect(app.state.schema[1].expanded).toBe(true);
+  });
+  it('a slow second click on the same row is a single click, not a double (window expired)', () => {
+    vi.useFakeTimers();
+    try {
+      const app = withSchema();
+      renderSchema(app);
+      let db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+      click(db2Row); // expand db2
+      expect(app.state.schema[1].expanded).toBe(true);
+      vi.advanceTimersByTime(400); // past DBLCLICK_MS (300ms)
+      db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+      click(db2Row); // expired → single → collapses db2, not an insert
+      expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
+      expect(app.state.schema[1].expanded).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

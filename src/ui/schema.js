@@ -23,6 +23,23 @@ const treeRow = (icon, label, meta, { expanded, iconColor } = {}) => [
   h('span', { class: 'meta' }, meta),
 ];
 
+// Distinguish single- from double-click WITHOUT the native `dblclick` event.
+// Every row's single-click handler re-renders the tree (replaceChildren), which
+// swaps the row node between a double-click's two clicks — and Firefox refuses to
+// fire `dblclick` across that node swap (Chrome tolerates it), so the schema
+// double-clicks silently did nothing in Firefox. Instead we record the last
+// click on `app` (per instance → tests stay isolated) and treat a quick repeat
+// on the same row as the double. Single click stays instant; the double runs in
+// addition to that first click's expand.
+const DBLCLICK_MS = 300;
+function isDoubleClick(app, key) {
+  const now = Date.now();
+  const last = app._schemaClick;
+  const dbl = !!last && last.key === key && now - last.at < DBLCLICK_MS;
+  app._schemaClick = dbl ? null : { key, at: now };
+  return dbl;
+}
+
 export function renderSchema(app) {
   const list = app.dom.schemaList;
   if (!list) return;
@@ -52,10 +69,10 @@ export function renderSchema(app) {
       title: 'Click to expand · double-click to insert · shift-click for SHOW CREATE',
       onclick: (e) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + db.db); return; }
+        if (isDoubleClick(app, 'db:' + db.db)) { app.actions.insertAtCursor(db.db); return; }
         db.expanded = !db.expanded;
         renderSchema(app);
       },
-      ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(db.db); },
       ...dragProps(db.db),
     },
       ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: db.expanded }),
@@ -81,12 +98,12 @@ export function renderSchema(app) {
         ...dragProps(key),
         onclick: (e) => {
           if (e.shiftKey) { app.actions.insertCreate(key); return; }
+          if (isDoubleClick(app, 'tb:' + key)) { app.actions.replaceEditor('SELECT * FROM ' + key + ' LIMIT 100'); return; }
           if (state.expandedTables.has(key)) state.expandedTables.delete(key);
           else state.expandedTables.add(key);
           if (state.expandedTables.has(key) && tb.columns == null) app.actions.loadColumns(db.db, tb.name, tb);
           else renderSchema(app);
         },
-        ondblclick: (e) => { e.stopPropagation(); app.actions.replaceEditor('SELECT * FROM ' + key + ' LIMIT 100'); },
       },
         ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),
       ));
@@ -105,8 +122,11 @@ export function renderSchema(app) {
           style: { paddingLeft: '38px' },
           title: (c.comment && c.comment.trim())
             || ('Double-click or drag to insert ' + c.name + ' · shift-click for ' + c.name + '::' + c.type),
-          onclick: (e) => { e.stopPropagation(); if (e.shiftKey) app.actions.insertAtCursor(c.name + '::' + c.type); },
-          ondblclick: (e) => { e.stopPropagation(); app.actions.insertAtCursor(c.name); },
+          onclick: (e) => {
+            e.stopPropagation();
+            if (e.shiftKey) { app.actions.insertAtCursor(c.name + '::' + c.type); return; }
+            if (isDoubleClick(app, 'col:' + key + '.' + c.name)) app.actions.insertAtCursor(c.name);
+          },
           ...dragProps(c.name),
         },
           ...treeRow(Icon.col(), c.name, c.type, { expanded: null, iconColor: 'var(--fg-faint)' }),
