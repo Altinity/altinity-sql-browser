@@ -236,11 +236,14 @@ export async function loadEntityDoc(ctx, name, sqlString) {
 export async function runQuery(ctx, sql, o = {}) {
   const fmt = o.format || 'Table';
   const isStreaming = fmt === 'Table';
+  // Streaming gets the progress-bearing JSON; raw mode sends the requested format
+  // verbatim as default_format (a real ClickHouse format name from a FORMAT clause
+  // or an implicit EXPLAIN). 'TSV' keeps its with-names-and-types expansion.
   const fmtParam = isStreaming
     ? 'JSONStringsEachRowWithProgress'
     : fmt === 'TSV'
       ? 'TabSeparatedWithNamesAndTypes'
-      : 'JSONCompact';
+      : fmt;
   const url = chUrl(ctx.origin, {
     format: fmtParam,
     // wait_end_of_query buffers the whole response server-side so the HTTP

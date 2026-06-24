@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isExplain,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -98,6 +98,20 @@ describe('detectSqlFormat', () => {
     expect(detectSqlFormat("SELECT 'FORMAT JSON' AS x")).toBeNull(); // FORMAT not the trailing clause
     expect(detectSqlFormat('')).toBeNull();
     expect(detectSqlFormat(null)).toBeNull();
+  });
+});
+
+describe('isExplain', () => {
+  it('detects a leading EXPLAIN (any variant), ignoring leading whitespace/case', () => {
+    expect(isExplain('EXPLAIN SELECT 1')).toBe(true);
+    expect(isExplain('  explain pipeline SELECT 1')).toBe(true);
+    expect(isExplain('EXPLAIN AST SELECT 1')).toBe(true);
+  });
+  it('is false for non-EXPLAIN statements', () => {
+    expect(isExplain('SELECT 1')).toBe(false);
+    expect(isExplain('SELECT explain FROM t')).toBe(false); // EXPLAIN not the leading keyword
+    expect(isExplain('')).toBe(false);
+    expect(isExplain(null)).toBe(false);
   });
 });
 

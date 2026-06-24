@@ -11,7 +11,7 @@ import {
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isExplain } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
@@ -378,9 +378,10 @@ export function createApp(env = {}) {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
-    // Default to structured streaming (Table); if the user ends their SQL with a
-    // FORMAT clause, run raw and show ClickHouse's response verbatim (#format).
-    const fmt = detectSqlFormat(tab.sql) || 'Table';
+    // Default to structured streaming (Table); an explicit FORMAT clause runs raw
+    // and shows ClickHouse's response verbatim, and so does EXPLAIN (its plan text
+    // reads far better raw than as a one-column table) unless a FORMAT was given.
+    const fmt = detectSqlFormat(tab.sql) || (isExplain(tab.sql) ? 'TabSeparated' : 'Table');
     const t0 = now();
     tab.result = newResult(fmt);
     app.state.resultSort = { col: null, dir: 'asc' };

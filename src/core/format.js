@@ -74,6 +74,12 @@ export function detectSqlFormat(sql) {
   return m ? m[1] : null;
 }
 
+/** True if the statement is an EXPLAIN (leading keyword). EXPLAIN output is plan
+ *  text, so the caller renders it raw unless the user gave an explicit FORMAT. Pure. */
+export function isExplain(sql) {
+  return /^\s*EXPLAIN\b/i.test(String(sql || ''));
+}
+
 /**
  * Derive a short display name for a saved query: "Query · <table>" when a
  * FROM clause is present, else the first 48 chars of the collapsed SQL.

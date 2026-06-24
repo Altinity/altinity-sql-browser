@@ -349,6 +349,23 @@ describe('query run', () => {
     expect(app.activeTab().result.rawText).toBe('a\tb');
     expect(app.activeTab().result.rawFormat).toBe('TabSeparatedWithNames'); // label for the raw tab
   });
+  it('runs EXPLAIN raw (plan text) when no explicit FORMAT is given', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'Expression\n  ReadFromTable' })],
+    ]);
+    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.rawText).toBe('Expression\n  ReadFromTable');
+    expect(app.activeTab().result.rawFormat).toBe('TabSeparated'); // plain TS → no header noise
+  });
+  it('an explicit FORMAT on an EXPLAIN still wins over the raw default', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /EXPLAIN/.test(sql), resp({ text: '{"plan":[]}' })],
+    ]);
+    app.activeTab().sql = 'EXPLAIN SELECT 1 FORMAT JSON';
+    await app.actions.run();
+    expect(app.activeTab().result.rawFormat).toBe('JSON'); // FORMAT clause, not the EXPLAIN default
+  });
 });
 
 describe('formatQuery', () => {
