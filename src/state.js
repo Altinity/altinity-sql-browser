@@ -216,14 +216,24 @@ export function newLibrary(state, save = saveJSON, saveName = saveStr) {
 }
 
 /** Replace the library with `queries`, adopting the loaded file's base name.
- *  Original ids are kept (lossless round-trip); id-less entries get a fresh id.
+ *  Unique ids are kept (lossless round-trip); missing OR duplicate ids get a fresh id.
  *  Clears dirty; open tabs are kept (dangling links pruned). */
 export function replaceLibrary(state, queries, fileName, save = saveJSON, saveName = saveStr, genId = () => makeId('s', Date.now())) {
-  state.savedQueries = queries.map((q) => ({
-    id: q.id || genId(), name: q.name, sql: q.sql, favorite: !!q.favorite,
-    ...(q.description ? { description: q.description } : {}),
-    ...(q.chart ? { chart: q.chart } : {}), ...(q.view ? { view: q.view } : {}),
-  }));
+  const seen = new Set();
+  state.savedQueries = queries.map((q) => {
+    // Mint a fresh id for a missing OR already-seen id so every saved row has a
+    // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
+    // id would let one delete remove several rows and rename/favorite hit the
+    // wrong one. (mergeSaved-based import already collapsed dup ids; keep parity.)
+    let id = q.id;
+    if (!id || seen.has(id)) { do { id = genId(); } while (seen.has(id)); }
+    seen.add(id);
+    return {
+      id, name: q.name, sql: q.sql, favorite: !!q.favorite,
+      ...(q.description ? { description: q.description } : {}),
+      ...(q.chart ? { chart: q.chart } : {}), ...(q.view ? { view: q.view } : {}),
+    };
+  });
   pruneTabLinks(state);
   const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
   state.libraryName = base || DEFAULT_LIBRARY_NAME;

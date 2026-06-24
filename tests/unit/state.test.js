@@ -321,6 +321,25 @@ describe('library document', () => {
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My Library');
   });
 
+  it('replaceLibrary mints fresh ids for duplicate incoming ids, keeping every id unique', () => {
+    const s = createState(reader());
+    const incoming = [
+      { id: 'dup', name: 'A', sql: '1' },
+      { id: 'dup', name: 'B', sql: '2' }, // same id → must be reassigned
+      { id: 'uniq', name: 'C', sql: '3' },
+      { name: 'D', sql: '4' },            // id-less → minted
+    ];
+    // first mint collides with an already-seen id → the retry loop must skip it
+    let n = 0;
+    const genId = () => { n += 1; return n === 1 ? 'dup' : 'g' + n; };
+    replaceLibrary(s, incoming, 'lib.json', vi.fn(), vi.fn(), genId);
+    const ids = s.savedQueries.map((q) => q.id);
+    expect(ids[0]).toBe('dup');                       // first occurrence keeps its id
+    expect(ids[2]).toBe('uniq');                      // unique id preserved
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);               // all unique (no duplicate 'dup')
+  });
+
   it('replaceLibrary with no usable file name falls back to the default', () => {
     const s = createState(reader());
     replaceLibrary(s, [{ name: 'A', sql: '1' }], '.json', vi.fn(), vi.fn(), () => 'g');
