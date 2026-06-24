@@ -29,7 +29,7 @@ export function renderSavedHistory(app) {
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'saved' ? ' active' : ''),
       onclick: () => switchTo('saved'),
-    }, Icon.star(state.sidePanel === 'saved'), h('span', null, 'Library'),
+    }, Icon.layers(), h('span', null, 'Library'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'history' ? ' active' : ''),

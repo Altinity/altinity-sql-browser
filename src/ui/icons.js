@@ -52,6 +52,8 @@ export const Icon = {
     e.setAttribute('fill', filled ? 'currentColor' : 'none');
     return e;
   },
+  // Library tab glyph — stacked layers, so it doesn't clash with the per-query ★.
+  layers: () => iconEl('<path d="M6 1.4 1.2 3.7 6 6l4.8-2.3z"/><path d="M1.6 6 6 8.1 10.4 6"/><path d="M1.6 8.4 6 10.5l4.4-2.1"/>', 12, 12, 1.2),
   history: () => svg('M2.5 5.5a3.5 3.5 0 1 1 1 2.5M2 3v2.5h2.5M6 3.5V6l1.5 1', 12, 12),
   share: () => iconEl('<circle cx="9" cy="3" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="9" cy="9" r="1.5"/><path d="M4.3 5.3l3.4-1.6M4.3 6.7l3.4 1.6"/>', 12, 12),
   chart: () => svg('M2 10V7M5 10V4M8 10V6M11 10V2', 12, 12),
