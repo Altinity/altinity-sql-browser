@@ -12,15 +12,14 @@ export function tabChart(tab) {
   return tab && tab.chartCfg ? { cfg: cloneChartCfg(tab.chartCfg), key: tab.chartKey ?? null } : null;
 }
 
-/** Result views a saved query can remember (the raw TSV/JSON view is transient). */
-export const SAVED_VIEWS = new Set(['table', 'json', 'chart']);
+/** Result views a saved query can remember (a raw FORMAT-clause view is transient). */
+export const SAVED_VIEWS = new Set(['table', 'json', 'chart', 'tsv']);
 
 export const KEYS = {
   theme: 'asb:theme',
   sidebarPx: 'asb:sidebarPx',
   editorPct: 'asb:editorPct',
   sideSplitPct: 'asb:sideSplitPct',
-  format: 'asb:format',
   sidePanel: 'asb:sidePanel',
   saved: 'asb:saved',
   history: 'asb:history',
@@ -60,7 +59,6 @@ export function createState(read = { loadJSON, loadStr }) {
     abortController: null,
     resultView: 'table',
     resultSort: { col: null, dir: 'asc' },
-    outputFormat: read.loadStr(KEYS.format, 'Table'),
     sidePanel: read.loadStr(KEYS.sidePanel, 'saved'),
     savedQueries: read.loadJSON(KEYS.saved, []),
     history: read.loadJSON(KEYS.history, []),

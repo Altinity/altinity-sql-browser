@@ -64,6 +64,17 @@ export function withStatementBreak(sql) {
 }
 
 /**
+ * The trailing `FORMAT <Name>` clause of a query, or null. ClickHouse requires
+ * FORMAT to be the last clause, so we only match it at the end (optionally before
+ * a `;`). Lets the results panel switch to raw passthrough when the user picks an
+ * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`). Pure.
+ */
+export function detectSqlFormat(sql) {
+  const m = /\bFORMAT\s+([A-Za-z][A-Za-z0-9]*)\s*;?\s*$/i.exec(String(sql || ''));
+  return m ? m[1] : null;
+}
+
+/**
  * Derive a short display name for a saved query: "Query · <table>" when a
  * FROM clause is present, else the first 48 chars of the collapsed SQL.
  */

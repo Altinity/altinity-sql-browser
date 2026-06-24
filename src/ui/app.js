@@ -11,7 +11,7 @@ import {
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
@@ -378,14 +378,16 @@ export function createApp(env = {}) {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
-    const fmt = app.state.outputFormat || 'Table';
+    // Default to structured streaming (Table); if the user ends their SQL with a
+    // FORMAT clause, run raw and show ClickHouse's response verbatim (#format).
+    const fmt = detectSqlFormat(tab.sql) || 'Table';
     const t0 = now();
     tab.result = newResult(fmt);
     app.state.resultSort = { col: null, dir: 'asc' };
     // Keep the current Table/JSON/Chart tab across re-runs (#34); a saved-query
     // open passes its remembered view in opts.view to restore that instead.
     const view = opts && opts.view;
-    app.state.resultView = ['table', 'json', 'chart'].includes(view) ? view : app.state.resultView;
+    app.state.resultView = ['table', 'json', 'chart', 'tsv'].includes(view) ? view : app.state.resultView;
     app.state.running = true;
     app.state.runT0 = t0;
     app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0;
@@ -743,18 +745,11 @@ export function renderApp(app, helpers) {
     h('button', { class: 'new-tab', title: 'New query', onclick: () => app.actions.newTab() }, Icon.plus()));
 
   app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
-  app.dom.fmtSelect = h('select', {
-    class: 'tb-select', title: 'Output format',
-    onchange: (e) => { state.outputFormat = e.target.value; app.savePref('format', state.outputFormat); },
-  },
-    h('option', { value: 'Table', selected: state.outputFormat === 'Table' }, 'Table'),
-    h('option', { value: 'TSV', selected: state.outputFormat === 'TSV' }, 'TSV'),
-    h('option', { value: 'JSON', selected: state.outputFormat === 'JSON' }, 'JSON'));
   app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
-  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn, app.dom.fmtSelect);
+  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn);
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });

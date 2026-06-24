@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -83,6 +83,21 @@ describe('withStatementBreak', () => {
     expect(withStatementBreak('')).toBe('');
     expect(withStatementBreak(null)).toBe('');
     expect(withStatementBreak(undefined)).toBe('');
+  });
+});
+
+describe('detectSqlFormat', () => {
+  it('returns the trailing FORMAT clause name (case-insensitive keyword, allows ; and trailing ws)', () => {
+    expect(detectSqlFormat('SELECT 1 FORMAT Pretty')).toBe('Pretty');
+    expect(detectSqlFormat('SELECT * FROM t\nFORMAT JSONEachRow')).toBe('JSONEachRow');
+    expect(detectSqlFormat('select 1 format CSV')).toBe('CSV');
+    expect(detectSqlFormat('SELECT 1 FORMAT TabSeparatedWithNames ; ')).toBe('TabSeparatedWithNames');
+  });
+  it('returns null without a trailing FORMAT clause', () => {
+    expect(detectSqlFormat('SELECT 1')).toBeNull();
+    expect(detectSqlFormat("SELECT 'FORMAT JSON' AS x")).toBeNull(); // FORMAT not the trailing clause
+    expect(detectSqlFormat('')).toBeNull();
+    expect(detectSqlFormat(null)).toBeNull();
   });
 });
 

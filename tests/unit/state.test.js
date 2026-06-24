@@ -31,7 +31,6 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(248);
     expect(s.editorPct).toBe(45);
     expect(s.sideSplitPct).toBe(58);
-    expect(s.outputFormat).toBe('Table');
     expect(s.tabs).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.expandedTables).toBeInstanceOf(Set);
@@ -44,7 +43,6 @@ describe('createState', () => {
       [KEYS.sidebarPx]: '9999', // clamps to 420
       [KEYS.editorPct]: '5', // clamps to 15
       [KEYS.sideSplitPct]: '99', // clamps to 85
-      [KEYS.format]: 'JSON',
       [KEYS.sidePanel]: 'history',
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
@@ -55,7 +53,6 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);
-    expect(s.outputFormat).toBe('JSON');
     expect(s.sidePanel).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);

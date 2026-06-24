@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, installChartZoomFix } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, renderTsv, colResizeWidth, openCellDetail, installChartZoomFix } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey } from '../../src/core/chart-data.js';
@@ -482,5 +482,21 @@ describe('installChartZoomFix', () => {
     const chart = { config: {} }; // no _eventHandler
     expect(installChartZoomFix(chart, document.createElement('canvas'))).toBe(chart);
     expect(installChartZoomFix(null, null)).toBeNull();
+  });
+});
+
+describe('renderTsv (TSV view)', () => {
+  it('renders TabSeparatedWithNames text with \\N for nulls, honoring the current sort', () => {
+    const app = appWithResult(tableResult());
+    const pre = renderTsv(app, app.activeTab().result);
+    expect(pre.className).toContain('tsv-view');
+    expect(pre.textContent).toBe('n\ts\n2\tb\n1\t\\N');
+  });
+  it('is the 4th view tab and renders through the switcher', () => {
+    const app = appWithResult(tableResult(), { resultView: 'tsv' });
+    renderResults(app);
+    const labels = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab span')].map((s) => s.textContent);
+    expect(labels).toEqual(['Table', 'JSON', 'Chart', 'TSV']);
+    expect(app.dom.resultsRegion.querySelector('.tsv-view')).not.toBeNull();
   });
 });

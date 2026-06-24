@@ -147,12 +147,6 @@ describe('renderApp shell', () => {
     expect(e.sessionStorage.getItem('oauth_verifier')).toBeNull();
     expect(e.sessionStorage.getItem('oauth_state')).toBeNull();
   });
-  it('changing the format select persists the choice', () => {
-    const { app } = rendered();
-    app.dom.fmtSelect.value = 'JSON';
-    app.dom.fmtSelect.dispatchEvent(new Event('change'));
-    expect(app.state.outputFormat).toBe('JSON');
-  });
   it('schema search updates the filter', () => {
     const { app } = rendered();
     app.dom.schemaSearchInput.value = 'foo';
@@ -346,14 +340,14 @@ describe('query run', () => {
     expect(app.activeTab().result.error).toContain('nope');
     expect(app.state.history.length).toBe(0);
   });
-  it('captures raw output (TSV)', async () => {
+  it('runs raw and captures the response when the SQL ends with a FORMAT clause', async () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 9/.test(sql), resp({ text: 'a\tb' })],
     ]);
-    app.state.outputFormat = 'TSV';
-    app.activeTab().sql = 'SELECT 9';
+    app.activeTab().sql = 'SELECT 9 FORMAT TabSeparatedWithNames';
     await app.actions.run();
     expect(app.activeTab().result.rawText).toBe('a\tb');
+    expect(app.activeTab().result.rawFormat).toBe('TabSeparatedWithNames'); // label for the raw tab
   });
 });
 

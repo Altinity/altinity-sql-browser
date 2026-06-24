@@ -9,12 +9,15 @@ function cell(v) {
 /**
  * TabSeparated text: a header row of column names + one line per data row.
  * Backslashes, tabs and newlines are escaped ClickHouse-TSV style so embedded
- * whitespace can't break the column/row grid when pasted.
+ * whitespace can't break the column/row grid when pasted. `nullText` is emitted
+ * verbatim for null/undefined cells — '' (default) for Copy, or '\N' for the TSV
+ * result view so it mirrors `FORMAT TabSeparatedWithNames`.
  */
-export function toTSV(columns, rows) {
+export function toTSV(columns, rows, nullText = '') {
   const esc = (s) => s.replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  const tsvCell = (v) => (v == null ? nullText : esc(String(v)));
   const head = columns.map((c) => esc(c.name)).join('\t');
-  const body = rows.map((row) => row.map((v) => esc(cell(v))).join('\t')).join('\n');
+  const body = rows.map((row) => row.map(tsvCell).join('\t')).join('\n');
   return rows.length ? head + '\n' + body : head;
 }
 

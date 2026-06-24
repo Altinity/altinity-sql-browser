@@ -7,6 +7,7 @@ import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
+import { toTSV } from '../core/export.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 
 const VIS_CAP = 5000;
@@ -103,6 +104,8 @@ export function renderResults(app) {
     inner.appendChild(renderJson(r));
   } else if (app.state.resultView === 'chart') {
     inner.appendChild(renderChart(app, r));
+  } else if (app.state.resultView === 'tsv') {
+    inner.appendChild(renderTsv(app, r));
   } else {
     inner.appendChild(renderTable(app, r));
   }
@@ -123,11 +126,12 @@ function buildToolbar(app, r) {
   const toolbar = h('div', { class: 'res-toolbar' });
   const tabs = h('div', { class: 'result-view-tabs' });
   const views = isRaw
-    ? [{ id: 'raw', label: r.rawFormat, icon: r.rawFormat === 'JSON' ? Icon.json() : Icon.table2() }]
+    ? [{ id: 'raw', label: r.rawFormat, icon: r.rawFormat === 'JSON' ? Icon.json() : Icon.tsv() }]
     : [
         { id: 'table', label: 'Table', icon: Icon.table2() },
         { id: 'json', label: 'JSON', icon: Icon.json() },
         { id: 'chart', label: 'Chart', icon: Icon.chart() },
+        { id: 'tsv', label: 'TSV', icon: Icon.tsv() },
       ];
   for (const v of views) {
     const isActive = app.state.resultView === v.id || (isRaw && v.id === 'raw');
@@ -182,6 +186,18 @@ export function renderJson(r) {
     return o;
   });
   return h('div', { class: 'json-view', tabindex: '0' }, JSON.stringify(arr, null, 2));
+}
+
+/**
+ * TSV view — a `<pre>` of the result as TabSeparatedWithNames, honoring the
+ * current column sort (like the table) and ClickHouse's `\N` null sentinel. A
+ * client-side approximation of `FORMAT TabSeparatedWithNames`; for an exact
+ * server format, end the query with an explicit `FORMAT …` clause (raw view).
+ */
+export function renderTsv(app, r) {
+  const { col, dir } = app.state.resultSort;
+  const rows = sortRows(r.rows, col, dir).slice(0, VIS_CAP);
+  return h('div', { class: 'tsv-view', tabindex: '0' }, toTSV(r.columns, rows, '\\N'));
 }
 
 export function renderTable(app, r) {
