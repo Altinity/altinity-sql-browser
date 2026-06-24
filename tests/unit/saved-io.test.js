@@ -27,6 +27,14 @@ describe('buildExportDoc', () => {
     expect('chart' in doc.queries[2]).toBe(false);
     expect('view' in doc.queries[2]).toBe(false);
   });
+  it('carries a description when present, omits it when absent', () => {
+    const doc = buildExportDoc([
+      { id: 's1', name: 'A', sql: '1', favorite: false, description: 'note' },
+      { id: 's2', name: 'B', sql: '2', favorite: false },
+    ], 'T');
+    expect(doc.queries[0].description).toBe('note');
+    expect('description' in doc.queries[1]).toBe(false);
+  });
 });
 
 describe('parseImportDoc', () => {
@@ -61,6 +69,16 @@ describe('parseImportDoc', () => {
     ] }));
     expect(queries[0].view).toBe('json');
     expect(queries[1].view).toBeUndefined();
+  });
+  it('trims a string description, dropping a whitespace-only or non-string one', () => {
+    const { queries } = parseImportDoc(env({ queries: [
+      { name: 'A', sql: '1', description: '  a note  ' }, // trimmed
+      { name: 'B', sql: '2', description: 123 },          // non-string → dropped
+      { name: 'C', sql: '3', description: '   ' },        // whitespace-only → dropped (#1 review)
+    ] }));
+    expect(queries[0].description).toBe('a note');
+    expect(queries[1].description).toBeUndefined();
+    expect(queries[2].description).toBeUndefined();
   });
   it('throws a user message for each invalid envelope', () => {
     expect(() => parseImportDoc('{not json')).toThrow('Not a valid JSON file');
@@ -110,5 +128,20 @@ describe('mergeSaved', () => {
     expect(r.merged.find((q) => q.id === 's2').view).toBe('json');
     expect(r.merged.find((q) => q.name === 'C').chart).toEqual(chart);
     expect(r.merged.find((q) => q.name === 'C').view).toBe('chart');
+  });
+  it('carries description on add, replaces it by id, and drops it when an update omits it', () => {
+    const existing = [
+      { id: 's1', name: 'A', sql: '1', favorite: false, description: 'old' },
+      { id: 's2', name: 'B', sql: '2', favorite: false, description: 'old2' },
+    ];
+    const incoming = [
+      { id: 's1', name: 'A2', sql: '1b', favorite: false },                       // no description → drop
+      { id: 's2', name: 'B2', sql: '2b', favorite: false, description: 'new' },    // replace
+      { name: 'C', sql: '3', favorite: false, description: 'added' },              // add with description
+    ];
+    const r = mergeSaved(existing, incoming, () => 'g');
+    expect('description' in r.merged.find((q) => q.id === 's1')).toBe(false);
+    expect(r.merged.find((q) => q.id === 's2').description).toBe('new');
+    expect(r.merged.find((q) => q.name === 'C').description).toBe('added');
   });
 });

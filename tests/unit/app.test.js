@@ -685,6 +685,19 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
     expect(app.dom.saveBtn.textContent).toContain('Saved');
   });
+  it('save popover: prefills the linked query description; ⌘Enter on the textarea commits', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [{ id: 's9', name: 'Fav', sql: 'SELECT 9', favorite: false, description: 'why' }];
+    app.actions.loadIntoNewTab('Fav', 'SELECT 9', 's9');
+    app.actions.save();
+    const desc = document.querySelector('.save-popover .sp-desc');
+    expect(desc.value).toBe('why'); // prefilled from the linked entry
+    desc.value = 'updated reason';
+    desc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true }));
+    expect(document.querySelector('.save-popover')).toBeNull(); // committed + closed
+    expect(app.state.savedQueries[0].description).toBe('updated reason');
+  });
   const fakeReader = (content, fail) => class {
     readAsText() { this.result = content; if (fail) this.onerror && this.onerror(); else this.onload && this.onload(); }
   };

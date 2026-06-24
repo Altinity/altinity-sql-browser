@@ -37,53 +37,71 @@ function renderSaved(app, list) {
       'No saved queries yet.', h('br'), 'Click ', Icon.bookmark(), ' Save next to Run.'));
   }
   for (const q of sortedSaved(state)) {
-    const editing = app.editingSavedId === q.id;
+    if (app.editingSavedId === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
     const star = h('button', {
       class: 'sv-star' + (q.favorite ? ' on' : ''), title: q.favorite ? 'Unfavorite' : 'Favorite',
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
     }, Icon.star(q.favorite));
 
-    let nameEl;
-    if (editing) {
-      const input = h('input', { class: 'sv-edit', value: q.name });
-      let done = false;
-      // `commit` (Enter/blur) renames; `!commit` (Escape) cancels. The guard
-      // stops the blur fired by the re-render teardown from undoing a cancel.
-      const finish = (commit) => {
-        if (done) return;
-        done = true;
-        if (commit && input.value.trim()) { renameSaved(state, q.id, input.value, app.saveJSON); app.actions.rerenderTabs(); }
-        app.editingSavedId = null;
-        renderSavedHistory(app);
-      };
-      input.addEventListener('click', (e) => e.stopPropagation());
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
-        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
-      });
-      input.addEventListener('blur', () => finish(true));
-      nameEl = input;
-      setTimeout(() => { input.focus(); input.select(); });
-    } else {
-      nameEl = h('span', { class: 'name' }, q.name);
-    }
-
-    const row = h('div', { class: 'saved-row', onclick: () => { if (!editing) { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } } },
+    const row = h('div', { class: 'saved-row', onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
       h('div', { class: 'top' },
         star,
-        nameEl,
-        editing ? null : h('button', {
-          class: 'sv-act', title: 'Rename',
+        h('span', { class: 'name' }, q.name),
+        h('button', {
+          class: 'sv-act', title: 'Edit name & description',
           onclick: (e) => { e.stopPropagation(); app.editingSavedId = q.id; renderSavedHistory(app); },
         }, Icon.pencil()),
-        editing ? null : h('button', {
+        h('button', {
           class: 'sv-act', title: 'Delete',
           onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); },
         }, Icon.trash())),
+      q.description ? h('div', { class: 'desc' }, q.description) : null,
       h('div', { class: 'preview' }, q.sql.split('\n')[0]));
     list.appendChild(row);
   }
   list.appendChild(savedActions(app));
+}
+
+/**
+ * The expanded "edit name & description" form shown in place of a saved row
+ * while `app.editingSavedId === q.id`. The Name field commits on Enter, the
+ * Description field on ⌘/Ctrl+Enter (plain Enter inserts a newline); Escape or
+ * Cancel reverts. Clicks inside the form don't load the query. A `done` guard
+ * keeps the re-render teardown from double-firing the commit.
+ */
+function savedEditForm(app, q) {
+  const state = app.state;
+  const nameInput = h('input', { class: 'sv-edit-name', value: q.name, placeholder: 'Query name' });
+  const descInput = h('textarea', { class: 'sv-edit-desc', rows: '3', placeholder: 'What this query does (shown in Markdown export)' });
+  descInput.value = q.description || '';
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    if (commit && nameInput.value.trim()) {
+      renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON);
+      app.actions.rerenderTabs();
+    }
+    app.editingSavedId = null;
+    renderSavedHistory(app);
+  };
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  descInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  setTimeout(() => { nameInput.focus(); nameInput.select(); });
+  return h('div', { class: 'saved-edit', onclick: (e) => e.stopPropagation() },
+    h('div', { class: 'sv-field' }, 'Name'),
+    nameInput,
+    h('div', { class: 'sv-field' }, 'Description'),
+    descInput,
+    h('div', { class: 'sv-edit-actions' },
+      h('button', { class: 'sv-edit-cancel', onclick: () => finish(false) }, 'Cancel'),
+      h('button', { class: 'sv-edit-save', onclick: () => finish(true) }, 'Save')));
 }
 
 /** Export / Import row pinned at the bottom of the Saved panel. */

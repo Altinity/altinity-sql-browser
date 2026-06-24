@@ -349,11 +349,37 @@ body {
 }
 .saved-row .sv-star.on { color: var(--accent); }
 .saved-row .sv-star:hover { color: var(--fg); }
-.saved-row .sv-edit {
-  flex: 1; min-width: 0; font: inherit; font-size: 12px; font-weight: 500;
-  color: var(--fg); background: var(--bg-editor);
-  border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; outline: none;
+.saved-row .desc {
+  font-size: 11px; color: var(--fg-mute); line-height: 1.4; padding-left: 18px;
+  overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
+/* Expanded "edit name & description" form, shown in place of a saved row. */
+.saved-edit {
+  padding: 9px 10px; background: var(--bg-hover);
+  border-bottom: 1px solid var(--border-faint); border-left: 2px solid var(--accent);
+  display: flex; flex-direction: column; gap: 5px;
+}
+.saved-edit .sv-field {
+  font-size: 9.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--fg-faint); margin-top: 3px;
+}
+.saved-edit .sv-edit-name, .saved-edit .sv-edit-desc {
+  font: inherit; color: var(--fg); background: var(--bg-input, var(--bg-editor));
+  border: 1px solid var(--border); border-radius: 5px; padding: 4px 7px; outline: none;
+  box-sizing: border-box; width: 100%;
+}
+.saved-edit .sv-edit-name { font-size: 12px; font-weight: 500; border-color: var(--accent); }
+.saved-edit .sv-edit-desc { font-size: 11.5px; line-height: 1.45; resize: vertical; min-height: 48px; }
+.saved-edit .sv-edit-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 3px; }
+.saved-edit .sv-edit-cancel, .saved-edit .sv-edit-save {
+  font: inherit; font-size: 11px; font-weight: 500; cursor: pointer;
+  padding: 4px 11px; border-radius: 5px; border: 1px solid var(--border);
+}
+.saved-edit .sv-edit-cancel { background: transparent; color: var(--fg); }
+.saved-edit .sv-edit-cancel:hover { background: var(--bg-hover); }
+.saved-edit .sv-edit-save { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.saved-edit .sv-edit-save:hover { filter: brightness(1.08); }
 .saved-row .preview {
   font-size: 10.5px; font-family: var(--mono); color: var(--fg-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -417,6 +443,13 @@ body {
   border-radius: 5px; padding: 6px 8px; outline: none;
 }
 .save-popover .sp-input:focus { border-color: var(--accent); }
+.save-popover .sp-opt { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--fg-faint); }
+.save-popover .sp-desc {
+  font: inherit; font-size: 12px; line-height: 1.45; color: var(--fg);
+  background: var(--bg-editor); border: 1px solid var(--border);
+  border-radius: 5px; padding: 6px 8px; outline: none; resize: vertical; min-height: 52px;
+}
+.save-popover .sp-desc:focus { border-color: var(--accent); }
 .save-popover .sp-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .save-popover .sp-cancel, .save-popover .sp-save {
   font: inherit; font-size: 12px; cursor: pointer;

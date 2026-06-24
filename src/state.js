@@ -84,15 +84,17 @@ export function savedForTab(state, tab) {
 }
 
 /**
- * Save the tab's SQL under `name`. If the tab is already linked to a saved
- * entry, update that entry in place; otherwise create a new one (newest first)
- * and link the tab to it. The tab's name mirrors the saved name. Returns the
- * saved entry, or null for empty SQL/name.
+ * Save the tab's SQL under `name` (+ an optional free-text `description`). If
+ * the tab is already linked to a saved entry, update that entry in place;
+ * otherwise create a new one (newest first) and link the tab to it. The tab's
+ * name mirrors the saved name. Returns the saved entry, or null for empty
+ * SQL/name.
  */
-export function saveQuery(state, tab, name, save = saveJSON, now = Date.now()) {
+export function saveQuery(state, tab, name, description, save = saveJSON, now = Date.now()) {
   const sql = String(tab.sql || '').trim();
   const nm = String(name || '').trim();
   if (!sql || !nm) return null;
+  const desc = String(description || '').trim();
   const chart = tabChart(tab);
   // Remember the current result view (Table/JSON/Chart) so a restore reopens the
   // same data representation; the transient raw view isn't persisted.
@@ -101,10 +103,12 @@ export function saveQuery(state, tab, name, save = saveJSON, now = Date.now()) {
   if (entry) {
     entry.name = nm;
     entry.sql = sql;
+    if (desc) entry.description = desc; else delete entry.description;
     if (chart) entry.chart = chart; else delete entry.chart;
     if (view) entry.view = view; else delete entry.view;
   } else {
     entry = { id: makeId('s', now), name: nm, sql, favorite: false };
+    if (desc) entry.description = desc;
     if (chart) entry.chart = chart;
     if (view) entry.view = view;
     state.savedQueries.unshift(entry);
@@ -115,12 +119,20 @@ export function saveQuery(state, tab, name, save = saveJSON, now = Date.now()) {
   return entry;
 }
 
-/** Rename a saved query, keeping any linked tab's name in sync. */
-export function renameSaved(state, id, name, save = saveJSON) {
+/**
+ * Rename a saved query, keeping any linked tab's name in sync. When
+ * `description` is provided (not undefined) it is set/cleared too; pass
+ * undefined to leave the existing description untouched (name-only rename).
+ */
+export function renameSaved(state, id, name, description, save = saveJSON) {
   const nm = String(name || '').trim();
   const entry = state.savedQueries.find((q) => q.id === id);
   if (!entry || !nm) return;
   entry.name = nm;
+  if (description !== undefined) {
+    const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
+    if (desc) entry.description = desc; else delete entry.description;
+  }
   for (const t of tabsForSaved(state, id)) t.name = nm;
   save(KEYS.saved, state.savedQueries);
 }

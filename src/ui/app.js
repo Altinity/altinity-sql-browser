@@ -587,10 +587,12 @@ export function createApp(env = {}) {
     const entry = savedForTab(app.state, tab);
     const prefill = entry ? entry.name : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));
     const input = h('input', { class: 'sp-input', value: prefill });
+    const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
+    if (entry && entry.description) descInput.value = entry.description;
     let close;
     const commit = () => {
       if (!input.value.trim()) return;
-      saveQuery(app.state, tab, input.value, saveJSON);
+      saveQuery(app.state, tab, input.value, descInput.value, saveJSON);
       close();
       app.updateSaveBtn();
       app.actions.rerenderTabs();
@@ -598,9 +600,13 @@ export function createApp(env = {}) {
       flashToast('Saved', { document: doc });
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+    // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.
+    descInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); } });
     const pop = h('div', { class: 'save-popover' },
       h('div', { class: 'sp-label' }, 'Save query as'),
       input,
+      h('div', { class: 'sp-label' }, 'Description', h('span', { class: 'sp-opt' }, ' — optional')),
+      descInput,
       h('div', { class: 'sp-actions' },
         h('button', { class: 'sp-cancel', onclick: () => close() }, 'Cancel'),
         h('button', { class: 'sp-save', onclick: commit }, 'Save')));

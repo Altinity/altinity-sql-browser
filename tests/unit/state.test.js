@@ -82,9 +82,9 @@ describe('saved queries', () => {
     const s = createState(reader());
     const save = vi.fn();
     s.tabs[0].sql = '';
-    expect(saveQuery(s, s.tabs[0], 'name', save)).toBeNull();
+    expect(saveQuery(s, s.tabs[0], 'name', '', save)).toBeNull();
     s.tabs[0].sql = 'SELECT 1';
-    expect(saveQuery(s, s.tabs[0], '  ', save)).toBeNull();
+    expect(saveQuery(s, s.tabs[0], '  ', '', save)).toBeNull();
     expect(save).not.toHaveBeenCalled();
   });
   it('saveQuery creates + links the tab, then updates in place on re-save', () => {
@@ -92,7 +92,7 @@ describe('saved queries', () => {
     const save = vi.fn();
     const tab = s.tabs[0];
     tab.sql = 'SELECT 1';
-    const e1 = saveQuery(s, tab, 'My query', save, 100);
+    const e1 = saveQuery(s, tab, 'My query', '', save, 100);
     expect(e1).toMatchObject({ name: 'My query', sql: 'SELECT 1', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
@@ -100,11 +100,27 @@ describe('saved queries', () => {
     expect(save).toHaveBeenLastCalledWith(KEYS.saved, s.savedQueries);
     // re-save the linked tab → updates the same entry in place
     tab.sql = 'SELECT 2';
-    const e2 = saveQuery(s, tab, 'My query v2', save, 200);
+    const e2 = saveQuery(s, tab, 'My query v2', '', save, 200);
     expect(e2.id).toBe(e1.id);
     expect(s.savedQueries).toHaveLength(1);
     expect(s.savedQueries[0]).toMatchObject({ name: 'My query v2', sql: 'SELECT 2' });
     expect(tab.name).toBe('My query v2');
+  });
+  it('saveQuery stores/updates/clears an optional description', () => {
+    const s = createState(reader());
+    const save = vi.fn();
+    const tab = s.tabs[0];
+    tab.sql = 'SELECT 1';
+    const e = saveQuery(s, tab, 'Q', '  what it does  ', save, 100); // trimmed
+    expect(e.description).toBe('what it does');
+    saveQuery(s, tab, 'Q', 'changed', save, 200); // update in place
+    expect(s.savedQueries[0].description).toBe('changed');
+    saveQuery(s, tab, 'Q', '   ', save, 300); // blank → dropped
+    expect('description' in s.savedQueries[0]).toBe(false);
+    // create with no description arg → no description field
+    const t2 = newTabObj('t2'); t2.sql = 'SELECT 2'; s.tabs.push(t2);
+    const e2 = saveQuery(s, t2, 'Q2', undefined, save, 400);
+    expect('description' in e2).toBe(false);
   });
   it('savedForTab resolves the linked entry (or null)', () => {
     const s = createState(reader());
@@ -120,13 +136,28 @@ describe('saved queries', () => {
     s.savedQueries = [{ id: 's1', sql: 'x', name: 'old', favorite: false }];
     s.tabs[0].savedId = 's1';
     const save = vi.fn();
-    renameSaved(s, 's1', '  new  ', save);
+    renameSaved(s, 's1', '  new  ', undefined, save);
     expect(s.savedQueries[0].name).toBe('new');
     expect(s.tabs[0].name).toBe('new');
-    renameSaved(s, 's1', '   ', save); // blank ignored
+    renameSaved(s, 's1', '   ', undefined, save); // blank ignored
     expect(s.savedQueries[0].name).toBe('new');
-    renameSaved(s, 'missing', 'x', save); // unknown id ignored
+    renameSaved(s, 'missing', 'x', undefined, save); // unknown id ignored
     expect(save).toHaveBeenCalledTimes(1);
+  });
+  it('renameSaved sets/clears description when given, leaves it untouched when undefined', () => {
+    const s = createState(reader());
+    s.savedQueries = [{ id: 's1', sql: 'x', name: 'A', favorite: false }];
+    const save = vi.fn();
+    renameSaved(s, 's1', 'A', '  a note  ', save); // set (trimmed)
+    expect(s.savedQueries[0].description).toBe('a note');
+    renameSaved(s, 's1', 'A', undefined, save); // name-only → description kept
+    expect(s.savedQueries[0].description).toBe('a note');
+    renameSaved(s, 's1', 'A', '', save); // explicit empty → cleared
+    expect('description' in s.savedQueries[0]).toBe(false);
+    renameSaved(s, 's1', 'A', '  re  ', save); // re-set
+    expect(s.savedQueries[0].description).toBe('re');
+    renameSaved(s, 's1', 'A', null, save); // null (not undefined) → cleared, not stored as 'null' (#4 review)
+    expect('description' in s.savedQueries[0]).toBe(false);
   });
   it('toggleFavorite flips the flag; sortedSaved puts favorites first (stable)', () => {
     const s = createState(reader());
@@ -173,16 +204,16 @@ describe('saved queries', () => {
     tab.sql = 'SELECT a, b';
     tab.chartCfg = { type: 'pie', x: 0, y: [1], series: null };
     tab.chartKey = 'a:String|b:UInt64';
-    const e1 = saveQuery(s, tab, 'Chartd', save, 100);
+    const e1 = saveQuery(s, tab, 'Chartd', '', save, 100);
     expect(e1.chart).toEqual({ cfg: tab.chartCfg, key: tab.chartKey });
     expect(e1.chart.cfg).not.toBe(tab.chartCfg); // cloned into the entry
     // re-save with a different chart → entry.chart updates in place
     tab.chartCfg = { type: 'line', x: 0, y: [1], series: null };
-    saveQuery(s, tab, 'Chartd', save, 200);
+    saveQuery(s, tab, 'Chartd', '', save, 200);
     expect(s.savedQueries[0].chart.cfg.type).toBe('line');
     // re-save after the chart is cleared → entry.chart is dropped
     tab.chartCfg = null;
-    saveQuery(s, tab, 'Chartd', save, 300);
+    saveQuery(s, tab, 'Chartd', '', save, 300);
     expect(s.savedQueries[0].chart).toBeUndefined();
   });
   it('saveQuery persists the result view (Table/JSON/Chart), updates it, and ignores the transient raw view', () => {
@@ -191,15 +222,15 @@ describe('saved queries', () => {
     const tab = s.tabs[0];
     tab.sql = 'SELECT 1';
     s.resultView = 'chart';
-    const e = saveQuery(s, tab, 'V', save, 100);
+    const e = saveQuery(s, tab, 'V', '', save, 100);
     expect(e.view).toBe('chart');
     // re-save under a different view → updates
     s.resultView = 'json';
-    saveQuery(s, tab, 'V', save, 200);
+    saveQuery(s, tab, 'V', '', save, 200);
     expect(s.savedQueries[0].view).toBe('json');
     // raw view (TSV/JSON output) is not a saved view → dropped
     s.resultView = 'raw';
-    saveQuery(s, tab, 'V', save, 300);
+    saveQuery(s, tab, 'V', '', save, 300);
     expect(s.savedQueries[0].view).toBeUndefined();
   });
   it('deleteSaved removes + clears tab pointers', () => {

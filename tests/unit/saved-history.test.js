@@ -54,28 +54,84 @@ describe('renderSavedHistory', () => {
     expect(names()).toEqual(['B', 'A']);
   });
 
-  it('saved: pencil → inline rename; Enter commits, Escape cancels', () => {
+  it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
     const app = makeApp();
     app.state.sidePanel = 'saved';
     app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false }];
     renderSavedHistory(app);
-    byTitle(app.dom.savedList, 'Rename').dispatchEvent(new Event('click', { bubbles: true }));
+    byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.editingSavedId).toBe('s1');
-    let input = app.dom.savedList.querySelector('.sv-edit');
-    expect(input.value).toBe('Old');
-    input.value = 'New';
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    expect(app.state.savedQueries[0].name).toBe('New');
+    const nameInput = app.dom.savedList.querySelector('.sv-edit-name');
+    const descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    expect(nameInput.value).toBe('Old');
+    expect(descInput.value).toBe(''); // no description yet
+    nameInput.value = 'New';
+    descInput.value = 'a description';
+    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(app.state.savedQueries[0]).toMatchObject({ name: 'New', description: 'a description' });
     expect(app.editingSavedId).toBeNull();
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
-    // re-open, edit, Escape → unchanged
-    byTitle(app.dom.savedList, 'Rename').dispatchEvent(new Event('click', { bubbles: true }));
-    input = app.dom.savedList.querySelector('.sv-edit');
-    input.value = 'XXX';
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    // a second commit on the now-detached field is a no-op (the `done` guard)
+    nameInput.value = 'AGAIN';
+    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(app.state.savedQueries[0].name).toBe('New');
+    // re-open and press Escape on the name field → cancels without saving
+    byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const reName = app.dom.savedList.querySelector('.sv-edit-name');
+    reName.value = 'XYZ';
+    reName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(app.editingSavedId).toBeNull();
     expect(app.state.savedQueries[0].name).toBe('New');
-    // clicking the row while editing another does not load (guard) — covered by Enter path above
+  });
+  it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'saved';
+    app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }];
+    renderSavedHistory(app);
+    const open = () => byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    // ⌘Enter on the description commits (and prefills the existing description)
+    open();
+    let descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    expect(descInput.value).toBe('d0');
+    descInput.value = 'd1';
+    descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+    expect(app.state.savedQueries[0].description).toBe('d1');
+    // Ctrl+Enter also commits
+    open();
+    descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    descInput.value = 'd2';
+    descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    expect(app.state.savedQueries[0].description).toBe('d2');
+    // Escape on the description cancels without saving
+    open();
+    descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    descInput.value = 'nope';
+    descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(app.state.savedQueries[0].description).toBe('d2');
+    expect(app.editingSavedId).toBeNull();
+    // Save button with a blank name does not rename (commit guard)
+    open();
+    app.dom.savedList.querySelector('.sv-edit-name').value = '   ';
+    app.dom.savedList.querySelector('.sv-edit-save').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.savedQueries[0].name).toBe('Old');
+    expect(app.editingSavedId).toBeNull();
+    // Cancel button reverts an edited name
+    open();
+    app.dom.savedList.querySelector('.sv-edit-name').value = 'ZZZ';
+    app.dom.savedList.querySelector('.sv-edit-cancel').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.savedQueries[0].name).toBe('Old');
+  });
+  it('saved: renders a 2-line description preview when present, omits it otherwise', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'saved';
+    app.state.savedQueries = [
+      { id: 's1', name: 'A', sql: '1', favorite: false, description: 'explains A' },
+      { id: 's2', name: 'B', sql: '2', favorite: false },
+    ];
+    renderSavedHistory(app);
+    const rows = app.dom.savedList.querySelectorAll('.saved-row');
+    expect(rows[0].querySelector('.desc').textContent).toBe('explains A');
+    expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
   it('saved: Export/Import row — Export disabled when empty, enabled with queries, wired', () => {
