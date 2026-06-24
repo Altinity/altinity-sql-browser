@@ -12,6 +12,14 @@ dependency is **Chart.js** (the chart result view), inlined into that one file.
 Refactored from a single-file SPA into a fully modular, test-first codebase
 held at **100% test coverage**.
 
+## Demo & examples
+
+Try it live on the Antalya demo cluster: **https://antalya.demo.altinity.cloud/sql**.
+The [**ontime chart demo**](docs/ONTIME-CHART-DEMO.md) is a ready-made library of 10
+queries (load [`examples/ontime-charts.json`](examples/ontime-charts.json) via
+**File ▾ → Replace**) that walks through every chart type and feature against the public
+`ontime` flight dataset.
+
 ## How it works
 
 ```

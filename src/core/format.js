@@ -51,6 +51,19 @@ export function sqlString(s) {
 }
 
 /**
+ * Terminate `sql` so a programmatic full-replace (Format / Insert DDL) leaves the
+ * caret on empty space rather than at the end of the last token. The editor's
+ * autocomplete needs ≥1 word char immediately before the caret, so without this
+ * a freshly-formatted query pops an irrelevant dropdown on its trailing word.
+ * Appends a single newline only when the text doesn't already end in whitespace
+ * or ';'. Pure.
+ */
+export function withStatementBreak(sql) {
+  const s = String(sql || '');
+  return s === '' || /[\s;]$/.test(s) ? s : s + '\n';
+}
+
+/**
  * Derive a short display name for a saved query: "Query · <table>" when a
  * FROM clause is present, else the first 48 chars of the collapsed SQL.
  */

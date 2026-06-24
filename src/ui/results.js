@@ -7,7 +7,7 @@ import { Icon } from './icons.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
-import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, CHART_ROW_CAP } from '../core/chart-data.js';
+import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 
 const VIS_CAP = 5000;
 const MIN_COL = 48; // px floor for a resized column
@@ -338,6 +338,23 @@ function chartEmpty(icon, msg) {
   return h('div', { class: 'chart-empty' }, h('div', { class: 'chip' }, icon), h('div', null, msg));
 }
 
+/**
+ * Make a Chart.js instance hover-correct under the page's CSS `zoom`. Chart.js
+ * feeds every pointer event through the controller's single `_eventHandler`
+ * entry point (a late-bound `this._eventHandler` lookup, so overriding the
+ * instance property intercepts it) *before* it computes hit-testing / in-area —
+ * so we divide the zoomed pointer coords back to chart space there (see
+ * `unzoomChartEvent`). `zoomScale(canvas)` reads the live factor each event, so
+ * it tracks theme/zoom changes and is a no-op (scale 1) when unzoomed. Returns
+ * the chart. Exported for tests.
+ */
+export function installChartZoomFix(chart, canvas) {
+  const onEvent = chart && chart._eventHandler;
+  if (typeof onEvent !== 'function') return chart;
+  chart._eventHandler = (e, replay) => onEvent.call(chart, unzoomChartEvent(e, zoomScale(canvas)), replay);
+  return chart;
+}
+
 export function renderChart(app, r) {
   const tab = app.activeTab();
   // Gate on run state BEFORE deriving the config: while a query streams its
@@ -382,7 +399,9 @@ export function renderChart(app, r) {
   // time series would zig-zag) and change which rows the CHART_ROW_CAP keeps,
   // contradicting the "first N rows" note. It would also sort up to VIS_CAP
   // rows just to discard all but the first CHART_ROW_CAP.
-  app.chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar)));
+  app.chart = installChartZoomFix(
+    new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar))),
+    canvas);
 
   return h('div', { class: 'chart-view' }, bar, h('div', { class: 'chart-canvas-wrap' }, canvas));
 }

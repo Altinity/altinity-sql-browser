@@ -69,6 +69,9 @@ export function createState(read = { loadJSON, loadStr }) {
     // file Save/Replace/New) is session-only and resets on reload.
     libraryName: read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME),
     libraryDirty: false,
+    // Transient search text for the Library/History side panel (session-only,
+    // cleared on a tab switch); never persisted.
+    libraryFilter: '',
     shortcutsOpen: false,
   };
 }
@@ -163,6 +166,26 @@ export function sortedSaved(state) {
     .map((q, i) => [q, i])
     .sort((a, b) => (b[0].favorite ? 1 : 0) - (a[0].favorite ? 1 : 0) || a[1] - b[1])
     .map(([q]) => q);
+}
+
+/**
+ * Filter saved queries by a free-text query (case-insensitive substring over
+ * name, description and SQL). Blank query → the list returned unchanged. Pure.
+ */
+export function filterSaved(list, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((it) =>
+    (it.name || '').toLowerCase().includes(q) ||
+    (it.description || '').toLowerCase().includes(q) ||
+    (it.sql || '').toLowerCase().includes(q));
+}
+
+/** Filter history entries by a free-text query (case-insensitive over SQL). Pure. */
+export function filterHistory(list, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return list;
+  return list.filter((ent) => (ent.sql || '').toLowerCase().includes(q));
 }
 
 /**

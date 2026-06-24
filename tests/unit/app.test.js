@@ -368,7 +368,9 @@ describe('formatQuery', () => {
     ]);
     app.activeTab().sql = 'select 1';
     await app.actions.formatQuery();
-    expect(app.dom.editorTextarea.value).toBe('SELECT\n  1');
+    // withStatementBreak appends a newline so the caret lands past the last
+    // token — otherwise the replace re-opens autocomplete on it (#format bug).
+    expect(app.dom.editorTextarea.value).toBe('SELECT\n  1\n');
   });
   it('no-ops on empty SQL', async () => {
     const { app, e } = appFor([]);

@@ -198,3 +198,94 @@ describe('renderSavedHistory', () => {
     expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'saved');
   });
 });
+
+describe('renderSavedHistory — search/filter', () => {
+  const savedApp = () => {
+    const app = makeApp();
+    app.state.sidePanel = 'saved';
+    app.state.savedQueries = [
+      { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false, description: 'worst delays' },
+      { id: 's2', name: 'Busiest airports', sql: 'SELECT origin, count() FROM flights', favorite: false },
+      { id: 's3', name: 'Monthly cancellations', sql: 'SELECT month, sum(cancelled)', favorite: false },
+    ];
+    renderSavedHistory(app);
+    return app;
+  };
+  const input = (app) => app.dom.savedSearch.querySelector('.sv-search-input');
+  const names = (app) => [...app.dom.savedList.querySelectorAll('.saved-row .name')].map((n) => n.textContent);
+  const type = (app, v) => { const i = input(app); i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); };
+
+  it('tolerates a missing search mount', () => {
+    const app = savedApp();
+    app.dom.savedSearch = null;
+    expect(() => renderSavedHistory(app)).not.toThrow();
+  });
+
+  it('collapses the search box when the active list is empty', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'saved';
+    renderSavedHistory(app);
+    expect(app.dom.savedSearch.children.length).toBe(0); // :empty → hidden via CSS
+    expect(input(app)).toBeNull();
+  });
+
+  it('shows the box with a per-tab placeholder when items exist', () => {
+    const app = savedApp();
+    expect(input(app).placeholder).toBe('Search saved queries…');
+    app.state.sidePanel = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    expect(input(app).placeholder).toBe('Search history…');
+  });
+
+  it('filters saved by name / description / sql, case-insensitively, reusing the input node', () => {
+    const app = savedApp();
+    const before = input(app);
+    type(app, 'delay'); // s1 name "Carrier delays" + description "worst delays"
+    expect(names(app)).toEqual(['Carrier delays']);
+    expect(input(app)).toBe(before); // list-only re-render keeps the input (focus-preserving)
+    type(app, 'origin'); // s2 sql only
+    expect(names(app)).toEqual(['Busiest airports']);
+    type(app, 'CARRIER'); // case-insensitive
+    expect(names(app)).toEqual(['Carrier delays']);
+  });
+
+  it('shows a no-match message and clears via the × button and Escape', () => {
+    const app = savedApp();
+    type(app, 'zzzz');
+    expect(app.dom.savedList.textContent).toContain('No queries match');
+    expect(app.dom.savedList.textContent).toContain('zzzz');
+    click(app.dom.savedSearch.querySelector('.sv-search-clear'));
+    expect(app.state.libraryFilter).toBe('');
+    expect(names(app)).toHaveLength(3);
+    type(app, 'busiest');
+    expect(names(app)).toEqual(['Busiest airports']);
+    input(app).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(app.state.libraryFilter).toBe('');
+    expect(names(app)).toHaveLength(3);
+  });
+
+  it('filters history by sql with its own no-match message', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'history';
+    app.state.history = [
+      { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 },
+      { id: 'h2', sql: 'INSERT INTO t', ts: Date.now(), rows: null, ms: 1 },
+    ];
+    renderSavedHistory(app);
+    const i = app.dom.savedSearch.querySelector('.sv-search-input');
+    i.value = 'insert'; i.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.dom.savedList.querySelectorAll('.history-row')).toHaveLength(1);
+    expect(app.dom.savedList.textContent).toContain('INSERT INTO t');
+    i.value = 'nope'; i.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.dom.savedList.textContent).toContain('No history matches');
+  });
+
+  it('clears the filter when switching tabs', () => {
+    const app = savedApp();
+    type(app, 'delay');
+    expect(app.state.libraryFilter).toBe('delay');
+    click(app.dom.savedTabsRow.querySelectorAll('.side-tab')[1]); // → History
+    expect(app.state.libraryFilter).toBe('');
+  });
+});

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -66,6 +66,23 @@ describe('sqlString', () => {
     expect(sqlString('a\\b')).toBe("'a\\\\b'");
     expect(sqlString('x\\')).toBe("'x\\\\'");
     expect(sqlString("\\'")).toBe("'\\\\'''");
+  });
+});
+
+describe('withStatementBreak', () => {
+  it('appends a newline so the caret clears the last token', () => {
+    expect(withStatementBreak('SELECT 1')).toBe('SELECT 1\n');
+    expect(withStatementBreak('SELECT a\nFROM t')).toBe('SELECT a\nFROM t\n');
+  });
+  it('leaves text already ending in whitespace or a semicolon untouched', () => {
+    expect(withStatementBreak('SELECT 1\n')).toBe('SELECT 1\n');
+    expect(withStatementBreak('SELECT 1 ')).toBe('SELECT 1 ');
+    expect(withStatementBreak('SELECT 1;')).toBe('SELECT 1;');
+  });
+  it('coerces nullish/empty to empty string (no stray newline)', () => {
+    expect(withStatementBreak('')).toBe('');
+    expect(withStatementBreak(null)).toBe('');
+    expect(withStatementBreak(undefined)).toBe('');
   });
 });
 
