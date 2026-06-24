@@ -11,7 +11,7 @@ import {
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine } from '../core/stream.js';
@@ -449,7 +449,9 @@ export function createApp(env = {}) {
     try {
       const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(sql) + ') AS q FORMAT JSON');
       const q = (json.data && json.data[0] && json.data[0].q) || '';
-      if (q) replaceEditor(app, q);
+      // Terminate so the caret lands past the last token — otherwise the input
+      // event from the replace re-opens autocomplete on the trailing word.
+      if (q) replaceEditor(app, withStatementBreak(q));
     } catch (e) {
       flashToast('Format failed: ' + String((e && e.message) || e), { document: doc });
     }
@@ -711,8 +713,9 @@ export function renderApp(app, helpers) {
     app.dom.schemaList);
 
   app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
+  app.dom.savedSearch = h('div', { class: 'saved-search' });
   app.dom.savedList = h('div', { class: 'saved-list' });
-  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedList);
+  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
   const rectFor = (axis) => {

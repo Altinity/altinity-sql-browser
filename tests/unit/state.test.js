@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId,
-  saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, importSaved,
+  saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, filterSaved, filterHistory, importSaved,
   deleteSaved, recordHistory, clearHistory, deleteHistory, tabChart,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
@@ -177,6 +177,29 @@ describe('saved queries', () => {
     toggleFavorite(s, 'missing', save); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
     expect(save).toHaveBeenCalledTimes(1);
+  });
+  it('filterSaved matches name/description/sql case-insensitively; blank → unchanged', () => {
+    const list = [
+      { id: 'a', name: 'Carrier delays', sql: 'SELECT carrier', description: 'worst delays' },
+      { id: 'b', name: 'Airports', sql: 'SELECT origin FROM flights' },
+      { id: 'c', name: 'Cancellations', sql: 'SELECT month' },
+    ];
+    expect(filterSaved(list, '').map((q) => q.id)).toEqual(['a', 'b', 'c']);
+    expect(filterSaved(list, '   ')).toBe(list); // blank → same reference, no copy
+    expect(filterSaved(list, 'CARRIER').map((q) => q.id)).toEqual(['a']); // name + sql
+    expect(filterSaved(list, 'delays').map((q) => q.id)).toEqual(['a']); // description
+    expect(filterSaved(list, 'origin').map((q) => q.id)).toEqual(['b']); // sql
+    expect(filterSaved(list, 'zzz')).toEqual([]);
+  });
+  it('filterSaved tolerates entries missing fields', () => {
+    const list = [{ id: 'x' }, { id: 'y', name: 'Yo' }];
+    expect(filterSaved(list, 'yo').map((q) => q.id)).toEqual(['y']);
+  });
+  it('filterHistory matches sql case-insensitively; blank → unchanged', () => {
+    const list = [{ id: 'h1', sql: 'SELECT 1' }, { id: 'h2', sql: 'INSERT INTO t' }, { id: 'h3' }];
+    expect(filterHistory(list, '')).toBe(list);
+    expect(filterHistory(list, 'insert').map((h) => h.id)).toEqual(['h2']);
+    expect(filterHistory(list, 'zzz')).toEqual([]);
   });
   it('importSaved merges (add/skip/update), persists, and uses injected genId', () => {
     const s = createState(reader());

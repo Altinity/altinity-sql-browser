@@ -12,6 +12,9 @@ export class FakeChart {
     this.config = config;
     this.destroyed = false;
   }
+  // Mirrors Chart.js's single pointer-event entry point: results.js wraps this
+  // to undo the page CSS zoom. Records the (corrected) event for assertions.
+  _eventHandler(e, replay) { this.lastEvent = e; this.lastReplay = replay; }
   destroy() { this.destroyed = true; }
 }
 
@@ -48,6 +51,7 @@ export function makeApp(over = {}) {
       schemaList: document.createElement('div'),
       resultsRegion: document.createElement('div'),
       savedTabsRow: document.createElement('div'),
+      savedSearch: document.createElement('div'),
       savedList: document.createElement('div'),
       saveBtn: document.createElement('button'),
     },

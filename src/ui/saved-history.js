@@ -1,10 +1,14 @@
-// The bottom sidebar pane: a Saved / History switcher and the two lists.
-// Saved items support favorite (star), inline rename (pencil) and delete (trash).
+// The bottom sidebar pane: a Saved / History switcher, a search box, and the
+// two lists. Saved items support favorite (star), inline rename (pencil) and
+// delete (trash). The search filters the active list (name/description/sql for
+// Library, sql for History); it re-renders only the list so typing keeps focus.
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
-import { sortedSaved, renameSaved, toggleFavorite, deleteSaved, deleteHistory } from '../state.js';
+import {
+  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
+} from '../state.js';
 
 export function renderSavedHistory(app) {
   const tabsRow = app.dom.savedTabsRow;
@@ -13,21 +17,67 @@ export function renderSavedHistory(app) {
   const state = app.state;
   const count = state.savedQueries.length;
 
+  // Switching panes clears the search so each tab starts unfiltered.
+  const switchTo = (panel) => {
+    state.sidePanel = panel;
+    state.libraryFilter = '';
+    app.savePref('sidePanel', panel);
+    renderSavedHistory(app);
+  };
+
   tabsRow.replaceChildren(
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'saved' ? ' active' : ''),
-      onclick: () => { state.sidePanel = 'saved'; app.savePref('sidePanel', 'saved'); renderSavedHistory(app); },
+      onclick: () => switchTo('saved'),
     }, Icon.star(state.sidePanel === 'saved'), h('span', null, 'Library'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel === 'history' ? ' active' : ''),
-      onclick: () => { state.sidePanel = 'history'; app.savePref('sidePanel', 'history'); renderSavedHistory(app); },
+      onclick: () => switchTo('history'),
     }, Icon.history(), h('span', null, 'History')),
   );
 
+  renderSearch(app);
+  renderList(app);
+}
+
+/** Re-render just the active list (called on every keystroke without rebuilding
+ * the search input, so the caret/focus survive filtering). */
+function renderList(app) {
+  const list = app.dom.savedList;
   list.replaceChildren();
-  if (state.sidePanel === 'saved') return renderSaved(app, list);
-  return renderHistory(app, list);
+  if (app.state.sidePanel === 'saved') renderSaved(app, list);
+  else renderHistory(app, list);
+}
+
+/**
+ * Render the search box into `app.dom.savedSearch` (built once per full render;
+ * a tab with no items shows nothing). Its `input` handler mutates
+ * `state.libraryFilter` and re-renders only the list, so it stays focused.
+ */
+function renderSearch(app) {
+  const box = app.dom.savedSearch;
+  if (!box) return;
+  const state = app.state;
+  const hasItems = state.sidePanel === 'saved' ? state.savedQueries.length > 0 : state.history.length > 0;
+  box.replaceChildren();
+  if (!hasItems) return;
+
+  const input = h('input', {
+    class: 'sv-search-input', type: 'text',
+    placeholder: state.sidePanel === 'saved' ? 'Search saved queries…' : 'Search history…',
+    value: state.libraryFilter,
+  });
+  const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());
+  const syncClear = () => { clear.style.display = input.value ? '' : 'none'; };
+  const setFilter = (v) => { input.value = v; state.libraryFilter = v; syncClear(); renderList(app); };
+
+  input.addEventListener('input', () => { state.libraryFilter = input.value; syncClear(); renderList(app); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); setFilter(''); } });
+  clear.addEventListener('click', () => { setFilter(''); input.focus(); });
+  syncClear();
+
+  box.append(h('span', { class: 'sv-search-icon' }, Icon.search()), input, clear);
 }
 
 function renderSaved(app, list) {
@@ -35,8 +85,14 @@ function renderSaved(app, list) {
   if (state.savedQueries.length === 0) {
     list.appendChild(h('div', { class: 'saved-empty' },
       'No saved queries yet.', h('br'), 'Click ', Icon.bookmark(), ' Save next to Run.'));
+    return;
   }
-  for (const q of sortedSaved(state)) {
+  const items = filterSaved(sortedSaved(state), state.libraryFilter);
+  if (items.length === 0) {
+    list.appendChild(h('div', { class: 'saved-empty' }, 'No queries match “' + state.libraryFilter.trim() + '”.'));
+    return;
+  }
+  for (const q of items) {
     if (app.editingSavedId === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
     const star = h('button', {
       class: 'sv-star' + (q.favorite ? ' on' : ''), title: q.favorite ? 'Unfavorite' : 'Favorite',
@@ -110,7 +166,12 @@ function renderHistory(app, list) {
     list.appendChild(h('div', { class: 'saved-empty' }, 'No history yet.'));
     return;
   }
-  for (const ent of state.history) {
+  const items = filterHistory(state.history, state.libraryFilter);
+  if (items.length === 0) {
+    list.appendChild(h('div', { class: 'saved-empty' }, 'No history matches “' + state.libraryFilter.trim() + '”.'));
+    return;
+  }
+  for (const ent of items) {
     list.appendChild(h('div', { class: 'history-row', onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); app.actions.run(); } },
       h('button', {
         class: 'sv-act del', title: 'Delete',
