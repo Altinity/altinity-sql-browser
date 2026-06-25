@@ -57,6 +57,36 @@ test.describe('EXPLAIN PIPELINE graph (antalya ontime fact/dim join)', () => {
     expect(labels).toContain('Limit');
   });
 
+  test('fullscreen overlay pans and zooms the graph and closes on Escape', async ({ page }) => {
+    await page.evaluate((dot) => window.__openFullscreen(dot), DOT);
+    const overlay = page.locator('.graph-overlay');
+    await expect(overlay).toBeVisible();
+    const svg = page.locator('.graph-overlay-canvas svg.explain-graph');
+    const vb = () => svg.getAttribute('viewBox').then((s) => s.split(' ').map(Number));
+
+    const [, , w0] = await vb();
+    // wheel over the canvas → zoom in (smaller viewBox width)
+    await page.locator('.graph-overlay-canvas').hover();
+    await page.mouse.wheel(0, -300);
+    const [, , w1] = await vb();
+    expect(w1).toBeLessThan(w0);
+
+    // drag → pan (viewBox x changes)
+    const [x1] = await vb();
+    const box = await page.locator('.graph-overlay-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 - 80, box.y + box.height / 2);
+    await page.mouse.up();
+    const [x2] = await vb();
+    expect(x2).not.toBe(x1);
+
+    // Fit resets; Escape closes
+    await page.getByRole('button', { name: 'Fit' }).click();
+    await page.keyboard.press('Escape');
+    await expect(overlay).toHaveCount(0);
+  });
+
   test('lays out vertically (stages stacked) with horizontal parallel lanes', async ({ page }) => {
     const m = await page.evaluate(() => {
       const rects = [...document.querySelectorAll('rect.eg-node')];

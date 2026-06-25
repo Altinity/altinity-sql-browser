@@ -16,12 +16,14 @@
   <!-- Mount the real Pipeline renderer. No bundling: the browser resolves the
        /src ESM graph directly (renderExplainGraph → core/dot.js). -->
   <script type="module">
-    import { renderExplainGraph } from '/src/ui/explain-graph.js';
+    import { renderExplainGraph, openPipelineFullscreen } from '/src/ui/explain-graph.js';
 
-    // Render a DOT document exactly as the Pipeline result view does.
+    // Render a DOT document exactly as the inline Pipeline result view does.
     window.__renderPipeline = (dotText) => {
       document.getElementById('host').replaceChildren(renderExplainGraph({ rawText: dotText }));
     };
+    // Open the fullscreen pan/zoom overlay (same call the Expand button makes).
+    window.__openFullscreen = (dotText) => openPipelineFullscreen({ document }, dotText);
     window.__ready = true;
   </script>
 </body>

@@ -542,4 +542,22 @@ describe('EXPLAIN views', () => {
     expect(app.dom.resultsRegion.querySelectorAll('.result-view-tab')).toHaveLength(5);
     expect(app.dom.resultsRegion.querySelector('.results-error').textContent).toContain('boom');
   });
+
+  it('shows an Expand button for the Pipeline view that opens the fullscreen overlay', () => {
+    const app = appWithResult(explainResult('pipeline', { rawText: 'digraph { n1 [label="A"]; }' }));
+    renderResults(app);
+    const expand = [...app.dom.resultsRegion.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent));
+    expect(expand).toBeTruthy();
+    click(expand);
+    const overlay = document.body.querySelector('.graph-overlay');
+    expect(overlay).not.toBeNull();
+    overlay.dispatchEvent(new Event('click', { bubbles: true })); // backdrop click closes + cleans up
+    expect(document.body.querySelector('.graph-overlay')).toBeNull();
+  });
+
+  it('has no Expand button for non-pipeline explain views', () => {
+    const app = appWithResult(explainResult('explain', { rawText: 'plan text' }));
+    renderResults(app);
+    expect([...app.dom.resultsRegion.querySelectorAll('.res-act')].some((b) => /Expand/.test(b.textContent))).toBe(false);
+  });
 });

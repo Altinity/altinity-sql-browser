@@ -9,7 +9,7 @@ import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
-import { renderExplainGraph } from './explain-graph.js';
+import { renderExplainGraph, openPipelineFullscreen } from './explain-graph.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -204,6 +204,12 @@ function buildToolbar(app, r) {
         h('span', { class: 'v' }, (r.rawText != null ? '—' : r.rows.length) + ' rows')));
       toolbar.appendChild(h('div', { class: 'stat', title: r.progress.rows + ' rows scanned' },
         h('span', { class: 'ic' }, Icon.bytes()), h('span', { class: 'v' }, formatBytes(r.progress.bytes))));
+    }
+    if (r.explainView === 'pipeline' && r.rawText && !r.error) {
+      toolbar.appendChild(h('button', {
+        class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
+        onclick: () => openPipelineFullscreen(app, r.rawText),
+      }, Icon.expand(), h('span', null, 'Expand')));
     }
     if (!r.error) {
       toolbar.appendChild(h('button', {
