@@ -517,10 +517,14 @@ export function createApp(env = {}) {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     const tab = app.activeTab();
+    // Show a loading placeholder first — the lineage queries (system.* + an
+    // EXPLAIN AST per view/MV) can take a moment on a large database.
+    tab.result = newResult('Table');
+    tab.result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+    renderResults(app);
     try {
       const rows = await ch.loadSchemaLineage(chCtx, focus);
       const g = buildSchemaGraph(rows, focus);
-      tab.result = newResult('Table');
       tab.result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges };
     } catch (e) {
       tab.result = newResult('Table');

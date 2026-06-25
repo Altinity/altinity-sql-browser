@@ -105,7 +105,11 @@ export function renderResults(app) {
   } else if (r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r.schemaGraph) {
-    inner.appendChild(renderSchemaGraph(app, r));
+    inner.appendChild(r.schemaGraph.loading
+      ? h('div', { class: 'placeholder starting' },
+        h('span', { class: 'spin' }, Icon.spinner()),
+        h('div', null, 'Loading lineage…'))
+      : renderSchemaGraph(app, r));
   } else if (r.explainView) {
     inner.appendChild(renderExplainView(app, r));
   } else if (r.rawText != null) {
@@ -153,10 +157,13 @@ function buildToolbar(app, r) {
     const title = f.kind === 'table' ? f.db + '.' + f.table : f.db;
     toolbar.appendChild(h('div', { class: 'result-view-tabs' }, h('span', { class: 'res-graph-title' }, 'Schema · ' + title)));
     toolbar.appendChild(h('div', { style: { flex: '1' } }));
-    toolbar.appendChild(h('button', {
-      class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
-      onclick: () => openSchemaFullscreen(app, r.schemaGraph),
-    }, Icon.expand(), h('span', null, 'Expand')));
+    // Expand is meaningless until the graph has loaded.
+    if (!r.schemaGraph.loading) {
+      toolbar.appendChild(h('button', {
+        class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
+        onclick: () => openSchemaFullscreen(app, r.schemaGraph),
+      }, Icon.expand(), h('span', null, 'Expand')));
+    }
     return toolbar;
   }
   const tabs = h('div', { class: 'result-view-tabs' });

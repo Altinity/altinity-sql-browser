@@ -595,4 +595,15 @@ describe('schema lineage result', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).toBe('Schema · lin.events');
   });
+  it('shows a loading placeholder (and no graph/Expand) while the lineage loads', () => {
+    const r = newResult('Table');
+    r.schemaGraph = { focus: { kind: 'db', db: 'lin' }, loading: true, nodes: [], edges: [] };
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.placeholder.starting').textContent).toMatch(/Loading lineage/);
+    expect(region.querySelector('svg.explain-graph')).toBeNull();
+    expect(region.querySelector('.res-graph-title').textContent).toBe('Schema · lin');
+    expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
+  });
 });
