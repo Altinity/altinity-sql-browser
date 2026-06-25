@@ -1,0 +1,58 @@
+import { describe, it, expect } from 'vitest';
+import dagre from '@dagrejs/dagre';
+import { parseDot } from '../../src/core/dot.js';
+import { dagreLayout, nodeWidth } from '../../src/core/dot-layout.js';
+
+// dagre is pure (no DOM), so the tests drive it directly — the same library the
+// app injects at runtime via the app.Dagre seam.
+const lay = (dot) => dagreLayout(dagre, parseDot(dot));
+
+describe('nodeWidth', () => {
+  it('floors at the minimum and grows with the label', () => {
+    expect(nodeWidth('')).toBe(64);
+    expect(nodeWidth('a very long processor label here')).toBeGreaterThan(64);
+  });
+});
+
+describe('dagreLayout', () => {
+  it('returns an empty layout for no nodes', () => {
+    expect(dagreLayout(dagre, { nodes: [], edges: [] })).toEqual({ nodes: [], edges: [], width: 0, height: 0 });
+  });
+
+  it('tolerates missing nodes/edges keys', () => {
+    expect(dagreLayout(dagre, {})).toEqual({ nodes: [], edges: [], width: 0, height: 0 });
+    const g = dagreLayout(dagre, { nodes: [{ id: 'solo', label: 'Solo' }] }); // no edges key
+    expect(g.nodes).toHaveLength(1);
+    expect(g.edges).toEqual([]);
+  });
+
+  it('lays a chain out top→bottom with top-left node coords and routed edges', () => {
+    const g = lay('digraph { a [label="A"]; b [label="B"]; c [label="C"]; a -> b; b -> c; }');
+    const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+    expect(by.a.y).toBeLessThan(by.b.y);
+    expect(by.b.y).toBeLessThan(by.c.y);
+    expect(by.a.w).toBeGreaterThanOrEqual(64);
+    expect(g.width).toBeGreaterThan(0);
+    expect(g.height).toBeGreaterThan(0);
+    expect(g.edges).toHaveLength(2);
+    expect(g.edges[0].points.length).toBeGreaterThanOrEqual(2); // a polyline
+    expect(g.edges[0].points[0]).toHaveProperty('x');
+  });
+
+  it('puts parallel processors of one stage on the same rank (same y)', () => {
+    const g = lay('digraph { a[label="a"]; b[label="b"]; c[label="c"]; t[label="t"]; a->t; b->t; c->t; }');
+    const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+    expect(by.a.y).toBe(by.b.y);
+    expect(by.b.y).toBe(by.c.y);
+    expect(by.t.y).toBeGreaterThan(by.a.y);
+  });
+
+  it('drops self-loops and edges to undeclared nodes before layout', () => {
+    const g = dagreLayout(dagre, {
+      nodes: [{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }],
+      edges: [{ from: 'a', to: 'a' }, { from: 'a', to: 'ghost' }, { from: 'a', to: 'b' }],
+    });
+    expect(g.nodes).toHaveLength(2);
+    expect(g.edges).toEqual([{ from: 'a', to: 'b', points: expect.any(Array) }]);
+  });
+});

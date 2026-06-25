@@ -6,17 +6,19 @@
 
 import { h, s } from './dom.js';
 import { Icon } from './icons.js';
-import { parseDot, layoutGraph } from '../core/dot.js';
+import { parseDot } from '../core/dot.js';
+import { dagreLayout } from '../core/dot-layout.js';
 import { fitBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 
 const ZOOM_STEP = 1.2; // per wheel notch / button press
 
 /**
- * Build the pipeline SVG from a DOT document. Returns the `<svg>` element plus
- * the graph's intrinsic size and node count (0 → caller shows a placeholder).
+ * Build the pipeline SVG from a DOT document, laying it out with the injected
+ * dagre engine. Returns the `<svg>` element plus the graph's intrinsic size and
+ * node count (0 → caller shows a placeholder).
  */
-export function buildPipelineSvg(rawText) {
-  const g = layoutGraph(parseDot(rawText || ''));
+export function buildPipelineSvg(rawText, dagre) {
+  const g = dagreLayout(dagre, parseDot(rawText || ''));
   const svg = s('svg', { class: 'explain-graph', viewBox: `0 0 ${g.width} ${g.height}` });
   if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
   // A single reusable arrowhead marker.
@@ -45,8 +47,8 @@ export function buildPipelineSvg(rawText) {
  * the pane scrolls; the fullscreen overlay (openPipelineFullscreen) is where
  * pan/zoom lives.
  */
-export function renderExplainGraph(r) {
-  const built = buildPipelineSvg(r.rawText || '');
+export function renderExplainGraph(app, r) {
+  const built = buildPipelineSvg(r.rawText || '', app.Dagre);
   if (!built.nodeCount) {
     return h('div', { class: 'placeholder' }, h('div', null, 'No pipeline graph to display.'));
   }
@@ -61,7 +63,7 @@ export function renderExplainGraph(r) {
  */
 export function openPipelineFullscreen(app, rawText) {
   const doc = (app && app.document) || document;
-  const built = buildPipelineSvg(rawText || '');
+  const built = buildPipelineSvg(rawText || '', app && app.Dagre);
 
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   let backdrop;

@@ -16,14 +16,18 @@
   <!-- Mount the real Pipeline renderer. No bundling: the browser resolves the
        /src ESM graph directly (renderExplainGraph → core/dot.js). -->
   <script type="module">
+    // dagre is injected (the app.Dagre seam) — load its self-contained ESM build
+    // straight from node_modules, served by the e2e static server (repo root).
+    import dagre from '/node_modules/@dagrejs/dagre/dist/dagre.esm.js';
     import { renderExplainGraph, openPipelineFullscreen } from '/src/ui/explain-graph.js';
 
+    const app = { document, Dagre: dagre };
     // Render a DOT document exactly as the inline Pipeline result view does.
     window.__renderPipeline = (dotText) => {
-      document.getElementById('host').replaceChildren(renderExplainGraph({ rawText: dotText }));
+      document.getElementById('host').replaceChildren(renderExplainGraph(app, { rawText: dotText }));
     };
     // Open the fullscreen pan/zoom overlay (same call the Expand button makes).
-    window.__openFullscreen = (dotText) => openPipelineFullscreen({ document }, dotText);
+    window.__openFullscreen = (dotText) => openPipelineFullscreen(app, dotText);
     window.__ready = true;
   </script>
 </body>

@@ -126,7 +126,7 @@ export function renderResults(app) {
 function renderExplainView(app, r) {
   const desc = EXPLAIN_VIEWS.find((v) => v.id === r.explainView);
   const kind = desc ? desc.kind : 'text';
-  if (kind === 'graph') return renderExplainGraph(r);
+  if (kind === 'graph') return renderExplainGraph(app, r);
   if (kind === 'table') {
     return r.rows.length
       ? renderTable(app, r)

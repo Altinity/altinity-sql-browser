@@ -52,6 +52,9 @@ export function createApp(env = {}) {
     // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
     Chart: env.Chart || win.Chart,
     cssVar: env.cssVar || ((name) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
+    // Pipeline-graph layout seam: dagre (injected like Chart). The DOT parser and
+    // SVG drawer are ours; dagre only computes node positions + edge bend points.
+    Dagre: env.Dagre || win.dagre,
   };
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
