@@ -1,0 +1,261 @@
+digraph
+{
+  rankdir="LR";
+  { node [shape = rect]
+        n17 [label="ColumnPermuteTransform × 8"];
+        n9 [label="JoiningTransform × 8"];
+        n7 [label="Resize × 2"];
+        n8 [label="SimpleSquashingTransform × 16"];
+    subgraph cluster_0 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n5 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_1 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n13 [label="ExpressionTransform"];
+        n16 [label="FillingRightJoinSide × 4"];
+        n14 [label="Resize × 3"];
+        n15 [label="SimpleSquashingTransform × 4"];
+      }
+    }
+    subgraph cluster_2 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n19 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_3 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n27 [label="ExpressionTransform × 4"];
+        n30 [label="FillingRightJoinSide × 4"];
+        n28 [label="Resize × 3"];
+        n29 [label="SimpleSquashingTransform × 4"];
+      }
+    }
+    subgraph cluster_4 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n2 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_5 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n31 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_6 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n11 [label="ExpressionTransform"];
+      }
+    }
+    subgraph cluster_7 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n22 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_8 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n6 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_9 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n21 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_10 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n37 [label="ExpressionTransform"];
+      }
+    }
+    subgraph cluster_11 {
+      label ="Limit";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n36 [label="Limit"];
+      }
+    }
+    subgraph cluster_12 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n18 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_13 {
+      label ="Expression";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n25 [label="ExpressionTransform × 4"];
+      }
+    }
+    subgraph cluster_14 {
+      label ="ReadFromMergeTree";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n1 [label="MergeTreeSelect(pool: ReadPool, algorithm: Thread) × 4"];
+      }
+    }
+    subgraph cluster_15 {
+      label ="ReadFromMergeTree";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n20 [label="MergeTreeSelect(pool: ReadPool, algorithm: Thread) × 4"];
+      }
+    }
+    subgraph cluster_16 {
+      label ="ReadFromMergeTree";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n10 [label="MergeTreeSelect(pool: ReadPoolInOrder, algorithm: InOrder)"];
+      }
+    }
+    subgraph cluster_17 {
+      label ="BuildRuntimeFilter";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n12 [label="BuildRuntimeFilterTransform"];
+      }
+    }
+    subgraph cluster_18 {
+      label ="Sorting";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n33 [label="LimitsCheckingTransform × 4"];
+        n34 [label="MergeSortingTransform × 4"];
+        n35 [label="MergingSortedTransform"];
+        n32 [label="PartialSortingTransform × 4"];
+      }
+    }
+    subgraph cluster_19 {
+      label ="BuildRuntimeFilter";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n26 [label="BuildRuntimeFilterTransform × 4"];
+      }
+    }
+    subgraph cluster_20 {
+      label ="Aggregating";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n3 [label="AggregatingTransform × 4"];
+        n4 [label="Resize"];
+      }
+    }
+    subgraph cluster_21 {
+      label ="Aggregating";
+      style=filled;
+      color=lightgrey;
+      node [style=filled,color=white];
+      { rank = same;
+        n23 [label="AggregatingTransform × 4"];
+        n24 [label="Resize"];
+      }
+    }
+  }
+  n17 -> n8 [label="× 8"];
+  n9 -> n17 [label="× 8"];
+  n7 -> n8 [label="× 8"];
+  n8 -> n18 [label="× 4"];
+  n8 -> n31 [label="× 4"];
+  n8 -> n9 [label="× 8"];
+  n5 -> n6 [label="× 4"];
+  n13 -> n14 [label=""];
+  n16 -> n14 [label="× 4"];
+  n14 -> n15 [label="× 4"];
+  n14 -> n14 [label=""];
+  n14 -> n9 [label="× 4"];
+  n15 -> n16 [label="× 4"];
+  n19 -> n7 [label="× 4"];
+  n27 -> n28 [label="× 4"];
+  n30 -> n28 [label="× 4"];
+  n28 -> n29 [label="× 4"];
+  n28 -> n28 [label=""];
+  n28 -> n9 [label="× 4"];
+  n29 -> n30 [label="× 4"];
+  n2 -> n3 [label="× 4"];
+  n31 -> n32 [label="× 4"];
+  n11 -> n12 [label=""];
+  n22 -> n23 [label="× 4"];
+  n6 -> n7 [label="× 4"];
+  n21 -> n22 [label="× 4"];
+  n36 -> n37 [label=""];
+  n18 -> n19 [label="× 4"];
+  n25 -> n26 [label="× 4"];
+  n1 -> n2 [label="× 4"];
+  n20 -> n21 [label="× 4"];
+  n10 -> n11 [label=""];
+  n12 -> n13 [label=""];
+  n33 -> n34 [label="× 4"];
+  n34 -> n35 [label="× 4"];
+  n35 -> n36 [label=""];
+  n32 -> n33 [label="× 4"];
+  n26 -> n27 [label="× 4"];
+  n3 -> n4 [label="× 4"];
+  n4 -> n5 [label="× 4"];
+  n23 -> n24 [label="× 4"];
+  n24 -> n25 [label="× 4"];
+}

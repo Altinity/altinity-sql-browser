@@ -175,15 +175,20 @@ function buildToolbar(app, r) {
   }
   toolbar.appendChild(tabs);
   toolbar.appendChild(h('div', { style: { flex: '1' } }));
+  // EXPLAIN views suppress the ms/rows/bytes stats — they're not meaningful for a
+  // plan and the freed space lets the five tabs breathe.
+  const showStats = !(r && r.explainView);
   if (app.state.running) {
     // Live counters (accent, mono) + Cancel — replaces the static stats while
     // streaming. The ms element is updated in place by app.tickElapsed().
-    app.dom.runElapsedEl = h('span', { class: 'v' }, app.elapsedMs().toFixed(0) + ' ms');
-    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()), app.dom.runElapsedEl));
-    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.rows()),
-      h('span', { class: 'v' }, formatRows(r ? r.progress.rows : 0) + ' rows')));
-    toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.bytes()),
-      h('span', { class: 'v' }, formatBytes(r ? r.progress.bytes : 0))));
+    if (showStats) {
+      app.dom.runElapsedEl = h('span', { class: 'v' }, app.elapsedMs().toFixed(0) + ' ms');
+      toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()), app.dom.runElapsedEl));
+      toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.rows()),
+        h('span', { class: 'v' }, formatRows(r ? r.progress.rows : 0) + ' rows')));
+      toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic' }, Icon.bytes()),
+        h('span', { class: 'v' }, formatBytes(r ? r.progress.bytes : 0))));
+    }
     toolbar.appendChild(h('button', {
       class: 'res-act cancel-act', title: 'Cancel query (Esc)',
       onclick: () => app.actions.cancel(),
@@ -192,12 +197,14 @@ function buildToolbar(app, r) {
     if (r.cancelled) {
       toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · partial'));
     }
-    const ms = (r.progress.elapsed_ns / 1e6).toFixed(0);
-    toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()), h('span', { class: 'v' }, ms + ' ms')));
-    toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()),
-      h('span', { class: 'v' }, (r.rawText != null ? '—' : r.rows.length) + ' rows')));
-    toolbar.appendChild(h('div', { class: 'stat', title: r.progress.rows + ' rows scanned' },
-      h('span', { class: 'ic' }, Icon.bytes()), h('span', { class: 'v' }, formatBytes(r.progress.bytes))));
+    if (showStats) {
+      const ms = (r.progress.elapsed_ns / 1e6).toFixed(0);
+      toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()), h('span', { class: 'v' }, ms + ' ms')));
+      toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()),
+        h('span', { class: 'v' }, (r.rawText != null ? '—' : r.rows.length) + ' rows')));
+      toolbar.appendChild(h('div', { class: 'stat', title: r.progress.rows + ' rows scanned' },
+        h('span', { class: 'ic' }, Icon.bytes()), h('span', { class: 'v' }, formatBytes(r.progress.bytes))));
+    }
     if (!r.error) {
       toolbar.appendChild(h('button', {
         class: 'res-act', title: 'Copy results to clipboard',

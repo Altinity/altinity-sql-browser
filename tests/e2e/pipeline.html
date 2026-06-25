@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>pipeline graph harness</title>
+  <!-- the real stylesheet, so the SVG graph is themed/laid out as shipped -->
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    html, body { margin: 0; background: #111; }
+    /* .explain-graph-view is height:100%, so the mount host needs a fixed box. */
+    #host { width: 900px; height: 560px; }
+  </style>
+</head>
+<body data-theme="dark">
+  <div id="host"></div>
+  <!-- Mount the real Pipeline renderer. No bundling: the browser resolves the
+       /src ESM graph directly (renderExplainGraph → core/dot.js). -->
+  <script type="module">
+    import { renderExplainGraph } from '/src/ui/explain-graph.js';
+
+    // Render a DOT document exactly as the Pipeline result view does.
+    window.__renderPipeline = (dotText) => {
+      document.getElementById('host').replaceChildren(renderExplainGraph({ rawText: dotText }));
+    };
+    window.__ready = true;
+  </script>
+</body>
+</html>

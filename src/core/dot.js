@@ -7,8 +7,8 @@ const DOT_KEYWORDS = new Set(['node', 'edge', 'graph', 'subgraph', 'digraph']);
 
 // Layout constants (px). Tuned for ClickHouse pipeline graphs (short labels).
 const NODE_H = 30;
-const V_GAP = 16;
-const H_GAP = 64;
+const V_GAP = 30; // vertical gap between sequential stages (room for the arrow)
+const H_GAP = 28; // horizontal gap between parallel processors in a stage
 const CHAR_W = 7;
 const PAD_X = 18;
 const MIN_W = 64;
@@ -55,17 +55,20 @@ export function parseDot(text) {
 }
 
 /**
- * Lay a parsed graph out left→right by layer. Returns positioned nodes
- * (`{id,label,x,y,w,h}`), edges as 2-point polylines (`{from,to,points}`), and
- * the overall `width`/`height` for the SVG viewBox. Longest-path layering
- * (Kahn topo; cycle-safe — leftover nodes stay in layer 0), uniform column
- * widths, vertically centred columns. Pure.
+ * Lay a parsed graph out top→bottom by layer: sequential stages stack
+ * vertically, parallel processors in the same stage sit side-by-side. Returns
+ * positioned nodes (`{id,label,x,y,w,h}`), edges as 2-point polylines
+ * (`{from,to,points}`, bottom-centre → top-centre), and the overall
+ * `width`/`height` for the SVG viewBox. Longest-path layering (Kahn topo;
+ * cycle-safe — leftover nodes stay in layer 0), each row centred. Pure.
  */
 export function layoutGraph(graph) {
   const nodes = (graph.nodes || []).map((n) => ({ ...n }));
   if (!nodes.length) return { nodes: [], edges: [], width: 0, height: 0 };
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const edges = (graph.edges || []).filter((e) => byId.has(e.from) && byId.has(e.to));
+  // Drop edges to unknown nodes and self-loops (a self-loop would just draw a
+  // line over its own node and can stall the topological layering).
+  const edges = (graph.edges || []).filter((e) => byId.has(e.from) && byId.has(e.to) && e.from !== e.to);
 
   // Longest-path layering via Kahn topological order.
   const succ = new Map(nodes.map((n) => [n.id, []]));
@@ -91,34 +94,27 @@ export function layoutGraph(graph) {
   const layers = Array.from({ length: maxLayer + 1 }, () => []);
   for (const n of nodes) layers[layer.get(n.id)].push(n.id);
 
-  // Node sizes, then uniform width per column and column x positions.
+  // Vertical layout: layers stack top→bottom (sequential stages), and nodes
+  // within a layer sit side-by-side left→right (parallel processors). Node widths
+  // vary with the label; each row is centred under the widest row.
   for (const n of nodes) {
     n.w = Math.max(MIN_W, n.label.length * CHAR_W + PAD_X);
     n.h = NODE_H;
   }
-  const layerX = [];
-  let x = MARGIN;
-  let maxColH = 0;
-  for (let L = 0; L < layers.length; L++) {
-    const col = layers[L];
-    const colW = col.reduce((mx, id) => Math.max(mx, byId.get(id).w), MIN_W);
-    for (const id of col) byId.get(id).w = colW;
-    layerX[L] = x;
-    x += colW + H_GAP;
-    const colH = col.length * NODE_H + Math.max(0, col.length - 1) * V_GAP;
-    if (colH > maxColH) maxColH = colH;
-  }
+  const rowWidth = (col) =>
+    col.reduce((sum, id) => sum + byId.get(id).w, 0) + Math.max(0, col.length - 1) * H_GAP;
+  let maxRowW = 0;
+  for (const col of layers) maxRowW = Math.max(maxRowW, rowWidth(col));
 
-  // Vertically centre each column within the tallest column.
   for (let L = 0; L < layers.length; L++) {
     const col = layers[L];
-    const colH = col.length * NODE_H + Math.max(0, col.length - 1) * V_GAP;
-    let y = MARGIN + (maxColH - colH) / 2;
+    const y = MARGIN + L * (NODE_H + V_GAP);
+    let x = MARGIN + (maxRowW - rowWidth(col)) / 2;
     for (const id of col) {
       const n = byId.get(id);
-      n.x = layerX[L];
+      n.x = x;
       n.y = y;
-      y += NODE_H + V_GAP;
+      x += n.w + H_GAP;
     }
   }
 
@@ -129,8 +125,8 @@ export function layoutGraph(graph) {
       from: e.from,
       to: e.to,
       points: [
-        { x: a.x + a.w, y: a.y + a.h / 2 },
-        { x: b.x, y: b.y + b.h / 2 },
+        { x: a.x + a.w / 2, y: a.y + a.h },
+        { x: b.x + b.w / 2, y: b.y },
       ],
     };
   });
@@ -138,7 +134,7 @@ export function layoutGraph(graph) {
   return {
     nodes,
     edges: laidEdges,
-    width: x - H_GAP + MARGIN,
-    height: maxColH + MARGIN * 2,
+    width: maxRowW + MARGIN * 2,
+    height: layers.length * NODE_H + Math.max(0, layers.length - 1) * V_GAP + MARGIN * 2,
   };
 }

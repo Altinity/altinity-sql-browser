@@ -45,35 +45,37 @@ describe('layoutGraph', () => {
     expect(layoutGraph({ nodes: [], edges: [] })).toEqual({ nodes: [], edges: [], width: 0, height: 0 });
     expect(layoutGraph({})).toEqual({ nodes: [], edges: [], width: 0, height: 0 });
   });
-  it('lays a chain out left→right in increasing layers', () => {
+  it('lays a chain out top→bottom in increasing layers', () => {
     const g = layoutGraph(parseDot('digraph { a [label="A"]; b [label="B"]; c [label="C"]; a -> b; b -> c; }'));
     const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-    expect(by.a.x).toBeLessThan(by.b.x);
-    expect(by.b.x).toBeLessThan(by.c.x);
+    expect(by.a.y).toBeLessThan(by.b.y);
+    expect(by.b.y).toBeLessThan(by.c.y);
     expect(g.width).toBeGreaterThan(0);
     expect(g.height).toBeGreaterThan(0);
     expect(g.edges).toHaveLength(2);
-    // each edge is a 2-point polyline from a right edge to a left edge
+    // each edge is a 2-point polyline from a bottom-centre to a top-centre
     expect(g.edges[0].points).toHaveLength(2);
-    expect(g.edges[0].points[0].x).toBe(by.a.x + by.a.w);
-    expect(g.edges[0].points[1].x).toBe(by.b.x);
+    expect(g.edges[0].points[0]).toEqual({ x: by.a.x + by.a.w / 2, y: by.a.y + by.a.h });
+    expect(g.edges[0].points[1]).toEqual({ x: by.b.x + by.b.w / 2, y: by.b.y });
   });
-  it('uses the longest path for layering (diamond)', () => {
-    // a->b->d and a->d : d must sit a column past b, not next to a.
+  it('uses the longest path for layering (diamond stacks vertically)', () => {
+    // a->b->d and a->d : d must sit a row below b, not beside a.
     const g = layoutGraph(parseDot('digraph { a[label="a"]; b[label="b"]; d[label="d"]; a->b; b->d; a->d; }'));
     const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-    expect(by.d.x).toBeGreaterThan(by.b.x);
+    expect(by.d.y).toBeGreaterThan(by.b.y);
   });
-  it('stacks a fan-in column and gives the column a uniform width', () => {
+  it('spreads parallel processors of one stage horizontally on the same row', () => {
     const g = layoutGraph(parseDot('digraph { a[label="a"]; b[label="b"]; c[label="c"]; t[label="target"]; a->t; b->t; c->t; }'));
     const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-    expect(by.a.w).toBe(by.b.w); // sources share one column width
-    expect(new Set([by.a.y, by.b.y, by.c.y]).size).toBe(3); // stacked, distinct rows
+    expect(by.a.y).toBe(by.b.y); // same stage → same row
+    expect(by.b.y).toBe(by.c.y);
+    expect(new Set([by.a.x, by.b.x, by.c.x]).size).toBe(3); // side-by-side, distinct columns
+    expect(by.t.y).toBeGreaterThan(by.a.y); // target below the parallel sources
   });
-  it('filters edges with an unknown endpoint', () => {
-    const g = layoutGraph({ nodes: [{ id: 'a', label: 'a' }], edges: [{ from: 'a', to: 'ghost' }] });
-    expect(g.nodes).toHaveLength(1);
-    expect(g.edges).toHaveLength(0);
+  it('filters edges with an unknown endpoint and self-loops', () => {
+    const g = layoutGraph({ nodes: [{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }], edges: [{ from: 'a', to: 'ghost' }, { from: 'a', to: 'a' }, { from: 'a', to: 'b' }] });
+    expect(g.nodes).toHaveLength(2);
+    expect(g.edges).toHaveLength(1); // only a->b survives
   });
   it('is cycle-safe (no infinite loop) and still positions every node', () => {
     const g = layoutGraph(parseDot('digraph { a[label="a"]; b[label="b"]; a->b; b->a; }'));
