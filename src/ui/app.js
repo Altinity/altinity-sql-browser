@@ -11,7 +11,8 @@ import {
 } from '../state.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isExplain } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
+import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
@@ -378,12 +379,41 @@ export function createApp(env = {}) {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
-    // Default to structured streaming (Table); an explicit FORMAT clause runs raw
-    // and shows ClickHouse's response verbatim, and so does EXPLAIN (its plan text
-    // reads far better raw than as a one-column table) unless a FORMAT was given.
-    const fmt = detectSqlFormat(tab.sql) || (isExplain(tab.sql) ? 'TabSeparated' : 'Table');
+    // EXPLAIN-view bookkeeping: the Explain button (opts.explain) forces any query
+    // into EXPLAIN-view mode; a normal Run clears that; switching an EXPLAIN tab
+    // (opts.explainView) preserves it.
+    if (opts && opts.explain) app.state.forceExplain = true;
+    else if (!(opts && opts.explainView != null)) app.state.forceExplain = false;
+
+    // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
+    // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
+    // the five EXPLAIN views; everything else streams structured (Table).
+    const explicitFmt = detectSqlFormat(tab.sql);
+    const parsed = explicitFmt ? null : parseExplain(tab.sql);
+    const explainMode = !explicitFmt && (parsed != null || app.state.forceExplain);
+    let runSql = tab.sql;
+    let fmt;
+    let explainView = null;
+    if (explainMode) {
+      // The Explain view runs the statement verbatim (honoring arbitrary params);
+      // a rich view is auto-selected only on an exact canonical match, else we keep
+      // the last-used view. Rich views derive a query from the inner statement.
+      explainView = (opts && opts.explainView)
+        || (parsed && detectExplainView(parsed))
+        || app.state.explainView || 'explain';
+      app.state.explainView = explainView;
+      fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
+      const inner = parsed ? parsed.inner : tab.sql;
+      runSql = explainView === 'explain'
+        ? (parsed ? tab.sql : 'EXPLAIN ' + tab.sql)
+        : buildExplainQuery(inner, explainView);
+    } else {
+      fmt = explicitFmt || 'Table';
+    }
+
     const t0 = now();
     tab.result = newResult(fmt);
+    if (explainView) tab.result.explainView = explainView;
     app.state.resultSort = { col: null, dir: 'asc' };
     // Keep the current Table/JSON/Chart tab across re-runs (#34); a saved-query
     // open passes its remembered view in opts.view to restore that instead.
@@ -398,7 +428,7 @@ export function createApp(env = {}) {
     app.state.runTick = setInterval(tickElapsed, 100);
 
     try {
-      const out = await ch.runQuery(chCtx, tab.sql, {
+      const out = await ch.runQuery(chCtx, runSql, {
         format: fmt,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
@@ -474,6 +504,12 @@ export function createApp(env = {}) {
       if (pos != null) app.dom.editorRevealCaret(pos);
     }
   }
+
+  // Explain the current query without editing it: run it through the EXPLAIN
+  // views (the editor SQL is left untouched; run() wraps it as needed).
+  function explainQuery() { return run({ explain: true }); }
+  // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
+  function setExplainView(id) { return run({ explainView: id }); }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
   // SHOW CREATE, pretty-print it through formatQuery(), and drop it into the
@@ -678,6 +714,8 @@ export function createApp(env = {}) {
     save: openSavePopover,
     openUserMenu,
     formatQuery,
+    explainQuery,
+    setExplainView,
     insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),
@@ -760,10 +798,11 @@ export function renderApp(app, helpers) {
 
   app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
   app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
+  app.dom.explainBtn = h('button', { class: 'tb-btn', title: 'Explain this query (plan, indexes, pipeline, estimate)', onclick: () => app.actions.explainQuery() }, Icon.plan(), 'Explain');
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
-  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn);
+  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn);
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });

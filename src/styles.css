@@ -622,6 +622,23 @@ body {
 /* tabindex makes the pane keyboard-scrollable; suppress the focus ring. */
 .raw-text-view:focus, .json-view:focus { outline: none; }
 
+/* ------------ EXPLAIN pipeline graph view ------------ */
+.explain-graph-view {
+  height: 100%; overflow: auto; padding: 12px 14px;
+  background: var(--bg-table);
+}
+.explain-graph-view:focus { outline: none; }
+/* `color` drives the arrowhead (fill:currentColor) and edge stroke. */
+.explain-graph { color: var(--fg-faint); display: block; }
+.explain-graph .eg-node {
+  fill: var(--bg-chip); stroke: var(--border); stroke-width: 1;
+}
+.explain-graph .eg-label {
+  fill: var(--fg); font-family: var(--mono); font-size: 11px;
+}
+.explain-graph .eg-edge { stroke: var(--fg-faint); stroke-width: 1.3; fill: none; }
+.explain-graph .eg-arrowhead { fill: var(--fg-faint); }
+
 /* ------------ chart view ------------ */
 /* `.res-body` is display:block, so height:100% (not flex:1) is what lets the
    chart fill it — otherwise the view collapses to the config bar and the

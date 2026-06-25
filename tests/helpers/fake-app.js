@@ -69,6 +69,8 @@ export function makeApp(over = {}) {
       exportResult: vi.fn(),
       save: vi.fn(),
       formatQuery: vi.fn(),
+      explainQuery: vi.fn(),
+      setExplainView: vi.fn(),
       insertCreate: vi.fn(),
       openShortcuts: vi.fn(),
       insertAtCursor: vi.fn(),

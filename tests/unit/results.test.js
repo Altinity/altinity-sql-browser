@@ -484,3 +484,62 @@ describe('installChartZoomFix', () => {
     expect(installChartZoomFix(null, null)).toBeNull();
   });
 });
+
+describe('EXPLAIN views', () => {
+  function explainResult(view, over = {}) {
+    const r = newResult(view === 'estimate' ? 'Table' : 'TabSeparatedRaw');
+    r.explainView = view;
+    return Object.assign(r, over);
+  }
+
+  it('toolbar shows the five EXPLAIN tabs with the active one marked', () => {
+    const app = appWithResult(explainResult('pipeline', { rawText: 'digraph { n1 [label="A"]; }' }));
+    renderResults(app);
+    const tabs = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab')];
+    expect(tabs.map((t) => t.textContent)).toEqual(['Explain', 'Indexes', 'Projections', 'Pipeline', 'Estimate']);
+    expect(tabs.find((t) => t.classList.contains('active')).textContent).toBe('Pipeline');
+  });
+
+  it('clicking a tab calls setExplainView (re-runs the derived query)', () => {
+    const app = appWithResult(explainResult('explain', { rawText: 'plan text' }));
+    renderResults(app);
+    const tabs = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab')];
+    click(tabs[3]); // Pipeline
+    expect(app.actions.setExplainView).toHaveBeenCalledWith('pipeline');
+  });
+
+  it('renders Explain/Indexes/Projections as monospace text', () => {
+    const app = appWithResult(explainResult('explain', { rawText: 'Expression\n  ReadFromTable' }));
+    renderResults(app);
+    const view = app.dom.resultsRegion.querySelector('.raw-text-view');
+    expect(view).not.toBeNull();
+    expect(view.textContent).toBe('Expression\n  ReadFromTable');
+  });
+
+  it('renders Pipeline as the SVG graph', () => {
+    const app = appWithResult(explainResult('pipeline', { rawText: 'digraph { n1 [label="A"]; n2 [label="B"]; n1 -> n2; }' }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.explain-graph-view svg.explain-graph')).not.toBeNull();
+  });
+
+  it('renders Estimate as a structured table, with a placeholder when empty', () => {
+    const r = explainResult('estimate');
+    r.columns = [{ name: 'rows', type: 'UInt64' }];
+    r.rows = [['42']];
+    const app = appWithResult(r);
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('table.res-table')).not.toBeNull();
+
+    const empty = appWithResult(explainResult('estimate', { columns: [], rows: [] }));
+    renderResults(empty);
+    expect(empty.dom.resultsRegion.querySelector('table.res-table')).toBeNull();
+    expect(empty.dom.resultsRegion.textContent).toMatch(/ESTIMATE applies to MergeTree/);
+  });
+
+  it('keeps the EXPLAIN tabs visible when a view errors', () => {
+    const app = appWithResult(explainResult('indexes', { error: 'DB::Exception: boom' }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelectorAll('.result-view-tab')).toHaveLength(5);
+    expect(app.dom.resultsRegion.querySelector('.results-error').textContent).toContain('boom');
+  });
+});

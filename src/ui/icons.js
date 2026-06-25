@@ -72,6 +72,10 @@ export const Icon = {
   arrow: () => svg('M2 6h7.5M7 3.5L9.5 6 7 8.5', 12, 12, { stroke: 1.6 }),
   // Same glyph as the JSON view tab so the Format button's { } matches it.
   braces: () => svg('M4 1.5C2.5 1.5 2.5 3 2.5 4S2.5 5 1.5 6c1 1 1 2 1 2s0 1.5 1.5 1.5M8 1.5c1.5 0 1.5 1.5 1.5 2.5s0 1 1 2c-1 1-1 2-1 2s0 1.5-1.5 1.5', 12, 12),
+  // EXPLAIN button + Explain view: an indented plan-tree of lines.
+  plan: () => iconEl('<path d="M2 2.6h8M4 5.5h6M4 8.4h4.5M2 5.5h.01M2 8.4h.01"/>', 12, 12, 1.4),
+  // Indexes view: a key.
+  key: () => iconEl('<circle cx="4" cy="4" r="2.4"/><path d="M5.7 5.7l4.3 4.3M8.3 8.3l1-1M9.3 9.3l1-1"/>', 12, 12, 1.3),
   bookmark: () => iconEl('<path d="M3.5 1.8h5a.6.6 0 0 1 .6.6v8.2l-3.1-2-3.1 2V2.4a.6.6 0 0 1 .6-.6z"/>', 12, 12, 1.3),
   pencil: () => iconEl('<path d="M2 10l.6-2.5 5-5 1.9 1.9-5 5z"/><path d="M7 3.1l1.9 1.9"/>', 12, 12),
   trash: () => iconEl('<path d="M2.5 3.5h7"/><path d="M4 3.5V2.4h3v1.1"/><path d="M3.4 3.5l.45 6.6a.6.6 0 0 0 .6.5h2.9a.6.6 0 0 0 .6-.5l.45-6.6"/>', 12, 12, 1.2),

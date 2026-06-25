@@ -349,14 +349,56 @@ describe('query run', () => {
     expect(app.activeTab().result.rawText).toBe('a\tb');
     expect(app.activeTab().result.rawFormat).toBe('TabSeparatedWithNames'); // label for the raw tab
   });
-  it('runs EXPLAIN raw (plan text) when no explicit FORMAT is given', async () => {
-    const { app } = appForRun([
+  const sentExplains = (e) => e.fetch.mock.calls.map((c) => c[1] && c[1].body).filter((b) => /EXPLAIN/.test(b || ''));
+  it('runs a plain EXPLAIN verbatim in the Explain view (clean TabSeparatedRaw)', async () => {
+    const { app, e } = appForRun([
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'Expression\n  ReadFromTable' })],
     ]);
     app.activeTab().sql = 'EXPLAIN SELECT 1';
     await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('explain');
     expect(app.activeTab().result.rawText).toBe('Expression\n  ReadFromTable');
-    expect(app.activeTab().result.rawFormat).toBe('TabSeparated'); // plain TS → no header noise
+    expect(sentExplains(e)).toContain('EXPLAIN SELECT 1'); // verbatim
+  });
+  it('keeps a complex EXPLAIN (extra settings) on the verbatim Explain view', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().sql = 'EXPLAIN indexes = 1, actions = 1 SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('explain'); // not auto-jumped to Indexes
+    expect(sentExplains(e)).toContain('EXPLAIN indexes = 1, actions = 1 SELECT 1'); // run as typed
+  });
+  it('auto-selects the Indexes view for an exact indexes=1 EXPLAIN', async () => {
+    const { app } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'idx plan' })]]);
+    app.activeTab().sql = 'EXPLAIN indexes = 1 SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('indexes');
+  });
+  it('setExplainView re-runs a derived query and never edits the SQL', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'digraph{}' })]]);
+    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    await app.actions.run();
+    await app.actions.setExplainView('pipeline');
+    expect(app.activeTab().sql).toBe('EXPLAIN SELECT 1'); // editor untouched
+    expect(app.activeTab().result.explainView).toBe('pipeline');
+    expect(sentExplains(e)).toContain('EXPLAIN PIPELINE graph = 1 SELECT 1');
+  });
+  it('the Explain button explains a plain SELECT (wraps it, editor untouched)', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.explainQuery();
+    expect(app.activeTab().sql).toBe('SELECT 1'); // editor untouched
+    expect(app.activeTab().result.explainView).toBe('explain');
+    expect(sentExplains(e)).toContain('EXPLAIN SELECT 1');
+  });
+  it('runs ESTIMATE as a structured table (streaming), not raw', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],
+    ]);
+    app.activeTab().sql = 'EXPLAIN ESTIMATE SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('estimate');
+    expect(app.activeTab().result.rows).toEqual([['42']]);
+    expect(app.activeTab().result.rawText).toBeNull();
   });
   it('an explicit FORMAT on an EXPLAIN still wins over the raw default', async () => {
     const { app } = appForRun([
