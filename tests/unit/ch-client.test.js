@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -322,5 +322,41 @@ describe('killQuery', () => {
   it('swallows errors (cancellation must never throw)', async () => {
     const ctx = ctxWith(async () => { throw new Error('boom'); });
     await expect(killQuery(ctx, 'q', sqlString)).resolves.toBeUndefined();
+  });
+});
+
+describe('loadSchemaLineage', () => {
+  it('fetches scoped system.tables + dictionaries and attaches EXPLAIN AST sources', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      seen.push(sql);
+      if (/EXPLAIN AST/.test(sql)) return jsonResp({ data: [{ explain: '      TableIdentifier lin.events (alias e)' }] });
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [{ database: 'lin', name: 'd', source: 'ClickHouse: lin.dim' }] });
+      // system.tables scope query
+      return jsonResp({ data: [
+        { database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' },
+        { database: 'lin', name: 'mv', engine: 'MaterializedView', as_select: 'SELECT 1 FROM lin.events', create_table_query: 'CREATE MATERIALIZED VIEW lin.mv TO lin.dst AS SELECT 1 FROM lin.events' },
+      ] });
+    });
+    const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    expect(out.tables).toHaveLength(2);
+    expect(out.dictionaries).toEqual([{ database: 'lin', name: 'd', source: 'ClickHouse: lin.dim' }]);
+    // the MV (non-empty as_select) got EXPLAIN AST sources; the plain table did not
+    expect(out.tables.find((t) => t.name === 'mv').astTables).toEqual(['lin.events']);
+    expect(out.tables.find((t) => t.name === 'events').astTables).toBeUndefined();
+    // scoped to the database, and target_* never requested (OSS-portable)
+    expect(seen.some((s) => /WHERE database = 'lin'/.test(s))).toBe(true);
+    expect(seen.some((s) => /target_database/.test(s))).toBe(false);
+  });
+  it('tolerates an EXPLAIN AST failure (leaves astTables undefined)', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) return jsonResp('parse error', false, 500);
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: [{ database: 'lin', name: 'v', engine: 'View', as_select: 'SELECT bad' }] });
+    });
+    const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    expect(out.tables[0].astTables).toBeUndefined();
   });
 });

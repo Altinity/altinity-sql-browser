@@ -41,10 +41,11 @@ export function dagreLayout(dagre, graph) {
 
   const outNodes = nodes.map((n) => {
     const dn = g.node(n.id);
-    return { id: n.id, label: n.label, x: dn.x - dn.width / 2, y: dn.y - dn.height / 2, w: dn.width, h: dn.height };
+    // `kind` (node) / `label` (edge) pass through for the schema graph's colouring.
+    return { id: n.id, label: n.label, kind: n.kind, x: dn.x - dn.width / 2, y: dn.y - dn.height / 2, w: dn.width, h: dn.height };
   });
   const outEdges = edges.map((e) => ({
-    from: e.from, to: e.to,
+    from: e.from, to: e.to, kind: e.kind, label: e.label,
     points: g.edge(e.from, e.to).points.map((p) => ({ x: p.x, y: p.y })),
   }));
   const gg = g.graph();

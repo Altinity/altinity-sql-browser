@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSchema } from '../../src/ui/schema.js';
-import { IDENT_MIME } from '../../src/ui/editor.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];
@@ -11,13 +11,14 @@ const shiftClick = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: t
 // re-renders between clicks). Clicking the same captured node twice works even
 // though the first click detaches it: the listener + per-app state still fire.
 const dblclick = (el) => { click(el); click(el); };
-// Fire a dragstart with a stub dataTransfer and return what setData captured.
+// Fire a dragstart with a stub dataTransfer and return all setData payloads by MIME.
 const dragstart = (el) => {
   const e = new Event('dragstart', { bubbles: true });
-  let captured = null;
-  e.dataTransfer = { setData: (mime, value) => { captured = { mime, value }; } };
+  const by = {};
+  e.dataTransfer = { setData: (mime, value) => { by[mime] = value; } };
   el.dispatchEvent(e);
-  return captured;
+  by.mime = Object.keys(by)[0]; by.value = by[by.mime]; // back-compat for single-MIME rows
+  return by;
 };
 
 function withSchema() {
@@ -188,17 +189,21 @@ describe('renderSchema tree', () => {
 });
 
 describe('renderSchema drag sources', () => {
-  it('dragging a db carries the bare database name', () => {
+  it('dragging a db carries the identifier and a schema-graph payload', () => {
     const app = withSchema();
     renderSchema(app);
     const dbRow = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
-    expect(dragstart(dbRow)).toEqual({ mime: IDENT_MIME, value: 'db1' });
+    const d = dragstart(dbRow);
+    expect(d[IDENT_MIME]).toBe('db1');
+    expect(JSON.parse(d[SCHEMA_GRAPH_MIME])).toEqual({ kind: 'db', db: 'db1' });
   });
-  it('dragging a table carries the qualified name', () => {
+  it('dragging a table carries the qualified identifier and a schema-graph payload', () => {
     const app = withSchema();
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
-    expect(dragstart(ordersRow)).toEqual({ mime: IDENT_MIME, value: 'db1.orders' });
+    const d = dragstart(ordersRow);
+    expect(d[IDENT_MIME]).toBe('db1.orders');
+    expect(JSON.parse(d[SCHEMA_GRAPH_MIME])).toEqual({ kind: 'table', db: 'db1', table: 'orders' });
   });
   it('dragging a column carries the bare column name', () => {
     const app = withSchema();
@@ -207,7 +212,9 @@ describe('renderSchema drag sources', () => {
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
-    expect(dragstart(colRow)).toEqual({ mime: IDENT_MIME, value: 'id' });
+    const d = dragstart(colRow);
+    expect(d[IDENT_MIME]).toBe('id');
+    expect(d[SCHEMA_GRAPH_MIME]).toBeUndefined(); // columns aren't graph drag sources
   });
 });
 

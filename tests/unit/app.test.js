@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
+import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
 
 function jwt(payload) {
@@ -52,6 +53,7 @@ function env(over = {}) {
     location: { host: 'ch.example', origin: 'https://ch.example', pathname: '/sql', search: '', hash: '', href: 'https://ch.example/sql' },
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: webcrypto,
+    Dagre: dagre,
     fetch: makeFetch([]),
     now: () => 0,
     navigator: { clipboard: { writeText: vi.fn(async () => {}) } },
@@ -1155,5 +1157,77 @@ describe('exhaustive controller coverage', () => {
     app.activeTab().sql = 'SELECT 1';
     await app.actions.run();
     expect(app.state.history.length).toBe(1);
+  });
+});
+
+describe('schema lineage graph (drag a db/table onto the results pane)', () => {
+  const lineageRoutes = [
+    [(u, sql) => /EXPLAIN AST/.test(sql), resp({ json: { data: [{ explain: '      TableIdentifier lin.events (alias e)' }] } })],
+    [(u, sql) => /system\.dictionaries/.test(sql), resp({ json: { data: [] } })],
+    [(u, sql) => /system\.tables/.test(sql), resp({ json: { data: [
+      { database: 'lin', name: 'events', engine: 'MergeTree', engine_full: '', create_table_query: '', as_select: '', uuid: '', dependencies_database: ['lin'], dependencies_table: ['mv'], loading_dependencies_database: [], loading_dependencies_table: [] },
+      { database: 'lin', name: 'mv', engine: 'MaterializedView', engine_full: '', create_table_query: 'CREATE MATERIALIZED VIEW lin.mv TO lin.dst AS SELECT 1 FROM lin.events', as_select: 'SELECT 1 FROM lin.events', uuid: '', dependencies_database: [], dependencies_table: [], loading_dependencies_database: [], loading_dependencies_table: [] },
+      { database: 'lin', name: 'dst', engine: 'MergeTree', engine_full: '', create_table_query: '', as_select: '', uuid: '', dependencies_database: [], dependencies_table: [], loading_dependencies_database: [], loading_dependencies_table: [] },
+    ] } })],
+  ];
+  function appForRun(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+
+  it('showSchemaGraph queries system.* and sets a schemaGraph result', async () => {
+    const { app } = appForRun(lineageRoutes);
+    await app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    const sg = app.activeTab().result.schemaGraph;
+    expect(sg.focus).toEqual({ kind: 'db', db: 'lin' });
+    const E = new Set(sg.edges.map((x) => `${x.from}>${x.to}:${x.kind}`));
+    expect(E.has('lin.events>lin.mv:feeds')).toBe(true);
+    expect(E.has('lin.mv>lin.dst:writes')).toBe(true);
+  });
+
+  it('a drop on the results region with the schema-graph MIME triggers showSchemaGraph', () => {
+    const { app } = appForRun(lineageRoutes);
+    app.actions.showSchemaGraph = vi.fn();
+    const e = new Event('drop', { cancelable: true });
+    e.dataTransfer = { getData: (m) => (m === 'application/x-asb-schema-graph' ? '{"kind":"table","db":"lin","table":"events"}' : '') };
+    app.dom.resultsRegion.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+    expect(app.actions.showSchemaGraph).toHaveBeenCalledWith({ kind: 'table', db: 'lin', table: 'events' });
+  });
+
+  it('surfaces a load error in the results panel', async () => {
+    const { app } = appForRun([[(u, sql) => /system\.tables/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })]]);
+    await app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    expect(app.activeTab().result.error).toContain('nope');
+  });
+});
+
+describe('schema graph drop edge cases', () => {
+  function mk() { const app = createApp(env({ fetch: makeFetch([]) })); app.renderApp(); return app; }
+  it('dragover accepts only the schema-graph MIME', () => {
+    const app = mk();
+    const a = new Event('dragover', { cancelable: true });
+    a.dataTransfer = { types: ['application/x-asb-schema-graph'] };
+    app.dom.resultsRegion.dispatchEvent(a);
+    expect(a.defaultPrevented).toBe(true);
+    const b = new Event('dragover', { cancelable: true });
+    b.dataTransfer = { types: ['text/plain'] };
+    app.dom.resultsRegion.dispatchEvent(b);
+    expect(b.defaultPrevented).toBe(false);
+  });
+  it('drop ignores a non-schema payload and tolerates malformed JSON', () => {
+    const app = mk();
+    app.actions.showSchemaGraph = vi.fn();
+    const none = new Event('drop', { cancelable: true });
+    none.dataTransfer = { getData: () => '' };
+    app.dom.resultsRegion.dispatchEvent(none);
+    expect(none.defaultPrevented).toBe(false);
+    const bad = new Event('drop', { cancelable: true });
+    bad.dataTransfer = { getData: (m) => (m === 'application/x-asb-schema-graph' ? 'not json' : '') };
+    expect(() => app.dom.resultsRegion.dispatchEvent(bad)).not.toThrow();
+    expect(bad.defaultPrevented).toBe(true);
+    expect(app.actions.showSchemaGraph).not.toHaveBeenCalled();
   });
 });

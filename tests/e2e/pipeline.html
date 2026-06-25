@@ -19,15 +19,19 @@
     // dagre is injected (the app.Dagre seam) — load its self-contained ESM build
     // straight from node_modules, served by the e2e static server (repo root).
     import dagre from '/node_modules/@dagrejs/dagre/dist/dagre.esm.js';
-    import { renderExplainGraph, openPipelineFullscreen } from '/src/ui/explain-graph.js';
+    import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from '/src/ui/explain-graph.js';
 
-    const app = { document, Dagre: dagre };
+    const app = { document, Dagre: dagre, actions: { showSchemaGraph() {} } };
     // Render a DOT document exactly as the inline Pipeline result view does.
     window.__renderPipeline = (dotText) => {
       document.getElementById('host').replaceChildren(renderExplainGraph(app, { rawText: dotText }));
     };
     // Open the fullscreen pan/zoom overlay (same call the Expand button makes).
     window.__openFullscreen = (dotText) => openPipelineFullscreen(app, dotText);
+    // Render a schema-lineage graph from a {nodes,edges} object.
+    window.__renderSchema = (graph) => {
+      document.getElementById('host').replaceChildren(renderSchemaGraph(app, { schemaGraph: graph }));
+    };
     window.__ready = true;
   </script>
 </body>

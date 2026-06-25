@@ -8,6 +8,7 @@
 // so the whole module is unit-testable with plain stubs.
 
 import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
+import { parseAstTables } from '../core/schema-graph.js';
 
 /** Build a ClickHouse HTTP URL with query-string options. Pure. */
 export function chUrl(origin, opts = {}) {
@@ -126,6 +127,35 @@ export async function loadSchema(ctx) {
     });
   }
   return [...byDb.entries()].map(([db, tables]) => ({ db, expanded: false, tables }));
+}
+
+/**
+ * Load object-lineage rows for a database: the `system.tables` columns the graph
+ * builder needs + `system.dictionaries` sources, and (for views/MVs) the
+ * `EXPLAIN AST` source tables attached as `row.astTables`. `target_database`/
+ * `target_table` are intentionally not selected — they're a ClickHouse-Cloud-only
+ * column (absent on OSS/Altinity builds), so the MV target is parsed from
+ * `create_table_query` in `buildSchemaGraph`. Returns `{ tables, dictionaries }`.
+ */
+export async function loadSchemaLineage(ctx, focus) {
+  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const db = (focus && focus.db) || '';
+  const cols = 'database, name, engine, engine_full, create_table_query, as_select, '
+    + 'toString(uuid) AS uuid, dependencies_database, dependencies_table, '
+    + 'loading_dependencies_database, loading_dependencies_table';
+  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${q(db)} ORDER BY name`);
+  const tables = tablesJson.data || [];
+  const dictsJson = await queryJson(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${q(db)}`);
+  const dictionaries = dictsJson.data || [];
+  // Robust source extraction for views/MVs: let ClickHouse parse the SELECT.
+  await Promise.all(tables.map(async (t) => {
+    if (!t.as_select || (t.engine !== 'View' && t.engine !== 'MaterializedView')) return;
+    try {
+      const ast = await queryJson(ctx, 'EXPLAIN AST ' + t.as_select);
+      t.astTables = parseAstTables((ast.data || []).map((r) => r.explain).join('\n'));
+    } catch { /* best-effort — leave astTables undefined */ }
+  }));
+  return { tables, dictionaries };
 }
 
 /** Load the columns of one table. Returns [{name,type,comment}]. */

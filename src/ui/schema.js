@@ -4,7 +4,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
-import { IDENT_MIME } from './editor.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './editor.js';
 
 // Make a tree row a drag source carrying `text` as the schema identifier, so it
 // can be dropped onto the editor (see editor.js drop handler). Click behavior is
@@ -12,6 +12,16 @@ import { IDENT_MIME } from './editor.js';
 const dragProps = (text) => ({
   draggable: 'true',
   ondragstart: (e) => e.dataTransfer.setData(IDENT_MIME, text),
+});
+
+// Database/table rows carry BOTH the identifier (for an editor drop) and a
+// schema-graph payload (for a results-pane drop → lineage graph).
+const lineageDrag = (ident, payload) => ({
+  draggable: 'true',
+  ondragstart: (e) => {
+    e.dataTransfer.setData(IDENT_MIME, ident);
+    e.dataTransfer.setData(SCHEMA_GRAPH_MIME, JSON.stringify(payload));
+  },
 });
 
 // The four spans every tree row shares: chevron, icon, label, meta. `expanded`
@@ -73,7 +83,7 @@ export function renderSchema(app) {
         db.expanded = !db.expanded;
         renderSchema(app);
       },
-      ...dragProps(db.db),
+      ...lineageDrag(db.db, { kind: 'db', db: db.db }),
     },
       ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: db.expanded }),
     ));
@@ -95,7 +105,7 @@ export function renderSchema(app) {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
         style: { paddingLeft: '24px' },
         title,
-        ...dragProps(key),
+        ...lineageDrag(key, { kind: 'table', db: db.db, table: tb.name }),
         onclick: (e) => {
           if (e.shiftKey) { app.actions.insertCreate(key); return; }
           if (isDoubleClick(app, 'tb:' + key)) { app.actions.replaceEditor('SELECT * FROM ' + key + ' LIMIT 100'); return; }

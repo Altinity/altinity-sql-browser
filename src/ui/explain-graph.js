@@ -64,15 +64,17 @@ function attachPanZoom(container, svg, dims) {
 }
 
 /**
- * Build the pipeline SVG from a DOT document, laying it out with the injected
- * dagre engine. Returns the `<svg>` element plus the graph's intrinsic size and
- * node count (0 → caller shows a placeholder).
+ * Draw a laid-out graph (`{nodes,edges,width,height}` from dagreLayout) as SVG.
+ * `opts.nodeClass(n)` / `opts.edgeClass(e)` pick CSS classes (kind colouring),
+ * `opts.edgeLabel(e)` an optional mid-edge label, `opts.onNode(n)` a click handler.
+ * Returns `{ svg, width, height, nodeCount }`. DOT-agnostic — reused by both the
+ * pipeline graph (DOT) and the schema graph (system.* rows).
  */
-export function buildPipelineSvg(rawText, dagre) {
-  const g = dagreLayout(dagre, parseDot(rawText || ''));
+function renderGraphSvg(g, opts = {}) {
+  const nodeClass = opts.nodeClass || (() => 'eg-node');
+  const edgeClass = opts.edgeClass || (() => 'eg-edge');
   const svg = s('svg', { class: 'explain-graph', viewBox: `0 0 ${g.width} ${g.height}` });
   if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
-  // A single reusable arrowhead marker.
   svg.appendChild(s('defs', null,
     s('marker', {
       id: 'eg-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5',
@@ -80,16 +82,42 @@ export function buildPipelineSvg(rawText, dagre) {
     }, s('path', { class: 'eg-arrowhead', d: 'M0 0L10 5L0 10z' }))));
   for (const e of g.edges) {
     const d = 'M' + e.points.map((p) => p.x + ' ' + p.y).join(' L');
-    svg.appendChild(s('path', { class: 'eg-edge', d, 'marker-end': 'url(#eg-arrow)' }));
+    svg.appendChild(s('path', { class: edgeClass(e), d, 'marker-end': 'url(#eg-arrow)' }));
+    const lbl = opts.edgeLabel && opts.edgeLabel(e);
+    if (lbl) {
+      const mid = e.points[Math.floor(e.points.length / 2)];
+      svg.appendChild(s('text', { class: 'eg-edge-label', x: mid.x, y: mid.y - 3, 'text-anchor': 'middle' }, lbl));
+    }
   }
   for (const n of g.nodes) {
-    svg.appendChild(s('rect', { class: 'eg-node', x: n.x, y: n.y, width: n.w, height: n.h, rx: '4' }));
-    svg.appendChild(s('text', {
+    const rect = s('rect', { class: nodeClass(n), x: n.x, y: n.y, width: n.w, height: n.h, rx: '4' });
+    const text = s('text', {
       class: 'eg-label', x: n.x + n.w / 2, y: n.y + n.h / 2,
       'text-anchor': 'middle', 'dominant-baseline': 'central',
-    }, n.label));
+    }, n.label);
+    if (opts.onNode) {
+      rect.setAttribute('cursor', 'pointer'); text.setAttribute('cursor', 'pointer');
+      const fire = (e) => { e.stopPropagation(); opts.onNode(n); };
+      rect.addEventListener('click', fire); text.addEventListener('click', fire);
+    }
+    svg.appendChild(rect); svg.appendChild(text);
   }
   return { svg, width: g.width, height: g.height, nodeCount: g.nodes.length };
+}
+
+/** Build the pipeline SVG from a DOT document (kind-agnostic boxes). */
+export function buildPipelineSvg(rawText, dagre) {
+  return renderGraphSvg(dagreLayout(dagre, parseDot(rawText || '')));
+}
+
+/** Build the schema-lineage SVG from a `{nodes,edges}` graph (kind-coloured). */
+export function buildSchemaSvg(graph, dagre, onNode) {
+  return renderGraphSvg(dagreLayout(dagre, graph || { nodes: [], edges: [] }), {
+    nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
+    edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
+    edgeLabel: (e) => e.kind,
+    onNode,
+  });
 }
 
 /**
@@ -107,41 +135,79 @@ export function renderExplainGraph(app, r) {
   return view;
 }
 
-/**
- * Open the pipeline graph in a fullscreen overlay with wheel-zoom (around the
- * cursor), drag-pan, and fit/zoom buttons. Esc / ✕ / backdrop close it.
- */
-export function openPipelineFullscreen(app, rawText) {
-  const doc = (app && app.document) || document;
-  const built = buildPipelineSvg(rawText || '', app && app.Dagre);
+// The schema-graph kinds + their legend labels (also drive the .eg-node--<kind>
+// and .eg-edge--<kind> CSS colours).
+const NODE_LEGEND = [
+  ['table', 'Table'], ['view', 'View'], ['mv', 'Materialized View'],
+  ['dictionary', 'Dictionary'], ['distributed', 'Distributed'], ['external', 'External'],
+];
+function schemaLegend() {
+  return h('div', { class: 'schema-graph-legend' },
+    ...NODE_LEGEND.map(([k, label]) =>
+      h('span', { class: 'sg-leg' }, h('i', { class: 'sg-swatch sg-swatch--' + k }), label)));
+}
 
+/**
+ * Open a graph in a fullscreen overlay (drag-pan, ⌘/Ctrl+wheel zoom, fit/zoom
+ * buttons; Esc / ✕ / backdrop close). `build()` returns `{svg,width,height,nodeCount}`
+ * — shared by the pipeline and schema graphs. `extra` is an optional overlay node
+ * (e.g. the schema legend).
+ */
+function openGraphFullscreen(app, title, build, extra) {
+  const doc = (app && app.document) || document;
+  const built = build();
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   let backdrop;
-  // `close` only fires from listeners attached after `backdrop` is assigned.
-  function close() {
-    backdrop.remove();
-    doc.removeEventListener('keydown', onKey, true);
-  }
+  function close() { backdrop.remove(); doc.removeEventListener('keydown', onKey, true); }
 
-  const bar = h('div', { class: 'graph-overlay-bar' },
-    h('span', { class: 'graph-overlay-title' }, 'Pipeline'));
+  const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
   const canvas = h('div', { class: 'graph-overlay-canvas' });
-
   if (!built.nodeCount) {
-    canvas.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'No pipeline graph to display.')));
+    canvas.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Nothing to display.')));
   } else {
     canvas.appendChild(built.svg);
+    if (extra) canvas.appendChild(extra);
     const pz = attachPanZoom(canvas, built.svg, built);
     bar.appendChild(h('div', { class: 'graph-overlay-zoom' },
       h('button', { class: 'res-act', title: 'Zoom out', onclick: pz.zoomOut }, Icon.minus()),
       h('button', { class: 'res-act', title: 'Zoom in', onclick: pz.zoomIn }, Icon.plus()),
       h('button', { class: 'res-act', title: 'Fit to screen', onclick: pz.fit }, 'Fit')));
   }
-
   bar.appendChild(h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
   const panel = h('div', { class: 'graph-overlay-panel', onclick: (e) => e.stopPropagation() }, bar, canvas);
   backdrop = h('div', { class: 'graph-overlay', onclick: close }, panel);
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
   return backdrop;
+}
+
+/** Fullscreen pipeline graph (DOT). */
+export function openPipelineFullscreen(app, rawText) {
+  return openGraphFullscreen(app, 'Pipeline', () => buildPipelineSvg(rawText || '', app && app.Dagre));
+}
+
+const schemaClick = (app) => (n) => {
+  if (!n.id || n.id.startsWith('ext:')) return;
+  const dot = n.id.indexOf('.');
+  app.actions.showSchemaGraph({ kind: 'table', db: n.id.slice(0, dot), table: n.id.slice(dot + 1) });
+};
+
+/** Fullscreen schema-lineage graph. */
+export function openSchemaFullscreen(app, graph) {
+  return openGraphFullscreen(app, 'Schema', () => buildSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend());
+}
+
+/**
+ * Render `r.schemaGraph` as the inline schema-lineage graph (kind-coloured boxes,
+ * relationship-coloured edges, legend, click-a-node to expand). Same pan/zoom as
+ * the pipeline view.
+ */
+export function renderSchemaGraph(app, r) {
+  const built = buildSchemaSvg(r.schemaGraph, app.Dagre, schemaClick(app));
+  if (!built.nodeCount) {
+    return h('div', { class: 'placeholder' }, h('div', null, 'No objects to graph.'));
+  }
+  const view = h('div', { class: 'explain-graph-view schema-graph-view', tabindex: '0' }, built.svg, schemaLegend());
+  attachPanZoom(view, built.svg, built);
+  return view;
 }

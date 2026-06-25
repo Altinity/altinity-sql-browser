@@ -9,7 +9,7 @@ import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
-import { renderExplainGraph, openPipelineFullscreen } from './explain-graph.js';
+import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaFullscreen } from './explain-graph.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -104,6 +104,8 @@ export function renderResults(app) {
       h('div', null, 'Press ', h('kbd', null, '⌘↵'), ' to run query')));
   } else if (r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
+  } else if (r.schemaGraph) {
+    inner.appendChild(renderSchemaGraph(app, r));
   } else if (r.explainView) {
     inner.appendChild(renderExplainView(app, r));
   } else if (r.rawText != null) {
@@ -145,6 +147,18 @@ function streamStrip(r) {
 
 function buildToolbar(app, r) {
   const toolbar = h('div', { class: 'res-toolbar' });
+  if (r && r.schemaGraph) {
+    // Schema-lineage view: a title + Expand (fullscreen); no view-switcher / stats.
+    const f = r.schemaGraph.focus || {};
+    const title = f.kind === 'table' ? f.db + '.' + f.table : f.db;
+    toolbar.appendChild(h('div', { class: 'result-view-tabs' }, h('span', { class: 'res-graph-title' }, 'Schema · ' + title)));
+    toolbar.appendChild(h('div', { style: { flex: '1' } }));
+    toolbar.appendChild(h('button', {
+      class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
+      onclick: () => openSchemaFullscreen(app, r.schemaGraph),
+    }, Icon.expand(), h('span', null, 'Expand')));
+    return toolbar;
+  }
   const tabs = h('div', { class: 'result-view-tabs' });
   if (r && r.explainView) {
     // The five EXPLAIN views — clicking re-runs the derived query (editor SQL is

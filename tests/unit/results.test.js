@@ -561,3 +561,38 @@ describe('EXPLAIN views', () => {
     expect([...app.dom.resultsRegion.querySelectorAll('.res-act')].some((b) => /Expand/.test(b.textContent))).toBe(false);
   });
 });
+
+describe('schema lineage result', () => {
+  function graphResult() {
+    const r = newResult('Table');
+    r.schemaGraph = {
+      focus: { kind: 'db', db: 'lin' },
+      nodes: [{ id: 'lin.a', label: 'a', kind: 'table' }, { id: 'lin.mv', label: 'mv', kind: 'mv' }],
+      edges: [{ from: 'lin.a', to: 'lin.mv', kind: 'feeds' }],
+    };
+    return r;
+  }
+  it('renders the schema graph (svg + legend) and a Schema toolbar with Expand', () => {
+    const app = appWithResult(graphResult());
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('svg.explain-graph')).not.toBeNull();
+    expect(region.querySelector('.schema-graph-legend')).not.toBeNull();
+    expect(region.querySelector('.res-graph-title').textContent).toBe('Schema · lin');
+    // no Table/JSON/Chart tabs in this mode
+    expect(region.querySelector('.result-view-tab')).toBeNull();
+    const expand = [...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent));
+    expect(expand).toBeTruthy();
+    click(expand);
+    const overlay = document.body.querySelector('.graph-overlay');
+    expect(overlay).not.toBeNull();
+    overlay.dispatchEvent(new Event('click', { bubbles: true })); // backdrop close + cleanup
+  });
+  it('titles a table-focus graph with the qualified name', () => {
+    const r = graphResult();
+    r.schemaGraph.focus = { kind: 'table', db: 'lin', table: 'events' };
+    const app = appWithResult(r);
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).toBe('Schema · lin.events');
+  });
+});

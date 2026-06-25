@@ -13,6 +13,7 @@ import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
+import { buildSchemaGraph } from '../core/schema-graph.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
@@ -22,7 +23,7 @@ import { generatePKCE, randomState } from '../core/pkce.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
-import { mountEditor, insertAtCursor, replaceEditor } from './editor.js';
+import { mountEditor, insertAtCursor, replaceEditor, SCHEMA_GRAPH_MIME } from './editor.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
@@ -509,6 +510,25 @@ export function createApp(env = {}) {
     }
   }
 
+  // Render the ClickHouse object-lineage graph for a dropped database/table into
+  // the data pane (queries system.* + EXPLAIN AST; the editor SQL is untouched).
+  async function showSchemaGraph(focus) {
+    if (!focus || !focus.db) return;
+    await ensureConfig();
+    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    const tab = app.activeTab();
+    try {
+      const rows = await ch.loadSchemaLineage(chCtx, focus);
+      const g = buildSchemaGraph(rows, focus);
+      tab.result = newResult('Table');
+      tab.result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges };
+    } catch (e) {
+      tab.result = newResult('Table');
+      tab.result.error = String((e && e.message) || e);
+    }
+    renderResults(app);
+  }
+
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
   function explainQuery() { return run({ explain: true }); }
@@ -720,6 +740,7 @@ export function createApp(env = {}) {
     formatQuery,
     explainQuery,
     setExplainView,
+    showSchemaGraph,
     insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),
@@ -809,6 +830,16 @@ export function renderApp(app, helpers) {
   const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn);
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
+  // Drop a database/table from the schema tree here → render its lineage graph.
+  app.dom.resultsRegion.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes(SCHEMA_GRAPH_MIME)) e.preventDefault();
+  });
+  app.dom.resultsRegion.addEventListener('drop', (e) => {
+    const payload = e.dataTransfer && e.dataTransfer.getData(SCHEMA_GRAPH_MIME);
+    if (!payload) return;
+    e.preventDefault();
+    try { app.actions.showSchemaGraph(JSON.parse(payload)); } catch { /* malformed payload */ }
+  });
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });
 
   const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);

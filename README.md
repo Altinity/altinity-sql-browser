@@ -62,6 +62,8 @@ editor library — it adds nothing to the single served file). On top of that:
   onto the editor: a schema identifier drops as text at the caret, and a
   saved/history query drops as a `( … )` subquery at the drop point (its trailing
   `FORMAT`/`;` stripped). Undoable; click-to-load still works for keyboard users.
+  Dragging a **database or table onto the results pane** instead renders a
+  [schema lineage graph](#schema-lineage-graph).
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**
@@ -98,6 +100,30 @@ Running a statement that *exactly* matches one of the rich forms auto-selects it
 tab (e.g. `EXPLAIN ESTIMATE …` opens **Estimate**); anything else opens the
 verbatim **Explain** tab. An explicit `… FORMAT <name>` on an EXPLAIN bypasses the
 views and shows ClickHouse's raw response.
+
+## Schema lineage graph
+
+Drag a **database** or **table** row from the schema sidebar onto the results pane
+to see how its ClickHouse objects relate — not generic foreign keys, but the
+engine-specific lineage: materialized views (`feeds` from sources, `writes` to the
+target), regular views (`reads` their sources), dictionaries (`dict` from a source
+table), and `Distributed`/`Buffer`/`Merge` engines pointing at their backing
+tables. Nodes are coloured by kind (table / view / materialized view / dictionary /
+distributed / external) with a legend; edges are coloured and labelled by
+relationship. Drag a **database** → the whole-DB lineage (isolated tables with no
+relationships are dropped so the lineage is the focus); drag a **table** → its
+1-hop neighbourhood. **Click any node** to re-centre on it, and **Expand** for a
+fullscreen pan/zoom view (same controls as the pipeline graph).
+
+Discovery is **structured-first, parse-fallback**, because the helpful
+`system.tables` columns are build-dependent: it prefers `dependencies_table` /
+`loading_dependencies_*` / `system.dictionaries.source` when populated, and
+otherwise lets ClickHouse parse the SQL via **`EXPLAIN AST`** (for query sources)
+plus light regex on `create_table_query` (`TO` target) and `engine_full`
+(Distributed/Buffer/Merge args). This keeps it working on older deployed builds
+(e.g. Altinity-antalya 26.3, where `target_*` is absent and `dependencies_*` can be
+empty). Graph math is pure in `src/core/schema-graph.js` (100%-covered); the SVG is
+the same dagre-laid-out renderer the pipeline graph uses.
 
 ## Saved queries & the Library
 

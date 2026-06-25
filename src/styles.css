@@ -642,6 +642,39 @@ body {
 }
 .explain-graph .eg-edge { stroke: var(--fg-faint); stroke-width: 1.3; fill: none; }
 .explain-graph .eg-arrowhead { fill: var(--fg-faint); }
+.explain-graph .eg-edge-label { fill: var(--fg-faint); font-family: var(--mono); font-size: 9px; }
+
+/* ------------ schema lineage graph (kind-coloured nodes + edges) ------------ */
+/* Node fill by object kind. Scoped under `.explain-graph` so these beat the base
+   `.explain-graph .eg-node` fill (same specificity → source order would lose). */
+.explain-graph .eg-node--table { fill: var(--bg-chip); stroke: var(--border); }
+.explain-graph .eg-node--view { fill: color-mix(in oklab, #14b8a6 22%, var(--bg-table)); stroke: #14b8a6; }
+.explain-graph .eg-node--mv { fill: color-mix(in oklab, #8b5cf6 24%, var(--bg-table)); stroke: #8b5cf6; }
+.explain-graph .eg-node--dictionary { fill: color-mix(in oklab, #3b82f6 22%, var(--bg-table)); stroke: #3b82f6; }
+.explain-graph .eg-node--distributed { fill: color-mix(in oklab, #f97316 22%, var(--bg-table)); stroke: #f97316; }
+.explain-graph .eg-node--buffer { fill: color-mix(in oklab, #eab308 22%, var(--bg-table)); stroke: #eab308; }
+.explain-graph .eg-node--merge { fill: color-mix(in oklab, #64748b 26%, var(--bg-table)); stroke: #64748b; }
+.explain-graph .eg-node--external { fill: transparent; stroke: var(--fg-faint); stroke-dasharray: 3 2; }
+.explain-graph .eg-edge--writes { stroke: #8b5cf6; }
+.explain-graph .eg-edge--dict { stroke: #3b82f6; }
+.explain-graph .eg-edge--shard { stroke: #f97316; }
+.explain-graph .eg-edge--buffer { stroke: #eab308; }
+.explain-graph .eg-edge--merge { stroke: #64748b; }
+.schema-graph-view { position: relative; }
+.schema-graph-legend {
+  position: absolute; top: 8px; left: 10px; pointer-events: none;
+  display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 70%;
+  font-size: 10.5px; color: var(--fg-mute);
+}
+.schema-graph-legend .sg-leg { display: flex; align-items: center; gap: 5px; }
+.schema-graph-legend .sg-swatch { width: 11px; height: 11px; border-radius: 2px; border: 1px solid var(--border); display: inline-block; }
+.sg-swatch--table { background: var(--bg-chip); border-color: var(--border); }
+.sg-swatch--view { background: #14b8a6; border-color: #14b8a6; }
+.sg-swatch--mv { background: #8b5cf6; border-color: #8b5cf6; }
+.sg-swatch--dictionary { background: #3b82f6; border-color: #3b82f6; }
+.sg-swatch--distributed { background: #f97316; border-color: #f97316; }
+.sg-swatch--external { background: transparent; border-style: dashed; }
+.res-graph-title { font-size: 11.5px; color: var(--fg-mute); font-weight: 500; padding: 0 4px; }
 
 /* ------------ fullscreen pipeline overlay (pan/zoom) ------------ */
 .graph-overlay {

@@ -30,6 +30,10 @@ export const IDENT_MIME = 'application/x-asb-identifier';
 // drop wraps it as a `( … )` subquery at the drop position (see the drop handler).
 export const SUBQUERY_MIME = 'application/x-asb-subquery';
 
+// dataTransfer MIME for dragging a database/table from the schema tree onto the
+// results pane → render its lineage graph. Payload is JSON `{kind, db, table?}`.
+export const SCHEMA_GRAPH_MIME = 'application/x-asb-schema-graph';
+
 /**
  * Paint tokenized SQL into `preEl` (whitespace as text, tokens as spans).
  * `opts` (optional) forwards dynamic keyword/function sets to the tokenizer so
