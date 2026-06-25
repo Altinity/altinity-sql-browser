@@ -409,7 +409,7 @@ describe('formatQuery', () => {
     expect(app.dom.editorTextarea.value).toBe('select x BEWEEN 2'); // editor unchanged
     const err = app.root.querySelector('.results-error');
     expect(err).not.toBeNull();
-    expect(err.textContent).toContain('Syntax error: failed at position 8 (BEWEEN): BEWEEN 2'); // summarized (no Code prefix / Expected-of tail)
+    expect(err.textContent).toContain('Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)'); // full original message, untruncated
     expect(app.dom.editorTextarea.selectionStart).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
     expect(app.activeTab().result.formatError).toBe(true);
   });

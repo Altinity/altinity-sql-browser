@@ -84,20 +84,6 @@ export function parseErrorPos(msg) {
 }
 
 /**
- * Condense a ClickHouse error for in-panel display: start at "Syntax error" when
- * present (dropping the "Code: N. DB::Exception: …" preamble) and cut the noisy
- * "Expected one of: <long token list>" tail. Non-syntax messages pass through.
- * Pure.
- */
-export function summarizeError(msg) {
-  let s = String(msg || '');
-  const i = s.search(/Syntax error/i);
-  if (i >= 0) s = s.slice(i);
-  s = s.split(/\.?\s*Expected one of:/i)[0];
-  return s.trim();
-}
-
-/**
  * True when a non-OK response body indicates an expired/invalid JWT. CH
  * returns HTTP 500 with `token_verification_exception` for a bad token, which
  * we treat like a 401 so the refresh/relogin path fires.

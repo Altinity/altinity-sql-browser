@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   newResult, applyStreamLine, splitBuffer, parseExceptionText, isAuthExpiredBody,
-  authDeniedMessage, parseErrorPos, summarizeError,
+  authDeniedMessage, parseErrorPos,
 } from '../../src/core/stream.js';
 
 describe('newResult', () => {
@@ -90,17 +90,6 @@ describe('parseErrorPos', () => {
     expect(parseErrorPos('Some other DB::Exception')).toBeNull();
     expect(parseErrorPos('')).toBeNull();
     expect(parseErrorPos(null)).toBeNull();
-  });
-});
-
-describe('summarizeError', () => {
-  it('starts at "Syntax error" and drops the Expected-one-of tail', () => {
-    const raw = 'Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, AND, OR. (SYNTAX_ERROR)';
-    expect(summarizeError(raw)).toBe('Syntax error: failed at position 8 (BEWEEN): BEWEEN 2');
-  });
-  it('passes non-syntax messages through (trimmed)', () => {
-    expect(summarizeError('  DB::Exception: Unknown function foo  ')).toBe('DB::Exception: Unknown function foo');
-    expect(summarizeError(null)).toBe('');
   });
 });
 

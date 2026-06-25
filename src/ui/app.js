@@ -14,7 +14,7 @@ import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isExplain } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
-import { newResult, applyStreamLine, parseErrorPos, summarizeError } from '../core/stream.js';
+import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
@@ -466,7 +466,7 @@ export function createApp(env = {}) {
     } catch (e) {
       const msg = String((e && e.message) || e);
       tab.result = newResult('Table');
-      tab.result.error = summarizeError(msg);
+      tab.result.error = msg;
       tab.result.formatError = true; // a format error, not a run result (so success can clear just this)
       app.state.resultView = 'table';
       renderResults(app);
