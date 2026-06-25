@@ -167,11 +167,23 @@ describe('replaceEditor', () => {
     mountEditor(app, document.createElement('div'));
     return { app, ta: app.dom.editorTextarea };
   }
-  it('swaps the whole content', () => {
+  it('swaps the whole content (fallback path when execCommand is unavailable)', () => {
     const { ta, app } = mounted('select 1');
     replaceEditor(app, 'SELECT\n  1');
     expect(ta.value).toBe('SELECT\n  1');
     expect(app.activeTab().sql).toBe('SELECT\n  1');
+  });
+  it('is a no-op when the content already equals the target (repeated Format never appends)', () => {
+    const { ta, app } = mounted('SELECT 1\n');
+    replaceEditor(app, 'SELECT 1\n'); // identical → must not append/duplicate
+    expect(ta.value).toBe('SELECT 1\n');
+  });
+  it('keeps the execCommand result when it reaches the target (undo-friendly path)', () => {
+    const { ta, app } = mounted('select 1');
+    const orig = document.execCommand;
+    document.execCommand = (_cmd, _ui, val) => { ta.value = val; return true; }; // simulate a real insertText
+    try { replaceEditor(app, 'SELECT 1'); } finally { document.execCommand = orig; }
+    expect(ta.value).toBe('SELECT 1');
   });
   it('no-ops without a textarea', () => {
     const app = makeApp();

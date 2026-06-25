@@ -379,11 +379,26 @@ export function insertAtCursor(app, text) {
   applyEdit(ta, text);
 }
 
-/** Replace the whole editor content with `text` (undoable). */
+/**
+ * Replace the whole editor content with `text` (undoable). Targets the value
+ * directly rather than trusting "did the value change?": when `text` already
+ * equals the content (an idempotent Format re-run), execCommand('insertText') is
+ * a legitimate no-op that ALSO collapses the selection to the end — so a
+ * change-detection fallback would splice at the caret and *append*. We instead
+ * no-op when already on target, and only fall back when execCommand failed to
+ * reach it.
+ */
 export function replaceEditor(app, text) {
   const ta = app.dom.editorTextarea;
   if (!ta) return;
+  if (ta.value === text) return; // already the target — nothing to do (no append)
   ta.focus();
   ta.select();
-  applyEdit(ta, text);
+  try { ta.ownerDocument.execCommand('insertText', false, text); } catch { /* unsupported */ }
+  if (ta.value === text) return; // execCommand reached the target (joins the undo stack)
+  // Fallback (execCommand absent or a no-op): force the full replacement. Undo
+  // isn't preserved here, but the content is always correct — never appended.
+  ta.value = text;
+  ta.selectionStart = ta.selectionEnd = text.length;
+  ta.dispatchEvent(new Event('input'));
 }

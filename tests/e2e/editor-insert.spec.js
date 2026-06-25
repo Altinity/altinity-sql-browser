@@ -42,6 +42,22 @@ test.describe('editor insertion (schema double-click path)', () => {
     expect(r.pre).toContain('LIMIT');
   });
 
+  test('replaceEditor with identical text never appends (repeated Format regression)', async ({ page }) => {
+    // The Format bug: re-formatting already-formatted SQL calls replaceEditor with
+    // text identical to the content. execCommand('insertText') then no-ops AND
+    // collapses the selection to the end, so the old change-detection fallback
+    // spliced at the caret and appended a second copy each click.
+    const r = await page.evaluate(() => {
+      const ta = window.__app.dom.editorTextarea;
+      window.__setSql('SELECT 1');
+      window.__replaceEditor('SELECT\n    1\n');  // first format
+      window.__replaceEditor('SELECT\n    1\n');  // idempotent re-format
+      window.__replaceEditor('SELECT\n    1\n');  // and again
+      return { value: ta.value };
+    });
+    expect(r.value).toBe('SELECT\n    1\n'); // not doubled/tripled
+  });
+
   test('a real double-click on an outside element replaces the editor (the reported bug)', async ({ page }) => {
     // Mount a stand-in for a schema row: a separate element whose dblclick runs
     // replaceEditor synchronously — same gesture/selection context as the app,
