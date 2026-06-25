@@ -1,8 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSavedHistory } from '../../src/ui/saved-history.js';
+import { SUBQUERY_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
+const dragStart = (el) => {
+  const e = new Event('dragstart', { bubbles: true });
+  e.dataTransfer = { setData: vi.fn() };
+  el.dispatchEvent(e);
+  return e.dataTransfer.setData;
+};
 
 describe('renderSavedHistory', () => {
   it('no-ops without mounts', () => {
@@ -287,5 +294,28 @@ describe('renderSavedHistory — search/filter', () => {
     expect(app.state.libraryFilter).toBe('delay');
     click(app.dom.savedTabsRow.querySelectorAll('.side-tab')[1]); // → History
     expect(app.state.libraryFilter).toBe('');
+  });
+});
+
+describe('drag a row into the editor', () => {
+  it('a saved row is draggable and carries its SQL as a subquery payload', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'saved';
+    app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }];
+    renderSavedHistory(app);
+    const row = app.dom.savedList.querySelector('.saved-row');
+    expect(row.getAttribute('draggable')).toBe('true');
+    const setData = dragStart(row);
+    expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 1\n-- more');
+  });
+  it('a history row is draggable and carries its SQL as a subquery payload', () => {
+    const app = makeApp();
+    app.state.sidePanel = 'history';
+    app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
+    renderSavedHistory(app);
+    const row = app.dom.savedList.querySelector('.history-row');
+    expect(row.getAttribute('draggable')).toBe('true');
+    const setData = dragStart(row);
+    expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');
   });
 });

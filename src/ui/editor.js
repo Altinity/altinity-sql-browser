@@ -6,6 +6,7 @@ import { tokenize, maskFromTokens } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
 import { caretXY, caretLineCol, offsetFromXY } from '../core/editor-geometry.js';
+import { toSubquery } from '../core/format.js';
 import { createSearch } from './editor-search.js';
 import { createComplete } from './editor-complete.js';
 import { createIntel } from './editor-intel.js';
@@ -24,6 +25,10 @@ const CHAR_WIDTH_PX = 7.8;
 // A dedicated type (not text/plain) scopes the drop handler to schema-tree
 // drags, leaving native text drag-within-the-textarea untouched.
 export const IDENT_MIME = 'application/x-asb-identifier';
+
+// dataTransfer MIME for dragging a whole saved/history query onto the editor; the
+// drop wraps it as a `( … )` subquery at the drop position (see the drop handler).
+export const SUBQUERY_MIME = 'application/x-asb-subquery';
 
 /**
  * Paint tokenized SQL into `preEl` (whitespace as text, tokens as spans).
@@ -310,10 +315,24 @@ export function mountEditor(app, container) {
   // Accept schema identifiers dragged from the tree; insert at the cursor.
   ta.addEventListener('dragover', (e) => e.preventDefault());
   ta.addEventListener('drop', (e) => {
-    const text = e.dataTransfer && e.dataTransfer.getData(IDENT_MIME);
-    if (!text) return; // not our drag — leave native behavior alone
-    e.preventDefault();
-    insertAtCursor(app, text);
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Schema identifier → insert verbatim at the caret (existing behavior).
+    const ident = dt.getData(IDENT_MIME);
+    if (ident) { e.preventDefault(); insertAtCursor(app, ident); return; }
+    // A saved/history query → wrap as a subquery and drop it at the cursor's
+    // landing point in the text (falling back to the caret when the drop is past
+    // the text, e.g. the blank area below the last line).
+    const sub = dt.getData(SUBQUERY_MIME);
+    if (sub) {
+      const text = toSubquery(sub);
+      if (!text) return;
+      e.preventDefault();
+      const off = offsetAt(e.clientX, e.clientY);
+      if (Number.isFinite(off)) replaceRange(off, off, text);
+      else insertAtCursor(app, text);
+    }
+    // otherwise: not our drag — leave native behavior alone.
   });
 
   app.dom.editorTextarea = ta;
