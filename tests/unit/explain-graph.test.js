@@ -20,7 +20,8 @@ describe('renderExplainGraph', () => {
     expect(el.className).toBe('explain-graph-view');
     const svg = el.querySelector('svg.explain-graph');
     expect(svg).not.toBeNull();
-    expect(svg.getAttribute('viewBox')).toMatch(/^0 0 \d+(\.\d+)? \d+(\.\d+)?$/);
+    expect(svg.getAttribute('width')).toBe('100%'); // fills the pane; viewBox is the window
+    expect(svg.getAttribute('viewBox').split(' ').map(Number).every(Number.isFinite)).toBe(true);
     expect(svg.querySelectorAll('rect.eg-node')).toHaveLength(3);
     expect(svg.querySelectorAll('text.eg-label')).toHaveLength(3);
     expect(svg.querySelectorAll('path.eg-edge')).toHaveLength(2);
@@ -49,6 +50,16 @@ describe('openPipelineFullscreen', () => {
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
   };
   const vbOf = (overlay) => overlay.querySelector('svg.explain-graph').getAttribute('viewBox').split(' ').map(Number);
+  // happy-dom drops modifier keys AND clientX/clientY from the WheelEvent init
+  // dict (it keeps deltaX/deltaY), so force every field the handler reads.
+  const fireWheel = (canvas, opts = {}) => {
+    const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: opts.deltaX || 0, deltaY: opts.deltaY || 0 });
+    Object.defineProperty(e, 'clientX', { value: opts.clientX ?? 200 });
+    Object.defineProperty(e, 'clientY', { value: opts.clientY ?? 100 });
+    if (opts.ctrlKey) Object.defineProperty(e, 'ctrlKey', { value: true });
+    if (opts.metaKey) Object.defineProperty(e, 'metaKey', { value: true });
+    canvas.dispatchEvent(e);
+  };
 
   it('mounts a fullscreen overlay with the graph and an initial fitted viewBox', () => {
     const overlay = openPipelineFullscreen(APP, DOT);
@@ -61,16 +72,34 @@ describe('openPipelineFullscreen', () => {
     expect(vbOf(overlay)[2]).toBeGreaterThan(0); // a real fitted width
   });
 
-  it('wheel zooms in (smaller viewBox) and out (larger) around the cursor', () => {
+  it('⌘/Ctrl+wheel zooms around the cursor; plain wheel pans', () => {
     const overlay = openPipelineFullscreen(APP, DOT);
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const w0 = vbOf(overlay)[2];
-    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, clientX: 200, clientY: 100, bubbles: true, cancelable: true }));
+    fireWheel(canvas, { deltaY: -1, ctrlKey: true });
     const w1 = vbOf(overlay)[2];
-    expect(w1).toBeLessThan(w0); // zoomed in
-    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 1, clientX: 200, clientY: 100, bubbles: true, cancelable: true }));
-    expect(vbOf(overlay)[2]).toBeGreaterThan(w1); // zoomed back out
+    expect(w1).toBeLessThan(w0); // Ctrl+wheel up → zoom in
+    fireWheel(canvas, { deltaY: 1, metaKey: true });
+    expect(vbOf(overlay)[2]).toBeGreaterThan(w1); // ⌘+wheel down → zoom out
+    // plain wheel pans: viewBox origin moves, width unchanged (not a zoom)
+    const [x0, y0, pw] = vbOf(overlay);
+    fireWheel(canvas, { deltaX: 30, deltaY: 40 });
+    const [x1, y1, pw2] = vbOf(overlay);
+    expect(pw2).toBe(pw);
+    expect(x1).not.toBe(x0);
+    expect(y1).not.toBe(y0);
+  });
+
+  it('double-click fits the graph', () => {
+    const overlay = openPipelineFullscreen(APP, DOT);
+    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    stubRect(canvas);
+    const fitW = vbOf(overlay)[2];
+    fireWheel(canvas, { deltaY: -1, ctrlKey: true });
+    expect(vbOf(overlay)[2]).toBeLessThan(fitW);
+    canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    expect(vbOf(overlay)[2]).toBeCloseTo(fitW);
   });
 
   it('drag pans the viewBox; a stray mousemove without a drag is a no-op', () => {

@@ -1,8 +1,9 @@
 // The Pipeline result view: draw the `EXPLAIN PIPELINE graph = 1` DOT output as
-// an SVG boxes-and-arrows graph, plus a fullscreen pan/zoom overlay for big
-// plans. All graph math (parse + layout) is pure in src/core/dot.js and the
-// viewBox algebra in src/core/panzoom.js; this module only does SVG + DOM.
-// Zero runtime deps — built with the `s()`/`h()` hyperscript.
+// an SVG boxes-and-arrows graph. Both the inline pane and the fullscreen overlay
+// use the SAME interaction model (attachPanZoom): drag to pan (grab cursor),
+// wheel to pan, ⌘/Ctrl+wheel to zoom at the cursor, double-click to fit. Graph
+// math (parse + layout) is pure in src/core/dot.js + dot-layout.js (dagre seam)
+// and the viewBox algebra in src/core/panzoom.js; this module only does SVG + DOM.
 
 import { h, s } from './dom.js';
 import { Icon } from './icons.js';
@@ -11,6 +12,56 @@ import { dagreLayout } from '../core/dot-layout.js';
 import { fitBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 
 const ZOOM_STEP = 1.2; // per wheel notch / button press
+
+/**
+ * Wire pan/zoom onto a container holding the graph `svg` (sized to fill it). The
+ * viewBox starts fitted to the `dims` graph. Returns `{ fit, zoomIn, zoomOut }`
+ * for external controls (the overlay buttons). Shared by the inline pane and the
+ * fullscreen overlay so both behave identically.
+ */
+function attachPanZoom(container, svg, dims) {
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  const minW = dims.width / 8;
+  const maxW = dims.width * 3;
+  let vb = fitBox(dims.width, dims.height);
+  const apply = () => svg.setAttribute('viewBox', viewBoxStr(vb));
+  const fit = () => { vb = fitBox(dims.width, dims.height); apply(); };
+  const toSvg = (cx, cy) => {
+    const r = container.getBoundingClientRect();
+    return { x: vb.x + ((cx - r.left) / r.width) * vb.w, y: vb.y + ((cy - r.top) / r.height) * vb.h };
+  };
+  const zoomAt = (factor, cx, cy) => { const p = toSvg(cx, cy); vb = zoomBox(vb, factor, p.x, p.y, minW, maxW); apply(); };
+  // Pan by pixel deltas (drag grabs the content; wheel scrolls the viewport — the
+  // caller passes the appropriate sign).
+  const panBy = (dxPx, dyPx) => {
+    const r = container.getBoundingClientRect();
+    vb = panBox(vb, dxPx * (vb.w / r.width), dyPx * (vb.h / r.height));
+    apply();
+  };
+  const centre = () => { const r = container.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) zoomAt(e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, e.clientX, e.clientY);
+    else panBy(-e.deltaX, -e.deltaY);
+  });
+  let drag = null;
+  container.addEventListener('mousedown', (e) => { drag = { x: e.clientX, y: e.clientY }; container.classList.add('grabbing'); });
+  container.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    panBy(e.clientX - drag.x, e.clientY - drag.y);
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  const end = () => { drag = null; container.classList.remove('grabbing'); };
+  container.addEventListener('mouseup', end);
+  container.addEventListener('mouseleave', end);
+  container.addEventListener('dblclick', fit);
+
+  apply();
+  return { fit, zoomIn: () => { const c = centre(); zoomAt(ZOOM_STEP, c.x, c.y); }, zoomOut: () => { const c = centre(); zoomAt(1 / ZOOM_STEP, c.x, c.y); } };
+}
 
 /**
  * Build the pipeline SVG from a DOT document, laying it out with the injected
@@ -42,19 +93,18 @@ export function buildPipelineSvg(rawText, dagre) {
 }
 
 /**
- * Render `r.rawText` as the inline (scrollable) pipeline graph. Falls back to a
- * placeholder when the DOT has no nodes. The SVG is sized to its intrinsic px so
- * the pane scrolls; the fullscreen overlay (openPipelineFullscreen) is where
- * pan/zoom lives.
+ * Render `r.rawText` as the inline pipeline graph: fitted to the pane, with the
+ * shared drag/wheel pan-zoom. Falls back to a placeholder when the DOT has no
+ * nodes. The fullscreen overlay (openPipelineFullscreen) adds zoom buttons.
  */
 export function renderExplainGraph(app, r) {
   const built = buildPipelineSvg(r.rawText || '', app.Dagre);
   if (!built.nodeCount) {
     return h('div', { class: 'placeholder' }, h('div', null, 'No pipeline graph to display.'));
   }
-  built.svg.setAttribute('width', built.width);
-  built.svg.setAttribute('height', built.height);
-  return h('div', { class: 'explain-graph-view', tabindex: '0' }, built.svg);
+  const view = h('div', { class: 'explain-graph-view', tabindex: '0' }, built.svg);
+  attachPanZoom(view, built.svg, built);
+  return view;
 }
 
 /**
@@ -80,62 +130,12 @@ export function openPipelineFullscreen(app, rawText) {
   if (!built.nodeCount) {
     canvas.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'No pipeline graph to display.')));
   } else {
-    const svg = built.svg;
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
-    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-    const minW = built.width / 8;
-    const maxW = built.width * 3;
-    let vb = fitBox(built.width, built.height);
-    const apply = () => svg.setAttribute('viewBox', viewBoxStr(vb));
-    apply();
-
-    // Cursor px → svg-space coords, using the live canvas rect.
-    const toSvg = (clientX, clientY) => {
-      const rc = canvas.getBoundingClientRect();
-      return {
-        x: vb.x + ((clientX - rc.left) / rc.width) * vb.w,
-        y: vb.y + ((clientY - rc.top) / rc.height) * vb.h,
-      };
-    };
-    const zoomAt = (factor, clientX, clientY) => {
-      const p = toSvg(clientX, clientY);
-      vb = zoomBox(vb, factor, p.x, p.y, minW, maxW);
-      apply();
-    };
-    const centre = () => {
-      const rc = canvas.getBoundingClientRect();
-      return { x: rc.left + rc.width / 2, y: rc.top + rc.height / 2 };
-    };
-
-    canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      zoomAt(e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, e.clientX, e.clientY);
-    });
-
-    let drag = null;
-    canvas.addEventListener('mousedown', (e) => {
-      drag = { x: e.clientX, y: e.clientY };
-      canvas.classList.add('grabbing');
-    });
-    const onMove = (e) => {
-      if (!drag) return;
-      const rc = canvas.getBoundingClientRect();
-      const scale = vb.w / rc.width;
-      vb = panBox(vb, (e.clientX - drag.x) * scale, (e.clientY - drag.y) * scale);
-      drag = { x: e.clientX, y: e.clientY };
-      apply();
-    };
-    const onUp = () => { drag = null; canvas.classList.remove('grabbing'); };
-    canvas.addEventListener('mousemove', onMove);
-    canvas.addEventListener('mouseup', onUp);
-    canvas.addEventListener('mouseleave', onUp);
-
-    canvas.appendChild(svg);
+    canvas.appendChild(built.svg);
+    const pz = attachPanZoom(canvas, built.svg, built);
     bar.appendChild(h('div', { class: 'graph-overlay-zoom' },
-      h('button', { class: 'res-act', title: 'Zoom out', onclick: () => { const c = centre(); zoomAt(1 / ZOOM_STEP, c.x, c.y); } }, Icon.minus()),
-      h('button', { class: 'res-act', title: 'Zoom in', onclick: () => { const c = centre(); zoomAt(ZOOM_STEP, c.x, c.y); } }, Icon.plus()),
-      h('button', { class: 'res-act', title: 'Fit to screen', onclick: () => { vb = fitBox(built.width, built.height); apply(); } }, 'Fit')));
+      h('button', { class: 'res-act', title: 'Zoom out', onclick: pz.zoomOut }, Icon.minus()),
+      h('button', { class: 'res-act', title: 'Zoom in', onclick: pz.zoomIn }, Icon.plus()),
+      h('button', { class: 'res-act', title: 'Fit to screen', onclick: pz.fit }, 'Fit')));
   }
 
   bar.appendChild(h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
