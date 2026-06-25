@@ -71,6 +71,28 @@ of scope for a textarea and tracked separately (CodeMirror, issue #21).
 > work. The `.jsx` files there are React prototypes; production is the vanilla
 > ES-module code under `src/`.
 
+## EXPLAIN views
+
+Run an `EXPLAIN` (or click **Explain** in the editor toolbar to explain the
+current query without editing it) and the results pane offers five views of the
+plan — switching one re-runs the query in that form; **the editor SQL is never
+rewritten**:
+
+- **Explain** — your `EXPLAIN` run *verbatim*, so any parameters you typed
+  (`EXPLAIN indexes=1, actions=1, json=1 …`) are honored. Shown as plan text.
+- **Indexes** / **Projections** — `EXPLAIN indexes = 1` / `projections = 1` of the
+  inner query (used parts/granules, analyzed projections). Plan text.
+- **Pipeline** — `EXPLAIN PIPELINE graph = 1`, whose Graphviz DOT is drawn as a
+  boxes-and-arrows processor graph by a small self-contained SVG renderer (no new
+  dependency; DOT parse + layered layout are pure in `src/core/dot.js`).
+- **Estimate** — `EXPLAIN ESTIMATE`, rendered as a real table (database, table,
+  parts, rows, marks).
+
+Running a statement that *exactly* matches one of the rich forms auto-selects its
+tab (e.g. `EXPLAIN ESTIMATE …` opens **Estimate**); anything else opens the
+verbatim **Explain** tab. An explicit `… FORMAT <name>` on an EXPLAIN bypasses the
+views and shows ClickHouse's raw response.
+
 ## Saved queries & the Library
 
 Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**

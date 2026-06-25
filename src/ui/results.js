@@ -130,7 +130,7 @@ function renderExplainView(app, r) {
   if (kind === 'table') {
     return r.rows.length
       ? renderTable(app, r)
-      : h('div', { class: 'placeholder' }, h('div', null, 'No estimate rows (ESTIMATE applies to MergeTree tables).'));
+      : h('div', { class: 'placeholder' }, h('div', null, 'No rows to estimate for this query (only MergeTree reads that scan parts produce an estimate).'));
   }
   return h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText || '');
 }

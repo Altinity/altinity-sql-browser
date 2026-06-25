@@ -533,7 +533,7 @@ describe('EXPLAIN views', () => {
     const empty = appWithResult(explainResult('estimate', { columns: [], rows: [] }));
     renderResults(empty);
     expect(empty.dom.resultsRegion.querySelector('table.res-table')).toBeNull();
-    expect(empty.dom.resultsRegion.textContent).toMatch(/ESTIMATE applies to MergeTree/);
+    expect(empty.dom.resultsRegion.textContent).toMatch(/No rows to estimate/);
   });
 
   it('keeps the EXPLAIN tabs visible when a view errors', () => {
