@@ -2,6 +2,7 @@
 // render modules in isolation under happy-dom. Not under src/, so it does not
 // count toward coverage.
 import { vi } from 'vitest';
+import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
@@ -26,6 +27,7 @@ export function makeApp(over = {}) {
     root,
     document,
     Chart: FakeChart,
+    Dagre: dagre, // real dagre — it's pure (no DOM), so tests use it directly
     cssVar: () => '', // blank → chartColors() uses its dark-theme fallbacks
     chart: null,
     host: () => 'test.host',

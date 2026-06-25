@@ -65,9 +65,11 @@ test.describe('EXPLAIN PIPELINE graph (antalya ontime fact/dim join)', () => {
     const vb = () => svg.getAttribute('viewBox').then((s) => s.split(' ').map(Number));
 
     const [, , w0] = await vb();
-    // wheel over the canvas → zoom in (smaller viewBox width)
+    // ⌘/Ctrl+wheel over the canvas → zoom in (smaller viewBox width)
     await page.locator('.graph-overlay-canvas').hover();
+    await page.keyboard.down('Control');
     await page.mouse.wheel(0, -300);
+    await page.keyboard.up('Control');
     const [, , w1] = await vb();
     expect(w1).toBeLessThan(w0);
 
@@ -92,20 +94,22 @@ test.describe('EXPLAIN PIPELINE graph (antalya ontime fact/dim join)', () => {
       const rects = [...document.querySelectorAll('rect.eg-node')];
       const rows = {};
       for (const r of rects) {
-        const y = +r.getAttribute('y');
+        const y = Math.round(+r.getAttribute('y'));
         rows[y] = (rows[y] || 0) + 1;
       }
       const svg = document.querySelector('svg.explain-graph');
       return {
         rowCount: Object.keys(rows).length,
         maxPerRow: Math.max(...Object.values(rows)),
-        width: +svg.getAttribute('width'),
-        height: +svg.getAttribute('height'),
-        viewBox: svg.getAttribute('viewBox'),
+        width: svg.getAttribute('width'),
+        vbNums: svg.getAttribute('viewBox').split(' ').map(Number),
       };
     });
     expect(m.rowCount).toBeGreaterThanOrEqual(5); // many sequential stages → vertical
     expect(m.maxPerRow).toBeGreaterThanOrEqual(2); // parallel processors → side-by-side
-    expect(m.viewBox).toBe(`0 0 ${m.width} ${m.height}`);
+    // inline svg fills the pane; the fitted viewBox is the window into the graph
+    expect(m.width).toBe('100%');
+    expect(m.vbNums).toHaveLength(4);
+    expect(m.vbNums.every(Number.isFinite)).toBe(true);
   });
 });

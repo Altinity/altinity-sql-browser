@@ -4,6 +4,7 @@
 // the real side-effect that runs in the browser (and is coverage-ignored).
 
 import Chart from 'chart.js/auto';
+import Dagre from '@dagrejs/dagre';
 import { createApp } from './ui/app.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
@@ -86,7 +87,7 @@ export async function bootstrap(app, env) {
 
 /* c8 ignore start -- browser entry side-effect, exercised via the live app */
 if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
-  const app = createApp({ Chart });
+  const app = createApp({ Chart, Dagre });
   document.addEventListener('keydown', (e) => handleKeydown(e, app));
   bootstrap(app, {
     location: window.location,

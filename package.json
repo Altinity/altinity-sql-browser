@@ -20,6 +20,7 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "chart.js": "^4.5.1"
   }
 }

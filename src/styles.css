@@ -623,11 +623,15 @@ body {
 .raw-text-view:focus, .json-view:focus { outline: none; }
 
 /* ------------ EXPLAIN pipeline graph view ------------ */
+/* Same pan/zoom surface as the fullscreen overlay: drag to pan (grab cursor),
+   wheel to pan, ⌘/Ctrl+wheel to zoom, double-click to fit. */
 .explain-graph-view {
-  height: 100%; overflow: auto; padding: 12px 14px;
-  background: var(--bg-table);
+  height: 100%; overflow: hidden;
+  background: var(--bg-table); cursor: grab;
 }
+.explain-graph-view.grabbing { cursor: grabbing; }
 .explain-graph-view:focus { outline: none; }
+.explain-graph-view > svg.explain-graph { width: 100%; height: 100%; }
 /* `color` drives the arrowhead (fill:currentColor) and edge stroke. */
 .explain-graph { color: var(--fg-faint); display: block; }
 .explain-graph .eg-node {

@@ -1,8 +1,8 @@
 // Build the single-file SPA: esbuild bundles src/main.js into one IIFE, which
 // is inlined (with the stylesheet) into build/template.html → dist/sql.html.
 //
-// esbuild is the only build-time tool; the sole bundled runtime dependency is
-// Chart.js (inlined, not fetched). The output is a self-contained HTML file
+// esbuild is the only build-time tool; the bundled runtime dependencies are
+// Chart.js and @dagrejs/dagre (inlined, not fetched). The output is a self-contained HTML file
 // that installs into any ClickHouse cluster's user_files and is served by an
 // <http_handlers> static rule — it still makes zero third-party requests.
 

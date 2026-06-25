@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import dagre from '@dagrejs/dagre';
 import { renderExplainGraph, openPipelineFullscreen } from '../../src/ui/explain-graph.js';
+
+const APP = { document, Dagre: dagre }; // app stub carrying the dagre layout seam
 
 const DOT = `digraph
 {
@@ -13,11 +16,12 @@ const DOT = `digraph
 
 describe('renderExplainGraph', () => {
   it('draws an SVG with one rect+label per node and a path per edge', () => {
-    const el = renderExplainGraph({ rawText: DOT });
+    const el = renderExplainGraph(APP, { rawText: DOT });
     expect(el.className).toBe('explain-graph-view');
     const svg = el.querySelector('svg.explain-graph');
     expect(svg).not.toBeNull();
-    expect(svg.getAttribute('viewBox')).toMatch(/^0 0 \d+(\.\d+)? \d+(\.\d+)?$/);
+    expect(svg.getAttribute('width')).toBe('100%'); // fills the pane; viewBox is the window
+    expect(svg.getAttribute('viewBox').split(' ').map(Number).every(Number.isFinite)).toBe(true);
     expect(svg.querySelectorAll('rect.eg-node')).toHaveLength(3);
     expect(svg.querySelectorAll('text.eg-label')).toHaveLength(3);
     expect(svg.querySelectorAll('path.eg-edge')).toHaveLength(2);
@@ -28,12 +32,12 @@ describe('renderExplainGraph', () => {
       .toEqual(['NumbersRange', 'Filter', 'Aggregating']);
   });
   it('shows a placeholder when the DOT has no nodes', () => {
-    const el = renderExplainGraph({ rawText: 'digraph {}' });
+    const el = renderExplainGraph(APP, { rawText: 'digraph {}' });
     expect(el.className).toBe('placeholder');
     expect(el.textContent).toMatch(/No pipeline graph/);
   });
   it('tolerates a null rawText', () => {
-    const el = renderExplainGraph({ rawText: null });
+    const el = renderExplainGraph(APP, { rawText: null });
     expect(el.className).toBe('placeholder');
   });
 });
@@ -46,9 +50,19 @@ describe('openPipelineFullscreen', () => {
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
   };
   const vbOf = (overlay) => overlay.querySelector('svg.explain-graph').getAttribute('viewBox').split(' ').map(Number);
+  // happy-dom drops modifier keys AND clientX/clientY from the WheelEvent init
+  // dict (it keeps deltaX/deltaY), so force every field the handler reads.
+  const fireWheel = (canvas, opts = {}) => {
+    const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: opts.deltaX || 0, deltaY: opts.deltaY || 0 });
+    Object.defineProperty(e, 'clientX', { value: opts.clientX ?? 200 });
+    Object.defineProperty(e, 'clientY', { value: opts.clientY ?? 100 });
+    if (opts.ctrlKey) Object.defineProperty(e, 'ctrlKey', { value: true });
+    if (opts.metaKey) Object.defineProperty(e, 'metaKey', { value: true });
+    canvas.dispatchEvent(e);
+  };
 
   it('mounts a fullscreen overlay with the graph and an initial fitted viewBox', () => {
-    const overlay = openPipelineFullscreen({ document }, DOT);
+    const overlay = openPipelineFullscreen(APP, DOT);
     expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.className).toBe('graph-overlay');
     const svg = overlay.querySelector('svg.explain-graph');
@@ -58,20 +72,38 @@ describe('openPipelineFullscreen', () => {
     expect(vbOf(overlay)[2]).toBeGreaterThan(0); // a real fitted width
   });
 
-  it('wheel zooms in (smaller viewBox) and out (larger) around the cursor', () => {
-    const overlay = openPipelineFullscreen({ document }, DOT);
+  it('⌘/Ctrl+wheel zooms around the cursor; plain wheel pans', () => {
+    const overlay = openPipelineFullscreen(APP, DOT);
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const w0 = vbOf(overlay)[2];
-    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, clientX: 200, clientY: 100, bubbles: true, cancelable: true }));
+    fireWheel(canvas, { deltaY: -1, ctrlKey: true });
     const w1 = vbOf(overlay)[2];
-    expect(w1).toBeLessThan(w0); // zoomed in
-    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 1, clientX: 200, clientY: 100, bubbles: true, cancelable: true }));
-    expect(vbOf(overlay)[2]).toBeGreaterThan(w1); // zoomed back out
+    expect(w1).toBeLessThan(w0); // Ctrl+wheel up → zoom in
+    fireWheel(canvas, { deltaY: 1, metaKey: true });
+    expect(vbOf(overlay)[2]).toBeGreaterThan(w1); // ⌘+wheel down → zoom out
+    // plain wheel pans: viewBox origin moves, width unchanged (not a zoom)
+    const [x0, y0, pw] = vbOf(overlay);
+    fireWheel(canvas, { deltaX: 30, deltaY: 40 });
+    const [x1, y1, pw2] = vbOf(overlay);
+    expect(pw2).toBe(pw);
+    expect(x1).not.toBe(x0);
+    expect(y1).not.toBe(y0);
+  });
+
+  it('double-click fits the graph', () => {
+    const overlay = openPipelineFullscreen(APP, DOT);
+    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    stubRect(canvas);
+    const fitW = vbOf(overlay)[2];
+    fireWheel(canvas, { deltaY: -1, ctrlKey: true });
+    expect(vbOf(overlay)[2]).toBeLessThan(fitW);
+    canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    expect(vbOf(overlay)[2]).toBeCloseTo(fitW);
   });
 
   it('drag pans the viewBox; a stray mousemove without a drag is a no-op', () => {
-    const overlay = openPipelineFullscreen({ document }, DOT);
+    const overlay = openPipelineFullscreen(APP, DOT);
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const [x0] = vbOf(overlay);
@@ -87,7 +119,7 @@ describe('openPipelineFullscreen', () => {
   });
 
   it('zoom buttons and Fit reframe the graph', () => {
-    const overlay = openPipelineFullscreen({ document }, DOT);
+    const overlay = openPipelineFullscreen(APP, DOT);
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const fitW = vbOf(overlay)[2];
@@ -101,25 +133,26 @@ describe('openPipelineFullscreen', () => {
 
   it('closes on Escape, the ✕ button, and a backdrop click (but not a panel click)', () => {
     // Escape
-    let overlay = openPipelineFullscreen({ document }, DOT);
+    let overlay = openPipelineFullscreen(APP, DOT);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // ignored
     expect(document.body.contains(overlay)).toBe(true);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(document.body.contains(overlay)).toBe(false);
     // panel click does NOT close; ✕ does
-    overlay = openPipelineFullscreen({ document }, DOT);
+    overlay = openPipelineFullscreen(APP, DOT);
     overlay.querySelector('.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(true);
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
-    // backdrop click closes; app-less call uses the global document
-    overlay = openPipelineFullscreen(null, DOT);
+    // backdrop click closes
+    overlay = openPipelineFullscreen(APP, DOT);
     overlay.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
 
-  it('shows a placeholder (no canvas svg / zoom controls) for an empty graph', () => {
-    const overlay = openPipelineFullscreen({ document }, 'digraph {}');
+  it('shows a placeholder for an empty graph; an app-less call uses the global document', () => {
+    const overlay = openPipelineFullscreen(null, 'digraph {}'); // null app → global document seam
+    expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.querySelector('svg.explain-graph')).toBeNull();
     expect(overlay.querySelector('.graph-overlay-zoom')).toBeNull();
     expect(overlay.textContent).toMatch(/No pipeline graph/);
