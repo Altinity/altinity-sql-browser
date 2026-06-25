@@ -873,3 +873,26 @@ describe('signature help + hover docs (#27)', () => {
     });
   });
 });
+
+describe('editorRevealCaret (jump to a format-error position)', () => {
+  it('sets the caret to the offset, clamps out-of-range, and scrolls the line into view', () => {
+    const app = makeApp();
+    mountEditor(app, document.createElement('div'));
+    const ta = app.dom.editorTextarea;
+    ta.value = 'line0\nline1\nline2\nline3';
+    // a caret below the viewport scrolls down to reveal it
+    ta.scrollTop = 0;
+    app.dom.editorRevealCaret(20); // on the last line
+    expect(ta.selectionStart).toBe(20);
+    expect(ta.selectionEnd).toBe(20);
+    expect(ta.scrollTop).toBeGreaterThan(0);
+    // a caret above the viewport scrolls back up
+    ta.scrollTop = 1000;
+    app.dom.editorRevealCaret(0);
+    expect(ta.selectionStart).toBe(0);
+    expect(ta.scrollTop).toBe(0);
+    // an out-of-range offset clamps to the end
+    app.dom.editorRevealCaret(99999);
+    expect(ta.selectionStart).toBe(ta.value.length);
+  });
+});

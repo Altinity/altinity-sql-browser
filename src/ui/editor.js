@@ -5,7 +5,7 @@ import { h, zoomScale } from './dom.js';
 import { tokenize, maskFromTokens } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
-import { caretXY, offsetFromXY } from '../core/editor-geometry.js';
+import { caretXY, caretLineCol, offsetFromXY } from '../core/editor-geometry.js';
 import { createSearch } from './editor-search.js';
 import { createComplete } from './editor-complete.js';
 import { createIntel } from './editor-intel.js';
@@ -324,6 +324,19 @@ export function mountEditor(app, container) {
   app.dom.editorComplete = complete;
   app.dom.editorIntel = intel;
   app.dom.editorSync = sync;
+  // Move the caret to a character offset and scroll its line into view — used to
+  // jump to a format/parse error position (#format-error).
+  app.dom.editorRevealCaret = (pos) => {
+    const p = Math.max(0, Math.min(pos | 0, ta.value.length));
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = p;
+    complete.hide();
+    const top = PAD_Y + caretLineCol(ta.value, p).line * LINE_HEIGHT_PX;
+    if (top < ta.scrollTop) ta.scrollTop = Math.max(0, top - LINE_HEIGHT_PX);
+    else if (top + LINE_HEIGHT_PX > ta.scrollTop + ta.clientHeight) ta.scrollTop = top + LINE_HEIGHT_PX - ta.clientHeight;
+    syncScroll();
+    paintMarks();
+  };
   sync();
 }
 
