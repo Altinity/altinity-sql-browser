@@ -395,13 +395,14 @@ export function createApp(env = {}) {
     let fmt;
     let explainView = null;
     if (explainMode) {
-      // The Explain view runs the statement verbatim (honoring arbitrary params);
-      // a rich view is auto-selected only on an exact canonical match, else we keep
-      // the last-used view. Rich views derive a query from the inner statement.
+      // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
+      // is honored exactly (canonical match → its rich view, else the verbatim
+      // Explain view); the button-forced path falls through to Explain. We never
+      // inherit a stale view from a previous run/tab — typing a plain EXPLAIN must
+      // show the plan, not whatever view was last open.
       explainView = (opts && opts.explainView)
         || (parsed && detectExplainView(parsed))
-        || app.state.explainView || 'explain';
-      app.state.explainView = explainView;
+        || 'explain';
       fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
       const inner = parsed ? parsed.inner : tab.sql;
       runSql = explainView === 'explain'

@@ -63,7 +63,7 @@ export function openPipelineFullscreen(app, rawText) {
   const doc = (app && app.document) || document;
   const built = buildPipelineSvg(rawText || '');
 
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   let backdrop;
   // `close` only fires from listeners attached after `backdrop` is assigned.
   function close() {

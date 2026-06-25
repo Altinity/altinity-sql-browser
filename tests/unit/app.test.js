@@ -373,6 +373,15 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('indexes');
   });
+  it('does not leak a previous rich view onto a freshly-typed plain EXPLAIN', async () => {
+    const { app } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'digraph{}' })]]);
+    app.activeTab().sql = 'EXPLAIN PIPELINE graph = 1 SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('pipeline');
+    app.activeTab().sql = 'EXPLAIN SELECT 2'; // plain → must show the plan, not pipeline
+    await app.actions.run();
+    expect(app.activeTab().result.explainView).toBe('explain');
+  });
   it('setExplainView re-runs a derived query and never edits the SQL', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'digraph{}' })]]);
     app.activeTab().sql = 'EXPLAIN SELECT 1';

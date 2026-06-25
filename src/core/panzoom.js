@@ -18,6 +18,7 @@ export function fitBox(gw, gh, pad = 0.04) {
  * aspect is preserved.
  */
 export function zoomBox(vb, factor, cx, cy, minW, maxW) {
+  if (!vb.w || !vb.h) return vb; // nothing to zoom (degenerate box)
   const want = vb.w / factor;
   const w = Math.max(minW, Math.min(maxW, want));
   const k = w / vb.w; // actual applied scale after clamping

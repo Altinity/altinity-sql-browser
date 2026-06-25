@@ -58,11 +58,9 @@ export function createState(read = { loadJSON, loadStr }) {
     running: false,
     abortController: null,
     resultView: 'table',
-    // The active EXPLAIN view (Explain/Indexes/Projections/Pipeline/Estimate),
-    // kept across re-runs like resultView. `forceExplain` is set by the Explain
-    // button to put an ordinary query into EXPLAIN-view mode; a normal Run clears
-    // it. Both session-only.
-    explainView: 'explain',
+    // `forceExplain` is set by the Explain button to put an ordinary query into
+    // EXPLAIN-view mode; a normal Run clears it (session-only). The active view is
+    // derived per-run from the typed statement / clicked tab, not stored here.
     forceExplain: false,
     resultSort: { col: null, dir: 'asc' },
     sidePanel: read.loadStr(KEYS.sidePanel, 'saved'),

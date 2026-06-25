@@ -20,14 +20,20 @@ digraph
     expect(g.nodes.map((n) => n.id)).toEqual(['a', 'b']);
     expect(g.edges).toEqual([{ from: 'a', to: 'b' }]);
   });
-  it('de-duplicates node ids and skips DOT keywords', () => {
+  it('de-duplicates node ids, skips DOT keywords, and drops edges to undeclared ids', () => {
     const g = parseDot('node [label="default"]; n1 [label="A"]; n1 [label="A again"]; n1 -> n2;');
-    // `node` keyword skipped; n1 only once; n2 added from the edge.
-    expect(g.nodes).toEqual([{ id: 'n1', label: 'A' }, { id: 'n2', label: 'n2' }]);
+    // `node` keyword skipped; n1 only once; n2 never declared → no phantom node…
+    expect(g.nodes).toEqual([{ id: 'n1', label: 'A' }]);
+    expect(g.edges).toEqual([]); // …and its edge is dropped
   });
-  it('skips edges whose endpoints are DOT keywords', () => {
+  it('skips edges whose endpoints are not declared nodes', () => {
     const g = parseDot('digraph { n1 [label="A"]; node -> n1; }');
     expect(g.edges).toEqual([]);
+  });
+  it('ignores -> and ids that appear inside label strings (no phantom nodes/edges)', () => {
+    const g = parseDot('digraph { n0 [label="Join a -> b"]; n1 [label="Scan"]; n0 -> n1; }');
+    expect(g.nodes.map((n) => n.id)).toEqual(['n0', 'n1']); // no phantom a / b
+    expect(g.edges).toEqual([{ from: 'n0', to: 'n1' }]);
   });
   it('unescapes quotes and collapses \\n in labels', () => {
     const g = parseDot('digraph { n1 [label="line1\\nline2"]; n2 [label="say \\"hi\\""]; }');

@@ -1,3 +1,9 @@
+// Captured from the antalya demo cluster (ontime dataset) — the real output of
+// `EXPLAIN PIPELINE graph = 1` for the fact/dim-join query documented in
+// tests/e2e/pipeline-graph.spec.js. To re-capture if ClickHouse's pipeline DOT
+// format changes, run that query with `EXPLAIN PIPELINE graph = 1 <query> FORMAT
+// TabSeparatedRaw` against ontime.fact_ontime ⋈ ontime.dim_airports and paste the
+// digraph below (drop this comment header — the parser starts at `digraph`).
 digraph
 {
   rankdir="LR";

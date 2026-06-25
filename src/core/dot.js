@@ -33,23 +33,24 @@ export function parseDot(text) {
 
   const nodes = [];
   const seen = new Set();
-  const add = (id, label) => {
-    if (seen.has(id) || DOT_KEYWORDS.has(id)) return;
-    seen.add(id);
-    nodes.push({ id, label });
-  };
-
   const nodeRe = /([A-Za-z_][\w]*)\s*\[\s*label\s*=\s*"((?:[^"\\]|\\.)*)"/g;
   let m;
-  while ((m = nodeRe.exec(body))) add(m[1], unescapeDot(m[2]));
+  while ((m = nodeRe.exec(body))) {
+    const id = m[1];
+    if (seen.has(id) || DOT_KEYWORDS.has(id)) continue;
+    seen.add(id);
+    nodes.push({ id, label: unescapeDot(m[2]) });
+  }
 
+  // Scan edges with quoted labels blanked out, so a `->` (or an id) inside a
+  // processor label — e.g. a lambda `x -> x + 1` — can't be mistaken for a
+  // data-flow edge. Only edges between already-declared processors are kept
+  // (ClickHouse always declares its nodes), which also rules out phantom nodes.
   const edges = [];
+  const edgeBody = body.replace(/"(?:[^"\\]|\\.)*"/g, '""');
   const edgeRe = /([A-Za-z_][\w]*)\s*->\s*([A-Za-z_][\w]*)/g;
-  while ((m = edgeRe.exec(body))) {
-    if (DOT_KEYWORDS.has(m[1]) || DOT_KEYWORDS.has(m[2])) continue;
-    edges.push({ from: m[1], to: m[2] });
-    add(m[1], m[1]);
-    add(m[2], m[2]);
+  while ((m = edgeRe.exec(edgeBody))) {
+    if (seen.has(m[1]) && seen.has(m[2])) edges.push({ from: m[1], to: m[2] });
   }
   return { nodes, edges };
 }

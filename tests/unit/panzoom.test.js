@@ -33,6 +33,10 @@ describe('zoomBox', () => {
     const out = zoomBox({ x: 0, y: 0, w: 200, h: 200 }, 0.5, 100, 100, 10, 300);
     expect(out.w).toBe(300); // wanted 400, clamped to 300
   });
+  it('returns a degenerate (zero-size) box unchanged', () => {
+    const vb = { x: 0, y: 0, w: 0, h: 0 };
+    expect(zoomBox(vb, 2, 0, 0, 10, 300)).toBe(vb);
+  });
 });
 
 describe('panBox', () => {
