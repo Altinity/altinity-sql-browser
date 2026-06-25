@@ -31,12 +31,27 @@ export function parseAstTables(astText) {
   return out;
 }
 
-/** The explicit `TO db.table` target of a materialized view, or null. */
+// One ClickHouse identifier part: a backtick-quoted run (with `\`` / `\\` escapes)
+// or a bare identifier. Used to parse names out of create_table_query, where CH
+// backtick-quotes non-bare names (e.g. TO target_all.`agg.out.parquet`).
+const IDENT_PART = '(?:`(?:[^`\\\\]|\\\\.)*`|[A-Za-z_][A-Za-z0-9_]*)';
+const TO_RE = new RegExp('\\sTO\\s+(' + IDENT_PART + ')(?:\\.(' + IDENT_PART + '))?');
+/** Strip backticks + unescape a single identifier part to its raw name. */
+function unBacktick(part) {
+  return part[0] === '`' ? part.slice(1, -1).replace(/\\(.)/g, '$1') : part;
+}
+
+/**
+ * The explicit `TO [db.]table` target of a materialized view as `{ db?, table }`
+ * (raw, backticks stripped — so it matches the row ids), or null for an implicit
+ * (`.inner.*`) MV. Handles backtick-quoted, dotted names.
+ */
 export function parseMvTarget(createTableQuery) {
   const s = String(createTableQuery || '');
   const head = s.split(/\sAS\s+SELECT/i)[0]; // only look before the SELECT body
-  const m = /\sTO\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)?)/.exec(head);
-  return m ? m[1] : null;
+  const m = TO_RE.exec(head);
+  if (!m) return null;
+  return m[2] ? { db: unBacktick(m[1]), table: unBacktick(m[2]) } : { table: unBacktick(m[1]) };
 }
 
 /** A dictionary's source as `{ db, table }` (ClickHouse source) or `{ external }`. */
@@ -71,11 +86,6 @@ export function parseEngineRef(engine, engineFull) {
   return null;
 }
 
-// A *reference* whose name MIGHT already be `db.table` (MV target / EXPLAIN AST
-// source) — the dot heuristic decides. Ambiguous for table names that themselves
-// contain dots, but those paths only ever *match against* known ids, so a miss
-// drops an edge rather than mis-linking.
-const qualify = (db, name) => (name && name.includes('.') ? name : db + '.' + name);
 // A reference whose db is always supplied separately (dependencies_*, engine
 // args, table-focus center) — join unconditionally so a dotted table name
 // (`…snappy.parquet`) keeps its db prefix instead of being mistaken for an
@@ -146,17 +156,18 @@ export function buildSchemaGraph(rows, focus) {
       node(dep, byId.has(dep) ? nodes.get(dep).kind : 'table');
       addEdge(id, dep, 'feeds');
     }
-    // fallback: EXPLAIN AST sources of a view/MV → source → this object. Only real
-    // (in-scope) objects count, so CTE/alias names from the AST are dropped.
+    // fallback: EXPLAIN AST sources of a view/MV → source → this object. EXPLAIN
+    // AST prints names unquoted, qualified-or-bare — so resolve against the known
+    // ids both ways (as-is, then db-qualified). A miss (CTE/alias name) is dropped.
     if ((kind === 'mv' || kind === 'view') && Array.isArray(t.astTables)) {
       for (const src of t.astTables) {
-        const sid = qualify(t.database, src);
-        if (byId.has(sid)) addEdge(sid, id, kind === 'mv' ? 'feeds' : 'reads');
+        const sid = byId.has(src) ? src : (byId.has(joinId(t.database, src)) ? joinId(t.database, src) : null);
+        if (sid) addEdge(sid, id, kind === 'mv' ? 'feeds' : 'reads');
       }
     }
     if (kind === 'mv') {
       const target = parseMvTarget(t.create_table_query);
-      const targetId = target ? qualify(t.database, target) : innerByUuid.get(String(t.uuid || ''));
+      const targetId = target ? joinId(target.db || t.database, target.table) : innerByUuid.get(String(t.uuid || ''));
       if (targetId) { node(targetId, byId.has(targetId) ? nodes.get(targetId).kind : 'table'); addEdge(id, targetId, 'writes'); }
     } else if (kind === 'distributed' || kind === 'buffer' || kind === 'merge') {
       const ref = parseEngineRef(t.engine, t.engine_full);

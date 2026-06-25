@@ -130,6 +130,25 @@ describe('completionContext', () => {
     expect(completionContext('.col', 4)).toMatchObject({ word: 'col', qualified: false, parent: null });
     expect(completionContext('count().c', 9)).toMatchObject({ word: 'c', qualified: false, parent: null });
   });
+  it('treats an open backtick as the word start (from = the backtick, word unquoted)', () => {
+    // SELECT * FROM `part   (caret at end) → word 'part', replace range starts at the backtick
+    const v = 'SELECT * FROM `part';
+    expect(completionContext(v, v.length)).toMatchObject({ word: 'part', from: 14, qualified: false });
+  });
+  it('does not mistake a CLOSED backtick run for an open one', () => {
+    const v = 'SELECT * FROM `my tbl` WHERE x';
+    expect(completionContext(v, v.length)).toMatchObject({ word: 'x', qualified: false }); // even # of backticks → bare
+  });
+  it('qualifies a column under a backtick-quoted table (parent unquoted)', () => {
+    const v = 'SELECT `od` FROM x'; // not qualified — no dot
+    expect(completionContext(v, 10)).toMatchObject({ word: 'od', qualified: false });
+    const q = '`weird.tbl`.col';
+    expect(completionContext(q, q.length)).toMatchObject({ word: 'col', qualified: true, parent: 'weird.tbl' });
+  });
+  it('handles an open backtick column under a backtick parent', () => {
+    const v = '`weird.tbl`.`od';
+    expect(completionContext(v, v.length)).toMatchObject({ word: 'od', qualified: true, parent: 'weird.tbl', from: 12 });
+  });
 });
 
 describe('rankCompletions', () => {

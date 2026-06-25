@@ -116,28 +116,52 @@ export function buildCompletions(ref, schema) {
  * Returns {word, from, to, qualified, parent, afterFormat}.
  */
 export function completionContext(value, pos) {
-  let s = pos;
-  while (s > 0 && /[A-Za-z0-9_]/.test(value[s - 1])) s--;
-  const word = value.slice(s, pos);
+  // The word being typed is either inside an OPEN backtick (odd # of backticks
+  // before the caret → a `non-bare-name… being typed) or a bare [A-Za-z0-9_] run.
+  // `from` is where an accepted candidate's text replaces to — the opening
+  // backtick in the quoted case, so accepting never doubles the backtick.
+  let ticks = 0;
+  for (let i = 0; i < pos; i++) if (value[i] === '`') ticks++;
+  let from;
+  let word;
+  if (ticks % 2 === 1) {
+    from = value.lastIndexOf('`', pos - 1);
+    word = value.slice(from + 1, pos); // partial name, unquoted
+  } else {
+    from = pos;
+    while (from > 0 && /[A-Za-z0-9_]/.test(value[from - 1])) from--;
+    word = value.slice(from, pos);
+  }
   // Inside a FORMAT clause? (the identifier just before the word is `FORMAT`) →
   // complete output-format names instead of the general candidate set.
-  let b = s;
+  let b = from;
   while (b > 0 && /\s/.test(value[b - 1])) b--;
   let pf = b;
   while (pf > 0 && /[A-Za-z0-9_]/.test(value[pf - 1])) pf--;
   const afterFormat = value.slice(pf, b).toUpperCase() === 'FORMAT';
+  // Qualified? An identifier (bare OR backtick-quoted) then a dot immediately
+  // before the word. parent is the unquoted table name, matched against item.parent.
   let qualified = false;
   let parent = null;
-  if (value[s - 1] === '.') {
-    let p = s - 1;
-    while (p > 0 && /[A-Za-z0-9_]/.test(value[p - 1])) p--;
-    const name = value.slice(p, s - 1);
+  if (value[from - 1] === '.') {
     // Only qualified when a real identifier precedes the dot. A bare '.' after a
-    // non-identifier (`.col`, `).c`, `count().c`) would otherwise yield parent=''
-    // and an empty dropdown — fall back to normal completion instead (#4 review).
+    // non-identifier (`.col`, `).c`, `count().c`) yields '' → normal completion.
+    const name = identBefore(value, from - 1);
     if (name) { qualified = true; parent = name; }
   }
-  return { word, from: s, to: pos, qualified, parent, afterFormat };
+  return { word, from, to: pos, qualified, parent, afterFormat };
+}
+
+// The identifier ending at index `end` (exclusive): a backtick-quoted run
+// (returned unquoted/unescaped) or a bare [A-Za-z0-9_] run. '' if neither.
+function identBefore(value, end) {
+  if (value[end - 1] === '`') {
+    const open = value.lastIndexOf('`', end - 2);
+    if (open >= 0) return value.slice(open + 1, end - 1).replace(/\\(.)/g, '$1');
+  }
+  let p = end;
+  while (p > 0 && /[A-Za-z0-9_]/.test(value[p - 1])) p--;
+  return value.slice(p, end);
 }
 
 /**

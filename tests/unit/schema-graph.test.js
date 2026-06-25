@@ -38,8 +38,16 @@ describe('parseAstTables', () => {
 });
 
 describe('parseMvTarget', () => {
-  it('reads the explicit TO target before the SELECT body', () => {
-    expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.events_mv TO lin.events_daily (`day` Date) AS SELECT toDate(ts) AS day FROM lin.events GROUP BY day')).toBe('lin.events_daily');
+  it('reads the explicit TO target before the SELECT body as {db, table}', () => {
+    expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.events_mv TO lin.events_daily (`day` Date) AS SELECT toDate(ts) AS day FROM lin.events GROUP BY day')).toEqual({ db: 'lin', table: 'events_daily' });
+  });
+  it('strips backticks from a dotted/backticked TO target (real CH create query)', () => {
+    // CH backtick-quotes non-bare names in create_table_query.
+    expect(parseMvTarget('CREATE MATERIALIZED VIEW target_all.`mv-1` TO target_all.`agg.out.parquet` (`id` UInt64) AS SELECT id, count() AS c FROM target_all.`part-0.snappy.parquet` GROUP BY id'))
+      .toEqual({ db: 'target_all', table: 'agg.out.parquet' });
+  });
+  it('returns a single {table} when the TO target is unqualified', () => {
+    expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.mv TO `weird.dst` AS SELECT 1')).toEqual({ table: 'weird.dst' });
   });
   it('returns null for an implicit MV (ENGINE = …, no TO)', () => {
     expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.events_mv2 (`day` Date) ENGINE = SummingMergeTree ORDER BY day AS SELECT toDate(ts) AS day FROM lin.events GROUP BY day')).toBeNull();
@@ -193,6 +201,32 @@ describe('buildSchemaGraph', () => {
       T('lin', 'events', 'MergeTree'),
     ], dictionaries: [] };
     expect(() => buildSchemaGraph(rows, { kind: 'db', db: 'lin' })).not.toThrow();
+  });
+
+  it('links an MV to a backticked/dotted TO target and a dotted AST source (CH 26.5 fixtures)', () => {
+    // Captured from Docker CH 26.5.1: create_table_query backtick-quotes the TO
+    // target; EXPLAIN AST prints the source unquoted (here UNqualified + dotted).
+    const rows = { tables: [
+      T('target_all', 'part-0.snappy.parquet', 'MergeTree'),
+      T('target_all', 'agg.out.parquet', 'SummingMergeTree'),
+      T('target_all', 'mv-1', 'MaterializedView', {
+        astTables: ['part-0.snappy.parquet'], // unqualified, dotted (default-db ref)
+        create_table_query: 'CREATE MATERIALIZED VIEW target_all.`mv-1` TO target_all.`agg.out.parquet` (`id` UInt64) AS SELECT id, count() AS c FROM target_all.`part-0.snappy.parquet` GROUP BY id',
+      }),
+    ], dictionaries: [] };
+    const g = buildSchemaGraph(rows, { kind: 'db', db: 'target_all' });
+    const E = eset(g);
+    expect(E.has('target_all.part-0.snappy.parquet>target_all.mv-1:feeds')).toBe(true); // AST source resolved
+    expect(E.has('target_all.mv-1>target_all.agg.out.parquet:writes')).toBe(true);      // backticked TO target
+    expect(g.nodes.some((n) => n.id === 'target_all.target_all')).toBe(false);           // no phantom from the old bug
+  });
+
+  it('resolves a fully-qualified dotted AST source (CH prints db.table unquoted)', () => {
+    const rows = { tables: [
+      T('target_all', 'part-0.snappy.parquet', 'MergeTree'),
+      T('target_all', 'v', 'View', { astTables: ['target_all.part-0.snappy.parquet'] }),
+    ], dictionaries: [] };
+    expect(eset(buildSchemaGraph(rows, { kind: 'db', db: 'target_all' })).has('target_all.part-0.snappy.parquet>target_all.v:reads')).toBe(true);
   });
 
   it('table-focus on a dotted-name table keeps the center + its 1-hop (not empty)', () => {
