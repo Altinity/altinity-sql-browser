@@ -79,4 +79,25 @@ test.describe('editor insertion (schema double-click path)', () => {
     expect(r.value).toBe('SELECT * FROM mytable LIMIT 100');
     expect(r.caret).toBe('SELECT * FROM mytable LIMIT 100'.length);
   });
+
+  test('dropping a saved/history query inserts it as a ( … ) subquery (real DnD geometry)', async ({ page }) => {
+    // Real DragEvent + DataTransfer over the textarea — exercises the offsetFromXY
+    // geometry happy-dom can't compute. Drops a query carrying a trailing FORMAT,
+    // which must be stripped, wrapped in parens, and spliced at the drop point.
+    const value = await page.evaluate(() => {
+      const ta = window.__app.dom.editorTextarea;
+      window.__setSql('SELECT * FROM t');
+      const rect = ta.getBoundingClientRect();
+      const dt = new DataTransfer();
+      dt.setData('application/x-asb-subquery', 'SELECT 99 FORMAT JSON');
+      ta.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, dataTransfer: dt,
+        clientX: rect.left + 60, clientY: rect.top + 10,
+      }));
+      return ta.value;
+    });
+    expect(value).toContain('(\nSELECT 99\n)'); // wrapped subquery, trailing FORMAT stripped
+    expect(value).not.toContain('FORMAT');
+    expect(value).toContain('FROM t');          // original text preserved around it
+  });
 });

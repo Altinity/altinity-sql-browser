@@ -6,6 +6,14 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
+import { SUBQUERY_MIME } from './editor.js';
+
+// Make a Library/History row draggable; dropping it on the editor inserts the
+// query wrapped as a `( … )` subquery (see the editor's drop handler).
+const dragProps = (sql) => ({
+  draggable: 'true',
+  ondragstart: (e) => e.dataTransfer.setData(SUBQUERY_MIME, sql),
+});
 import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
 } from '../state.js';
@@ -99,7 +107,7 @@ function renderSaved(app, list) {
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); app.updateLibraryTitle(); },
     }, Icon.star(q.favorite));
 
-    const row = h('div', { class: 'saved-row', onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
+    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, q.name),
@@ -172,7 +180,7 @@ function renderHistory(app, list) {
     return;
   }
   for (const ent of items) {
-    list.appendChild(h('div', { class: 'history-row', onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); app.actions.run(); } },
+    list.appendChild(h('div', { class: 'history-row', ...dragProps(ent.sql), onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); app.actions.run(); } },
       h('button', {
         class: 'sv-act del', title: 'Delete',
         onclick: (e) => { e.stopPropagation(); deleteHistory(state, ent.id, app.saveJSON); renderSavedHistory(app); },

@@ -85,6 +85,19 @@ export function inferQueryName(sql) {
   return s.length > 48 ? s.slice(0, 45) + '…' : s;
 }
 
+/**
+ * Wrap a query's SQL as a parenthesized subquery for dropping into the editor.
+ * Strips what can't live inside `()` — a trailing `;` and a trailing `FORMAT
+ * <name>` clause (FORMAT must be a statement's last clause) — then brackets it on
+ * its own lines. Empty/whitespace input → '' (caller inserts nothing). Pure.
+ */
+export function toSubquery(sql) {
+  let s = String(sql || '').trim();
+  s = s.replace(/;\s*$/, '').trim();
+  s = s.replace(/\bFORMAT\s+[A-Za-z][A-Za-z0-9]*\s*$/i, '').trim();
+  return s ? '(\n' + s + '\n)' : '';
+}
+
 /** True for ClickHouse numeric column types (Int/UInt/Float/Decimal). */
 export function isNumericType(type) {
   return /^(U?Int|Float|Decimal)/.test(type || '');

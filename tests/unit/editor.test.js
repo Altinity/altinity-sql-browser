@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHighlightInto, mountEditor, insertAtCursor, replaceEditor, IDENT_MIME } from '../../src/ui/editor.js';
+import { renderHighlightInto, mountEditor, insertAtCursor, replaceEditor, IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/editor.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 describe('renderHighlightInto', () => {
@@ -106,6 +106,37 @@ describe('mountEditor', () => {
     ta.dispatchEvent(e);
     expect(ta.value).toBe('SELECT db.tbl FROM t');
     expect(e.defaultPrevented).toBe(true);
+  });
+  it('dropping a saved/history query inserts it as a ( … ) subquery at the drop position', () => {
+    const { ta } = mount();
+    ta.value = 'X';
+    ta.selectionStart = ta.selectionEnd = 1; // caret at end — drop position must win
+    const e = new Event('drop', { cancelable: true });
+    e.clientX = 14; e.clientY = 13; // maps to text offset 0 (PAD_X/PAD_Y origin)
+    e.dataTransfer = { getData: (m) => (m === SUBQUERY_MIME ? 'SELECT 1 FORMAT JSON' : '') };
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('(\nSELECT 1\n)X'); // at offset 0 (not the caret), FORMAT stripped
+    expect(e.defaultPrevented).toBe(true);
+  });
+  it('falls back to the caret when the subquery is dropped past the text', () => {
+    const { ta } = mount();
+    ta.value = 'X';
+    ta.selectionStart = ta.selectionEnd = 1;
+    const e = new Event('drop', { cancelable: true });
+    e.clientX = 14; e.clientY = 9999; // below the last line → offsetFromXY null
+    e.dataTransfer = { getData: (m) => (m === SUBQUERY_MIME ? 'SELECT 1' : '') };
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe('X(\nSELECT 1\n)'); // inserted at the caret
+    expect(e.defaultPrevented).toBe(true);
+  });
+  it('a subquery drop of empty SQL is a no-op (native handling)', () => {
+    const { ta } = mount();
+    const before = ta.value;
+    const e = new Event('drop', { cancelable: true });
+    e.dataTransfer = { getData: (m) => (m === SUBQUERY_MIME ? '   ' : '') };
+    ta.dispatchEvent(e);
+    expect(ta.value).toBe(before);
+    expect(e.defaultPrevented).toBe(false);
   });
   it('a drop without our identifier is left to native handling', () => {
     const { ta } = mount();

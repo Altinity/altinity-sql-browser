@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat, toSubquery,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -155,5 +155,26 @@ describe('userShortName', () => {
     expect(userShortName('@nolocal')).toBe('@nolocal'); // at index 0 → no split
     expect(userShortName('')).toBe('');
     expect(userShortName(null)).toBe('');
+  });
+});
+
+describe('toSubquery', () => {
+  it('wraps SQL in parentheses on their own lines', () => {
+    expect(toSubquery('SELECT 1')).toBe('(\nSELECT 1\n)');
+  });
+  it('trims and strips a trailing semicolon', () => {
+    expect(toSubquery('  SELECT 1 ;  ')).toBe('(\nSELECT 1\n)');
+  });
+  it('strips a trailing FORMAT clause (invalid inside a subquery)', () => {
+    expect(toSubquery('SELECT 1 FORMAT JSON')).toBe('(\nSELECT 1\n)');
+    expect(toSubquery('SELECT 1 FORMAT TabSeparated;')).toBe('(\nSELECT 1\n)');
+  });
+  it('keeps a FORMAT that is not the trailing clause untouched', () => {
+    expect(toSubquery("SELECT 'FORMAT JSON' AS x")).toBe("(\nSELECT 'FORMAT JSON' AS x\n)");
+  });
+  it('returns empty string for empty/whitespace input', () => {
+    expect(toSubquery('')).toBe('');
+    expect(toSubquery('   ')).toBe('');
+    expect(toSubquery(null)).toBe('');
   });
 });
