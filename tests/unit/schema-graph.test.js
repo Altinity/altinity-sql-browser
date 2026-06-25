@@ -187,6 +187,14 @@ describe('buildSchemaGraph', () => {
     expect(ids.has('lin.b')).toBe(true);
   });
 
+  it('never throws on a malformed Merge regex (keeps the no-throw contract)', () => {
+    const rows = { tables: [
+      T('lin', 'm', 'Merge', { engine_full: "Merge('lin', '([')" }), // invalid regex
+      T('lin', 'events', 'MergeTree'),
+    ], dictionaries: [] };
+    expect(() => buildSchemaGraph(rows, { kind: 'db', db: 'lin' })).not.toThrow();
+  });
+
   it('tolerates empty input', () => {
     expect(buildSchemaGraph(null, { kind: 'db', db: 'x' })).toEqual({ nodes: [], edges: [] });
     expect(buildSchemaGraph({}, null)).toEqual({ nodes: [], edges: [] });
