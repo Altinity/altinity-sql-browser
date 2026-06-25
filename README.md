@@ -58,6 +58,10 @@ editor library — it adds nothing to the single served file). On top of that:
   ClickHouse keyword shows its signature/description. Both read the same cached
   reference data — `system.functions.{syntax,description}` (loaded with #25) and
   a small built-in keyword-doc set — so they never query on the keystroke path.
+- **Drag to insert** — drag a schema table/column, or a **Library/History** row,
+  onto the editor: a schema identifier drops as text at the caret, and a
+  saved/history query drops as a `( … )` subquery at the drop point (its trailing
+  `FORMAT`/`;` stripped). Undoable; click-to-load still works for keyboard users.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

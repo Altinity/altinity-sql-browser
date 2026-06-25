@@ -7,6 +7,9 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
 import { SUBQUERY_MIME } from './editor.js';
+import {
+  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
+} from '../state.js';
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
 // query wrapped as a `( … )` subquery (see the editor's drop handler).
@@ -14,9 +17,6 @@ const dragProps = (sql) => ({
   draggable: 'true',
   ondragstart: (e) => e.dataTransfer.setData(SUBQUERY_MIME, sql),
 });
-import {
-  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
-} from '../state.js';
 
 export function renderSavedHistory(app) {
   const tabsRow = app.dom.savedTabsRow;

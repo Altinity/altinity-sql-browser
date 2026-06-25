@@ -93,8 +93,14 @@ export function inferQueryName(sql) {
  */
 export function toSubquery(sql) {
   let s = String(sql || '').trim();
-  s = s.replace(/;\s*$/, '').trim();
-  s = s.replace(/\bFORMAT\s+[A-Za-z][A-Za-z0-9]*\s*$/i, '').trim();
+  // Peel trailing `;` and `FORMAT <name>` clauses (either order, repeated) — both
+  // are invalid inside a subquery. A trailing comment after FORMAT is left as-is
+  // (rare; degrades to a visible SQL error rather than silently dropping a note).
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/;+\s*$/, '').replace(/\bFORMAT\s+[A-Za-z][A-Za-z0-9]*\s*$/i, '').trim();
+  } while (s !== prev);
   return s ? '(\n' + s + '\n)' : '';
 }
 

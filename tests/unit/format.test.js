@@ -168,6 +168,11 @@ describe('toSubquery', () => {
   it('strips a trailing FORMAT clause (invalid inside a subquery)', () => {
     expect(toSubquery('SELECT 1 FORMAT JSON')).toBe('(\nSELECT 1\n)');
     expect(toSubquery('SELECT 1 FORMAT TabSeparated;')).toBe('(\nSELECT 1\n)');
+    expect(toSubquery('SELECT 1 FORMAT Null')).toBe('(\nSELECT 1\n)');
+  });
+  it('peels FORMAT + repeated/spaced trailing semicolons in any order', () => {
+    expect(toSubquery('SELECT 1 FORMAT JSON ;;')).toBe('(\nSELECT 1\n)');
+    expect(toSubquery('SELECT 1 ;')).toBe('(\nSELECT 1\n)');
   });
   it('keeps a FORMAT that is not the trailing clause untouched', () => {
     expect(toSubquery("SELECT 'FORMAT JSON' AS x")).toBe("(\nSELECT 'FORMAT JSON' AS x\n)");
