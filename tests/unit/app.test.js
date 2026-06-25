@@ -399,15 +399,32 @@ describe('formatQuery', () => {
     await app.actions.formatQuery();
     expect(app.root.querySelector('.login-screen')).not.toBeNull();
   });
-  it('surfaces a format failure without changing the editor', async () => {
+  it('shows a format error persistently in the results panel and moves the caret to it', async () => {
     const { app } = appFor([
-      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: syntax"}' })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)"}' })],
     ]);
-    app.activeTab().sql = 'select 1';
-    app.dom.editorTextarea.value = 'select 1';
+    app.activeTab().sql = 'select x BEWEEN 2';
+    app.dom.editorTextarea.value = 'select x BEWEEN 2';
     await app.actions.formatQuery();
-    expect(app.dom.editorTextarea.value).toBe('select 1'); // unchanged
-    expect(document.body.querySelector('.share-toast')).not.toBeNull();
+    expect(app.dom.editorTextarea.value).toBe('select x BEWEEN 2'); // editor unchanged
+    const err = app.root.querySelector('.results-error');
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain('Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)'); // full original message, untruncated
+    expect(app.dom.editorTextarea.selectionStart).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
+    expect(app.activeTab().result.formatError).toBe(true);
+  });
+  it('a later successful format clears a prior format error', async () => {
+    const { app } = appFor([
+      [(u, sql) => /BEWEEN/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error: failed at position 8 (BEWEEN): x. Expected one of: foo"}' })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
+    ]);
+    app.activeTab().sql = 'select x BEWEEN 2';
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.results-error')).not.toBeNull();
+    app.activeTab().sql = 'select 1'; // fixed
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.results-error')).toBeNull(); // error cleared
+    expect(app.activeTab().result).toBeNull();
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   newResult, applyStreamLine, splitBuffer, parseExceptionText, isAuthExpiredBody,
-  authDeniedMessage,
+  authDeniedMessage, parseErrorPos,
 } from '../../src/core/stream.js';
 
 describe('newResult', () => {
@@ -78,6 +78,18 @@ describe('parseExceptionText', () => {
   });
   it('falls back to raw text when the exception line is malformed JSON', () => {
     expect(parseExceptionText('{"exception": bad')).toBe('{"exception": bad');
+  });
+});
+
+describe('parseErrorPos', () => {
+  it('returns the 0-based caret offset from "position N" (1-based in the message)', () => {
+    expect(parseErrorPos('Syntax error: failed at position 18 (BEWEEN): …')).toBe(17);
+    expect(parseErrorPos('failed at position 1 (x)')).toBe(0);
+  });
+  it('returns null when no position is present', () => {
+    expect(parseErrorPos('Some other DB::Exception')).toBeNull();
+    expect(parseErrorPos('')).toBeNull();
+    expect(parseErrorPos(null)).toBeNull();
   });
 });
 

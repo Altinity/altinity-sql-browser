@@ -14,7 +14,7 @@ import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isExplain } from '../core/format.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
-import { newResult, applyStreamLine } from '../core/stream.js';
+import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
@@ -445,20 +445,33 @@ export function createApp(env = {}) {
   }
   app.setRunBtn = setRunBtn;
 
-  // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place.
+  // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place. The
+  // raw (untrimmed) SQL is sent so a syntax error's reported position maps 1:1
+  // onto the editor text. On error we show it persistently in the results panel
+  // and jump the caret to the offending token; a later successful format clears
+  // that error. Success never touches real run results.
   async function formatQuery() {
-    const sql = (app.activeTab().sql || '').trim();
-    if (!sql) return;
+    const raw = app.activeTab().sql || '';
+    if (!raw.trim()) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    const tab = app.activeTab();
     try {
-      const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(sql) + ') AS q FORMAT JSON');
+      const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(raw) + ') AS q FORMAT JSON');
       const q = (json.data && json.data[0] && json.data[0].q) || '';
       // Terminate so the caret lands past the last token — otherwise the input
       // event from the replace re-opens autocomplete on the trailing word.
       if (q) replaceEditor(app, withStatementBreak(q));
+      if (tab.result && tab.result.formatError) { tab.result = null; renderResults(app); } // clear a prior format error
     } catch (e) {
-      flashToast('Format failed: ' + String((e && e.message) || e), { document: doc });
+      const msg = String((e && e.message) || e);
+      tab.result = newResult('Table');
+      tab.result.error = msg;
+      tab.result.formatError = true; // a format error, not a run result (so success can clear just this)
+      app.state.resultView = 'table';
+      renderResults(app);
+      const pos = parseErrorPos(msg);
+      if (pos != null) app.dom.editorRevealCaret(pos);
     }
   }
 

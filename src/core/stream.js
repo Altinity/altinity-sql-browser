@@ -73,6 +73,17 @@ export function parseExceptionText(text) {
 }
 
 /**
+ * The 0-based caret offset a ClickHouse error points at, or null. CH syntax
+ * errors carry "failed at position N (token): …" where N is 1-based and relative
+ * to the query string (newlines counted as one char), so it maps straight onto
+ * the editor text. Used to jump the caret to a format/parse error. Pure.
+ */
+export function parseErrorPos(msg) {
+  const m = /\bposition (\d+)/i.exec(String(msg || ''));
+  return m ? Math.max(0, parseInt(m[1], 10) - 1) : null;
+}
+
+/**
  * True when a non-OK response body indicates an expired/invalid JWT. CH
  * returns HTTP 500 with `token_verification_exception` for a bad token, which
  * we treat like a 401 so the refresh/relogin path fires.
