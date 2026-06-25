@@ -6,8 +6,9 @@ schema-aware autocomplete, streaming results with table / JSON / chart views,
 saved queries, history, and shareable links. It ships as a
 **single self-contained HTML file served from ClickHouse itself** (no Node
 server, no CDN, no external fonts) — the page makes **zero third-party
-requests** and renders in the OS's native UI font. Its only bundled runtime
-dependency is **Chart.js** (the chart result view), inlined into that one file.
+requests** and renders in the OS's native UI font. Its two bundled runtime
+dependencies — **Chart.js** (the chart result view) and **@dagrejs/dagre** (the
+EXPLAIN pipeline-graph layout) — are inlined into that one file.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase
 held at **100% test coverage**.
@@ -83,8 +84,9 @@ rewritten**:
 - **Indexes** / **Projections** — `EXPLAIN indexes = 1` / `projections = 1` of the
   inner query (used parts/granules, analyzed projections). Plan text.
 - **Pipeline** — `EXPLAIN PIPELINE graph = 1`, whose Graphviz DOT is drawn as a
-  boxes-and-arrows processor graph by a small self-contained SVG renderer (no new
-  dependency; DOT parse + layered layout are pure in `src/core/dot.js`).
+  boxes-and-arrows processor graph (with a fullscreen pan/zoom view). The DOT parse
+  is pure in `src/core/dot.js`; node/edge layout is delegated to **dagre** through
+  an injected seam (`src/core/dot-layout.js`), and our own SVG renderer draws it.
 - **Estimate** — `EXPLAIN ESTIMATE`, rendered as a real table (database, table,
   parts, rows, marks).
 

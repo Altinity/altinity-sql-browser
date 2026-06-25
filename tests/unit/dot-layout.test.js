@@ -24,6 +24,10 @@ describe('dagreLayout', () => {
     const g = dagreLayout(dagre, { nodes: [{ id: 'solo', label: 'Solo' }] }); // no edges key
     expect(g.nodes).toHaveLength(1);
     expect(g.edges).toEqual([]);
+    // x/y are the box TOP-LEFT (dagre reports centres → we subtract w/2, h/2):
+    // a corner sits at the margin, well left/above the centre.
+    expect(g.nodes[0].x).toBeLessThan(g.nodes[0].w / 2);
+    expect(g.nodes[0].y).toBeLessThan(g.nodes[0].h / 2);
   });
 
   it('lays a chain out top→bottom with top-left node coords and routed edges', () => {
@@ -36,7 +40,8 @@ describe('dagreLayout', () => {
     expect(g.height).toBeGreaterThan(0);
     expect(g.edges).toHaveLength(2);
     expect(g.edges[0].points.length).toBeGreaterThanOrEqual(2); // a polyline
-    expect(g.edges[0].points[0]).toHaveProperty('x');
+    const p0 = g.edges[0].points[0];
+    expect(Number.isFinite(p0.x) && Number.isFinite(p0.y)).toBe(true); // {x,y} pairs
   });
 
   it('puts parallel processors of one stage on the same rank (same y)', () => {
