@@ -9,6 +9,7 @@
 
 import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 import { parseAstTables } from '../core/schema-graph.js';
+import { sqlString } from '../core/format.js';
 
 /** Build a ClickHouse HTTP URL with query-string options. Pure. */
 export function chUrl(origin, opts = {}) {
@@ -138,14 +139,13 @@ export async function loadSchema(ctx) {
  * `create_table_query` in `buildSchemaGraph`. Returns `{ tables, dictionaries }`.
  */
 export async function loadSchemaLineage(ctx, focus) {
-  const q = (s) => "'" + String(s).replace(/'/g, "''") + "'";
   const db = (focus && focus.db) || '';
   const cols = 'database, name, engine, engine_full, create_table_query, as_select, '
     + 'toString(uuid) AS uuid, dependencies_database, dependencies_table, '
     + 'loading_dependencies_database, loading_dependencies_table';
-  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${q(db)} ORDER BY name`);
+  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY name`);
   const tables = tablesJson.data || [];
-  const dictsJson = await queryJson(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${q(db)}`);
+  const dictsJson = await queryJson(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`);
   const dictionaries = dictsJson.data || [];
   // Robust source extraction for views/MVs: let ClickHouse parse the SELECT.
   await Promise.all(tables.map(async (t) => {

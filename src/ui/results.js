@@ -157,8 +157,9 @@ function buildToolbar(app, r) {
     const title = f.kind === 'table' ? f.db + '.' + f.table : f.db;
     toolbar.appendChild(h('div', { class: 'result-view-tabs' }, h('span', { class: 'res-graph-title' }, 'Schema · ' + title)));
     toolbar.appendChild(h('div', { style: { flex: '1' } }));
-    // Expand is meaningless until the graph has loaded.
-    if (!r.schemaGraph.loading) {
+    // Expand is meaningless until the graph has loaded, or when there's nothing
+    // to draw (no connected objects → the pane shows a message, not a graph).
+    if (!r.schemaGraph.loading && r.schemaGraph.nodes.length) {
       toolbar.appendChild(h('button', {
         class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
         onclick: () => openSchemaFullscreen(app, r.schemaGraph),

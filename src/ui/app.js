@@ -525,7 +525,8 @@ export function createApp(env = {}) {
     try {
       const rows = await ch.loadSchemaLineage(chCtx, focus);
       const g = buildSchemaGraph(rows, focus);
-      tab.result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges };
+      // tableCount lets the renderer explain an empty result ("N tables, none linked").
+      tab.result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (rows.tables || []).length };
     } catch (e) {
       tab.result = newResult('Table');
       tab.result.error = String((e && e.message) || e);

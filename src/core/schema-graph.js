@@ -132,10 +132,9 @@ export function buildSchemaGraph(rows, focus) {
     node(id, objectKind(t.engine));
   }
   // friendlier labels for inner storage tables
-  for (const [uuid, id] of innerByUuid) {
+  for (const id of innerByUuid.values()) {
     const n = nodes.get(id);
     if (n) n.label = '·inner';
-    void uuid;
   }
 
   const edges = [];
@@ -192,12 +191,14 @@ export function buildSchemaGraph(rows, focus) {
     }
   }
 
-  // dictionaries: prefer loading_dependencies (structured) else parse source/CREATE
+  // dictionaries: prefer loading_dependencies (structured) else parse source/CREATE.
+  // Index system.dictionaries by db.name once (O(1) source lookup, not O(D) per dict).
+  const dictByid = new Map(dicts.map((d) => [d.database + '.' + d.name, d]));
   for (const t of tables) {
-    if (nodes.get(rowId(t)).kind !== 'dictionary') continue;
     const id = rowId(t);
+    if (nodes.get(id).kind !== 'dictionary') continue;
     const ld = zip(t.loading_dependencies_database, t.loading_dependencies_table);
-    const d = dicts.find((x) => x.database === t.database && x.name === t.name);
+    const d = dictByid.get(id);
     if (ld.length) {
       for (const src of ld) { node(src, byId.has(src) ? nodes.get(src).kind : 'table'); addEdge(src, id, 'dict'); }
     } else {
@@ -218,10 +219,12 @@ export function buildSchemaGraph(rows, focus) {
     for (const e of edges) { if (e.from === center) keep.add(e.to); if (e.to === center) keep.add(e.from); }
     outNodes = outNodes.filter((n) => keep.has(n.id));
     outEdges = edges.filter((e) => keep.has(e.from) && keep.has(e.to));
-  } else if (edges.length) {
-    // Whole-DB lineage: drop isolated (degree-0) tables so the relationships are
-    // the focus — but only when there ARE relationships, so a DB with no lineage
-    // still shows its tables rather than an empty pane.
+  } else {
+    // Whole-DB lineage: keep only tables that participate in a relationship — a
+    // lineage view always shows lineage. When nothing is connected (e.g. a DB of
+    // unrelated URL/MergeTree tables) this yields an empty graph, and the renderer
+    // shows a "no relationships" message rather than dumping every table as a row
+    // of disconnected boxes (which dagre lays out into an unreadable wide strip).
     const linked = new Set();
     for (const e of edges) { linked.add(e.from); linked.add(e.to); }
     outNodes = outNodes.filter((n) => linked.has(n.id));
