@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   objectKind, parseAstTables, parseMvTarget, parseDictSource, parseEngineRef, buildSchemaGraph,
+  expandLineage, externalDbs,
 } from '../../src/core/schema-graph.js';
 
 // Fixtures are the *actual* outputs captured from ClickHouse 26.5.1 (Docker) for a
@@ -264,5 +265,70 @@ describe('buildSchemaGraph', () => {
   it('tolerates empty input', () => {
     expect(buildSchemaGraph(null, { kind: 'db', db: 'x' })).toEqual({ nodes: [], edges: [] });
     expect(buildSchemaGraph({}, null)).toEqual({ nodes: [], edges: [] });
+  });
+
+  it('keeps a dotted DATABASE name intact as node.db (not the first segment)', () => {
+    const rows = { tables: [
+      T('my.db', 'tbl', 'MergeTree', { dependencies_database: ['my.db'], dependencies_table: ['mv'] }),
+      T('my.db', 'mv', 'MaterializedView'),
+    ], dictionaries: [] };
+    const tbl = buildSchemaGraph(rows, { kind: 'db', db: 'my.db' }).nodes.find((n) => n.id === 'my.db.tbl');
+    expect(tbl.db).toBe('my.db');   // not 'my'
+    expect(tbl.name).toBe('tbl');   // not 'db.tbl'
+  });
+});
+
+describe('externalDbs', () => {
+  it('lists referenced dbs not yet loaded, skipping ext: leaves', () => {
+    const g = { nodes: [{ id: 'a.x', db: 'a' }, { id: 'b.y', db: 'b' }, { id: 'a.z', db: 'a' }, { id: 'ext:HTTP', db: '' }] };
+    expect(externalDbs(g, ['a']).sort()).toEqual(['b']);
+    expect(externalDbs(g, []).sort()).toEqual(['a', 'b']);
+    expect(externalDbs(null, ['a'])).toEqual([]);
+  });
+});
+
+describe('expandLineage', () => {
+  const G = {
+    nodes: [
+      { id: 'a.t1', db: 'a' }, { id: 'a.t2', db: 'a' },
+      { id: 'b.u', db: 'b' }, { id: 'c.w', db: 'c' }, { id: 'd.iso', db: 'd' },
+    ],
+    edges: [
+      { from: 'a.t1', to: 'b.u', kind: 'feeds' },  // a → b (1 hop)
+      { from: 'b.u', to: 'c.w', kind: 'writes' },  // b → c (transitive)
+    ],
+  };
+  it('seeds the whole seed db and walks transitively across db boundaries, tagging external', () => {
+    const out = expandLineage(G, 'a');
+    const ids = new Set(out.nodes.map((n) => n.id));
+    expect(ids.has('a.t1')).toBe(true);
+    expect(ids.has('a.t2')).toBe(true);  // seeded even though isolated within 'a'
+    expect(ids.has('b.u')).toBe(true);   // 1 hop
+    expect(ids.has('c.w')).toBe(true);   // transitive 2 hops
+    expect(ids.has('d.iso')).toBe(false); // unreached
+    expect(out.nodes.find((n) => n.id === 'a.t1').external).toBe(false);
+    expect(out.nodes.find((n) => n.id === 'b.u').external).toBe(true);
+    expect(out.edges).toHaveLength(2);
+    expect(out.truncated).toBe(false);
+  });
+  it('walks both directions — a reverse edge into the seed pulls its source in', () => {
+    const g = { nodes: [{ id: 'a.t', db: 'a' }, { id: 'b.s', db: 'b' }], edges: [{ from: 'b.s', to: 'a.t', kind: 'feeds' }] };
+    expect(new Set(expandLineage(g, 'a').nodes.map((n) => n.id)).has('b.s')).toBe(true);
+  });
+  it('caps the cross-db expansion and flags truncated', () => {
+    const nodes = [{ id: 'a.seed', db: 'a' }];
+    const edges = [];
+    let prev = 'a.seed';
+    for (let i = 0; i < 10; i++) { const id = 'x.n' + i; nodes.push({ id, db: 'x' }); edges.push({ from: prev, to: id, kind: 'feeds' }); prev = id; }
+    const out = expandLineage({ nodes, edges }, 'a', { cap: 5 });
+    expect(out.truncated).toBe(true);
+    expect(out.nodes.length).toBeLessThanOrEqual(5);
+  });
+  it('ignores edges whose endpoints are not real nodes, and tolerates a null graph', () => {
+    const g = { nodes: [{ id: 'a.t', db: 'a' }], edges: [{ from: 'a.t', to: 'ghost', kind: 'feeds' }] };
+    const out = expandLineage(g, 'a');
+    expect(out.nodes.map((n) => n.id)).toEqual(['a.t']);
+    expect(out.edges).toEqual([]);
+    expect(expandLineage(null, 'a')).toEqual({ nodes: [], edges: [], truncated: false });
   });
 });

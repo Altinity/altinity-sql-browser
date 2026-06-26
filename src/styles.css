@@ -681,6 +681,9 @@ body {
 .explain-graph .eg-badge--sk { fill: #6bb6ff; }
 .explain-graph .eg-badge--partition { fill: #c297ff; }
 .explain-graph .eg-badge--sampling { fill: #eab308; }
+/* external (other-DB) cards pulled in transitively: dashed border + dimmed fill,
+   composed on top of the kind colour. */
+.explain-graph .eg-node--ext { stroke-dasharray: 4 3; fill-opacity: 0.4; }
 
 .schema-graph-view { position: relative; }
 .schema-graph-legend {
@@ -729,6 +732,43 @@ body {
 }
 .graph-overlay-canvas.grabbing { cursor: grabbing; }
 .graph-overlay-canvas > svg.explain-graph { width: 100%; height: 100%; }
+.graph-overlay-note { font-size: 11px; color: #eab308; }
+
+/* ------------ schema node detail pane (fullscreen graph) ------------ */
+.schema-detail {
+  flex: 0 0 280px; min-height: 90px; position: relative;
+  border-top: 1px solid var(--border); background: var(--bg-modal); overflow: auto;
+}
+.schema-detail-handle {
+  position: sticky; top: 0; height: 7px; cursor: row-resize; background: var(--border);
+}
+.schema-detail-handle:hover { background: var(--fg-faint); }
+.schema-detail-close {
+  position: absolute; top: 10px; right: 10px; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
+  background: transparent; color: var(--fg-mute); cursor: pointer;
+}
+.schema-detail-close:hover { background: var(--bg-hover); color: var(--fg); }
+.schema-detail-body { padding: 10px 14px; }
+.schema-detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.schema-detail-head b { font-size: 13px; word-break: break-all; }
+.schema-detail-kind { font-size: 11px; color: var(--fg-faint); }
+.schema-detail h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-faint); margin: 12px 0 6px;
+}
+.schema-detail-cols { width: 100%; border-collapse: collapse; font-size: 11px; }
+.schema-detail-cols th, .schema-detail-cols td {
+  text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.schema-detail-cols th { color: var(--fg-faint); font-weight: 600; }
+.schema-detail-cols th.num, .schema-detail-cols td.num { text-align: right; }
+.schema-detail-roles { color: #ff8f6b; font-weight: 600; }
+.schema-detail-ddl {
+  background: var(--bg-table); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; overflow: auto; font: 11px/1.45 var(--mono); white-space: pre-wrap;
+}
 
 /* ------------ chart view ------------ */
 /* `.res-body` is display:block, so height:100% (not flex:1) is what lets the

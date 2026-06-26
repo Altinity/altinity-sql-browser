@@ -214,10 +214,12 @@ export function buildRichSchemaSvg(graph, dagre, onNode) {
     const { w, h } = cardSize(model);
     return { ...n, w, h };
   });
+  // `external` rides through dagreLayout (like kind/db/name), so the node class can
+  // read it off the laid node — no side-channel needed.
   const laid = dagreLayout(dagre, { nodes: sized, edges: g.edges || [] });
   return renderRichGraphSvg(laid, {
     cardById,
-    nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
+    nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table') + (n.external ? ' eg-node--ext' : ''),
     edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
     edgeLabel: (e) => e.kind,
     onNode,
@@ -253,9 +255,10 @@ function schemaLegend() {
  * Open a graph in a fullscreen overlay (drag-pan, ⌘/Ctrl+wheel zoom, fit/zoom
  * buttons; Esc / ✕ / backdrop close). `build()` returns `{svg,width,height,nodeCount}`
  * — shared by the pipeline and schema graphs. `extra` is an optional overlay node
- * (e.g. the schema legend).
+ * (e.g. the schema legend); `note` an optional banner shown in the bar (e.g. a
+ * truncation warning).
  */
-function openGraphFullscreen(app, title, build, extra, emptyMsg) {
+function openGraphFullscreen(app, title, build, extra, emptyMsg, note) {
   const doc = (app && app.document) || document;
   const built = build();
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
@@ -263,6 +266,7 @@ function openGraphFullscreen(app, title, build, extra, emptyMsg) {
   function close() { backdrop.remove(); doc.removeEventListener('keydown', onKey, true); }
 
   const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
+  if (note) bar.appendChild(h('span', { class: 'graph-overlay-note' }, note));
   const canvas = h('div', { class: 'graph-overlay-canvas' });
   if (!built.nodeCount) {
     canvas.appendChild(placeholder(emptyMsg || 'Nothing to display.'));
@@ -298,9 +302,20 @@ const schemaClick = (app) => (n) => {
   app.actions.insertCreate(qualifyIdent(n.db, n.name));
 };
 
-/** Fullscreen schema-lineage graph — rich cards (engine/rows/bytes + columns). */
+// In the fullscreen graph, clicking an object opens the detail pane (full columns /
+// keys / partitions / DDL) instead of inserting SHOW CREATE — the pane carries its
+// own "Insert SHOW CREATE" button. External (ext:) leaves have no detail to show.
+const schemaDetailClick = (app) => (n) => {
+  if (!n.id || n.id.startsWith('ext:')) return;
+  app.actions.openNodeDetail(n);
+};
+
+/** Fullscreen schema-lineage graph — rich cards + click-a-node detail pane. */
 export function openSchemaFullscreen(app, graph) {
-  return openGraphFullscreen(app, 'Schema', () => buildRichSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend(), schemaEmptyMessage(graph));
+  const note = graph && graph.truncated
+    ? 'Lineage truncated — showing ' + (((graph.nodes && graph.nodes.length) || 0)) + ' objects'
+    : null;
+  return openGraphFullscreen(app, 'Schema', () => buildRichSchemaSvg(graph, app && app.Dagre, schemaDetailClick(app)), schemaLegend(), schemaEmptyMessage(graph), note);
 }
 
 /**

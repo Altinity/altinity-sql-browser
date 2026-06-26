@@ -108,11 +108,11 @@ export function buildSchemaGraph(rows, focus) {
   const byId = new Map(); // id → table row, for lookups
   const innerByUuid = new Map(); // implicit-MV inner storage, keyed by owner uuid
 
-  const node = (id, kind) => {
-    if (!nodes.has(id)) {
-      const dot = id.indexOf('.');
-      nodes.set(id, { id, label: id, kind, db: id.slice(0, dot), name: id.slice(dot + 1) });
-    }
+  // Every creation passes explicit db/name (callers build the id via joinId/rowId,
+  // so they always know the parts) — keeping a dotted *database* correct, not just a
+  // dotted table. The db/name args are ignored when the node already exists.
+  const node = (id, kind, db, name) => {
+    if (!nodes.has(id)) nodes.set(id, { id, label: id, kind, db, name });
     return nodes.get(id);
   };
   // external (non-CH dictionary source) leaf
@@ -129,7 +129,7 @@ export function buildSchemaGraph(rows, focus) {
       const uuid = t.name.replace(/^\.inner(_id)?\./, '');
       innerByUuid.set(uuid, id);
     }
-    node(id, objectKind(t.engine));
+    node(id, objectKind(t.engine), t.database, t.name);
   }
   // friendlier labels for inner storage tables
   for (const id of innerByUuid.values()) {
@@ -147,15 +147,18 @@ export function buildSchemaGraph(rows, focus) {
     seen.add(k);
     edges.push({ from, to, kind });
   };
-  const zip = (dbs, names) => (names || []).map((nm, i) => joinId((dbs && dbs[i]) || '', nm));
+  const zip = (dbs, names) => (names || []).map((nm, i) => {
+    const d = (dbs && dbs[i]) || '';
+    return { id: joinId(d, nm), db: d, name: nm };
+  });
 
   for (const t of tables) {
     const id = rowId(t);
     const kind = nodes.get(id).kind;
     // source → MV/View (structured dependents on the source side)
     for (const dep of zip(t.dependencies_database, t.dependencies_table)) {
-      node(dep, byId.has(dep) ? nodes.get(dep).kind : 'table');
-      addEdge(id, dep, 'feeds');
+      node(dep.id, byId.has(dep.id) ? nodes.get(dep.id).kind : 'table', dep.db, dep.name);
+      addEdge(id, dep.id, 'feeds');
     }
     // fallback: EXPLAIN AST sources of a view/MV → source → this object. EXPLAIN
     // AST prints names unquoted, qualified-or-bare — so resolve against the known
@@ -172,12 +175,18 @@ export function buildSchemaGraph(rows, focus) {
     if (kind === 'mv') {
       const target = parseMvTarget(t.create_table_query);
       const targetId = target ? joinId(target.db || t.database, target.table) : innerByUuid.get(String(t.uuid || ''));
-      if (targetId) { node(targetId, byId.has(targetId) ? nodes.get(targetId).kind : 'table'); addEdge(id, targetId, 'writes'); }
+      if (targetId) {
+        // For an implicit (.inner) target the node already exists with correct
+        // parts (created in the first pass), so db/name here are only used for the
+        // explicit-TO case.
+        node(targetId, byId.has(targetId) ? nodes.get(targetId).kind : 'table', target ? (target.db || t.database) : undefined, target ? target.table : undefined);
+        addEdge(id, targetId, 'writes');
+      }
     } else if (kind === 'distributed' || kind === 'buffer' || kind === 'merge') {
       const ref = parseEngineRef(t.engine, t.engine_full);
       if (ref && ref.table) {
         const refId = joinId(ref.db || t.database, ref.table);
-        node(refId, byId.has(refId) ? nodes.get(refId).kind : 'table');
+        node(refId, byId.has(refId) ? nodes.get(refId).kind : 'table', ref.db || t.database, ref.table);
         addEdge(refId, id, ref.kind === 'buffer' ? 'buffer' : 'shard');
       } else if (ref && ref.regex) {
         let rx = null;
@@ -200,10 +209,10 @@ export function buildSchemaGraph(rows, focus) {
     const ld = zip(t.loading_dependencies_database, t.loading_dependencies_table);
     const d = dictByid.get(id);
     if (ld.length) {
-      for (const src of ld) { node(src, byId.has(src) ? nodes.get(src).kind : 'table'); addEdge(src, id, 'dict'); }
+      for (const src of ld) { node(src.id, byId.has(src.id) ? nodes.get(src.id).kind : 'table', src.db, src.name); addEdge(src.id, id, 'dict'); }
     } else {
       const s = parseDictSource(d && d.source, t.create_table_query);
-      if (s && s.table) { const sid = joinId(s.db || t.database, s.table); node(sid, 'table'); addEdge(sid, id, 'dict'); }
+      if (s && s.table) { const sid = joinId(s.db || t.database, s.table); node(sid, 'table', s.db || t.database, s.table); addEdge(sid, id, 'dict'); }
       else if (s && s.external) addEdge(external(s.external), id, 'dict');
     }
   }
@@ -230,4 +239,54 @@ export function buildSchemaGraph(rows, focus) {
     outNodes = outNodes.filter((n) => linked.has(n.id));
   }
   return { nodes: outNodes, edges: outEdges };
+}
+
+/**
+ * The databases referenced by `graph`'s nodes that aren't in `loadedDbs` — the
+ * next databases to fetch to extend a transitive cross-DB lineage. External
+ * (non-CH `ext:`) leaves carry an empty db and are skipped. Pure.
+ */
+export function externalDbs(graph, loadedDbs) {
+  const loaded = new Set(loadedDbs || []);
+  const out = new Set();
+  for (const n of (graph && graph.nodes) || []) {
+    if (n.db && !loaded.has(n.db)) out.add(n.db);
+  }
+  return [...out];
+}
+
+/**
+ * Transitive closure of `graph` around every node in `seedDb`: an undirected BFS
+ * over the edges in BOTH directions across database boundaries, until the frontier
+ * empties or `cap` nodes are reached (then `truncated`). Returns `{ nodes, edges,
+ * truncated }` with each node tagged `external = (n.db !== seedDb)` and only the
+ * reached nodes/edges kept. All of `seedDb` is seeded unconditionally; the cap
+ * bounds only the cross-DB expansion (a pathologically interconnected cluster
+ * can't freeze the view). Pure — the loader decides which DBs to fetch.
+ */
+export function expandLineage(graph, seedDb, opts = {}) {
+  const cap = opts.cap != null ? opts.cap : 600;
+  const allNodes = (graph && graph.nodes) || [];
+  const edges = (graph && graph.edges) || [];
+  const byId = new Map(allNodes.map((n) => [n.id, n]));
+  const adj = new Map();
+  const link = (a, b) => { const l = adj.get(a); if (l) l.push(b); else adj.set(a, [b]); };
+  for (const e of edges) {
+    if (!byId.has(e.from) || !byId.has(e.to)) continue;
+    link(e.from, e.to); link(e.to, e.from);
+  }
+  const visited = new Set();
+  const queue = [];
+  for (const n of allNodes) if (n.db === seedDb) { visited.add(n.id); queue.push(n.id); }
+  let truncated = false;
+  while (queue.length && !truncated) {
+    for (const nb of adj.get(queue.shift()) || []) {
+      if (visited.has(nb)) continue;
+      if (visited.size >= cap) { truncated = true; break; }
+      visited.add(nb); queue.push(nb);
+    }
+  }
+  const nodes = [...visited].map((id) => ({ ...byId.get(id), external: byId.get(id).db !== seedDb }));
+  const outEdges = edges.filter((e) => visited.has(e.from) && visited.has(e.to));
+  return { nodes, edges: outEdges, truncated };
 }

@@ -13,7 +13,7 @@ import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
-import { buildSchemaGraph } from '../core/schema-graph.js';
+import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
@@ -29,6 +29,7 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
 import { openSchemaFullscreen } from './explain-graph.js';
+import { openDetailPane } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
@@ -545,21 +546,36 @@ export function createApp(env = {}) {
     if (!focus || !focus.db) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    let rows, cards;
+    let lineage;
     try {
-      // The lineage rows and the card metadata are independent — load concurrently.
-      [rows, cards] = await Promise.all([
-        ch.loadSchemaLineage(chCtx, focus),
-        ch.loadSchemaCards(chCtx, [focus.db]),
-      ]);
+      // Walk lineage transitively across DB boundaries (soft-capped) — pulls in
+      // objects an other database references, instead of dead-ending at the edge.
+      lineage = await ch.loadLineageTransitive(chCtx, focus);
     } catch {
       // The inline graph is still on screen; tell the user the expand didn't load.
       flashToast('Could not load the schema graph', { document: doc });
       return;
     }
-    const g = buildSchemaGraph(rows, focus);
-    const cardGraph = buildCardGraph(g, { tables: rows.tables, columnsByKey: cards.columnsByKey, skipByKey: cards.skipByKey });
-    openSchemaFullscreen(app, { nodes: cardGraph.nodes, edges: cardGraph.edges, focus, tableCount: (rows.tables || []).length });
+    const g = buildSchemaGraph(lineage.rows, focus);
+    const ex = expandLineage(g, focus.db); // closure around focus.db, tags external nodes
+    // Card metadata for every database the expansion reached (external nodes too).
+    const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
+    const cards = await ch.loadSchemaCards(chCtx, dbs);
+    const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
+      { tables: lineage.rows.tables, columnsByKey: cards.columnsByKey, skipByKey: cards.skipByKey });
+    openSchemaFullscreen(app, {
+      nodes: cardGraph.nodes, edges: cardGraph.edges, focus,
+      tableCount: (lineage.rows.tables || []).length,
+      truncated: lineage.truncated || ex.truncated,
+    });
+  }
+
+  // Open the detail pane for a clicked fullscreen node: lazily load the table's full
+  // columns / partitions / DDL (best-effort) and mount the pane in the overlay.
+  async function openNodeDetail(node) {
+    if (!node || !node.db || !node.name) return;
+    const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
+    openDetailPane(app, node, detail);
   }
 
   // Explain the current query without editing it: run it through the EXPLAIN
@@ -775,6 +791,7 @@ export function createApp(env = {}) {
     setExplainView,
     showSchemaGraph,
     expandSchemaGraph,
+    openNodeDetail,
     insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),

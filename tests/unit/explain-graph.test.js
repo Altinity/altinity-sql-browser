@@ -242,8 +242,24 @@ describe('schema lineage graph', () => {
     expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.querySelector('svg.explain-graph')).not.toBeNull();
     expect(overlay.querySelector('.schema-graph-legend')).not.toBeNull();
+    expect(overlay.querySelector('.graph-overlay-note')).toBeNull(); // not truncated → no banner
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
+  });
+
+  it('clicking a fullscreen node opens the detail pane (openNodeDetail), not insertCreate', () => {
+    const actions = { openNodeDetail: vi.fn(), insertCreate: vi.fn() };
+    const overlay = openSchemaFullscreen({ document, Dagre: dagre, actions }, GRAPH);
+    overlay.querySelector('g.eg-card').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(actions.openNodeDetail).toHaveBeenCalledTimes(1);
+    expect(actions.insertCreate).not.toHaveBeenCalled();
+  });
+
+  it('shows a truncation banner when the graph is truncated', () => {
+    const overlay = openSchemaFullscreen({ document, Dagre: dagre, actions: { openNodeDetail: vi.fn() } }, { ...GRAPH, truncated: true });
+    const note = overlay.querySelector('.graph-overlay-note');
+    expect(note).not.toBeNull();
+    expect(note.textContent).toMatch(/truncated/i);
   });
 });
 
@@ -309,5 +325,18 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     const built = buildRichSchemaSvg(null, dagre);
     expect(built.nodeCount).toBe(0);
     expect(built.svg.querySelectorAll('g.eg-card')).toHaveLength(0);
+  });
+
+  it('marks external (other-db) nodes with eg-node--ext, leaving local nodes plain', () => {
+    const g = {
+      nodes: [
+        { id: 'a.t', label: 't', kind: 'table', db: 'a', name: 't', external: false },
+        { id: 'b.u', label: 'u', kind: 'mv', db: 'b', name: 'u', external: true },
+      ],
+      edges: [{ from: 'a.t', to: 'b.u', kind: 'feeds' }],
+    };
+    const built = buildRichSchemaSvg(g, dagre);
+    expect(built.svg.querySelectorAll('rect.eg-node--ext')).toHaveLength(1);
+    expect(built.svg.querySelector('rect.eg-node--ext').getAttribute('class')).toContain('eg-node--mv');
   });
 });

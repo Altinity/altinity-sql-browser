@@ -8,7 +8,7 @@
 // so the whole module is unit-testable with plain stubs.
 
 import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
-import { parseAstTables } from '../core/schema-graph.js';
+import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import { sqlString } from '../core/format.js';
 
 /** Build a ClickHouse HTTP URL with query-string options. Pure. */
@@ -203,6 +203,70 @@ export async function loadSchemaCards(ctx, dbs) {
     (skipByKey[key] = skipByKey[key] || []).push(r);
   }
   return { columnsByKey, skipByKey };
+}
+
+/**
+ * Load lineage rows transitively across database boundaries: start at `focus.db`,
+ * then BFS into every database referenced by the graph built so far, merging rows,
+ * until no new database is referenced or a cap is hit. `opts.dbCap` bounds the
+ * number of databases fetched and `opts.nodeCap` the graph size — either tripping
+ * sets `truncated` (the caller shows a banner). Returns `{ rows, truncated }`;
+ * `rows` is the merged `{ tables, dictionaries }` for buildSchemaGraph + expandLineage.
+ */
+export async function loadLineageTransitive(ctx, focus, opts = {}) {
+  const nodeCap = opts.nodeCap != null ? opts.nodeCap : 600;
+  const dbCap = opts.dbCap != null ? opts.dbCap : 8;
+  const seed = (focus && focus.db) || '';
+  const loaded = new Set();
+  let frontier = seed ? [seed] : [];
+  let tables = [];
+  let dictionaries = [];
+  let truncated = false;
+  while (frontier.length) {
+    if (loaded.size >= dbCap) { truncated = true; break; }
+    // Load the whole frontier concurrently (bounded by the remaining db budget),
+    // rebuild the graph once per round, then take its newly-referenced dbs as the
+    // next frontier. Far fewer round-trips than fetching one db at a time.
+    const batch = frontier.slice(0, dbCap - loaded.size);
+    batch.forEach((db) => loaded.add(db));
+    const parts = await Promise.all(batch.map((db) => loadSchemaLineage(ctx, { db })));
+    for (const part of parts) {
+      tables = tables.concat(part.tables);
+      dictionaries = dictionaries.concat(part.dictionaries);
+    }
+    const graph = buildSchemaGraph({ tables, dictionaries });
+    if (graph.nodes.length >= nodeCap) { truncated = true; break; }
+    frontier = externalDbs(graph, loaded);
+  }
+  return { rows: { tables, dictionaries }, truncated };
+}
+
+/**
+ * Per-table detail for the node detail pane: full columns (with key-role flags +
+ * compression sizes), per-partition part/row/byte sums, and the DDL. All reads are
+ * best-effort via tryQueryData (a denied/missing system table degrades to empty,
+ * never an error). Returns `{ columns, partitions, ddl }`.
+ */
+export async function loadTableDetail(ctx, db, table) {
+  const byCol = 'database = ' + sqlString(db) + ' AND table = ' + sqlString(table);
+  const byName = 'database = ' + sqlString(db) + ' AND name = ' + sqlString(table);
+  const [columns, partitions, ddlRows] = await Promise.all([
+    tryQueryData(ctx,
+      'SELECT name, type, compression_codec AS codec, '
+      + 'is_in_partition_key, is_in_sorting_key, is_in_primary_key, is_in_sampling_key, '
+      + 'toUInt64(data_compressed_bytes) AS compressed, toUInt64(data_uncompressed_bytes) AS uncompressed, '
+      + 'toUInt64(marks_bytes) AS marks, position '
+      + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position FORMAT JSON'),
+    tryQueryData(ctx,
+      'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
+      + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
+    tryQueryData(ctx, 'SELECT create_table_query AS ddl FROM system.tables WHERE ' + byName + ' FORMAT JSON'),
+  ]);
+  return {
+    columns: columns || [],
+    partitions: partitions || [],
+    ddl: (ddlRows && ddlRows[0] && ddlRows[0].ddl) || '',
+  };
 }
 
 // Run a query for its `data` rows, returning null on ANY error. Editor

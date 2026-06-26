@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage, loadSchemaCards,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -404,5 +404,88 @@ describe('loadSchemaCards', () => {
     const ctx = ctxWith(() => { throw new Error('should not fetch'); });
     expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {}, skipByKey: {} });
     expect(ctx.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadLineageTransitive', () => {
+  // 'a.t' depends on 'b.mv' (cross-DB), so the walk should pull in database 'b'.
+  const tbl = (database, name, engine, over = {}) => ({
+    database, name, engine, engine_full: '', create_table_query: '', as_select: '', uuid: '',
+    dependencies_database: [], dependencies_table: [], loading_dependencies_database: [], loading_dependencies_table: [], ...over,
+  });
+  const lineageCtx = (extra = {}) => ctxWith((url, init) => {
+    const sql = init.body;
+    if (/EXPLAIN AST/.test(sql)) return jsonResp({ data: [] });
+    if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+    if (/database = 'a'/.test(sql)) return jsonResp({ data: [tbl('a', 't', 'MergeTree', { dependencies_database: ['b'], dependencies_table: ['mv'] })] });
+    if (/database = 'b'/.test(sql)) return jsonResp({ data: [tbl('b', 'mv', 'MaterializedView', extra.b || {})] });
+    if (/database = 'c'/.test(sql)) return jsonResp({ data: [tbl('c', 'x', 'MergeTree')] });
+    return jsonResp({ data: [] });
+  });
+
+  it('walks across DB boundaries and merges rows from both databases', async () => {
+    const out = await loadLineageTransitive(lineageCtx(), { db: 'a' });
+    const dbs = new Set(out.rows.tables.map((t) => t.database));
+    expect(dbs.has('a')).toBe(true);
+    expect(dbs.has('b')).toBe(true); // pulled in transitively
+    expect(out.truncated).toBe(false);
+  });
+
+  it('flags truncated when the database cap is hit', async () => {
+    // a → b → c; dbCap 2 stops before loading c.
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql) || /system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      if (/database = 'a'/.test(sql)) return jsonResp({ data: [tbl('a', 't', 'MergeTree', { dependencies_database: ['b'], dependencies_table: ['u'] })] });
+      if (/database = 'b'/.test(sql)) return jsonResp({ data: [tbl('b', 'u', 'MergeTree', { dependencies_database: ['c'], dependencies_table: ['w'] })] });
+      return jsonResp({ data: [] });
+    });
+    const out = await loadLineageTransitive(ctx, { db: 'a' }, { dbCap: 2 });
+    expect(out.truncated).toBe(true);
+    expect(new Set(out.rows.tables.map((t) => t.database)).has('c')).toBe(false);
+  });
+
+  it('flags truncated when the node cap is hit', async () => {
+    const out = await loadLineageTransitive(lineageCtx(), { db: 'a' }, { nodeCap: 1 });
+    expect(out.truncated).toBe(true);
+  });
+
+  it('loads a multi-database frontier concurrently in one round', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql) || /system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      if (/database = 'a'/.test(sql)) return jsonResp({ data: [tbl('a', 't', 'MergeTree', { dependencies_database: ['b', 'c'], dependencies_table: ['mb', 'mc'] })] });
+      if (/database = 'b'/.test(sql)) return jsonResp({ data: [tbl('b', 'mb', 'MergeTree')] });
+      if (/database = 'c'/.test(sql)) return jsonResp({ data: [tbl('c', 'mc', 'MergeTree')] });
+      return jsonResp({ data: [] });
+    });
+    const out = await loadLineageTransitive(ctx, { db: 'a' });
+    const dbs = new Set(out.rows.tables.map((t) => t.database));
+    expect(dbs.has('b') && dbs.has('c')).toBe(true); // both external dbs pulled in
+    expect(out.truncated).toBe(false);
+  });
+
+  it('returns empty rows for a missing focus db', async () => {
+    const ctx = ctxWith(() => { throw new Error('should not fetch'); });
+    expect(await loadLineageTransitive(ctx, {})).toEqual({ rows: { tables: [], dictionaries: [] }, truncated: false });
+  });
+});
+
+describe('loadTableDetail', () => {
+  it('returns columns, per-partition sums, and DDL (best-effort)', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/system\.parts/.test(sql)) return jsonResp({ data: [{ partition: '2024', parts: 3, rows: 100, bytes: 5000 }] });
+      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree' }] });
+      return jsonResp({ data: [{ name: 'id', type: 'UInt64', is_in_primary_key: 1, position: 1 }] });
+    });
+    const d = await loadTableDetail(ctx, 'a', 't');
+    expect(d.columns).toHaveLength(1);
+    expect(d.partitions[0].partition).toBe('2024');
+    expect(d.ddl).toContain('CREATE TABLE');
+  });
+  it('degrades to empty arrays + empty DDL when the system tables are denied', async () => {
+    const ctx = ctxWith(() => jsonResp('Code: 497', false, 500));
+    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], partitions: [], ddl: '' });
   });
 });

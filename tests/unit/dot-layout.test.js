@@ -54,12 +54,13 @@ describe('dagreLayout', () => {
 
   it('honors an explicit node w/h, else falls back to label width + fixed height', () => {
     const g = dagreLayout(dagre, {
-      nodes: [{ id: 'card', label: 'x', w: 240, h: 120 }, { id: 'plain', label: 'plain' }],
+      nodes: [{ id: 'card', label: 'x', w: 240, h: 120, external: true }, { id: 'plain', label: 'plain' }],
       edges: [{ from: 'card', to: 'plain' }],
     });
     const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
     expect(by.card.w).toBe(240); // explicit size honored
     expect(by.card.h).toBe(120);
+    expect(by.card.external).toBe(true); // external rides through the layout
     expect(by.plain.w).toBe(nodeWidth('plain')); // no w → label-based width
     expect(by.plain.h).toBe(30); // no h → NODE_H
   });

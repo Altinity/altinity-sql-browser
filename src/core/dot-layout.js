@@ -46,9 +46,10 @@ export function dagreLayout(dagre, graph) {
 
   const outNodes = nodes.map((n) => {
     const dn = g.node(n.id);
-    // `kind`/`db`/`name` (node) and `label` (edge) pass through for the schema
-    // graph's colouring + click-to-SHOW-CREATE (so the UI need not re-split the id).
-    return { id: n.id, label: n.label, kind: n.kind, db: n.db, name: n.name, x: dn.x - dn.width / 2, y: dn.y - dn.height / 2, w: dn.width, h: dn.height };
+    // `kind`/`db`/`name`/`external` (node) and `label` (edge) pass through for the
+    // schema graph's colouring, external-dimming + click-to-SHOW-CREATE (so the UI
+    // need not re-split the id or keep a side-channel for these).
+    return { id: n.id, label: n.label, kind: n.kind, db: n.db, name: n.name, external: n.external, x: dn.x - dn.width / 2, y: dn.y - dn.height / 2, w: dn.width, h: dn.height };
   });
   const outEdges = edges.map((e) => ({
     from: e.from, to: e.to, kind: e.kind, label: e.label,

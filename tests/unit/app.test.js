@@ -1234,6 +1234,16 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     await app3.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
     expect(document.body.querySelector('.graph-overlay')).toBeNull();
   });
+
+  it('openNodeDetail mounts the detail pane in the open overlay (and guards an incomplete node)', async () => {
+    const { app } = appForRun(lineageRoutes);
+    await app.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    expect(document.body.querySelector('.graph-overlay')).not.toBeNull();
+    await app.actions.openNodeDetail({ db: 'lin', name: 'events', kind: 'table' });
+    expect(document.body.querySelector('.schema-detail')).not.toBeNull();
+    await app.actions.openNodeDetail({ db: 'lin' }); // no name → guard returns, no throw
+    document.body.querySelector('.graph-overlay').remove();
+  });
 });
 
 describe('schema graph drop edge cases', () => {
