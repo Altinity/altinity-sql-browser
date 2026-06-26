@@ -142,7 +142,10 @@ export async function loadSchemaLineage(ctx, focus) {
   const db = (focus && focus.db) || '';
   const cols = 'database, name, engine, engine_full, create_table_query, as_select, '
     + 'toString(uuid) AS uuid, dependencies_database, dependencies_table, '
-    + 'loading_dependencies_database, loading_dependencies_table';
+    + 'loading_dependencies_database, loading_dependencies_table, '
+    // Card metadata (ignored by the inline graph; used by the rich fullscreen cards).
+    + 'toUInt64(ifNull(total_rows, 0)) AS total_rows, toUInt64(ifNull(total_bytes, 0)) AS total_bytes, '
+    + 'partition_key, sorting_key, primary_key, sampling_key';
   const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY name`);
   const tables = tablesJson.data || [];
   const dictsJson = await queryJson(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`);
@@ -166,6 +169,40 @@ export async function loadColumns(ctx, db, table, sqlString) {
     'ORDER BY position FORMAT JSON';
   const json = await queryJson(ctx, sql);
   return (json.data || []).map((r) => ({ name: r.name, type: r.type, comment: r.comment || '' }));
+}
+
+/**
+ * Load the rich-card metadata (columns with key-role flags + skip indices) for a
+ * set of databases, keyed by `db.table`. Best-effort via tryQueryData: a missing
+ * system table or denied SELECT degrades to an empty map (cards then show just the
+ * engine/rows/bytes header — no badges/skip line), never a query error. Returns
+ * `{ columnsByKey, skipByKey }`.
+ */
+export async function loadSchemaCards(ctx, dbs) {
+  const columnsByKey = {};
+  const skipByKey = {};
+  const list = (dbs || []).map((d) => sqlString(d)).join(', ');
+  if (!list) return { columnsByKey, skipByKey };
+  // The two reads are independent — run them concurrently (one server round-trip
+  // of wall-clock instead of two).
+  const [colRows, idxRows] = await Promise.all([
+    tryQueryData(ctx,
+      'SELECT database, table, name, type, is_in_partition_key, is_in_sorting_key, '
+      + 'is_in_primary_key, is_in_sampling_key, compression_codec, position '
+      + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position FORMAT JSON'),
+    tryQueryData(ctx,
+      'SELECT database, table, name, type, expr FROM system.data_skipping_indices '
+      + 'WHERE database IN (' + list + ') FORMAT JSON'),
+  ]);
+  for (const r of colRows || []) {
+    const key = r.database + '.' + r.table;
+    (columnsByKey[key] = columnsByKey[key] || []).push(r);
+  }
+  for (const r of idxRows || []) {
+    const key = r.database + '.' + r.table;
+    (skipByKey[key] = skipByKey[key] || []).push(r);
+  }
+  return { columnsByKey, skipByKey };
 }
 
 // Run a query for its `data` rows, returning null on ANY error. Editor

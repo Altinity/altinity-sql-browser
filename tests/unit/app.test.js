@@ -1202,6 +1202,38 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     await app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
     expect(app.activeTab().result.error).toContain('nope');
   });
+
+  it('expandSchemaGraph loads the enriched dataset and opens a rich-card fullscreen overlay', async () => {
+    const routes = [
+      ...lineageRoutes,
+      [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [
+        { database: 'lin', table: 'events', name: 'id', type: 'UInt64', is_in_primary_key: 1, position: 1 },
+      ] } })],
+      [(u, sql) => /data_skipping_indices/.test(sql), resp({ json: { data: [] } })],
+    ];
+    const { app } = appForRun(routes);
+    await app.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    const overlay = document.body.querySelector('.graph-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay.querySelector('g.eg-card')).not.toBeNull();
+    expect(overlay.querySelector('text.eg-card-header').textContent).toMatch(/rows/);
+    overlay.remove();
+  });
+
+  it('expandSchemaGraph guards: no db, signed-out, and a lineage failure open no overlay', async () => {
+    // no focus.db → early return
+    const { app } = appForRun(lineageRoutes);
+    await app.actions.expandSchemaGraph({ kind: 'db' });
+    expect(document.body.querySelector('.graph-overlay')).toBeNull();
+    // signed out (empty session → null token) → onSignedOut + return
+    const { app: app2 } = appForRun(lineageRoutes, { sessionStorage: memSession({}) });
+    await app2.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    expect(document.body.querySelector('.graph-overlay')).toBeNull();
+    // lineage load fails → caught, no overlay (the inline graph would still be on screen)
+    const { app: app3 } = appForRun([[(u, sql) => /system\.tables/.test(sql), resp({ ok: false, status: 500, text: 'boom' })]]);
+    await app3.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    expect(document.body.querySelector('.graph-overlay')).toBeNull();
+  });
 });
 
 describe('schema graph drop edge cases', () => {

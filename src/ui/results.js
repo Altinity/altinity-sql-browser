@@ -9,7 +9,7 @@ import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
-import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaFullscreen } from './explain-graph.js';
+import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -161,8 +161,8 @@ function buildToolbar(app, r) {
     // to draw (no connected objects → the pane shows a message, not a graph).
     if (!r.schemaGraph.loading && r.schemaGraph.nodes.length) {
       toolbar.appendChild(h('button', {
-        class: 'res-act', title: 'Open the graph fullscreen (pan & zoom)',
-        onclick: () => openSchemaFullscreen(app, r.schemaGraph),
+        class: 'res-act', title: 'Open the graph fullscreen with rich cards (pan & zoom)',
+        onclick: () => app.actions.expandSchemaGraph(r.schemaGraph.focus),
       }, Icon.expand(), h('span', null, 'Expand')));
     }
     return toolbar;

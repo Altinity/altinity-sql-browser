@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
-import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaFullscreen } from '../../src/ui/explain-graph.js';
+import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaFullscreen, buildRichSchemaSvg } from '../../src/ui/explain-graph.js';
 
 const APP = { document, Dagre: dagre }; // app stub carrying the dagre layout seam
 
@@ -244,5 +244,70 @@ describe('schema lineage graph', () => {
     expect(overlay.querySelector('.schema-graph-legend')).not.toBeNull();
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
+  });
+});
+
+describe('buildRichSchemaSvg (rich cards)', () => {
+  const RICH = {
+    nodes: [
+      {
+        id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a',
+        card: {
+          title: 'lin.a', kind: 'table', summary: 'MergeTree · 5 rows · 0 B',
+          cols: [{ name: 'id', type: 'UInt64', roles: ['PK', 'SK'] }, { name: 'd', type: 'Date', roles: [] }],
+          overflow: 2, skipLine: 'idx: i (minmax)',
+        },
+      },
+      { id: 'lin.mv', label: 'mv', kind: 'mv', db: 'lin', name: 'mv' }, // no .card → header-only fallback
+      { id: 'lin.dst', label: 'dst', kind: 'table', db: 'lin', name: 'dst' },
+    ],
+    edges: [
+      { from: 'lin.a', to: 'lin.mv', kind: 'feeds' },
+      { from: 'lin.mv', to: 'lin.dst', kind: '' }, // empty kind → no edge label drawn
+    ],
+  };
+
+  it('draws a card group per node with title, summary, divider, columns + role badges, overflow and skip rows', () => {
+    const built = buildRichSchemaSvg(RICH, dagre);
+    expect(built.nodeCount).toBe(3);
+    const svg = built.svg;
+    expect(svg.querySelectorAll('g.eg-card')).toHaveLength(3);
+    expect(svg.querySelector('rect.eg-node--table')).not.toBeNull();
+    expect(svg.querySelector('rect.eg-node--mv')).not.toBeNull();
+    expect([...svg.querySelectorAll('text.eg-card-title')].map((t) => t.textContent)).toContain('lin.a');
+    expect([...svg.querySelectorAll('text.eg-card-header')].map((t) => t.textContent)).toContain('MergeTree · 5 rows · 0 B');
+    expect(svg.querySelector('line.eg-card-divider')).not.toBeNull();
+    expect(svg.querySelectorAll('text.eg-col').length).toBeGreaterThanOrEqual(2);
+    expect(svg.querySelector('tspan.eg-badge--pk')).not.toBeNull();
+    expect(svg.querySelector('tspan.eg-badge--sk')).not.toBeNull();
+    expect([...svg.querySelectorAll('text.eg-col-more')].map((t) => t.textContent)).toContain('+2 more');
+    expect(svg.querySelector('text.eg-skipidx').textContent).toBe('idx: i (minmax)');
+    // only the labelled edge draws a mid-edge label; the empty-kind edge draws none
+    expect([...svg.querySelectorAll('text.eg-edge-label')].map((t) => t.textContent)).toEqual(['feeds']);
+  });
+
+  it('falls back to a header-only card for a node without a .card model', () => {
+    const built = buildRichSchemaSvg(RICH, dagre);
+    const titles = [...built.svg.querySelectorAll('text.eg-card-title')].map((t) => t.textContent);
+    expect(titles).toContain('mv'); // buildCardModel(node) → label
+    const headers = [...built.svg.querySelectorAll('text.eg-card-header')].map((t) => t.textContent);
+    expect(headers).toContain('mv · — rows · —'); // engine falls back to kind, no row/byte data
+  });
+
+  it('fires onNode with the clicked node (which carries db/name for SHOW CREATE)', () => {
+    const onNode = vi.fn();
+    const built = buildRichSchemaSvg(RICH, dagre, onNode);
+    built.svg.querySelector('g.eg-card').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(onNode).toHaveBeenCalledTimes(1);
+    const arg = onNode.mock.calls[0][0];
+    expect(arg).toMatchObject({ db: 'lin' });
+    expect(typeof arg.id).toBe('string');
+  });
+
+  it('returns an empty result (no card groups) for an empty or missing graph', () => {
+    expect(buildRichSchemaSvg({ nodes: [], edges: [] }, dagre).nodeCount).toBe(0);
+    const built = buildRichSchemaSvg(null, dagre);
+    expect(built.nodeCount).toBe(0);
+    expect(built.svg.querySelectorAll('g.eg-card')).toHaveLength(0);
   });
 });

@@ -14,6 +14,7 @@ import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph } from '../core/schema-graph.js';
+import { buildCardGraph } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, toCSV } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
@@ -27,6 +28,7 @@ import { mountEditor, insertAtCursor, replaceEditor, SCHEMA_GRAPH_MIME } from '.
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
+import { openSchemaFullscreen } from './explain-graph.js';
 import { renderSavedHistory } from './saved-history.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
@@ -534,6 +536,32 @@ export function createApp(env = {}) {
     renderResults(app);
   }
 
+  // Open the schema lineage fullscreen with RICH cards. Lazily fetches a separate
+  // enriched dataset (the inline pane stays compact and untouched): re-loads
+  // lineage + the per-table column / skip-index metadata (best-effort), attaches a
+  // card model to each node, then opens the overlay. Re-fetch (vs reusing the inline
+  // result) keeps the inline path's shape frozen and the card data off the hot path.
+  async function expandSchemaGraph(focus) {
+    if (!focus || !focus.db) return;
+    await ensureConfig();
+    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    let rows, cards;
+    try {
+      // The lineage rows and the card metadata are independent — load concurrently.
+      [rows, cards] = await Promise.all([
+        ch.loadSchemaLineage(chCtx, focus),
+        ch.loadSchemaCards(chCtx, [focus.db]),
+      ]);
+    } catch {
+      // The inline graph is still on screen; tell the user the expand didn't load.
+      flashToast('Could not load the schema graph', { document: doc });
+      return;
+    }
+    const g = buildSchemaGraph(rows, focus);
+    const cardGraph = buildCardGraph(g, { tables: rows.tables, columnsByKey: cards.columnsByKey, skipByKey: cards.skipByKey });
+    openSchemaFullscreen(app, { nodes: cardGraph.nodes, edges: cardGraph.edges, focus, tableCount: (rows.tables || []).length });
+  }
+
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
   function explainQuery() { return run({ explain: true }); }
@@ -746,6 +774,7 @@ export function createApp(env = {}) {
     explainQuery,
     setExplainView,
     showSchemaGraph,
+    expandSchemaGraph,
     insertCreate,
     openShortcuts: () => openShortcuts(app),
     insertAtCursor: (text) => insertAtCursor(app, text),

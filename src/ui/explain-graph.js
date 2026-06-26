@@ -9,6 +9,7 @@ import { h, s } from './dom.js';
 import { Icon } from './icons.js';
 import { parseDot } from '../core/dot.js';
 import { dagreLayout } from '../core/dot-layout.js';
+import { buildCardModel, cardSize, CARD } from '../core/schema-cards.js';
 import { qualifyIdent } from '../core/format.js';
 import { fitBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 
@@ -96,11 +97,13 @@ function attachPanZoom(container, svg, dims, opts = {}) {
  * Returns `{ svg, width, height, nodeCount }`. DOT-agnostic — reused by both the
  * pipeline graph (DOT) and the schema graph (system.* rows).
  */
-function renderGraphSvg(g, opts = {}) {
-  const nodeClass = opts.nodeClass || (() => 'eg-node');
-  const edgeClass = opts.edgeClass || (() => 'eg-edge');
+// Build the <svg> shell + arrowhead <defs> + routed edges (with optional
+// mid-edge labels). Node drawing is the caller's job — plain labelled boxes
+// (renderGraphSvg) or rich cards (renderRichGraphSvg) — so the edge/marker code
+// lives in one place. Empty-graph safe: returns a bare <svg> with no defs.
+function graphSvgWithEdges(g, edgeClass, edgeLabel) {
   const svg = s('svg', { class: 'explain-graph', viewBox: `0 0 ${g.width} ${g.height}` });
-  if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
+  if (!g.nodes.length) return svg;
   svg.appendChild(s('defs', null,
     s('marker', {
       id: 'eg-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5',
@@ -109,12 +112,19 @@ function renderGraphSvg(g, opts = {}) {
   for (const e of g.edges) {
     const d = 'M' + e.points.map((p) => p.x + ' ' + p.y).join(' L');
     svg.appendChild(s('path', { class: edgeClass(e), d, 'marker-end': 'url(#eg-arrow)' }));
-    const lbl = opts.edgeLabel && opts.edgeLabel(e);
+    const lbl = edgeLabel && edgeLabel(e);
     if (lbl) {
       const mid = e.points[Math.floor(e.points.length / 2)];
       svg.appendChild(s('text', { class: 'eg-edge-label', x: mid.x, y: mid.y - 3, 'text-anchor': 'middle' }, lbl));
     }
   }
+  return svg;
+}
+
+function renderGraphSvg(g, opts = {}) {
+  const nodeClass = opts.nodeClass || (() => 'eg-node');
+  const svg = graphSvgWithEdges(g, opts.edgeClass || (() => 'eg-edge'), opts.edgeLabel);
+  if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
   for (const n of g.nodes) {
     const rect = s('rect', { class: nodeClass(n), x: n.x, y: n.y, width: n.w, height: n.h, rx: '4' });
     const text = s('text', {
@@ -139,6 +149,74 @@ export function buildPipelineSvg(rawText, dagre) {
 /** Build the schema-lineage SVG from a `{nodes,edges}` graph (kind-coloured). */
 export function buildSchemaSvg(graph, dagre, onNode) {
   return renderGraphSvg(dagreLayout(dagre, graph || { nodes: [], edges: [] }), {
+    nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
+    edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
+    edgeLabel: (e) => e.kind,
+    onNode,
+  });
+}
+
+// Draw one node as a rich card: a kind-coloured background rect with a title +
+// engine/rows/bytes summary header, then a row per column (with key-role badges),
+// an overflow row, and a skip-index row — all placed at the deterministic offsets
+// cardSize() used to size the node, so no DOM measurement is needed. `model` is
+// always supplied by renderRichGraphSvg (a header-only model for a card-less node).
+function renderCardNode(n, model, nodeClass, onNode) {
+  const g = s('g', { class: 'eg-card' });
+  const rect = s('rect', { class: nodeClass(n), x: n.x, y: n.y, width: n.w, height: n.h, rx: '5' });
+  g.appendChild(rect);
+  const left = n.x + CARD.PAD_X;
+  g.appendChild(s('text', { class: 'eg-card-title', x: left, y: n.y + CARD.TITLE_Y }, model.title));
+  g.appendChild(s('text', { class: 'eg-card-header', x: left, y: n.y + CARD.SUMMARY_Y }, model.summary));
+  const divY = n.y + CARD.HEADER_H;
+  g.appendChild(s('line', { class: 'eg-card-divider', x1: n.x, y1: divY, x2: n.x + n.w, y2: divY }));
+  let row = 0;
+  const rowY = () => divY + row * CARD.ROW_H + CARD.ROW_BASELINE;
+  for (const c of model.cols) {
+    const t = s('text', { class: 'eg-col', x: left, y: rowY() },
+      s('tspan', { class: 'eg-col-name' }, c.name),
+      s('tspan', { class: 'eg-col-type', dx: '6' }, c.type));
+    for (const role of c.roles) t.appendChild(s('tspan', { class: 'eg-badge eg-badge--' + role.toLowerCase(), dx: '6' }, role));
+    g.appendChild(t);
+    row++;
+  }
+  if (model.overflow) { g.appendChild(s('text', { class: 'eg-col eg-col-more', x: left, y: rowY() }, '+' + model.overflow + ' more')); row++; }
+  if (model.skipLine) g.appendChild(s('text', { class: 'eg-skipidx', x: left, y: rowY() }, model.skipLine));
+  if (onNode) {
+    rect.setAttribute('cursor', 'pointer');
+    g.addEventListener('click', (e) => { e.stopPropagation(); onNode(n); });
+  }
+  return g;
+}
+
+// Like renderGraphSvg, but draws each node as a rich card (looked up by id in
+// `opts.cardById`) instead of a single labelled box, reusing the same edge/marker
+// scaffold. `opts` always carries cardById/nodeClass/edgeClass/edgeLabel (onNode optional).
+function renderRichGraphSvg(g, opts) {
+  const svg = graphSvgWithEdges(g, opts.edgeClass, opts.edgeLabel);
+  if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
+  for (const n of g.nodes) svg.appendChild(renderCardNode(n, opts.cardById.get(n.id), opts.nodeClass, opts.onNode));
+  return { svg, width: g.width, height: g.height, nodeCount: g.nodes.length };
+}
+
+/**
+ * Build the rich schema-lineage SVG: size each node from its `.card` model (the
+ * model is attached by buildCardGraph; a node without one degrades to a header-only
+ * card), lay out with dagre (honoring the card w/h), then draw cards. Used by the
+ * fullscreen overlay; the inline pane keeps the compact buildSchemaSvg.
+ */
+export function buildRichSchemaSvg(graph, dagre, onNode) {
+  const g = graph || { nodes: [], edges: [] };
+  const cardById = new Map();
+  const sized = (g.nodes || []).map((n) => {
+    const model = n.card || buildCardModel(n);
+    cardById.set(n.id, model);
+    const { w, h } = cardSize(model);
+    return { ...n, w, h };
+  });
+  const laid = dagreLayout(dagre, { nodes: sized, edges: g.edges || [] });
+  return renderRichGraphSvg(laid, {
+    cardById,
     nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
     edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
     edgeLabel: (e) => e.kind,
@@ -220,9 +298,9 @@ const schemaClick = (app) => (n) => {
   app.actions.insertCreate(qualifyIdent(n.db, n.name));
 };
 
-/** Fullscreen schema-lineage graph. */
+/** Fullscreen schema-lineage graph — rich cards (engine/rows/bytes + columns). */
 export function openSchemaFullscreen(app, graph) {
-  return openGraphFullscreen(app, 'Schema', () => buildSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend(), schemaEmptyMessage(graph));
+  return openGraphFullscreen(app, 'Schema', () => buildRichSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend(), schemaEmptyMessage(graph));
 }
 
 /**

@@ -584,9 +584,9 @@ describe('schema lineage result', () => {
     const expand = [...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent));
     expect(expand).toBeTruthy();
     click(expand);
-    const overlay = document.body.querySelector('.graph-overlay');
-    expect(overlay).not.toBeNull();
-    overlay.dispatchEvent(new Event('click', { bubbles: true })); // backdrop close + cleanup
+    // Expand now fires the async action that lazily loads the rich-card dataset and
+    // opens the overlay (the overlay itself is covered in explain-graph.test.js).
+    expect(app.actions.expandSchemaGraph).toHaveBeenCalledWith({ kind: 'db', db: 'lin' });
   });
   it('titles a table-focus graph with the qualified name', () => {
     const r = graphResult();
