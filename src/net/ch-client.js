@@ -104,7 +104,8 @@ export async function loadServerVersion(ctx) {
 }
 
 /**
- * Load the table list grouped by database (excludes system schemas).
+ * Load the table list grouped by database. `system` is included (handy for
+ * dashboards/diagnostics); the redundant INFORMATION_SCHEMA views stay filtered.
  * Returns [{ db, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
 export async function loadSchema(ctx) {
@@ -112,7 +113,7 @@ export async function loadSchema(ctx) {
     'SELECT database, name, toUInt64(total_rows) AS total_rows, ' +
     'toUInt64(total_bytes) AS total_bytes, comment\n' +
     'FROM system.tables\n' +
-    "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema','system')\n" +
+    "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
     'ORDER BY database, name\n' +
     'FORMAT JSON';
   const json = await queryJson(ctx, sql);
