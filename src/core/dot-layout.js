@@ -35,7 +35,12 @@ export function dagreLayout(dagre, graph) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: 'TB', nodesep: NODESEP, ranksep: RANKSEP, marginx: MARGIN, marginy: MARGIN });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const n of nodes) g.setNode(n.id, { width: nodeWidth(n.label), height: NODE_H });
+  // Honor a node's explicit size when it carries one (the rich schema cards
+  // pre-compute w/h from their content via cardSize); otherwise fall back to the
+  // label-based width + fixed height (pipeline + inline schema boxes).
+  for (const n of nodes) {
+    g.setNode(n.id, { width: n.w != null ? n.w : nodeWidth(n.label), height: n.h != null ? n.h : NODE_H });
+  }
   for (const e of edges) g.setEdge(e.from, e.to);
   dagre.layout(g);
 

@@ -74,6 +74,7 @@ export function makeApp(over = {}) {
       explainQuery: vi.fn(),
       setExplainView: vi.fn(),
       showSchemaGraph: vi.fn(),
+      expandSchemaGraph: vi.fn(),
       insertCreate: vi.fn(),
       openShortcuts: vi.fn(),
       insertAtCursor: vi.fn(),

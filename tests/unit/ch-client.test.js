@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage, loadSchemaCards,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -358,5 +358,51 @@ describe('loadSchemaLineage', () => {
     });
     const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
     expect(out.tables[0].astTables).toBeUndefined();
+  });
+  it('includes the card metadata columns in the scoped tables query', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      seen.push(init.body);
+      if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
+      return jsonResp({ data: [{ database: 'lin', name: 't', engine: 'MergeTree', as_select: '' }] });
+    });
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    const tablesSql = seen.find((s) => /FROM system\.tables/.test(s));
+    expect(tablesSql).toMatch(/total_rows/);
+    expect(tablesSql).toMatch(/total_bytes/);
+    expect(tablesSql).toMatch(/partition_key/);
+    expect(tablesSql).toMatch(/sampling_key/);
+  });
+});
+
+describe('loadSchemaCards', () => {
+  it('keys columns + skip indices by db.table and scopes via IN (…)', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body; seen.push(sql);
+      if (/system\.data_skipping_indices/.test(sql)) {
+        return jsonResp({ data: [{ database: 'lin', table: 'events', name: 'idx_d', type: 'minmax', expr: 'd' }] });
+      }
+      return jsonResp({ data: [
+        { database: 'lin', table: 'events', name: 'id', type: 'UInt64', is_in_primary_key: 1, position: 1 },
+        { database: 'lin', table: 'events', name: 'd', type: 'Date', is_in_partition_key: 1, position: 2 },
+        { database: 'lin', table: 'other', name: 'x', type: 'String', position: 1 },
+      ] });
+    });
+    const out = await loadSchemaCards(ctx, ['lin']);
+    expect(out.columnsByKey['lin.events']).toHaveLength(2);
+    expect(out.columnsByKey['lin.other']).toHaveLength(1);
+    expect(out.skipByKey['lin.events']).toEqual([{ database: 'lin', table: 'events', name: 'idx_d', type: 'minmax', expr: 'd' }]);
+    expect(seen.some((s) => /system\.columns/.test(s) && /database IN \('lin'\)/.test(s))).toBe(true);
+    expect(seen.some((s) => /data_skipping_indices/.test(s) && /database IN \('lin'\)/.test(s))).toBe(true);
+  });
+  it('degrades to empty maps when the system tables are denied (no throw)', async () => {
+    const ctx = ctxWith(() => jsonResp('Code: 497 ACCESS_DENIED', false, 500));
+    expect(await loadSchemaCards(ctx, ['lin', 'other'])).toEqual({ columnsByKey: {}, skipByKey: {} });
+  });
+  it('issues no query for an empty database list', async () => {
+    const ctx = ctxWith(() => { throw new Error('should not fetch'); });
+    expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {}, skipByKey: {} });
+    expect(ctx.fetch).not.toHaveBeenCalled();
   });
 });
