@@ -10,7 +10,8 @@ It reads your `~/.clickhouse-client/config.xml` connections and offers them as a
 **Saved connection** dropdown on the login screen:
   • a plain connection (hostname/user/password) → prefills the credentials form.
   • a connection carrying clickhouse-client's OAuth keys (`oauth-url`,
-    `oauth-client-id`, `oauth-audience`) → an OAuth sign-in against that cluster.
+    `oauth-client-id`, optional `oauth-client-secret` for a Web client like Google,
+    `oauth-audience`) → an OAuth sign-in against that cluster.
 
     npm run local            # build + serve, then open http://localhost:8900/sql
 
@@ -58,12 +59,17 @@ def build_config():
         url = f"{scheme}://{hostname}:{http_port}" if http_port else f"{scheme}://{hostname}"
         oauth_url = _text(conn, "oauth-url", "oauth_url")
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
+        oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")
         oauth_aud = _text(conn, "oauth-audience", "oauth_audience")
         if oauth_url and oauth_client:
             if name not in seen:
                 idps.append({
                     "id": name, "label": name, "issuer": oauth_url, "client_id": oauth_client,
-                    "audience": oauth_aud, "bearer": "access_token" if oauth_aud else "id_token",
+                    # Optional: a Web-client secret (e.g. Google) for the code exchange.
+                    # Empty → public PKCE. clickhouse-client has no such flag, so this is
+                    # a local-only convenience key read from the same connection.
+                    "client_secret": oauth_secret, "audience": oauth_aud,
+                    "bearer": "access_token" if oauth_aud else "id_token",
                 })
                 seen.add(name)
             hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name})
