@@ -154,6 +154,13 @@ body {
   font-family: inherit; transition: border-color .12s, box-shadow .12s;
 }
 .login-input.mono { font-family: var(--mono); font-size: 12.5px; }
+.login-picker {
+  width: 100%; height: 38px; padding: 0 11px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--fg); font-size: 12.5px; outline: none;
+  font-family: var(--mono); cursor: pointer; transition: border-color .12s, box-shadow .12s;
+}
+.login-picker:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
 .login-input::placeholder { color: var(--fg-faint); }
 .login-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
 .login-input-wrap { position: relative; }

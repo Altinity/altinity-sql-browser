@@ -602,6 +602,26 @@ describe('auth flows', () => {
     app.chCtx.onSignedOut();
     expect(app.root.querySelector('.login-error').textContent).toContain('session expired');
   });
+  it('login(idp, origin) stashes oauth_origin for a cross-origin cluster; sign-out clears it', async () => {
+    const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' };
+    const e = env({
+      location: loc,
+      sessionStorage: memSession({}),
+      fetch: makeFetch([
+        [(u) => /config\.json/.test(u), resp({ json: { idps: [{ id: 'google', issuer: 'https://accounts.google.com', client_id: 'g' }] } })],
+        [(u) => /openid-configuration/.test(u), resp({ json: { authorization_endpoint: 'https://accounts.google.com/auth', token_endpoint: 'https://t' } })],
+      ]),
+    });
+    const app = createApp(e);
+    await app.actions.login('google', 'https://antalya.demo.altinity.cloud');
+    expect(e.sessionStorage.getItem('oauth_origin')).toBe('https://antalya.demo.altinity.cloud');
+    app.signOut();
+    expect(e.sessionStorage.getItem('oauth_origin')).toBeNull();
+  });
+  it('oauth mode posts queries to the stashed oauth_origin (cross-origin)', () => {
+    const e = env({ sessionStorage: memSession({ oauth_id_token: validToken, oauth_origin: 'https://antalya.demo.altinity.cloud' }) });
+    expect(createApp(e).chCtx.origin).toBe('https://antalya.demo.altinity.cloud');
+  });
 });
 
 describe('credentials (basic) sign-in', () => {

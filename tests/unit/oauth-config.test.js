@@ -112,6 +112,31 @@ describe('loadConfigDoc', () => {
   });
 });
 
+describe('loadConfigDoc hosts', () => {
+  const load = (body) => loadConfigDoc(fetcher([[/config\.json$/, resp(true, body)]]), '/sql');
+
+  it('returns [] when no hosts are configured', async () => {
+    expect((await load({ idps: [] })).hosts).toEqual([]);
+  });
+
+  it('normalizes basic and oauth host entries (defaults + auth)', async () => {
+    const { hosts } = await load({
+      idps: [],
+      hosts: [
+        { label: 'demo', url: 'http://localhost:8123', user: 'default', password: 'pw' },
+        { label: 'antalya', url: 'https://antalya.demo.altinity.cloud', auth: 'oauth', idp: 'google' },
+      ],
+    });
+    expect(hosts[0]).toEqual({ label: 'demo', url: 'http://localhost:8123', auth: 'basic', user: 'default', password: 'pw', idp: '' });
+    expect(hosts[1]).toEqual({ label: 'antalya', url: 'https://antalya.demo.altinity.cloud', auth: 'oauth', user: '', password: '', idp: 'google' });
+  });
+
+  it('falls back the label to the url and defaults missing fields', async () => {
+    const { hosts } = await load({ idps: [], hosts: [{ url: 'http://h:8123' }] });
+    expect(hosts[0]).toEqual({ label: 'http://h:8123', url: 'http://h:8123', auth: 'basic', user: '', password: '', idp: '' });
+  });
+});
+
 describe('resolveIdp', () => {
   const idp = {
     id: 'i', label: 'I', issuer: 'https://i', clientId: 'c', clientSecret: '',

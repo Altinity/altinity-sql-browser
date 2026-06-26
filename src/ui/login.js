@@ -99,6 +99,13 @@ export function renderLogin(app, errorMsg) {
       h('span', { style: { flex: '1' } }),
       targetAsEl));
 
+  // --- saved-connection picker (populated async; shown only when config lists hosts) ---
+  let pickHosts = [];
+  const hostPicker = h('select', { class: 'login-picker mono', onchange: onPickHost });
+  const pickerSection = h('div', { class: 'login-field login-picker-field', style: { display: 'none' } },
+    h('label', { class: 'login-lbl' }, 'Saved connection'),
+    hostPicker);
+
   // Footer tag adapts to which methods are available (set by applyChrome once
   // the IdP list / basic_login flag resolve). The brand block is heading enough,
   // so there's no separate "Sign in" title or subtitle.
@@ -110,6 +117,7 @@ export function renderLogin(app, errorMsg) {
       h('div', { class: 'login-brand-text' },
         h('div', { class: 'login-brand-name' }, 'Altinity SQL Browser'),
         h('div', { class: 'login-brand-sub mono' }, 'ClickHouse query console'))),
+    pickerSection,
     ssoSection,
     credSection,
     errorMsg ? h('div', { class: 'login-error' }, errorMsg) : null,
@@ -127,9 +135,10 @@ export function renderLogin(app, errorMsg) {
   // Resolve the configured IdPs (and the basic_login flag) and reconcile which
   // sections are shown. On failure keep credentials visible (fail-open — OAuth
   // can't work without config anyway) and show no SSO.
-  app.loadIdps().then(({ idps, basicLogin }) => {
+  app.loadIdps().then(({ idps, basicLogin, hosts }) => {
     const credsShown = basicLogin !== false;
     if (!credsShown) credSection.remove();
+    populateHosts(hosts);
     populateSso(idps);
     applyChrome(ssoBtns.length > 0, credsShown);
     update();
@@ -158,6 +167,42 @@ export function renderLogin(app, errorMsg) {
       ...btns,
       h('div', { class: 'login-sso-note' },
         Icon.server(), h('span', null, 'Authenticates on '), h('span', { class: 'mono' }, cur)));
+  }
+
+  // Fill the picker from config.json's `hosts` (npm run local supplies them from
+  // ~/.clickhouse-client/config.xml). Hidden when none are configured.
+  function populateHosts(hosts) {
+    pickHosts = hosts || [];
+    if (!pickHosts.length) return;
+    hostPicker.replaceChildren(
+      h('option', { value: '' }, 'Choose a connection…'),
+      ...pickHosts.map((hh, i) => h('option', { value: String(i) }, hh.label + (hh.auth === 'oauth' ? ' (OAuth)' : ''))));
+    pickerSection.style.display = '';
+  }
+
+  // Pick a saved connection: a basic one prefills the credentials form (+ reveals
+  // the host); an oauth one starts the SSO flow against that cluster.
+  function onPickHost() {
+    if (hostPicker.value === '') return;
+    const hh = pickHosts[Number(hostPicker.value)];
+    if (hh.auth === 'oauth') { pickOAuth(hh); return; }
+    hostInput.value = hh.url;
+    userInput.value = hh.user;
+    passInput.value = hh.password;
+    advOpen = true; advField.style.display = ''; advChev.style.transform = 'rotate(0deg)';
+    update();
+  }
+
+  async function pickOAuth(hh) {
+    busy = 'sso';
+    hostPicker.disabled = true;
+    try {
+      await app.actions.login(hh.idp, hh.url);
+    } catch (err) {
+      busy = null;
+      hostPicker.disabled = false;
+      app.showLogin(String((err && err.message) || err));
+    }
   }
 
   // Keep the primary/secondary swap, Connect enablement, and target row in sync

@@ -176,19 +176,25 @@ npm run dev            # build + serve dist/ at http://localhost:8900
 npm run local          # build + serve → open http://localhost:8900/sql
 ```
 
-The app is a thin client: in **credentials** mode the login form takes a
-ClickHouse host, and queries go straight from the browser to that host. So the
-local server just serves the page — point the login at whatever ClickHouse you
-like:
+The app is a thin client — queries go straight from the browser to the chosen
+ClickHouse — so the local server only serves the page plus a generated
+`config.json`. It reads your **`~/.clickhouse-client/config.xml`** connections and
+offers them as a **Saved connection** dropdown on the login screen:
 
-- **Host** — e.g. `http://localhost:8123` (include the scheme; a bare host
-  defaults to `https://<host>:8443`).
-- **User / password** — your ClickHouse credentials.
+- A plain connection (`hostname`/`user`/`password`) → prefills the credentials
+  form (cross-origin HTTP Basic to that host).
+- A connection carrying clickhouse-client's OAuth keys (`oauth-url`,
+  `oauth-client-id`, `oauth-audience`) → an OAuth sign-in against that cluster.
 
-The target ClickHouse must allow cross-origin requests; ClickHouse's HTTP
-interface sends `Access-Control-Allow-Origin` for requests carrying an `Origin`
-header by default, so a stock server works as-is. Override the serve port with
-`PORT`. Ctrl-C stops it.
+You can also ignore the picker and type a host/user/password by hand (host: include
+the scheme, e.g. `http://localhost:8123`; a bare host defaults to
+`https://<host>:8443`).
+
+The target ClickHouse must allow cross-origin requests — ClickHouse's HTTP
+interface sends `Access-Control-Allow-Origin` for requests with an `Origin` header
+by default, so a stock server works. For an **OAuth** connection you also register
+`http://localhost:8900/sql` as a redirect URI with the IdP. Override the serve port
+with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
 
 ## Installing on any ClickHouse cluster
 

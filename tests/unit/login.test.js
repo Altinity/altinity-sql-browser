@@ -8,6 +8,11 @@ function type(input, value) {
   input.value = value;
   input.dispatchEvent(new Event('input'));
 }
+function selectHost(root, value) {
+  const sel = root.querySelector('.login-picker');
+  sel.value = value;
+  sel.dispatchEvent(new Event('change'));
+}
 // makeApp defaults loadIdps → { idps: [], basicLogin: true }. Override per test.
 function appWith(over = {}) {
   const base = makeApp();
@@ -37,6 +42,60 @@ describe('renderLogin — structure', () => {
     expect(app.root.querySelector('.login-target .lt-host').textContent).toBe('ch.demo');
     const hostInput = app.root.querySelectorAll('.login-input')[2];
     expect(hostInput.getAttribute('placeholder')).toBe('ch.demo:8443');
+  });
+});
+
+describe('renderLogin — host picker', () => {
+  const hosts = [
+    { label: 'demo', url: 'http://localhost:8123', auth: 'basic', user: 'default', password: 'pw', idp: '' },
+    { label: 'antalya', url: 'https://antalya.demo.altinity.cloud', auth: 'oauth', user: '', password: '', idp: 'google' },
+  ];
+  const withHosts = (over = {}) => appWith({ loadIdps: async () => ({ idps: [], basicLogin: true, hosts }), ...over });
+
+  it('is hidden when no hosts are configured', async () => {
+    const app = appWith({ loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) });
+    renderLogin(app); await tick();
+    expect(app.root.querySelector('.login-picker-field').style.display).toBe('none');
+  });
+  it('lists configured hosts (OAuth tagged) when present', async () => {
+    const app = withHosts();
+    renderLogin(app); await tick();
+    expect(app.root.querySelector('.login-picker-field').style.display).toBe('');
+    expect([...app.root.querySelector('.login-picker').options].map((o) => o.textContent))
+      .toEqual(['Choose a connection…', 'demo', 'antalya (OAuth)']);
+  });
+  it('selecting a basic host prefills host/user/password and opens Advanced', async () => {
+    const app = withHosts();
+    renderLogin(app); await tick();
+    selectHost(app.root, '0');
+    const [user, pass, host] = app.root.querySelectorAll('.login-input');
+    expect([host.value, user.value, pass.value]).toEqual(['http://localhost:8123', 'default', 'pw']);
+    expect(app.root.querySelector('.login-adv-field').style.display).toBe('');
+  });
+  it('selecting an OAuth host starts SSO against that cluster', async () => {
+    const login = vi.fn(async () => {});
+    const app = withHosts({ actions: { login } });
+    renderLogin(app); await tick();
+    selectHost(app.root, '1');
+    expect(login).toHaveBeenCalledWith('google', 'https://antalya.demo.altinity.cloud');
+  });
+  it('the placeholder option is a no-op', async () => {
+    const login = vi.fn();
+    const app = withHosts({ actions: { login } });
+    renderLogin(app); await tick();
+    selectHost(app.root, '');
+    expect(login).not.toHaveBeenCalled();
+  });
+  it('re-enables the picker and surfaces an error when OAuth sign-in fails', async () => {
+    const login = vi.fn(async () => { throw new Error('redirect blocked'); });
+    const app = withHosts({ actions: { login } });
+    app.showLogin = vi.fn();
+    renderLogin(app); await tick();
+    selectHost(app.root, '1');
+    await tick();
+    expect(login).toHaveBeenCalled();
+    expect(app.showLogin).toHaveBeenCalled();
+    expect(app.root.querySelector('.login-picker').disabled).toBe(false);
   });
 });
 

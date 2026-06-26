@@ -68,7 +68,25 @@ function normalizeEntry(e) {
 }
 
 /**
- * Fetch config.json and normalize to `{ idps: [descriptor, ...], basicLogin }`.
+ * Map one raw `hosts[]` entry to a saved-connection descriptor for the login
+ * picker: `{ label, url, auth, user, password, idp }`. `auth` is 'oauth' (sign in
+ * via the named `idp`, querying `url` cross-origin) or 'basic' (prefill the
+ * credentials form with `url`/`user`/`password`).
+ */
+function normalizeHost(h) {
+  const e = h || {};
+  return {
+    label: e.label || e.url || '',
+    url: e.url || '',
+    auth: e.auth === 'oauth' ? 'oauth' : 'basic',
+    user: e.user || '',
+    password: e.password || '',
+    idp: e.idp || '',
+  };
+}
+
+/**
+ * Fetch config.json and normalize to `{ idps: [descriptor, ...], basicLogin, hosts }`.
  * Accepts a list (`{ idps: [...] }`) or a single bare object (legacy) wrapped
  * into one entry. An IdP-less config (no `idps`, no `issuer`) is valid — it
  * describes a credentials-only deployment, so `idps` comes back empty rather
@@ -86,7 +104,13 @@ export async function loadConfigDoc(fetchFn, basePath = '') {
   const list = Array.isArray(cfg.idps)
     ? cfg.idps
     : (cfg.issuer || cfg.client_id) ? [cfg] : [];
-  return { idps: list.map(normalizeEntry), basicLogin: cfg.basic_login !== false };
+  return {
+    idps: list.map(normalizeEntry),
+    basicLogin: cfg.basic_login !== false,
+    // Optional saved-connection list for the login host picker (npm run local
+    // fills it from ~/.clickhouse-client/config.xml). Empty when absent.
+    hosts: Array.isArray(cfg.hosts) ? cfg.hosts.map(normalizeHost) : [],
+  };
 }
 
 /**

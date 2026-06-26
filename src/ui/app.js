@@ -141,7 +141,7 @@ export function createApp(env = {}) {
     app.authMode = 'oauth';
     chCtx.origin = loc.origin;
     chCtx.authConfirmed = false; // a fresh sign-in starts unconfirmed again
-    ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp',
+    ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp', 'oauth_origin',
       'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin'].forEach((k) => ss.removeItem(k));
   }
   app.setTokens = setTokens;
@@ -152,8 +152,13 @@ export function createApp(env = {}) {
   app.showLogin = (msg) => renderLogin(app, msg);
 
   // --- OAuth -------------------------------------------------------------
-  async function login(idpId) {
+  async function login(idpId, targetOrigin) {
     if (idpId) selectIdp(idpId);
+    // A picked saved-connection can target another cluster: stash its origin so
+    // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
+    // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
+    if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
+    else ss.removeItem('oauth_origin');
     const cfg = await resolveConfig();
     const { verifier, challenge } = await generatePKCE(cryptoObj);
     const state = randomState(cryptoObj);
@@ -207,7 +212,9 @@ export function createApp(env = {}) {
     fetch: fetchFn,
     // Where queries POST: the serving origin for OAuth, or the (possibly
     // cross-origin) target chosen at credential sign-in for basic mode.
-    origin: app.authMode === 'basic' ? (ss.getItem('ch_basic_origin') || loc.origin) : loc.origin,
+    origin: app.authMode === 'basic'
+      ? (ss.getItem('ch_basic_origin') || loc.origin)
+      : (ss.getItem('oauth_origin') || loc.origin),
     // Flips true after the first 2xx; gates whether a later 401/403 is treated
     // as a sign-in failure (only before auth is confirmed) or a query error.
     authConfirmed: false,
@@ -779,7 +786,7 @@ export function createApp(env = {}) {
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
     loadIntoNewTab: (name, sql, savedId, chart) => loadIntoNewTab(app, name, sql, savedId, chart),
-    login: (idpId) => login(idpId),
+    login: (idpId, targetOrigin) => login(idpId, targetOrigin),
     connect,
     share,
     copyResult,

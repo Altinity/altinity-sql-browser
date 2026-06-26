@@ -1,34 +1,79 @@
 #!/usr/bin/env python3
-"""Serve the built SQL browser locally as a static page — no ClickHouse here.
+"""Serve the built SQL browser locally, with a host picker from clickhouse-client.
 
-The app is a thin client: in *credentials* (username/password) mode its login form
-takes a ClickHouse host, and queries go straight from the browser to that host
-(cross-origin). So this server only needs to serve the SPA + a
-`{"basic_login": true}` config.json on localhost — there's nothing to proxy and no
-ClickHouse to run locally.
+The app is a thin client: in *credentials* mode its login form takes a ClickHouse
+host and queries it directly (cross-origin); in OAuth mode it signs in via an IdP
+and sends the bearer to the chosen cluster. So this server only serves the SPA +
+a generated config.json — there's nothing to proxy and no ClickHouse to run here.
+
+It reads your `~/.clickhouse-client/config.xml` connections and offers them as a
+**Saved connection** dropdown on the login screen:
+  • a plain connection (hostname/user/password) → prefills the credentials form.
+  • a connection carrying clickhouse-client's OAuth keys (`oauth-url`,
+    `oauth-client-id`, `oauth-audience`) → an OAuth sign-in against that cluster.
 
     npm run local            # build + serve, then open http://localhost:8900/sql
 
-On the login screen, sign in with:
-  • Host:  http://localhost:8123   — your ClickHouse HTTP endpoint. Include the
-           scheme: a bare host defaults to https://<host>:8443.
-  • User / password: your ClickHouse credentials.
+For OAuth connections you also register `http://localhost:8900/sql` as a redirect
+URI with the IdP and allow CORS from localhost on the cluster (see README).
 
-The target ClickHouse must allow cross-origin requests — ClickHouse's HTTP
-interface sends `Access-Control-Allow-Origin` for requests carrying an `Origin`
-header by default, so a stock server works as-is.
-
-Env: PORT (default 8900).
+Env: PORT (default 8900) · LOCAL_CH_CONFIG (default ~/.clickhouse-client/config.xml).
 """
 import json
 import os
 import sys
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPA = os.path.join(ROOT, "dist", "sql.html")
 PORT = int(os.environ.get("PORT", "8900"))
-CONFIG = json.dumps({"basic_login": True, "idps": []}).encode()
+CH_CONFIG = os.environ.get("LOCAL_CH_CONFIG") or os.path.expanduser("~/.clickhouse-client/config.xml")
+
+
+def _text(conn, *names):
+    """First non-empty child text among `names` (dash/underscore variants)."""
+    for n in names:
+        el = conn.find(n)
+        if el is not None and el.text and el.text.strip():
+            return el.text.strip()
+    return ""
+
+
+def build_config():
+    """Generate config.json from the clickhouse-client connections (best-effort)."""
+    idps, hosts, seen = [], [], set()
+    try:
+        root = ET.parse(CH_CONFIG).getroot()
+    except (OSError, ET.ParseError):
+        root = None
+    for conn in (root.iter("connection") if root is not None else []):
+        name = _text(conn, "name")
+        hostname = _text(conn, "hostname")
+        if not name or not hostname:
+            continue
+        secure = _text(conn, "secure").lower() in ("1", "true", "yes")
+        http_port = _text(conn, "http_port", "http-port")
+        scheme = "https" if secure else "http"
+        url = f"{scheme}://{hostname}:{http_port}" if http_port else f"{scheme}://{hostname}"
+        oauth_url = _text(conn, "oauth-url", "oauth_url")
+        oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
+        oauth_aud = _text(conn, "oauth-audience", "oauth_audience")
+        if oauth_url and oauth_client:
+            if name not in seen:
+                idps.append({
+                    "id": name, "label": name, "issuer": oauth_url, "client_id": oauth_client,
+                    "audience": oauth_aud, "bearer": "access_token" if oauth_aud else "id_token",
+                })
+                seen.add(name)
+            hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name})
+        else:
+            hosts.append({"label": name, "url": url, "auth": "basic",
+                          "user": _text(conn, "user"), "password": _text(conn, "password")})
+    return json.dumps({"basic_login": True, "idps": idps, "hosts": hosts}).encode()
+
+
+CONFIG = build_config()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -63,10 +108,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if not os.path.exists(SPA):
         sys.exit("dist/sql.html not found - run `npm run build` first (or `npm run local`).")
+    n = json.loads(CONFIG)["hosts"]
     print(
         f"\n  Altinity SQL Browser - local static server\n"
         f"  ▸ open    http://localhost:{PORT}/sql\n"
-        f"  ▸ sign in with your ClickHouse host (e.g. http://localhost:8123) + credentials\n"
+        f"  ▸ {len(n)} saved connection(s) from {CH_CONFIG}\n"
         f"  ▸ Ctrl-C to stop\n"
     )
     try:
