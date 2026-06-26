@@ -225,6 +225,18 @@ describe('schema lineage graph', () => {
     expect(el.className).toBe('placeholder');
   });
 
+  it('explains an empty whole-DB result with the table count (no-relationships message)', () => {
+    const el = renderSchemaGraph(APP, { schemaGraph: { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [], tableCount: 201 } });
+    expect(el.className).toBe('placeholder');
+    expect(el.textContent).toMatch(/No object relationships in target_all/);
+    expect(el.textContent).toMatch(/201 tables/);
+  });
+
+  it('explains an empty table-focus result', () => {
+    const el = renderSchemaGraph(APP, { schemaGraph: { focus: { kind: 'table', db: 'd', table: 'lonely' }, nodes: [], edges: [] } });
+    expect(el.textContent).toMatch(/d\.lonely has no lineage relationships/);
+  });
+
   it('openSchemaFullscreen mounts an overlay with the legend and closes', () => {
     const overlay = openSchemaFullscreen({ document, Dagre: dagre, actions: { showSchemaGraph: vi.fn() } }, GRAPH);
     expect(document.body.contains(overlay)).toBe(true);

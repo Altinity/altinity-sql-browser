@@ -14,6 +14,21 @@ import { fitBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 
 const ZOOM_STEP = 1.2; // per wheel notch / button press
 
+/** A centred message shown in place of a graph (no nodes / nothing to draw). */
+const placeholder = (msg) => h('div', { class: 'placeholder' }, h('div', null, msg));
+
+/**
+ * Empty-state copy for a schema graph that has no relationships to draw — explains
+ * WHY (so a relationless DB doesn't look like a failure) and what to try instead.
+ */
+function schemaEmptyMessage(graph) {
+  const f = (graph && graph.focus) || {};
+  if (f.kind === 'table') return f.db + '.' + f.table + ' has no lineage relationships.';
+  const n = graph && graph.tableCount;
+  return 'No object relationships in ' + f.db
+    + (n ? ' — its ' + n + ' table' + (n === 1 ? '' : 's') + " aren't linked by a view, materialized view, dictionary, or Distributed/Buffer/Merge engine." : '.');
+}
+
 /**
  * Wire pan/zoom onto a container holding the graph `svg` (sized to fill it). The
  * viewBox starts fitted to the `dims` graph. Returns `{ fit, zoomIn, zoomOut }`
@@ -28,7 +43,9 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   svg.setAttribute('width', '100%');
   svg.setAttribute('height', '100%');
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-  const minW = dims.width / 8;
+  // Smallest viewBox (most zoomed-in). Cap at an absolute pixel floor so a very
+  // wide graph can still be zoomed to a legible node, not just to width/8.
+  const minW = Math.min(dims.width / 8, 600);
   const maxW = dims.width * 3;
   let vb = fitBox(dims.width, dims.height);
   const apply = () => svg.setAttribute('viewBox', viewBoxStr(vb));
@@ -136,9 +153,7 @@ export function buildSchemaSvg(graph, dagre, onNode) {
  */
 export function renderExplainGraph(app, r) {
   const built = buildPipelineSvg(r.rawText || '', app.Dagre);
-  if (!built.nodeCount) {
-    return h('div', { class: 'placeholder' }, h('div', null, 'No pipeline graph to display.'));
-  }
+  if (!built.nodeCount) return placeholder('No pipeline graph to display.');
   const view = h('div', { class: 'explain-graph-view', tabindex: '0' }, built.svg);
   attachPanZoom(view, built.svg, built);
   return view;
@@ -162,7 +177,7 @@ function schemaLegend() {
  * — shared by the pipeline and schema graphs. `extra` is an optional overlay node
  * (e.g. the schema legend).
  */
-function openGraphFullscreen(app, title, build, extra) {
+function openGraphFullscreen(app, title, build, extra, emptyMsg) {
   const doc = (app && app.document) || document;
   const built = build();
   const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
@@ -172,7 +187,7 @@ function openGraphFullscreen(app, title, build, extra) {
   const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
   const canvas = h('div', { class: 'graph-overlay-canvas' });
   if (!built.nodeCount) {
-    canvas.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Nothing to display.')));
+    canvas.appendChild(placeholder(emptyMsg || 'Nothing to display.'));
   } else {
     canvas.appendChild(built.svg);
     if (extra) canvas.appendChild(extra);
@@ -207,7 +222,7 @@ const schemaClick = (app) => (n) => {
 
 /** Fullscreen schema-lineage graph. */
 export function openSchemaFullscreen(app, graph) {
-  return openGraphFullscreen(app, 'Schema', () => buildSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend());
+  return openGraphFullscreen(app, 'Schema', () => buildSchemaSvg(graph, app && app.Dagre, schemaClick(app)), schemaLegend(), schemaEmptyMessage(graph));
 }
 
 /**
@@ -217,9 +232,8 @@ export function openSchemaFullscreen(app, graph) {
  */
 export function renderSchemaGraph(app, r) {
   const built = buildSchemaSvg(r.schemaGraph, app.Dagre, schemaClick(app));
-  if (!built.nodeCount) {
-    return h('div', { class: 'placeholder' }, h('div', null, 'No objects to graph.'));
-  }
+  // No connected objects → explain why instead of drawing nothing / a wide strip.
+  if (!built.nodeCount) return placeholder(schemaEmptyMessage(r.schemaGraph));
   const view = h('div', { class: 'explain-graph-view schema-graph-view', tabindex: '0' }, built.svg, schemaLegend());
   attachPanZoom(view, built.svg, built, { modifierPan: true });
   return view;

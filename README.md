@@ -110,10 +110,12 @@ target), regular views (`reads` their sources), dictionaries (`dict` from a sour
 table), and `Distributed`/`Buffer`/`Merge` engines pointing at their backing
 tables. Nodes are coloured by kind (table / view / materialized view / dictionary /
 distributed / external) with a legend; edges are coloured and labelled by
-relationship. Drag a **database** → the whole-DB lineage (isolated tables with no
-relationships are dropped so the lineage is the focus); drag a **table** → its
-1-hop neighbourhood. **Click any node** to re-centre on it, and **Expand** for a
-fullscreen pan/zoom view (same controls as the pipeline graph).
+relationship. Drag a **database** → the whole-DB lineage (it shows only the tables
+that participate in a relationship; a database whose tables aren't linked by any
+view/MV/dictionary/Distributed engine shows a "no object relationships" message
+rather than a wall of disconnected boxes); drag a **table** → its 1-hop
+neighbourhood. **Click any node** to run `SHOW CREATE` for it into the editor;
+**⌘/Ctrl-drag** to pan; **Expand** for a fullscreen pan/zoom view.
 
 Discovery is **structured-first, parse-fallback**, because the helpful
 `system.tables` columns are build-dependent: it prefers `dependencies_table` /

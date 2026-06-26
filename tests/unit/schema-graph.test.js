@@ -192,11 +192,15 @@ describe('buildSchemaGraph', () => {
     expect(ids.has('lin.orphan')).toBe(false);
   });
 
-  it('keeps all tables when a DB has no lineage at all', () => {
-    const rows = { tables: [T('lin', 'a', 'MergeTree'), T('lin', 'b', 'MergeTree')], dictionaries: [] };
-    const ids = new Set(buildSchemaGraph(rows, { kind: 'db', db: 'lin' }).nodes.map((n) => n.id));
-    expect(ids.has('lin.a')).toBe(true);
-    expect(ids.has('lin.b')).toBe(true);
+  it('returns an EMPTY graph for a DB with no relationships (lineage-only; the UI shows a message)', () => {
+    // Regression for the target_all bug: a DB of unrelated tables (e.g. all URL
+    // engine) must NOT dump every table as a disconnected node — it returns no
+    // nodes so the renderer can explain "no relationships" instead of laying out
+    // a giant unreadable strip.
+    const tables = Array.from({ length: 50 }, (_, i) => T('lin', 'url_' + i, 'URL'));
+    const g = buildSchemaGraph({ tables, dictionaries: [] }, { kind: 'db', db: 'lin' });
+    expect(g.nodes).toEqual([]);
+    expect(g.edges).toEqual([]);
   });
 
   it('never throws on a malformed Merge regex (keeps the no-throw contract)', () => {
