@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run it locally — Altinity SQL Browser</title>
+<meta name="description" content="Install the Altinity SQL Browser as a local app with one curl command. A zero-dependency Python runner reads your clickhouse-client connections and serves the SQL console at localhost:8900.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<section class="hero center">
+  <div class="wrap">
+    <span class="pill">Local app · curl | sh</span>
+    <h1>Run the SQL Browser on your laptop</h1>
+    <p class="lede">One command installs a launcher and a zero-dependency Python runner. It serves the app at
+      <code class="code-inline" style="color:#7fd4e8;">localhost:8900/sql</code> and points it at the clusters
+      already in your <code class="code-inline" style="color:#7fd4e8;">clickhouse-client</code> config.</p>
+    <div class="curl">
+      <code>curl&nbsp;-fsSL&nbsp;https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh&nbsp;|&nbsp;sh</code>
+      <button class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh">Copy</button>
+    </div>
+    <p style="font-size:.9rem;color:#8ba2af;margin-top:14px;">Needs only <strong style="color:#c8e9f3;">python3</strong> (preinstalled on macOS &amp; Linux) plus curl or wget.</p>
+  </div>
+</section>
+
+<!-- screenshot of picker -->
+<section style="padding:44px 0;">
+  <div class="wrap">
+    <figure class="shot zoom" style="max-width:720px;margin:0 auto;background:#fff;">
+      <img src="assets/img/login-local.png" alt="The local app's login screen with a Saved connection dropdown listing the clusters from clickhouse-client, and a Target of localhost:8900." loading="lazy">
+    </figure>
+    <p style="text-align:center;color:var(--faint);font-size:.9rem;margin-top:14px;">
+      The launcher opens a connection picker built from your saved <code class="k">clickhouse-client</code> connections.
+    </p>
+  </div>
+</section>
+
+<!-- what happens -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="section-head">
+      <div class="eyebrow">What the one-liner does</div>
+      <h2>Four steps, no build toolchain</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <h4>Resolves the latest release</h4>
+        <p>Asks the GitHub API for the newest tag, then downloads
+          <code class="k">altinity-sql-browser.tar.gz</code> and verifies its SHA-256 checksum.</p>
+      </li>
+      <li>
+        <h4>Installs into your home directory</h4>
+        <p>Extracts the prebuilt <code class="k">sql.html</code> and the Python runner into
+          <code class="k">~/.altinity-sql-browser</code>, and drops a launcher at
+          <code class="k">~/.local/bin/altinity-sql-browser</code>.</p>
+      </li>
+      <li>
+        <h4>Adds sample connections</h4>
+        <p>Installs <code class="k">~/.clickhouse-client/sql-browser.xml</code> with public demo endpoints —
+          <em>without</em> touching your real <code class="k">config.xml</code>.</p>
+      </li>
+      <li>
+        <h4>Ready to launch</h4>
+        <p>Run <code class="k">altinity-sql-browser</code> and it boots the runner, probes which clusters are
+          reachable, and opens <code class="k">http://localhost:8900/sql</code>.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- runner detail -->
+<section>
+  <div class="wrap narrow">
+    <div class="eyebrow">The runner</div>
+    <h2>A thin, zero-dependency Python server</h2>
+    <p>There's nothing to proxy: the browser talks to ClickHouse directly. The runner only serves the SPA and a
+      generated <code class="k">config.json</code>. It merges connections from your own
+      <code class="k">~/.clickhouse-client/config.xml</code> (which wins on a name clash) and the sample
+      <code class="k">sql-browser.xml</code>, and offers each as a <strong>Saved connection</strong>:</p>
+    <ul style="color:var(--mute);">
+      <li>plain connections (host / user / password) pre-fill the credentials form;</li>
+      <li>connections carrying <code class="k">oauth-*</code> keys become an SSO sign-in against that cluster.</li>
+    </ul>
+    <p>At startup it probes each connection's HTTP interface — trying both standard ports (443 then 8443 for
+      secure, 8123 then 80 for plain) and using whichever answers on <code class="k">/ping</code> — and skips
+      native-only endpoints so they aren't dead picks.</p>
+
+    <h3 style="margin-top:26px;">Run it from a source checkout instead</h3>
+    <pre class="code">npm run local      <span class="c"># build dist/sql.html, then start the picker on :8900</span></pre>
+
+    <h3 style="margin-top:26px;">Environment overrides</h3>
+    <div class="table-scroll">
+      <table class="cmp">
+        <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td><code class="k">PORT</code></td><td class="feat">Listen port (default <code class="k">8900</code>).</td></tr>
+          <tr><td><code class="k">ASB_VERSION</code></td><td class="feat">Install a specific release tag (default: latest).</td></tr>
+          <tr><td><code class="k">ASB_HOME</code></td><td class="feat">Install directory (default <code class="k">~/.altinity-sql-browser</code>).</td></tr>
+          <tr><td><code class="k">ASB_BIN</code></td><td class="feat">Launcher directory (default <code class="k">~/.local/bin</code>).</td></tr>
+          <tr><td><code class="k">LOCAL_CH_CONFIG</code></td><td class="feat">Use a single explicit connections file.</td></tr>
+          <tr><td><code class="k">SQL_BROWSER_PROBE</code></td><td class="feat">Set <code class="k">0</code> to keep all hosts (skip the reachability probe).</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout" style="margin-top:24px;"><strong>Queries go straight to ClickHouse.</strong> The runner
+      never sees your data — it only hands the browser the app and the list of hosts. Credentials and tokens
+      stay in the tab's <code class="k">sessionStorage</code>.</div>
+  </div>
+</section>
+
+<!-- try public -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="eyebrow">Try it against public data</div>
+    <h2>Bundled demo endpoints</h2>
+    <p>The sample connection file ships with public ClickHouse demos, so you can explore immediately:</p>
+    <div class="grid cols-3">
+      <div class="card"><h3>antalya</h3><p>Altinity Antalya demo — the <code class="k">ontime</code> flight dataset.</p></div>
+      <div class="card"><h3>clickhouse-sql</h3><p>The public ClickHouse playground (read-only).</p></div>
+      <div class="card"><h3>altinity-demo</h3><p>Altinity github.demo cluster.</p></div>
+    </div>
+    <p style="margin-top:22px;">Want a guided tour? Load the <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ONTIME-CHART-DEMO.md">ontime chart demo</a> —
+      ten ready-made queries that walk through every chart type.</p>
+  </div>
+</section>
+
+<section class="cta-band">
+  <div class="wrap">
+    <h2>Install it now</h2>
+    <div class="curl" style="margin:22px auto 0;">
+      <code>curl&nbsp;-fsSL&nbsp;https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh&nbsp;|&nbsp;sh</code>
+      <button class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh">Copy</button>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

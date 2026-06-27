@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployment — Altinity SQL Browser</title>
+<meta name="description" content="Three ways to deploy the Altinity SQL Browser: hosted on your ClickHouse cluster, as a local curl-installed app, or from a source checkout. Plus OAuth setup and security headers.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<section class="hero center" style="padding:60px 0 50px;">
+  <div class="wrap">
+    <span class="pill">Deployment</span>
+    <h1>Three deployment modes</h1>
+    <p class="lede">Pick the one that fits: a shared app hosted on your cluster, a personal local app, or a
+      dev checkout. They all build from the same single-file artifact.</p>
+  </div>
+</section>
+
+<!-- comparison -->
+<section>
+  <div class="wrap">
+    <div class="table-scroll">
+      <table class="cmp">
+        <thead>
+          <tr><th>&nbsp;</th><th>Hosted on ClickHouse</th><th>Local app (curl)</th><th>From source</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="feat">Who it's for</td><td>A whole team, shared URL</td><td>One developer, your laptop</td><td>Contributors</td></tr>
+          <tr><td class="feat">Served from</td><td>ClickHouse <code class="k">/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td></tr>
+          <tr><td class="feat">Prerequisites</td><td>Cluster admin + an IdP</td><td><code class="k">python3</code> + curl</td><td>Node.js + npm</td></tr>
+          <tr><td class="feat">Auth</td><td class="yes">SSO (OIDC) or Basic</td><td>Your saved connections</td><td>Your saved connections</td></tr>
+          <tr><td class="feat">Connects to</td><td>That cluster</td><td>Any cluster in your config</td><td>Any cluster in your config</td></tr>
+          <tr><td class="feat">Install</td><td><code class="k">deploy/install.sh</code></td><td>one <code class="k">curl | sh</code></td><td><code class="k">npm run local</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Mode 1: hosted -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="eyebrow">Mode 1 · Hosted on ClickHouse</div>
+    <h2>Serve it from your cluster</h2>
+    <p>The SPA and its <code class="k">config.json</code> are uploaded into ClickHouse's
+      <code class="k">user_files</code> directory; HTTP handlers serve them at <code class="k">/sql</code> and
+      <code class="k">/sql/config.json</code>. Every query then carries the signed-in user's JWT, validated by
+      ClickHouse's token processor (or a delegated verifier), so users get exactly their own grants.</p>
+
+    <p>One installer renders the config, fills the CSP <code class="k">connect-src</code> from your IdP's OIDC
+      discovery document, and uploads everything:</p>
+    <pre class="code"><span class="c"># builds dist/sql.html, renders config + http_handlers.xml, uploads to user_files</span>
+CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
+  --ch-host clickhouse.example.com \
+  --ch-user admin \
+  --client-id &lt;oauth-client-id&gt; \
+  [--issuer https://accounts.google.com] \
+  [--audience &lt;api-audience&gt;] \
+  [--cluster &lt;cluster-name&gt;] [--secure]</pre>
+
+    <div class="callout"><strong>Public file, by design.</strong> <code class="k">config.json</code> is served to
+      browsers, so prefer a PKCE public client. If your IdP requires a <code class="k">client_secret</code>,
+      lock the redirect URI and treat the file as public.</div>
+
+    <h3 style="margin-top:28px;">OAuth in three shapes</h3>
+    <div class="grid cols-3" style="margin-top:12px;">
+      <div class="card"><h3>Public PKCE</h3><p>Recommended. Register a SPA / public client and omit the secret entirely.</p></div>
+      <div class="card"><h3>Web client + secret</h3><p>Some IdPs require a <code class="k">client_secret</code> even with PKCE — put it in <code class="k">config.json</code> and lock the redirect URI.</p></div>
+      <div class="card"><h3>Server-side broker</h3><p>An auth proxy holds the secret and exposes a public PKCE flow; <code class="k">config.json</code> stays empty.</p></div>
+    </div>
+
+    <p style="margin-top:24px;">Full walk-throughs, including stock-ClickHouse JWT verification:</p>
+    <p>
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/DEPLOYMENT.md">DEPLOYMENT.md</a> ·
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/CLICKHOUSE-OAUTH.md">CLICKHOUSE-OAUTH.md</a> ·
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/CLICKHOUSE-OSS-OAUTH.md">OSS (delegated verifier)</a> ·
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/ASSET-DISTRIBUTION.md">ASSET-DISTRIBUTION.md</a>
+    </p>
+  </div>
+</section>
+
+<!-- Mode 2: local -->
+<section>
+  <div class="wrap narrow">
+    <div class="eyebrow">Mode 2 · Local app</div>
+    <h2>Run it on your laptop with one command</h2>
+    <p>A <code class="k">curl | sh</code> installer downloads the latest release bundle (the prebuilt
+      <code class="k">sql.html</code> plus a zero-dependency Python runner) and installs a launcher. The runner
+      reads the clusters from your <code class="k">~/.clickhouse-client/config.xml</code> and serves the app at
+      <code class="k">localhost:8900/sql</code>.</p>
+    <div class="curl" style="margin:0 0 18px;max-width:none;">
+      <code>curl&nbsp;-fsSL&nbsp;https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh&nbsp;|&nbsp;sh</code>
+      <button class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh">Copy</button>
+    </div>
+    <p>It only needs <code class="k">python3</code> (preinstalled on macOS/Linux) and curl or wget.
+      <a href="local-app.html">See the full local-app guide →</a></p>
+  </div>
+</section>
+
+<!-- Mode 3: source -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="eyebrow">Mode 3 · From source</div>
+    <h2>Build and develop</h2>
+    <pre class="code">git clone https://github.com/Altinity/altinity-sql-browser
+cd altinity-sql-browser
+npm install
+npm run local      <span class="c"># build + connection picker at localhost:8900/sql</span>
+npm run build      <span class="c"># produce dist/sql.html</span>
+npm test           <span class="c"># vitest + coverage gate</span></pre>
+    <p>Source is vanilla ES modules with no framework. Pure logic lives in <code class="k">src/core/</code>,
+      network in <code class="k">src/net/</code> (with an injected fetch seam), and DOM rendering in
+      <code class="k">src/ui/</code>. esbuild inlines everything — including Chart.js and the graph layout
+      engine — into the single served file.</p>
+  </div>
+</section>
+
+<!-- security -->
+<section>
+  <div class="wrap narrow">
+    <div class="eyebrow">Hardening</div>
+    <h2>Security headers out of the box</h2>
+    <p>The hosted handler ships a strict Content-Security-Policy: <code class="k">default-src 'none'</code>
+      with an explicit allowlist, <code class="k">connect-src</code> bounded to your cluster and IdP origins,
+      <code class="k">frame-ancestors 'none'</code>, plus <code class="k">X-Content-Type-Options: nosniff</code>
+      and <code class="k">Referrer-Policy: no-referrer</code>. The installer fills the IdP origins automatically
+      from OIDC discovery.</p>
+  </div>
+</section>
+
+<section class="cta-band">
+  <div class="wrap">
+    <h2>Ready to deploy?</h2>
+    <p>Start with the local app, or wire it into your cluster.</p>
+    <div class="hero-cta" style="margin-top:24px;">
+      <a class="btn btn-primary" href="local-app.html">Install the local app →</a>
+      <a class="btn btn-ghost" href="https://github.com/Altinity/altinity-sql-browser/blob/main/docs/DEPLOYMENT.md">Cluster deploy docs ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

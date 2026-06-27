@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Altinity SQL Browser — an OAuth-gated SQL console for ClickHouse</title>
+<meta name="description" content="A zero-dependency, OAuth-gated SQL browser for any ClickHouse cluster. Charts, EXPLAIN graphs, schema lineage, autocomplete — one self-contained HTML file. Run it locally with one curl command.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+<meta property="og:title" content="Altinity SQL Browser">
+<meta property="og:description" content="A zero-dependency, OAuth-gated SQL console for any ClickHouse cluster — charts, EXPLAIN graphs, schema lineage. Install locally with one curl command.">
+<meta property="og:type" content="website">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<section class="hero center">
+  <div class="wrap">
+    <span class="pill">Zero dependencies · One HTML file</span>
+    <h1>A SQL console for ClickHouse<br>that you can host anywhere</h1>
+    <p class="lede">An OAuth-gated query browser with charts, EXPLAIN pipeline graphs, schema lineage and
+      smart autocomplete — built as a single self-contained HTML file. Serve it from ClickHouse itself,
+      or run it locally with one command.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="https://antalya.demo.altinity.cloud/sql">Try the live demo ↗</a>
+      <a class="btn btn-ghost" href="local-app.html">Run it locally →</a>
+    </div>
+    <div class="curl">
+      <code>curl&nbsp;-fsSL&nbsp;https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh&nbsp;|&nbsp;sh</code>
+      <button class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh">Copy</button>
+    </div>
+  </div>
+</section>
+
+<!-- Hero screenshot -->
+<section style="padding-top:48px;padding-bottom:48px;">
+  <div class="wrap">
+    <figure class="shot zoom" style="max-width:980px;margin:0 auto;">
+      <img src="assets/img/chart-column-dark.png" alt="The Altinity SQL Browser showing a query result rendered as a column chart, with the schema tree and saved-query library in the sidebar." loading="lazy">
+    </figure>
+    <p style="text-align:center;color:var(--faint);font-size:.9rem;margin-top:14px;">
+      Query → table → chart, with a schema tree, tabbed editor and saved-query library — all in one page.
+    </p>
+  </div>
+</section>
+
+<!-- Value props -->
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Why it's different</div>
+      <h2>A full query workbench with no backend to run</h2>
+      <p>The browser talks straight to ClickHouse over HTTP. There is no app server, no database of its own,
+        and no third-party requests — just one HTML file and your OAuth provider.</p>
+    </div>
+    <div class="grid cols-3">
+      <div class="card">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 8 8 8 8s8-3 8-8V6l-8-4z"/></svg></div>
+        <h3>OAuth-gated, no static secret</h3>
+        <p>Each user signs in with your IdP (any OIDC provider) via Authorization-Code + PKCE. ClickHouse
+          sees their JWT and enforces their own grants. The app never holds a shared credential.</p>
+      </div>
+      <div class="card">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
+        <h3>One self-contained file</h3>
+        <p>esbuild bundles everything — including Chart.js and the graph layout engine — into a single
+          <code class="k">sql.html</code>. No CDN, no fonts, no external calls. Serve it from ClickHouse's
+          <code class="k">user_files</code> and you're done.</p>
+      </div>
+      <div class="card">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5m0 14h16M8 16l3-4 3 2 4-6"/></svg></div>
+        <h3>More than a textarea</h3>
+        <p>Charts, five EXPLAIN views including a pipeline graph, full schema-lineage diagrams, autocomplete
+          from <code class="k">system.*</code>, find/replace, a saved-query library and share links.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Deployment modes -->
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">Three ways to run it</div>
+      <h2>Deploy it your way</h2>
+      <p>The same artifact runs as a hosted app on your cluster, as a local desktop-style app, or straight
+        from a dev checkout.</p>
+    </div>
+    <div class="modes">
+      <div class="mode">
+        <div class="tag">Hosted on ClickHouse</div>
+        <h3>Served from your cluster</h3>
+        <p>Upload the SPA + config to <code class="k">user_files</code> and let ClickHouse's HTTP handlers
+          serve it at <code class="k">/sql</code>, gated by your IdP.</p>
+        <ul>
+          <li>Shared, always-on URL for your team</li>
+          <li>SSO via any OIDC provider</li>
+          <li>One <code class="k">deploy/install.sh</code> command</li>
+        </ul>
+        <div class="foot"><a class="btn btn-dark" href="deployment.html">Deployment guide →</a></div>
+      </div>
+      <div class="mode featured">
+        <div class="tag">Local app · curl | sh</div>
+        <h3>Run it on your laptop</h3>
+        <p>One command installs a launcher and a zero-dependency Python runner. Point it at the clusters in
+          your <code class="k">clickhouse-client</code> config.</p>
+        <ul>
+          <li>Needs only <code class="k">python3</code></li>
+          <li>Reads your saved connections</li>
+          <li>Nothing leaves your machine but queries</li>
+        </ul>
+        <div class="foot"><a class="btn btn-primary" href="local-app.html">Install locally →</a></div>
+      </div>
+      <div class="mode">
+        <div class="tag">From source</div>
+        <h3>Develop &amp; build</h3>
+        <p>Clone the repo, <code class="k">npm run local</code>, and iterate. The tested ES modules build to
+          the single artifact via esbuild.</p>
+        <ul>
+          <li>Vanilla ES modules, no framework</li>
+          <li>100% coverage on the core layers</li>
+          <li>Playwright + vitest test suites</li>
+        </ul>
+        <div class="foot"><a class="btn btn-dark" href="https://github.com/Altinity/altinity-sql-browser#quick-start-development">Quick start →</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- How it works -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2>No app-specific backend</h2>
+      <p>The only moving parts are ClickHouse's HTTP interface and your OAuth provider.</p>
+    </div>
+    <div class="flow">browser ──https──▶ ClickHouse   GET /sql            → the SPA (one HTML file)
+                            GET /sql/config.json → { issuer, client_id }
+   │  OAuth2 Authorization-Code + PKCE via OIDC discovery (any IdP)
+   │  id_token kept in sessionStorage, silently refreshed
+   ▼
+ClickHouse  POST /  Authorization: Bearer &lt;id_token&gt;   ← every query
+            (validated by CH token_processor / JWKS, or a delegated verifier)</div>
+    <p style="text-align:center;margin-top:20px;"><a href="features.html">Explore every feature →</a></p>
+  </div>
+</section>
+
+<!-- Final CTA -->
+<section class="cta-band">
+  <div class="wrap">
+    <h2>Start querying in a minute</h2>
+    <p>Try the public demo, or install the local app with one command.</p>
+    <div class="hero-cta" style="margin-top:24px;">
+      <a class="btn btn-primary" href="https://antalya.demo.altinity.cloud/sql">Open the live demo ↗</a>
+      <a class="btn btn-ghost" href="https://github.com/Altinity/altinity-sql-browser">Star on GitHub ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

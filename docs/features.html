@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Features — Altinity SQL Browser</title>
+<meta name="description" content="Charts, EXPLAIN pipeline graphs, schema-lineage diagrams, autocomplete from system.*, find/replace, a saved-query library, share links and SSO — a full tour of the Altinity SQL Browser.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="features.html">Features</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<section class="hero center" style="padding:60px 0 50px;">
+  <div class="wrap">
+    <span class="pill">Feature tour</span>
+    <h1>Everything in one query workbench</h1>
+    <p class="lede">A custom editor, rich result views, query plans you can <em>see</em>, and a map of how your
+      tables connect — all without a single third-party request.</p>
+  </div>
+</section>
+
+<!-- Charts -->
+<section>
+  <div class="wrap">
+    <div class="feature-row">
+      <div class="txt">
+        <div class="eyebrow">Result views</div>
+        <h3>Table, JSON &amp; charts from any query</h3>
+        <p>Every result set switches between a sortable table, raw JSON, and a chart — without re-running.
+          The chart view auto-detects axis roles (a date becomes a time series, a category becomes bars) and
+          lets you override type, X, Y and series.</p>
+        <ul>
+          <li>Line · Bar · Column · Area · Pie</li>
+          <li>Multi-series &amp; "all measures" plotting</li>
+          <li>Chart config saved with the query and in share links</li>
+          <li>CSV / TSV export and copy-to-clipboard</li>
+        </ul>
+      </div>
+      <figure class="shot zoom"><img src="assets/img/chart-column-dark.png" alt="A monthly-flights query rendered as a vertical column chart with a TYPE/X/Y config bar." loading="lazy"></figure>
+    </div>
+
+    <div class="feature-row reverse">
+      <div class="txt">
+        <div class="eyebrow">Result views</div>
+        <h3>Pick the shape that tells the story</h3>
+        <p>A small categorical breakdown becomes a pie with a legend; a time series becomes a line. The same
+          result is one click away from a clean table with sortable, type-aware columns and live row/byte/time stats.</p>
+      </div>
+      <figure class="shot zoom"><img src="assets/img/chart-pie-dark.png" alt="A cancellation-reasons query rendered as a pie chart with a legend." loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<!-- EXPLAIN -->
+<section class="alt">
+  <div class="wrap">
+    <div class="feature-row">
+      <div class="txt">
+        <div class="eyebrow">Query plans</div>
+        <h3>See the pipeline, not just the text</h3>
+        <p>One <strong>Explain</strong> click gives five views — Explain, Indexes, Projections, Pipeline and
+          Estimate. The Pipeline view renders <code class="k">EXPLAIN PIPELINE graph</code> as a real
+          boxes-and-arrows DAG you can pan, zoom and open fullscreen.</p>
+        <ul>
+          <li>Processor graph laid out automatically</li>
+          <li>Index &amp; projection analysis tabs</li>
+          <li>Auto-wraps your query — your editor is untouched</li>
+        </ul>
+      </div>
+      <figure class="shot zoom"><img src="assets/img/explain-pipeline-fullscreen-dark.png" alt="The EXPLAIN PIPELINE graph shown fullscreen as a vertical DAG of processors." loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<!-- Lineage -->
+<section>
+  <div class="wrap">
+    <div class="feature-row reverse">
+      <div class="txt">
+        <div class="eyebrow">Schema lineage</div>
+        <h3>A live map of how your data connects</h3>
+        <p>Drag a database or table onto the results pane to draw its lineage: materialized views, target
+          tables, plain views and dictionaries, colour-coded by engine with <em>feeds</em>, <em>writes</em>,
+          <em>reads</em> and <em>dict</em> edges. Open it fullscreen to drag nodes (with undo/redo) and click
+          any node for its columns, keys and DDL.</p>
+        <ul>
+          <li>Materialized views, dictionaries, Distributed / Buffer / Merge</li>
+          <li>Transitive, cross-database relationships</li>
+          <li>Drag-move layout with undo/redo · detail pane per node</li>
+        </ul>
+      </div>
+      <figure class="shot zoom"><img src="assets/img/lineage-fullscreen-dark.png" alt="A schema-lineage graph: events_raw feeding three materialized views that write to target tables, a products table feeding a dictionary, and a view reading from daily_sales." loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<!-- Editor -->
+<section class="alt">
+  <div class="wrap">
+    <div class="feature-row">
+      <div class="txt">
+        <div class="eyebrow">SQL editor</div>
+        <h3>Autocomplete that knows your server</h3>
+        <p>The editor reads <code class="k">system.keywords</code>, <code class="k">system.functions</code> and
+          your schema once per connection, so completion, highlighting and signature help match the exact
+          ClickHouse version you're on — and never fire a query on the keystroke path.</p>
+        <ul>
+          <li>Ranked completions: databases, tables, columns, functions, keywords</li>
+          <li>Function signature help &amp; hover docs</li>
+          <li>Find/replace with regex · bracket matching · multi-tab</li>
+        </ul>
+      </div>
+      <figure class="shot zoom"><img src="assets/img/autocomplete-dark.png" alt="The editor showing a ranked autocomplete dropdown with table, function and keyword entries, above a schema-lineage graph." loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<!-- Workbench grid -->
+<section>
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">And the rest of the workbench</div>
+      <h2>Built for everyday querying</h2>
+    </div>
+    <div class="grid cols-3">
+      <div class="card"><h3>Schema explorer</h3><p>A filterable tree of databases → tables → columns with engines and row counts. Double-click to insert names; drag onto the editor or the results pane.</p></div>
+      <div class="card"><h3>Saved-query library</h3><p>Name, describe and star queries; search them; import/export the whole library as JSON, Markdown or SQL. A non-persistent history tracks recent runs.</p></div>
+      <div class="card"><h3>Share links</h3><p>Encode a query (and its chart config) into a URL — open it and land on the same query. Zero server-side state.</p></div>
+      <div class="card"><h3>Streaming results</h3><p>Results stream in with a live progress bar and row/byte/time counters. Cancel a running query and keep the partial output.</p></div>
+      <div class="card"><h3>Tabbed workspace</h3><p>Multiple query tabs, each with its own editor, result view and chart config. Resizable editor / sidebar split.</p></div>
+      <div class="card"><h3>Dark &amp; light themes</h3><p>A polished design-token palette in both themes, with native OS fonts — no web-font downloads.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Auth -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="section-head">
+      <div class="eyebrow">Authentication</div>
+      <h2>Sign in the way your cluster expects</h2>
+    </div>
+    <div class="grid cols-2">
+      <div class="card"><h3>SSO via any OIDC IdP</h3><p>Google, Auth0, Okta and friends — Authorization-Code + PKCE, discovered from <code class="k">/.well-known/openid-configuration</code>. The login screen can offer several providers.</p></div>
+      <div class="card"><h3>Credentials &amp; passwordless</h3><p>HTTP Basic username/password for clusters without OAuth, including username-only connect for demo clusters. Tokens and credentials live only in <code class="k">sessionStorage</code>.</p></div>
+    </div>
+    <p style="text-align:center;margin-top:28px;"><a class="btn btn-dark" href="deployment.html">See deployment &amp; auth setup →</a></p>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="index.html">Home</a>
+      <a href="deployment.html">Deployment</a>
+      <a href="local-app.html">Local app</a>
+      <a href="screenshots.html">Screenshots</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>
