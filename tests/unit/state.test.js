@@ -27,7 +27,7 @@ describe('newTabObj', () => {
 describe('createState', () => {
   it('uses defaults', () => {
     const s = createState(reader());
-    expect(s.theme).toBe('dark');
+    expect(s.theme).toBe('light');
     expect(s.sidebarPx).toBe(248);
     expect(s.editorPct).toBe(45);
     expect(s.sideSplitPct).toBe(58);

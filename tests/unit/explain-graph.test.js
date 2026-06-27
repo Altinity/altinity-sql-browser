@@ -347,6 +347,57 @@ describe('schema lineage graph', () => {
     expect(overlayOf().textContent).toMatch(/Could not load/);
     expect(document.querySelector('.share-toast')).not.toBeNull();
   });
+
+  it('render()/fail() are no-ops once the view was closed (closed before the lineage loaded)', () => {
+    // Pop-up blocked → overlay opens showing Loading…; user closes it (Esc) while
+    // the fetch is still pending, THEN render() arrives. It must not mount the graph
+    // or attach the (leaking) main-document key handlers.
+    const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // close before render
+    expect(overlayOf()).toBeNull();
+    view.render(GRAPH); // late-arriving fetch result
+    expect(document.querySelector('g.eg-card')).toBeNull(); // nothing mounted
+    view.fail('too late'); // also a no-op (no toast)
+    expect(document.querySelector('.share-toast')).toBeNull();
+    // the leaked keydown handler is gone: a ⌘Z in the editor is not preventDefaulted
+    const ev = new KeyboardEvent('keydown', { key: 'z', metaKey: true, cancelable: true });
+    document.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('overlay theme toggle drives the app’s own toggleTheme (keeps state/pref/header in sync)', () => {
+    const toggleTheme = vi.fn();
+    const view = openSchemaView({ document, Dagre: dagre, openWindow: () => null, toggleTheme, actions: { openNodeDetail: vi.fn() } });
+    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    view.render(GRAPH);
+    overlayOf().querySelector('button[title="Toggle theme"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(toggleTheme).toHaveBeenCalledTimes(1); // routed through the app, not a stray data-theme flip
+  });
+
+  it('clears the latched .modkey cursor when the window loses focus', () => {
+    const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
+    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    view.render(GRAPH);
+    document.dispatchEvent(new KeyboardEvent('keydown', { metaKey: true, key: 'Meta' }));
+    expect(canvas.classList.contains('modkey')).toBe(true);
+    window.dispatchEvent(new Event('blur')); // keyup may never arrive on blur
+    expect(canvas.classList.contains('modkey')).toBe(false);
+  });
+
+  it('refits on window resize and drops the listener once the overlay is gone', () => {
+    const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
+    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    view.render(GRAPH);
+    const svg = canvas.querySelector('svg.explain-graph');
+    window.dispatchEvent(new Event('resize')); // connected → refit, no throw
+    expect(svg.getAttribute('viewBox')).not.toBeNull();
+    overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    window.dispatchEvent(new Event('resize')); // disconnected → self-removes, no throw
+    expect(document.querySelector('.graph-overlay')).toBeNull();
+  });
 });
 
 describe('openSchemaView — real browser tab', () => {
@@ -444,7 +495,7 @@ describe('openSchemaView — real browser tab', () => {
     const incBefore = incident.getAttribute('d');
     const otherBefore = other.getAttribute('d');
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
-    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     expect(card.getAttribute('transform')).toMatch(/translate\(/);
     expect(incident.getAttribute('d')).not.toBe(incBefore); // incident edge re-routed straight
     expect(other.getAttribute('d')).toBe(otherBefore); // non-incident edge untouched
@@ -466,7 +517,7 @@ describe('openSchemaView — real browser tab', () => {
     const key = (opts) => win.document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...opts }));
     // perform a move
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
-    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     const moved = card.getAttribute('transform');
     expect(moved).toMatch(/translate\(/);
@@ -499,7 +550,7 @@ describe('openSchemaView — real browser tab', () => {
     expect(redoBtn.disabled).toBe(true);
     const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
-    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     const moved = card.getAttribute('transform');
     expect(undoBtn.disabled).toBe(false); // a move is now undoable
@@ -520,7 +571,7 @@ describe('openSchemaView — real browser tab', () => {
     view.render({ ...GRAPH, savedPositions: {} });
     const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
     card.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, bubbles: true })); // no modifier
-    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     expect(card.getAttribute('transform')).toBeNull();
     canvas.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 5, clientY: 5, bubbles: true })); // empty space
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 50, clientY: 50, bubbles: true }));
@@ -541,9 +592,101 @@ describe('openSchemaView — real browser tab', () => {
     view.render(GRAPH); // no savedPositions
     const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
-    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); // no throw
     expect(card.getAttribute('transform')).toMatch(/translate\(/);
+  });
+
+  it('ends the drag when the button is released off-window (a no-button mousemove)', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    stub(canvas);
+    view.render({ ...GRAPH, savedPositions: {} });
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
+    const moved = card.getAttribute('transform');
+    expect(moved).toMatch(/translate\(/);
+    // buttons === 0 means the button was released outside the window → drag ends.
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 200, clientY: 200, buttons: 0, bubbles: true }));
+    expect(canvas.classList.contains('grabbing')).toBe(false);
+    // a subsequent move (even with a button) no longer relocates the node
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, buttons: 1, bubbles: true }));
+    expect(card.getAttribute('transform')).toBe(moved);
+  });
+
+  it('a plain (no-modifier) press on a card does not pan; on empty canvas it does', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    stub(canvas);
+    view.render({ ...GRAPH, savedPositions: {} });
+    const svg = canvas.querySelector('svg.explain-graph');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    // plain press on a card is swallowed → the canvas does not pan
+    const vbBefore = svg.getAttribute('viewBox');
+    card.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
+    canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 160, buttons: 1, bubbles: true }));
+    expect(svg.getAttribute('viewBox')).toBe(vbBefore); // no pan from a card
+    canvas.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    // plain press on EMPTY canvas falls through to the pan handler → viewBox moves
+    canvas.dispatchEvent(new MouseEvent('mousedown', { clientX: 5, clientY: 5, buttons: 1, bubbles: true }));
+    canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 80, clientY: 80, buttons: 1, bubbles: true }));
+    expect(svg.getAttribute('viewBox')).not.toBe(vbBefore); // empty-canvas plain drag pans
+  });
+
+  it('repositions edge labels with a moved node and tolerates an unlabelled incident edge', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    stub(canvas);
+    // lin.a has a labelled edge (feeds) and an unlabelled one (kind '') incident to it.
+    const g = {
+      focus: { kind: 'db', db: 'lin' },
+      nodes: [
+        { id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a' },
+        { id: 'lin.mv', label: 'mv', kind: 'mv', db: 'lin', name: 'mv' },
+        { id: 'lin.x', label: 'x', kind: 'table', db: 'lin', name: 'x' },
+      ],
+      edges: [
+        { from: 'lin.a', to: 'lin.mv', kind: 'feeds' },
+        { from: 'lin.a', to: 'lin.x', kind: '' }, // falsy kind → no label rendered
+      ],
+      savedPositions: {},
+    };
+    view.render(g);
+    const label = canvas.querySelector('text[data-lbl-eidx]');
+    expect(label).not.toBeNull();
+    const lblBefore = label.getAttribute('x');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 220, clientY: 220, buttons: 1, bubbles: true })); // no throw on the unlabelled edge
+    win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    expect(label.getAttribute('x')).not.toBe(lblBefore); // label followed its edge
+  });
+
+  it('a ⌘ press with no movement records nothing (no undoable op)', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    stub(canvas);
+    view.render({ ...GRAPH, savedPositions: {} });
+    const undoBtn = win.document.querySelector('button[title="Undo move (⌘Z)"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
+    win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); // released without moving
+    expect(card.getAttribute('transform')).toBeNull(); // never moved
+    expect(undoBtn.disabled).toBe(true); // nothing recorded
+  });
+
+  it('titles a table-focus view "Schema:<db>.<table>"', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    stub(win.document.querySelector('.graph-overlay-canvas'));
+    view.render({ ...GRAPH, focus: { kind: 'table', db: 'lin', table: 'events' } });
+    expect(win.document.title).toBe('Schema:lin.events');
+    expect(win.document.querySelector('.graph-overlay-title').textContent).toBe('Schema: lin.events');
   });
 
   it('⌘/Ctrl toggles the hand-cursor (.modkey) class', () => {

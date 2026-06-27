@@ -43,7 +43,7 @@ export function createState(read = { loadJSON, loadStr }) {
   const num = (key, dflt, lo, hi) => clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
   return {
     nextTabId: 2,
-    theme: read.loadStr(KEYS.theme, 'dark'),
+    theme: read.loadStr(KEYS.theme, 'light'),
     density: 'comfortable',
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),

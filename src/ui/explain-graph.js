@@ -47,6 +47,11 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   // fitWidth: frame the graph to fill the container's WIDTH and let the height
   // overflow (pan/scroll down) — used by the schema full view, which can be tall.
   const fitWidth = !!opts.fitWidth;
+  // refitOnResize: re-fit when the window resizes. Set for the standalone schema
+  // tab + the fullscreen overlays (whose container tracks the viewport); left off
+  // for the small inline result pane, which re-renders often and shouldn't reset
+  // a user's pan/zoom on every layout change.
+  const refitOnResize = !!opts.refitOnResize;
   svg.setAttribute('width', '100%');
   svg.setAttribute('height', '100%');
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -69,8 +74,8 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   // Pan by pixel deltas (drag grabs the content; wheel scrolls the viewport — the
   // caller passes the appropriate sign).
   const panBy = (dxPx, dyPx) => {
-    const r = container.getBoundingClientRect();
-    vb = panBox(vb, dxPx * (vb.w / r.width), dyPx * (vb.h / r.height));
+    const { dx, dy } = dragDeltaToSvg(dxPx, dyPx, vb, container.getBoundingClientRect());
+    vb = panBox(vb, dx, dy);
     apply();
   };
   const centre = () => { const r = container.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
@@ -95,6 +100,16 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   container.addEventListener('mouseup', end);
   container.addEventListener('mouseleave', end);
   container.addEventListener('dblclick', fit);
+  // Refit on window resize so the viewBox aspect keeps matching the container —
+  // otherwise preserveAspectRatio letterboxes and drag/pan stop tracking the
+  // pointer (notably when the standalone schema tab is resized). The listener
+  // removes itself once the container leaves the DOM (overlay/tab closed); a
+  // detached document (defaultView null) never gets one in the first place.
+  const win = container.ownerDocument.defaultView;
+  if (win && refitOnResize) {
+    const onResize = () => { if (container.isConnected) fit(); else win.removeEventListener('resize', onResize); };
+    win.addEventListener('resize', onResize);
+  }
 
   apply();
   return { fit, zoomIn: () => { const c = centre(); zoomAt(ZOOM_STEP, c.x, c.y); }, zoomOut: () => { const c = centre(); zoomAt(1 / ZOOM_STEP, c.x, c.y); } };
@@ -126,8 +141,14 @@ function graphSvgWithEdges(g, edgeClass, edgeLabel) {
     svg.appendChild(s('path', { class: edgeClass(e), d, 'marker-end': 'url(#eg-arrow)', 'data-eidx': i, 'data-from': e.from, 'data-to': e.to }));
     const lbl = edgeLabel && edgeLabel(e);
     if (lbl) {
-      const mid = e.points[Math.floor(e.points.length / 2)];
-      svg.appendChild(s('text', { class: 'eg-edge-label', x: mid.x, y: mid.y - 3, 'text-anchor': 'middle' }, lbl));
+      // A straightened (2-point) edge has no real mid-vertex, so points[len/2]
+      // would land on the target endpoint — use the segment midpoint instead.
+      // data-lbl-eidx lets the move handler reposition the label with its edge.
+      const pts = e.points;
+      const mid = pts.length === 2
+        ? { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
+        : pts[Math.floor(pts.length / 2)];
+      svg.appendChild(s('text', { class: 'eg-edge-label', x: mid.x, y: mid.y - 3, 'text-anchor': 'middle', 'data-lbl-eidx': i }, lbl));
     }
   });
   return svg;
@@ -296,7 +317,7 @@ function openGraphFullscreen(app, title, build) {
       canvas.appendChild(placeholder('Nothing to display.'));
     } else {
       canvas.appendChild(built.svg);
-      const pz = attachPanZoom(canvas, built.svg, built);
+      const pz = attachPanZoom(canvas, built.svg, built, { refitOnResize: true });
       actions.appendChild(zoomControls(pz));
     }
     actions.appendChild(h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
@@ -373,21 +394,26 @@ function focusLabel(focus) {
 
 // Day/night switcher for the view's own document — mirrors the main window's
 // toggle (sun while dark → click for light; moon while light → click for dark).
-function themeToggle(doc) {
+// `onToggle` is the app's real toggleTheme: passed only when the view IS the main
+// document (overlay fallback) so app.state/the saved pref/the header button stay
+// in sync; in a separate tab it's omitted and the flip is local + ephemeral. The
+// icon is rebuilt inside withDocument(doc) so it's created in the view's own realm.
+function themeToggle(doc, onToggle) {
   const icon = () => (doc.documentElement.getAttribute('data-theme') === 'light' ? Icon.moon() : Icon.sun());
   const btn = h('button', { class: 'res-act', title: 'Toggle theme' }, icon());
   btn.addEventListener('click', () => {
-    doc.documentElement.setAttribute('data-theme', doc.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
-    btn.replaceChildren(icon());
+    if (onToggle) onToggle(); // overlay: app's toggle flips data-theme + state + pref + header icon
+    else doc.documentElement.setAttribute('data-theme', doc.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+    withDocument(doc, () => btn.replaceChildren(icon()));
   });
   return btn;
 }
 
-// Truncation banner text (null when the lineage wasn't soft-capped).
+// Truncation banner text (null when the lineage wasn't soft-capped). Only called
+// from render() with a populated graph (the nodeCount > 0 branch), so graph.nodes
+// is always present here.
 function schemaNote(graph) {
-  return graph && graph.truncated
-    ? 'Lineage truncated — showing ' + (((graph.nodes && graph.nodes.length) || 0)) + ' objects'
-    : null;
+  return graph.truncated ? 'Lineage truncated — showing ' + graph.nodes.length + ' objects' : null;
 }
 
 // ⌘/Ctrl drives a hand cursor (.modkey) and gates node dragging: a ⌘/Ctrl+drag
@@ -402,19 +428,33 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
   svg.querySelectorAll('g.eg-card[data-node-id]').forEach((g) => cardById.set(g.getAttribute('data-node-id'), g));
   const pathByIdx = new Map();
   svg.querySelectorAll('path[data-eidx]').forEach((p) => pathByIdx.set(+p.getAttribute('data-eidx'), p));
+  const labelByIdx = new Map();
+  svg.querySelectorAll('text[data-lbl-eidx]').forEach((t) => labelByIdx.set(+t.getAttribute('data-lbl-eidx'), t));
+  // Each node's incident-edge indices are fixed for the view's lifetime, so map
+  // them once here rather than rescanning every edge on every drag-move frame.
+  const incidentById = new Map();
+  nodes.forEach((n) => incidentById.set(n.id, incidentEdges(edges, n.id)));
   const getVb = () => { const a = svg.getAttribute('viewBox').split(' ').map(Number); return { x: a[0], y: a[1], w: a[2], h: a[3] }; };
   const history = createMoveHistory();
 
   // Move a node to an absolute position: translate its card, re-route only its
-  // incident edges, and update the persisted map. Shared by live drag + undo/redo.
+  // incident edges (and their labels), grow the layout bounds, and update the
+  // persisted map. Shared by live drag + undo/redo.
   const placeAt = (id, x, y) => {
     const node = byId.get(id);
     node.x = x; node.y = y;
     cardById.get(id).setAttribute('transform', 'translate(' + (x - node.x0) + ' ' + (y - node.y0) + ')');
-    for (const i of incidentEdges(edges, id)) {
+    // Grow the layout bounds (same object attachPanZoom fits) so Fit/double-click
+    // can still frame a node dragged past dagre's original extent.
+    if (x + node.w > built.width) built.width = x + node.w;
+    if (y + node.h > built.height) built.height = y + node.h;
+    for (const i of incidentById.get(id)) { // every node id is mapped above
       const ed = edges[i];
       const pts = straightEdgePoints(byId.get(ed.from), byId.get(ed.to));
       pathByIdx.get(i).setAttribute('d', 'M' + pts.map((p) => p.x + ' ' + p.y).join(' L'));
+      // Keep the relationship label on the re-routed edge's midpoint, not stranded.
+      const lbl = labelByIdx.get(i);
+      if (lbl) { lbl.setAttribute('x', (pts[0].x + pts[1].x) / 2); lbl.setAttribute('y', (pts[0].y + pts[1].y) / 2 - 3); }
     }
     if (positions) recordPosition(positions, id, x, y);
   };
@@ -431,22 +471,31 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
     else if (k === 'y') { e.preventDefault(); doRedo(); } // ⌘Y redo (Windows-style)
   };
   const onKeyUp = (e) => { if (!(e.metaKey || e.ctrlKey)) canvas.classList.remove('modkey'); };
+  // If the window loses focus mid-press the modifier keyup may never arrive, which
+  // would leave the grab/move cursor (.modkey) latched on — clear it on blur.
+  const onBlur = () => canvas.classList.remove('modkey');
+  const win = targetDoc.defaultView;
   const onDown = (e) => {
-    if (!(e.metaKey || e.ctrlKey)) return; // plain drag → let the pan handler have it
     const g = e.target.closest('[data-node-id]');
-    if (!g) return;
+    if (!(e.metaKey || e.ctrlKey)) {
+      // Plain press on a card: swallow it so the canvas doesn't pan (a clean click
+      // still opens the detail pane). Plain press on empty canvas falls through to pan.
+      if (g) e.stopPropagation();
+      return;
+    }
+    if (!g) return; // ⌘/Ctrl on empty canvas → let the pan handler grab it
     const node = byId.get(g.getAttribute('data-node-id'));
     if (!node) return;
     e.preventDefault(); e.stopPropagation();
     canvas.classList.add('grabbing');
     const start = { x: node.x, y: node.y }; // for the undo record
-    // The viewBox and the container box are fixed for the duration of a node drag,
-    // so read them once here instead of reflowing/parsing on every mousemove.
-    const vb = getVb();
+    // The container box is stable for the drag, so read it once; the viewBox is
+    // re-read each move (a ⌘/wheel zoom mid-drag changes it) so deltas stay scaled.
     const rect = canvas.getBoundingClientRect();
     let last = { x: e.clientX, y: e.clientY };
     const onMove = (ev) => {
-      const { dx, dy } = dragDeltaToSvg(ev.clientX - last.x, ev.clientY - last.y, vb, rect);
+      if (ev.buttons === 0) return onUp(); // button released off-window → end the drag
+      const { dx, dy } = dragDeltaToSvg(ev.clientX - last.x, ev.clientY - last.y, getVb(), rect);
       last = { x: ev.clientX, y: ev.clientY };
       placeAt(node.id, node.x + dx, node.y + dy);
     };
@@ -463,17 +512,19 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
   targetDoc.addEventListener('keydown', onKeyDown);
   targetDoc.addEventListener('keyup', onKeyUp);
   canvas.addEventListener('mousedown', onDown, true);
+  if (win) win.addEventListener('blur', onBlur);
   return {
     undo: doUndo,
     redo: doRedo,
     canUndo: () => history.canUndo(),
     canRedo: () => history.canRedo(),
-    // Teardown: the overlay path attaches keydown/keyup to the persistent main
-    // document, so closing must remove them (the tab path drops them with its doc).
+    // Teardown: the overlay path attaches keydown/keyup/blur to the persistent main
+    // document/window, so closing must remove them (the tab path drops them with its doc).
     teardown: () => {
       targetDoc.removeEventListener('keydown', onKeyDown);
       targetDoc.removeEventListener('keyup', onKeyUp);
       canvas.removeEventListener('mousedown', onDown, true);
+      if (win) win.removeEventListener('blur', onBlur);
     },
   };
 }
@@ -484,8 +535,10 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
 // error in the canvas and toasts the main window.
 function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
   let teardown = null;
+  let destroyed = false;
   return {
     render(graph) {
+      if (destroyed) return; // the view was closed before the lineage finished loading
       withDocument(targetDoc, () => {
         canvas.textContent = '';
         bar.querySelector('.graph-overlay-title').textContent = 'Schema: ' + focusLabel(graph.focus);
@@ -494,13 +547,16 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
         if (targetDoc !== mainDoc) targetDoc.title = 'Schema:' + focusLabel(graph.focus);
         const built = buildRichSchemaSvg(graph, app.Dagre, schemaDetailClick(app, targetDoc));
         // Right-aligned action cluster: theme switcher + (zoom controls) + (close).
-        const actions = h('div', { class: 'graph-overlay-actions' }, themeToggle(targetDoc));
+        // In the overlay (targetDoc === mainDoc) the toggle routes through app's own
+        // toggleTheme so state/pref/header stay in sync; a real tab flips locally.
+        const actions = h('div', { class: 'graph-overlay-actions' },
+          themeToggle(targetDoc, targetDoc === mainDoc ? app.toggleTheme : null));
         if (!built.nodeCount) {
           canvas.appendChild(placeholder(schemaEmptyMessage(graph)));
         } else {
           canvas.classList.add('schema-canvas');
           canvas.appendChild(built.svg);
-          const pz = attachPanZoom(canvas, built.svg, built, { fitWidth: true });
+          const pz = attachPanZoom(canvas, built.svg, built, { fitWidth: true, refitOnResize: true });
           let undoBtn, redoBtn;
           const refresh = () => { undoBtn.disabled = !controls.canUndo(); redoBtn.disabled = !controls.canRedo(); };
           const controls = attachSchemaInteractions(canvas, built.svg, built, targetDoc, graph.savedPositions, refresh);
@@ -520,10 +576,11 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
       });
     },
     fail(msg) {
+      if (destroyed) return;
       withDocument(targetDoc, () => { canvas.textContent = ''; canvas.appendChild(placeholder(msg)); });
       flashToast(msg, { document: mainDoc });
     },
-    destroy() { if (teardown) teardown(); },
+    destroy() { destroyed = true; if (teardown) teardown(); },
   };
 }
 

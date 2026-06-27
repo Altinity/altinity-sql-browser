@@ -124,10 +124,10 @@ describe('renderApp shell', () => {
   });
   it('toggles theme via the header button', () => {
     const { app } = rendered();
-    app.dom.themeBtn.dispatchEvent(new Event('click'));
-    expect(app.state.theme).toBe('light');
+    app.dom.themeBtn.dispatchEvent(new Event('click')); // default light → dark
+    expect(app.state.theme).toBe('dark');
     expect(app.savePref).toBeUndefined; // savePref is internal; theme attr set
-    expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
   it('user menu: open → Log out clears tokens and shows login', () => {
     const { app, e } = rendered();
