@@ -229,8 +229,10 @@ export function renderLogin(app, errorMsg) {
         + 'page it then redirects to is expected and unrelated; just close that tab, return here, and connect.'),
     ];
     if (hh.auth === 'oauth') {
-      kids.push(h('button', { class: 'login-btn btn-primary login-cert-go', onclick: () => pickOAuth(hh) },
-        Icon.shield(), h('span', null, 'Continue — sign in')));
+      const go = h('button', { class: 'login-btn btn-primary login-cert-go',
+        onclick: () => { go.disabled = true; pickOAuth(hh); } },
+      Icon.shield(), h('span', null, 'Continue — sign in'));
+      kids.push(go);
     }
     certWarn.replaceChildren(...kids);
     certWarn.style.display = '';
@@ -242,6 +244,7 @@ export function renderLogin(app, errorMsg) {
   }
 
   async function pickOAuth(hh) {
+    if (busy) return; // reachable from the cert panel's Continue button — guard re-entry like doSso
     busy = 'sso';
     hostPicker.disabled = true;
     try {

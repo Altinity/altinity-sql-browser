@@ -69,9 +69,14 @@ def build_config():
         # Default to ClickHouse's HTTP-interface ports (8443 TLS / 8123 plain), NOT
         # 443/80 — mirrors the SPA's resolveTarget for a bare host. Managed endpoints
         # often park an auth gateway on 443 (a browser GET 302s to an SSO login), so
-        # 443 wouldn't reach ClickHouse; 8443 is the direct HTTPS interface.
-        port = http_port or ("8443" if secure else "8123")
-        url = f"{scheme}://{hostname}:{port}"
+        # 443 wouldn't reach ClickHouse; 8443 is the direct HTTPS interface. Set an
+        # explicit <http_port> to override (e.g. 443 for a proxy that fronts the HTTP
+        # interface there with no gateway).
+        # Don't double-append when <hostname> already carries a port (clickhouse-client
+        # accepts host:port), else 'h:9000' would become 'h:9000:8443'.
+        tail = hostname.rsplit(":", 1)
+        has_port = len(tail) == 2 and tail[1].isdigit()
+        url = f"{scheme}://{hostname}" if has_port else f"{scheme}://{hostname}:{http_port or ('8443' if secure else '8123')}"
         oauth_url = _text(conn, "oauth-url", "oauth_url")
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
         oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")

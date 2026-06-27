@@ -145,6 +145,19 @@ describe('renderLogin — insecure (accept-invalid-certificate) hosts', () => {
     expect(login).toHaveBeenCalledWith('google', 'https://support-a.tenant-a.dev.altinity.cloud');
   });
 
+  it('oauth insecure host: Continue guards against double-submit (disables itself + busy gate)', async () => {
+    // login stays pending so `busy` is still 'sso' on the second click.
+    const login = vi.fn(() => new Promise(() => {}));
+    const app = withInsecure({ actions: { login } });
+    renderLogin(app); await tick();
+    selectHost(app.root, '1');
+    const go = app.root.querySelector('.login-cert-go');
+    click(go);
+    expect(go.disabled).toBe(true);
+    click(go); // re-entry blocked by the busy guard in pickOAuth
+    expect(login).toHaveBeenCalledTimes(1);
+  });
+
   it('clears the cert step when switching to the placeholder or a normal connection', async () => {
     const app = appWith({ loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [
       ...insecureHosts,
