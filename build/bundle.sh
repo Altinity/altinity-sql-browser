@@ -6,7 +6,8 @@
 #   altinity-sql-browser/
 #     sql.html            — the prebuilt single-file SPA
 #     local.py            — the zero-dep Python runner (serves SPA + config.json)
-#     config.example.xml  — sample clickhouse-client connections (template)
+#     sql-browser.xml     — sample public-demo connections (merged with the
+#                           user's ~/.clickhouse-client/config.xml by the runner)
 #     run.sh              — self-resolving launcher (python3 local.py)
 #     VERSION
 #     README.txt
@@ -26,9 +27,9 @@ node "$ROOT/build/build.mjs"
 echo "==> Staging bundle ($VERSION)"
 rm -rf "$OUT/bundle"
 mkdir -p "$STAGE"
-cp "$OUT/sql.html"                                       "$STAGE/sql.html"
-cp "$ROOT/build/local.py"                                "$STAGE/local.py"
-cp "$ROOT/deploy/clickhouse-client-config.example.xml"  "$STAGE/config.example.xml"
+cp "$OUT/sql.html"                  "$STAGE/sql.html"
+cp "$ROOT/build/local.py"           "$STAGE/local.py"
+cp "$ROOT/deploy/sql-browser.xml"   "$STAGE/sql-browser.xml"
 printf '%s\n' "$VERSION" > "$STAGE/VERSION"
 
 cat > "$STAGE/run.sh" <<'EOF'
@@ -49,12 +50,13 @@ Requires only python3 (preinstalled on macOS/Linux).
 
   ./run.sh                 # serve http://localhost:8900/sql
 
-It reads your ~/.clickhouse-client/config.xml and offers each connection in the
-login picker. To try the bundled sample instead (your real config is untouched):
+It merges connections from your ~/.clickhouse-client/config.xml and the bundled
+sql-browser.xml (public demos) and offers each in the login picker — your own
+config wins on a name clash. Run ./install.sh (curl|sh) to also copy
+sql-browser.xml into ~/.clickhouse-client/.
 
-  LOCAL_CH_CONFIG=./config.example.xml ./run.sh
-
-Env: PORT (default 8900), LOCAL_CH_CONFIG, SQL_BROWSER_SPA.
+Env: PORT (default 8900), LOCAL_CH_CONFIG (override with one explicit file),
+SQL_BROWSER_SPA.
 
 Source & docs: https://github.com/Altinity/altinity-sql-browser
 EOF

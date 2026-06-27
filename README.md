@@ -180,10 +180,14 @@ altinity-sql-browser          # serve → open http://localhost:8900/sql
 This downloads the latest [release](https://github.com/Altinity/altinity-sql-browser/releases)
 bundle (the prebuilt single-file SPA + the zero-dependency Python runner) into
 `~/.altinity-sql-browser` and installs a launcher in `~/.local/bin`. Overrides:
-`ASB_VERSION` (tag to install), `ASB_HOME`, `ASB_BIN`. The bundle ships a sample
-**`config.example.xml`** (a clickhouse-client connections template — it does *not*
-touch your real `~/.clickhouse-client/config.xml`); try it with
-`LOCAL_CH_CONFIG=~/.altinity-sql-browser/config.example.xml altinity-sql-browser`.
+`ASB_VERSION` (tag to install), `ASB_HOME`, `ASB_BIN`.
+
+The installer also writes a sample **`~/.clickhouse-client/sql-browser.xml`** (a few
+public demo clusters) — under a separate name, so it **never replaces your real
+`config.xml`**. The runner **merges** connections from both files (your `config.xml`
+wins on a name clash), so a fresh machine has something to connect to immediately.
+The picker reads `<http_port>` if set, else defaults to ClickHouse's HTTP interface
+(`8443` secure / `8123` plain) — the native `<port>` (9440/9000) is not used.
 
 **From a checkout** (also builds the SPA, needs Node):
 

@@ -83,6 +83,14 @@ exec python3 "$ASB_HOME/local.py" "\$@"
 EOF
 chmod +x "$LAUNCH"
 
+# Install the sample connections beside the user's clickhouse-client config —
+# under a separate name so it NEVER replaces their real config.xml. The runner
+# merges both. Back up any previous sql-browser.xml first.
+CHC="$HOME/.clickhouse-client"
+mkdir -p "$CHC"
+if [ -e "$CHC/sql-browser.xml" ]; then cp "$CHC/sql-browser.xml" "$CHC/sql-browser.xml.bak"; fi
+cp "$ASB_HOME/sql-browser.xml" "$CHC/sql-browser.xml"
+
 say ""
 say "Installed $(cat "$ASB_HOME/VERSION" 2>/dev/null || echo "$TAG"). Launcher: $LAUNCH"
 case ":$PATH:" in
@@ -90,9 +98,8 @@ case ":$PATH:" in
   *) say ""; say "NOTE: $ASB_BIN is not on your PATH. Add it:"; say "    export PATH=\"$ASB_BIN:\$PATH\"" ;;
 esac
 say ""
-say "Run it:"
-say "    altinity-sql-browser            # reads ~/.clickhouse-client/config.xml → http://localhost:8900/sql"
+say "Sample connections written to $CHC/sql-browser.xml (your config.xml is untouched)."
+say "The runner merges both files."
 say ""
-say "No connections configured yet? A sample is bundled (your real config is untouched):"
-say "    LOCAL_CH_CONFIG=$ASB_HOME/config.example.xml altinity-sql-browser"
-say "    # or copy it as a starting point:  cp $ASB_HOME/config.example.xml ~/.clickhouse-client/config.xml"
+say "Run it:"
+say "    altinity-sql-browser            # → http://localhost:8900/sql"

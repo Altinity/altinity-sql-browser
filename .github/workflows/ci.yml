@@ -46,11 +46,13 @@ jobs:
           set -euo pipefail
           tmp=$(mktemp -d)
           tar -C "$tmp" -xzf dist/altinity-sql-browser.tar.gz --strip-components=1
-          for f in sql.html local.py config.example.xml run.sh VERSION; do
+          for f in sql.html local.py sql-browser.xml run.sh VERSION; do
             test -f "$tmp/$f" || { echo "missing $f in bundle" >&2; exit 1; }
           done
           python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$tmp/local.py"
-          LOCAL_CH_CONFIG="$tmp/config.example.xml" PORT=8901 "$tmp/run.sh" &
+          # No LOCAL_CH_CONFIG: the runner discovers the bundled sql-browser.xml
+          # next to local.py, proving the merge/discovery path end to end.
+          PORT=8901 "$tmp/run.sh" &
           pid=$!
           for i in $(seq 1 20); do curl -fsS "http://localhost:8901/sql" >/dev/null 2>&1 && break; sleep 0.5; done
           curl -fsS "http://localhost:8901/sql" >/dev/null

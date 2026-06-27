@@ -6,7 +6,9 @@ host and queries it directly (cross-origin); in OAuth mode it signs in via an Id
 and sends the bearer to the chosen cluster. So this server only serves the SPA +
 a generated config.json — there's nothing to proxy and no ClickHouse to run here.
 
-It reads your `~/.clickhouse-client/config.xml` connections and offers them as a
+It merges connections from `~/.clickhouse-client/config.xml` (your own) and
+`~/.clickhouse-client/sql-browser.xml` (the demo file installed by install.sh),
+de-duped by name (your config.xml wins), and offers them as a
 **Saved connection** dropdown on the login screen:
   • a plain connection (hostname/user/password) → prefills the credentials form.
   • a connection carrying clickhouse-client's OAuth keys (`oauth-url`,
@@ -23,7 +25,7 @@ It reads your `~/.clickhouse-client/config.xml` connections and offers them as a
 For OAuth connections you also register `http://localhost:8900/sql` as a redirect
 URI with the IdP and allow CORS from localhost on the cluster (see README).
 
-Env: PORT (default 8900) · LOCAL_CH_CONFIG (default ~/.clickhouse-client/config.xml)
+Env: PORT (default 8900) · LOCAL_CH_CONFIG (override with a single explicit file)
    · SQL_BROWSER_SPA (override the sql.html path).
 """
 import json
@@ -52,7 +54,34 @@ def _find_spa():
 
 SPA = _find_spa()
 PORT = int(os.environ.get("PORT", "8900"))
-CH_CONFIG = os.environ.get("LOCAL_CH_CONFIG") or os.path.expanduser("~/.clickhouse-client/config.xml")
+CH_DIR = os.path.expanduser("~/.clickhouse-client")
+
+
+def config_paths():
+    """Files to read connections from, in precedence order (first wins on a name
+    clash). LOCAL_CH_CONFIG overrides the list with a single explicit file; else
+    we merge the user's own `config.xml` with the SQL-browser demo file —
+    installed at ~/.clickhouse-client/sql-browser.xml and/or shipped next to this
+    runner in the release bundle. Missing files are skipped silently."""
+    env = os.environ.get("LOCAL_CH_CONFIG")
+    if env:
+        return [env]
+    return [
+        os.path.join(CH_DIR, "config.xml"),       # the user's own connections — win on clash
+        os.path.join(CH_DIR, "sql-browser.xml"),  # installed by install.sh
+        os.path.join(HERE, "sql-browser.xml"),     # run-from-bundle fallback (same names → deduped)
+    ]
+
+
+def _connections():
+    """Yield <connection> elements from every configured file that parses."""
+    for path in config_paths():
+        try:
+            root = ET.parse(path).getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for conn in root.iter("connection"):
+            yield conn
 
 
 def _text(conn, *names):
@@ -65,23 +94,25 @@ def _text(conn, *names):
 
 
 def build_config():
-    """Generate config.json from the clickhouse-client connections (best-effort)."""
-    idps, hosts, seen = [], [], set()
-    try:
-        root = ET.parse(CH_CONFIG).getroot()
-    except (OSError, ET.ParseError):
-        root = None
-    for conn in (root.iter("connection") if root is not None else []):
+    """Generate config.json from the clickhouse-client connections (best-effort),
+    merged across config_paths() and de-duped by connection name (first file wins)."""
+    idps, hosts, seen, names = [], [], set(), set()
+    for conn in _connections():
         name = _text(conn, "name")
         hostname = _text(conn, "hostname")
-        if not name or not hostname:
+        if not name or not hostname or name in names:
             continue
+        names.add(name)
         secure = _text(conn, "secure").lower() in ("1", "true", "yes")
         # A self-signed / wrong-host TLS cert. The browser can't bypass cert
         # validation from fetch(), so the SPA can't honour this on its own — it
         # flags the connection and walks the user through trusting the cert once
         # (see populateHosts in src/ui/login.js).
         insecure = _text(conn, "accept-invalid-certificate", "accept_invalid_certificate").lower() in ("1", "true", "yes")
+        # The browser talks to ClickHouse's HTTP interface, NOT the native <port>
+        # (9440/9000) clickhouse-client uses — those are independent server ports,
+        # so we never derive one from the other. Read <http_port> if given; else
+        # fall back to the HTTP-interface default keyed off `secure`.
         http_port = _text(conn, "http_port", "http-port")
         scheme = "https" if secure else "http"
         # Default to ClickHouse's HTTP-interface ports (8443 TLS / 8123 plain), NOT
@@ -154,10 +185,11 @@ def main():
     if not os.path.exists(SPA):
         sys.exit("dist/sql.html not found - run `npm run build` first (or `npm run local`).")
     n = json.loads(CONFIG)["hosts"]
+    srcs = ", ".join(p for p in config_paths() if os.path.exists(p)) or "(no connection files found)"
     print(
         f"\n  Altinity SQL Browser - local static server\n"
         f"  ▸ open    http://localhost:{PORT}/sql\n"
-        f"  ▸ {len(n)} saved connection(s) from {CH_CONFIG}\n"
+        f"  ▸ {len(n)} saved connection(s) from {srcs}\n"
         f"  ▸ Ctrl-C to stop\n"
     )
     try:
