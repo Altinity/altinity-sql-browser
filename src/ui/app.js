@@ -99,9 +99,11 @@ export function createApp(env = {}) {
   app.updateLibraryTitle = () => renderLibraryTitle(app);
 
   // --- identity ----------------------------------------------------------
-  app.host = () => (app.authMode === 'basic'
-    ? originHost(chCtx.origin) || 'clickhouse'
-    : loc.host || 'clickhouse');
+  // The host queries actually go to. chCtx.origin already resolves to the basic
+  // target, the picked OAuth cluster (oauth_origin), or the serving origin — so a
+  // cross-origin OAuth connection shows the cluster, not localhost. (URL.host drops
+  // a default :443, so a 443 cluster shows a bare hostname; an 8443 one shows :8443.)
+  app.host = () => originHost(chCtx.origin) || 'clickhouse';
   app.activeTab = () => activeTab(app.state);
   // A `?host=` query param pre-fills the credential server address on the login
   // screen (and disables SSO, which only targets the serving host).

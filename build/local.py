@@ -26,7 +26,8 @@ For OAuth connections you also register `http://localhost:8900/sql` as a redirec
 URI with the IdP and allow CORS from localhost on the cluster (see README).
 
 At startup it probes each connection's HTTP interface — trying both standard ports
-(8443/443 or 8123/80) and using whichever answers Ok. on /ping — and prints a
+(443 then 8443 for secure, 8123 then 80 for plain) and using whichever answers Ok.
+on /ping — and prints a
 reachability table; hosts with no HTTP interface on any port (native-only
 endpoints) are skipped from the picker so they aren't dead picks. Set
 SQL_BROWSER_PROBE=0 to keep all hosts.
@@ -138,7 +139,11 @@ def collect():
         elif http_port:                                 # explicit override
             alts = [f"{scheme}://{hostname}:{http_port}"]
         else:                                           # try both standard ports
-            alts = [f"{scheme}://{hostname}:{p}" for p in (("8443", "443") if secure else ("8123", "80"))]
+            # Secure: 443 first (the canonical public endpoint for managed clusters,
+            # and it dodges the 8443 timeout when only 443 is open) — the /ping=='Ok.'
+            # check still rejects a 443 auth-gateway and falls through to 8443. Plain:
+            # 8123 first (the ClickHouse default; 80 is rarely the HTTP interface).
+            alts = [f"{scheme}://{hostname}:{p}" for p in (("443", "8443") if secure else ("8123", "80"))]
         url = alts[0]
         oauth_url = _text(conn, "oauth-url", "oauth_url")
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")

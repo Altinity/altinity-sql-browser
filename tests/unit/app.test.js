@@ -622,6 +622,12 @@ describe('auth flows', () => {
     const e = env({ sessionStorage: memSession({ oauth_id_token: validToken, oauth_origin: 'https://antalya.demo.altinity.cloud' }) });
     expect(createApp(e).chCtx.origin).toBe('https://antalya.demo.altinity.cloud');
   });
+  it('header shows the picked cluster, not the serving host, for cross-origin oauth', () => {
+    // Serving host is ch.example; the picked cluster is antalya on :443 (default
+    // https port → URL.host drops it, so the header is the bare cluster hostname).
+    const e = env({ sessionStorage: memSession({ oauth_id_token: validToken, oauth_origin: 'https://antalya.demo.altinity.cloud:443' }) });
+    expect(createApp(e).host()).toBe('antalya.demo.altinity.cloud');
+  });
 });
 
 describe('credentials (basic) sign-in', () => {
