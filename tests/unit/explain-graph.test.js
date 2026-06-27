@@ -371,6 +371,7 @@ describe('openSchemaView — real browser tab', () => {
     return {
       document: childDoc, closed: false,
       close: over.close || vi.fn(),
+      focus: vi.fn(),
       addEventListener: (t, fn) => { ls[t] = fn; },
       fire: (t) => ls[t] && ls[t](),
     };
@@ -390,11 +391,14 @@ describe('openSchemaView — real browser tab', () => {
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.documentElement.getAttribute('data-density')).toBeNull();
     expect(win.document.body.className).toBe('schema-tab');
+    expect(win.focus).toHaveBeenCalled(); // tab brought to front for key events
     const canvas = win.document.querySelector('.graph-overlay-canvas');
+    expect(canvas.getAttribute('tabindex')).toBe('-1'); // focusable → receives ⌘ key events
     stub(canvas);
     view.render(GRAPH);
     expect(win.document.querySelectorAll('g.eg-card')).toHaveLength(3);
-    // headline: "Schema: <db>", colour key lives in the bar, no close ✕ (browser tab closes)
+    // browser-tab title is "Schema:<db>"; headline is "Schema: <db>"; colour key in the bar; no close ✕
+    expect(win.document.title).toBe('Schema:lin');
     expect(win.document.querySelector('.graph-overlay-title').textContent).toBe('Schema: lin');
     expect(win.document.querySelector('.graph-overlay-bar .schema-graph-legend')).not.toBeNull();
     expect(win.document.querySelector('.graph-overlay-close')).toBeNull();

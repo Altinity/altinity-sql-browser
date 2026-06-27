@@ -341,7 +341,9 @@ const schemaDetailClick = (app, targetDoc) => (n, e) => {
 // `.graph-overlay-panel` is also the mount point the detail pane looks for.
 function buildGraphPanel(title) {
   const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
-  const canvas = h('div', { class: 'graph-overlay-canvas' });
+  // tabindex makes the canvas focusable so the view receives ⌘/Ctrl + key events
+  // (cursor mode, undo/redo) without first clicking — vital for the new tab.
+  const canvas = h('div', { class: 'graph-overlay-canvas', tabindex: '-1' });
   const panel = h('div', { class: 'graph-overlay-panel', onclick: (e) => e.stopPropagation() }, bar, canvas);
   return { panel, bar, canvas };
 }
@@ -487,6 +489,9 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
       withDocument(targetDoc, () => {
         canvas.textContent = '';
         bar.querySelector('.graph-overlay-title').textContent = 'Schema: ' + focusLabel(graph.focus);
+        // Name the browser tab "Schema:<db>" (only a real tab — never clobber the
+        // main app's title when this is the in-app overlay fallback).
+        if (targetDoc !== mainDoc) targetDoc.title = 'Schema:' + focusLabel(graph.focus);
         const built = buildRichSchemaSvg(graph, app.Dagre, schemaDetailClick(app, targetDoc));
         // Right-aligned action cluster: theme switcher + (zoom controls) + (close).
         const actions = h('div', { class: 'graph-overlay-actions' }, themeToggle(targetDoc));
@@ -511,6 +516,7 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
         }
         if (closeBtn) actions.appendChild(closeBtn);
         bar.appendChild(actions);
+        canvas.focus(); // a focused element makes ⌘/Ctrl key events reach the view
       });
     },
     fail(msg) {
@@ -524,16 +530,17 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
 // Drive a same-origin about:blank tab from the opener: copy the page CSS + theme,
 // mount the panel, and keep the detail pane targeting the child document. The
 // opener keeps the token + ch-client, so click-to-detail still fetches live.
-function openInTab(app, childDoc, mainDoc) {
+function openInTab(app, win, childDoc, mainDoc) {
   return withDocument(childDoc, () => {
     childDoc.head.appendChild(h('style', null, app.stylesText || ''));
     mirrorTheme(mainDoc, childDoc);
-    childDoc.title = 'Schema graph';
+    childDoc.title = 'Schema'; // render() refines this to "Schema:<db>"
     const { panel, bar, canvas } = buildGraphPanel('Schema');
     canvas.appendChild(placeholder('Loading…'));
     // No close button — the browser tab's own close serves that.
     childDoc.body.className = 'schema-tab';
     childDoc.body.appendChild(panel);
+    win.focus(); // bring the new tab to the front + give it window focus for key events
     // Esc closes the open detail pane (the browser tab's own close handles the rest).
     childDoc.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
@@ -582,7 +589,7 @@ export function openSchemaView(app) {
   const mainDoc = app.document || document;
   try {
     const win = app.openWindow('', '_blank');
-    if (win && win.document) return openInTab(app, win.document, mainDoc);
+    if (win && win.document) return openInTab(app, win, win.document, mainDoc);
   } catch (e) { /* pop-up blocked or cross-origin document — fall back to overlay */ }
   return openInOverlay(app, mainDoc);
 }
