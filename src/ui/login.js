@@ -33,7 +33,10 @@ export function renderLogin(app, errorMsg) {
   let advOpen = !!hostHint;
   let ssoBtns = [];
 
-  const hasCreds = () => userInput.value.trim().length > 0 && passInput.value.length > 0;
+  // A username is enough to connect — the password is optional, since passwordless
+  // users are common on demo/playground clusters (e.g. ClickHouse `play`). An empty
+  // password sends HTTP Basic `user:` which ClickHouse accepts.
+  const hasCreds = () => userInput.value.trim().length > 0;
 
   // --- credential fields ---
   const fld = (over) => h('input', {

@@ -27,6 +27,44 @@ jobs:
           path: dist/sql.html
           retention-days: 14
 
+  # Release-bundle smoke test: assemble the curl|sh artifact, extract it, and boot
+  # the zero-dep Python runner exactly as an end user would — proving the bundle
+  # layout, the SPA-path discovery, and config.json generation all work before a
+  # tag ever cuts a real release.
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Build release bundle
+        run: build/bundle.sh
+      - name: Extract + boot the runner (as a user would)
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          tar -C "$tmp" -xzf dist/altinity-sql-browser.tar.gz --strip-components=1
+          for f in sql.html local.py sql-browser.xml run.sh VERSION; do
+            test -f "$tmp/$f" || { echo "missing $f in bundle" >&2; exit 1; }
+          done
+          python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$tmp/local.py"
+          # No LOCAL_CH_CONFIG: the runner discovers the bundled sql-browser.xml
+          # next to local.py, proving the merge/discovery path end to end.
+          # SQL_BROWSER_PROBE=0: don't depend on reaching external demo hosts from CI.
+          SQL_BROWSER_PROBE=0 PORT=8901 "$tmp/run.sh" &
+          pid=$!
+          for i in $(seq 1 20); do curl -fsS "http://localhost:8901/sql" >/dev/null 2>&1 && break; sleep 0.5; done
+          curl -fsS "http://localhost:8901/sql" >/dev/null
+          curl -fsS "http://localhost:8901/config.json" \
+            | python3 -c "import sys,json; assert json.load(sys.stdin)['hosts'], 'no hosts parsed'"
+          kill "$pid"
+      - name: Lint the installer (shellcheck)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck install.sh build/bundle.sh
+
   # Real-browser regression tests (Playwright). Runs on Linux runners where the
   # Gecko/Chromium binaries launch normally — separate from the unit suite so a
   # missing browser binary can't mask a unit failure, and vice versa. The

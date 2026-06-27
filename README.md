@@ -170,7 +170,31 @@ npm run dev            # build + serve dist/ at http://localhost:8900
 
 ### Run locally against your own ClickHouse
 
-`npm run local` builds the SPA and serves it as a static page on localhost:
+**Install (no clone, no Node — just `python3`):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh
+altinity-sql-browser          # serve → open http://localhost:8900/sql
+```
+
+This downloads the latest [release](https://github.com/Altinity/altinity-sql-browser/releases)
+bundle (the prebuilt single-file SPA + the zero-dependency Python runner) into
+`~/.altinity-sql-browser` and installs a launcher in `~/.local/bin`. Overrides:
+`ASB_VERSION` (tag to install), `ASB_HOME`, `ASB_BIN`.
+
+The installer also writes a sample **`~/.clickhouse-client/sql-browser.xml`** (a few
+public demo clusters) — under a separate name, so it **never replaces your real
+`config.xml`**. The runner **merges** connections from both files (your `config.xml`
+wins on a name clash), so a fresh machine has something to connect to immediately.
+The picker uses `<http_port>` if set; otherwise, since a cluster may serve the
+HTTP interface on either port, at startup the runner **probes both standard ports**
+(`443` then `8443` for secure, `8123` then `80` for plain) and uses whichever
+answers `Ok.` on `/ping`. The native `<port>` (9440/9000) is never used — it's a
+different interface. The probe **prints a reachability table** and skips any host
+with no HTTP interface on any port (e.g. a native-only endpoint) so it isn't a dead
+pick. Set `SQL_BROWSER_PROBE=0` to skip probing and keep all hosts (`8443`/`8123`).
+
+**From a checkout** (also builds the SPA, needs Node):
 
 ```bash
 npm run local          # build + serve → open http://localhost:8900/sql
@@ -413,6 +437,21 @@ npm run test:e2e
 The harness (`tests/e2e/`) serves the repo over HTTP and imports the actual
 source as native ESM — no bundling, always current. It is **not** part of
 `npm test` or the coverage gate.
+
+## Releasing
+
+Releases are cut by pushing a version tag — `.github/workflows/release.yml` then
+runs the coverage gate, assembles the bundle, and publishes a GitHub Release:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The release attaches `altinity-sql-browser.tar.gz` (+ `.sha256`) and the raw
+`sql.html`. The bundle is built by `build/bundle.sh` (also runnable locally), and
+every PR smoke-tests it in CI (`bundle` job: extract → boot the runner → fetch
+`/sql` + `/config.json`). The `curl | sh` `install.sh` resolves the latest tag and
+installs that artifact.
 
 ## License
 

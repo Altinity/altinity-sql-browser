@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!--
+  Altinity SQL Browser — sample connections, shipped with the release bundle and
+  installed to ~/.clickhouse-client/sql-browser.xml. This does NOT replace your
+  real ~/.clickhouse-client/config.xml; the runner MERGES both (your config.xml
+  wins on a name clash).
+
+  These are PUBLIC ClickHouse demo endpoints — verified reachable over the HTTP
+  interface the browser uses (POST SELECT 1 → 200). Each <connection> becomes a
+  "Saved connection" in the login picker. Fields the runner reads: name, hostname,
+  http_port (default 8443 secure / 8123 plain), secure, user, password,
+  accept-invalid-certificate, and the oauth-* keys. (<port>/<database> are kept so
+  the file also works as a clickhouse-client connections file.)
+-->
+<clickhouse>
+  <connections_credentials>
+
+    <!-- Altinity Antalya demo (public). -->
+    <connection>
+      <name>antalya</name>
+      <hostname>antalya.demo.altinity.cloud</hostname>
+      <secure>1</secure>
+      <port>9440</port>
+      <database>default</database>
+      <user>demo</user>
+      <password>demo</password>
+    </connection>
+
+    <!-- Altinity github.demo (public). -->
+    <connection>
+      <name>altinity-demo</name>
+      <hostname>github.demo.altinity.cloud</hostname>
+      <secure>1</secure>
+      <port>9440</port>
+      <database>default</database>
+      <user>demo</user>
+      <password>demo</password>
+    </connection>
+
+    <!-- ClickHouse public playground (read-only). -->
+    <connection>
+      <name>clickhouse-sql</name>
+      <hostname>sql-clickhouse.clickhouse.com</hostname>
+      <secure>1</secure>
+      <port>9440</port>
+      <database>default</database>
+      <user>play</user>
+      <password></password>
+    </connection>
+
+    <!-- OAuth / SSO example (TEMPLATE — fill in your own IdP + client). A Google
+         "Web" client also needs <oauth-client-secret>; a public PKCE client does
+         not. A non-empty <oauth-audience> switches the bearer to the access token.
+    <connection>
+      <name>my-sso-cluster</name>
+      <hostname>clickhouse.example.com</hostname>
+      <secure>1</secure>
+      <oauth-url>https://accounts.google.com</oauth-url>
+      <oauth-client-id>YOUR_CLIENT_ID.apps.googleusercontent.com</oauth-client-id>
+      <oauth-client-secret>YOUR_CLIENT_SECRET</oauth-client-secret>
+      <oauth-audience></oauth-audience>
+    </connection>
+    -->
+
+  </connections_credentials>
+</clickhouse>

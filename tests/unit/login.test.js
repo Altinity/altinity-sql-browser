@@ -72,6 +72,16 @@ describe('renderLogin — host picker', () => {
     expect([host.value, user.value, pass.value]).toEqual(['http://localhost:8123', 'default', 'pw']);
     expect(app.root.querySelector('.login-adv-field').style.display).toBe('');
   });
+  it('selecting a passwordless basic host (empty password) still enables Connect', async () => {
+    const app = appWith({ loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [
+      { label: 'clickhouse-sql', url: 'https://sql-clickhouse.clickhouse.com:8443', auth: 'basic', user: 'play', password: '', idp: '' },
+    ] }) });
+    renderLogin(app); await tick();
+    selectHost(app.root, '0');
+    const [user, pass] = app.root.querySelectorAll('.login-input');
+    expect([user.value, pass.value]).toEqual(['play', '']);
+    expect(app.root.querySelector('.login-creds .login-btn').disabled).toBe(false);
+  });
   it('selecting an OAuth host starts SSO against that cluster', async () => {
     const login = vi.fn(async () => {});
     const app = withHosts({ actions: { login } });
@@ -281,6 +291,18 @@ describe('renderLogin — credentials reactivity', () => {
     expect(sso.classList.contains('btn-ghost')).toBe(true);
     expect(app.root.querySelector('.lt-as').textContent).toBe('as default');
   });
+  it('a username alone enables Connect — password is optional (passwordless demos like `play`)', async () => {
+    const app = appWith({ loadIdps: async () => ({ idps: [{ id: 'g', label: 'Google' }], basicLogin: true }) });
+    renderLogin(app);
+    await tick();
+    const [user] = app.root.querySelectorAll('.login-input');
+    const connect = app.root.querySelector('.login-creds .login-btn');
+    expect(connect.disabled).toBe(true);          // nothing typed yet
+    type(user, 'play');                            // username only, no password
+    expect(connect.disabled).toBe(false);
+    expect(connect.classList.contains('btn-primary')).toBe(true);
+    expect(app.root.querySelector('.lt-as').textContent).toBe('as play');
+  });
   it('the host field drives the target host', () => {
     const app = appWith();
     renderLogin(app);
@@ -336,16 +358,19 @@ describe('renderLogin — connect flow', () => {
     await tick();
     expect(connect).toHaveBeenCalled();
   });
-  it('Enter without both credentials does nothing; other keys ignored', async () => {
+  it('Enter is a no-op with no username and for non-Enter keys; submits once a username is present', async () => {
     const connect = vi.fn(async () => {});
     const app = appWith({ actions: { connect } });
     renderLogin(app);
     const [user] = app.root.querySelectorAll('.login-input');
-    type(user, 'only-user');
-    user.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    user.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    user.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // empty → no-op
+    type(user, 'play');
+    user.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));     // non-Enter → ignored
     await tick();
     expect(connect).not.toHaveBeenCalled();
+    user.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // username present → submits (no password)
+    await tick();
+    expect(connect).toHaveBeenCalledWith({ username: 'play', password: '', host: '' });
   });
   it('clicking Connect with empty fields is a no-op', async () => {
     const connect = vi.fn(async () => {});

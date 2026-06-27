@@ -1,0 +1,33 @@
+name: release
+
+# Cut a release by pushing a tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Test (coverage gate)
+        run: npm test
+      - name: Build release bundle
+        run: build/bundle.sh "${GITHUB_REF_NAME#v}"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/altinity-sql-browser.tar.gz \
+            dist/altinity-sql-browser.tar.gz.sha256 \
+            dist/sql.html
