@@ -66,7 +66,12 @@ def build_config():
         insecure = _text(conn, "accept-invalid-certificate", "accept_invalid_certificate").lower() in ("1", "true", "yes")
         http_port = _text(conn, "http_port", "http-port")
         scheme = "https" if secure else "http"
-        url = f"{scheme}://{hostname}:{http_port}" if http_port else f"{scheme}://{hostname}"
+        # Default to ClickHouse's HTTP-interface ports (8443 TLS / 8123 plain), NOT
+        # 443/80 — mirrors the SPA's resolveTarget for a bare host. Managed endpoints
+        # often park an auth gateway on 443 (a browser GET 302s to an SSO login), so
+        # 443 wouldn't reach ClickHouse; 8443 is the direct HTTPS interface.
+        port = http_port or ("8443" if secure else "8123")
+        url = f"{scheme}://{hostname}:{port}"
         oauth_url = _text(conn, "oauth-url", "oauth_url")
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
         oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")
