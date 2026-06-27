@@ -25,9 +25,11 @@ de-duped by name (your config.xml wins), and offers them as a
 For OAuth connections you also register `http://localhost:8900/sql` as a redirect
 URI with the IdP and allow CORS from localhost on the cluster (see README).
 
-At startup it probes each connection's HTTP interface and prints a reachability
-table; hosts with no HTTP interface (native-only endpoints) are skipped from the
-picker so they aren't dead picks. Set SQL_BROWSER_PROBE=0 to keep all hosts.
+At startup it probes each connection's HTTP interface — trying both standard ports
+(8443/443 or 8123/80) and using whichever answers Ok. on /ping — and prints a
+reachability table; hosts with no HTTP interface on any port (native-only
+endpoints) are skipped from the picker so they aren't dead picks. Set
+SQL_BROWSER_PROBE=0 to keep all hosts.
 
 Env: PORT (default 8900) · LOCAL_CH_CONFIG (override with a single explicit file)
    · SQL_BROWSER_SPA (override the sql.html path) · SQL_BROWSER_PROBE (0 to skip
@@ -124,17 +126,20 @@ def collect():
         # fall back to the HTTP-interface default keyed off `secure`.
         http_port = _text(conn, "http_port", "http-port")
         scheme = "https" if secure else "http"
-        # Default to ClickHouse's HTTP-interface ports (8443 TLS / 8123 plain), NOT
-        # 443/80 — mirrors the SPA's resolveTarget for a bare host. Managed endpoints
-        # often park an auth gateway on 443 (a browser GET 302s to an SSO login), so
-        # 443 wouldn't reach ClickHouse; 8443 is the direct HTTPS interface. Set an
-        # explicit <http_port> to override (e.g. 443 for a proxy that fronts the HTTP
-        # interface there with no gateway).
-        # Don't double-append when <hostname> already carries a port (clickhouse-client
-        # accepts host:port), else 'h:9000' would become 'h:9000:8443'.
+        # Candidate HTTP URLs to try, in order — the startup probe picks the first
+        # whose /ping answers (see probe()). An explicit <http_port> or a port
+        # already embedded in <hostname> is respected as the sole candidate;
+        # otherwise we try BOTH standard HTTP ports for the scheme, since a cluster
+        # may serve ClickHouse on 8443 (direct) or 443 (TLS-terminating proxy). The
+        # native <port> (9440/9000) is never used — it's a different interface.
         tail = hostname.rsplit(":", 1)
-        has_port = len(tail) == 2 and tail[1].isdigit()
-        url = f"{scheme}://{hostname}" if has_port else f"{scheme}://{hostname}:{http_port or ('8443' if secure else '8123')}"
+        if len(tail) == 2 and tail[1].isdigit():       # hostname already has a port
+            alts = [f"{scheme}://{hostname}"]
+        elif http_port:                                 # explicit override
+            alts = [f"{scheme}://{hostname}:{http_port}"]
+        else:                                           # try both standard ports
+            alts = [f"{scheme}://{hostname}:{p}" for p in (("8443", "443") if secure else ("8123", "80"))]
+        url = alts[0]
         oauth_url = _text(conn, "oauth-url", "oauth_url")
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
         oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")
@@ -148,47 +153,63 @@ def collect():
                 "client_secret": oauth_secret, "audience": oauth_aud,
                 "bearer": "access_token" if oauth_aud else "id_token",
             })
-            hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name, "insecure": insecure})
+            hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name,
+                          "insecure": insecure, "_alts": alts})
         else:
             hosts.append({"label": name, "url": url, "auth": "basic",
                           "user": _text(conn, "user"), "password": _text(conn, "password"),
-                          "insecure": insecure})
+                          "insecure": insecure, "_alts": alts})
     return idps_by_id, hosts
 
 
 def serialize(idps_by_id, hosts):
     """Render config.json bytes, keeping only IdPs still referenced by a kept host
-    (so dropping an unreachable OAuth host doesn't leave a dangling SSO button)."""
+    (so dropping an unreachable OAuth host doesn't leave a dangling SSO button) and
+    stripping internal `_`-prefixed fields (e.g. `_alts`) from the hosts."""
     used = {h["idp"] for h in hosts if h.get("auth") == "oauth"}
     idps = [idps_by_id[i] for i in idps_by_id if i in used]
-    return json.dumps({"basic_login": True, "idps": idps, "hosts": hosts}).encode()
+    clean = [{k: v for k, v in h.items() if not k.startswith("_")} for h in hosts]
+    return json.dumps({"basic_login": True, "idps": idps, "hosts": clean}).encode()
 
 
 PROBE_TIMEOUT = float(os.environ.get("SQL_BROWSER_PROBE_TIMEOUT", "4"))
 
 
-def probe(host):
-    """Best-effort reachability check of a host's HTTP interface (GET /ping).
-    Returns (reachable, detail). 'Reachable' = the port answered HTTP at all
-    (any status — auth/redirect is the user's concern); 'unreachable' = a
-    connection-level failure (refused, timeout, TLS, DNS) → no HTTP interface to
-    POST queries to (e.g. a native-only endpoint like play.clickhouse.com)."""
-    ctx = ssl._create_unverified_context() if host.get("insecure") else None
+def _ping_ok(url, insecure):
+    """GET <url>/ping and report whether ClickHouse answered 'Ok.'. Returns
+    (ok, detail)."""
+    ctx = ssl._create_unverified_context() if insecure else None
     try:
-        req = urllib.request.Request(host["url"].rstrip("/") + "/ping", method="GET")
+        req = urllib.request.Request(url.rstrip("/") + "/ping", method="GET")
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT, context=ctx) as r:
-            return True, f"HTTP {r.status}"
+            body = r.read(16).decode("ascii", "replace").strip()
+            return body == "Ok.", (f"HTTP {r.status}" if body == "Ok." else f"HTTP {r.status}, not ClickHouse")
     except urllib.error.HTTPError as e:
-        return True, f"HTTP {e.code}"            # answered → has an HTTP interface
+        return False, f"HTTP {e.code}"
     except urllib.error.URLError as e:            # refused / timeout / TLS / DNS
         return False, str(getattr(e, "reason", "") or type(e).__name__)
     except Exception as e:
         return False, type(e).__name__
 
 
+def probe(host):
+    """Try the host's candidate ports in order; the first whose /ping answers 'Ok.'
+    wins. Returns (chosen_url|None, detail). None → no HTTP interface on any port
+    (e.g. a native-only endpoint like play.clickhouse.com on :8443), so the host is
+    skipped from the picker rather than offered as a dead pick."""
+    notes = []
+    for url in host["_alts"]:
+        ok, detail = _ping_ok(url, host.get("insecure"))
+        port = url.rsplit(":", 1)[-1]
+        if ok:
+            return url, f"port {port}"
+        notes.append(f"{port}: {detail}")
+    return None, "; ".join(notes)
+
+
 def probe_all(hosts):
-    """Probe every host concurrently. Returns a list of (reachable, detail) aligned
-    with `hosts`."""
+    """Probe every host concurrently. Returns a list of (chosen_url|None, detail)
+    aligned with `hosts`."""
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(hosts)))) as ex:
         return list(ex.map(probe, hosts))
 
@@ -238,12 +259,19 @@ def main():
     srcs = ", ".join(p for p in config_paths() if os.path.exists(p)) or "(no connection files found)"
     probe_on = os.environ.get("SQL_BROWSER_PROBE", "1") != "0" and bool(hosts)
 
-    # Probe each host's HTTP interface so the picker only offers ones the browser
-    # can actually POST to (a native-only endpoint like play.clickhouse.com is
-    # otherwise a dead pick). The full situation is printed so nothing is silently
-    # dropped. Disable with SQL_BROWSER_PROBE=0.
-    results = probe_all(hosts) if probe_on else [(True, "not probed")] * len(hosts)
-    kept = [h for h, (ok, _d) in zip(hosts, results) if ok]
+    # Probe each host's HTTP interface (trying both candidate ports) so the picker
+    # only offers ones the browser can actually reach — a native-only endpoint like
+    # play.clickhouse.com on :8443 is otherwise a dead pick. The full situation is
+    # printed so nothing is silently dropped. Disable with SQL_BROWSER_PROBE=0.
+    if probe_on:
+        results = probe_all(hosts)
+    else:
+        results = [(h["_alts"][0], "not probed") for h in hosts]
+    kept = []
+    for h, (chosen, _d) in zip(hosts, results):
+        if chosen:
+            h["url"] = chosen          # pin the port that actually answered
+            kept.append(h)
     CONFIG = serialize(idps_by_id, kept)
 
     width = max((len(h["label"]) for h in hosts), default=0)
@@ -251,14 +279,15 @@ def main():
              "  Altinity SQL Browser - local static server",
              f"  ▸ open    http://localhost:{PORT}/sql",
              f"  ▸ connections from {srcs}:" if hosts else "  ▸ no connections found"]
-    for h, (ok, detail) in zip(hosts, results):
-        mark = "✓" if ok else "✗"
-        note = "" if ok else f"  — unreachable ({detail}); skipped"
-        lines.append(f"      {mark} {h['label']:<{width}}  {h['auth']:<5}  {h['url']}{note}")
+    for h, (chosen, detail) in zip(hosts, results):
+        if chosen:
+            lines.append(f"      ✓ {h['label']:<{width}}  {h['auth']:<5}  {chosen}  ({detail})")
+        else:
+            lines.append(f"      ✗ {h['label']:<{width}}  {h['auth']:<5}  no HTTP interface — skipped  [{detail}]")
     if probe_on:
-        reachable = sum(1 for ok, _ in results if ok)
-        extra = f", {len(hosts) - reachable} skipped" if reachable < len(hosts) else ""
-        lines.append(f"  ▸ {reachable}/{len(hosts)} reachable{extra}")
+        n = sum(1 for c, _ in results if c)
+        extra = f", {len(hosts) - n} skipped" if n < len(hosts) else ""
+        lines.append(f"  ▸ {n}/{len(hosts)} reachable{extra}")
     lines += ["  ▸ Ctrl-C to stop  (SQL_BROWSER_PROBE=0 to skip the reachability check)", ""]
     print("\n".join(lines), flush=True)  # flush: serve_forever() never returns to flush for us
 

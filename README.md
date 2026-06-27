@@ -186,11 +186,13 @@ The installer also writes a sample **`~/.clickhouse-client/sql-browser.xml`** (a
 public demo clusters) — under a separate name, so it **never replaces your real
 `config.xml`**. The runner **merges** connections from both files (your `config.xml`
 wins on a name clash), so a fresh machine has something to connect to immediately.
-The picker reads `<http_port>` if set, else defaults to ClickHouse's HTTP interface
-(`8443` secure / `8123` plain) — the native `<port>` (9440/9000) is not used. At
-startup the runner **probes each host's HTTP interface and prints a reachability
-table**, skipping any with no HTTP interface (e.g. a native-only endpoint) so they
-aren't dead picks. Set `SQL_BROWSER_PROBE=0` to keep all hosts.
+The picker uses `<http_port>` if set; otherwise, since a cluster may serve the
+HTTP interface on either port, at startup the runner **probes both standard ports**
+(`8443` then `443` for secure, `8123` then `80` for plain) and uses whichever
+answers `Ok.` on `/ping`. The native `<port>` (9440/9000) is never used — it's a
+different interface. The probe **prints a reachability table** and skips any host
+with no HTTP interface on any port (e.g. a native-only endpoint) so it isn't a dead
+pick. Set `SQL_BROWSER_PROBE=0` to skip probing and keep all hosts (`8443`/`8123`).
 
 **From a checkout** (also builds the SPA, needs Node):
 
