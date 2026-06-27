@@ -52,7 +52,8 @@ jobs:
           python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$tmp/local.py"
           # No LOCAL_CH_CONFIG: the runner discovers the bundled sql-browser.xml
           # next to local.py, proving the merge/discovery path end to end.
-          PORT=8901 "$tmp/run.sh" &
+          # SQL_BROWSER_PROBE=0: don't depend on reaching external demo hosts from CI.
+          SQL_BROWSER_PROBE=0 PORT=8901 "$tmp/run.sh" &
           pid=$!
           for i in $(seq 1 20); do curl -fsS "http://localhost:8901/sql" >/dev/null 2>&1 && break; sleep 0.5; done
           curl -fsS "http://localhost:8901/sql" >/dev/null

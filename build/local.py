@@ -25,13 +25,22 @@ de-duped by name (your config.xml wins), and offers them as a
 For OAuth connections you also register `http://localhost:8900/sql` as a redirect
 URI with the IdP and allow CORS from localhost on the cluster (see README).
 
+At startup it probes each connection's HTTP interface and prints a reachability
+table; hosts with no HTTP interface (native-only endpoints) are skipped from the
+picker so they aren't dead picks. Set SQL_BROWSER_PROBE=0 to keep all hosts.
+
 Env: PORT (default 8900) · LOCAL_CH_CONFIG (override with a single explicit file)
-   · SQL_BROWSER_SPA (override the sql.html path).
+   · SQL_BROWSER_SPA (override the sql.html path) · SQL_BROWSER_PROBE (0 to skip
+   the reachability probe) · SQL_BROWSER_PROBE_TIMEOUT (seconds, default 4).
 """
 import json
 import os
+import ssl
 import sys
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,10 +102,10 @@ def _text(conn, *names):
     return ""
 
 
-def build_config():
-    """Generate config.json from the clickhouse-client connections (best-effort),
-    merged across config_paths() and de-duped by connection name (first file wins)."""
-    idps, hosts, seen, names = [], [], set(), set()
+def collect():
+    """Parse + merge + de-dupe the connection files (first file wins on a name
+    clash). Pure — no network. Returns (idps_by_id, hosts)."""
+    idps_by_id, hosts, names = {}, [], set()
     for conn in _connections():
         name = _text(conn, "name")
         hostname = _text(conn, "hostname")
@@ -131,22 +140,62 @@ def build_config():
         oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")
         oauth_aud = _text(conn, "oauth-audience", "oauth_audience")
         if oauth_url and oauth_client:
-            if name not in seen:
-                idps.append({
-                    "id": name, "label": name, "issuer": oauth_url, "client_id": oauth_client,
-                    # Optional: a Web-client secret (e.g. Google) for the code exchange.
-                    # Empty → public PKCE. clickhouse-client has no such flag, so this is
-                    # a local-only convenience key read from the same connection.
-                    "client_secret": oauth_secret, "audience": oauth_aud,
-                    "bearer": "access_token" if oauth_aud else "id_token",
-                })
-                seen.add(name)
+            idps_by_id.setdefault(name, {
+                "id": name, "label": name, "issuer": oauth_url, "client_id": oauth_client,
+                # Optional: a Web-client secret (e.g. Google) for the code exchange.
+                # Empty → public PKCE. clickhouse-client has no such flag, so this is
+                # a local-only convenience key read from the same connection.
+                "client_secret": oauth_secret, "audience": oauth_aud,
+                "bearer": "access_token" if oauth_aud else "id_token",
+            })
             hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name, "insecure": insecure})
         else:
             hosts.append({"label": name, "url": url, "auth": "basic",
                           "user": _text(conn, "user"), "password": _text(conn, "password"),
                           "insecure": insecure})
+    return idps_by_id, hosts
+
+
+def serialize(idps_by_id, hosts):
+    """Render config.json bytes, keeping only IdPs still referenced by a kept host
+    (so dropping an unreachable OAuth host doesn't leave a dangling SSO button)."""
+    used = {h["idp"] for h in hosts if h.get("auth") == "oauth"}
+    idps = [idps_by_id[i] for i in idps_by_id if i in used]
     return json.dumps({"basic_login": True, "idps": idps, "hosts": hosts}).encode()
+
+
+PROBE_TIMEOUT = float(os.environ.get("SQL_BROWSER_PROBE_TIMEOUT", "4"))
+
+
+def probe(host):
+    """Best-effort reachability check of a host's HTTP interface (GET /ping).
+    Returns (reachable, detail). 'Reachable' = the port answered HTTP at all
+    (any status — auth/redirect is the user's concern); 'unreachable' = a
+    connection-level failure (refused, timeout, TLS, DNS) → no HTTP interface to
+    POST queries to (e.g. a native-only endpoint like play.clickhouse.com)."""
+    ctx = ssl._create_unverified_context() if host.get("insecure") else None
+    try:
+        req = urllib.request.Request(host["url"].rstrip("/") + "/ping", method="GET")
+        with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT, context=ctx) as r:
+            return True, f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return True, f"HTTP {e.code}"            # answered → has an HTTP interface
+    except urllib.error.URLError as e:            # refused / timeout / TLS / DNS
+        return False, str(getattr(e, "reason", "") or type(e).__name__)
+    except Exception as e:
+        return False, type(e).__name__
+
+
+def probe_all(hosts):
+    """Probe every host concurrently. Returns a list of (reachable, detail) aligned
+    with `hosts`."""
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(hosts)))) as ex:
+        return list(ex.map(probe, hosts))
+
+
+def build_config():
+    """All connections as config.json bytes (no probing) — used by tests/imports."""
+    return serialize(*collect())
 
 
 CONFIG = build_config()
@@ -184,14 +233,35 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if not os.path.exists(SPA):
         sys.exit("dist/sql.html not found - run `npm run build` first (or `npm run local`).")
-    n = json.loads(CONFIG)["hosts"]
+    global CONFIG
+    idps_by_id, hosts = collect()
     srcs = ", ".join(p for p in config_paths() if os.path.exists(p)) or "(no connection files found)"
-    print(
-        f"\n  Altinity SQL Browser - local static server\n"
-        f"  ▸ open    http://localhost:{PORT}/sql\n"
-        f"  ▸ {len(n)} saved connection(s) from {srcs}\n"
-        f"  ▸ Ctrl-C to stop\n"
-    )
+    probe_on = os.environ.get("SQL_BROWSER_PROBE", "1") != "0" and bool(hosts)
+
+    # Probe each host's HTTP interface so the picker only offers ones the browser
+    # can actually POST to (a native-only endpoint like play.clickhouse.com is
+    # otherwise a dead pick). The full situation is printed so nothing is silently
+    # dropped. Disable with SQL_BROWSER_PROBE=0.
+    results = probe_all(hosts) if probe_on else [(True, "not probed")] * len(hosts)
+    kept = [h for h, (ok, _d) in zip(hosts, results) if ok]
+    CONFIG = serialize(idps_by_id, kept)
+
+    width = max((len(h["label"]) for h in hosts), default=0)
+    lines = ["",
+             "  Altinity SQL Browser - local static server",
+             f"  ▸ open    http://localhost:{PORT}/sql",
+             f"  ▸ connections from {srcs}:" if hosts else "  ▸ no connections found"]
+    for h, (ok, detail) in zip(hosts, results):
+        mark = "✓" if ok else "✗"
+        note = "" if ok else f"  — unreachable ({detail}); skipped"
+        lines.append(f"      {mark} {h['label']:<{width}}  {h['auth']:<5}  {h['url']}{note}")
+    if probe_on:
+        reachable = sum(1 for ok, _ in results if ok)
+        extra = f", {len(hosts) - reachable} skipped" if reachable < len(hosts) else ""
+        lines.append(f"  ▸ {reachable}/{len(hosts)} reachable{extra}")
+    lines += ["  ▸ Ctrl-C to stop  (SQL_BROWSER_PROBE=0 to skip the reachability check)", ""]
+    print("\n".join(lines), flush=True)  # flush: serve_forever() never returns to flush for us
+
     try:
         ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
     except KeyboardInterrupt:

@@ -187,7 +187,10 @@ public demo clusters) — under a separate name, so it **never replaces your rea
 `config.xml`**. The runner **merges** connections from both files (your `config.xml`
 wins on a name clash), so a fresh machine has something to connect to immediately.
 The picker reads `<http_port>` if set, else defaults to ClickHouse's HTTP interface
-(`8443` secure / `8123` plain) — the native `<port>` (9440/9000) is not used.
+(`8443` secure / `8123` plain) — the native `<port>` (9440/9000) is not used. At
+startup the runner **probes each host's HTTP interface and prints a reachability
+table**, skipping any with no HTTP interface (e.g. a native-only endpoint) so they
+aren't dead picks. Set `SQL_BROWSER_PROBE=0` to keep all hosts.
 
 **From a checkout** (also builds the SPA, needs Node):
 
