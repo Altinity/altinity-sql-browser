@@ -516,7 +516,7 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
         }
         if (closeBtn) actions.appendChild(closeBtn);
         bar.appendChild(actions);
-        canvas.focus(); // a focused element makes ⌘/Ctrl key events reach the view
+        canvas.focus({ preventScroll: true }); // focus for ⌘/Ctrl key events — but never scroll the header off
       });
     },
     fail(msg) {

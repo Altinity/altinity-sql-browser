@@ -767,7 +767,7 @@ body {
 .graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
 
 /* The schema graph's own browser tab: the panel fills the viewport chromelessly. */
-body.schema-tab { margin: 0; height: 100vh; background: var(--bg-editor); }
+body.schema-tab { margin: 0; height: 100vh; overflow: hidden; background: var(--bg-editor); }
 body.schema-tab .graph-overlay-panel { height: 100vh; border: none; border-radius: 0; }
 
 /* ------------ schema node detail pane (fullscreen graph) ------------ */
