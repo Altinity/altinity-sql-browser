@@ -20,6 +20,15 @@ export const CARD = {
   BADGE_W: 26, // approx width of one role badge (PK/SK/PARTITION/SAMPLING)
   MIN_W: 130,
   MAX_COLS: 16,
+  MAX_TYPE: 28, // truncate the displayed column type — a big Enum/Tuple/Map would
+                // otherwise blow the card (and the whole graph) absurdly wide.
+};
+
+// Clamp an over-long column type for the card (the full type stays in the detail
+// pane). Keeps a giant inline Enum8('a'=1, …) from stretching the layout.
+const clampType = (t) => {
+  const s = String(t == null ? '' : t);
+  return s.length > CARD.MAX_TYPE ? s.slice(0, CARD.MAX_TYPE - 1) + '…' : s;
 };
 
 // A ClickHouse UInt8 flag is 1/0, but JSON vs JSONStrings formats deliver it as
@@ -51,7 +60,7 @@ export function buildCardModel(node, tableRow, columns, skipIndices) {
   const summary = engine + ' · ' + formatRows(tr.total_rows) + ' rows · ' + formatBytes(tr.total_bytes);
   const allCols = columns || [];
   const cols = allCols.slice(0, CARD.MAX_COLS).map((c) => ({
-    name: c.name, type: c.type, roles: columnRoles(c),
+    name: c.name, type: clampType(c.type), roles: columnRoles(c),
   }));
   const overflow = Math.max(0, allCols.length - CARD.MAX_COLS);
   const idx = skipIndices || [];

@@ -87,6 +87,24 @@ describe('openDetailPane', () => {
     expect(pane.querySelector('.schema-detail-kind').textContent).toBe('table'); // kind fallback
   });
 
+  it('mounts into the passed targetDoc (the schema tab) when given', () => {
+    const childDoc = document.implementation.createHTMLDocument('');
+    const panel = childDoc.createElement('div');
+    panel.className = 'graph-overlay-panel';
+    childDoc.body.appendChild(panel);
+    const pane = openDetailPane({ document, actions: { insertCreate: vi.fn() } }, NODE, DETAIL, childDoc);
+    expect(pane.ownerDocument).toBe(childDoc); // built in the child tab's document
+    expect(childDoc.querySelector('.schema-detail')).not.toBeNull();
+    expect(document.querySelector('.schema-detail')).toBeNull(); // not in the main document
+  });
+
+  it('falls back to the global document and tolerates missing columns/partitions', () => {
+    mountPanel();
+    const pane = openDetailPane({ actions: { insertCreate: vi.fn() } }, NODE, { ddl: '' }); // no document/detailDocument
+    expect(pane).not.toBeNull();
+    expect([...pane.querySelectorAll('h4')].map((e) => e.textContent)).toEqual(['Columns (0)']);
+  });
+
   it('returns null when no overlay is open', () => {
     expect(openDetailPane(APP(), NODE, DETAIL)).toBeNull();
   });

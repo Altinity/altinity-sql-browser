@@ -1,7 +1,41 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h, s } from '../../src/ui/dom.js';
+import { h, s, withDocument } from '../../src/ui/dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+describe('withDocument', () => {
+  it('builds elements in the target document for the duration of fn, then restores', () => {
+    const other = document.implementation.createHTMLDocument('');
+    const el = withDocument(other, () => h('div', null, s('svg'), 'x'));
+    expect(el.ownerDocument).toBe(other); // created in the target document
+    expect(el.querySelector('svg').namespaceURI).toBe(SVG_NS);
+    // restored: a subsequent build uses the global document again
+    expect(h('div').ownerDocument).toBe(document);
+  });
+  it('returns fn’s value and restores the previous document even when fn throws', () => {
+    expect(withDocument(document.implementation.createHTMLDocument(''), () => 7)).toBe(7);
+    const other = document.implementation.createHTMLDocument('');
+    expect(() => withDocument(other, () => { throw new Error('boom'); })).toThrow('boom');
+    expect(h('div').ownerDocument).toBe(document); // not stuck on `other`
+  });
+  it('appends element children built in another document as nodes, not stringified text', () => {
+    // Regression: cross-realm nodes fail the opener’s `instanceof Node`; they must
+    // still be appended as elements (not coerced to "[object HTMLDivElement]").
+    const other = document.implementation.createHTMLDocument('');
+    const tree = withDocument(other, () => h('div', null, h('span', null, 'x'), h('i')));
+    expect(tree.childElementCount).toBe(2);
+    expect(tree.textContent).toBe('x'); // not "[object HTML…]"
+    expect(tree.querySelector('span')).not.toBeNull();
+  });
+  it('nests: an inner withDocument restores the outer target, not the global', () => {
+    const outer = document.implementation.createHTMLDocument('');
+    const inner = document.implementation.createHTMLDocument('');
+    withDocument(outer, () => {
+      withDocument(inner, () => expect(h('div').ownerDocument).toBe(inner));
+      expect(h('div').ownerDocument).toBe(outer); // restored to outer, not global
+    });
+  });
+});
 
 describe('s (SVG namespace)', () => {
   it('creates elements in the SVG namespace with attrs, style, events, and children', () => {

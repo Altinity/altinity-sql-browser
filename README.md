@@ -109,13 +109,24 @@ engine-specific lineage: materialized views (`feeds` from sources, `writes` to t
 target), regular views (`reads` their sources), dictionaries (`dict` from a source
 table), and `Distributed`/`Buffer`/`Merge` engines pointing at their backing
 tables. Nodes are coloured by kind (table / view / materialized view / dictionary /
-distributed / external) with a legend; edges are coloured and labelled by
-relationship. Drag a **database** → the whole-DB lineage (it shows only the tables
-that participate in a relationship; a database whose tables aren't linked by any
-view/MV/dictionary/Distributed engine shows a "no object relationships" message
-rather than a wall of disconnected boxes); drag a **table** → its 1-hop
+distributed / buffer / merge / external) with a legend; edges are coloured and
+labelled by relationship. Drag a **database** → the whole-DB lineage (it shows only
+the tables that participate in a relationship; a database whose tables aren't linked
+by any view/MV/dictionary/Distributed engine shows a "no object relationships"
+message rather than a wall of disconnected boxes); drag a **table** → its 1-hop
 neighbourhood. **Click any node** to run `SHOW CREATE` for it into the editor;
-**⌘/Ctrl-drag** to pan; **Expand** for a fullscreen pan/zoom view.
+**⌘/Ctrl-drag** to pan; **Expand** for the full view.
+
+The full view opens in a **real browser tab** kept live by the opener (it still
+holds the OAuth token, so click-to-detail fetches on demand) — keep the tab open
+beside the editor. If a pop-up is blocked it falls back to an in-app overlay. Three
+cursor shapes keep the actions distinct: a **pointer** over a card (**click** opens a
+detail pane — full columns / keys / partitions / DDL), the **move ✛** cursor when
+**⌘/Ctrl** is held over a card (**⌘/Ctrl-drag to move it**, its edges re-route as
+straight lines), and the **grab hand** over empty canvas (plain **drag pans**). Wheel
+pans, ⌘/Ctrl+wheel zooms, double-click fits, **Esc** closes the detail pane.
+Node moves are **undo/redo-able** (⌘/Ctrl+Z, ⌘/Ctrl+Shift+Z or ⌘/Ctrl+Y), and
+manually-moved positions persist for as long as that result is open.
 
 Discovery is **structured-first, parse-fallback**, because the helpful
 `system.tables` columns are build-dependent: it prefers `dependencies_table` /

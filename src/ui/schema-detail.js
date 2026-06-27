@@ -4,7 +4,7 @@
 // its DDL — plus an "Insert SHOW CREATE" action. Pure DOM over the app controller;
 // the data is fetched by app.actions.openNodeDetail (ch.loadTableDetail).
 
-import { h } from './dom.js';
+import { h, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { clamp, formatRows, formatBytes, qualifyIdent } from '../core/format.js';
 import { columnRoles } from '../core/schema-cards.js';
@@ -18,13 +18,21 @@ const TOP_MARGIN = 100;
  * or null when no overlay is open. The ✕ button closes just the pane; Esc closes
  * the whole overlay (which removes the pane with it).
  */
-export function openDetailPane(app, node, detail) {
-  const doc = (app && app.document) || document;
+export function openDetailPane(app, node, detail, targetDoc) {
+  // `targetDoc` is the view's own document (a schema tab, or the overlay's host);
+  // fall back to the main document. Both host a .graph-overlay-panel.
+  const doc = targetDoc || (app && app.document) || document;
   const panel = doc.querySelector('.graph-overlay-panel');
-  if (!panel) return null; // overlay already closed
+  if (!panel) return null; // view already closed
   const prior = panel.querySelector('.schema-detail');
   if (prior) prior.remove(); // re-opening for another node replaces the pane
 
+  return withDocument(doc, () => buildDetailPane(app, node, detail, panel));
+}
+
+// Build + mount the pane (created in the active document via withDocument).
+function buildDetailPane(app, node, detail, panel) {
+  const doc = panel.ownerDocument;
   const cols = detail.columns || [];
   const parts = detail.partitions || [];
   const ident = qualifyIdent(node.db, node.name);

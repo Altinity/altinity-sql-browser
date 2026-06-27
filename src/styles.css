@@ -705,6 +705,8 @@ body {
 .sg-swatch--mv { background: #8b5cf6; border-color: #8b5cf6; }
 .sg-swatch--dictionary { background: #3b82f6; border-color: #3b82f6; }
 .sg-swatch--distributed { background: #f97316; border-color: #f97316; }
+.sg-swatch--buffer { background: #eab308; border-color: #eab308; }
+.sg-swatch--merge { background: #64748b; border-color: #64748b; }
 .sg-swatch--external { background: transparent; border-style: dashed; }
 .res-graph-title { font-size: 11.5px; color: var(--fg-mute); font-weight: 500; padding: 0 4px; }
 
@@ -725,8 +727,14 @@ body {
   padding: 9px 12px; border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.graph-overlay-title { font-size: 12.5px; font-weight: 600; color: var(--fg); }
-.graph-overlay-zoom { display: flex; gap: 6px; margin-left: auto; }
+.graph-overlay-title { font-size: 12.5px; font-weight: 600; color: var(--fg); flex-shrink: 0; }
+.graph-overlay-zoom { display: flex; gap: 6px; }
+/* Right-aligned action cluster (theme switcher + zoom + optional close). */
+.graph-overlay-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+/* The colour key sits in the headline (not over the canvas) for the full view. */
+.graph-overlay-bar .schema-graph-legend {
+  position: static; max-width: none; flex-wrap: wrap; gap: 3px 12px; min-width: 0;
+}
 .graph-overlay-close {
   display: flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border: none; border-radius: 6px;
@@ -740,6 +748,27 @@ body {
 .graph-overlay-canvas.grabbing { cursor: grabbing; }
 .graph-overlay-canvas > svg.explain-graph { width: 100%; height: 100%; }
 .graph-overlay-note { font-size: 11px; color: #eab308; }
+
+/* Full schema view cursor model — three distinct shapes so each action is
+   unambiguous:
+     • over a node (no modifier): pointer  → click opens the detail pane
+     • over a node + ⌘/Ctrl:      move (✛) → drag relocates the node
+     • empty canvas + ⌘/Ctrl:     grab/grabbing → drag pans the viewport
+   default elsewhere is the arrow. (Nodes carry an inline cursor:pointer; the
+   ⌘/Ctrl rule below is a class selector, so it overrides that presentation attr.) */
+.graph-overlay-canvas.schema-canvas { cursor: default; position: relative; }
+.graph-overlay-canvas.schema-canvas.modkey { cursor: grab; }
+.graph-overlay-canvas.schema-canvas.grabbing { cursor: grabbing; }
+/* Whole card reads as clickable (finger) at rest… */
+.graph-overlay-canvas.schema-canvas .eg-card rect,
+.graph-overlay-canvas.schema-canvas .eg-card text { cursor: pointer; }
+/* …and as movable (✛) while ⌘/Ctrl is held. */
+.graph-overlay-canvas.schema-canvas.modkey .eg-card rect,
+.graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
+
+/* The schema graph's own browser tab: the panel fills the viewport chromelessly. */
+body.schema-tab { margin: 0; height: 100vh; background: var(--bg-editor); }
+body.schema-tab .graph-overlay-panel { height: 100vh; border: none; border-radius: 0; }
 
 /* ------------ schema node detail pane (fullscreen graph) ------------ */
 .schema-detail {
@@ -1234,6 +1263,7 @@ body {
   font-size: 11px; font-family: inherit; cursor: pointer;
 }
 .res-act:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--border); }
+.res-act:disabled { opacity: .35; cursor: default; pointer-events: none; }
 .stat .ic { color: var(--fg-faint); display: flex; }
 .stat .v { color: var(--fg); }
 

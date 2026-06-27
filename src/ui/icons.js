@@ -80,6 +80,9 @@ export const Icon = {
   expand: () => iconEl('<path d="M2 4.5V2h2.5M9.5 2H12v2.5M12 7.5V10H9.5M4.5 10H2V7.5"/>', 12, 12, 1.4),
   // Zoom-out bar (pairs with plus for zoom-in).
   minus: () => svg('M2 6h8', 12, 12, { stroke: 1.6 }),
+  // Curved-arrow undo / redo (mirror images) for the schema node-move history.
+  undo: () => svg('M4.5 3.5 2 6l2.5 2.5M2 6h5a2.5 2.5 0 0 1 2.5 2.5', 12, 12),
+  redo: () => svg('M7.5 3.5 10 6l-2.5 2.5M10 6H5a2.5 2.5 0 0 0-2.5 2.5', 12, 12),
   bookmark: () => iconEl('<path d="M3.5 1.8h5a.6.6 0 0 1 .6.6v8.2l-3.1-2-3.1 2V2.4a.6.6 0 0 1 .6-.6z"/>', 12, 12, 1.3),
   pencil: () => iconEl('<path d="M2 10l.6-2.5 5-5 1.9 1.9-5 5z"/><path d="M7 3.1l1.9 1.9"/>', 12, 12),
   trash: () => iconEl('<path d="M2.5 3.5h7"/><path d="M4 3.5V2.4h3v1.1"/><path d="M3.4 3.5l.45 6.6a.6.6 0 0 0 .6.5h2.9a.6.6 0 0 0 .6-.5l.45-6.6"/>', 12, 12, 1.2),
