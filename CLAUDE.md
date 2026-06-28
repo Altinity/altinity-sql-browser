@@ -1,7 +1,8 @@
 # Contributor guide — altinity-sql-browser
 
 A modular ES-module SPA that builds to one self-contained HTML file served from
-ClickHouse. No framework, no runtime deps. Quality is held by tests.
+ClickHouse. No framework; runtime deps are rare and deliberate (currently two,
+both bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
 

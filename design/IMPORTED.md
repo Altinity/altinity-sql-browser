@@ -5,7 +5,7 @@ project's `design_handoff_altinity_play/` handoff bundle — the UI source-of-tr
 for the editor-enhancement work (issues #23–#27).
 
 **Reference only — not shipped.** These are React/Babel prototypes. The production
-app is the zero-dependency vanilla-ES-module SPA under `src/`. esbuild bundles only
+app is the framework-free vanilla-ES-module SPA under `src/`. esbuild bundles only
 `src/main.js` → `dist/sql.html`, so nothing here is built into the served artifact,
 and `tests/` coverage (`include: ['src/**/*.js']`) never sees it.
 
