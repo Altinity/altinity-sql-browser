@@ -359,6 +359,17 @@ describe('loadSchemaLineage', () => {
     const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
     expect(out.tables[0].astTables).toBeUndefined();
   });
+  it('tolerates a denied system.dictionaries (degrades to no dictionary edges, graph still loads)', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      // Low-priv users (e.g. the demo role) lack SELECT on system.dictionaries.
+      if (/system\.dictionaries/.test(sql)) return jsonResp('DB::Exception: demo: Not enough privileges. ... grant SELECT ON system.dictionaries. (ACCESS_DENIED)', false, 500);
+      return jsonResp({ data: [{ database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' }] });
+    });
+    const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    expect(out.tables).toHaveLength(1);
+    expect(out.dictionaries).toEqual([]);
+  });
   it('includes the card metadata columns in the scoped tables query', async () => {
     const seen = [];
     const ctx = ctxWith((url, init) => {

@@ -149,8 +149,9 @@ export async function loadSchemaLineage(ctx, focus) {
     + 'partition_key, sorting_key, primary_key, sampling_key';
   const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY name`);
   const tables = tablesJson.data || [];
-  const dictsJson = await queryJson(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`);
-  const dictionaries = dictsJson.data || [];
+  // Best-effort: a denied/missing system.dictionaries (low-priv users lack
+  // SELECT on it) must degrade to no dictionary edges, never abort the graph.
+  const dictionaries = await tryQueryData(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`) || [];
   // Robust source extraction for views/MVs: let ClickHouse parse the SELECT.
   await Promise.all(tables.map(async (t) => {
     if (!t.as_select || (t.engine !== 'View' && t.engine !== 'MaterializedView')) return;
