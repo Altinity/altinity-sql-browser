@@ -16,8 +16,9 @@ const TOP_MARGIN = 100;
 /**
  * Mount (or replace) the detail pane for `node` inside the live fullscreen overlay,
  * populated from `detail` ({ columns, partitions, ddl }). Returns the pane element,
- * or null when no overlay is open. The ✕ button closes just the pane; Esc closes
- * the whole overlay (which removes the pane with it).
+ * or null when no overlay is open. The ✕ button and Esc both close just the pane
+ * and clear the card's selection ring (Esc is wired in explain-graph.js via the
+ * exported clearSchemaSelection); a further Esc / backdrop click closes the view.
  */
 export function openDetailPane(app, node, detail, targetDoc) {
   // `targetDoc` is the view's own document (a schema tab, or the overlay's host);
@@ -41,10 +42,16 @@ function findCard(doc, nodeId) {
   return [...doc.querySelectorAll('.eg-card[data-node-id]')].find((g) => g.getAttribute('data-node-id') === nodeId) || null;
 }
 
-// Clear any prior selection: drop the marker class and remove the ring rects.
-function clearSelection(doc) {
-  doc.querySelectorAll('.eg-card--selected').forEach((g) => g.classList.remove('eg-card--selected'));
-  doc.querySelectorAll('.eg-card-ring').forEach((ring) => ring.remove());
+// Clear the selection highlight in `doc`: drop the marker class and its ring rect
+// from the selected card (the ring is always a child of that card). Exported so the
+// graph's other pane-close paths — Esc in the schema tab / in-app overlay, in
+// explain-graph.js — clear it too, not only the pane's own ✕ button.
+export function clearSchemaSelection(doc) {
+  doc.querySelectorAll('.eg-card--selected').forEach((g) => {
+    g.classList.remove('eg-card--selected');
+    const ring = g.querySelector('.eg-card-ring');
+    if (ring) ring.remove();
+  });
 }
 
 // Mark `nodeId`'s card as selected: an accent ring drawn just outside its box (a
@@ -52,7 +59,7 @@ function clearSelection(doc) {
 // CSS keys off. Replaces any prior selection. No-op when the card isn't drawn
 // (e.g. the pane opened over a view without that card, or in a test harness).
 function markSelected(doc, nodeId) {
-  clearSelection(doc);
+  clearSchemaSelection(doc);
   const card = findCard(doc, nodeId);
   if (!card) return;
   card.classList.add('eg-card--selected');
@@ -98,7 +105,7 @@ function buildDetailPane(node, detail, panel) {
   const handle = h('div', { class: 'schema-detail-handle', title: 'Drag to resize' });
   const pane = h('div', { class: 'schema-detail' },
     handle,
-    h('button', { class: 'schema-detail-close', title: 'Close', onclick: () => { pane.remove(); clearSelection(doc); } }, Icon.close()),
+    h('button', { class: 'schema-detail-close', title: 'Close', onclick: () => { pane.remove(); clearSchemaSelection(doc); } }, Icon.close()),
     h('div', { class: 'schema-detail-body' },
       h('div', { class: 'schema-detail-head' },
         h('b', null, ident), h('span', { class: 'schema-detail-kind' }, node.kind || 'table')),

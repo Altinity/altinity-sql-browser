@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { openDetailPane } from '../../src/ui/schema-detail.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
@@ -157,7 +157,7 @@ describe('openDetailPane', () => {
     const panel = childDoc.createElement('div');
     panel.className = 'graph-overlay-panel';
     childDoc.body.appendChild(panel);
-    const pane = openDetailPane({ document, actions: { insertCreate: vi.fn() } }, NODE, DETAIL, childDoc);
+    const pane = openDetailPane({ document, actions: {} }, NODE, DETAIL, childDoc);
     expect(pane.ownerDocument).toBe(childDoc); // built in the child tab's document
     expect(childDoc.querySelector('.schema-detail')).not.toBeNull();
     expect(document.querySelector('.schema-detail')).toBeNull(); // not in the main document
@@ -165,7 +165,7 @@ describe('openDetailPane', () => {
 
   it('falls back to the global document and tolerates missing columns/partitions', () => {
     mountPanel();
-    const pane = openDetailPane({ actions: { insertCreate: vi.fn() } }, NODE, { ddl: '' }); // no document/detailDocument
+    const pane = openDetailPane({ actions: {} }, NODE, { ddl: '' }); // no document/detailDocument
     expect(pane).not.toBeNull();
     expect([...pane.querySelectorAll('h4')].map((e) => e.textContent)).toEqual(['Columns (0)']);
   });

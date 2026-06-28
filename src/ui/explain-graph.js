@@ -14,6 +14,7 @@ import { qualifyIdent } from '../core/format.js';
 import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 import { straightEdgePoints, incidentEdges, dragDeltaToSvg, applyPositions, recordPosition, createMoveHistory } from '../core/graph-layout.js';
 import { flashToast } from './toast.js';
+import { clearSchemaSelection } from './schema-detail.js';
 
 const ZOOM_STEP = 1.2; // per zoom-button press
 const WHEEL_ZOOM_STEP = 1.04; // per ⌘/Ctrl+wheel notch — gentle, so trackpad/wheel zoom isn't jumpy
@@ -344,9 +345,9 @@ const schemaClick = (app) => (n) => {
 };
 
 // In the full schema view, clicking an object opens the detail pane (full columns
-// / keys / partitions / DDL) instead of inserting SHOW CREATE — the pane carries
-// its own "Insert SHOW CREATE" button. External (ext:) leaves have no detail; a
-// ⌘/Ctrl-click is reserved for dragging the node, so it doesn't open the pane.
+// / keys / partitions / DDL) instead of inserting SHOW CREATE, and rings the
+// clicked card. External (ext:) leaves have no detail; a ⌘/Ctrl-click is reserved
+// for dragging the node, so it doesn't open the pane.
 // `targetDoc` is this view's own document (the tab or the overlay's host), threaded
 // so a node click always opens the pane in the view it came from — even when
 // several full views are open at once (no shared single-slot document).
@@ -601,7 +602,7 @@ function openInTab(app, win, childDoc, mainDoc) {
     childDoc.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       const pane = childDoc.querySelector('.schema-detail');
-      if (pane) { e.stopPropagation(); pane.remove(); }
+      if (pane) { e.stopPropagation(); pane.remove(); clearSchemaSelection(childDoc); }
     }, true);
     return makeController(app, childDoc, mainDoc, canvas, bar, null);
   });
@@ -617,7 +618,7 @@ function openInOverlay(app, mainDoc) {
       if (e.key !== 'Escape') return;
       e.stopPropagation();
       const pane = mainDoc.querySelector('.schema-detail');
-      if (pane) pane.remove(); else close();
+      if (pane) { pane.remove(); clearSchemaSelection(mainDoc); } else close();
     };
     let backdrop;
     // close() also tears down the interaction listeners attached to the main

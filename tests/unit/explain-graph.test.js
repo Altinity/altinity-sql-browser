@@ -287,14 +287,23 @@ describe('schema lineage graph', () => {
     expect(document.body.contains(overlay)).toBe(false);
   });
 
-  it('Esc closes the open detail pane first, then the overlay', () => {
+  it('Esc closes the open detail pane first (clearing its card ring), then the overlay', () => {
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render(GRAPH);
     const overlay = overlayOf();
+    const panel = overlay.querySelector('.graph-overlay-panel');
     const pane = document.createElement('div'); pane.className = 'schema-detail';
-    overlay.querySelector('.graph-overlay-panel').appendChild(pane);
+    panel.appendChild(pane);
+    // a selected card with a ring, as markSelected would have left it on the canvas
+    const card = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    card.setAttribute('class', 'eg-card eg-card--selected');
+    card.setAttribute('data-node-id', 'x.y');
+    card.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'rect')).setAttribute('class', 'eg-card-ring');
+    panel.appendChild(card);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    expect(overlay.querySelector('.schema-detail')).toBeNull(); // pane closed
-    expect(document.body.contains(overlay)).toBe(true); // overlay stays
+    expect(overlay.querySelector('.schema-detail')).toBeNull();      // pane closed
+    expect(overlay.querySelector('.eg-card--selected')).toBeNull();  // selection class cleared
+    expect(overlay.querySelector('.eg-card-ring')).toBeNull();       // ring removed
+    expect(document.body.contains(overlay)).toBe(true);              // overlay stays
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(document.body.contains(overlay)).toBe(false); // second Esc closes overlay
   });
