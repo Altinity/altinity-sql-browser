@@ -138,6 +138,35 @@ plus light regex on `create_table_query` (`TO` target) and `engine_full`
 empty). Graph math is pure in `src/core/schema-graph.js` (100%-covered); the SVG is
 the same dagre-laid-out renderer the pipeline graph uses.
 
+### Required grants
+
+Every introspection read is **best-effort**: a denied or missing `system.*` table
+degrades the affected layer instead of failing the graph, so the lineage view works
+even for low-privilege users. The graph draws with **no extra grants** — the implicit
+`SELECT` that `SHOW TABLES` / `SHOW COLUMNS` give over `system.tables` /
+`system.columns` is enough (and those rows are already filtered to the databases the
+user can otherwise access). What you grant only buys *fidelity*:
+
+| To get… | the role needs | if denied (default) |
+|---|---|---|
+| the graph itself + node cards | `SHOW TABLES`, `SHOW COLUMNS` (→ implicit `SELECT ON system.tables` / `system.columns`) | required — without these there's nothing to draw |
+| dictionary (`dict`) lineage edges | `SELECT ON system.dictionaries` | no dictionary edges; the rest of the graph still draws |
+| skip-index badges on the rich cards | `SELECT ON system.data_skipping_indices` | cards show the engine/rows/bytes header without the skip line |
+| per-partition rows in the node detail pane | `SELECT ON system.parts` | detail pane shows columns/keys/DDL but no partition breakdown |
+
+So for full, **no-degrade** schema mode, grant the three optional `SELECT`s above to
+the role your users log in as, e.g.:
+
+```sql
+GRANT SELECT ON system.dictionaries          TO <role>;
+GRANT SELECT ON system.data_skipping_indices TO <role>;
+GRANT SELECT ON system.parts                 TO <role>;
+```
+
+These are metadata-only and stay row-filtered to the databases the role can already
+read; DDL secrets remain masked unless the role separately holds
+`displaySecretsInShowAndSelect`.
+
 ## Saved queries & the Library
 
 Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**
