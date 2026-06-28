@@ -11,7 +11,22 @@ function mountPanel() {
   document.body.appendChild(p);
   return p;
 }
-const APP = (over = {}) => ({ document, actions: { insertCreate: vi.fn() }, ...over });
+// A graph card stand-in (the rich full-view nodes carry data-node-id + a rect).
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function mountCard(id, { rect = true } = {}) {
+  const g = document.createElementNS(SVG_NS, 'g');
+  g.setAttribute('class', 'eg-card');
+  g.setAttribute('data-node-id', id);
+  if (rect) {
+    const r = document.createElementNS(SVG_NS, 'rect');
+    r.setAttribute('class', 'eg-node eg-node--table');
+    r.setAttribute('x', '10'); r.setAttribute('y', '20'); r.setAttribute('width', '100'); r.setAttribute('height', '60');
+    g.appendChild(r);
+  }
+  document.body.appendChild(g);
+  return g;
+}
+const APP = (over = {}) => ({ document, actions: {}, ...over });
 const NODE = { id: 'a.t', db: 'a', name: 't', kind: 'table' };
 const DETAIL = {
   columns: [
@@ -39,20 +54,55 @@ describe('openDetailPane', () => {
     expect(pane.querySelector('.schema-detail-ddl').textContent).toContain('CREATE TABLE');
   });
 
-  it('"Insert SHOW CREATE" runs insertCreate with the qualified ident', () => {
+  it('has no action button in the head (just the ident + kind)', () => {
     mountPanel();
-    const app = APP();
-    const pane = openDetailPane(app, NODE, DETAIL);
-    const btn = [...pane.querySelectorAll('button')].find((b) => /Insert SHOW CREATE/.test(b.textContent));
-    btn.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.actions.insertCreate).toHaveBeenCalledWith('a.t');
+    const pane = openDetailPane(APP(), NODE, DETAIL);
+    // the only button is the ✕ close affordance — no "Insert SHOW CREATE" etc.
+    const labels = [...pane.querySelectorAll('.schema-detail-head button')];
+    expect(labels).toHaveLength(0);
   });
 
-  it('the ✕ button removes just the pane', () => {
+  it('rings the clicked card with a double border (accent ring + selected class)', () => {
     mountPanel();
+    const card = mountCard('a.t'); // NODE.id
+    openDetailPane(APP(), NODE, DETAIL);
+    expect(card.classList.contains('eg-card--selected')).toBe(true);
+    const ring = card.querySelector('.eg-card-ring');
+    expect(ring).not.toBeNull();
+    expect(card.firstChild).toBe(ring);            // drawn behind the card content
+    expect(ring.getAttribute('x')).toBe('7');      // node x 10 − 3
+    expect(ring.getAttribute('width')).toBe('106'); // node w 100 + 6
+  });
+
+  it('moves the ring to the new card when another node is opened', () => {
+    mountPanel();
+    const cardA = mountCard('a.t');
+    const cardB = mountCard('a.u');
+    openDetailPane(APP(), NODE, DETAIL);
+    expect(cardA.classList.contains('eg-card--selected')).toBe(true);
+    openDetailPane(APP(), { id: 'a.u', db: 'a', name: 'u', kind: 'table' }, DETAIL);
+    expect(cardA.classList.contains('eg-card--selected')).toBe(false);
+    expect(cardA.querySelector('.eg-card-ring')).toBeNull();
+    expect(cardB.classList.contains('eg-card--selected')).toBe(true);
+    expect(cardB.querySelector('.eg-card-ring')).not.toBeNull();
+  });
+
+  it('marks a card with no rect (class only, no ring drawn)', () => {
+    mountPanel();
+    const card = mountCard('a.t', { rect: false });
+    openDetailPane(APP(), NODE, DETAIL);
+    expect(card.classList.contains('eg-card--selected')).toBe(true);
+    expect(card.querySelector('.eg-card-ring')).toBeNull();
+  });
+
+  it('the ✕ button removes just the pane and clears the selection ring', () => {
+    mountPanel();
+    const card = mountCard('a.t');
     const pane = openDetailPane(APP(), NODE, DETAIL);
     pane.querySelector('.schema-detail-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.querySelector('.schema-detail')).toBeNull();
+    expect(card.classList.contains('eg-card--selected')).toBe(false);
+    expect(card.querySelector('.eg-card-ring')).toBeNull();
   });
 
   it('dragging the handle resizes the pane, clamped to both bounds', () => {

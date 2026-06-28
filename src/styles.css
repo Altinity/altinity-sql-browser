@@ -697,6 +697,13 @@ body {
    composed on top of the kind colour. */
 .explain-graph .eg-node--ext { stroke-dasharray: 4 3; fill-opacity: 0.4; }
 
+/* The card whose detail pane is open: an accent ring just outside the box, so
+   together with the card's own kind-coloured stroke it reads as a double border —
+   making the object you're working with unmistakable. The ring is injected by
+   schema-detail.js (markSelected); the marker class also thickens the own stroke. */
+.explain-graph .eg-card-ring { fill: none; stroke: var(--accent); stroke-width: 2; }
+.explain-graph .eg-card--selected .eg-node { stroke: var(--accent); stroke-width: 2; }
+
 .schema-graph-view { position: relative; }
 .schema-graph-legend {
   position: absolute; top: 8px; left: 10px; pointer-events: none;
