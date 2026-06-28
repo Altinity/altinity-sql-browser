@@ -606,14 +606,14 @@ describe('schema lineage result', () => {
     expect(region.querySelector('.res-graph-title').textContent).toBe('Schema · lin');
     expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
   });
-  it('a no-relationship DB shows the message and no Expand button', () => {
+  it('a DB with no objects shows the message and no Expand button', () => {
     const r = newResult('Table');
-    r.schemaGraph = { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [], tableCount: 201 };
+    r.schemaGraph = { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [] };
     const app = appWithResult(r);
     renderResults(app);
     const region = app.dom.resultsRegion;
     expect(region.querySelector('svg.explain-graph')).toBeNull();
-    expect(region.querySelector('.placeholder').textContent).toMatch(/No object relationships in target_all/);
+    expect(region.querySelector('.placeholder').textContent).toMatch(/No objects in target_all/);
     expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
   });
 });

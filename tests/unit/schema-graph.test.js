@@ -193,14 +193,13 @@ describe('buildSchemaGraph', () => {
     expect(ids.has('lin.orphan')).toBe(false);
   });
 
-  it('returns an EMPTY graph for a DB with no relationships (lineage-only; the UI shows a message)', () => {
-    // Regression for the target_all bug: a DB of unrelated tables (e.g. all URL
-    // engine) must NOT dump every table as a disconnected node — it returns no
-    // nodes so the renderer can explain "no relationships" instead of laying out
-    // a giant unreadable strip.
+  it('keeps every table as a standalone node when a whole-DB graph has no relationships', () => {
+    // A DB of unrelated tables (e.g. all URL engine) still renders its tables —
+    // showing the objects beats an empty "no relationships" screen, even though
+    // there are no edges to draw between them.
     const tables = Array.from({ length: 50 }, (_, i) => T('lin', 'url_' + i, 'URL'));
     const g = buildSchemaGraph({ tables, dictionaries: [] }, { kind: 'db', db: 'lin' });
-    expect(g.nodes).toEqual([]);
+    expect(g.nodes).toHaveLength(50);
     expect(g.edges).toEqual([]);
   });
 

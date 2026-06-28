@@ -22,15 +22,14 @@ const WHEEL_ZOOM_STEP = 1.04; // per ⌘/Ctrl+wheel notch — gentle, so trackpa
 const placeholder = (msg) => h('div', { class: 'placeholder' }, h('div', null, msg));
 
 /**
- * Empty-state copy for a schema graph that has no relationships to draw — explains
- * WHY (so a relationless DB doesn't look like a failure) and what to try instead.
+ * Empty-state copy when there's genuinely nothing to draw. A whole-DB graph now
+ * keeps its tables as standalone nodes even with no relationships, so this is only
+ * reached for a focused table with no neighbours, or a database with no objects.
  */
 function schemaEmptyMessage(graph) {
   const f = (graph && graph.focus) || {};
   if (f.kind === 'table') return f.db + '.' + f.table + ' has no data-flow relationships.';
-  const n = graph && graph.tableCount;
-  return 'No object relationships in ' + f.db
-    + (n ? ' — its ' + n + ' table' + (n === 1 ? '' : 's') + " aren't linked by a view, materialized view, dictionary, or Distributed/Buffer/Merge engine." : '.');
+  return f.db ? 'No objects in ' + f.db + '.' : 'Nothing to draw.';
 }
 
 /**

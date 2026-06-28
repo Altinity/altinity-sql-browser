@@ -228,16 +228,16 @@ export function buildSchemaGraph(rows, focus) {
     for (const e of edges) { if (e.from === center) keep.add(e.to); if (e.to === center) keep.add(e.from); }
     outNodes = outNodes.filter((n) => keep.has(n.id));
     outEdges = edges.filter((e) => keep.has(e.from) && keep.has(e.to));
-  } else {
-    // Whole-DB lineage: keep only tables that participate in a relationship — a
-    // lineage view always shows lineage. When nothing is connected (e.g. a DB of
-    // unrelated URL/MergeTree tables) this yields an empty graph, and the renderer
-    // shows a "no relationships" message rather than dumping every table as a row
-    // of disconnected boxes (which dagre lays out into an unreadable wide strip).
+  } else if (edges.length) {
+    // Whole-DB lineage WITH relationships: keep only the tables that participate —
+    // a lineage view shows lineage, not a wall of unrelated boxes alongside it.
     const linked = new Set();
     for (const e of edges) { linked.add(e.from); linked.add(e.to); }
     outNodes = outNodes.filter((n) => linked.has(n.id));
   }
+  // Whole-DB lineage with NO relationships (e.g. a DB of unrelated URL/MergeTree
+  // tables): fall through keeping every table as a standalone node, so the database
+  // still renders its tables rather than showing an empty "no relationships" screen.
   return { nodes: outNodes, edges: outEdges };
 }
 

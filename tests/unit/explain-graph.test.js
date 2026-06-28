@@ -240,11 +240,12 @@ describe('schema lineage graph', () => {
     expect(el.className).toBe('placeholder');
   });
 
-  it('explains an empty whole-DB result with the table count (no-relationships message)', () => {
-    const el = renderSchemaGraph(APP, { schemaGraph: { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [], tableCount: 201 } });
+  it('explains a whole-DB result with no objects to draw', () => {
+    // A DB with tables but no links now renders the tables as standalone nodes;
+    // the placeholder is only reached when there are genuinely no objects.
+    const el = renderSchemaGraph(APP, { schemaGraph: { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [] } });
     expect(el.className).toBe('placeholder');
-    expect(el.textContent).toMatch(/No object relationships in target_all/);
-    expect(el.textContent).toMatch(/201 tables/);
+    expect(el.textContent).toMatch(/No objects in target_all/);
   });
 
   it('explains an empty table-focus result', () => {
@@ -337,7 +338,7 @@ describe('schema lineage graph', () => {
 
   it('renders an empty-graph message when there is nothing to draw', () => {
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render({ focus: { kind: 'db', db: 'lin' }, nodes: [], edges: [] });
-    expect(overlayOf().textContent).toMatch(/No object relationships/);
+    expect(overlayOf().textContent).toMatch(/No objects in lin/);
     expect(overlayOf().querySelector('svg.explain-graph')).toBeNull();
   });
 

@@ -110,11 +110,10 @@ target), regular views (`reads` their sources), dictionaries (`dict` from a sour
 table), and `Distributed`/`Buffer`/`Merge` engines pointing at their backing
 tables. Nodes are coloured by kind (table / view / materialized view / dictionary /
 distributed / buffer / merge / external) with a legend; edges are coloured and
-labelled by relationship. Drag a **database** → the whole-DB data flow (it shows only
-the tables that participate in a relationship; a database whose tables aren't linked
-by any view/MV/dictionary/Distributed engine shows a "no object relationships"
-message rather than a wall of disconnected boxes); drag a **table** → its 1-hop
-neighbourhood. **Click any node** to run `SHOW CREATE` for it into the editor;
+labelled by relationship. Drag a **database** → the whole-DB data flow (when there are
+relationships it shows the tables that participate in them; a database with no
+relationships at all still renders its tables as standalone nodes, so you always see
+the objects); drag a **table** → its 1-hop neighbourhood. **Click any node** to run `SHOW CREATE` for it into the editor;
 **⌘/Ctrl-drag** to pan; **Expand** for the full view.
 
 The full view opens in a **real browser tab** kept live by the opener (it still
