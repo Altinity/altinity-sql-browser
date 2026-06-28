@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h, s, withDocument, zoomScale } from '../../src/ui/dom.js';
+import { h, s, withDocument, zoomScale, fixedAnchor } from '../../src/ui/dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -53,6 +53,26 @@ describe('zoomScale', () => {
   });
   it('falls back to 1 for a degenerate 0-width rect (ratio 0)', () => {
     expect(zoomScale(stub(0, 100))).toBe(1);
+  });
+});
+
+describe('fixedAnchor', () => {
+  it('left-aligns under the anchor, dividing client coords by the zoom scale', () => {
+    const a = fixedAnchor({ bottom: 40, left: 100 }, 1.2);
+    expect(a.top).toBeCloseTo(40 / 1.2 + 6); // r.bottom/scale + default 6px gap
+    expect(a.left).toBeCloseTo(100 / 1.2);
+    expect(a.right).toBeUndefined();
+  });
+  it('right-aligns to the anchor when viewportW is given', () => {
+    const a = fixedAnchor({ bottom: 40, right: 1180 }, 1.2, { viewportW: 1200 });
+    expect(a.top).toBeCloseTo(40 / 1.2 + 6);
+    expect(a.right).toBeCloseTo((1200 - 1180) / 1.2);
+    expect(a.left).toBeUndefined();
+  });
+  it('floors the side inset at `min` (default 8) and honors a custom gap', () => {
+    expect(fixedAnchor({ bottom: 0, left: 0 }, 1)).toMatchObject({ top: 6, left: 8 });
+    expect(fixedAnchor({ bottom: 0, right: 1200 }, 1, { viewportW: 1200 })).toMatchObject({ right: 8 });
+    expect(fixedAnchor({ bottom: 10, left: 50 }, 1, { gap: 0, min: 0 })).toMatchObject({ top: 10, left: 50 });
   });
 });
 

@@ -208,6 +208,18 @@ describe('buildSchemaGraph', () => {
     expect(byId['other.remote_tbl'].label).toBe('other.remote_tbl'); // another db → stays qualified
   });
 
+  it('keeps the friendly ·inner label for a same-db implicit-MV storage node (not stripped to bare name)', () => {
+    const UUID = 'abcd';
+    const rows = { tables: [
+      T('lin', 'events', 'MergeTree'),
+      T('lin', 'mv', 'MaterializedView', { uuid: UUID, create_table_query: 'CREATE MATERIALIZED VIEW lin.mv (x UInt8) ENGINE = MergeTree AS SELECT 1 FROM lin.events' }),
+      T('lin', '.inner_id.' + UUID, 'MergeTree'),
+    ], dictionaries: [] };
+    const byId = Object.fromEntries(buildSchemaGraph(rows, { kind: 'db', db: 'lin' }).nodes.map((n) => [n.id, n]));
+    expect(byId['lin..inner_id.' + UUID].label).toBe('·inner'); // label !== id → left alone, not rewritten
+    expect(byId['lin.events'].label).toBe('events');            // ordinary same-db node still stripped
+  });
+
   it('keeps every table as a standalone node when a whole-DB graph has no relationships', () => {
     // A DB of unrelated tables (e.g. all URL engine) still renders its tables —
     // showing the objects beats an empty "no relationships" screen, even though

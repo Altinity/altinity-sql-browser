@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { parseDot } from '../../src/core/dot.js';
-import { dagreLayout, nodeWidth } from '../../src/core/dot-layout.js';
+import { dagreLayout, schemaLayout, nodeWidth } from '../../src/core/dot-layout.js';
 
 // dagre is pure (no DOM), so the tests drive it directly — the same library the
 // app injects at runtime via the app.Dagre seam.
@@ -74,33 +74,57 @@ describe('dagreLayout', () => {
     expect(g.edges).toEqual([{ from: 'a', to: 'b', points: expect.any(Array) }]);
   });
 
-  describe('isolatedLast (schema views)', () => {
-    it('packs edge-less nodes into a grid below the connected lineage', () => {
-      const g = dagreLayout(dagre, {
-        nodes: [
-          { id: 'a', label: 'A' }, { id: 'b', label: 'B' },        // a → b lineage
-          { id: 's1', label: 'S1' }, { id: 's2', label: 'S2' }, { id: 's3', label: 'S3' }, // singles
-        ],
-        edges: [{ from: 'a', to: 'b' }],
-      }, { isolatedLast: true });
-      const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
-      expect(g.nodes).toHaveLength(5);            // every node kept
-      expect(g.edges).toHaveLength(1);            // lineage edge preserved
-      const lineageBottom = Math.max(by.a.y + by.a.h, by.b.y + by.b.h);
-      for (const id of ['s1', 's2', 's3']) expect(by[id].y).toBeGreaterThanOrEqual(lineageBottom); // all below
-      expect(by.a.y).toBeLessThan(by.b.y);        // lineage still laid out top→bottom
-    });
+});
 
-    it('grids all nodes from the top when none are connected (no lineage)', () => {
-      const g = dagreLayout(dagre, {
-        nodes: [{ id: 'x', label: 'X' }, { id: 'y', label: 'Y' }, { id: 'z', label: 'Z' }],
-        edges: [],
-      }, { isolatedLast: true });
-      expect(g.nodes).toHaveLength(3);
-      expect(g.edges).toEqual([]);
-      expect(g.width).toBeGreaterThan(0);
-      expect(g.height).toBeGreaterThan(0);
-      expect(Math.min(...g.nodes.map((n) => n.y))).toBeLessThanOrEqual(12); // top row at the margin
+describe('schemaLayout (lineage first, singles gridded below)', () => {
+  it('packs edge-less nodes into a grid below the connected lineage', () => {
+    const g = schemaLayout(dagre, {
+      nodes: [
+        { id: 'a', label: 'A' }, { id: 'b', label: 'B' },        // a → b lineage
+        { id: 's1', label: 'S1' }, { id: 's2', label: 'S2' }, { id: 's3', label: 'S3' }, // singles
+      ],
+      edges: [{ from: 'a', to: 'b' }],
     });
+    const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+    expect(g.nodes).toHaveLength(5);            // every node kept
+    expect(g.edges).toHaveLength(1);            // lineage edge preserved
+    const lineageBottom = Math.max(by.a.y + by.a.h, by.b.y + by.b.h);
+    for (const id of ['s1', 's2', 's3']) expect(by[id].y).toBeGreaterThanOrEqual(lineageBottom); // all below
+    expect(by.a.y).toBeLessThan(by.b.y);        // lineage still laid out top→bottom
+  });
+
+  it('grids singles from the top with a known extent when there is no lineage', () => {
+    // 3 unlabeled-width singles: cols = ceil(sqrt 3) = 2, rows = 2; colW = MIN_W 64,
+    // rowH = NODE_H 30; MARGIN 12, NODESEP 26.
+    const g = schemaLayout(dagre, {
+      nodes: [{ id: 'x', label: 'X' }, { id: 'y', label: 'Y' }, { id: 'z', label: 'Z' }],
+      edges: [],
+    });
+    expect(g.nodes).toHaveLength(3);
+    expect(g.edges).toEqual([]);
+    expect(g.width).toBe(12 * 2 + 2 * 64 + 1 * 26);   // 178 — two columns
+    expect(g.height).toBe(12 + 2 * 30 + 1 * 26 + 12); // 110 — two rows, top at MARGIN
+    const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+    expect(by.x).toMatchObject({ x: 12, y: 12 });               // row 0, col 0
+    expect(by.y).toMatchObject({ x: 12 + 64 + 26, y: 12 });     // row 0, col 1
+    expect(by.z).toMatchObject({ x: 12, y: 12 + 30 + 26 });     // row 1, col 0
+  });
+
+  it('falls back to plain dagre when there are no singles', () => {
+    const g = schemaLayout(dagre, {
+      nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }],
+      edges: [{ from: 'a', to: 'b' }],
+    });
+    expect(g.nodes).toHaveLength(2);
+    expect(g.edges).toHaveLength(1);
+    expect(Object.fromEntries(g.nodes.map((n) => [n.id, n.y])).a)
+      .toBeLessThan(Object.fromEntries(g.nodes.map((n) => [n.id, n.y])).b);
+  });
+
+  it('returns an empty layout for no nodes and tolerates missing nodes/edges keys', () => {
+    expect(schemaLayout(dagre, {})).toEqual({ nodes: [], edges: [], width: 0, height: 0 }); // no `nodes` key
+    const g = schemaLayout(dagre, { nodes: [{ id: 'solo', label: 'Solo' }] });             // no `edges` key
+    expect(g.nodes).toHaveLength(1);
+    expect(g.edges).toEqual([]);
   });
 });

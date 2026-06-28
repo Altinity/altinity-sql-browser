@@ -4,7 +4,7 @@
 // window, location, fetch, crypto, sessionStorage) is injected so the whole
 // controller is testable under happy-dom with stubs.
 
-import { h, zoomScale } from './dom.js';
+import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, tabChart,
@@ -730,13 +730,11 @@ export function createApp(env = {}) {
     };
     app.dom[refKey] = node;
     const r = anchorEl.getBoundingClientRect();
-    // Bridge the shipped html{zoom}: getBoundingClientRect is post-zoom px, but a
-    // fixed element's top/right are re-scaled by zoom on paint — divide by scale so
-    // the popover anchors under the button (same as the File menu / editor popovers).
-    const scale = zoomScale(anchorEl);
+    // Right-align under the button, bridging html{zoom} (see fixedAnchor / zoomScale).
+    const a = fixedAnchor(r, zoomScale(anchorEl), { viewportW: win.innerWidth || 0 });
     node.style.position = 'fixed';
-    node.style.top = (r.bottom / scale + 6) + 'px';
-    node.style.right = Math.max(8, ((win.innerWidth || 0) - r.right) / scale) + 'px';
+    node.style.top = a.top + 'px';
+    node.style.right = a.right + 'px';
     doc.body.appendChild(node);
     doc.addEventListener('keydown', onKey, true);
     doc.addEventListener('mousedown', onOutside, true);
@@ -890,9 +888,10 @@ export function renderApp(app, helpers) {
   const dragCtx = {
     state,
     rectFor,
-    // Only the px-based 'col' axis needs the html{zoom} bridge (the '%' axes use a
-    // zoom-cancelling ratio); measure the sidebar, which lives in the zoomed tree.
-    scale: (axis) => (axis === 'col' ? zoomScale(sidebar) : 1),
+    // The px-based 'col' axis divides clientX by the page zoom; the '%' axes use a
+    // zoom-cancelling ratio and ignore `scale` (dragValue's default), so we needn't
+    // special-case the axis here — just report the page zoom from the sidebar.
+    scale: () => zoomScale(sidebar),
     apply: (axis, value) => {
       if (axis === 'col') sidebar.style.width = value + 'px';
       else if (axis === 'sideRow') sidebar.firstElementChild.style.height = value + '%';

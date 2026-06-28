@@ -237,7 +237,13 @@ export async function loadLineageTransitive(ctx, focus, opts = {}) {
       dictionaries = dictionaries.concat(part.dictionaries);
     }
     const graph = buildSchemaGraph({ tables, dictionaries });
-    if (graph.nodes.length >= nodeCap) { truncated = true; break; }
+    // Cap on the *lineage* size — count only nodes that participate in an edge.
+    // Standalone tables are cheap to render and never drive cross-DB expansion, so
+    // they must not trip the cap (a single big DB of mostly-unrelated tables would
+    // otherwise truncate on the first round, before its few links are followed).
+    const linked = new Set();
+    for (const e of graph.edges) { linked.add(e.from); linked.add(e.to); }
+    if (linked.size >= nodeCap) { truncated = true; break; }
     frontier = externalDbs(graph, loaded);
   }
   return { rows: { tables, dictionaries }, truncated };

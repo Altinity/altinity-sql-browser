@@ -8,7 +8,7 @@
 import { h, s, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { parseDot } from '../core/dot.js';
-import { dagreLayout } from '../core/dot-layout.js';
+import { dagreLayout, schemaLayout } from '../core/dot-layout.js';
 import { buildCardModel, cardSize, CARD } from '../core/schema-cards.js';
 import { qualifyIdent } from '../core/format.js';
 import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
@@ -180,7 +180,7 @@ export function buildPipelineSvg(rawText, dagre) {
 
 /** Build the schema-lineage SVG from a `{nodes,edges}` graph (kind-coloured). */
 export function buildSchemaSvg(graph, dagre, onNode) {
-  return renderGraphSvg(dagreLayout(dagre, graph || { nodes: [], edges: [] }, { isolatedLast: true }), {
+  return renderGraphSvg(schemaLayout(dagre, graph || { nodes: [], edges: [] }), {
     nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
     edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
     edgeLabel: (e) => e.kind,
@@ -248,7 +248,7 @@ export function buildRichSchemaSvg(graph, dagre, onNode) {
   });
   // `external` rides through dagreLayout (like kind/db/name), so the node class can
   // read it off the laid node — no side-channel needed.
-  const laid = dagreLayout(dagre, { nodes: sized, edges: g.edges || [] }, { isolatedLast: true });
+  const laid = schemaLayout(dagre, { nodes: sized, edges: g.edges || [] });
   // Overlay any manually-moved positions remembered for this result, then
   // straighten the edges touching a moved node so they still connect on first draw.
   const positions = g.savedPositions;
