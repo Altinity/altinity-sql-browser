@@ -34,6 +34,21 @@
   </div>
 </section>
 
+<!-- Authentication -->
+<section class="alt">
+  <div class="wrap narrow">
+    <div class="section-head">
+      <div class="eyebrow">Authentication</div>
+      <h2>Sign in the way your cluster expects</h2>
+    </div>
+    <div class="grid cols-2">
+      <div class="card"><h3>SSO via any OIDC IdP</h3><p>Google, Auth0, Okta and friends — Authorization-Code + PKCE, discovered from <code class="k">/.well-known/openid-configuration</code>. The login screen can offer several providers.</p></div>
+      <div class="card"><h3>Credentials &amp; passwordless</h3><p>HTTP Basic username/password for clusters without OAuth, including username-only connect for demo clusters. Tokens and credentials live only in <code class="k">sessionStorage</code>.</p></div>
+    </div>
+    <p style="text-align:center;margin-top:28px;"><a class="btn btn-dark" href="deployment.html">See deployment &amp; auth setup →</a></p>
+  </div>
+</section>
+
 <!-- Charts -->
 <section>
   <div class="wrap">
@@ -42,16 +57,16 @@
         <div class="eyebrow">Result views</div>
         <h3>Table, JSON &amp; charts from any query</h3>
         <p>Every result set switches between a sortable table, raw JSON, and a chart — without re-running.
-          The chart view auto-detects axis roles (a date becomes a time series, a category becomes bars) and
-          lets you override type, X, Y and series.</p>
+          The table gives type-aware columns, NULL styling and row numbers, with live row, byte and
+          elapsed-time stats in the toolbar.</p>
         <ul>
-          <li>Line · Bar · Column · Area · Pie</li>
-          <li>Multi-series &amp; "all measures" plotting</li>
+          <li>Sortable, type-aware columns · expandable cells</li>
+          <li>One click to JSON, or to a chart — Line · Bar · Column · Area · Pie</li>
           <li>Chart config saved with the query and in share links</li>
           <li>CSV / TSV export and copy-to-clipboard</li>
         </ul>
       </div>
-      <figure class="shot zoom"><img src="assets/img/chart-column-dark.png" alt="A monthly-flights query rendered as a vertical column chart with a TYPE/X/Y config bar." loading="lazy"></figure>
+      <figure class="shot zoom"><img src="assets/img/table-dark.png" alt="A monthly-flights query result shown as a sortable table with row numbers and live row, byte and elapsed-time stats in the toolbar." loading="lazy"></figure>
     </div>
 
     <div class="feature-row reverse">
@@ -237,21 +252,6 @@ ORDER BY month;</pre>
       <div class="card"><h3>Tabbed workspace</h3><p>Multiple query tabs, each with its own editor, result view and chart config. Resizable editor / sidebar split.</p></div>
       <div class="card"><h3>Dark &amp; light themes</h3><p>A polished design-token palette in both themes, with native OS fonts — no web-font downloads.</p></div>
     </div>
-  </div>
-</section>
-
-<!-- Auth -->
-<section class="alt">
-  <div class="wrap narrow">
-    <div class="section-head">
-      <div class="eyebrow">Authentication</div>
-      <h2>Sign in the way your cluster expects</h2>
-    </div>
-    <div class="grid cols-2">
-      <div class="card"><h3>SSO via any OIDC IdP</h3><p>Google, Auth0, Okta and friends — Authorization-Code + PKCE, discovered from <code class="k">/.well-known/openid-configuration</code>. The login screen can offer several providers.</p></div>
-      <div class="card"><h3>Credentials &amp; passwordless</h3><p>HTTP Basic username/password for clusters without OAuth, including username-only connect for demo clusters. Tokens and credentials live only in <code class="k">sessionStorage</code>.</p></div>
-    </div>
-    <p style="text-align:center;margin-top:28px;"><a class="btn btn-dark" href="deployment.html">See deployment &amp; auth setup →</a></p>
   </div>
 </section>
 
