@@ -26,6 +26,18 @@
       <password>demo</password>
     </connection>
 
+    <!-- Altinity Antalya demo via Google SSO (public Web client). -->
+    <connection>
+      <name>antalya-oauth</name>
+      <hostname>antalya.demo.altinity.cloud</hostname>
+      <secure>1</secure>
+      <port>9440</port>
+      <database>default</database>
+      <oauth-url>https://accounts.google.com</oauth-url>
+      <oauth-client-id>925653064731-tpj128lp5qm5vkqn4llgbl96udvt3lsf.apps.googleusercontent.com</oauth-client-id>
+      <oauth-client-secret>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</oauth-client-secret>
+    </connection>
+
     <!-- Altinity github.demo (public). -->
     <connection>
       <name>altinity-demo</name>

@@ -1,7 +1,7 @@
 {
   "name": "altinity-sql-browser",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A zero-dependency, OAuth-gated SQL browser for any ClickHouse cluster. Vanilla ES modules, served from ClickHouse itself.",
   "type": "module",
   "license": "Apache-2.0",
