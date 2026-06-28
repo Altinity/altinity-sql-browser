@@ -8,6 +8,10 @@ describe('dragValue', () => {
     expect(dragValue('col', { clientX: 250 })).toBe(250);
     expect(dragValue('col', { clientX: 999 })).toBe(420);
   });
+  it('col divides clientX by the zoom scale before clamping', () => {
+    expect(dragValue('col', { clientX: 360 }, null, 1.2)).toBe(300); // 360 visual px → 300 layout px
+    expect(dragValue('col', { clientX: 60 }, null, 1.2)).toBe(180); // 50 layout → clamp to 180
+  });
   it('sideRow maps Y to % clamped [25,85]', () => {
     expect(dragValue('sideRow', { clientY: 200 }, rect)).toBe(50);
     expect(dragValue('sideRow', { clientY: 100 }, rect)).toBe(25); // 0% → clamp 25
@@ -52,6 +56,17 @@ describe('startDrag', () => {
     expect(handle.classList.contains('dragging')).toBe(false);
     expect(save).toHaveBeenCalledWith('sidebarPx', 300);
     expect(win._has('mousemove')).toBe(false);
+  });
+  it('col: applies ctx.scale to the dragged width', () => {
+    const win = fakeWin();
+    const handle = document.createElement('div');
+    const state = { sidebarPx: 0 };
+    const apply = vi.fn();
+    const ctx = { win, state, apply, save: vi.fn(), rectFor: () => ({}), scale: () => 1.2 };
+    startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'col', ctx);
+    win._fire('mousemove', { clientX: 360 });
+    expect(state.sidebarPx).toBe(300); // 360 / 1.2
+    expect(apply).toHaveBeenCalledWith('col', 300);
   });
   it('sideRow: updates sideSplitPct + persists', () => {
     const { win, state, save } = harness('sideRow');

@@ -1,12 +1,17 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-html { zoom: 1.2; }
+html { zoom: var(--zoom); }
 
 :root {
   --ui: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
   --accent: #0079AD;
   --accent-dim: #005F8A;
+  /* Page zoom. Normal flow scales cleanly, but `zoom` does NOT divide viewport
+     units, so an in-flow `100vh`/`100vw`/`100%`-tall element renders --zoom times
+     too big and overflows the window. The two full-viewport graph panels below
+     divide their viewport sizing by --zoom to fit; bump both together here. */
+  --zoom: 1.2;
 }
 
 [data-theme='dark'] {
@@ -717,7 +722,11 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .graph-overlay-panel {
-  width: 100%; height: 100%;
+  /* `.graph-overlay` is a fixed inset:0 backdrop with 24px padding. A plain
+     100% here would render --zoom times too tall (see --zoom) and spill past the
+     viewport; divide the viewport box (minus the 48px padding) by --zoom so the
+     panel fits with its breathing room intact. */
+  width: calc((100vw - 48px) / var(--zoom)); height: calc((100vh - 48px) / var(--zoom));
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: 11px; overflow: hidden;
   display: flex; flex-direction: column;
@@ -766,9 +775,17 @@ body {
 .graph-overlay-canvas.schema-canvas.modkey .eg-card rect,
 .graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
 
-/* The schema graph's own browser tab: the panel fills the viewport chromelessly. */
-body.schema-tab { margin: 0; height: 100vh; overflow: hidden; background: var(--bg-editor); }
-body.schema-tab .graph-overlay-panel { height: 100vh; border: none; border-radius: 0; }
+/* The schema graph's own browser tab: the panel fills the viewport chromelessly.
+   Divide by --zoom like the panel (see --zoom) so the body is exactly one screen
+   tall rather than 1.2× (which would otherwise only be hidden by overflow:hidden). */
+body.schema-tab { margin: 0; height: calc(100vh / var(--zoom)); overflow: hidden; background: var(--bg-editor); }
+/* Full-bleed in its own browser tab — no backdrop padding, but still divide the
+   viewport sizing by --zoom (see --zoom) so the panel fills exactly one screen
+   instead of overflowing the bottom (which hid the detail pane's DDL). */
+body.schema-tab .graph-overlay-panel {
+  width: calc(100vw / var(--zoom)); height: calc(100vh / var(--zoom));
+  border: none; border-radius: 0;
+}
 
 /* ------------ schema node detail pane (fullscreen graph) ------------ */
 .schema-detail {
