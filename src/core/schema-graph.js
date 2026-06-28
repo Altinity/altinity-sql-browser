@@ -228,16 +228,12 @@ export function buildSchemaGraph(rows, focus) {
     for (const e of edges) { if (e.from === center) keep.add(e.to); if (e.to === center) keep.add(e.from); }
     outNodes = outNodes.filter((n) => keep.has(n.id));
     outEdges = edges.filter((e) => keep.has(e.from) && keep.has(e.to));
-  } else if (edges.length) {
-    // Whole-DB lineage WITH relationships: keep only the tables that participate —
-    // a lineage view shows lineage, not a wall of unrelated boxes alongside it.
-    const linked = new Set();
-    for (const e of edges) { linked.add(e.from); linked.add(e.to); }
-    outNodes = outNodes.filter((n) => linked.has(n.id));
   }
-  // Whole-DB lineage with NO relationships (e.g. a DB of unrelated URL/MergeTree
-  // tables): fall through keeping every table as a standalone node, so the database
-  // still renders its tables rather than showing an empty "no relationships" screen.
+  // Whole-DB lineage: keep EVERY table as a node, linked or not. A database view
+  // should show all of its objects — with lineage edges drawn where they exist —
+  // rather than hiding the unlinked tables behind the relationships. (Cross-DB
+  // scoping in the full view is handled afterwards by expandLineage, which seeds
+  // the focus DB and BFS-walks only the connected nodes of other databases.)
   return { nodes: outNodes, edges: outEdges };
 }
 
