@@ -241,7 +241,7 @@ export function buildSchemaGraph(rows, focus) {
   // friendly ·inner and external-source labels are left alone — and ids/edges
   // (which key everything, incl. click-to-SHOW-CREATE) are unaffected.
   const curDb = focus && focus.db;
-  if (curDb) for (const n of outNodes) { if (n.db === curDb && n.label === n.id) n.label = n.name; }
+  if (curDb) for (const n of outNodes) { if (n.db === curDb && n.name && n.label === n.id) n.label = n.name; }
   return { nodes: outNodes, edges: outEdges };
 }
 

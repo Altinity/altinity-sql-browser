@@ -20,11 +20,23 @@ export function nodeWidth(label) {
   return Math.max(MIN_W, String(label).length * CHAR_W + PAD_X);
 }
 
+// Box size for a node: honor an explicit w/h when it carries one (the rich schema
+// cards pre-compute w/h from their content via cardSize); otherwise fall back to
+// the label-based width + fixed height (pipeline + inline schema boxes).
+const sizeOf = (n) => ({ width: n.w != null ? n.w : nodeWidth(n.label), height: n.h != null ? n.h : NODE_H });
+// `kind`/`db`/`name`/`external` (node) and `label` (edge) pass through for the
+// schema graph's colouring, external-dimming + click-to-SHOW-CREATE (so the UI
+// need not re-split the id or keep a side-channel for these).
+const carry = (n) => ({ id: n.id, label: n.label, kind: n.kind, db: n.db, name: n.name, external: n.external });
+
 /**
+ * Lay out a graph with dagre. Generic (pipeline + schema lineage): every node is
+ * ranked top→bottom and edges routed. Returns `{ nodes, edges, width, height }`
+ * with node x/y as top-left.
  * @param dagre  the injected dagre module (`{ graphlib, layout }`)
  * @param graph  parsed `{ nodes:[{id,label}], edges:[{from,to}] }`
  */
-export function dagreLayout(dagre, graph, opts = {}) {
+export function dagreLayout(dagre, graph) {
   const nodes = graph.nodes || [];
   if (!nodes.length) return { nodes: [], edges: [], width: 0, height: 0 };
   const ids = new Set(nodes.map((n) => n.id));
@@ -32,33 +44,14 @@ export function dagreLayout(dagre, graph, opts = {}) {
   // would just loop onto its own box).
   const edges = (graph.edges || []).filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
 
-  // Schema views opt into `isolatedLast`: lay out only the connected nodes with
-  // dagre and pack the edge-less "single" tables into a grid *below* the lineage,
-  // so a whole-DB graph reads as "relationships first, loose tables after" rather
-  // than dagre ranking the orphans across the top. Other callers (the pipeline
-  // graph) keep every node in the dagre pass.
-  const connected = new Set();
-  for (const e of edges) { connected.add(e.from); connected.add(e.to); }
-  const singles = opts.isolatedLast ? nodes.filter((n) => !connected.has(n.id)) : [];
-  const ranked = opts.isolatedLast ? nodes.filter((n) => connected.has(n.id)) : nodes;
-
-  // Honor a node's explicit size when it carries one (the rich schema cards
-  // pre-compute w/h from their content via cardSize); otherwise fall back to the
-  // label-based width + fixed height (pipeline + inline schema boxes).
-  const sizeOf = (n) => ({ width: n.w != null ? n.w : nodeWidth(n.label), height: n.h != null ? n.h : NODE_H });
-  // `kind`/`db`/`name`/`external` (node) and `label` (edge) pass through for the
-  // schema graph's colouring, external-dimming + click-to-SHOW-CREATE (so the UI
-  // need not re-split the id or keep a side-channel for these).
-  const carry = (n) => ({ id: n.id, label: n.label, kind: n.kind, db: n.db, name: n.name, external: n.external });
-
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: 'TB', nodesep: NODESEP, ranksep: RANKSEP, marginx: MARGIN, marginy: MARGIN });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const n of ranked) g.setNode(n.id, sizeOf(n));
+  for (const n of nodes) g.setNode(n.id, sizeOf(n));
   for (const e of edges) g.setEdge(e.from, e.to);
-  if (ranked.length) dagre.layout(g);
+  dagre.layout(g);
 
-  const outNodes = ranked.map((n) => {
+  const outNodes = nodes.map((n) => {
     const dn = g.node(n.id);
     return { ...carry(n), x: dn.x - dn.width / 2, y: dn.y - dn.height / 2, w: dn.width, h: dn.height };
   });
@@ -67,26 +60,46 @@ export function dagreLayout(dagre, graph, opts = {}) {
     points: g.edge(e.from, e.to).points.map((p) => ({ x: p.x, y: p.y })),
   }));
   const gg = g.graph();
-  let width = ranked.length ? gg.width : 0;
-  let height = ranked.length ? gg.height : 0;
+  return { nodes: outNodes, edges: outEdges, width: gg.width, height: gg.height };
+}
 
-  // Grid-pack the singles beneath the connected layout: a roughly-square block of
-  // uniform cells (widest/tallest single), left-aligned at the margin, sitting one
-  // ranksep below the lineage (or at the top when there's no lineage at all).
-  if (singles.length) {
-    const cells = singles.map(sizeOf);
-    const colW = Math.max(...cells.map((c) => c.width));
-    const rowH = Math.max(...cells.map((c) => c.height));
-    const cols = Math.max(1, Math.ceil(Math.sqrt(singles.length)));
-    const top = height ? height + RANKSEP : MARGIN;
-    singles.forEach((n, i) => {
-      const col = i % cols, row = Math.floor(i / cols);
-      outNodes.push({ ...carry(n), x: MARGIN + col * (colW + NODESEP), y: top + row * (rowH + NODESEP), w: cells[i].width, h: cells[i].height });
-    });
-    const usedCols = Math.min(cols, singles.length);
-    const rows = Math.ceil(singles.length / cols);
-    width = Math.max(width, MARGIN * 2 + usedCols * colW + (usedCols - 1) * NODESEP);
-    height = top + rows * rowH + (rows - 1) * NODESEP + MARGIN;
-  }
-  return { nodes: outNodes, edges: outEdges, width, height };
+/**
+ * Schema-graph layout: dagre the connected lineage, then grid-pack the edge-less
+ * "single" tables *below* it — so a whole-DB graph reads as "relationships first,
+ * loose tables after" rather than dagre ranking the orphans across the top. The
+ * grid is a roughly-square block of uniform cells (widest/tallest single),
+ * left-aligned at the margin, one ranksep below the lineage (or at the top when
+ * there is no lineage at all). Same `{ nodes, edges, width, height }` shape.
+ */
+export function schemaLayout(dagre, graph) {
+  const nodes = graph.nodes || [];
+  if (!nodes.length) return { nodes: [], edges: [], width: 0, height: 0 };
+  const ids = new Set(nodes.map((n) => n.id));
+  const edges = (graph.edges || []).filter((e) => ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
+  const connected = new Set();
+  for (const e of edges) { connected.add(e.from); connected.add(e.to); }
+  const singles = nodes.filter((n) => !connected.has(n.id));
+  if (!singles.length) return dagreLayout(dagre, graph); // no orphans → plain dagre
+
+  // Lay the lineage out with dagre (connected nodes only, so the orphans don't
+  // reserve a rank-0 row across the top), then append the grid beneath it.
+  const base = dagreLayout(dagre, { nodes: nodes.filter((n) => connected.has(n.id)), edges });
+  const cells = singles.map(sizeOf);
+  const colW = Math.max(...cells.map((c) => c.width));
+  const rowH = Math.max(...cells.map((c) => c.height));
+  const cols = Math.max(1, Math.ceil(Math.sqrt(singles.length)));
+  const top = base.height ? base.height + RANKSEP : MARGIN;
+  const gridded = singles.map((n, i) => ({
+    ...carry(n),
+    x: MARGIN + (i % cols) * (colW + NODESEP),
+    y: top + Math.floor(i / cols) * (rowH + NODESEP),
+    w: cells[i].width, h: cells[i].height,
+  }));
+  const rows = Math.ceil(singles.length / cols);
+  return {
+    nodes: [...base.nodes, ...gridded],
+    edges: base.edges,
+    width: Math.max(base.width, MARGIN * 2 + cols * colW + (cols - 1) * NODESEP),
+    height: top + rows * rowH + (rows - 1) * NODESEP + MARGIN,
+  };
 }

@@ -461,6 +461,25 @@ describe('loadLineageTransitive', () => {
     expect(out.truncated).toBe(true);
   });
 
+  it('counts only linked nodes toward the cap — standalone tables do not truncate the cross-DB walk', async () => {
+    // 'a' has one cross-DB link (a.t → b.mv) plus 4 standalone tables: 6 total nodes
+    // after round 1, but only 2 linked. nodeCap 3 must NOT truncate, and 'b' must load.
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql) || /system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      if (/database = 'a'/.test(sql)) return jsonResp({ data: [
+        tbl('a', 't', 'MergeTree', { dependencies_database: ['b'], dependencies_table: ['mv'] }),
+        tbl('a', 's1', 'MergeTree'), tbl('a', 's2', 'MergeTree'),
+        tbl('a', 's3', 'MergeTree'), tbl('a', 's4', 'MergeTree'),
+      ] });
+      if (/database = 'b'/.test(sql)) return jsonResp({ data: [tbl('b', 'mv', 'MaterializedView')] });
+      return jsonResp({ data: [] });
+    });
+    const out = await loadLineageTransitive(ctx, { db: 'a' }, { nodeCap: 3 });
+    expect(out.truncated).toBe(false);                                            // 2 linked < cap 3
+    expect(new Set(out.rows.tables.map((t) => t.database)).has('b')).toBe(true);  // cross-DB walk reached b
+  });
+
   it('loads a multi-database frontier concurrently in one round', async () => {
     const ctx = ctxWith((url, init) => {
       const sql = init.body;

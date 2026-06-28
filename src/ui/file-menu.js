@@ -5,7 +5,7 @@
 // effect goes through an injected seam (app.saveJSON / app.saveStr /
 // app.downloadFile / app.FileReader / app.document), so it is fully testable.
 
-import { h, zoomScale } from './dom.js';
+import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -104,13 +104,11 @@ export function openFileMenu(app) {
   app.dom.fileMenu = menu;
   doc.body.appendChild(overlay);
   const r = app.dom.fileBtn.getBoundingClientRect();
-  // Bridge the shipped html{zoom}: getBoundingClientRect is post-zoom px, but a
-  // fixed element's top/left are re-scaled by zoom on paint — divide by scale so
-  // the menu anchors under the button (same as the editor popovers via zoomScale).
-  const scale = zoomScale(app.dom.fileBtn);
+  // Anchor under the button, bridging html{zoom} (see fixedAnchor / zoomScale).
+  const a = fixedAnchor(r, zoomScale(app.dom.fileBtn));
   menu.style.position = 'fixed';
-  menu.style.top = (r.bottom / scale + 6) + 'px';
-  menu.style.left = Math.max(8, r.left / scale) + 'px';
+  menu.style.top = a.top + 'px';
+  menu.style.left = a.left + 'px';
   doc.body.appendChild(menu);
   doc.addEventListener('keydown', onKey, true);
 }
