@@ -63,7 +63,7 @@ editor library — it adds nothing to the single served file). On top of that:
   saved/history query drops as a `( … )` subquery at the drop point (its trailing
   `FORMAT`/`;` stripped). Undoable; click-to-load still works for keyboard users.
   Dragging a **database or table onto the results pane** instead renders a
-  [schema lineage graph](#schema-lineage-graph).
+  [data flow graph](#data-flow-graph).
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**
@@ -101,16 +101,16 @@ tab (e.g. `EXPLAIN ESTIMATE …` opens **Estimate**); anything else opens the
 verbatim **Explain** tab. An explicit `… FORMAT <name>` on an EXPLAIN bypasses the
 views and shows ClickHouse's raw response.
 
-## Schema lineage graph
+## Data flow graph
 
 Drag a **database** or **table** row from the schema sidebar onto the results pane
 to see how its ClickHouse objects relate — not generic foreign keys, but the
-engine-specific lineage: materialized views (`feeds` from sources, `writes` to the
+engine-specific data flow: materialized views (`feeds` from sources, `writes` to the
 target), regular views (`reads` their sources), dictionaries (`dict` from a source
 table), and `Distributed`/`Buffer`/`Merge` engines pointing at their backing
 tables. Nodes are coloured by kind (table / view / materialized view / dictionary /
 distributed / buffer / merge / external) with a legend; edges are coloured and
-labelled by relationship. Drag a **database** → the whole-DB lineage (it shows only
+labelled by relationship. Drag a **database** → the whole-DB data flow (it shows only
 the tables that participate in a relationship; a database whose tables aren't linked
 by any view/MV/dictionary/Distributed engine shows a "no object relationships"
 message rather than a wall of disconnected boxes); drag a **table** → its 1-hop
@@ -141,7 +141,7 @@ the same dagre-laid-out renderer the pipeline graph uses.
 ### Required grants
 
 Every introspection read is **best-effort**: a denied or missing `system.*` table
-degrades the affected layer instead of failing the graph, so the lineage view works
+degrades the affected layer instead of failing the graph, so the data-flow view works
 even for low-privilege users. The graph draws with **no extra grants** — the implicit
 `SELECT` that `SHOW TABLES` / `SHOW COLUMNS` give over `system.tables` /
 `system.columns` is enough (and those rows are already filtered to the databases the
@@ -150,7 +150,7 @@ user can otherwise access). What you grant only buys *fidelity*:
 | To get… | the role needs | if denied (default) |
 |---|---|---|
 | the graph itself + node cards | `SHOW TABLES`, `SHOW COLUMNS` (→ implicit `SELECT ON system.tables` / `system.columns`) | required — without these there's nothing to draw |
-| dictionary (`dict`) lineage edges | `SELECT ON system.dictionaries` | no dictionary edges; the rest of the graph still draws |
+| dictionary (`dict`) data-flow edges | `SELECT ON system.dictionaries` | no dictionary edges; the rest of the graph still draws |
 | skip-index badges on the rich cards | `SELECT ON system.data_skipping_indices` | cards show the engine/rows/bytes header without the skip line |
 | per-partition rows in the node detail pane | `SELECT ON system.parts` | detail pane shows columns/keys/DDL but no partition breakdown |
 

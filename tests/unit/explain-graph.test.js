@@ -249,7 +249,7 @@ describe('schema lineage graph', () => {
 
   it('explains an empty table-focus result', () => {
     const el = renderSchemaGraph(APP, { schemaGraph: { focus: { kind: 'table', db: 'd', table: 'lonely' }, nodes: [], edges: [] } });
-    expect(el.textContent).toMatch(/d\.lonely has no lineage relationships/);
+    expect(el.textContent).toMatch(/d\.lonely has no data-flow relationships/);
   });
 
   // Overlay-fallback mode: openWindow returns null, so openSchemaView falls back

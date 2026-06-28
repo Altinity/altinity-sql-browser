@@ -108,7 +108,7 @@ export function renderResults(app) {
     inner.appendChild(r.schemaGraph.loading
       ? h('div', { class: 'placeholder starting' },
         h('span', { class: 'spin' }, Icon.spinner()),
-        h('div', null, 'Loading lineage…'))
+        h('div', null, 'Loading data flow…'))
       : renderSchemaGraph(app, r));
   } else if (r.explainView) {
     inner.appendChild(renderExplainView(app, r));

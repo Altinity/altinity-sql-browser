@@ -601,7 +601,7 @@ describe('schema lineage result', () => {
     const app = appWithResult(r);
     renderResults(app);
     const region = app.dom.resultsRegion;
-    expect(region.querySelector('.placeholder.starting').textContent).toMatch(/Loading lineage/);
+    expect(region.querySelector('.placeholder.starting').textContent).toMatch(/Loading data flow/);
     expect(region.querySelector('svg.explain-graph')).toBeNull();
     expect(region.querySelector('.res-graph-title').textContent).toBe('Schema · lin');
     expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();

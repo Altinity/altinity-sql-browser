@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Features — Altinity SQL Browser</title>
-<meta name="description" content="Charts, EXPLAIN pipeline graphs, schema-lineage diagrams, autocomplete from system.*, find/replace, a saved-query library, share links and SSO — a full tour of the Altinity SQL Browser.">
+<meta name="description" content="Charts, EXPLAIN pipeline graphs, data-flow graphs, autocomplete from system.*, find/replace, a saved-query library, share links and SSO — a full tour of the Altinity SQL Browser.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -87,24 +87,25 @@
   </div>
 </section>
 
-<!-- Lineage -->
+<!-- Data flow -->
 <section>
   <div class="wrap">
     <div class="feature-row reverse">
       <div class="txt">
-        <div class="eyebrow">Schema lineage</div>
+        <div class="eyebrow">Data flow</div>
         <h3>A live map of how your data connects</h3>
-        <p>Drag a database or table onto the results pane to draw its lineage: materialized views, target
-          tables, plain views and dictionaries, colour-coded by engine with <em>feeds</em>, <em>writes</em>,
-          <em>reads</em> and <em>dict</em> edges. Open it fullscreen to drag nodes (with undo/redo) and click
-          any node for its columns, keys and DDL.</p>
+        <p>Drag a database or table onto the results pane to trace its data flow: source tables feeding
+          materialized views that write to aggregates, dictionaries pulling from tables, and views reading
+          downstream — colour-coded by engine with <em>feeds</em>, <em>writes</em>, <em>reads</em> and
+          <em>dict</em> edges. Open it fullscreen to drag nodes (with undo/redo) and click any node for its
+          columns, keys and DDL.</p>
         <ul>
           <li>Materialized views, dictionaries, Distributed / Buffer / Merge</li>
           <li>Transitive, cross-database relationships</li>
           <li>Drag-move layout with undo/redo · detail pane per node</li>
         </ul>
       </div>
-      <figure class="shot zoom"><img src="assets/img/lineage-fullscreen-dark.png" alt="A schema-lineage graph: events_raw feeding three materialized views that write to target tables, a products table feeding a dictionary, and a view reading from daily_sales." loading="lazy"></figure>
+      <figure class="shot zoom"><img src="assets/img/lineage-fullscreen-dark.png" alt="A data-flow graph: events_raw feeding three materialized views that write to target tables, a products table feeding a dictionary, and a view reading from daily_sales." loading="lazy"></figure>
     </div>
   </div>
 </section>
@@ -125,7 +126,7 @@
           <li>Find/replace with regex · bracket matching · multi-tab</li>
         </ul>
       </div>
-      <figure class="shot zoom"><img src="assets/img/autocomplete-dark.png" alt="The editor showing a ranked autocomplete dropdown with table, function and keyword entries, above a schema-lineage graph." loading="lazy"></figure>
+      <figure class="shot zoom"><img src="assets/img/autocomplete-dark.png" alt="The editor showing a ranked autocomplete dropdown with table, function and keyword entries, above a data-flow graph." loading="lazy"></figure>
     </div>
   </div>
 </section>

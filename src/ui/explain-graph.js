@@ -27,7 +27,7 @@ const placeholder = (msg) => h('div', { class: 'placeholder' }, h('div', null, m
  */
 function schemaEmptyMessage(graph) {
   const f = (graph && graph.focus) || {};
-  if (f.kind === 'table') return f.db + '.' + f.table + ' has no lineage relationships.';
+  if (f.kind === 'table') return f.db + '.' + f.table + ' has no data-flow relationships.';
   const n = graph && graph.tableCount;
   return 'No object relationships in ' + f.db
     + (n ? ' — its ' + n + ' table' + (n === 1 ? '' : 's') + " aren't linked by a view, materialized view, dictionary, or Distributed/Buffer/Merge engine." : '.');
@@ -413,7 +413,7 @@ function themeToggle(doc, onToggle) {
 // from render() with a populated graph (the nodeCount > 0 branch), so graph.nodes
 // is always present here.
 function schemaNote(graph) {
-  return graph.truncated ? 'Lineage truncated — showing ' + graph.nodes.length + ' objects' : null;
+  return graph.truncated ? 'Data flow truncated — showing ' + graph.nodes.length + ' objects' : null;
 }
 
 // ⌘/Ctrl drives a hand cursor (.modkey) and gates node dragging: a ⌘/Ctrl+drag
