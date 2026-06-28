@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h, s, withDocument } from '../../src/ui/dom.js';
+import { h, s, withDocument, zoomScale } from '../../src/ui/dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -34,6 +34,25 @@ describe('withDocument', () => {
       withDocument(inner, () => expect(h('div').ownerDocument).toBe(inner));
       expect(h('div').ownerDocument).toBe(outer); // restored to outer, not global
     });
+  });
+});
+
+describe('zoomScale', () => {
+  const stub = (rectWidth, offsetWidth) => ({
+    getBoundingClientRect: () => ({ width: rectWidth }),
+    offsetWidth,
+  });
+  it('returns the post-zoom / layout width ratio for a laid-out element', () => {
+    expect(zoomScale(stub(120, 100))).toBe(1.2);
+  });
+  it('falls back to 1 when the element is not laid out (0/0 → NaN)', () => {
+    expect(zoomScale(stub(0, 0))).toBe(1);
+  });
+  it('falls back to 1 when offsetWidth is 0 but the rect is non-zero (Infinity)', () => {
+    expect(zoomScale(stub(800, 0))).toBe(1);
+  });
+  it('falls back to 1 for a degenerate 0-width rect (ratio 0)', () => {
+    expect(zoomScale(stub(0, 100))).toBe(1);
   });
 });
 

@@ -60,7 +60,10 @@ export function s(tag, props, ...children) {
 // post-zoom px while layout (offsetWidth) is pre-zoom CSS px, so their ratio is
 // the zoom. The single source of truth for bridging `html{zoom}` when mapping
 // between client coords and CSS px (editor popovers, results column-resize).
-// Falls back to 1 when the element isn't laid out (offsetWidth 0 → NaN).
+// Falls back to 1 for any non-positive/non-finite ratio — an unlaid-out element
+// gives 0/0 → NaN, and offsetWidth 0 with a non-zero rect gives Infinity; both
+// (and a degenerate 0-width) must read as "no zoom", not blow up a divisor.
 export function zoomScale(el) {
-  return (el.getBoundingClientRect().width / el.offsetWidth) || 1;
+  const s = el.getBoundingClientRect().width / el.offsetWidth;
+  return Number.isFinite(s) && s > 0 ? s : 1;
 }

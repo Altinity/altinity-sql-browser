@@ -7,10 +7,14 @@ import { clamp } from '../core/format.js';
 /**
  * Compute the new size for a drag. `axis` is 'col' (sidebar px), 'sideRow'
  * (sidebar vertical %), or 'row' (editor/results %). `rect` is the bounding
- * rect of the container being split (unused for 'col').
+ * rect of the container being split (unused for 'col'). `scale` is the page
+ * `html{zoom}` factor: `clientX` is post-zoom px but the sidebar width is set in
+ * layout px, so 'col' divides by it or the handle drifts from the cursor. The
+ * '%'-based axes derive from a (clientY-top)/(height) ratio where zoom cancels,
+ * so they ignore `scale`.
  */
-export function dragValue(axis, ev, rect) {
-  if (axis === 'col') return clamp(ev.clientX, 180, 420);
+export function dragValue(axis, ev, rect, scale = 1) {
+  if (axis === 'col') return clamp(ev.clientX / scale, 180, 420);
   const pct = clamp(((ev.clientY - rect.top) / (rect.bottom - rect.top)) * 100,
     axis === 'sideRow' ? 25 : 15, 85);
   return pct;
@@ -27,8 +31,11 @@ export function startDrag(ev, axis, ctx) {
   const handle = ev.currentTarget;
   const win = ctx.win || window;
   handle.classList.add('dragging');
+  // Page zoom is constant for the drag's lifetime, so measure it once here rather
+  // than reflowing (getBoundingClientRect/offsetWidth) on every mousemove.
+  const scale = ctx.scale ? ctx.scale(axis) : 1;
   const onMove = (move) => {
-    const value = dragValue(axis, move, ctx.rectFor(axis));
+    const value = dragValue(axis, move, ctx.rectFor(axis), scale);
     if (axis === 'col') ctx.state.sidebarPx = value;
     else if (axis === 'sideRow') ctx.state.sideSplitPct = value;
     else ctx.state.editorPct = value;
