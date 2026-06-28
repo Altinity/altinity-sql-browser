@@ -197,6 +197,17 @@ describe('buildSchemaGraph', () => {
     expect(eset(g).has('lin.src>lin.mv:feeds')).toBe(true); // lineage edges still present
   });
 
+  it('strips the focus-db prefix from same-db node labels but keeps it cross-db', () => {
+    const rows = { tables: [
+      T('lin', 'events', 'MergeTree'), // same db, isolated
+      T('lin', 'dist', 'Distributed', { engine_full: "Distributed('cl', 'other', 'remote_tbl')" }),
+    ], dictionaries: [] };
+    const byId = Object.fromEntries(buildSchemaGraph(rows, { kind: 'db', db: 'lin' }).nodes.map((n) => [n.id, n]));
+    expect(byId['lin.events'].label).toBe('events');                 // same db → bare table name
+    expect(byId['lin.dist'].label).toBe('dist');                     // same db → bare table name
+    expect(byId['other.remote_tbl'].label).toBe('other.remote_tbl'); // another db → stays qualified
+  });
+
   it('keeps every table as a standalone node when a whole-DB graph has no relationships', () => {
     // A DB of unrelated tables (e.g. all URL engine) still renders its tables —
     // showing the objects beats an empty "no relationships" screen, even though

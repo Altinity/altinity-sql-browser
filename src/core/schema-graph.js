@@ -234,6 +234,14 @@ export function buildSchemaGraph(rows, focus) {
   // rather than hiding the unlinked tables behind the relationships. (Cross-DB
   // scoping in the full view is handled afterwards by expandLineage, which seeds
   // the focus DB and BFS-walks only the connected nodes of other databases.)
+
+  // Display label: inside the focused database the "<db>." prefix is redundant, so
+  // show just the table name; a node from another database keeps its qualified id
+  // so its cross-DB origin stays visible. Only the untouched id is rewritten — the
+  // friendly ·inner and external-source labels are left alone — and ids/edges
+  // (which key everything, incl. click-to-SHOW-CREATE) are unaffected.
+  const curDb = focus && focus.db;
+  if (curDb) for (const n of outNodes) { if (n.db === curDb && n.label === n.id) n.label = n.name; }
   return { nodes: outNodes, edges: outEdges };
 }
 

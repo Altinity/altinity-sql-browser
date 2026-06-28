@@ -73,4 +73,34 @@ describe('dagreLayout', () => {
     expect(g.nodes).toHaveLength(2);
     expect(g.edges).toEqual([{ from: 'a', to: 'b', points: expect.any(Array) }]);
   });
+
+  describe('isolatedLast (schema views)', () => {
+    it('packs edge-less nodes into a grid below the connected lineage', () => {
+      const g = dagreLayout(dagre, {
+        nodes: [
+          { id: 'a', label: 'A' }, { id: 'b', label: 'B' },        // a → b lineage
+          { id: 's1', label: 'S1' }, { id: 's2', label: 'S2' }, { id: 's3', label: 'S3' }, // singles
+        ],
+        edges: [{ from: 'a', to: 'b' }],
+      }, { isolatedLast: true });
+      const by = Object.fromEntries(g.nodes.map((n) => [n.id, n]));
+      expect(g.nodes).toHaveLength(5);            // every node kept
+      expect(g.edges).toHaveLength(1);            // lineage edge preserved
+      const lineageBottom = Math.max(by.a.y + by.a.h, by.b.y + by.b.h);
+      for (const id of ['s1', 's2', 's3']) expect(by[id].y).toBeGreaterThanOrEqual(lineageBottom); // all below
+      expect(by.a.y).toBeLessThan(by.b.y);        // lineage still laid out top→bottom
+    });
+
+    it('grids all nodes from the top when none are connected (no lineage)', () => {
+      const g = dagreLayout(dagre, {
+        nodes: [{ id: 'x', label: 'X' }, { id: 'y', label: 'Y' }, { id: 'z', label: 'Z' }],
+        edges: [],
+      }, { isolatedLast: true });
+      expect(g.nodes).toHaveLength(3);
+      expect(g.edges).toEqual([]);
+      expect(g.width).toBeGreaterThan(0);
+      expect(g.height).toBeGreaterThan(0);
+      expect(Math.min(...g.nodes.map((n) => n.y))).toBeLessThanOrEqual(12); // top row at the margin
+    });
+  });
 });
