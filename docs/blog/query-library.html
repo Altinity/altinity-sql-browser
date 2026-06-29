@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A query library you can commit, share, and run anywhere — Altinity SQL Browser</title>
+<meta name="description" content="Saved queries shouldn't be trapped in one tool. The SQL Browser's library is one JSON file you can commit and share — and it exports to a Markdown runbook or a runnable .sql program that clickhouse-client, DBeaver and DataGrip can execute.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Workflow</div>
+  <h1>A query library you can commit, share, and run anywhere</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+  <p class="post-lede">The useful queries always end up somewhere useless — a Slack DM, a stale wiki, someone's <code class="k">~/scratch.sql</code>. Yours should be a file you can commit.</p>
+
+  <div class="body">
+    <p>Every team that runs ClickHouse accumulates a folklore of queries: the one that finds parts about
+      to hit the merge limit, the revenue rollup with the three joins nobody wants to rewrite, the lag
+      check you paste during an incident. They live in chat history and people's heads. New hires re-derive
+      them. I've done it; you've done it.</p>
+
+    <p>So the SQL Browser treats saved queries as an artifact, not app state. Save a query with
+      <code class="k">⌘S</code>, give it a name and a description, star the ones you reach for, search the
+      rest. The whole collection is a named <strong>library</strong> — and that library is one file.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/library-save-dark.png" alt="The Save Query dialog with a name field and a description field." loading="lazy"></div>
+      <figcaption>Every query gets a name and a description. The description isn't decoration — it travels with the query into every export.</figcaption>
+    </figure>
+
+    <h2>It's a file, so treat it like one</h2>
+    <p><strong>File ▾ → Save</strong> writes the library as JSON. <strong>Open</strong> loads someone
+      else's. <strong>Append</strong> merges one into yours and de-dupes, so two people can maintain
+      overlapping sets without clobbering each other. That's the whole sharing story — no accounts, no
+      server, no "export to cloud." Sharing a library is sending a file.</p>
+
+    <p>Which means it belongs in git. Check <code class="k">queries.json</code> into the repo next to the
+      schema it queries. Review changes to it in a pull request like any other code. Onboard someone by
+      pointing them at the file instead of a search through Slack. The library stops being one person's
+      browser state and becomes something the team owns and versions.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/library-filemenu-dark.png" alt="The File menu: New Library, Save JSON, Open, Append, Download Markdown, Download SQL." loading="lazy"></div>
+      <figcaption>JSON round-trips everything; Markdown and SQL are one-way exports for humans and other tools.</figcaption>
+    </figure>
+
+    <h2>Two exports, two audiences</h2>
+    <p>The JSON is lossless — it round-trips the SQL, the name, the description, even the chart config and
+      the view you left each query on. But not everyone who needs these queries opens the browser, so the
+      library exports two other ways.</p>
+
+    <p><strong>Download Markdown</strong> gives you a document. Each query becomes a heading, its
+      description, and a fenced SQL block — a cookbook you can paste into a README, a wiki, or a Notion page
+      and it renders everywhere:</p>
+
+    <pre class="code">### Revenue by category
+
+Revenue per product category from category_revenue — the
+mv_category_revenue view derives the category with dictGet().
+
+&#96;&#96;&#96;sql
+SELECT category, sum(revenue) AS revenue
+FROM shop.category_revenue
+GROUP BY category
+ORDER BY revenue DESC
+&#96;&#96;&#96;</pre>
+
+    <p><strong>Download SQL</strong> gives you a program. Each query is a comment carrying its name and
+      description, then the statement, semicolon-terminated:</p>
+
+    <pre class="code"><span class="c">/* Revenue by category
+Revenue per product category from category_revenue — the
+mv_category_revenue view derives the category with dictGet(). */</span>
+SELECT category, sum(revenue) AS revenue
+FROM shop.category_revenue
+GROUP BY category
+ORDER BY revenue DESC;</pre>
+
+    <h2>The .sql is just SQL — run it anywhere</h2>
+    <p>That second file is the one I keep coming back to. It's a plain SQL script, so it runs without the
+      browser anywhere in your stack. Pipe the whole library through the CLI:</p>
+
+    <pre class="code">clickhouse-client --queries-file team-queries.sql
+<span class="c"># or</span>
+clickhouse-client &lt; team-queries.sql</pre>
+
+    <p>Or open it in <strong>DBeaver</strong> or <strong>DataGrip</strong> and step through it
+      statement by statement — the <code class="k">/* … */</code> comment above each one tells whoever's
+      driving what it does and why. The same file is a scheduled job's input, a migration reviewer's
+      reference, and a teammate's starting point in whatever client they already use. Author the queries
+      once, with charts and context, in the browser; hand off a format that outlives it.</p>
+
+    <p>We dogfood this: the chart demos on the site <em>are</em> a library file —
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/examples/shop-charts.json">examples/shop-charts.json</a>,
+      eight queries with descriptions and chart configs. Download it, <strong>File ▾ → Open</strong> on the
+      <a href="https://antalya.demo.altinity.cloud/sql">demo</a>, and you're editing the same library these
+      examples ship as. Then export it to <code class="k">.sql</code> and run it from your own client.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="local-console.html">A ClickHouse console in one curl →</a>
+      <a href="materialized-view-web.html">Map the materialized-view web →</a>
+      <a href="no-backend-sql-console.html">The SQL console with no backend →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>
