@@ -6,17 +6,6 @@ backend) served from a ClickHouse cluster's `user_files/` by an
 OAuth IdP, and makes zero third-party requests. The notes below describe how to
 report a vulnerability and the threat model you should deploy against.
 
-## Supported versions
-
-This project is pre-1.0 and ships from a single `main`. Security fixes land on
-`main` and in the next tagged release; only the **latest release** is supported.
-There are no long-term-support branches before 1.0.
-
-| Version            | Supported |
-|--------------------|-----------|
-| Latest release     | ✅        |
-| Older releases     | ❌        |
-
 ## Reporting a vulnerability
 
 **Please do not open a public GitHub issue for a security vulnerability.**
