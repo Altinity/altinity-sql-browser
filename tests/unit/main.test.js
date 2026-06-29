@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { bootstrap } from '../../src/main.js';
+import { signal } from '../../src/core/signal.js';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -10,7 +11,7 @@ const valid = jwt({ email: 'me@x.com', exp: Math.floor(Date.now() / 1000) + 3600
 function fakeApp(over = {}) {
   return {
     token: null,
-    state: { tabs: [{ id: 't1', sql: '', name: 'Untitled' }] },
+    state: { tabs: signal([{ id: 't1', sql: '', name: 'Untitled' }]) },
     loadConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' })),
     ensureConfig: vi.fn(async () => ({})),
     setTokens: vi.fn(function (id) { this.token = id; }),
@@ -138,9 +139,9 @@ describe('bootstrap', () => {
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
-    expect(app.state.tabs[0].sql).toBe('SELECT 1');
-    expect(app.state.tabs[0].name).toBe('Shared query');
-    expect(app.state.tabs[0].chartCfg).toBeFalsy(); // legacy hash carries no chart
+    expect(app.state.tabs.value[0].sql).toBe('SELECT 1');
+    expect(app.state.tabs.value[0].name).toBe('Shared query');
+    expect(app.state.tabs.value[0].chartCfg).toBeFalsy(); // legacy hash carries no chart
     expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: 'SELECT 1', chart: null }); // survives a login redirect
   });
 
@@ -150,10 +151,10 @@ describe('bootstrap', () => {
     const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT a, b FROM t', chart }))));
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
-    expect(app.state.tabs[0].sql).toBe('SELECT a, b FROM t');
-    expect(app.state.tabs[0].chartCfg).toEqual(chart.cfg);
-    expect(app.state.tabs[0].chartCfg).not.toBe(chart.cfg); // cloned, not aliased
-    expect(app.state.tabs[0].chartKey).toBe(chart.key);
+    expect(app.state.tabs.value[0].sql).toBe('SELECT a, b FROM t');
+    expect(app.state.tabs.value[0].chartCfg).toEqual(chart.cfg);
+    expect(app.state.tabs.value[0].chartCfg).not.toBe(chart.cfg); // cloned, not aliased
+    expect(app.state.tabs.value[0].chartKey).toBe(chart.key);
   });
 
   it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {
@@ -163,9 +164,9 @@ describe('bootstrap', () => {
     const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({ sql: 'SELECT 42', chart }));
     await bootstrap(app, env);
-    expect(app.state.tabs[0].sql).toBe('SELECT 42');
-    expect(app.state.tabs[0].name).toBe('Shared query');
-    expect(app.state.tabs[0].chartCfg).toEqual(chart.cfg);
+    expect(app.state.tabs.value[0].sql).toBe('SELECT 42');
+    expect(app.state.tabs.value[0].name).toBe('Shared query');
+    expect(app.state.tabs.value[0].chartCfg).toEqual(chart.cfg);
     expect(app.renderApp).toHaveBeenCalled();
     expect(env.sessionStorage.getItem('oauth_shared')).toBeNull(); // consumed on render
   });
@@ -175,8 +176,8 @@ describe('bootstrap', () => {
     const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
     env.sessionStorage.setItem('oauth_shared', '{not json');
     await bootstrap(app, env);
-    expect(app.state.tabs[0].sql).toBe('');
-    expect(app.state.tabs[0].name).toBe('Untitled');
+    expect(app.state.tabs.value[0].sql).toBe('');
+    expect(app.state.tabs.value[0].name).toBe('Untitled');
   });
 
   it('preserves extra query params while stripping oauth ones', async () => {

@@ -26,6 +26,7 @@ import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { mountEditor, insertAtCursor, replaceEditor, SCHEMA_GRAPH_MIME } from './editor.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
+import { effect } from '../core/signal.js';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
 import { openSchemaView } from './explain-graph.js';
@@ -938,11 +939,20 @@ export function renderApp(app, helpers) {
   app.root.replaceChildren(header, app.dom.banner, h('div', { class: 'main-row' }, sidebar, sideHandle, workbench));
 
   mountEditor(app, app.dom.editorRegion);
-  renderTabs(app);
-  renderResults(app);
+  // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
+  // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
+  // just mutate the signals. (Result-data repaints still call renderResults
+  // directly from the run flow; those aren't tab changes.)
+  effect(() => {
+    app.state.tabs.value;
+    app.state.activeTabId.value;
+    renderTabs(app);
+    if (app.dom.editorSync) app.dom.editorSync();
+    renderResults(app);
+    app.updateSaveBtn();
+  });
   renderSchema(app);
   renderSavedHistory(app);
-  app.updateSaveBtn();
   app.loadVersion();
   app.loadSchema();
   app.loadReference();

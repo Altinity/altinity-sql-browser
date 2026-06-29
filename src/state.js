@@ -6,6 +6,7 @@ import { clamp } from './core/format.js';
 import { mergeSaved } from './core/saved-io.js';
 import { cloneChartCfg } from './core/chart-data.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
+import { signal } from './core/signal.js';
 
 /** A tab's chart state as a persistable payload `{ cfg, key }`, or null. */
 export function tabChart(tab) {
@@ -48,8 +49,11 @@ export function createState(read = { loadJSON, loadStr }) {
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
-    tabs: [newTabObj('t1')],
-    activeTabId: 't1',
+    // Reactive (signals): renderTabs + the editor/results/save-button repaint via
+    // an effect that reads these, so mutating them is all a caller does — no
+    // manual refresh() list to keep in sync. Read/write through `.value`.
+    tabs: signal([newTabObj('t1')]),
+    activeTabId: signal('t1'),
     schema: null,
     schemaError: null,
     schemaFilter: '',
@@ -80,7 +84,7 @@ export function createState(read = { loadJSON, loadStr }) {
 
 /** The currently-active tab object (falls back to the first tab). */
 export function activeTab(state) {
-  return state.tabs.find((t) => t.id === state.activeTabId) || state.tabs[0];
+  return state.tabs.value.find((t) => t.id === state.activeTabId.value) || state.tabs.value[0];
 }
 
 /** Allocate a new tab id ('t2', 't3', ...). */
@@ -90,7 +94,7 @@ export function allocTabId(state) {
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
 const makeId = (prefix, now) => prefix + now + rnd();
-const tabsForSaved = (state, id) => state.tabs.filter((t) => t.savedId === id);
+const tabsForSaved = (state, id) => state.tabs.value.filter((t) => t.savedId === id);
 
 /** The saved query a tab is linked to (via tab.savedId), or null. */
 export function savedForTab(state, tab) {
@@ -219,7 +223,7 @@ export function deleteSaved(state, id, save = saveJSON) {
  *  kept tab doesn't show "Saved" against a query that's gone. */
 function pruneTabLinks(state) {
   const ids = new Set(state.savedQueries.map((q) => q.id));
-  for (const t of state.tabs) if (t.savedId && !ids.has(t.savedId)) t.savedId = null;
+  for (const t of state.tabs.value) if (t.savedId && !ids.has(t.savedId)) t.savedId = null;
 }
 
 /** Rename the library (blank → the default name). Marks dirty; persists name. */

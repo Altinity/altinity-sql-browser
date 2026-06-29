@@ -874,7 +874,7 @@ describe('exhaustive controller coverage', () => {
     document.querySelector('.save-popover .sp-input').value = 'Q';
     document.querySelector('.save-popover .sp-save').dispatchEvent(new Event('click')); // commit
     app.dom.shareBtn.dispatchEvent(new Event('click')); // share
-    expect(app.state.tabs.length).toBeGreaterThan(1);
+    expect(app.state.tabs.value.length).toBeGreaterThan(1);
     expect(app.state.savedQueries.length).toBe(1);
   });
 
@@ -986,7 +986,7 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     app.dom.runBtn.dispatchEvent(new Event('click')); // run wrapper (empty sql → no-op)
     app.actions.newTab();
-    app.state.tabs.push({ id: 'tx', name: 'X', sql: '', dirty: false, result: null, savedId: null });
+    app.state.tabs.value.push({ id: 'tx', name: 'X', sql: '', dirty: false, result: null, savedId: null });
     app.actions.selectTab('tx');
     app.actions.insertAtCursor('zz');
     app.actions.replaceEditor('SELECT 9');
@@ -994,8 +994,8 @@ describe('exhaustive controller coverage', () => {
     app.actions.rerenderTabs();
     app.actions.rerenderResults();
     app.actions.updateSaveBtn();
-    app.actions.closeTab(app.state.activeTabId);
-    expect(app.state.tabs.length).toBeGreaterThan(0);
+    app.actions.closeTab(app.state.activeTabId.value);
+    expect(app.state.tabs.value.length).toBeGreaterThan(0);
   });
 
   it('share / toggleSaved tolerate empty SQL; share with no navigator at all', () => {

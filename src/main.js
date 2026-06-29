@@ -61,7 +61,7 @@ export async function bootstrap(app, env) {
     catch { shared = { sql: '', chart: null }; }
   }
   if (shared.sql) {
-    const t0 = app.state.tabs[0];
+    const t0 = app.state.tabs.value[0];
     t0.sql = shared.sql;
     t0.name = 'Shared query';
     if (shared.chart && shared.chart.cfg) {
