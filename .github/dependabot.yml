@@ -1,0 +1,17 @@
+# Dependency update alerts/PRs. The two runtime deps (Chart.js, @dagrejs/dagre)
+# are inlined into the shipped dist/sql.html, so a vuln in them ships to every
+# browser that loads the page — keep them watched, alongside devDeps and Actions.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

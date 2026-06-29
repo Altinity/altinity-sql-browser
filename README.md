@@ -76,10 +76,9 @@ in-memory schema. Highlighting then tracks the connected server's actual
 keyword/function set, so it's version-correct. Folding and multi-cursor are out
 of scope for a textarea and tracked separately (CodeMirror, issue #21).
 
-> Design source of truth: the handoff bundle under `design/` (imported from the
-> "Altinity Play" Claude Design project) — read `design/README.md` before UI
-> work. The `.jsx` files there are React prototypes; production is the vanilla
-> ES-module code under `src/`.
+> Design source of truth: the "Altinity Play" Claude Design project (external).
+> Production is the vanilla ES-module code under `src/` — there is no React in
+> the shipped app.
 
 ## EXPLAIN views
 
@@ -445,7 +444,6 @@ src/
   styles.css
 build/        esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
-design/       imported design handoff bundle (UI spec; reference only, not built)
 tests/        vitest + happy-dom, one spec per module
 docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
               CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md

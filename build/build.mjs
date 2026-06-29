@@ -28,7 +28,15 @@ async function main() {
   const styles = await readFile(resolve(root, 'src/styles.css'), 'utf8');
   const template = await readFile(resolve(here, 'template.html'), 'utf8');
 
+  // The two runtime deps (Chart.js, dagre) are MIT and inlined into the bundle,
+  // so the artifact must carry their notices. esbuild strips legal comments
+  // (legalComments: 'none'), so embed THIRD-PARTY-NOTICES.md as a leading HTML
+  // comment — sanitized so its text can't close the comment early.
+  const notices = (await readFile(resolve(root, 'THIRD-PARTY-NOTICES.md'), 'utf8')).replace(/--+>?/g, '-');
+  const thirdParty = '<!--\n' + notices.trim() + '\n-->';
+
   const html = template
+    .replace('<!--__THIRDPARTY__-->', () => thirdParty)
     .replace('/*__STYLES__*/', () => styles)
     .replace('/*__SCRIPT__*/', () => script);
 
