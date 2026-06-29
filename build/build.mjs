@@ -2,7 +2,7 @@
 // is inlined (with the stylesheet) into build/template.html → dist/sql.html.
 //
 // esbuild is the only build-time tool; the bundled runtime dependencies are
-// Chart.js and @dagrejs/dagre (inlined, not fetched). The output is a self-contained HTML file
+// Chart.js, @dagrejs/dagre, and @preact/signals-core (inlined, not fetched). The output is a self-contained HTML file
 // that installs into any ClickHouse cluster's user_files and is served by an
 // <http_handlers> static rule — it still makes zero third-party requests.
 
@@ -52,8 +52,8 @@ async function main() {
   const styles = await readFile(resolve(root, 'src/styles.css'), 'utf8');
   const template = await readFile(resolve(here, 'template.html'), 'utf8');
 
-  // The two runtime deps (Chart.js, dagre) are MIT and inlined into the bundle,
-  // so the artifact must carry their notices. esbuild strips legal comments
+  // The runtime deps (Chart.js, dagre, @preact/signals-core) are MIT and inlined
+  // into the bundle, so the artifact must carry their notices. esbuild strips legal comments
   // (legalComments: 'none'), so embed THIRD-PARTY-NOTICES.md as a leading HTML
   // comment — sanitized so its text can't close the comment early.
   const notices = (await readFile(resolve(root, 'THIRD-PARTY-NOTICES.md'), 'utf8')).replace(/--+>?/g, '-');

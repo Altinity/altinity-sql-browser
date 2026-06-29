@@ -3,7 +3,8 @@
 - **Status:** Proposed
 - **Date:** 2026-06-29
 - **Context tracking:** roadmap #68
-- **Evidence:** branch `spike/signals` (primitive + two converted slices)
+- **Evidence:** `spike/signals` (hand-rolled primitive + two converted slices),
+  `spike/signals-core` (same two slices on `@preact/signals-core`)
 
 ## Context
 
@@ -23,27 +24,42 @@ per-file 100/100/100/100 coverage gate (rule 1), and the injected-seam layering
 
 ## Decision
 
-Adopt a **~70-line in-house reactive primitive** (`src/core/signal.js`:
-`signal()` / `effect()` / `batch()`) and migrate state **one slice at a time**,
-behind accessor helpers. **Do not** adopt a UI framework (React/Preact/Solid).
+Adopt **`@preact/signals-core`** (`signal()` / `effect()` / `computed()` /
+`batch()` / `untracked()`) and migrate state **one slice at a time**, behind
+accessor helpers. **Do not** adopt a UI framework (React/Preact/Solid).
 
-## Options considered
+A hand-rolled ~70-line primitive was prototyped first and works (`spike/signals`),
+but `@preact/signals-core` was chosen over it: same `.value` API (so the
+migration code is identical and the choice is reversible in ~5 lines), but
+maintained, glitch-free (correct topological/diamond updates), and with a lazy
+memoized `computed()` — none of which the naive synchronous prototype provides.
+It costs one small, zero-transitive-dependency package and **+1.4 KB gzip** to
+the artifact (vs +0.45 KB hand-rolled), in exchange for not owning ~70 lines +
+~180 test lines of correctness-critical reactive code. Per CLAUDE.md rule 4 this
+is a deliberate dependency; it is still inlined, so the artifact makes zero
+third-party requests.
 
-| Option | gzip cost | Verdict |
+## Options considered (all measured)
+
+| Option | artifact Δ (gzip) | Verdict |
 |---|---|---|
-| **In-house `signal`/`effect`** | ~0.45 KB (measured) | **Chosen** — retires manual invalidation; zero deps; proven 100%-coverable |
-| Preact + @preact/signals | ~7.3 KB (measured, `spike/preact`) | Rejected for now — only added value over the primitive is auto DOM-diffing of large lists, which we don't need |
-| Solid.js | ~7 KB | Rejected — compiler/plugin + ecosystem cost; same "big-list" benefit we don't need |
-| React (proper) | ~45 KB | Rejected — heaviest dep, vDOM-on-big-tables liability, mismatch with the single-file ethos |
+| **@preact/signals-core** | **+1.4 KB** | **Chosen** — maintained, glitch-free, `computed`; same `.value` API; we own no reactive code |
+| Hand-rolled `signal.js` | +0.45 KB | Viable (`spike/signals`) — zero deps, but we own + 100%-cover it; naive (not glitch-free), no `computed` |
+| Preact + @preact/signals | +7.3 KB (`spike/preact`) | Rejected — its only edge over signals-core is auto DOM-diffing of large lists, which we don't need |
+| Solid.js | ~+7 KB | Rejected — compiler/plugin + ecosystem cost; same unneeded big-list benefit |
+| React (proper) | ~+45 KB | Rejected — heaviest dep, vDOM-on-big-tables liability, mismatch with the single-file ethos |
 
 Decisive factor: we do **not** need a virtualized / large-list renderer (no
-10k-row grid requirement), which is the one thing a vDOM framework buys over the
-primitive. The pain is invalidation, which the primitive solves directly.
+10k-row grid requirement), which is the one thing a vDOM framework buys over a
+bare signals core. The pain is invalidation, which signals solve directly — and
+between the two signals options, a maintained, glitch-free core beats owning the
+primitive for ~1 KB.
 
 ## Evidence (spike)
 
-Two slices converted end-to-end with the full suite + coverage gate green
-(1033 tests; `signal.js` 100/100/100/100; real `npm run build` succeeds):
+Two slices converted end-to-end with the full suite + per-file coverage gate
+green and a real `npm run build` (1033 tests on the hand-rolled branch; 1022 on
+`spike/signals-core`, which drops the 11 primitive-internal tests):
 
 - **tabs** (`tabs` + `activeTabId`) — *has* an `activeTab()` accessor → 16 callers
   insulated; low mechanical churn, but one behavioral test relocation (the
@@ -52,8 +68,10 @@ Two slices converted end-to-end with the full suite + coverage gate green
   mechanical `.value` and concentrated in the panel's own test file; no assertion
   rewrites.
 
-Cumulative spike cost: 12 files, +432/−142, most of which is the reusable
-primitive (95) + its tests (178).
+Both branches share the slice conversions verbatim. Moving from the hand-rolled
+primitive to `@preact/signals-core` was a 5-line diff (import swaps + deleting
+`src/core/signal.js` and its test), demonstrating the API parity and that the
+choice is reversible.
 
 ## Consequences
 
@@ -64,5 +82,8 @@ primitive (95) + its tests (178).
 - Per-slice cost is mostly mechanical `.value` edits in that slice's tests.
 - **Rule:** give each converted slice an accessor helper (like `activeTab()`) to
   contain reader churn and localize behavior.
+- Adding `@preact/signals-core` makes **three** bundled runtime deps. On adoption,
+  update CLAUDE.md rule 4 ("two bundled runtime dependencies") and the count in
+  THIRD-PARTY-NOTICES.md (done) / `build/build.mjs` comments (done).
 - Re-evaluate Preact/Solid only if the UI later grows many interdependent
   components with rich local state, or a genuine large-list render need appears.
