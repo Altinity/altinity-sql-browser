@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { bootstrap } from '../../src/main.js';
-import { signal } from '../../src/core/signal.js';
+import { signal } from '@preact/signals-core';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');

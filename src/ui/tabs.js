@@ -5,7 +5,7 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { activeTab, allocTabId, newTabObj } from '../state.js';
 import { cloneChartCfg } from '../core/chart-data.js';
-import { batch } from '../core/signal.js';
+import { batch } from '@preact/signals-core';
 
 /** Paint the tab strip into app.dom.qtabsInner. */
 export function renderTabs(app) {

@@ -6,7 +6,7 @@ import { clamp } from './core/format.js';
 import { mergeSaved } from './core/saved-io.js';
 import { cloneChartCfg } from './core/chart-data.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
-import { signal } from './core/signal.js';
+import { signal } from '@preact/signals-core';
 
 /** A tab's chart state as a persistable payload `{ cfg, key }`, or null. */
 export function tabChart(tab) {

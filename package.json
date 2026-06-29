@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
+    "@preact/signals-core": "^1.14.3",
     "chart.js": "^4.5.1"
   }
 }

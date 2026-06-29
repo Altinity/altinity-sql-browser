@@ -26,7 +26,7 @@ import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { mountEditor, insertAtCursor, replaceEditor, SCHEMA_GRAPH_MIME } from './editor.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
-import { effect } from '../core/signal.js';
+import { effect } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
 import { openSchemaView } from './explain-graph.js';
