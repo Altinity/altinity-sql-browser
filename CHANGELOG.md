@@ -10,6 +10,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- `SECURITY.md`: private vulnerability-disclosure policy + the `config.json`
+  threat model (it's served to browsers — prefer a PKCE public client; lock the
+  redirect URI if a `client_secret` is unavoidable) and the CSP/token baseline (#72).
 - In-app build stamp: the build bakes `v<version> (<short-commit>)` into
   `dist/sql.html` (graceful `v<version>` fallback when not a git checkout) and
   shows it in the user menu, so a bug report can be tied to an exact build (#74).

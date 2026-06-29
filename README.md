@@ -398,6 +398,10 @@ wrong password is surfaced on the login screen — the connect probe runs a
 
 ### Security headers
 
+> For the vulnerability-disclosure policy and the full threat model (why
+> `config.json` is public, the redirect-lock requirement, token storage), see
+> [`SECURITY.md`](SECURITY.md).
+
 `deploy/http_handlers.xml` sends a strict **Content-Security-Policy** plus
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` on the SPA
 response. The CSP is `default-src 'none'` with everything re-allowed explicitly:
