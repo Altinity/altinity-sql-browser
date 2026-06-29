@@ -22,6 +22,7 @@
       <a href="deployment.html">Deployment</a>
       <a href="local-app.html">Local app</a>
       <a href="screenshots.html">Screenshots</a>
+      <a href="blog/index.html">Blog</a>
       <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
       <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
     </div>
@@ -159,6 +160,35 @@
 ClickHouse  POST /  Authorization: Bearer &lt;id_token&gt;   ← every query
             (validated by CH token_processor / JWKS, or a delegated verifier)</div>
     <p style="text-align:center;margin-top:20px;"><a href="features.html">Explore every feature →</a></p>
+  </div>
+</section>
+
+<!-- From the blog -->
+<section class="alt">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow">From the blog</div>
+      <h2>Engineering notes</h2>
+      <p>Short pieces on how it works and why it's built this way.</p>
+    </div>
+    <div class="grid cols-3">
+      <a class="card post-card" href="blog/no-backend-sql-console.html">
+        <div class="kicker">Architecture</div>
+        <h3>The SQL console with no backend</h3>
+        <p>One HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, zero third-party requests.</p>
+      </a>
+      <a class="card post-card" href="blog/materialized-view-web.html">
+        <div class="kicker">Schema</div>
+        <h3>Map the materialized-view web</h3>
+        <p>Drag a database in and get a typed data-flow graph of MVs, dictionaries and Distributed tables.</p>
+      </a>
+      <a class="card post-card" href="blog/explain-pipeline-graph.html">
+        <div class="kicker">Performance</div>
+        <h3>Read your query plan as a graph</h3>
+        <p>EXPLAIN PIPELINE as a processor DAG — read parallelism and the Resize funnel at a glance.</p>
+      </a>
+    </div>
+    <p style="text-align:center;margin-top:28px;"><a href="blog/index.html">All posts →</a></p>
   </div>
 </section>
 

@@ -240,6 +240,38 @@ footer.site .wrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: cent
 footer.site a { color: #c8e9f3; }
 footer.site .fnav { display: flex; gap: 18px; flex-wrap: wrap; }
 
+/* ---------- blog ---------- */
+.post { max-width: 720px; margin: 0 auto; padding: 8px 0 0; }
+.post .kicker { color: var(--accent); font-weight: 700; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 10px; }
+.post h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); letter-spacing: -.02em; margin: 0 0 14px; }
+.post-meta { color: var(--faint); font-size: .92rem; margin: 0 0 8px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.post-meta .dot { color: var(--border-2); }
+.post-lede { font-size: 1.15rem; color: var(--mute); margin: 0 0 28px; line-height: 1.55; }
+.post .body { font-size: 1.06rem; line-height: 1.7; }
+.post .body h2 { font-size: 1.3rem; margin: 36px 0 10px; }
+.post .body p { margin: 0 0 1.1em; }
+.post .body ul { margin: 0 0 1.1em; padding-left: 22px; }
+.post .body li { margin: 6px 0; }
+.post .body a { font-weight: 500; }
+.post .body blockquote {
+  margin: 28px 0; padding: 4px 0 4px 20px; border-left: 3px solid var(--accent);
+  color: var(--ink-2); font-size: 1.2rem; font-style: italic;
+}
+.post .body pre.code, .post .body .flow { margin: 0 0 1.3em; }
+.post-figure { margin: 28px 0; }
+.post-figure figcaption { color: var(--faint); font-size: .88rem; text-align: center; margin-top: 10px; }
+.post-foot { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--mute); font-size: .96rem; }
+.post-nav { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
+
+/* blog index cards */
+.post-card { display: block; }
+.post-card:hover { text-decoration: none; }
+.post-card .kicker { color: var(--accent); font-weight: 700; font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
+.post-card h3 { font-size: 1.18rem; margin: 0 0 8px; color: var(--ink); }
+.post-card p { color: var(--mute); font-size: .96rem; margin: 0 0 10px; }
+.post-card .post-meta { font-size: .85rem; margin: 0; }
+.post-card:hover h3 { color: var(--accent); }
+
 /* ---------- lightbox ---------- */
 .lb {
   position: fixed; inset: 0; background: rgba(6, 12, 18, .9); display: none; z-index: 100;

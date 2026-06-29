@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A ClickHouse console in one curl — and a query library you can commit — Altinity SQL Browser</title>
+<meta name="description" content="A zero-dependency Python runner serves the SQL Browser locally against any cluster in your clickhouse-client config. And the saved-query library is one JSON file you can commit to git and export to Markdown or SQL.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Workflow</div>
+  <h1>A ClickHouse console in one curl — and a query library you can commit</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+  <p class="post-lede">Two small conveniences that change how a team lives with ClickHouse — one for you today, one for everyone over time.</p>
+
+  <div class="body">
+    <h2>One curl, any cluster</h2>
+    <p>The same single-file app ClickHouse can serve also runs locally, with no install ceremony:</p>
+
+    <div class="curl" style="max-width:none;margin:0 0 18px;">
+      <code>curl&nbsp;-fsSL&nbsp;https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh&nbsp;|&nbsp;sh</code>
+      <button class="copy" data-copy="curl -fsSL https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/install.sh | sh">Copy</button>
+    </div>
+
+    <p>That drops a launcher and a small Python runner into your home directory. It needs only
+      <code class="k">python3</code> — no Node, no pip, nothing to build. Run
+      <code class="k">altinity-sql-browser</code> and it serves the app at
+      <code class="k">localhost:8900</code> and opens it.</p>
+
+    <p>The good part is where it gets its connections. The runner reads your
+      <code class="k">~/.clickhouse-client/config.xml</code> — the same file
+      <code class="k">clickhouse-client</code> already uses — and offers each saved connection in the login
+      picker. Plain host/user/password entries prefill the form; ones carrying OAuth keys do an SSO
+      sign-in. At startup it probes each host's HTTP interface (443 then 8443 for TLS, 8123 then 80 for
+      plain) and skips the ones that don't answer, so you're not staring at dead entries.</p>
+
+    <blockquote>Queries go straight from your browser to the cluster. The runner only hands over the app and the list of hosts — it never sees your data.</blockquote>
+
+    <p>So it's a local console for whatever clusters you already talk to, with nothing new to trust and
+      nothing to uninstall later.</p>
+
+    <h2>A query library you can commit</h2>
+    <p>The second one is the saved-query library. Save a query with <code class="k">⌘S</code>, give it a name
+      and a description, search and star them. So far, so normal. The part that matters: the whole library
+      is one JSON file. <strong>File ▾ → Save</strong> writes it, <strong>Open</strong> loads a colleague's,
+      <strong>Append</strong> merges one into yours with dedup.</p>
+
+    <p>Which means your team's ClickHouse knowledge can live in git instead of a wiki nobody updates. Check
+      the file in next to the schema it queries. Review changes in a pull request. Onboard someone by
+      handing them a file, not a Slack thread.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/library-filemenu-dark.png" alt="The File menu: New Library, Save JSON, Open, Append, Download Markdown, Download SQL — with the saved-query list in the sidebar." loading="lazy"></div>
+      <figcaption>One library — round-trips as JSON, exports to Markdown or SQL.</figcaption>
+    </figure>
+
+    <p>Because a saved query is structured (name, description, SQL, even its chart config), it exports two
+      more ways:</p>
+    <ul>
+      <li><strong>Markdown</strong> — a readable cookbook: an <code class="k">###</code> heading, the description, a fenced <code class="k">sql</code> block. Drop it straight into a README.</li>
+      <li><strong>SQL</strong> — a runnable batch: each query as a <code class="k">/* name + description */</code> comment then the statement, <code class="k">;</code>-terminated. Pipe it into <code class="k">clickhouse-client</code>.</li>
+    </ul>
+
+    <p>We dogfood this. The chart demos on the live site <em>are</em> a library file —
+      <a href="https://github.com/Altinity/altinity-sql-browser/blob/main/examples/shop-charts.json">examples/shop-charts.json</a>
+      in the repo. Download it, <strong>File ▾ → Open</strong> on the
+      <a href="https://antalya.demo.altinity.cloud/sql">demo</a>, and you're exploring eight queries with
+      their charts already set up.</p>
+
+    <p>The console is one command; the library is a File menu away. Both are covered in the
+      <a href="../local-app.html">local-app guide</a>.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="no-backend-sql-console.html">The SQL console with no backend →</a>
+      <a href="materialized-view-web.html">Map the materialized-view web →</a>
+      <a href="explain-pipeline-graph.html">Read your query plan as a graph →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

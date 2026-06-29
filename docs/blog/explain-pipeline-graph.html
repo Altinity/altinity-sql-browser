@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Read your query plan as a graph — Altinity SQL Browser</title>
+<meta name="description" content="EXPLAIN PIPELINE shows how ClickHouse actually runs a query, but the text is a wall. The SQL Browser draws it as a processor DAG you can pan and zoom — read parallelism and the Resize funnel at a glance.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Performance</div>
+  <h1>Read your query plan as a graph</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>4 min read</span></div>
+  <p class="post-lede"><code class="k">EXPLAIN PIPELINE</code> tells you how ClickHouse will actually run a query. It just tells you in a wall of text.</p>
+
+  <div class="body">
+    <p>ClickHouse has one of the better <code class="k">EXPLAIN</code> families around.
+      <code class="k">EXPLAIN PIPELINE</code> in particular shows the physical processors — the things that
+      actually read, transform, aggregate and merge your data — and how they fan out across threads. The
+      catch is the output: an indented text tree that's precise and nearly unreadable past a dozen lines.</p>
+
+    <p>So the browser draws it. Click <strong>Explain</strong> on any query and you get five tabs —
+      Explain, Indexes, Projections, Pipeline, Estimate — and the Pipeline tab lays the processor graph out
+      as boxes and arrows. Pan it, zoom it, pop it fullscreen.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/explain-pipeline-fullscreen-dark.png" alt="EXPLAIN PIPELINE rendered as a top-to-bottom processor DAG for a grouped, sorted query." loading="lazy"></div>
+      <figcaption><code class="k">EXPLAIN PIPELINE</code> for a <code class="k">GROUP BY … ORDER BY</code>, drawn as a processor DAG.</figcaption>
+    </figure>
+
+    <p>Once it's a picture, the shape tells you things the text buries. Read the graph above top to bottom:</p>
+
+    <ul>
+      <li><strong><code class="k">MergeTreeSelect × 4</code></strong> — four parallel reading lanes. That <code class="k">× 4</code> is your parallelism: how many threads pull parts at once.</li>
+      <li><strong><code class="k">AggregatingTransform × 4</code></strong> — the <code class="k">GROUP BY</code> runs per-lane, in parallel, after a couple of expression steps.</li>
+      <li><strong><code class="k">Resize</code></strong> — the funnel. Parallel lanes collapse toward fewer. This is where parallel work becomes serial, and it's usually the first place to look when a query is slower than it should be.</li>
+      <li><strong><code class="k">PartialSorting → MergeSorting → MergingSortedTransform</code></strong> — the <code class="k">ORDER BY</code>: sort each lane, then merge the sorted streams.</li>
+    </ul>
+
+    <p>You start to read these the way you read a flame graph. Wide and parallel up top, a
+      <code class="k">Resize</code> in the middle, a merge at the bottom — that's a healthy aggregate-and-sort.
+      A pipeline that stays one box wide the whole way down is single-threaded, and now you can see that
+      instead of guessing at it.</p>
+
+    <h2>It doesn't touch your query</h2>
+    <p>A small thing I appreciate: hitting Explain doesn't rewrite your editor. The app wraps your statement
+      in <code class="k">EXPLAIN</code> behind the scenes and shows the result in the results pane — your SQL
+      stays exactly as you typed it. The Indexes and Projections tabs run
+      <code class="k">EXPLAIN indexes = 1</code> / <code class="k">projections = 1</code>, which answer the
+      question you usually have when a query scans more than it should: are my skip indexes and projections
+      actually being used?</p>
+
+    <p>It's the kind of thing that's obvious the first time and slightly annoying to live without after.
+      Paste a real <code class="k">GROUP BY</code> into the <a href="https://antalya.demo.altinity.cloud/sql">live demo</a>
+      and hit Explain → Pipeline.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="no-backend-sql-console.html">The SQL console with no backend →</a>
+      <a href="materialized-view-web.html">Map the materialized-view web →</a>
+      <a href="local-console-and-library.html">A console in one curl →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

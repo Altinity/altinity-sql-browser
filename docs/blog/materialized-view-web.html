@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map the materialized-view web before it bites — Altinity SQL Browser</title>
+<meta name="description" content="A mature ClickHouse schema is a graph of materialized views, dictionaries and Distributed tables. Drag a database onto the results pane and the SQL Browser draws the data flow — typed edges, rich cards, transitive across databases.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Schema</div>
+  <h1>Map the materialized-view web before it bites</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+  <p class="post-lede">A mature ClickHouse schema is a graph. Most tools show you a list.</p>
+
+  <div class="body">
+    <p>Here's a thing that happens. You go to drop a "temporary" table, or change a column type, and an
+      hour later something three hops away has quietly stopped ingesting. The table fed a materialized
+      view you'd forgotten about, which wrote to an aggregate that another view read through a dictionary.
+      ClickHouse will happily let you build these chains. It just won't draw them for you.</p>
+
+    <p>The SQL Browser does. Drag a database — or a single table — from the sidebar onto the results pane,
+      and it builds a graph of how the objects actually connect.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/lineage-fullscreen-dark.png" alt="Data-flow graph of the shop database: events_raw feeds three materialized views writing to aggregate tables; products feeds a dictionary; a view reads from daily_sales." loading="lazy"></div>
+      <figcaption>The <code class="k">shop</code> demo: <code class="k">events_raw</code> feeds three MVs that write to aggregates; <code class="k">products</code> feeds a dictionary; <code class="k">v_top_countries</code> reads <code class="k">daily_sales</code>.</figcaption>
+    </figure>
+
+    <p>The edges are typed, because in ClickHouse the relationships are. A materialized view
+      <em>feeds</em> from its sources and <em>writes</em> to its target. A plain view <em>reads</em> its
+      sources. A dictionary pulls from a source table (<em>dict</em>). A <code class="k">Distributed</code>,
+      <code class="k">Buffer</code> or <code class="k">Merge</code> table points at what it wraps. Nodes are
+      coloured by engine, so it's obvious at a glance which box is an MV and which is a dictionary.</p>
+
+    <h2>Where the edges come from</h2>
+    <p>This is the part I actually care about. Discovery is structured-first, parse-fallback. When
+      ClickHouse fills in the helpful columns — <code class="k">system.tables.dependencies_table</code>,
+      <code class="k">loading_dependencies_*</code>, <code class="k">system.dictionaries.source</code> — we use
+      them. When it doesn't (older builds, or an engine that leaves them empty), we fall back: an
+      <code class="k">EXPLAIN AST</code> to find what a view selects from, and a parse of
+      <code class="k">create_table_query</code> / <code class="k">engine_full</code> for an MV's
+      <code class="k">TO</code> target or a Distributed table's arguments.</p>
+
+    <p>Every lookup is best-effort. A denied system table or a missing column degrades that one layer — you
+      might lose dictionary edges — but the graph still draws. It never throws up its hands and shows you
+      nothing. (Concretely: if your role lacks <code class="k">SELECT ON system.dictionaries</code> you'll
+      see the dictionary node without its source edge; grant it and the edge appears.)</p>
+
+    <h2>Read it, then dig in</h2>
+    <p>Hit <strong>Expand</strong> and the graph opens in its own browser tab as rich cards — each object
+      with its engine, row and byte counts, and full column list with <code class="k">PK</code>/<code class="k">SK</code>
+      badges. Click a node for a side pane with columns, keys, partitions and the <code class="k">SHOW CREATE</code>.
+      Drag nodes around; the layout has undo/redo. Discovery is transitive and crosses database boundaries,
+      so a view in one database that reads a table in another shows the hop.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom"><img src="../assets/img/schema-tab-dark.png" alt="The full data-flow graph in its own tab: rich cards showing engine, row/byte stats and columns with PK/SK badges." loading="lazy"></div>
+      <figcaption>Expand → rich cards in a live tab: engine, row/byte stats, and every column with its type and key badges.</figcaption>
+    </figure>
+
+    <p>And a database of unrelated tables still renders — you get the tables as standalone nodes, not an
+      empty screen. The graph is honest about what's connected and what isn't.</p>
+
+    <p>Fastest way to see it on your terms: open the <a href="https://antalya.demo.altinity.cloud/sql">live demo</a>
+      and drag the <code class="k">shop</code> database onto the results pane — that's the graph above, against
+      real data. The mechanics are on the <a href="../features.html#data-flow">Features page</a>.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="no-backend-sql-console.html">The SQL console with no backend →</a>
+      <a href="explain-pipeline-graph.html">Read your query plan as a graph →</a>
+      <a href="local-console-and-library.html">A console in one curl →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

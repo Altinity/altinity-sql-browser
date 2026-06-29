@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The SQL console with no backend — Altinity SQL Browser</title>
+<meta name="description" content="Most database UIs are a service you deploy and babysit. This one is a single HTML file ClickHouse serves itself — OAuth in the browser, per-user grants, zero third-party requests, a strict CSP.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Architecture</div>
+  <h1>The SQL console with no backend</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>4 min read</span></div>
+  <p class="post-lede">Most database UIs are a service you deploy, secure, and babysit. This one is a file.</p>
+
+  <div class="body">
+    <p>I've stood up enough internal tools to be tired of them. A SQL UI usually means another web
+      service: a container, a config, a session store, a service account with broad database rights, a
+      cert to rotate, and someone paged at 2am when it falls over. For something whose entire job is
+      "let people type <code class="k">SELECT</code>," that's a lot of surface area.</p>
+
+    <p>So the Altinity SQL Browser doesn't have a backend. It's one HTML file, and ClickHouse serves it.</p>
+
+    <h2>How that works</h2>
+    <p>You upload the built <code class="k">sql.html</code> into ClickHouse's <code class="k">user_files</code>
+      directory and add a static <code class="k">&lt;http_handlers&gt;</code> rule. Now <code class="k">GET /sql</code>
+      returns the app and <code class="k">GET /sql/config.json</code> returns <code class="k">{ issuer, client_id }</code>.
+      That's the deployment. There is no application server in the request path.</p>
+
+    <p>Auth happens in the browser. The page runs an OAuth2 Authorization-Code + PKCE flow against your
+      IdP — discovered from <code class="k">/.well-known/openid-configuration</code> — keeps the
+      <code class="k">id_token</code> in <code class="k">sessionStorage</code>, and sends it as
+      <code class="k">Authorization: Bearer …</code> on every query. ClickHouse validates that JWT itself
+      (its <code class="k">token_processor</code>/JWKS, or a delegated verifier) and runs the query as that user.</p>
+
+    <blockquote>The app never holds a credential. There's no shared service account to leak, because there's no service.</blockquote>
+
+    <p>Each person signs in with your IdP and ClickHouse sees their identity and enforces their grants.
+      If Alice can't read <code class="k">billing</code>, the browser can't make her — the database says no.
+      That's a very different story from a shared app login that can read everything.</p>
+
+    <figure class="post-figure">
+      <div class="shot zoom" style="background:#fff;"><img src="../assets/img/login-local.png" alt="The login screen with a saved-connection picker and a Target line showing where queries go." loading="lazy"></div>
+      <figcaption>Sign in with your IdP (or a saved connection). The “Target” line shows exactly where queries will go.</figcaption>
+    </figure>
+
+    <h2>Zero third-party requests</h2>
+    <p>Open the network tab while you use it. You'll see calls to ClickHouse and to your IdP — and
+      nothing else. No CDN, no analytics, no web fonts; it renders in your OS font. Everything the app
+      needs is inlined into that one file at build time, including the two libraries it leans on (Chart.js
+      for the chart view, dagre for the graph layout). I'd rather ship one ~440&nbsp;KB file I can diff than a
+      tree of packages I can't.</p>
+
+    <p>That's a security property too, and it's enforced rather than hoped for. The handler ships a strict
+      Content-Security-Policy:</p>
+
+    <pre class="code">default-src 'none';
+script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src data:; font-src 'self'; frame-src 'self';
+connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com;
+base-uri 'none'; frame-ancestors 'none'</pre>
+
+    <p>The line that matters is <code class="k">connect-src</code>: the browser can only talk to the cluster
+      and the OAuth origins you allowlisted — the installer fills those in from your IdP's discovery
+      document. A token can't be shipped off to some other host because the CSP won't open the connection.
+      <code class="k">frame-ancestors 'none'</code> keeps the page out of an attacker's iframe.</p>
+
+    <h2>What you get for free</h2>
+    <p>No backend means most of the failure modes just aren't there. Nothing to scale, nothing to patch
+      between releases, nothing holding a long-lived secret. Upgrading is copying a new file into
+      <code class="k">user_files</code> — no restart, the static handler serves it live. And because it's
+      one readable artifact, you can audit the thing in an afternoon instead of trusting a dependency tree.</p>
+
+    <p>The trade-off is honest: this only works because ClickHouse already speaks HTTP, terminates TLS, and
+      can validate a JWT. We're not avoiding a backend by hiding one somewhere else — we're using the
+      database you already run as the backend.</p>
+
+    <p>If that sounds like less to worry about, the <a href="../deployment.html">deployment guide</a> walks
+      through the handler and the OAuth wiring. Or just open the
+      <a href="https://antalya.demo.altinity.cloud/sql">live demo</a> and watch the network tab.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="materialized-view-web.html">Map the materialized-view web →</a>
+      <a href="explain-pipeline-graph.html">Read your query plan as a graph →</a>
+      <a href="local-console-and-library.html">A console in one curl →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

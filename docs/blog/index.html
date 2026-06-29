@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blog — Altinity SQL Browser</title>
+<meta name="description" content="Short engineering notes on the Altinity SQL Browser: a SQL console with no backend, mapping the materialized-view web, reading query plans as graphs, and a one-curl local console.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<section class="hero center" style="padding:56px 0 46px;">
+  <div class="wrap">
+    <span class="pill">Blog</span>
+    <h1>Engineering notes</h1>
+    <p class="lede">Short pieces on how the SQL Browser works and why it's built this way — one idea each.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap" style="max-width:820px;">
+    <div class="grid" style="gap:18px;">
+      <a class="card post-card" href="no-backend-sql-console.html">
+        <div class="kicker">Architecture</div>
+        <h3>The SQL console with no backend</h3>
+        <p>One HTML file ClickHouse serves itself, OAuth in the browser, per-user grants, zero third-party requests, and a CSP that enforces it.</p>
+        <div class="post-meta"><span>June 2026</span><span class="dot">·</span><span>4 min read</span></div>
+      </a>
+      <a class="card post-card" href="materialized-view-web.html">
+        <div class="kicker">Schema</div>
+        <h3>Map the materialized-view web before it bites</h3>
+        <p>Drag a database onto the results pane and get a typed data-flow graph — materialized views, dictionaries, Distributed tables — discovered structured-first, parse-fallback.</p>
+        <div class="post-meta"><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+      </a>
+      <a class="card post-card" href="explain-pipeline-graph.html">
+        <div class="kicker">Performance</div>
+        <h3>Read your query plan as a graph</h3>
+        <p>EXPLAIN PIPELINE as a processor DAG you can pan and zoom — read parallelism and the Resize funnel at a glance, the way you read a flame graph.</p>
+        <div class="post-meta"><span>June 2026</span><span class="dot">·</span><span>4 min read</span></div>
+      </a>
+      <a class="card post-card" href="local-console-and-library.html">
+        <div class="kicker">Workflow</div>
+        <h3>A console in one curl — and a query library you can commit</h3>
+        <p>A zero-dependency local runner for any cluster in your clickhouse-client config, plus a saved-query library that lives in git and exports to Markdown or SQL.</p>
+        <div class="post-meta"><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>
