@@ -1,0 +1,11 @@
+Altinity SQL Browser
+Copyright 2026 Altinity, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It bundles the following third-party components into the built single-file
+artifact (dist/sql.html). Their licenses and copyright notices are reproduced in
+THIRD-PARTY-NOTICES.md and are embedded in the artifact:
+
+  - Chart.js (MIT) — https://www.chartjs.org
+  - @dagrejs/dagre (MIT) — https://github.com/dagrejs/dagre
