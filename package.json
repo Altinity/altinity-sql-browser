@@ -14,9 +14,9 @@
     "local": "node build/build.mjs && python3 build/local.py"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0",
+    "@playwright/test": "^1.61.1",
     "@vitest/coverage-v8": "^2.1.8",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.28.1",
     "happy-dom": "^15.11.0",
     "vitest": "^2.1.8"
   },
