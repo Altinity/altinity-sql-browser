@@ -20,7 +20,7 @@ describe('renderSavedHistory', () => {
 
   it('saved: empty state', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     expect(app.dom.savedList.textContent).toContain('No saved queries yet.');
   });
@@ -29,7 +29,7 @@ describe('renderSavedHistory', () => {
 
   it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
     app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, chart, view: 'chart' }];
     renderSavedHistory(app);
@@ -46,7 +46,7 @@ describe('renderSavedHistory', () => {
 
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [
       { id: 'a', name: 'A', sql: '1', favorite: false },
       { id: 'b', name: 'B', sql: '2', favorite: false },
@@ -63,7 +63,7 @@ describe('renderSavedHistory', () => {
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false }];
     renderSavedHistory(app);
     byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
@@ -92,7 +92,7 @@ describe('renderSavedHistory', () => {
   });
   it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }];
     renderSavedHistory(app);
     const open = () => byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
@@ -130,7 +130,7 @@ describe('renderSavedHistory', () => {
   });
   it('saved: renders a 2-line description preview when present, omits it otherwise', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [
       { id: 's1', name: 'A', sql: '1', favorite: false, description: 'explains A' },
       { id: 's2', name: 'B', sql: '2', favorite: false },
@@ -143,7 +143,7 @@ describe('renderSavedHistory', () => {
 
   it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
     renderSavedHistory(app);
     const savedTab = app.dom.savedTabsRow.querySelectorAll('.side-tab')[0];
@@ -156,14 +156,14 @@ describe('renderSavedHistory', () => {
   });
   it('history: empty state', () => {
     const app = makeApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     renderSavedHistory(app);
     expect(app.dom.savedList.textContent).toContain('No history yet.');
   });
 
   it('history: lists rows (with + without row count) and loads on click', () => {
     const app = makeApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
       { id: 'h2', sql: 'INSERT …', ts: Date.now(), rows: null, ms: 1 },
@@ -180,7 +180,7 @@ describe('renderSavedHistory', () => {
 
   it('history: per-row delete removes just that entry without loading it', () => {
     const app = makeApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
       { id: 'h2', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 2 },
@@ -194,14 +194,14 @@ describe('renderSavedHistory', () => {
 
   it('switching panels persists the choice', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     const [savedBtn, histBtn] = app.dom.savedTabsRow.querySelectorAll('.side-tab');
     click(histBtn);
-    expect(app.state.sidePanel).toBe('history');
+    expect(app.state.sidePanel.value).toBe('history');
     expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'history');
     click(savedBtn);
-    expect(app.state.sidePanel).toBe('saved');
+    expect(app.state.sidePanel.value).toBe('saved');
     expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'saved');
   });
 });
@@ -209,7 +209,7 @@ describe('renderSavedHistory', () => {
 describe('renderSavedHistory — search/filter', () => {
   const savedApp = () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [
       { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false, description: 'worst delays' },
       { id: 's2', name: 'Busiest airports', sql: 'SELECT origin, count() FROM flights', favorite: false },
@@ -230,7 +230,7 @@ describe('renderSavedHistory — search/filter', () => {
 
   it('collapses the search box when the active list is empty', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     expect(app.dom.savedSearch.children.length).toBe(0); // :empty → hidden via CSS
     expect(input(app)).toBeNull();
@@ -239,7 +239,7 @@ describe('renderSavedHistory — search/filter', () => {
   it('shows the box with a per-tab placeholder when items exist', () => {
     const app = savedApp();
     expect(input(app).placeholder).toBe('Search saved queries…');
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
     expect(input(app).placeholder).toBe('Search history…');
@@ -274,7 +274,7 @@ describe('renderSavedHistory — search/filter', () => {
 
   it('filters history by sql with its own no-match message', () => {
     const app = makeApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 },
       { id: 'h2', sql: 'INSERT INTO t', ts: Date.now(), rows: null, ms: 1 },
@@ -300,7 +300,7 @@ describe('renderSavedHistory — search/filter', () => {
 describe('drag a row into the editor', () => {
   it('a saved row is draggable and carries its SQL as a subquery payload', () => {
     const app = makeApp();
-    app.state.sidePanel = 'saved';
+    app.state.sidePanel.value = 'saved';
     app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }];
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.saved-row');
@@ -310,7 +310,7 @@ describe('drag a row into the editor', () => {
   });
   it('a history row is draggable and carries its SQL as a subquery payload', () => {
     const app = makeApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.history-row');

@@ -1197,7 +1197,7 @@ describe('exhaustive controller coverage', () => {
     });
     const app = createApp(e);
     app.renderApp();
-    app.state.sidePanel = 'history';
+    app.state.sidePanel.value = 'history';
     app.activeTab().sql = 'SELECT 1';
     await app.actions.run();
     expect(app.state.history.length).toBe(1);

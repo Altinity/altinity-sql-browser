@@ -640,7 +640,7 @@ export function createApp(env = {}) {
   // --- saved / history bridges ------------------------------------------
   app.recordHistory = (tab) => {
     recordHistory(app.state, tab, saveJSON);
-    if (app.state.sidePanel === 'history') renderSavedHistory(app);
+    if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
   };
 
   // --- share + star ------------------------------------------------------
@@ -952,7 +952,13 @@ export function renderApp(app, helpers) {
     app.updateSaveBtn();
   });
   renderSchema(app);
-  renderSavedHistory(app);
+  // Reactive repaint of the side panel: re-runs when the active panel changes
+  // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
+  // still call renderSavedHistory directly until those slices are signals too.
+  effect(() => {
+    app.state.sidePanel.value;
+    renderSavedHistory(app);
+  });
   app.loadVersion();
   app.loadSchema();
   app.loadReference();

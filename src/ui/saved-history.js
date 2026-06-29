@@ -25,22 +25,24 @@ export function renderSavedHistory(app) {
   const state = app.state;
   const count = state.savedQueries.length;
 
-  // Switching panes clears the search so each tab starts unfiltered.
+  // Switching panes clears the search so each tab starts unfiltered. Clear the
+  // (plain) filter first, then set the sidePanel signal — its render effect runs
+  // synchronously on assignment and must see the cleared filter. No manual
+  // re-render call: the effect in createApp() repaints.
   const switchTo = (panel) => {
-    state.sidePanel = panel;
     state.libraryFilter = '';
     app.savePref('sidePanel', panel);
-    renderSavedHistory(app);
+    state.sidePanel.value = panel;
   };
 
   tabsRow.replaceChildren(
     h('button', {
-      class: 'side-tab' + (state.sidePanel === 'saved' ? ' active' : ''),
+      class: 'side-tab' + (state.sidePanel.value === 'saved' ? ' active' : ''),
       onclick: () => switchTo('saved'),
     }, Icon.layers(), h('span', null, 'Library'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
-      class: 'side-tab' + (state.sidePanel === 'history' ? ' active' : ''),
+      class: 'side-tab' + (state.sidePanel.value === 'history' ? ' active' : ''),
       onclick: () => switchTo('history'),
     }, Icon.history(), h('span', null, 'History')),
   );
@@ -54,7 +56,7 @@ export function renderSavedHistory(app) {
 function renderList(app) {
   const list = app.dom.savedList;
   list.replaceChildren();
-  if (app.state.sidePanel === 'saved') renderSaved(app, list);
+  if (app.state.sidePanel.value === 'saved') renderSaved(app, list);
   else renderHistory(app, list);
 }
 
@@ -67,13 +69,13 @@ function renderSearch(app) {
   const box = app.dom.savedSearch;
   if (!box) return;
   const state = app.state;
-  const hasItems = state.sidePanel === 'saved' ? state.savedQueries.length > 0 : state.history.length > 0;
+  const hasItems = state.sidePanel.value === 'saved' ? state.savedQueries.length > 0 : state.history.length > 0;
   box.replaceChildren();
   if (!hasItems) return;
 
   const input = h('input', {
     class: 'sv-search-input', type: 'text',
-    placeholder: state.sidePanel === 'saved' ? 'Search saved queries…' : 'Search history…',
+    placeholder: state.sidePanel.value === 'saved' ? 'Search saved queries…' : 'Search history…',
     value: state.libraryFilter,
   });
   const clear = h('button', { class: 'sv-search-clear', title: 'Clear' }, Icon.close());

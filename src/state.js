@@ -67,7 +67,7 @@ export function createState(read = { loadJSON, loadStr }) {
     // derived per-run from the typed statement / clicked tab, not stored here.
     forceExplain: false,
     resultSort: { col: null, dir: 'asc' },
-    sidePanel: read.loadStr(KEYS.sidePanel, 'saved'),
+    sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
     savedQueries: read.loadJSON(KEYS.saved, []),
     history: read.loadJSON(KEYS.history, []),
     // The saved-query collection treated as a named document ("the Library").
