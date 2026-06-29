@@ -22,7 +22,9 @@ OUT="$ROOT/dist"
 STAGE="$OUT/bundle/altinity-sql-browser"
 
 echo "==> Building SPA"
-node "$ROOT/build/build.mjs"
+# Pass the resolved version through so the in-HTML build stamp matches the
+# VERSION file written below (build.mjs honors $ASB_VERSION over package.json).
+ASB_VERSION="$VERSION" node "$ROOT/build/build.mjs"
 
 echo "==> Staging bundle ($VERSION)"
 rm -rf "$OUT/bundle"

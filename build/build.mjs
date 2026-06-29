@@ -18,12 +18,18 @@ const root = resolve(here, '..');
 // The build stamp shown in the UI (user menu) and grep-able in dist/sql.html, so
 // a bug report can be tied to an exact build: `v<version> (<short-commit>)`, or
 // just `v<version>` when this isn't a git checkout (offline tarball, CI export).
-// version is the single source of truth in package.json; commit comes from git.
+// A dirty working tree appends `-dirty` so a hand-built artifact (e.g. a manual
+// `kubectl cp dist/sql.html`) is never mistaken for the clean commit it sits on.
+// Version source: $ASB_VERSION when set (bundle.sh passes the release tag so the
+// stamp and the bundle's VERSION file stay in lockstep), else package.json.
 async function buildStamp() {
-  const { version } = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+  const version = process.env.ASB_VERSION
+    || JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')).version;
   let commit = '';
   try {
     commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim();
+    // `git status --porcelain` is empty iff the tree exactly matches HEAD.
+    if (execFileSync('git', ['status', '--porcelain'], { cwd: root }).toString().trim()) commit += '-dirty';
   } catch { /* not a git checkout — fall back to version only */ }
   return commit ? `v${version} (${commit})` : `v${version}`;
 }
