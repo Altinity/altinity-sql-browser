@@ -10,6 +10,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- In-app build stamp: the build bakes `v<version> (<short-commit>)` into
+  `dist/sql.html` (graceful `v<version>` fallback when not a git checkout) and
+  shows it in the user menu, so a bug report can be tied to an exact build (#74).
 - `NOTICE` + `THIRD-PARTY-NOTICES.md`, and the bundled Chart.js / dagre (MIT)
   notices are now embedded in the built `dist/sql.html`.
 - `CONTRIBUTING.md` and this `CHANGELOG.md`.

@@ -295,6 +295,11 @@ body {
 .user-menu .um-item:hover { background: var(--bg-hover); }
 .user-menu .um-item.danger { color: #ef4444; }
 .user-menu .um-item.danger:hover { background: color-mix(in oklab, #ef4444 12%, transparent); }
+.user-menu .um-build {
+  margin-top: 3px; padding: 7px 9px; border-top: 1px solid var(--border-faint);
+  font-size: 10.5px; color: var(--fg-faint); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* ------------ header File menu + library title ------------ */
 .hd-divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }

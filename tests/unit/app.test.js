@@ -135,6 +135,7 @@ describe('renderApp shell', () => {
     const menu = document.querySelector('.user-menu');
     expect(menu).not.toBeNull();
     expect(menu.querySelector('.um-id').textContent).toBe('me@example.com');
+    expect(menu.querySelector('.um-build').textContent).toBe(app.build); // build stamp ('dev' here)
     menu.querySelector('.um-item.danger').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.token).toBeNull();
     expect(e.sessionStorage.getItem('oauth_id_token')).toBeNull();

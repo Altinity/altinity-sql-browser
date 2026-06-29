@@ -87,7 +87,7 @@ export async function bootstrap(app, env) {
 
 /* c8 ignore start -- browser entry side-effect, exercised via the live app */
 if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
-  const app = createApp({ Chart, Dagre });
+  const app = createApp({ Chart, Dagre, build: '__ASB_BUILD__' });
   document.addEventListener('keydown', (e) => handleKeydown(e, app));
   bootstrap(app, {
     location: window.location,

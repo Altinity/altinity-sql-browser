@@ -31,6 +31,7 @@ export function makeApp(over = {}) {
     cssVar: () => '', // blank → chartColors() uses its dark-theme fallbacks
     chart: null,
     host: () => 'test.host',
+    build: 'v0.0.0-test',
     activeTab: () => activeTab(state),
     isSignedIn: () => true,
     email: () => 'me@example.com',

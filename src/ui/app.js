@@ -64,6 +64,10 @@ export function createApp(env = {}) {
     // child tab can inline the page's CSS (about:blank ships none of it).
     openWindow: env.openWindow || ((...a) => win.open(...a)),
     stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style').textContent : ''),
+    // Build stamp ("v0.1.4 (abc1234)") injected at build time via main.js; shown
+    // in the user menu so a bug report can be tied to a build. 'dev' in tests /
+    // an un-built run where the placeholder was never replaced.
+    build: env.build || 'dev',
   };
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
@@ -787,7 +791,8 @@ export function createApp(env = {}) {
     let close;
     const menu = h('div', { class: 'user-menu' },
       h('div', { class: 'um-id' }, app.email()),
-      h('button', { class: 'um-item danger', onclick: () => { close(); app.signOut(); } }, Icon.logout(), h('span', null, 'Log out')));
+      h('button', { class: 'um-item danger', onclick: () => { close(); app.signOut(); } }, Icon.logout(), h('span', null, 'Log out')),
+      h('div', { class: 'um-build', title: 'App version / build' }, app.build));
     ({ close } = anchoredPopover(menu, app.dom.userBtn, 'userMenu'));
   }
   app.openUserMenu = openUserMenu;
