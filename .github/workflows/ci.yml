@@ -21,7 +21,7 @@ jobs:
         run: npm test
       - name: Build single-file SPA
         run: npm run build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sql-browser-dist
           path: dist/sql.html
@@ -82,7 +82,7 @@ jobs:
         run: npx playwright install --with-deps chromium firefox
       - name: E2E (Playwright — Chromium + Firefox)
         run: npm run test:e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: ${{ failure() }}
         with:
           name: playwright-results
