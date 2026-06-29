@@ -26,15 +26,7 @@ queries (load [`examples/ontime-charts.json`](examples/ontime-charts.json) via
 
 ## How it works
 
-```
-browser ──https──▶ ClickHouse  GET /sql            → the SPA (one HTML file)
-                              GET /sql/config.json → { issuer, client_id }
-   │  OAuth2 Authorization-Code + PKCE via OIDC discovery (any IdP)
-   │  id_token kept in sessionStorage, silently refreshed
-   ▼
-ClickHouse  POST /  Authorization: Bearer <id_token>   ← every query
-            (validated by CH token_processor/JWKS, or a delegated verifier)
-```
+![Auth & data flow: the browser fetches the single-file SPA and its config.json from ClickHouse, signs in to your OAuth IdP with OAuth2 Authorization-Code + PKCE (id_token kept in sessionStorage), then POSTs every query to ClickHouse with an Authorization: Bearer id_token that ClickHouse validates against the IdP's JWKS via its token_processor (or a delegated verifier). There is no app-specific backend.](docs/assets/img/how-it-works.svg)
 
 The browser never holds a static credential — each user authenticates with your
 IdP and ClickHouse sees their JWT. There is **no app-specific backend**: the
