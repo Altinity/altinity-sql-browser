@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-29
+
 ### Added
 - `SECURITY.md`: private vulnerability-disclosure policy + the `config.json`
   threat model (it's served to browsers — prefer a PKCE public client; lock the
