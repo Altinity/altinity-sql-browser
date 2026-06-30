@@ -1,8 +1,8 @@
 # Contributor guide — altinity-sql-browser
 
 A modular ES-module SPA that builds to one self-contained HTML file served from
-ClickHouse. No framework; runtime deps are rare and deliberate (currently two,
-both bundled — see hard rule 4). Quality is held by tests.
+ClickHouse. No framework; runtime deps are rare and deliberate (currently three,
+all bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
 
@@ -73,3 +73,20 @@ Touch these in one change:
 
 Pure-by-construction modules, injected side-effect seams, per-file coverage
 thresholds, and a single ClickHouse-served artifact built by esbuild.
+
+## Working discipline
+
+- **Surface out-of-scope findings, don't bury them.** Spot a real bug, data
+  inconsistency, deprecated API, or future footgun outside the current task →
+  open an issue labeled `inbox` (file:line + why deferred) and tell the user.
+  High signal only, not style nits.
+- **Reconcile forward work after a substantive change.** A change to behavior,
+  schema, or a settled decision can stale tracked work. In the same commit,
+  reconcile what it reshaped: the roadmap meta-issue (currently #68) — re-check
+  or re-scope the track it touches; the affected issue's body (Goal/Acceptance);
+  the relevant ADR addendum and `CHANGELOG.md` `[Unreleased]`; and any issue it
+  obsoletes (close via "Closes #N" in the PR). Flag it if the rework is large.
+  (Trivial typo/comment changes exempt.)
+- **Convert friction into memory.** If a task needed retried commits or hit an
+  unexpected failure (test/env/scope surprise), save a memory so the next
+  session doesn't repeat it.
