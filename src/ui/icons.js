@@ -76,8 +76,13 @@ export const Icon = {
   plan: () => iconEl('<path d="M2 2.6h8M4 5.5h6M4 8.4h4.5M2 5.5h.01M2 8.4h.01"/>', 12, 12, 1.4),
   // Indexes view: a key.
   key: () => iconEl('<circle cx="4" cy="4" r="2.4"/><path d="M5.7 5.7l4.3 4.3M8.3 8.3l1-1M9.3 9.3l1-1"/>', 12, 12, 1.3),
-  // Expand to fullscreen: corner arrows.
-  expand: () => iconEl('<path d="M2 4.5V2h2.5M9.5 2H12v2.5M12 7.5V10H9.5M4.5 10H2V7.5"/>', 12, 12, 1.4),
+  // Expand to fullscreen: four corner brackets, centred + symmetric in the 12-box
+  // (2.5 margins, 2.5-long legs). The old path was off-centre (bbox 10×8, touching
+  // the right edge) on half-pixel coords, so at ~12px each engine's stroke
+  // rasteriser snapped it differently — Chrome/Firefox blurred the corners into
+  // solid `[ ]` brackets while Safari kept them crisp. Centred + symmetric renders
+  // consistently across engines.
+  expand: () => iconEl('<path d="M2.5 5V2.5H5M7 2.5H9.5V5M9.5 7V9.5H7M5 9.5H2.5V7"/>', 12, 12, 1.4),
   // Zoom-out bar (pairs with plus for zoom-in).
   minus: () => svg('M2 6h8', 12, 12, { stroke: 1.6 }),
   // Curved-arrow undo / redo (mirror images) for the schema node-move history.

@@ -11,10 +11,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ### Added
 - Playwright e2e now runs on **WebKit** in addition to Chromium and Firefox, so
-  Safari regressions on the `html{zoom}`-based layout fail CI instead of
+  many Safari regressions on the `html{zoom}`-based layout fail CI instead of
   shipping silently. README gained a **Supported browsers** stance: desktop
-  Chromium/Firefox/Safari are supported (Safari verified green on CI); the full
-  browser/ClickHouse/IdP matrix is tracked in #71. (#69)
+  Chromium/Firefox/Safari are supported; the full browser/ClickHouse/IdP matrix
+  is tracked in #71. (#69)
+- `tests/e2e/zoom-support.spec.js` regression-guards the fullscreen-panel sizing
+  mechanism (#70) on all three engines. Caveat now documented: Playwright's WebKit
+  is **not** a faithful Safari proxy for `zoom` × `getBoundingClientRect`/viewport
+  units — it behaves like Chromium there — so that path is verified manually (#71).
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime
@@ -24,6 +28,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   instead of manual render calls. No user-facing behavior change. A Preact
   schema-panel spike was evaluated and **rejected** — the app stays
   framework-free (ADR-0001 addendum). (#88)
+
+### Fixed
+- The fullscreen schema / EXPLAIN graph panels were mis-sized on **Safari** (#70).
+  They size off viewport units, and engines disagree on how `vw`/`vh` interact
+  with `html{zoom}`: Chromium's ignore `zoom` (so `100vh` overshoots one screen by
+  the zoom factor and must be divided back), but WebKit/Safari's track `zoom`, so
+  the existing `calc(.../var(--zoom))` correction shrank those panels to ~83%. The
+  divisor is now measured at runtime (a `100vh` probe vs the one-screen `#root`)
+  and published as `--vp-zoom` — ~`--zoom` on Chromium, ~1 on Safari — so the
+  panels fit exactly one screen on both. The rest of the UI was already correct on
+  Safari (its pointer/caret/drag corrections self-calibrate to the live rect
+  ratio). A `@supports not (zoom: 1)` rule still neutralizes the factor to 1 on
+  engines that can't parse `zoom` at all.
 
 ## [0.1.5] - 2026-06-29
 

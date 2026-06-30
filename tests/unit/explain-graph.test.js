@@ -411,7 +411,7 @@ describe('schema lineage graph', () => {
 });
 
 describe('openSchemaView — real browser tab', () => {
-  afterEach(() => { document.body.innerHTML = ''; });
+  afterEach(() => { document.body.innerHTML = ''; document.documentElement.style.removeProperty('--vp-zoom'); });
   const GRAPH = {
     focus: { kind: 'db', db: 'lin' },
     nodes: [
@@ -443,14 +443,17 @@ describe('openSchemaView — real browser tab', () => {
   });
   const stub = (canvas) => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 }); };
 
-  it('builds the graph in the child document: copies CSS, mirrors theme, fills the tab', () => {
+  it('builds the graph in the child document: copies CSS, mirrors theme + --vp-zoom, fills the tab', () => {
     document.documentElement.setAttribute('data-theme', 'dark'); // data-density left unset → skipped
+    document.documentElement.style.setProperty('--vp-zoom', '1'); // opener measured the Safari case
     const win = makeWin();
     const app = tabApp(win);
     const view = openSchemaView(app);
     expect(win.document.querySelector('style').textContent).toBe('body{color:red}');
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.documentElement.getAttribute('data-density')).toBeNull();
+    // the opener's measured viewport divisor carries onto the tab so its panel fits (#70)
+    expect(win.document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('1');
     expect(win.document.body.className).toBe('schema-tab');
     expect(win.focus).toHaveBeenCalled(); // tab brought to front for key events
     const canvas = win.document.querySelector('.graph-overlay-canvas');
