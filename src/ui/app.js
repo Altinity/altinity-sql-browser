@@ -309,21 +309,21 @@ export function createApp(env = {}) {
   app.loadSchema = async () => {
     try {
       await ensureConfig();
-      app.state.schema = await ch.loadSchema(chCtx);
-      app.state.schemaError = null;
+      const schema = await ch.loadSchema(chCtx);
+      // One batched write → one repaint (the schema effect + the banner effect
+      // react to these signals; no manual renderSchema/updateBanner needed).
+      batch(() => { app.state.schema.value = schema; app.state.schemaError.value = null; });
     } catch (e) {
-      app.state.schemaError = String((e && e.message) || e);
+      app.state.schemaError.value = String((e && e.message) || e);
     }
     app.rebuildCompletions();
-    renderSchema(app);
-    updateBanner();
   };
   // Editor reference data + autocomplete candidates. Loaded once per connection
   // (the keystroke rule, #25): keywords/functions drive both version-correct
   // highlighting and the autocomplete list; completion then runs client-side.
   app.refData = assembleReferenceData(null); // built-in fallback until loaded
   app.rebuildCompletions = () => {
-    app.completions = buildCompletions(app.refData, app.state.schema);
+    app.completions = buildCompletions(app.refData, app.state.schema.value);
   };
   app.rebuildCompletions();
   // Hover docs (#27) are fetched on demand per entity and cached for reuse —
@@ -356,7 +356,7 @@ export function createApp(env = {}) {
   function updateBanner() {
     const b = app.dom.banner;
     if (!b) return;
-    const err = app.state.schemaError;
+    const err = app.state.schemaError.value;
     if (!err || app._bannerDismissedFor === err) {
       b.style.display = 'none';
       return;
@@ -397,17 +397,26 @@ export function createApp(env = {}) {
     doc.documentElement.style.setProperty('--vp-zoom', String(vp));
   }
   app.applyViewportZoom = applyViewportZoom;
-  async function loadColumns(db, table, tableObj) {
-    tableObj.columns = 'loading';
-    renderSchema(app);
+  // Lazily load a table's columns into the schema signal by REFERENCE (no
+  // in-place mutation): replace the target table object with `{...tb, columns}`.
+  // 'loading' is written synchronously (before the await) so the schema effect
+  // paints the spinner immediately; the result/[] write repaints with the data.
+  // `tb.columns` stays the completion cache that buildCompletions reads.
+  async function loadColumns(db, table) {
+    const setCols = (cols) => {
+      app.state.schema.value = app.state.schema.value.map((d) =>
+        (d.db === db
+          ? { ...d, tables: d.tables.map((t) => (t.name === table ? { ...t, columns: cols } : t)) }
+          : d));
+    };
+    setCols('loading');
     try {
       await ensureConfig();
-      tableObj.columns = await ch.loadColumns(chCtx, db, table, sqlString);
+      setCols(await ch.loadColumns(chCtx, db, table, sqlString));
     } catch {
-      tableObj.columns = [];
+      setCols([]);
     }
     app.rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
-    renderSchema(app);
   }
 
   // --- query run ---------------------------------------------------------
@@ -902,7 +911,7 @@ export function renderApp(app, helpers) {
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',
-    oninput: (e) => { state.schemaFilter = e.target.value; renderSchema(app); },
+    oninput: (e) => { state.schemaFilter.value = e.target.value; },
   });
   app.dom.schemaList = h('div', { class: 'schema-list' });
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
@@ -989,7 +998,22 @@ export function renderApp(app, helpers) {
   });
   // The Run button reflects the run state (label + disabled).
   effect(() => app.setRunBtn(app.state.running.value));
-  renderSchema(app);
+  // Reactive repaint of the schema tree — replaces the scattered renderSchema()
+  // calls: re-runs on schema load, load error, filter text, or expand/collapse.
+  // Registered here (post-mount) so app.dom.schemaList already exists; the effect
+  // also runs once now for the initial paint.
+  effect(() => {
+    app.state.schema.value;
+    app.state.schemaError.value;
+    app.state.schemaFilter.value;
+    app.state.expanded.value;
+    renderSchema(app);
+  });
+  // The schema/auth-failure banner reflects schemaError (a separate surface).
+  effect(() => {
+    app.state.schemaError.value;
+    app.updateBanner();
+  });
   // Reactive repaint of the side panel: re-runs when the active panel changes
   // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
   // still call renderSavedHistory directly until those slices are signals too.

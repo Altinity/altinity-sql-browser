@@ -152,3 +152,20 @@ maintenance drag, convert it with signals-core using *replaced* Set/Map-valued
 signals rather than in-place mutation). The `spike/preact-schema` branch stands
 as the evidence; re-open the decision only when several complex, interdependent,
 rich-local-state panels are actually on the roadmap (per the trigger above).
+
+## Addendum — schema slice landed via signals-core (#91, completes #88)
+
+The schema slice was converted with signals-core exactly as the fallback above
+prescribed — **no Preact**. `schema`/`schemaError`/`schemaFilter` are now
+`signal(...)`; the in-place anti-pattern is gone two ways: per-row expand state
+moved from the mutated `db.expanded` bool + `expandedTables` Set into a single
+**Set-valued `expanded` signal** (keys `db:`/`tb:`), updated copy-on-write; and
+lazy column loads **replace the `schema` reference** (`{...tb, columns}`) instead
+of mutating `tb.columns` in place — `tb.columns` stays the completion cache
+`buildCompletions` reads, so `completions.js` was untouched (lower churn than a
+separate Map-valued signal; the gate held). Two `effect()`s in `createApp`
+(schema tree + error banner) replaced every scattered `renderSchema()` call; the
+expand+first-fetch is wrapped in `batch()` so the row opens with its spinner in
+one repaint. This was the last slice — **#88 is complete**. The
+re-evaluation trigger in #91 still applies: if reference-replacement proves as
+forgettable as the old manual `renderSchema` calls, revisit via a fresh ADR.

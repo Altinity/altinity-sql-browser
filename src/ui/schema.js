@@ -1,10 +1,20 @@
 // The schema tree: databases → tables → columns, with a text filter and
 // lazy per-table column loading. Renders into app.dom.schemaList.
 
+import { batch } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './editor.js';
+
+// Copy-on-write expand toggle: returns a new Set with `key` added or removed, so
+// assigning it to the `expanded` signal triggers the repaint effect (signals
+// react to reference changes, never in-place Set mutation).
+const toggleKey = (set, key) => {
+  const next = new Set(set);
+  if (!next.delete(key)) next.add(key);
+  return next;
+};
 
 // Make a tree row a drag source carrying `text` as the schema identifier, so it
 // can be dropped onto the editor (see editor.js drop handler). Click behavior is
@@ -55,40 +65,43 @@ export function renderSchema(app) {
   if (!list) return;
   list.replaceChildren();
   const state = app.state;
+  const schemaError = state.schemaError.value;
+  const schema = state.schema.value;
 
-  if (state.schemaError) {
+  if (schemaError) {
     list.appendChild(h('div', { class: 'schema-empty', style: { color: 'var(--error-fg)' } },
-      'Schema load failed: ' + state.schemaError));
+      'Schema load failed: ' + schemaError));
     return;
   }
-  if (!state.schema) {
+  if (!schema) {
     list.appendChild(h('div', { class: 'schema-empty' }, 'Loading schema…'));
     return;
   }
-  if (state.schema.length === 0) {
+  if (schema.length === 0) {
     list.appendChild(h('div', { class: 'schema-empty' }, 'No databases.'));
     return;
   }
 
-  const filter = state.schemaFilter.trim().toLowerCase();
+  const filter = state.schemaFilter.value.trim().toLowerCase();
   const matches = (s) => !filter || s.toLowerCase().includes(filter);
 
-  for (const db of state.schema) {
+  for (const db of schema) {
     const qdb = quoteIdent(db.db); // SQL-safe db name (reused by the 3 emit sites)
+    const dbKey = 'db:' + db.db;
+    const dbOpen = state.expanded.value.has(dbKey);
     list.appendChild(h('div', {
       class: 'tree-row bold',
       title: 'Click to expand · double-click to insert · shift-click for SHOW CREATE',
       onclick: (e) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + qdb); return; }
-        if (isDoubleClick(app, 'db:' + db.db)) { app.actions.insertAtCursor(qdb); return; }
-        db.expanded = !db.expanded;
-        renderSchema(app);
+        if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
+        state.expanded.value = toggleKey(state.expanded.value, dbKey);
       },
       ...lineageDrag(qdb, { kind: 'db', db: db.db }),
     },
-      ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: db.expanded }),
+      ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: dbOpen }),
     ));
-    if (!db.expanded) continue;
+    if (!dbOpen) continue;
 
     for (const tb of db.tables) {
       const tableMatch = matches(tb.name);
@@ -96,8 +109,9 @@ export function renderSchema(app) {
       const visibleCols = filter ? colsHave.filter((c) => matches(c.name)) : colsHave;
       if (filter && !tableMatch && visibleCols.length === 0 && tb.columns !== 'loading') continue;
       const key = db.db + '.' + tb.name; // internal identity (Sets, dbl-click tracking)
+      const tbKey = 'tb:' + key;
       const qname = qualifyIdent(db.db, tb.name); // SQL-safe qualified name
-      const isOpen = state.expandedTables.has(key);
+      const isOpen = state.expanded.value.has(tbKey);
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
@@ -110,11 +124,15 @@ export function renderSchema(app) {
         ...lineageDrag(qname, { kind: 'table', db: db.db, table: tb.name }),
         onclick: (e) => {
           if (e.shiftKey) { app.actions.insertCreate(qname); return; }
-          if (isDoubleClick(app, 'tb:' + key)) { app.actions.replaceEditor('SELECT * FROM ' + qname + ' LIMIT 100'); return; }
-          if (state.expandedTables.has(key)) state.expandedTables.delete(key);
-          else state.expandedTables.add(key);
-          if (state.expandedTables.has(key) && tb.columns == null) app.actions.loadColumns(db.db, tb.name, tb);
-          else renderSchema(app);
+          if (isDoubleClick(app, tbKey)) { app.actions.replaceEditor('SELECT * FROM ' + qname + ' LIMIT 100'); return; }
+          const willOpen = !state.expanded.value.has(tbKey);
+          // Batch the expand + first column fetch so the row opens *with* its
+          // spinner in one repaint (loadColumns' 'loading' write runs synchronously
+          // before its await). Collapse / already-loaded is a single Set write.
+          batch(() => {
+            state.expanded.value = toggleKey(state.expanded.value, tbKey);
+            if (willOpen && tb.columns == null) app.actions.loadColumns(db.db, tb.name);
+          });
         },
       },
         ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),

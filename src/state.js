@@ -55,10 +55,17 @@ export function createState(read = { loadJSON, loadStr }) {
     // the results pane + Run button react to resultView/running (below).
     tabs: signal([newTabObj('t1')]),
     activeTabId: signal('t1'),
-    schema: null,
-    schemaError: null,
-    schemaFilter: '',
-    expandedTables: new Set(),
+    // Schema panel (signals): the tree repaints via an effect in createApp that
+    // reads these (no manual renderSchema list). `schema` is the db→table array;
+    // each `tb.columns` is a lazily-loaded completion cache replaced by reference
+    // (see loadColumns) — never mutated in place. `expanded` is a Set of expand
+    // keys ('db:'+name / 'tb:'+db.table) replaced copy-on-write. Read/write via
+    // `.value`. (The 'db:'/'tb:' prefixes mirror the dbl-click tracker's keys in
+    // schema.js — a separate store, not shared state.)
+    schema: signal(null),
+    schemaError: signal(null),
+    schemaFilter: signal(''),
+    expanded: signal(new Set()),
     serverVersion: null,
     // Run state (signals): `running` flips the Run button + results pane via
     // effects; `resultView` is the active Table/JSON/Chart tab. Via `.value`.

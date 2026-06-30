@@ -24,10 +24,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime
   dependency), adopted incrementally per
   [ADR-0001](docs/ADR-0001-reactivity.md): the tab list, side panel, run state
-  (`running`/`resultView`), and the library title repaint via signal `effect`s
-  instead of manual render calls. No user-facing behavior change. A Preact
-  schema-panel spike was evaluated and **rejected** — the app stays
-  framework-free (ADR-0001 addendum). (#88)
+  (`running`/`resultView`), the library title, and now the **schema panel**
+  (`schema`/`schemaError`/`schemaFilter`) repaint via signal `effect`s instead of
+  manual render calls. No user-facing behavior change. A Preact schema-panel spike
+  was evaluated and **rejected** — the app stays framework-free (ADR-0001
+  addendum); the schema slice is the documented imperative exception, converted
+  with a *replaced* Set-valued `expanded` signal and reference-replaced column
+  loads rather than in-place mutation. This **completes the migration**. (#88, #91)
 
 ### Fixed
 - The fullscreen schema / EXPLAIN graph panels were mis-sized on **Safari** (#70).

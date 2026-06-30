@@ -171,7 +171,7 @@ describe('renderApp shell', () => {
     const { app } = rendered();
     app.dom.schemaSearchInput.value = 'foo';
     app.dom.schemaSearchInput.dispatchEvent(new Event('input'));
-    expect(app.state.schemaFilter).toBe('foo');
+    expect(app.state.schemaFilter.value).toBe('foo');
   });
 });
 
@@ -224,7 +224,7 @@ describe('loadVersion / loadSchema', () => {
     const app = createApp(e);
     app.renderApp();
     await new Promise((r) => setTimeout(r));
-    expect(app.state.schemaError).toContain('boom');
+    expect(app.state.schemaError.value).toContain('boom');
   });
 });
 
@@ -248,7 +248,7 @@ describe('loadReference / rebuildCompletions (#25)', () => {
   });
   it('rebuildCompletions folds in already-loaded schema columns', () => {
     const app = createApp(env());
-    app.state.schema = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'c', type: 'UInt8' }] }] }];
+    app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'c', type: 'UInt8' }] }] }];
     app.rebuildCompletions();
     expect(app.completions.some((c) => c.kind === 'column' && c.label === 'c' && c.parent === 't')).toBe(true);
   });
@@ -262,8 +262,8 @@ describe('loadReference / rebuildCompletions (#25)', () => {
       [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })],
     ]) });
     const app = createApp(e); // no renderApp → loadSchema can't clobber our schema mid-test
-    app.state.schema = [{ db: 'd', expanded: true, tables: [{ name: 't', columns: null }] }];
-    await app.actions.loadColumns('d', 't', app.state.schema[0].tables[0]);
+    app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: null }] }];
+    await app.actions.loadColumns('d', 't');
     expect(app.completions.some((c) => c.kind === 'column' && c.label === 'id' && c.parent === 't')).toBe(true);
   });
   it('entityDoc fetches a hover description on demand and caches it (#27)', async () => {
@@ -865,21 +865,26 @@ describe('share + star + columns', () => {
     expect(document.querySelector('.save-popover')).toBeNull(); // committed + closed
     expect(app.state.savedQueries[0].description).toBe('updated reason');
   });
-  it('loadColumns fills the table object', async () => {
+  it('loadColumns fills the target table by reference, leaving siblings untouched', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });
-    const app = createApp(e);
-    app.renderApp();
-    const tbl = { name: 't', columns: null };
-    await app.actions.loadColumns('d', 't', tbl);
-    expect(tbl.columns).toEqual([{ name: 'id', type: 'UInt64', comment: '' }]);
+    const app = createApp(e); // no renderApp → loadSchema can't clobber our seeded schema
+    // Two dbs / two tables so the immutable replace exercises both ternary arms
+    // (non-target db kept, non-target table kept).
+    app.state.schema.value = [
+      { db: 'other', tables: [{ name: 'x', columns: null }] },
+      { db: 'd', tables: [{ name: 's', columns: null }, { name: 't', columns: null }] },
+    ];
+    await app.actions.loadColumns('d', 't');
+    expect(app.state.schema.value[1].tables[1].columns).toEqual([{ name: 'id', type: 'UInt64', comment: '' }]);
+    expect(app.state.schema.value[0].tables[0].columns).toBe(null); // other db untouched
+    expect(app.state.schema.value[1].tables[0].columns).toBe(null); // sibling table untouched
   });
   it('loadColumns falls back to [] on error', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ ok: false, status: 500, text: 'x' })]]) });
     const app = createApp(e);
-    app.renderApp();
-    const tbl = { name: 't', columns: null };
-    await app.actions.loadColumns('d', 't', tbl);
-    expect(tbl.columns).toEqual([]);
+    app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: null }] }];
+    await app.actions.loadColumns('d', 't');
+    expect(app.state.schema.value[0].tables[0].columns).toEqual([]);
   });
 });
 
@@ -1053,7 +1058,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     await new Promise((r) => setTimeout(r));
-    expect(app.state.schemaError).toBe('rawfail');
+    expect(app.state.schemaError.value).toBe('rawfail');
   });
 
   it('run uses the performance.now fallback when env.now is absent', async () => {
@@ -1214,7 +1219,7 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     app.updateBanner();
     expect(app.dom.banner.style.display).toBe('none'); // no error → hidden
-    app.state.schemaError = 'Token authentication is not configured';
+    app.state.schemaError.value = 'Token authentication is not configured';
     app.updateBanner();
     expect(app.dom.banner.style.display).toBe('');
     expect(app.dom.banner.textContent).toContain('Token authentication is not configured');

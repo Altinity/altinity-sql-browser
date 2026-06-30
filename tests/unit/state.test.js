@@ -33,7 +33,11 @@ describe('createState', () => {
     expect(s.sideSplitPct).toBe(58);
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
-    expect(s.expandedTables).toBeInstanceOf(Set);
+    expect(s.schema.value).toBe(null);
+    expect(s.schemaError.value).toBe(null);
+    expect(s.schemaFilter.value).toBe('');
+    expect(s.expanded.value).toBeInstanceOf(Set);
+    expect(s.expanded.value.size).toBe(0);
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
   });

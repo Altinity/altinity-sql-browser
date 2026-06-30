@@ -11,6 +11,9 @@ const shiftClick = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: t
 // re-renders between clicks). Clicking the same captured node twice works even
 // though the first click detaches it: the listener + per-app state still fire.
 const dblclick = (el) => { click(el); click(el); };
+// Expand state is a Set-valued signal keyed 'db:'+name / 'tb:'+db.table; seed it
+// additively so a table expand keeps its parent db open.
+const setExpanded = (app, ...keys) => { app.state.expanded.value = new Set([...app.state.expanded.value, ...keys]); };
 // Fire a dragstart with a stub dataTransfer and return all setData payloads by MIME.
 const dragstart = (el) => {
   const e = new Event('dragstart', { bubbles: true });
@@ -23,17 +26,17 @@ const dragstart = (el) => {
 
 function withSchema() {
   const app = makeApp();
-  app.state.schema = [
+  app.state.schema.value = [
     {
       db: 'db1',
-      expanded: true,
       tables: [
         { name: 'orders', total_rows: '1000', total_bytes: '2000', comment: 'the orders', columns: null },
         { name: 'events', total_rows: '5', total_bytes: '9', comment: '', columns: null },
       ],
     },
-    { db: 'db2', expanded: false, tables: [{ name: 't', total_rows: '1', total_bytes: '1', comment: '', columns: null }] },
+    { db: 'db2', tables: [{ name: 't', total_rows: '1', total_bytes: '1', comment: '', columns: null }] },
   ];
+  app.state.expanded.value = new Set(['db:db1']); // db1 open, db2 collapsed
   return app;
 }
 
@@ -45,7 +48,7 @@ describe('renderSchema states', () => {
   });
   it('shows the schema error', () => {
     const app = makeApp();
-    app.state.schemaError = 'bad';
+    app.state.schemaError.value = 'bad';
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('Schema load failed: bad');
   });
@@ -56,7 +59,7 @@ describe('renderSchema states', () => {
   });
   it('shows "No databases." for an empty schema', () => {
     const app = makeApp();
-    app.state.schema = [];
+    app.state.schema.value = [];
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('No databases.');
   });
@@ -77,7 +80,7 @@ describe('renderSchema tree', () => {
     renderSchema(app);
     const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
     click(db2Row);
-    expect(app.state.schema[1].expanded).toBe(true);
+    expect(app.state.expanded.value.has('db:db2')).toBe(true);
   });
   it('shift-clicking a db inserts its formatted DDL without expanding', () => {
     const app = withSchema();
@@ -85,7 +88,7 @@ describe('renderSchema tree', () => {
     const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
     shiftClick(db2Row);
     expect(app.actions.insertCreate).toHaveBeenCalledWith('DATABASE db2');
-    expect(app.state.schema[1].expanded).toBe(false);
+    expect(app.state.expanded.value.has('db:db2')).toBe(false);
   });
   it('double-clicking a db inserts its name', () => {
     const app = withSchema();
@@ -99,17 +102,17 @@ describe('renderSchema tree', () => {
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
     click(ordersRow);
-    expect(app.state.expandedTables.has('db1.orders')).toBe(true);
-    expect(app.actions.loadColumns).toHaveBeenCalledWith('db1', 'orders', expect.any(Object));
+    expect(app.state.expanded.value.has('tb:db1.orders')).toBe(true);
+    expect(app.actions.loadColumns).toHaveBeenCalledWith('db1', 'orders');
   });
   it('collapsing an already-loaded table just re-renders', () => {
     const app = withSchema();
-    app.state.schema[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
-    app.state.expandedTables.add('db1.orders');
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
     click(ordersRow); // collapse
-    expect(app.state.expandedTables.has('db1.orders')).toBe(false);
+    expect(app.state.expanded.value.has('tb:db1.orders')).toBe(false);
   });
   it('double-clicking a table replaces the editor with a SELECT *', () => {
     const app = withSchema();
@@ -124,23 +127,23 @@ describe('renderSchema tree', () => {
     const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
     shiftClick(eventsRow);
     expect(app.actions.insertCreate).toHaveBeenCalledWith('db1.events');
-    expect(app.state.expandedTables.has('db1.events')).toBe(false);
+    expect(app.state.expanded.value.has('tb:db1.events')).toBe(false);
     expect(app.actions.loadColumns).not.toHaveBeenCalled();
   });
   it('shows a loading row while columns load', () => {
     const app = withSchema();
-    app.state.schema[0].tables[0].columns = 'loading';
-    app.state.expandedTables.add('db1.orders');
+    app.state.schema.value[0].tables[0].columns = 'loading';
+    setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('loading columns…');
   });
   it('columns: a plain click inserts nothing, a quick repeat (double-click) inserts the name', () => {
     const app = withSchema();
-    app.state.schema[0].tables[0].columns = [
+    app.state.schema.value[0].tables[0].columns = [
       { name: 'id', type: 'UInt64', comment: 'pk' },     // comment → title branch
       { name: 'ts', type: 'DateTime', comment: '' },     // no comment → default title branch
     ];
-    app.state.expandedTables.add('db1.orders');
+    setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
@@ -151,8 +154,8 @@ describe('renderSchema tree', () => {
   });
   it('columns: shift-click inserts name::type', () => {
     const app = withSchema();
-    app.state.schema[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: 'pk' }];
-    app.state.expandedTables.add('db1.orders');
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: 'pk' }];
+    setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
@@ -167,7 +170,7 @@ describe('renderSchema tree', () => {
     click(db1Row); // single: collapses db1
     click(db2Row); // different row → single: expands db2 (not an insert)
     expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
-    expect(app.state.schema[1].expanded).toBe(true);
+    expect(app.state.expanded.value.has('db:db2')).toBe(true);
   });
   it('a slow second click on the same row is a single click, not a double (window expired)', () => {
     vi.useFakeTimers();
@@ -176,12 +179,12 @@ describe('renderSchema tree', () => {
       renderSchema(app);
       let db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
       click(db2Row); // expand db2
-      expect(app.state.schema[1].expanded).toBe(true);
+      expect(app.state.expanded.value.has('db:db2')).toBe(true);
       vi.advanceTimersByTime(400); // past DBLCLICK_MS (300ms)
       db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
       click(db2Row); // expired → single → collapses db2, not an insert
       expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
-      expect(app.state.schema[1].expanded).toBe(false);
+      expect(app.state.expanded.value.has('db:db2')).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -207,8 +210,8 @@ describe('renderSchema drag sources', () => {
   });
   it('dragging a column carries the bare column name', () => {
     const app = withSchema();
-    app.state.schema[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
-    app.state.expandedTables.add('db1.orders');
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'id');
@@ -222,10 +225,11 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
   const PARQUET = 'part-00000-70041866.snappy.parquet';
   function withParquet() {
     const app = makeApp();
-    app.state.schema = [{
-      db: 'target_all', expanded: true,
+    app.state.schema.value = [{
+      db: 'target_all',
       tables: [{ name: PARQUET, total_rows: '1', total_bytes: '1', comment: '', columns: null }],
     }];
+    app.state.expanded.value = new Set(['db:target_all']);
     return app;
   }
   const tbRow = (app) => rows(app).find((r) => r.querySelector('.label').textContent === PARQUET);
@@ -251,8 +255,8 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
   });
   it('a column with special chars is quoted on insert', () => {
     const app = withParquet();
-    app.state.schema[0].tables[0].columns = [{ name: 'odd col', type: 'String', comment: '' }];
-    app.state.expandedTables.add('target_all.' + PARQUET);
+    app.state.schema.value[0].tables[0].columns = [{ name: 'odd col', type: 'String', comment: '' }];
+    setExpanded(app, 'tb:target_all.' + PARQUET);
     renderSchema(app);
     const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
       .find((r) => r.querySelector('.label').textContent === 'odd col');
@@ -265,7 +269,7 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
 describe('renderSchema filter', () => {
   it('keeps matching tables and drops non-matching ones', () => {
     const app = withSchema();
-    app.state.schemaFilter = 'order';
+    app.state.schemaFilter.value = 'order';
     renderSchema(app);
     const labels = rows(app).map((r) => r.querySelector('.label').textContent);
     expect(labels).toContain('orders');
@@ -273,8 +277,8 @@ describe('renderSchema filter', () => {
   });
   it('reveals a table when one of its columns matches the filter', () => {
     const app = withSchema();
-    app.state.schema[0].tables[1].columns = [{ name: 'user_id', type: 'UInt64', comment: '' }];
-    app.state.schemaFilter = 'user_id';
+    app.state.schema.value[0].tables[1].columns = [{ name: 'user_id', type: 'UInt64', comment: '' }];
+    app.state.schemaFilter.value = 'user_id';
     renderSchema(app);
     expect(app.dom.schemaList.textContent).toContain('user_id');
   });
