@@ -49,9 +49,10 @@ export function createState(read = { loadJSON, loadStr }) {
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
-    // Reactive (signals): renderTabs + the editor/results/save-button repaint via
-    // an effect that reads these, so mutating them is all a caller does — no
-    // manual refresh() list to keep in sync. Read/write through `.value`.
+    // Reactive (signals): mutating these drives repaints via effects in
+    // createApp — no manual refresh() list to keep in sync. Read/write through
+    // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;
+    // the results pane + Run button react to resultView/running (below).
     tabs: signal([newTabObj('t1')]),
     activeTabId: signal('t1'),
     schema: null,
@@ -59,9 +60,11 @@ export function createState(read = { loadJSON, loadStr }) {
     schemaFilter: '',
     expandedTables: new Set(),
     serverVersion: null,
-    running: false,
+    // Run state (signals): `running` flips the Run button + results pane via
+    // effects; `resultView` is the active Table/JSON/Chart tab. Via `.value`.
+    running: signal(false),
     abortController: null,
-    resultView: 'table',
+    resultView: signal('table'),
     // `forceExplain` is set by the Explain button to put an ordinary query into
     // EXPLAIN-view mode; a normal Run clears it (session-only). The active view is
     // derived per-run from the typed statement / clicked tab, not stored here.
@@ -116,7 +119,7 @@ export function saveQuery(state, tab, name, description, save = saveJSON, now = 
   const chart = tabChart(tab);
   // Remember the current result view (Table/JSON/Chart) so a restore reopens the
   // same data representation; the transient raw view isn't persisted.
-  const view = SAVED_VIEWS.has(state.resultView) ? state.resultView : undefined;
+  const view = SAVED_VIEWS.has(state.resultView.value) ? state.resultView.value : undefined;
   let entry = savedForTab(state, tab);
   if (entry) {
     entry.name = nm;

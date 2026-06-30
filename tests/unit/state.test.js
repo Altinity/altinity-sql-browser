@@ -246,15 +246,15 @@ describe('saved queries', () => {
     const save = vi.fn();
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT 1';
-    s.resultView = 'chart';
+    s.resultView.value = 'chart';
     const e = saveQuery(s, tab, 'V', '', save, 100);
     expect(e.view).toBe('chart');
     // re-save under a different view → updates
-    s.resultView = 'json';
+    s.resultView.value = 'json';
     saveQuery(s, tab, 'V', '', save, 200);
     expect(s.savedQueries[0].view).toBe('json');
     // raw view (TSV/JSON output) is not a saved view → dropped
-    s.resultView = 'raw';
+    s.resultView.value = 'raw';
     saveQuery(s, tab, 'V', '', save, 300);
     expect(s.savedQueries[0].view).toBeUndefined();
   });

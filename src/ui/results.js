@@ -92,8 +92,8 @@ export function renderResults(app) {
   const inner = h('div', { class: 'res-body' });
   // While running, pin a streaming strip to the top of the body: a determinate
   // fill at read/total when known, else an indeterminate sweep.
-  if (app.state.running) inner.appendChild(streamStrip(r));
-  const streamingBlank = app.state.running && (!r || (r.rows.length === 0 && r.rawText == null));
+  if (app.state.running.value) inner.appendChild(streamStrip(r));
+  const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
     inner.appendChild(h('div', { class: 'placeholder starting' },
       h('span', { class: 'spin' }, Icon.spinner()),
@@ -116,9 +116,9 @@ export function renderResults(app) {
     inner.appendChild(h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText));
   } else if (r.rows.length === 0) {
     inner.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.')));
-  } else if (app.state.resultView === 'json') {
+  } else if (app.state.resultView.value === 'json') {
     inner.appendChild(renderJson(r));
-  } else if (app.state.resultView === 'chart') {
+  } else if (app.state.resultView.value === 'chart') {
     inner.appendChild(renderChart(app, r));
   } else {
     inner.appendChild(renderTable(app, r));
@@ -188,10 +188,10 @@ function buildToolbar(app, r) {
           { id: 'chart', label: 'Chart', icon: Icon.chart() },
         ];
     for (const v of views) {
-      const isActive = app.state.resultView === v.id || (isRaw && v.id === 'raw');
+      const isActive = app.state.resultView.value === v.id || (isRaw && v.id === 'raw');
       tabs.appendChild(h('button', {
         class: 'result-view-tab' + (isActive ? ' active' : ''),
-        onclick: () => { app.state.resultView = v.id; renderResults(app); },
+        onclick: () => { app.state.resultView.value = v.id; },
       }, v.icon, h('span', null, v.label)));
     }
   }
@@ -200,7 +200,7 @@ function buildToolbar(app, r) {
   // EXPLAIN views suppress the ms/rows/bytes stats — they're not meaningful for a
   // plan and the freed space lets the five tabs breathe.
   const showStats = !(r && r.explainView);
-  if (app.state.running) {
+  if (app.state.running.value) {
     // Live counters (accent, mono) + Cancel — replaces the static stats while
     // streaming. The ms element is updated in place by app.tickElapsed().
     if (showStats) {
@@ -432,7 +432,7 @@ export function renderChart(app, r) {
   // Gate on run state BEFORE deriving the config: while a query streams its
   // columns can be empty (pre-meta), and letting chartCfgFor see that empty
   // schema would clobber a restored saved/shared config with autoChart(null).
-  if (app.state.running) return chartEmpty(Icon.spinner(), 'Chart renders when the query completes.');
+  if (app.state.running.value) return chartEmpty(Icon.spinner(), 'Chart renders when the query completes.');
   const cfg = chartCfgFor(tab, r.columns);
   if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 

@@ -57,7 +57,7 @@ export function handleKeydown(e, app) {
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
   // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
-  if (e.key === 'Escape' && app.state.running) {
+  if (e.key === 'Escape' && app.state.running.value) {
     e.preventDefault();
     app.actions.cancel();
     return 'cancel';

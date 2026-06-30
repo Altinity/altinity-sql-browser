@@ -63,10 +63,10 @@ describe('handleKeydown', () => {
   });
   it('Escape cancels a running query, and is a no-op otherwise', () => {
     const app = makeApp();
-    app.state.running = false;
+    app.state.running.value = false;
     expect(handleKeydown(ev({ key: 'Escape' }), app)).toBeNull();
     expect(app.actions.cancel).not.toHaveBeenCalled();
-    app.state.running = true;
+    app.state.running.value = true;
     expect(handleKeydown(ev({ key: 'Escape' }), app)).toBe('cancel');
     expect(app.actions.cancel).toHaveBeenCalled();
   });

@@ -9,7 +9,13 @@ const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 function appWithResult(result, over = {}) {
   const app = makeApp();
   app.activeTab().result = result;
-  Object.assign(app.state, over);
+  // Signal-aware assign: resultView/running are signals — write through .value;
+  // plain fields are set directly.
+  for (const [k, v] of Object.entries(over)) {
+    const cur = app.state[k];
+    if (cur && typeof cur === 'object' && 'value' in cur) cur.value = v;
+    else app.state[k] = v;
+  }
   return app;
 }
 
@@ -116,7 +122,7 @@ describe('renderResults states', () => {
     renderResults(app);
     const jsonTab = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab')].find((b) => b.textContent.includes('JSON'));
     click(jsonTab);
-    expect(app.state.resultView).toBe('json');
+    expect(app.state.resultView.value).toBe('json');
   });
 });
 
