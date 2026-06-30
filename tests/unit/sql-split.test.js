@@ -71,6 +71,16 @@ describe('splitStatements', () => {
     expect(splitStatements('SELECT 1; /* trailing')).toEqual(['SELECT 1']);
   });
 
+  it('handles a realistically-commented script (-- , #, /* */ all supported)', () => {
+    const sql = '-- setup\nCREATE TABLE t (a Int8); /* seed */ INSERT INTO t VALUES (1); # check\nSELECT * FROM t -- trailing';
+    expect(splitStatements(sql)).toEqual([
+      '-- setup\nCREATE TABLE t (a Int8)',
+      '/* seed */ INSERT INTO t VALUES (1)',
+      '# check\nSELECT * FROM t -- trailing',
+    ]);
+    expect(isAutoRunnable(sql)).toBe(false); // CREATE/INSERT present → don't auto-run
+  });
+
   it('drops comment-only and whitespace-only fragments but keeps comments attached to code', () => {
     // The leading comment belongs to the statement that follows it (harmless to
     // send); the bare `;` and the trailing comment-only fragment are dropped.

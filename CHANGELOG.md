@@ -19,8 +19,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   still gets the full Table/Chart/EXPLAIN view. Row-returning statements show the
   first row inline (comma-separated) — click to open all rows (capped at 100) in a
   side pane; effectful statements show **OK**. Each grid row also shows that
-  statement's own execution time (the toolbar still shows the script total), and
-  the grid's columns are drag-resizable like the data table. Cancel aborts mid-script. Splitting
+  statement's own execution time (the toolbar still shows the script total). The
+  click-to-open row pane is the **same sortable + resizable grid** as the main
+  results table (one shared component). Statements run inside a **per-tab
+  ClickHouse HTTP session** (`session_id` + `session_timeout=600`), so a script's
+  temporary tables / `SET`s persist across its separate per-statement requests.
+  Cancel aborts mid-script. Splitting
   is purely lexical (`src/core/sql-split.js`), skipping `;` inside string/identifier
   literals and `--` / `#` / `/* */` comments. Known limitation: an `INSERT … FORMAT
   …` with inline data containing `;` mis-splits — run those on their own.
@@ -53,6 +57,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   loads rather than in-place mutation. This **completes the migration**. (#88, #91)
 
 ### Fixed
+- Result-table **column resize** now uses a splitter model: dragging a column's
+  right edge trades width with its right neighbor (the table's total width and the
+  other columns stay put), instead of growing the whole table and shifting later
+  columns sideways. Dragging the last column still widens the table. Applies to the
+  data grid, the multiquery script grid, and the script-row pane (one shared grid).
 - The fullscreen schema / EXPLAIN graph panels were mis-sized on **Safari** (#70).
   They size off viewport units, and engines disagree on how `vw`/`vh` interact
   with `html{zoom}`: Chromium's ignore `zoom` (so `100vh` overshoots one screen by

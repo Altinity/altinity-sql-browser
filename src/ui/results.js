@@ -38,16 +38,16 @@ const IDX_KEY = (k) => (k === 0 ? 'idx' : k - 1);
 const PLAIN_KEY = (k) => k;
 
 /**
- * Pin every column of `table` to the px widths in `r.colWidths` (keyed via
+ * Pin every column of `table` to the px widths in `widths` (keyed via
  * `keyOf(cellIndex)`) and switch it to fixed layout so columns honor those widths
  * exactly (and the wrap scrolls). Shared by the data grid and the script grid.
  */
-function applyFixedWidths(table, r, keyOf) {
+function applyFixedWidths(table, widths, keyOf) {
   table.classList.add('fixed');
   const cells = table.querySelectorAll('thead th');
   let total = 0;
   for (let k = 0; k < cells.length; k++) {
-    const w = r.colWidths[keyOf(k)];
+    const w = widths[keyOf(k)];
     cells[k].style.width = w + 'px';
     total += w;
   }
@@ -55,28 +55,45 @@ function applyFixedWidths(table, r, keyOf) {
   table.style.minWidth = '0';
 }
 
-/** Begin dragging the right edge of header `th` to resize its column. `keyOf`
- *  maps a cell index to its `r.colWidths` key (see IDX_KEY / PLAIN_KEY). */
-function startColumnResize(r, th, ev, keyOf) {
+/**
+ * Begin dragging the right edge of header `th` to resize its column. `keyOf` maps
+ * a cell index to its `r.colWidths` key (see IDX_KEY / PLAIN_KEY).
+ *
+ * Splitter model: the drag moves the *border* between this column and its right
+ * neighbor — the column grows and the neighbor shrinks by the same amount, so the
+ * table's total width (and every other column) stays put. Dragging the last
+ * column's edge has no neighbor to take from, so it grows the table (scroll).
+ */
+function startColumnResize(widths, th, ev, keyOf) {
   ev.preventDefault();
   ev.stopPropagation(); // don't let the handle's mousedown reach the sort header
   const table = th.closest('table');
   const cells = table.querySelectorAll('thead th');
-  const colIndex = keyOf([].indexOf.call(cells, th));
+  const cellIdx = [].indexOf.call(cells, th);
+  const colIndex = keyOf(cellIdx);
+  const nextKey = cellIdx + 1 < cells.length ? keyOf(cellIdx + 1) : null;
   // First resize: freeze every column at its current rendered width, then fix.
-  if (!Object.keys(r.colWidths).length) {
+  if (!Object.keys(widths).length) {
     for (let k = 0; k < cells.length; k++) {
-      r.colWidths[keyOf(k)] = cells[k].offsetWidth;
+      widths[keyOf(k)] = cells[k].offsetWidth;
     }
   }
-  applyFixedWidths(table, r, keyOf);
+  applyFixedWidths(table, widths, keyOf);
   const win = th.ownerDocument.defaultView;
   const scale = zoomScale(th);
   const startX = ev.clientX;
-  const startW = r.colWidths[colIndex];
+  const startW = widths[colIndex];
+  const pairW = nextKey != null ? startW + widths[nextKey] : 0; // combined width of the pair
   const onMove = (m) => {
-    r.colWidths[colIndex] = colResizeWidth(startW, m.clientX - startX, scale);
-    applyFixedWidths(table, r, keyOf);
+    let w = colResizeWidth(startW, m.clientX - startX, scale);
+    if (nextKey != null) {
+      // Keep the pair's combined width constant; both stay ≥ MIN_COL (a pair
+      // narrower than 2·MIN_COL can't satisfy both — the floor wins over total).
+      w = Math.max(MIN_COL, Math.min(w, pairW - MIN_COL));
+      widths[nextKey] = Math.max(MIN_COL, pairW - w);
+    }
+    widths[colIndex] = w;
+    applyFixedWidths(table, widths, keyOf);
   };
   const onUp = () => {
     win.removeEventListener('mousemove', onMove);
@@ -184,14 +201,14 @@ function renderScriptGrid(app, r) {
       h('span', {
         class: 'col-resize-h',
         title: 'Drag to resize column',
-        onmousedown: (e) => startColumnResize(r, th, e, PLAIN_KEY),
+        onmousedown: (e) => startColumnResize(r.colWidths, th, e, PLAIN_KEY),
         onclick: (e) => e.stopPropagation(),
       }));
     trh.appendChild(th);
   }
   thead.appendChild(trh);
   table.appendChild(thead);
-  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r, PLAIN_KEY);
+  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r.colWidths, PLAIN_KEY);
   const tbody = document.createElement('tbody');
   r.script.forEach((e) => {
     const tr = document.createElement('tr');
@@ -225,14 +242,16 @@ function scriptOutcomeCell(app, e) {
 }
 
 /**
- * Open a right-side pane with the full rows of one script SELECT, as a static
- * table. Reuses the cell-detail drawer scaffold (.cd-*); a shared Drawer
- * primitive is deferred to #60. Escape / backdrop / ✕ closes. Exported for tests.
+ * Open a right-side pane with the full rows of one script SELECT, using the same
+ * sortable + resizable grid as the main results table (renderGrid). Sort state and
+ * column widths are local to this pane; clicking a cell opens its value (the same
+ * cell-detail drawer, stacked). Reuses the .cd-* drawer scaffold (a shared Drawer
+ * primitive is deferred to #60). Escape / backdrop / ✕ closes. Exported for tests.
  */
 export function openRowsViewer(app, entry) {
   const doc = app.document || document;
   let backdrop;
-  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  const onKey = (ev) => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
   function close() {
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
@@ -243,33 +262,24 @@ export function openRowsViewer(app, entry) {
       h('span', { class: 'cd-name' }, 'Result rows'),
       h('span', { class: 'cd-type' }, n + (entry.truncated ? '+' : '') + ' row' + (n === 1 ? '' : 's'))),
     h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
-  const body = h('div', { class: 'cd-body' }, scriptRowsTable(entry.columns || [], entry.rows));
+  // Local sort + width state (persist for the lifetime of this open via the entry).
+  const sort = entry.viewerSort || (entry.viewerSort = { col: null, dir: 'asc' });
+  const widths = entry.viewerWidths || (entry.viewerWidths = {});
+  const body = h('div', { class: 'cd-body' });
+  const paint = () => body.replaceChildren(renderGrid({
+    columns: entry.columns || [],
+    rows: entry.rows,
+    sort,
+    onSort: (col, dir) => { sort.col = col; sort.dir = dir; paint(); },
+    widths,
+    onCell: (name, type, value) => openCellDetail(app, name, type, value),
+  }));
+  paint();
   const panel = h('div', { class: 'cd-panel', onclick: (ev) => ev.stopPropagation() }, head, body);
   backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
   return backdrop;
-}
-
-// A plain (no sort / resize) table of a script SELECT's rows for the side pane.
-function scriptRowsTable(columns, rows) {
-  const table = document.createElement('table');
-  table.className = 'res-table';
-  const trh = document.createElement('tr');
-  trh.appendChild(h('th', { class: 'idx' }, '#'));
-  columns.forEach((c) => trh.appendChild(h('th', { title: c.type || '' }, c.name)));
-  const thead = document.createElement('thead');
-  thead.appendChild(trh);
-  table.appendChild(thead);
-  const tbody = document.createElement('tbody');
-  rows.forEach((row, ri) => {
-    const tr = document.createElement('tr');
-    tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
-    row.forEach((v) => tr.appendChild(h('td', { class: 'cell' }, h('div', { class: 'cell-val' }, v == null ? '' : String(v)))));
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  return h('div', { class: 'res-table-wrap' }, table);
 }
 
 function buildToolbar(app, r) {
@@ -401,25 +411,28 @@ export function renderJson(r) {
   return h('div', { class: 'json-view', tabindex: '0' }, JSON.stringify(arr, null, 2));
 }
 
-export function renderTable(app, r) {
-  const { col, dir } = app.state.resultSort;
-  const rows = sortRows(r.rows, col, dir);
-  r.colWidths = r.colWidths || {}; // persists across re-renders (sort/streaming)
+/**
+ * Shared sortable + resizable data grid (the one table view, reused by the main
+ * results table and the script-row side pane). Caller supplies the data plus the
+ * state seams so the same DOM/interaction code drives both:
+ *   { columns, rows, sort:{col,dir}, onSort(col,dir), widths, onCell(name,type,value) }
+ * `widths` is a colWidths object mutated in place (drag-resize); `onSort` re-renders
+ * for the caller (global results effect, or the drawer's local repaint).
+ */
+export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCell }) {
+  const { col, dir } = sort;
+  const rows = sortRows(rawRows, col, dir);
   const wrap = h('div', { class: 'res-table-wrap' });
   const table = document.createElement('table');
   table.className = 'res-table';
 
   const trh = document.createElement('tr');
   trh.appendChild(h('th', { style: { textAlign: 'center', color: 'var(--fg-faint)', minWidth: '36px' } }, '#'));
-  r.columns.forEach((c, i) => {
+  columns.forEach((c, i) => {
     const isSort = col === i;
     const th = h('th', {
       title: c.type || '', // type exposed on hover, not shown inline
-      onclick: () => {
-        if (isSort) app.state.resultSort.dir = dir === 'asc' ? 'desc' : 'asc';
-        else { app.state.resultSort.col = i; app.state.resultSort.dir = 'asc'; }
-        renderResults(app);
-      },
+      onclick: () => onSort(i, isSort && dir === 'asc' ? 'desc' : 'asc'),
     }, h('div', { class: 'h-inner' },
       h('span', { class: 'h-name' }, c.name),
       h('span', { style: { flex: '1' } }),
@@ -428,7 +441,7 @@ export function renderTable(app, r) {
       h('span', {
         class: 'col-resize-h',
         title: 'Drag to resize column',
-        onmousedown: (e) => startColumnResize(r, th, e, IDX_KEY),
+        onmousedown: (e) => startColumnResize(widths, th, e, IDX_KEY),
         onclick: (e) => e.stopPropagation(),
       }));
     trh.appendChild(th);
@@ -436,21 +449,21 @@ export function renderTable(app, r) {
   const thead = document.createElement('thead');
   thead.appendChild(trh);
   table.appendChild(thead);
-  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r, IDX_KEY);
+  if (Object.keys(widths).length) applyFixedWidths(table, widths, IDX_KEY);
 
   const tbody = document.createElement('tbody');
   rows.slice(0, VIS_CAP).forEach((row, ri) => {
     const tr = document.createElement('tr');
     tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
     row.forEach((v, ci) => {
-      const isNum = isNumericType(r.columns[ci].type);
+      const isNum = isNumericType(columns[ci].type);
       const text = v == null ? '' : String(v);
       // Truncate in-cell (CSS max-width + ellipsis); click opens the full value
       // in a side drawer so one fat column (e.g. HTML blobs) can't dominate.
       tr.appendChild(h('td', {
         class: 'cell' + (isNum ? ' num' : ''),
         title: text.length > 100 ? text.slice(0, 100) + '…' : text,
-        onclick: () => openCellDetail(app, r.columns[ci].name, r.columns[ci].type, v),
+        onclick: () => onCell(columns[ci].name, columns[ci].type, v),
       }, h('div', { class: 'cell-val' }, text)));
     });
     tbody.appendChild(tr);
@@ -465,16 +478,37 @@ export function renderTable(app, r) {
   return wrap;
 }
 
+// The main results table: renderGrid wired to the global sort state + result.
+export function renderTable(app, r) {
+  r.colWidths = r.colWidths || {}; // persists across re-renders (sort/streaming)
+  return renderGrid({
+    columns: r.columns,
+    rows: r.rows,
+    sort: app.state.resultSort,
+    onSort: (col, dir) => { app.state.resultSort = { col, dir }; renderResults(app); },
+    widths: r.colWidths,
+    onCell: (name, type, value) => openCellDetail(app, name, type, value),
+  });
+}
+
 /**
  * Open a right-side drawer with one cell's full value: pretty-printed (JSON is
  * reindented), and for HTML a Rendered (sandboxed iframe) ↔ Source toggle.
  * Escape or a backdrop/✕ click closes it. Exported for tests.
  */
+// Only the topmost drawer responds to Escape, so dismissing a stacked cell drawer
+// returns to the rows pane underneath instead of closing both at once. (The
+// current backdrop is always in the DOM when its handler fires.)
+function isTopDrawer(doc, el) {
+  const all = doc.querySelectorAll('.cd-backdrop');
+  return all[all.length - 1] === el;
+}
+
 export function openCellDetail(app, name, type, value) {
   const doc = app.document || document;
   const text = value == null ? '' : String(value);
   let backdrop;
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const onKey = (e) => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
   function close() {
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
