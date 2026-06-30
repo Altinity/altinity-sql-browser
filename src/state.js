@@ -25,7 +25,19 @@ export const KEYS = {
   saved: 'asb:saved',
   history: 'asb:history',
   libraryName: 'asb:libraryName',
+  resultRowLimit: 'asb:resultRowLimit',
 };
+
+/** Row-limit options for the result cap selector (shared between state + UI). */
+export const RESULT_ROW_LIMIT_OPTIONS = [100, 500, 1000, 5000, 10000];
+
+/** Default row cap when none is persisted (or a stored value is unrecognized). */
+export const DEFAULT_RESULT_ROW_LIMIT = 500;
+
+/** Snap a row-limit to a known option, falling back to the default. Pure. */
+export function normalizeRowLimit(n) {
+  return RESULT_ROW_LIMIT_OPTIONS.includes(n) ? n : DEFAULT_RESULT_ROW_LIMIT;
+}
 
 /** Default name for a fresh / unnamed saved-query library. */
 export const DEFAULT_LIBRARY_NAME = 'SQL Library';
@@ -46,6 +58,11 @@ export function createState(read = { loadJSON, loadStr }) {
     nextTabId: 2,
     theme: read.loadStr(KEYS.theme, 'light'),
     density: 'comfortable',
+    // Global cap on how many rows a normal SELECT fetches (server-side
+    // max_result_rows + a client-side guard; see runQuery / applyStreamLine).
+    // One persisted preference, default 500; a non-option stored value snaps
+    // back to the default so the selector always reflects a real choice.
+    resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),

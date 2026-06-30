@@ -10,6 +10,12 @@ describe('newResult', () => {
     expect(r).toMatchObject({ columns: [], rows: [], rawText: null, rawFormat: 'TSV', error: null, pct: 0 });
     expect(r.progress).toEqual({ rows: 0, bytes: 0, elapsed_ns: 0 });
   });
+  it('defaults to an uncapped row limit', () => {
+    expect(newResult('Table')).toMatchObject({ rowLimit: 0, capped: false });
+  });
+  it('carries the row limit when given', () => {
+    expect(newResult('Table', 500)).toMatchObject({ rowLimit: 500, capped: false });
+  });
 });
 
 describe('applyStreamLine', () => {
@@ -42,6 +48,17 @@ describe('applyStreamLine', () => {
     applyStreamLine({ progress: {} }, r);
     expect(r.progress).toEqual({ rows: 0, bytes: 0, elapsed_ns: 0, total_rows: 0 });
     expect(r.pct).toBe(0);
+  });
+  it('stops pushing rows at the cap and flags capped (trims block-boundary overage)', () => {
+    const r = newResult('Table', 2);
+    applyStreamLine({ meta: [{ name: 'a', type: 'UInt8' }] }, r);
+    applyStreamLine({ row: { a: '1' } }, r);
+    applyStreamLine({ row: { a: '2' } }, r);
+    expect(r.capped).toBe(false);
+    applyStreamLine({ row: { a: '3' } }, r); // overage past the cap → dropped + flagged
+    applyStreamLine({ row: { a: '4' } }, r);
+    expect(r.rows).toEqual([['1'], ['2']]);
+    expect(r.capped).toBe(true);
   });
   it('captures exceptions', () => {
     const r = newResult('Table');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, installChartZoomFix } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, installChartZoomFix, visCap } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey } from '../../src/core/chart-data.js';
@@ -187,6 +187,54 @@ describe('renderTable', () => {
     r.rows = Array.from({ length: 5001 }, (_, i) => [String(i)]);
     const el = renderTable(makeApp(), r);
     expect(el.textContent).toContain('more rows truncated');
+  });
+});
+
+describe('result row cap', () => {
+  it('visCap follows the result row limit, else the 5000 fallback', () => {
+    expect(visCap({ rowLimit: 10000 })).toBe(10000);
+    expect(visCap({ rowLimit: 0 })).toBe(5000);
+  });
+  it('renders the row-limit selector reflecting the current limit; changing it re-runs', () => {
+    const app = appWithResult(tableResult(), { resultRowLimit: 1000 });
+    renderResults(app);
+    const sel = app.dom.resultsRegion.querySelector('.row-limit-select');
+    expect(sel).not.toBeNull();
+    expect(sel.value).toBe('1000');
+    expect([...sel.options].map((o) => o.value)).toEqual(['100', '500', '1000', '5000', '10000']);
+    sel.value = '5000';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.actions.setResultRowLimit).toHaveBeenCalledWith(5000);
+  });
+  it('hides the row-limit selector for EXPLAIN views', () => {
+    const r = newResult('Table');
+    r.explainView = 'explain';
+    r.rawText = 'plan';
+    const app = appWithResult(r);
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.row-limit-select')).toBeNull();
+  });
+  it('shows a "first N (capped)" badge when the result is capped, none otherwise', () => {
+    const r = tableResult();
+    r.rowLimit = 500;
+    r.capped = true;
+    const app = appWithResult(r);
+    renderResults(app);
+    const badge = app.dom.resultsRegion.querySelector('.capped-badge');
+    expect(badge.textContent).toBe('first 500 (capped)');
+    // uncapped result → no badge
+    renderResults(appWithResult(tableResult()));
+    const app2 = appWithResult(tableResult());
+    renderResults(app2);
+    expect(app2.dom.resultsRegion.querySelector('.capped-badge')).toBeNull();
+  });
+  it('renders rows up to the result row limit (display cap follows it)', () => {
+    const r = newResult('Table', 10000);
+    r.columns = [{ name: 'n', type: 'UInt64' }];
+    r.rows = Array.from({ length: 6000 }, (_, i) => [String(i)]);
+    const el = renderTable(makeApp(), r);
+    expect(el.querySelectorAll('tbody tr')).toHaveLength(6000); // 6000 < 10000 → all shown
+    expect(el.textContent).not.toContain('more rows truncated');
   });
 });
 

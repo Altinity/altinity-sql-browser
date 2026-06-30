@@ -73,6 +73,7 @@ export function makeApp(over = {}) {
       formatQuery: vi.fn(),
       explainQuery: vi.fn(),
       setExplainView: vi.fn(),
+      setResultRowLimit: vi.fn(),
       showSchemaGraph: vi.fn(),
       expandSchemaGraph: vi.fn(),
       openNodeDetail: vi.fn(),
