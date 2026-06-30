@@ -15,6 +15,12 @@
   <div id="host"></div>
   <!-- Mount the real editor module with a minimal stub controller. No bundling:
        the browser resolves the /src ESM graph directly. -->
+  <!-- Resolve the bare `@preact/signals-core` specifier that src/state.js imports.
+       esbuild inlines it for the shipped artifact; raw ESM in the browser needs
+       this map (the e2e server serves the repo root, so /node_modules is live). -->
+  <script type="importmap">
+    { "imports": { "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs" } }
+  </script>
   <script type="module">
     import { mountEditor, insertAtCursor, replaceEditor } from '/src/ui/editor.js';
     import { createState } from '/src/state.js';
