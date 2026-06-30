@@ -4,6 +4,7 @@
 
 import { h, zoomScale } from './dom.js';
 import { Icon } from './icons.js';
+import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
@@ -139,9 +140,7 @@ export function renderResults(app) {
   }
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
-    inner.appendChild(h('div', { class: 'placeholder starting' },
-      h('span', { class: 'spin' }, Icon.spinner()),
-      h('div', null, 'Starting query…')));
+    inner.appendChild(loadingPlaceholder('Starting query…'));
   } else if (!r) {
     inner.appendChild(h('div', { class: 'empty-results' },
       h('div', { class: 'chip' }, Icon.play()),
@@ -150,9 +149,7 @@ export function renderResults(app) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r.schemaGraph) {
     inner.appendChild(r.schemaGraph.loading
-      ? h('div', { class: 'placeholder starting' },
-        h('span', { class: 'spin' }, Icon.spinner()),
-        h('div', null, 'Loading data flow…'))
+      ? loadingPlaceholder('Loading data flow…')
       : renderSchemaGraph(app, r));
   } else if (r.explainView) {
     inner.appendChild(renderExplainView(app, r));

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -198,6 +198,23 @@ describe('shortVersion', () => {
     expect(shortVersion('26.3')).toBe('26.3');
     expect(shortVersion('')).toBe('');
     expect(shortVersion(null)).toBe('');
+  });
+});
+
+describe('supportsExplainPretty', () => {
+  it('is true at and above 26.3', () => {
+    expect(supportsExplainPretty('26.3.1')).toBe(true);
+    expect(supportsExplainPretty('26.3')).toBe(true);
+    expect(supportsExplainPretty('26.4.0')).toBe(true);
+    expect(supportsExplainPretty('27.0.1')).toBe(true);
+  });
+  it('is false below 26.3, and for malformed/empty input', () => {
+    expect(supportsExplainPretty('26.2.9')).toBe(false);
+    expect(supportsExplainPretty('25.9')).toBe(false);
+    expect(supportsExplainPretty('')).toBe(false);
+    expect(supportsExplainPretty(null)).toBe(false);
+    expect(supportsExplainPretty(undefined)).toBe(false);
+    expect(supportsExplainPretty('not-a-version')).toBe(false);
   });
 });
 

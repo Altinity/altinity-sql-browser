@@ -75,6 +75,23 @@ describe('renderSchema tree', () => {
     expect(labels).toContain('db2');
     expect(labels).not.toContain('t'); // db2 collapsed
   });
+  it('shows the db comment as hover text when present, else the default + drag hint', () => {
+    const app = withSchema();
+    app.state.schema.value[1].comment = 'second database';
+    renderSchema(app);
+    const db1Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
+    const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+    expect(db1Row.title).toBe('Click to expand · double-click to insert · shift-click for SHOW CREATE · drag to Data for Schema');
+    expect(db2Row.title).toBe('second database');
+  });
+  it('appends a drag hint to the no-comment table hover text', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    expect(ordersRow.title).toBe('the orders · 1.0K rows'); // has a comment, unchanged
+    expect(eventsRow.title).toBe('Click to expand · double-click for SELECT * · shift-click for SHOW CREATE · drag to insert name');
+  });
   it('clicking a db toggles expansion', () => {
     const app = withSchema();
     renderSchema(app);

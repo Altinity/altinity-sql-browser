@@ -167,6 +167,18 @@ export function shortVersion(v) {
 }
 
 /**
+ * True when `v` (a ClickHouse version string) is >= 26.3, the release that
+ * added EXPLAIN's `pretty`/`compact` settings. Malformed/empty input → false.
+ */
+export function supportsExplainPretty(v) {
+  const m = /^(\d+)\.(\d+)/.exec(String(v || ''));
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  return major > 26 || (major === 26 && minor >= 3);
+}
+
+/**
  * Short display name for the header user control: the local-part of an email
  * (before '@'). Falls back to the whole string when there's no '@', and '' for
  * empty/nullish input.

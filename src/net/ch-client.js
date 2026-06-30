@@ -108,12 +108,12 @@ export async function loadServerVersion(ctx) {
  * dashboards/diagnostics); the redundant INFORMATION_SCHEMA views stay filtered.
  * Databases are enumerated from `system.databases` (not derived from
  * `system.tables`) so a freshly created, still-empty database shows up too.
- * Returns [{ db, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
+ * Returns [{ db, comment, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
 export async function loadSchema(ctx) {
   const [dbJson, tblJson] = await Promise.all([
     queryJson(ctx,
-      "SELECT name FROM system.databases\n" +
+      "SELECT name, comment FROM system.databases\n" +
       "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
       'ORDER BY name\n' +
       'FORMAT JSON'),
@@ -122,14 +122,14 @@ export async function loadSchema(ctx) {
       'toUInt64(total_bytes) AS total_bytes, comment\n' +
       'FROM system.tables\n' +
       "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
-      'ORDER BY database, name\n' +
+      "ORDER BY database, startsWith(name, '_'), name\n" +
       'FORMAT JSON'),
   ]);
   const byDb = new Map();
-  for (const r of dbJson.data || []) byDb.set(r.name, []);
+  for (const r of dbJson.data || []) byDb.set(r.name, { comment: r.comment || '', tables: [] });
   for (const r of tblJson.data || []) {
-    if (!byDb.has(r.database)) byDb.set(r.database, []);
-    byDb.get(r.database).push({
+    if (!byDb.has(r.database)) byDb.set(r.database, { comment: '', tables: [] });
+    byDb.get(r.database).tables.push({
       name: r.name,
       total_rows: r.total_rows,
       total_bytes: r.total_bytes,
@@ -137,7 +137,7 @@ export async function loadSchema(ctx) {
       columns: null,
     });
   }
-  return [...byDb.entries()].map(([db, tables]) => ({ db, expanded: false, tables }));
+  return [...byDb.entries()].map(([db, v]) => ({ db, comment: v.comment, expanded: false, tables: v.tables }));
 }
 
 /**
@@ -156,7 +156,7 @@ export async function loadSchemaLineage(ctx, focus) {
     // Card metadata (ignored by the inline graph; used by the rich fullscreen cards).
     + 'toUInt64(ifNull(total_rows, 0)) AS total_rows, toUInt64(ifNull(total_bytes, 0)) AS total_bytes, '
     + 'partition_key, sorting_key, primary_key, sampling_key';
-  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY name`);
+  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY startsWith(name, '_'), name`);
   const tables = tablesJson.data || [];
   // Best-effort: a denied/missing system.dictionaries (low-priv users lack
   // SELECT on it) must degrade to no dictionary edges, never abort the graph.
