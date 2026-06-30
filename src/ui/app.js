@@ -433,6 +433,21 @@ export function createApp(env = {}) {
   }
   app.tickElapsed = tickElapsed;
 
+  // A ClickHouse HTTP session ties a tab's requests together so session state —
+  // temporary tables, SET settings — survives across the separate HTTP requests
+  // of a multiquery script (and across successive runs in the tab). ClickHouse's
+  // HTTP interface runs one statement per request and is otherwise stateless, so
+  // without this a `CREATE TEMPORARY TABLE …; INSERT …; SELECT …` script can't
+  // see its own temp table. Each tab gets its own id (lazily) so tabs don't share
+  // state and never collide on the per-session lock (only one query runs at a
+  // time, guarded by `running`). 600s idle timeout (default is 60s). Schema /
+  // reference loads deliberately run session-less — they fire in parallel and
+  // would otherwise deadlock on the lock.
+  function sessionParams(tab) {
+    tab.chSession = tab.chSession || (cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'sess-' + now());
+    return { session_id: tab.chSession, session_timeout: 600 };
+  }
+
   async function run(opts) {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
@@ -502,6 +517,7 @@ export function createApp(env = {}) {
         format: fmt,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
+        params: sessionParams(tab),
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -566,9 +582,13 @@ export function createApp(env = {}) {
             format: rowReturning ? 'JSONCompact' : 'TSV',
             queryId: app.state.runQueryId,
             signal: app.state.abortController.signal,
-            // Over-fetch by one past the display cap so a truncated result is
-            // detectable (at exactly the cap the client can't tell it was cut).
-            params: rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : undefined,
+            // Shared session across the script's statements (temp tables / SET
+            // persist); over-fetch SELECTs by one past the display cap so a
+            // truncated result is detectable (at exactly the cap it isn't).
+            params: {
+              ...sessionParams(tab),
+              ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}),
+            },
           });
         } catch (e) {
           if (e.name === 'AbortError') { aborted = true; break; }

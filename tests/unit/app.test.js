@@ -311,6 +311,9 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]);
     expect(app.state.history.length).toBe(1);
+    // the query runs inside a per-tab ClickHouse session (600s timeout)
+    const runUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    expect(runUrl).toMatch(/session_timeout=600/);
   });
   it('keeps the current result view on a plain re-run, and restores a remembered view when opened (#34)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
@@ -512,8 +515,14 @@ describe('query run', () => {
     expect(app.state.history[0].sql).toBe(SCRIPT);
     // SELECT statements are sent with the JSONCompact + row-cap params
     // (over-fetched by one past the display cap to detect truncation).
-    const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /max_result_rows=101/.test(u));
+    const urls = app.chCtx.fetch.mock.calls.map((c) => c[0]);
+    const selUrl = urls.find((u) => /max_result_rows=101/.test(u));
     expect(selUrl).toMatch(/result_overflow_mode=break/);
+    // every statement shares one ClickHouse session (so temp tables / SET persist)
+    const sids = urls.filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)[1]);
+    expect(sids).toHaveLength(3);
+    expect(new Set(sids).size).toBe(1);
+    expect(urls.some((u) => /session_timeout=600/.test(u))).toBe(true);
   });
 
   it('flags a SELECT as truncated when more than the cap rows come back', async () => {
