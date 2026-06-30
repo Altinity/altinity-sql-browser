@@ -34,6 +34,20 @@ both bundled — see hard rule 4). Quality is held by tests.
    100%-covered) and make the library call an **injected seam** (`app.Chart` /
    `app.Dagre`, like the fetch/crypto seams) so the DOM wrapper stays fully tested
    rather than dropping below the coverage gate.
+5. **No UI framework; signals for state, imperative adapters for islands.** State
+   reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),
+   migrated slice-by-slice (ADR-0001). **No React/Preact/Solid** — a Preact spike
+   on the schema panel (`spike/preact-schema`, ADR-0001 addendum) confirmed a
+   component model removes the in-place-mutation pain but buys a second render
+   paradigm the roadmap doesn't justify. The hard, third-party, or
+   high-frequency-pointer surfaces (the editor, the EXPLAIN/schema graphs,
+   Chart.js, result-grid resize/sort) stay **imperative behind an injected seam** —
+   signals coordinate state, they don't own every mousemove. CodeMirror 6 is the
+   pre-approved next runtime dep, behind an `EditorPort` seam, to land when
+   schema-aware autocomplete (#84) does (#21). When a *second* consumer of a
+   complex UI pattern appears, extract a shared primitive (e.g. `EditorPort`,
+   `GraphSurface`, a result-view registry, `Drawer`) rather than copy it — but
+   don't build a primitive speculatively for a single caller.
 
 ## How to add a result view / panel / feature
 
