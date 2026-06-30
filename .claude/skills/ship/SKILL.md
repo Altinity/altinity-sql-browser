@@ -36,7 +36,7 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 - `/code-review` on the working diff → apply real findings → re-run `npm test`.
 - `/security-review` as well if it touches auth / OAuth / `config.json`.
 - For the high-risk phases (CM6 #21, schema graph #66): `claude ultrareview` on the branch for an independent multi-agent pass; address what it surfaces.
-- UI-visible change → verify behaviour (the `verify` / `run` skill or agent Chrome), not just tests.
+- **UI-visible change → run `npm run test:e2e`** (Playwright, all three engines). If browsers aren't installed yet: `npx playwright install chromium firefox webkit`. Fix any failures before opening the PR. Then also verify behaviour with the `verify` / `run` skill or agent Chrome.
 
 ## 5 — Reconcile (Working-discipline, same change)
 - If this reshaped tracked work, reconcile it now: the **#68** checklist, the issue body's Goal/Acceptance, the relevant **ADR** addendum, and **CHANGELOG.md `[Unreleased]`**.
