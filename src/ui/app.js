@@ -9,7 +9,7 @@ import { Icon } from './icons.js';
 import {
   createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart,
 } from '../state.js';
-import { splitStatements, isRowReturning } from '../core/sql-split.js';
+import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
@@ -452,14 +452,23 @@ export function createApp(env = {}) {
   // of a multiquery script (and across successive runs in the tab). ClickHouse's
   // HTTP interface runs one statement per request and is otherwise stateless, so
   // without this a `CREATE TEMPORARY TABLE …; INSERT …; SELECT …` script can't
-  // see its own temp table. Each tab gets its own id (lazily) so tabs don't share
+  // see its own temp table. The id is per-tab (lazily minted) so tabs don't share
   // state and never collide on the per-session lock (only one query runs at a
-  // time, guarded by `running`). 600s idle timeout (default is 60s). Schema /
-  // reference loads deliberately run session-less — they fire in parallel and
-  // would otherwise deadlock on the lock.
+  // time, guarded by `running`). 600s idle timeout (default is 60s).
   function sessionParams(tab) {
     tab.chSession = tab.chSession || uid('sess-');
     return { session_id: tab.chSession, session_timeout: 600 };
+  }
+  // Only TEMPORARY tables and session `SET`s need a session; permanent DDL/DML and
+  // SELECTs are global. So we attach a session_id ONLY when the SQL needs one — or
+  // when the tab already opened one (sticky, so a temp table / SET from an earlier
+  // run stays visible to later runs in that tab). Ordinary scripts run session-LESS,
+  // which avoids the session lock / replica-affinity reset that intermittently
+  // surfaces as a "Network error". (Schema / reference loads are always
+  // session-less — they fan out in parallel and would deadlock on the lock.)
+  const needsSession = (sqls) => sqls.some((s) => /\bTEMPORARY\b/i.test(s) || leadingKeyword(s) === 'SET');
+  function sessionParamsFor(tab, sqls) {
+    return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
 
   async function run(opts) {
@@ -531,7 +540,7 @@ export function createApp(env = {}) {
         format: fmt,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
-        params: sessionParams(tab),
+        params: sessionParamsFor(tab, [srcSql]),
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -594,38 +603,41 @@ export function createApp(env = {}) {
     app.state.abortController = new AbortController();
     app.state.runTick = setInterval(tickElapsed, 100);
     let aborted = false;
+    // Attach a session only if the script needs one (TEMPORARY / SET) or the tab
+    // already has one — same params for every statement, computed once.
+    const sp = sessionParamsFor(tab, statements);
     app.state.running.value = true; // the results effect paints the (empty) grid
     try {
       for (let i = 0; i < statements.length; i++) {
         const stmt = statements[i];
         const rowReturning = isRowReturning(stmt);
-        // Shared session across the script's statements (temp tables / SET
-        // persist); over-fetch SELECTs by one past the display cap so a truncated
-        // result is detectable (at exactly the cap it isn't).
+        // Over-fetch SELECTs by one past the display cap so a truncated result is
+        // detectable (at exactly the cap it isn't).
         const opts = {
           format: rowReturning ? 'JSONCompact' : 'TSV',
           signal: app.state.abortController.signal,
-          params: {
-            ...sessionParams(tab),
-            ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}),
-          },
+          params: { ...sp, ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
         };
         const s0 = now(); // this statement's own wall-clock (grid Time column)
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
         app.state.runQueryId = uid('q');
         let out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
-        // One retry on a transient failure: rapid same-session script requests can
-        // race ClickHouse's async session-lock release — a connection reset
-        // surfaces as a fetch TypeError ("Network error"), a still-held lock as
-        // SESSION_IS_LOCKED. A fresh attempt (new connection, fresh query_id)
-        // almost always succeeds. (A mid-retry Cancel aborts the retry itself.)
-        if (!out.aborted && (out.transient || (out.error != null && SESSION_BUSY.test(out.error)))) {
+        // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
+        // rejected before running → safe to retry (any statement). A connection
+        // reset (fetch TypeError → "Network error") leaves it UNKNOWN whether the
+        // statement ran, so only retry read-only statements — re-running an
+        // INSERT/DDL could double-apply it. (A mid-retry Cancel aborts the retry.)
+        const locked = out.error != null && SESSION_BUSY.test(out.error);
+        if (!out.aborted && (locked || (out.transient && rowReturning))) {
           await sleep(retryMs);
           app.state.runQueryId = uid('q');
           out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
         }
         if (out.aborted) { aborted = true; break; }
+        // A connection reset on a non-idempotent statement: don't silently retry —
+        // tell the user it may have run so they can decide whether to re-run.
+        if (out.transient && !rowReturning) out.error = 'Network error — the statement may have executed; re-run it manually if needed.';
         const ms = now() - s0;
         if (out.error != null) {
           entries.push({ sql: stmt, status: 'error', error: out.error, ms });

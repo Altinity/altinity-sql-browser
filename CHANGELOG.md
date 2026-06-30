@@ -57,12 +57,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   loads rather than in-place mutation. This **completes the migration**. (#88, #91)
 
 ### Fixed
-- Multiquery scripts no longer fail intermittently with **"Network error"**: the
-  rapid, back-to-back statements of a script share one ClickHouse HTTP session, and
-  a follow-up request could arrive before the server released the session lock —
-  surfacing (behind a proxy/LB) as a reset connection. Each statement now **retries
-  once** on a transient failure (connection reset or `SESSION_IS_LOCKED`) with a
-  fresh `query_id`. Single queries were unaffected and are unchanged.
+- Multiquery scripts no longer fail intermittently with **"Network error"**. A
+  ClickHouse HTTP session is now attached **only when the SQL actually needs one**
+  (a `CREATE TEMPORARY` table or a session `SET`), or when the tab already opened
+  one (sticky, so that state persists across runs in the tab) — ordinary scripts
+  run session-less, removing the session-lock / replica-affinity reset that
+  surfaced (behind a proxy/LB) as a reset connection. When a session *is* in use,
+  a transient failure is retried **only when safe**: a `SESSION_IS_LOCKED`
+  (rejected before execution) or a connection reset on a **read-only** statement.
+  A connection reset on an `INSERT`/DDL is **not** retried — it may have executed
+  server-side, so it's surfaced as "the statement may have executed; re-run
+  manually" rather than silently double-applied.
 - The `session_id` / `query_id` fallback used when `crypto.randomUUID` is
   unavailable (non-secure `http://` contexts) now mixes in `Math.random` instead of
   only a coarse `performance.now()`, so two tabs can't mint the same id and collide

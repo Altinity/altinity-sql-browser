@@ -312,9 +312,21 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]);
     expect(app.state.history.length).toBe(1);
-    // the query runs inside a per-tab ClickHouse session (600s timeout)
-    const runUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
-    expect(runUrl).toMatch(/session_timeout=600/);
+    // a plain SELECT needs no session, so none is opened (avoids the session race)
+    expect(app.chCtx.fetch.mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
+  });
+  it('opens a ClickHouse session (600s) only for SQL that needs one (SET / TEMPORARY), and it sticks to the tab', async () => {
+    const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    app.activeTab().sql = 'SET max_threads = 1';
+    await app.actions.run(); // SET → opens a session
+    const setUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    expect(setUrl).toMatch(/session_timeout=600/);
+    const sid = /session_id=([^&]+)/.exec(setUrl)[1];
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT 1'; // plain SELECT now, but the tab already has a session
+    await app.actions.run();
+    const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    expect(/session_id=([^&]+)/.exec(selUrl)[1]).toBe(sid); // sticky: same session id
   });
   it('keeps the current result view on a plain re-run, and restores a remembered view when opened (#34)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
@@ -519,11 +531,21 @@ describe('query run', () => {
     const urls = app.chCtx.fetch.mock.calls.map((c) => c[0]);
     const selUrl = urls.find((u) => /max_result_rows=101/.test(u));
     expect(selUrl).toMatch(/result_overflow_mode=break/);
-    // every statement shares one ClickHouse session (so temp tables / SET persist)
-    const sids = urls.filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)[1]);
-    expect(sids).toHaveLength(3);
-    expect(new Set(sids).size).toBe(1);
-    expect(urls.some((u) => /session_timeout=600/.test(u))).toBe(true);
+    // this script needs no session (permanent table) → session-less (no race)
+    expect(urls.some((u) => /session_id=/.test(u))).toBe(false);
+  });
+
+  it('a script with CREATE TEMPORARY / SET shares one session across all its statements', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /TEMPORARY/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /SELECT \* FROM t/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'a', type: 'Int8' }], data: [['1']] }) })],
+    ]);
+    app.activeTab().sql = 'CREATE TEMPORARY TABLE t (a Int8); INSERT INTO t VALUES (1); SELECT * FROM t';
+    await app.actions.run();
+    const sids = app.chCtx.fetch.mock.calls.map((c) => c[0]).filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)[1]);
+    expect(sids).toHaveLength(3); // all three statements carry the session
+    expect(new Set(sids).size).toBe(1); // and it's the same one (temp table persists)
   });
 
   it('flags a SELECT as truncated when more than the cap rows come back', async () => {
@@ -573,13 +595,14 @@ describe('query run', () => {
     expect(app.state.history).toHaveLength(0);
   });
 
-  it('reports a network error (TypeError) per statement', async () => {
+  it('reports a connection reset (TypeError) on a non-idempotent statement without retrying it', async () => {
     const { app } = appForRun([
       [(u, sql) => /CREATE TABLE t/.test(sql), () => { throw new TypeError('fetch failed'); }],
     ]);
     app.activeTab().sql = SCRIPT;
     await app.actions.run();
-    expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error', error: 'Network error' });
+    expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error' });
+    expect(app.activeTab().result.script[0].error).toMatch(/may have executed/);
   });
 
   it('surfaces a non-abort thrown error message per statement', async () => {
@@ -603,18 +626,31 @@ describe('query run', () => {
     expect(app.state.history).toHaveLength(0);
   });
 
-  it('retries a statement once on a transient connection reset (Network error → success)', async () => {
-    let creates = 0;
+  it('retries a READ-ONLY statement once on a transient connection reset (Network error → success)', async () => {
+    let sel = 0;
     const { app } = appForRun([
-      // first attempt resets the connection (fetch TypeError); the retry succeeds
-      [(u, sql) => /CREATE TABLE t/.test(sql), () => { if (creates++ === 0) throw new TypeError('Failed to fetch'); return resp({ text: '' }); }],
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
       [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
-      [(u, sql) => /SELECT count/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) })],
+      // the SELECT (idempotent) resets once, then the retry succeeds
+      [(u, sql) => /SELECT count/.test(sql), () => { if (sel++ === 0) throw new TypeError('Failed to fetch'); return resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) }); }],
     ]);
     app.activeTab().sql = SCRIPT;
     await app.actions.run();
-    expect(creates).toBe(2); // one retry
+    expect(sel).toBe(2); // retried the SELECT
     expect(app.activeTab().result.script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']); // recovered
+  });
+
+  it('does NOT retry a non-idempotent statement on a connection reset (surfaces "may have executed")', async () => {
+    let inserts = 0;
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), () => { inserts++; throw new TypeError('Failed to fetch'); }],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(inserts).toBe(1); // the INSERT is NOT re-sent — it may have run server-side
+    expect(app.activeTab().result.script[1]).toMatchObject({ status: 'error' });
+    expect(app.activeTab().result.script[1].error).toMatch(/may have executed/);
   });
 
   it('retries a statement once when the ClickHouse session is briefly locked', async () => {
@@ -645,8 +681,8 @@ describe('query run', () => {
 
   it('session_id falls back to a unique non-UUID id without crypto.randomUUID', async () => {
     const noUuid = { getRandomValues: (a) => webcrypto.getRandomValues(a) }; // non-secure context: no randomUUID
-    const { app } = appForRun([[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { crypto: noUuid });
-    app.activeTab().sql = 'SELECT 1';
+    const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]], { crypto: noUuid });
+    app.activeTab().sql = 'SET max_threads = 1'; // SET opens a session, so a session_id is sent
     await app.actions.run();
     const url = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(decodeURIComponent(/session_id=([^&]+)/.exec(url)[1])).toMatch(/^sess-/); // collision-resistant fallback
