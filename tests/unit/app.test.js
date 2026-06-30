@@ -518,6 +518,29 @@ describe('query run', () => {
     expect(app.activeTab().result.rows).toEqual([['42']]);
     expect(app.activeTab().result.rawText).toBeNull();
   });
+  it('decorates the auto-derived Explain/Indexes queries with pretty=1, compact=1 on a >=26.3 server', async () => {
+    const { app, e } = appForRun([
+      [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
+      [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
+    ]);
+    await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.explainQuery();
+    expect(sentExplains(e)).toContain('EXPLAIN pretty = 1, compact = 1 SELECT 1');
+    app.activeTab().sql = 'EXPLAIN indexes = 1 SELECT 1';
+    await app.actions.run();
+    expect(sentExplains(e)).toContain('EXPLAIN indexes = 1, pretty = 1, compact = 1 SELECT 1');
+  });
+  it('never decorates a typed, verbatim EXPLAIN even on a >=26.3 server', async () => {
+    const { app, e } = appForRun([
+      [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
+      [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
+    ]);
+    await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
+    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    await app.actions.run();
+    expect(sentExplains(e)).toContain('EXPLAIN SELECT 1'); // verbatim, no decoration
+  });
   it('an explicit FORMAT on an EXPLAIN still wins over the raw default', async () => {
     const { app } = appForRun([
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: '{"plan":[]}' })],
@@ -1721,6 +1744,17 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     await app.actions.openNodeDetail({ db: 'lin', name: 'events', kind: 'table' });
     expect(document.body.querySelector('.schema-detail')).not.toBeNull();
     await app.actions.openNodeDetail({ db: 'lin' }); // no name → guard returns, no throw
+    document.body.querySelector('.graph-overlay').remove();
+  });
+
+  it('openNodeDetail shows a spinner immediately, then the loaded detail once the fetch resolves', async () => {
+    const { app } = appForRun(lineageRoutes, { openWindow: () => null });
+    await app.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+    const pending = app.actions.openNodeDetail({ db: 'lin', name: 'events', kind: 'table' });
+    expect(document.body.querySelector('.schema-detail .placeholder.starting')).not.toBeNull();
+    await pending;
+    expect(document.body.querySelector('.schema-detail .placeholder.starting')).toBeNull();
+    expect(document.body.querySelector('.schema-detail-cols')).not.toBeNull();
     document.body.querySelector('.graph-overlay').remove();
   });
 

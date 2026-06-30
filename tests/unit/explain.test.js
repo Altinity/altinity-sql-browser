@@ -80,4 +80,16 @@ describe('buildExplainQuery', () => {
     expect(buildExplainQuery('SELECT 1', 'bogus')).toBe('EXPLAIN SELECT 1');
     expect(buildExplainQuery(null, 'explain')).toBe('EXPLAIN ');
   });
+  it('decorates plain/indexes/projections with pretty=1, compact=1 when opts.pretty is set', () => {
+    expect(buildExplainQuery('SELECT 1', 'explain', { pretty: true })).toBe('EXPLAIN pretty = 1, compact = 1 SELECT 1');
+    expect(buildExplainQuery('SELECT 1', 'indexes', { pretty: true })).toBe('EXPLAIN indexes = 1, pretty = 1, compact = 1 SELECT 1');
+    expect(buildExplainQuery('SELECT 1', 'projections', { pretty: true })).toBe('EXPLAIN projections = 1, pretty = 1, compact = 1 SELECT 1');
+  });
+  it('leaves pipeline/estimate unchanged regardless of opts.pretty', () => {
+    expect(buildExplainQuery('SELECT 1', 'pipeline', { pretty: true })).toBe('EXPLAIN PIPELINE graph = 1 SELECT 1');
+    expect(buildExplainQuery('SELECT 1', 'estimate', { pretty: true })).toBe('EXPLAIN ESTIMATE SELECT 1');
+  });
+  it('defaults opts to {} (no pretty) when omitted', () => {
+    expect(buildExplainQuery('SELECT 1', 'indexes')).toBe('EXPLAIN indexes = 1 SELECT 1');
+  });
 });

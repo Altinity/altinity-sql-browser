@@ -7,6 +7,7 @@
 
 import { h, s, withDocument, zoomScale } from './dom.js';
 import { Icon } from './icons.js';
+import { loadingPlaceholder } from './placeholder.js';
 import { clamp, formatRows, formatBytes, qualifyIdent } from '../core/format.js';
 import { columnRoles } from '../core/schema-cards.js';
 
@@ -76,31 +77,48 @@ function markSelected(doc, nodeId) {
 // Build + mount the pane (created in the active document via withDocument).
 function buildDetailPane(node, detail, panel) {
   const doc = panel.ownerDocument;
-  const cols = detail.columns || [];
-  const parts = detail.partitions || [];
   const ident = qualifyIdent(node.db, node.name);
+  // `columns === 'loading'` is the sentinel openNodeDetail mounts before the
+  // ch.loadTableDetail fetch resolves — the same shape the schema tree uses for
+  // a table's lazy column load.
+  const loading = detail.columns === 'loading';
 
-  const colsTable = h('table', { class: 'schema-detail-cols' },
-    h('thead', null, h('tr', null,
-      h('th', null, 'column'), h('th', null, 'type'), h('th', null, 'codec'),
-      h('th', { class: 'num' }, 'compressed'), h('th', { class: 'num' }, 'uncompressed'), h('th', null, 'key'))),
-    h('tbody', null, ...cols.map((c) => h('tr', null,
-      h('td', null, c.name), h('td', null, c.type), h('td', null, c.codec || ''),
-      h('td', { class: 'num' }, formatBytes(c.compressed)),
-      h('td', { class: 'num' }, formatBytes(c.uncompressed)),
-      h('td', { class: 'schema-detail-roles' }, columnRoles(c).join(' '))))));
+  let body;
+  if (loading) {
+    body = loadingPlaceholder('Loading table…');
+  } else {
+    const cols = detail.columns || [];
+    const parts = detail.partitions || [];
 
-  const partsSection = parts.length
-    ? h('div', null,
-      h('h4', null, 'Partitions (' + parts.length + ')'),
-      h('table', { class: 'schema-detail-cols' },
-        h('thead', null, h('tr', null,
-          h('th', null, 'partition'), h('th', { class: 'num' }, 'parts'),
-          h('th', { class: 'num' }, 'rows'), h('th', { class: 'num' }, 'bytes'))),
-        h('tbody', null, ...parts.map((p) => h('tr', null,
-          h('td', null, p.partition), h('td', { class: 'num' }, formatRows(p.parts)),
-          h('td', { class: 'num' }, formatRows(p.rows)), h('td', { class: 'num' }, formatBytes(p.bytes)))))))
-    : null;
+    const colsTable = h('table', { class: 'schema-detail-cols' },
+      h('thead', null, h('tr', null,
+        h('th', null, 'column'), h('th', null, 'type'), h('th', null, 'codec'),
+        h('th', { class: 'num' }, 'compressed'), h('th', { class: 'num' }, 'uncompressed'), h('th', null, 'key'))),
+      h('tbody', null, ...cols.map((c) => h('tr', null,
+        h('td', null, c.name), h('td', null, c.type), h('td', null, c.codec || ''),
+        h('td', { class: 'num' }, formatBytes(c.compressed)),
+        h('td', { class: 'num' }, formatBytes(c.uncompressed)),
+        h('td', { class: 'schema-detail-roles' }, columnRoles(c).join(' '))))));
+
+    const partsSection = parts.length
+      ? h('div', null,
+        h('h4', null, 'Partitions (' + parts.length + ')'),
+        h('table', { class: 'schema-detail-cols' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'partition'), h('th', { class: 'num' }, 'parts'),
+            h('th', { class: 'num' }, 'rows'), h('th', { class: 'num' }, 'bytes'))),
+          h('tbody', null, ...parts.map((p) => h('tr', null,
+            h('td', null, p.partition), h('td', { class: 'num' }, formatRows(p.parts)),
+            h('td', { class: 'num' }, formatRows(p.rows)), h('td', { class: 'num' }, formatBytes(p.bytes)))))))
+      : null;
+
+    body = h('div', null,
+      h('h4', null, 'Columns (' + cols.length + ')'),
+      colsTable,
+      partsSection,
+      detail.ddl ? h('h4', null, 'DDL') : null,
+      detail.ddl ? h('pre', { class: 'schema-detail-ddl' }, detail.ddl) : null);
+  }
 
   const handle = h('div', { class: 'schema-detail-handle', title: 'Drag to resize' });
   const pane = h('div', { class: 'schema-detail' },
@@ -109,11 +127,7 @@ function buildDetailPane(node, detail, panel) {
     h('div', { class: 'schema-detail-body' },
       h('div', { class: 'schema-detail-head' },
         h('b', null, ident), h('span', { class: 'schema-detail-kind' }, node.kind || 'table')),
-      h('h4', null, 'Columns (' + cols.length + ')'),
-      colsTable,
-      partsSection,
-      detail.ddl ? h('h4', null, 'DDL') : null,
-      detail.ddl ? h('pre', { class: 'schema-detail-ddl' }, detail.ddl) : null));
+      body));
   panel.appendChild(pane);
 
   // Drag the handle to resize. Listeners are added on mousedown and removed on

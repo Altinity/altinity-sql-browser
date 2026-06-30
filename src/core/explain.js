@@ -77,16 +77,21 @@ export function detectExplainView(parsed) {
 
 /**
  * Build the derived query for a rich view from the inner statement. The
- * `explain` view does not derive (the caller runs the statement verbatim);
- * unknown ids fall back to a plain `EXPLAIN`. Pure.
+ * `explain` view does not derive when the caller runs a *typed* EXPLAIN
+ * verbatim (only an auto-constructed plain EXPLAIN reaches here); unknown ids
+ * fall back to a plain `EXPLAIN`. `opts.pretty` (server >= 26.3, see
+ * `supportsExplainPretty` in `core/format.js`) decorates plain/indexes/
+ * projections with `pretty = 1, compact = 1` — pipeline (already has its own
+ * `graph = 1` rendering) and estimate are unaffected. Pure.
  */
-export function buildExplainQuery(inner, viewId) {
+export function buildExplainQuery(inner, viewId, opts = {}) {
   const q = String(inner || '');
+  const prettySuffix = opts.pretty ? ', pretty = 1, compact = 1' : '';
   switch (viewId) {
-    case 'indexes': return 'EXPLAIN indexes = 1 ' + q;
-    case 'projections': return 'EXPLAIN projections = 1 ' + q;
+    case 'indexes': return 'EXPLAIN indexes = 1' + prettySuffix + ' ' + q;
+    case 'projections': return 'EXPLAIN projections = 1' + prettySuffix + ' ' + q;
     case 'pipeline': return 'EXPLAIN PIPELINE graph = 1 ' + q;
     case 'estimate': return 'EXPLAIN ESTIMATE ' + q;
-    default: return 'EXPLAIN ' + q;
+    default: return (opts.pretty ? 'EXPLAIN pretty = 1, compact = 1 ' : 'EXPLAIN ') + q;
   }
 }

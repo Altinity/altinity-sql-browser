@@ -13,7 +13,7 @@ import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-spl
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
@@ -511,9 +511,10 @@ export function createApp(env = {}) {
         || 'explain';
       fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
       const inner = parsed ? parsed.inner : srcSql;
-      runSql = explainView === 'explain'
-        ? (parsed ? srcSql : 'EXPLAIN ' + srcSql)
-        : buildExplainQuery(inner, explainView);
+      const explainOpts = { pretty: supportsExplainPretty(app.state.serverVersion) };
+      runSql = explainView === 'explain' && parsed
+        ? srcSql
+        : buildExplainQuery(inner, explainView, explainOpts);
     } else {
       fmt = explicitFmt || 'Table';
     }
@@ -863,6 +864,7 @@ export function createApp(env = {}) {
   // columns / partitions / DDL (best-effort) and mount the pane in the overlay.
   async function openNodeDetail(node, targetDoc) {
     if (!node || !node.db || !node.name) return;
+    openDetailPane(app, node, { columns: 'loading' }, targetDoc);
     const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
     openDetailPane(app, node, detail, targetDoc);
   }

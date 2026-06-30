@@ -166,9 +166,21 @@ describe('loadSchema', () => {
     expect(schema).toHaveLength(3);
     expect(schema[0]).toMatchObject({ db: 'a', expanded: false });
     expect(schema[1]).toMatchObject({ db: 'b', expanded: false });
-    expect(schema[2]).toEqual({ db: 'empty', expanded: false, tables: [] });
+    expect(schema[2]).toEqual({ db: 'empty', expanded: false, comment: '', tables: [] });
     expect(schema[0].tables[0]).toEqual({ name: 't1', total_rows: '1', total_bytes: '2', comment: 'c', columns: null });
     expect(schema[0].tables[1].comment).toBe('');
+  });
+  it('sorts underscore-prefixed tables after regular ones, in both queries', async () => {
+    const seen = [];
+    const ctx = ctxWith(async (url, o) => {
+      seen.push(o.body);
+      return o.body.includes('FROM system.databases')
+        ? jsonResp({ data: [] })
+        : jsonResp({ data: [] });
+    });
+    await loadSchema(ctx);
+    const tablesSql = seen.find((s) => s.includes('FROM system.tables'));
+    expect(tablesSql).toMatch(/ORDER BY database, startsWith\(name, '_'\), name/);
   });
   it('handles a table whose database is missing from system.databases', async () => {
     const ctx = ctxWith(async (url, o) => (
@@ -177,7 +189,17 @@ describe('loadSchema', () => {
         : jsonResp({ data: [{ database: 'orphan', name: 't1', total_rows: '1', total_bytes: '2', comment: '' }] })
     ));
     const schema = await loadSchema(ctx);
-    expect(schema).toEqual([{ db: 'orphan', expanded: false, tables: [{ name: 't1', total_rows: '1', total_bytes: '2', comment: '', columns: null }] }]);
+    expect(schema).toEqual([{ db: 'orphan', comment: '', expanded: false, tables: [{ name: 't1', total_rows: '1', total_bytes: '2', comment: '', columns: null }] }]);
+  });
+  it('surfaces a database comment, defaulting to "" when absent', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('FROM system.databases')
+        ? jsonResp({ data: [{ name: 'a', comment: 'analytics db' }, { name: 'b' }] })
+        : jsonResp({ data: [] })
+    ));
+    const schema = await loadSchema(ctx);
+    expect(schema[0]).toMatchObject({ db: 'a', comment: 'analytics db' });
+    expect(schema[1]).toMatchObject({ db: 'b', comment: '' });
   });
   it('handles an empty table list', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
@@ -415,6 +437,17 @@ describe('loadSchemaLineage', () => {
     expect(tablesSql).toMatch(/total_bytes/);
     expect(tablesSql).toMatch(/partition_key/);
     expect(tablesSql).toMatch(/sampling_key/);
+  });
+  it('sorts underscore-prefixed tables after regular ones', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      seen.push(init.body);
+      if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
+      return jsonResp({ data: [] });
+    });
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    const tablesSql = seen.find((s) => /FROM system\.tables/.test(s));
+    expect(tablesSql).toMatch(/ORDER BY startsWith\(name, '_'\), name/);
   });
 });
 

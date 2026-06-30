@@ -91,7 +91,7 @@ export function renderSchema(app) {
     const dbOpen = state.expanded.value.has(dbKey);
     list.appendChild(h('div', {
       class: 'tree-row bold',
-      title: 'Click to expand · double-click to insert · shift-click for SHOW CREATE',
+      title: db.comment || 'Click to expand · double-click to insert · shift-click for SHOW CREATE · drag to Data for Schema',
       onclick: (e) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + qdb); return; }
         if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
@@ -115,7 +115,7 @@ export function renderSchema(app) {
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
-        : 'Click to expand · double-click for SELECT * · shift-click for SHOW CREATE';
+        : 'Click to expand · double-click for SELECT * · shift-click for SHOW CREATE · drag to insert name';
 
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),

@@ -170,6 +170,17 @@ describe('openDetailPane', () => {
     expect([...pane.querySelectorAll('h4')].map((e) => e.textContent)).toEqual(['Columns (0)']);
   });
 
+  it('shows the loading spinner placeholder for a columns:"loading" sentinel, no columns/partitions/DDL', () => {
+    mountPanel();
+    const pane = openDetailPane(APP(), NODE, { columns: 'loading' });
+    expect(pane.querySelector('.placeholder.starting')).not.toBeNull();
+    expect(pane.querySelector('.placeholder.starting').textContent).toContain('Loading table…');
+    expect(pane.querySelector('.schema-detail-cols')).toBeNull();
+    expect(pane.querySelectorAll('h4')).toHaveLength(0);
+    // the head (ident + kind) still shows immediately
+    expect(pane.querySelector('.schema-detail-head').textContent).toContain('a.t');
+  });
+
   it('returns null when no overlay is open', () => {
     expect(openDetailPane(APP(), NODE, DETAIL)).toBeNull();
   });

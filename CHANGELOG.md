@@ -53,6 +53,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   mechanism (#70) on all three engines. Caveat now documented: Playwright's WebKit
   is **not** a faithful Safari proxy for `zoom` × `getBoundingClientRect`/viewport
   units — it behaves like Chromium there — so that path is verified manually (#71).
+- Small schema/EXPLAIN polish (#85): on ClickHouse ≥ 26.3, the EXPLAIN
+  plain/Indexes/Projections views render with `pretty = 1, compact = 1` (older
+  servers are unaffected — gated on the connected server's version); underscore-
+  prefixed tables (`_…`) now sort to the end of each database in the schema
+  sidebar and the lineage graph; opening a table's detail pane (fullscreen schema
+  graph) shows a loading spinner immediately instead of a blank pane while its
+  columns/partitions/DDL fetch; database rows show their `comment` as hover text
+  when set (else the existing shortcut hints, now also noting drag-to-graph); and
+  the no-comment table hover text now also notes drag-to-insert.
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime
