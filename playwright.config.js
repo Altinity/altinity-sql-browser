@@ -25,7 +25,7 @@ export default defineConfig({
   // execCommand('insertText') on <textarea>, WebKit's handling of
   // `html{zoom}` × getBoundingClientRect), so the suite runs on all three
   // engines — WebKit is the Safari proxy and the one most likely to diverge on
-  // the zoom-based layout (see docs/ADR-0001 + README "Supported browsers").
+  // the zoom-based layout (see README "Supported browsers").
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
     { name: 'firefox', use: { browserName: 'firefox' } },

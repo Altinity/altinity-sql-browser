@@ -445,6 +445,24 @@ docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
               CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md
 ```
 
+## Supported browsers
+
+Current **desktop** engines — Chromium (Chrome/Edge), Firefox, and **Safari
+(WebKit)** — are all supported. The whole layout and the pointer/caret/drag math
+ride on `html { zoom: var(--zoom) }`, and WebKit is the engine most likely to
+diverge on `zoom` × `getBoundingClientRect`/viewport units, so it is exercised
+on **every CI run**: the Playwright e2e suite runs the editor-alignment,
+editor-insertion, schema-graph and EXPLAIN-pipeline specs on all three engines
+(`webkit` included as of #69), and Safari/WebKit passes them. A regression that
+breaks Safari now fails CI rather than shipping silently.
+
+> There is no responsive CSS today (fixed px, `overflow:hidden` on
+> `html`/`body`), so the app targets **desktop** browsers; the formal
+> narrow-viewport stance is part of the matrix in #71.
+
+The full system-requirements matrix — minimum browser versions, supported
+ClickHouse server versions, and IdP/OAuth requirements — is tracked in #71.
+
 ## Testing
 
 ```bash
@@ -463,10 +481,12 @@ suite needs no mocking libraries.
 happy-dom has no real layout or scrollbars, so render-layer bugs (e.g. the
 editor highlight drifting behind the selection when a scrollbar shrinks the
 textarea's client box) can't be caught by the unit suite. A small Playwright
-harness mounts the real `src/` modules in Chromium for those cases.
+harness mounts the real `src/` modules in **Chromium, Firefox and WebKit** for
+those cases — WebKit is the Safari proxy and the engine most likely to diverge
+on the `html{zoom}`-based layout (see [Supported browsers](#supported-browsers)).
 
 ```bash
-npx playwright install chromium   # once per machine
+npx playwright install chromium firefox webkit   # once per machine
 npm run test:e2e
 ```
 

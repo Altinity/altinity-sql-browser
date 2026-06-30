@@ -9,6 +9,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- Playwright e2e now runs on **WebKit** in addition to Chromium and Firefox, so
+  Safari regressions on the `html{zoom}`-based layout fail CI instead of
+  shipping silently. README gained a **Supported browsers** stance: desktop
+  Chromium/Firefox/Safari are supported (Safari verified green on CI); the full
+  browser/ClickHouse/IdP matrix is tracked in #71. (#69)
+
 ## [0.1.5] - 2026-06-29
 
 ### Added
