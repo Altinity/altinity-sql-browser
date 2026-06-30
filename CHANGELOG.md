@@ -10,6 +10,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Multiquery + run-selection** (#83): run a `;`-separated script (DDL / INSERT /
+  SELECT) in one shot, or run just the highlighted text. ⌘+Enter auto-detects — a
+  single statement behaves exactly as before; more than one runs **sequentially**
+  (one ClickHouse request per statement, stopping on the first failure) into a
+  compact per-statement summary grid. A non-empty editor selection runs only that
+  text (the Run button flips to **Run selection**); a single selected statement
+  still gets the full Table/Chart/EXPLAIN view. Row-returning statements show the
+  first row inline (comma-separated) — click to open all rows (capped at 100) in a
+  side pane; effectful statements show **OK**. Cancel aborts mid-script. Splitting
+  is purely lexical (`src/core/sql-split.js`), skipping `;` inside string/identifier
+  literals and `--` / `#` / `/* */` comments. Known limitation: an `INSERT … FORMAT
+  …` with inline data containing `;` mis-splits — run those on their own.
 - Playwright e2e now runs on **WebKit** in addition to Chromium and Firefox, so
   many Safari regressions on the `html{zoom}`-based layout fail CI instead of
   shipping silently. README gained a **Supported browsers** stance: desktop
