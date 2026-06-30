@@ -1,10 +1,11 @@
 # ADR-0001: Reactivity — incremental signals, not a framework
 
-- **Status:** Proposed
-- **Date:** 2026-06-29
-- **Context tracking:** roadmap #68
+- **Status:** Accepted — adopted on `spike/signals-core` (#88)
+- **Date:** 2026-06-29 (adopted 2026-06-30)
+- **Context tracking:** roadmap #68; adoption #88
 - **Evidence:** `spike/signals` (hand-rolled primitive + two converted slices),
-  `spike/signals-core` (same two slices on `@preact/signals-core`)
+  `spike/signals-core` (the chosen primitive; tabs/sidePanel, then the
+  `resultView`+`running` and `libraryName`+`libraryDirty` scalar slices)
 
 ## Context
 
@@ -25,8 +26,11 @@ per-file 100/100/100/100 coverage gate (rule 1), and the injected-seam layering
 ## Decision
 
 Adopt **`@preact/signals-core`** (`signal()` / `effect()` / `computed()` /
-`batch()` / `untracked()`) and migrate state **one slice at a time**, behind
-accessor helpers. **Do not** adopt a UI framework (React/Preact/Solid).
+`batch()` / `untracked()`) and migrate state **one slice at a time**, reading
+and writing through `.value`. An accessor helper (like `activeTab()`) is
+*optional* — used where it usefully contains reader churn, skipped where the
+churn is trivially mechanical (see the Consequences guideline). **Do not** adopt
+a UI framework (React/Preact/Solid).
 
 A hand-rolled ~70-line primitive was prototyped first and works (`spike/signals`),
 but `@preact/signals-core` was chosen over it: same `.value` API (so the
@@ -80,10 +84,13 @@ choice is reversible.
 - **Migration is monotonic**: a slice keeps some direct render calls until its
   co-dependent slices are also signals. No slice un-converts another.
 - Per-slice cost is mostly mechanical `.value` edits in that slice's tests.
-- **Rule:** give each converted slice an accessor helper (like `activeTab()`) to
-  contain reader churn and localize behavior.
-- Adding `@preact/signals-core` makes **three** bundled runtime deps. On adoption,
-  update CLAUDE.md rule 4 ("two bundled runtime dependencies") and the count in
-  THIRD-PARTY-NOTICES.md (done) / `build/build.mjs` comments (done).
+- **Guideline (not a rule):** add an accessor helper (like `activeTab()`) for a
+  slice with many scattered readers to contain churn; slices with few or
+  localized readers convert fine with bare `.value`. Validated by the
+  `sidePanel` slice (no helper — "worst case") and the `resultView`/`running`
+  and `libraryName`/`libraryDirty` scalar slices, all helper-free.
+- Adding `@preact/signals-core` makes **three** bundled runtime deps. On adoption
+  the dependency count was updated in CLAUDE.md rule 4, THIRD-PARTY-NOTICES.md,
+  and `build/build.mjs` comments (all done).
 - Re-evaluate Preact/Solid only if the UI later grows many interdependent
   components with rich local state, or a genuine large-list render need appears.

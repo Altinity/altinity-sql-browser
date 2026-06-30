@@ -22,9 +22,11 @@ both bundled — see hard rule 4). Quality is held by tests.
    (see README "Configuring OAuth").
 4. **The build is esbuild only; runtime deps are rare and deliberate.** Source
    files are the tested files; esbuild bundles `src/main.js` → `dist/sql.html`.
-   There are **two** bundled runtime dependencies — **Chart.js** (the Chart
-   result view) and **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout) — both
-   inlined into the artifact, so the page still makes zero third-party requests.
+   There are **three** bundled runtime dependencies — **Chart.js** (the Chart
+   result view), **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
+   **@preact/signals-core** (the reactivity primitive — see
+   `docs/ADR-0001-reactivity.md`) — all inlined into the artifact, so the page
+   still makes zero third-party requests.
    Adding *another* runtime dependency is a deliberate decision (it grows the
    single served file) — don't do it casually. When a feature needs a library,
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
