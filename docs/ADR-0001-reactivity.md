@@ -94,3 +94,61 @@ choice is reversible.
   and `build/build.mjs` comments (all done).
 - Re-evaluate Preact/Solid only if the UI later grows many interdependent
   components with rich local state, or a genuine large-list render need appears.
+
+## Addendum — Preact spike on the schema panel (#88, branch `spike/preact-schema`)
+
+The scalar slices (`resultView`/`running`, `libraryName`/`libraryDirty`) fit
+signals-core cleanly. The **schema panel** does not: `state.schema` was a nested
+array mutated *in place* (`db.expanded`, an `expandedTables` Set, `tb.columns`
+flipping null→'loading'→array), and signals only react to reference changes — so
+a signals-core conversion would just relocate the manual-invalidation pain into
+`schema.value = [...]` bumps. That makes it the fair test of whether a
+component+vDOM model earns adoption. We built it as Preact components
+(`SchemaTree → DbRow → TableRow → ColumnRow`) to gather evidence — explicitly
+re-opening this ADR's "no framework" line for *complex panels only*.
+
+**What the spike proved (the thesis holds):**
+- The in-place-mutation anti-pattern is **gone**. Per-row expand state and lazy
+  columns are component-local `useState`; the `expandedTables` Set and
+  `db.expanded` were deleted; `loadColumns` became `fetchColumns` (returns the
+  columns for local state, still caches to `tb.columns` for autocomplete — a data
+  cache now decoupled from rendering). `state.schema`/`schemaError`/`schemaFilter`
+  are signals the tree reads via `@preact/signals` auto-tracking; no manual
+  `renderSchema()` calls remain.
+- **The 100/100/100/100 per-file coverage gate is achievable** on the component
+  file (`src/ui/schema.js`) with tests ported to preact's `render` + `act()`.
+- Signal→component auto-tracking works under happy-dom (load and filter repaint
+  the mounted tree).
+
+**What it cost (measured / observed):**
+- **Bundle: +6.8 KB gzip** (148,044 → 154,873 B; raw 457,892 → 474,440) — close
+  to this ADR's +5.9 KB estimate. ~+4.6% of the artifact, still zero third-party
+  requests (inlined).
+- **A second paradigm.** signals-core `effect()`s drive the rest of `createApp`
+  (tabs/results/title); the schema tree is Preact. Two render models coexist —
+  the main ongoing cost.
+- **Integration seams with the imperative layer:** `Icon.*()` returns live SVG
+  DOM nodes that Preact can't embed, so a `ref`-mounter bridges them; preact's
+  `h` vs the project's hand-rolled `h`; `loadColumns` had to be reshaped.
+- **Test friction:** scenarios staged by poking global state (`expandedTables`,
+  `tb.columns`) now require driving interactions; every interaction needs `act()`;
+  the double-click detector forced a fake-timer gap between open/collapse clicks.
+  Coverage still reaches 100%, but assertions shifted from state to DOM/behaviour.
+- **LOC:** `src/ui/schema.js` 149 → 185 (+36), plus `preact` + `@preact/signals`
+  deps (would make **five** bundled runtime deps; CLAUDE.md rule 4 +
+  THIRD-PARTY-NOTICES would need updating *iff* adopted — not done on the spike).
+- Used preact's `h()` (zero build/test config); JSX would improve ergonomics
+  further but needs esbuild + vitest jsx config — not required to evaluate the
+  component model.
+
+**Recommendation: do not adopt Preact now; stay signals-core.** The component
+model genuinely removes the anti-pattern and is fully testable, but the costs
+(a second render paradigm app-wide, +6.8 KB, the icon/`h`/columns integration
+seams) are paid across the whole app to benefit **one** panel. That matches this
+ADR's original reasoning — the need is invalidation, not a component model, and
+there is no large-list requirement. Keep the schema panel as a **documented
+imperative exception** (or, if its `tb.columns`/expand churn becomes a real
+maintenance drag, convert it with signals-core using *replaced* Set/Map-valued
+signals rather than in-place mutation). The `spike/preact-schema` branch stands
+as the evidence; re-open the decision only when several complex, interdependent,
+rich-local-state panels are actually on the roadmap (per the trigger above).
