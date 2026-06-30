@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>zoom harness</title>
+  <!-- The real stylesheet, so `html{zoom}`, the --vp-zoom default, and the
+       .graph-overlay-panel viewport math all apply exactly as shipped (#70). -->
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body data-theme="dark">
+  <!-- #root inherits height:100% from styles.css → reliably one real screen on
+       every engine (the reference applyViewportZoom measures the overshoot against). -->
+  <div id="root"></div>
+  <!-- No bundled deps in this module graph (zoom-support.js imports nothing), so
+       the unbundled harness needs no import map. -->
+  <script type="module">
+    import { viewportZoom } from '/src/core/zoom-support.js';
+    const root = document.getElementById('root');
+
+    // Mirror src/ui/app.js applyViewportZoom: measure the viewport-unit overshoot
+    // (a 100vh probe vs the one-screen #root) and publish it as --vp-zoom.
+    function applyVp() {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:100vh;visibility:hidden;pointer-events:none';
+      document.body.appendChild(probe);
+      const vp = viewportZoom(probe.getBoundingClientRect().height, root.getBoundingClientRect().height);
+      probe.remove();
+      if (vp != null) document.documentElement.style.setProperty('--vp-zoom', String(vp));
+      return vp;
+    }
+
+    window.__zoom = () => {
+      const divisor = applyVp();
+      // Build the real fullscreen panel and measure whether it fits one screen.
+      const overlay = document.createElement('div');
+      overlay.className = 'graph-overlay';
+      const panel = document.createElement('div');
+      panel.className = 'graph-overlay-panel';
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      const pr = panel.getBoundingClientRect();
+      const rr = root.getBoundingClientRect();
+      const out = {
+        zoom: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--zoom')),
+        vpZoom: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--vp-zoom')),
+        divisor, screenH: rr.height, screenW: rr.width, panelH: pr.height, panelW: pr.width,
+      };
+      overlay.remove();
+      return out;
+    };
+    window.__ready = true;
+  </script>
+</body>
+</html>

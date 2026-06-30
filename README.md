@@ -449,12 +449,24 @@ docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
 
 Current **desktop** engines — Chromium (Chrome/Edge), Firefox, and **Safari
 (WebKit)** — are all supported. The whole layout and the pointer/caret/drag math
-ride on `html { zoom: var(--zoom) }`, and WebKit is the engine most likely to
-diverge on `zoom` × `getBoundingClientRect`/viewport units, so it is exercised
-on **every CI run**: the Playwright e2e suite runs the editor-alignment,
-editor-insertion, schema-graph and EXPLAIN-pipeline specs on all three engines
-(`webkit` included as of #69), and Safari/WebKit passes them. A regression that
-breaks Safari now fails CI rather than shipping silently.
+ride on `html { zoom: var(--zoom) }`. The pointer/caret/drag corrections
+self-calibrate (they divide by the live `getBoundingClientRect`/`offsetWidth`
+ratio — the zoom factor on Chromium, `1` on Safari — both correct), so those work
+across engines.
+
+Engines do diverge on one thing — **viewport units under `zoom`**: Chromium's
+`vw`/`vh` ignore it, Safari's track it. The fullscreen graph panels size off
+`vw`/`vh`, so the divisor they apply is **measured at runtime** and published as
+`--vp-zoom` (~`--zoom` on Chromium, ~`1` on Safari), letting them fit one screen
+on both (#70). An engine that can't parse `zoom` at all falls back via
+`@supports not (zoom: 1)` to a consistent 1× layout.
+
+CI exercises the editor-alignment, editor-insertion, schema-graph and
+EXPLAIN-pipeline specs on all three engines (`webkit` added in #69), plus a
+panel-sizing spec. **Caveat:** Playwright's WebKit applies `zoom` to
+`getBoundingClientRect`/viewport units like Chromium, *not* like real Safari, so
+it is not a faithful Safari proxy for that specific behavior — the real-Safari
+viewport-unit path is verified manually (tracked in the #71 matrix).
 
 > There is no responsive CSS today (fixed px, `overflow:hidden` on
 > `html`/`body`), so the app targets **desktop** browsers; the formal

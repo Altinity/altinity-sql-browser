@@ -61,7 +61,7 @@ function env(over = {}) {
   };
 }
 
-beforeEach(() => { document.body.innerHTML = ''; });
+beforeEach(() => { document.body.innerHTML = ''; document.documentElement.style.removeProperty('--vp-zoom'); });
 
 describe('createApp basics', () => {
   it('reads the stored token and derives identity', () => {
@@ -172,6 +172,31 @@ describe('renderApp shell', () => {
     app.dom.schemaSearchInput.value = 'foo';
     app.dom.schemaSearchInput.dispatchEvent(new Event('input'));
     expect(app.state.schemaFilter).toBe('foo');
+  });
+});
+
+describe('applyViewportZoom — html{zoom} viewport-unit divisor (#70)', () => {
+  it('publishes the measured divisor as --vp-zoom on the document root', () => {
+    // Inject the measurement seam (real layout needs a browser; viewportZoom is
+    // unit-tested separately). 1 = the WebKit/Safari case the fix targets.
+    const app = createApp(env({ measureViewportZoom: () => 1 }));
+    app.renderApp();
+    expect(app.vpZoom).toBe(1);
+    expect(document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('1');
+  });
+
+  it('leaves --vp-zoom (the CSS default) untouched when the layout is unmeasurable', () => {
+    // happy-dom has no layout, so the default seam's 100vh probe measures 0 → null.
+    const app = createApp(env());
+    app.renderApp();
+    expect(app.vpZoom).toBeUndefined();
+    expect(document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('');
+  });
+
+  it('measures via a transient 100vh probe by default, leaving no probe behind', () => {
+    const app = createApp(env());
+    app.renderApp(); // the default seam ran: appended its probe, measured, removed it
+    expect(document.querySelector('div[style*="100vh"]')).toBeNull();
   });
 });
 

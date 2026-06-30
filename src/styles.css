@@ -7,11 +7,24 @@ html { zoom: var(--zoom); }
   --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
   --accent: #0079AD;
   --accent-dim: #005F8A;
-  /* Page zoom. Normal flow scales cleanly, but `zoom` does NOT divide viewport
-     units, so an in-flow `100vh`/`100vw`/`100%`-tall element renders --zoom times
-     too big and overflows the window. The two full-viewport graph panels below
-     divide their viewport sizing by --zoom to fit; bump both together here. */
+  /* Page zoom. Normal flow scales cleanly, but viewport units interact with
+     `zoom` differently per engine: on Chromium `vh`/`vw` ignore `zoom`, so a
+     `100vh`/`100vw` element renders --zoom times too big and overflows; on
+     WebKit/Safari they track `zoom`, so `100vh` is exactly one screen. The
+     fullscreen graph panels below divide their viewport sizing by --vp-zoom —
+     the per-engine divisor measured at runtime (app.applyViewportZoom, #70):
+     ~--zoom on Chromium, ~1 on Safari. It defaults to --zoom here so behavior is
+     unchanged (Chromium-correct) until the measurement runs / if JS is off. */
   --zoom: 1.2;
+  --vp-zoom: var(--zoom);
+}
+
+/* Fallback for engines that can't even parse `zoom` (no `@supports (zoom: 1)`):
+   neutralize the factor so the `html{zoom}` no-op AND every `calc(.../var(--vp-zoom))`
+   viewport panel collapse to a consistent 1× layout, instead of dividing by a
+   zoom that was never applied. (--vp-zoom inherits --zoom, so it follows to 1 too.) */
+@supports not (zoom: 1) {
+  :root { --zoom: 1; }
 }
 
 [data-theme='dark'] {
@@ -735,10 +748,11 @@ body {
 }
 .graph-overlay-panel {
   /* `.graph-overlay` is a fixed inset:0 backdrop with 24px padding. A plain
-     100% here would render --zoom times too tall (see --zoom) and spill past the
-     viewport; divide the viewport box (minus the 48px padding) by --zoom so the
-     panel fits with its breathing room intact. */
-  width: calc((100vw - 48px) / var(--zoom)); height: calc((100vh - 48px) / var(--zoom));
+     100% here can render --zoom times too tall (see --zoom/--vp-zoom) and spill
+     past the viewport; divide the viewport box (minus the 48px padding) by
+     --vp-zoom (the per-engine viewport divisor) so the panel fits with its
+     breathing room intact on both Chromium and Safari. */
+  width: calc((100vw - 48px) / var(--vp-zoom)); height: calc((100vh - 48px) / var(--vp-zoom));
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: 11px; overflow: hidden;
   display: flex; flex-direction: column;
@@ -788,14 +802,15 @@ body {
 .graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
 
 /* The schema graph's own browser tab: the panel fills the viewport chromelessly.
-   Divide by --zoom like the panel (see --zoom) so the body is exactly one screen
-   tall rather than 1.2× (which would otherwise only be hidden by overflow:hidden). */
-body.schema-tab { margin: 0; height: calc(100vh / var(--zoom)); overflow: hidden; background: var(--bg-editor); }
+   Divide by --vp-zoom like the panel (see --zoom/--vp-zoom) so the body is exactly
+   one screen tall on both engines (the opener mirrors its measured --vp-zoom onto
+   this tab's <html>; falls back to --zoom otherwise). */
+body.schema-tab { margin: 0; height: calc(100vh / var(--vp-zoom)); overflow: hidden; background: var(--bg-editor); }
 /* Full-bleed in its own browser tab — no backdrop padding, but still divide the
-   viewport sizing by --zoom (see --zoom) so the panel fills exactly one screen
-   instead of overflowing the bottom (which hid the detail pane's DDL). */
+   viewport sizing by --vp-zoom (see --zoom/--vp-zoom) so the panel fills exactly
+   one screen instead of overflowing the bottom (which hid the detail pane's DDL). */
 body.schema-tab .graph-overlay-panel {
-  width: calc(100vw / var(--zoom)); height: calc(100vh / var(--zoom));
+  width: calc(100vw / var(--vp-zoom)); height: calc(100vh / var(--vp-zoom));
   border: none; border-radius: 0;
 }
 
