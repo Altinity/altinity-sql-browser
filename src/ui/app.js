@@ -10,7 +10,7 @@ import {
   createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart,
 } from '../state.js';
 import { splitStatements, isRowReturning } from '../core/sql-split.js';
-import { parseSelectResult, firstRowPreview } from '../core/script-result.js';
+import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
@@ -565,7 +565,9 @@ export function createApp(env = {}) {
             format: rowReturning ? 'JSONCompact' : 'TSV',
             queryId: app.state.runQueryId,
             signal: app.state.abortController.signal,
-            params: rowReturning ? { max_result_rows: 100, result_overflow_mode: 'break' } : undefined,
+            // Over-fetch by one past the display cap so a truncated result is
+            // detectable (at exactly the cap the client can't tell it was cut).
+            params: rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : undefined,
           });
         } catch (e) {
           if (e.name === 'AbortError') { aborted = true; break; }
@@ -577,7 +579,7 @@ export function createApp(env = {}) {
           break; // stop-on-first-failure: skip the remaining statements
         }
         if (rowReturning) {
-          const sel = parseSelectResult(out.raw, 100);
+          const sel = parseSelectResult(out.raw, SELECT_ROW_CAP);
           entries.push({ sql: stmt, status: 'rows', columns: sel.columns, rows: sel.rows, truncated: sel.truncated, preview: firstRowPreview(sel.rows) });
         } else {
           entries.push({ sql: stmt, status: 'ok' });
@@ -613,6 +615,7 @@ export function createApp(env = {}) {
     const hasSel = sel.trim() !== '';
     const input = hasSel ? sel : app.activeTab().sql;
     const statements = splitStatements(input);
+    if (!statements.length) return; // nothing runnable (empty / comments-only)
     // >1 statement → script grid (a remembered single-result view doesn't apply).
     if (statements.length > 1) return runScript(statements, input);
     // 1 statement → today's rich path. Forward opts (e.g. a saved query's
@@ -799,7 +802,8 @@ export function createApp(env = {}) {
   // A result is exportable once it has raw text or at least one row.
   function exportableResult() {
     const r = app.activeTab().result;
-    return r && !r.error && (r.rawText != null || r.rows.length > 0) ? r : null;
+    // A script result is a per-statement grid, not a single exportable table.
+    return r && !r.error && !r.script && (r.rawText != null || r.rows.length > 0) ? r : null;
   }
   function copyResult() {
     const r = exportableResult();

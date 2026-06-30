@@ -80,7 +80,8 @@ const ROW_RETURNING = new Set([
 ]);
 
 /** The first SQL keyword of `stmt`, uppercased, after skipping leading
- *  whitespace and -- / # / block comments. '' when none. Pure. */
+ *  whitespace, -- / # / block comments, and `(` (so a parenthesized
+ *  `(SELECT …) UNION …` is still recognized as row-returning). '' when none. Pure. */
 export function leadingKeyword(stmt) {
   let s = String(stmt || '');
   for (;;) {
@@ -88,7 +89,8 @@ export function leadingKeyword(stmt) {
     s = s.replace(/^\s+/, '')
       .replace(/^--[^\n]*/, '')
       .replace(/^#[^\n]*/, '')
-      .replace(/^\/\*[\s\S]*?\*\//, '');
+      .replace(/^\/\*[\s\S]*?\*\//, '')
+      .replace(/^\(+/, '');
     if (s === before) break;
   }
   const m = /^([A-Za-z]+)/.exec(s);

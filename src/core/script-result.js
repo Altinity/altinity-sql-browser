@@ -5,13 +5,19 @@
 // grid (renderTable) consumes. The script summary grid shows a one-line preview
 // of the first row in column 2; clicking it opens the full table in a side pane.
 
+// The display cap for a script-mode SELECT. The runner asks the server for
+// SELECT_ROW_CAP + 1 rows (so it can tell a result was truncated — at exactly
+// the cap it can't) and shows at most SELECT_ROW_CAP.
+export const SELECT_ROW_CAP = 100;
+
 /**
  * Parse a JSONCompact response body into `{ columns, rows, truncated }`, capping
- * `rows` at `cap` (default 100; the server also caps via max_result_rows, so this
- * is a display backstop). A blank body or one that isn't valid JSON yields an
- * empty result rather than throwing. Pure.
+ * `rows` at `cap` (default SELECT_ROW_CAP). `truncated` is true when more than
+ * `cap` rows came back (the runner over-fetches by one to detect this). A blank
+ * body or one that isn't valid JSON yields an empty result rather than throwing.
+ * Pure.
  */
-export function parseSelectResult(rawText, cap = 100) {
+export function parseSelectResult(rawText, cap = SELECT_ROW_CAP) {
   const text = String(rawText == null ? '' : rawText).trim();
   if (!text) return { columns: [], rows: [], truncated: false };
   let json;

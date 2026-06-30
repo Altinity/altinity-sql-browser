@@ -9,6 +9,7 @@ import { looksLikeHtml, prettyValue } from '../core/cell.js';
 import { sortRows } from '../core/sort.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
+import { SELECT_ROW_CAP } from '../core/script-result.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
@@ -196,7 +197,7 @@ function scriptOutcomeCell(app, e) {
   // status === 'rows'
   if (!e.rows || !e.rows.length) return h('td', { class: 'script-cell' }, '(0 rows)');
   const n = e.rows.length;
-  const meta = '(' + n + ' row' + (n === 1 ? '' : 's') + (e.truncated ? ', first 100' : '') + ')';
+  const meta = '(' + n + ' row' + (n === 1 ? '' : 's') + (e.truncated ? ', first ' + SELECT_ROW_CAP : '') + ')';
   return h('td', {
     class: 'script-cell rows', title: 'Click to view all rows',
     onclick: () => openRowsViewer(app, e),

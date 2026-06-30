@@ -494,9 +494,43 @@ describe('query run', () => {
     expect(script[2]).toMatchObject({ preview: '1', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1']] });
     expect(app.state.history).toHaveLength(1);
     expect(app.state.history[0].sql).toBe(SCRIPT);
-    // SELECT statements are sent with the JSONCompact + row-cap params.
-    const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /max_result_rows=100/.test(u));
+    // SELECT statements are sent with the JSONCompact + row-cap params
+    // (over-fetched by one past the display cap to detect truncation).
+    const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /max_result_rows=101/.test(u));
     expect(selUrl).toMatch(/result_overflow_mode=break/);
+  });
+
+  it('flags a SELECT as truncated when more than the cap rows come back', async () => {
+    const data = Array.from({ length: 101 }, (_, i) => [String(i)]);
+    const { app } = appForRun([
+      [(u, sql) => /SELECT/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'n', type: 'Int' }], data }) })],
+    ]);
+    app.activeTab().sql = 'SELECT 1; SELECT 2'; // two statements → script mode
+    await app.actions.run();
+    const last = app.activeTab().result.script[1];
+    expect(last.rows).toHaveLength(100); // displayed cap
+    expect(last.truncated).toBe(true);
+  });
+
+  it('a comment-only selection is a no-op (nothing is sent)', async () => {
+    const { app } = appForRun([]);
+    const ta = app.dom.editorTextarea;
+    ta.value = '-- just a note';
+    ta.selectionStart = 0; ta.selectionEnd = ta.value.length;
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result).toBeNull(); // no run started
+    // the comment text was never POSTed to ClickHouse
+    expect(app.chCtx.fetch.mock.calls.some((c) => /just a note/.test(c[1] && c[1].body))).toBe(false);
+  });
+
+  it('copy/export treat a script result as non-exportable (no throw)', async () => {
+    const { app } = appForRun(scriptRoutes());
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result.script).toHaveLength(3);
+    expect(() => app.actions.copyResult()).not.toThrow();
+    expect(() => app.actions.exportResult()).not.toThrow();
   });
 
   it('stops on the first failing statement and skips the rest (no history)', async () => {

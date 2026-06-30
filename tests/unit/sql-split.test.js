@@ -87,6 +87,10 @@ describe('leadingKeyword', () => {
   it('skips leading whitespace and comments of every kind', () => {
     expect(leadingKeyword('  \n -- note\n # bang\n /* block */ SELECT 1')).toBe('SELECT');
   });
+  it('skips leading parentheses so a parenthesized SELECT is recognized', () => {
+    expect(leadingKeyword('((SELECT 1) UNION ALL (SELECT 2))')).toBe('SELECT');
+    expect(leadingKeyword('/* c */ ( select 1 )')).toBe('SELECT');
+  });
   it('returns "" when there is no leading keyword', () => {
     expect(leadingKeyword('')).toBe('');
     expect(leadingKeyword('-- only a comment')).toBe('');
@@ -97,7 +101,8 @@ describe('leadingKeyword', () => {
 describe('isRowReturning', () => {
   it('is true for row-bearing statements', () => {
     for (const s of ['SELECT 1', 'with x as (select 1) select * from x',
-      'SHOW TABLES', 'DESC t', 'DESCRIBE t', 'EXISTS TABLE t', 'VALUES (1)', 'EXPLAIN SELECT 1']) {
+      'SHOW TABLES', 'DESC t', 'DESCRIBE t', 'EXISTS TABLE t', 'VALUES (1)', 'EXPLAIN SELECT 1',
+      '(SELECT 1) UNION ALL (SELECT 2)']) {
       expect(isRowReturning(s)).toBe(true);
     }
   });
