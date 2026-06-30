@@ -7,8 +7,14 @@
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
 
-/** A fresh, empty result object for a query run in output format `fmt`. */
-export function newResult(fmt) {
+/**
+ * A fresh, empty result object for a query run in output format `fmt`. `rowLimit`
+ * (default 0 = uncapped) is the client-side row cap: the server's
+ * result_overflow_mode='break' stops at the cap but can overshoot to the next
+ * block boundary, so applyStreamLine trims any rows past `rowLimit` and flags
+ * `capped` once it's reached.
+ */
+export function newResult(fmt, rowLimit = 0) {
   return {
     columns: [],
     rows: [],
@@ -18,6 +24,8 @@ export function newResult(fmt) {
     error: null,
     cancelled: false,
     pct: 0,
+    rowLimit,
+    capped: false,
   };
 }
 
@@ -26,7 +34,12 @@ export function applyStreamLine(json, result) {
   if (json.meta) {
     result.columns = json.meta.map((m) => ({ name: m.name, type: m.type }));
   } else if (json.row) {
-    result.rows.push(result.columns.map((c) => json.row[c.name]));
+    // At the cap: drop the row (block-boundary overage from `break`) and flag it.
+    if (result.rowLimit > 0 && result.rows.length >= result.rowLimit) {
+      result.capped = true;
+    } else {
+      result.rows.push(result.columns.map((c) => json.row[c.name]));
+    }
   } else if (json.progress) {
     const p = json.progress;
     const total = +p.total_rows_to_read || 0;

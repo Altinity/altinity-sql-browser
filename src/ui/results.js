@@ -10,6 +10,7 @@ import { sortRows } from '../core/sort.js';
 import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, CHART_ROW_CAP } from '../core/chart-data.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
+import { RESULT_ROW_LIMIT_OPTIONS } from '../state.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
@@ -19,8 +20,18 @@ const EXPLAIN_ICONS = {
   pipeline: Icon.share, estimate: Icon.rows,
 };
 
-const VIS_CAP = 5000;
+const VIS_CAP = 5000; // fallback display cap for results that carry no row limit (raw / EXPLAIN)
 const MIN_COL = 48; // px floor for a resized column
+
+/**
+ * How many rows to render: follow the result's own row cap when set (so a 10000
+ * limit renders 10000), else the fixed fallback. The server cap already trims a
+ * normal SELECT to its limit, so this just keeps the renderers from re-capping
+ * a large-but-allowed result. Pure — exported for tests.
+ */
+export function visCap(r) {
+  return r.rowLimit > 0 ? r.rowLimit : VIS_CAP;
+}
 
 /**
  * New width (px) for a column dragged by `dx` client px. `scale` converts client
@@ -282,6 +293,27 @@ export function openRowsViewer(app, entry) {
   return backdrop;
 }
 
+/**
+ * A <select> capping how many rows a normal query fetches (the global, persisted
+ * preference). Changing it re-runs the current query with the new server-side
+ * cap, so a higher limit genuinely fetches more. The caller hides it for EXPLAIN
+ * views (small output a cap would truncate oddly).
+ */
+function rowLimitSelect(app) {
+  const sel = h('select', {
+    class: 'row-limit-select',
+    title: 'Max rows to fetch — changing re-runs the query',
+    onchange: (e) => app.actions.setResultRowLimit(Number(e.target.value)),
+  });
+  for (const n of RESULT_ROW_LIMIT_OPTIONS) {
+    sel.appendChild(h('option', { value: String(n) }, String(n)));
+  }
+  // Reflect the current limit by value (set after the options are attached so the
+  // <select> resolves the selection correctly).
+  sel.value = String(app.state.resultRowLimit);
+  return h('label', { class: 'row-limit' }, h('span', { class: 'row-limit-label' }, 'Rows'), sel);
+}
+
 function buildToolbar(app, r) {
   const toolbar = h('div', { class: 'res-toolbar' });
   if (r && r.script) {
@@ -351,6 +383,9 @@ function buildToolbar(app, r) {
     }
   }
   toolbar.appendChild(tabs);
+  // Row-cap selector after the view tabs, for normal result queries only —
+  // EXPLAIN views are exempt (small output a cap would truncate oddly).
+  if (!(r && r.explainView)) toolbar.appendChild(rowLimitSelect(app));
   toolbar.appendChild(h('div', { style: { flex: '1' } }));
   // EXPLAIN views suppress the ms/rows/bytes stats — they're not meaningful for a
   // plan and the freed space lets the five tabs breathe.
@@ -381,6 +416,13 @@ function buildToolbar(app, r) {
         h('span', { class: 'v' }, (r.rawText != null ? '—' : r.rows.length) + ' rows')));
       toolbar.appendChild(h('div', { class: 'stat', title: r.progress.rows + ' rows scanned' },
         h('span', { class: 'ic' }, Icon.bytes()), h('span', { class: 'v' }, formatBytes(r.progress.bytes))));
+      // The result hit the row cap: say so (the fetch stopped at the limit, more
+      // rows exist). Only the streaming path sets `capped`; raw output can't.
+      if (r.capped) {
+        toolbar.appendChild(h('span', {
+          class: 'capped-badge', title: 'Fetch stopped at the row limit — raise it to see more',
+        }, 'first ' + r.rowLimit + ' (capped)'));
+      }
     }
     if (r.explainView === 'pipeline' && r.rawText && !r.error) {
       toolbar.appendChild(h('button', {
@@ -403,7 +445,7 @@ function buildToolbar(app, r) {
 }
 
 export function renderJson(r) {
-  const arr = r.rows.slice(0, VIS_CAP).map((row) => {
+  const arr = r.rows.slice(0, visCap(r)).map((row) => {
     const o = {};
     r.columns.forEach((c, i) => { o[c.name] = row[i]; });
     return o;
@@ -417,9 +459,11 @@ export function renderJson(r) {
  * state seams so the same DOM/interaction code drives both:
  *   { columns, rows, sort:{col,dir}, onSort(col,dir), widths, onCell(name,type,value) }
  * `widths` is a colWidths object mutated in place (drag-resize); `onSort` re-renders
- * for the caller (global results effect, or the drawer's local repaint).
+ * for the caller (global results effect, or the drawer's local repaint). `cap` is
+ * the display row cap (the main table passes the selectable result-row limit; the
+ * rows pane leaves the default).
  */
-export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCell }) {
+export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCell, cap = VIS_CAP }) {
   const { col, dir } = sort;
   const rows = sortRows(rawRows, col, dir);
   const wrap = h('div', { class: 'res-table-wrap' });
@@ -452,7 +496,7 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   if (Object.keys(widths).length) applyFixedWidths(table, widths, IDX_KEY);
 
   const tbody = document.createElement('tbody');
-  rows.slice(0, VIS_CAP).forEach((row, ri) => {
+  rows.slice(0, cap).forEach((row, ri) => {
     const tr = document.createElement('tr');
     tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
     row.forEach((v, ci) => {
@@ -470,10 +514,10 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   });
   table.appendChild(tbody);
   wrap.appendChild(table);
-  if (rows.length > VIS_CAP) {
+  if (rows.length > cap) {
     wrap.appendChild(h('div', {
       style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
-    }, '… + ' + (rows.length - VIS_CAP) + ' more rows truncated for display.'));
+    }, '… + ' + (rows.length - cap) + ' more rows truncated for display.'));
   }
   return wrap;
 }
@@ -488,6 +532,7 @@ export function renderTable(app, r) {
     onSort: (col, dir) => { app.state.resultSort = { col, dir }; renderResults(app); },
     widths: r.colWidths,
     onCell: (name, type, value) => openCellDetail(app, name, type, value),
+    cap: visCap(r), // honor the selectable result-row limit (#86)
   });
 }
 

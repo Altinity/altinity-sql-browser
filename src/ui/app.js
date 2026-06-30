@@ -7,7 +7,7 @@
 import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart,
+  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart, normalizeRowLimit,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
@@ -518,8 +518,13 @@ export function createApp(env = {}) {
       fmt = explicitFmt || 'Table';
     }
 
+    // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
+    // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
+    // would truncate a plan oddly). The streaming guard reads it off the result;
+    // runQuery adds the server-side max_result_rows for the Table path.
+    const rowLimit = explainMode ? 0 : app.state.resultRowLimit;
     const t0 = now();
-    tab.result = newResult(fmt);
+    tab.result = newResult(fmt, rowLimit);
     if (explainView) tab.result.explainView = explainView;
     app.state.resultSort = { col: null, dir: 'asc' };
     app.state.runT0 = t0;
@@ -541,6 +546,7 @@ export function createApp(env = {}) {
     try {
       const out = await ch.runQuery(chCtx, runSql, {
         format: fmt,
+        resultRowLimit: rowLimit,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
         params: sessionParamsFor(tab, [srcSql]),
@@ -867,6 +873,15 @@ export function createApp(env = {}) {
   function explainQuery() { return explainMultiBlocked() ? undefined : run({ explain: true }); }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
   function setExplainView(id) { return explainMultiBlocked() ? undefined : run({ explainView: id }); }
+  // Change the global result-row cap: persist the (normalized) preference and
+  // re-run the current query so a raise genuinely fetches more (server-side cap),
+  // a lower one stops sooner. run() no-ops on an empty editor, so changing the
+  // limit with nothing typed just saves the preference.
+  function setResultRowLimit(n) {
+    app.state.resultRowLimit = normalizeRowLimit(n);
+    app.savePref('resultRowLimit', app.state.resultRowLimit);
+    return run();
+  }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
   // SHOW CREATE, pretty-print it through formatQuery(), and drop it into the
@@ -1079,6 +1094,7 @@ export function createApp(env = {}) {
     formatQuery,
     explainQuery,
     setExplainView,
+    setResultRowLimit,
     showSchemaGraph,
     expandSchemaGraph,
     openNodeDetail,

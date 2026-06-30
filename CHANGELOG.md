@@ -34,6 +34,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse error when the editor holds more than one statement. Opening a saved
   query / history entry **auto-runs only read-only queries** — an effectful one
   (CREATE/ALTER/DROP/INSERT/…) loads into the editor without executing.
+- **Result-row cap** with a 100 / 500 / 1000 / 5000 / 10000 selector in the result
+  toolbar (default **500**, a global preference persisted across tabs and reloads).
+  A normal `SELECT` now fetches at most the selected cap rather than pulling every
+  row over the wire: ClickHouse stops cleanly at the cap server-side
+  (`max_result_rows` + `result_overflow_mode = 'break'`), a small client-side guard
+  trims the block-boundary overage `break` can leave, and a **"first N (capped)"**
+  badge appears in the stats row when the limit is hit. Changing the selector
+  re-runs the current query, so raising the cap genuinely fetches more. The display
+  grid now renders up to the selected cap (10000 actually shows 10000). EXPLAIN /
+  PIPELINE / ESTIMATE runs are exempt. (#86)
 - Playwright e2e now runs on **WebKit** in addition to Chromium and Firefox, so
   many Safari regressions on the `html{zoom}`-based layout fail CI instead of
   shipping silently. README gained a **Supported browsers** stance: desktop

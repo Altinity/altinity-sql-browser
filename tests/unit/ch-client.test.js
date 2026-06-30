@@ -314,6 +314,16 @@ describe('runQuery', () => {
     await runQuery(raw, 'x', { format: 'TSV' });
     expect(raw.fetch.mock.calls[0][0]).toContain('wait_end_of_query=1');
   });
+  it('adds the server-side row cap when resultRowLimit is set; omits it otherwise', async () => {
+    const capped = ctxWith(async () => streamResp(['{"row":{}}\n']));
+    await runQuery(capped, 'x', { format: 'Table', resultRowLimit: 500 });
+    const url = capped.fetch.mock.calls[0][0];
+    expect(url).toContain('max_result_rows=500');
+    expect(url).toContain('result_overflow_mode=break');
+    const uncapped = ctxWith(async () => streamResp(['{"row":{}}\n']));
+    await runQuery(uncapped, 'x', { format: 'Table' }); // no limit → no cap params
+    expect(uncapped.fetch.mock.calls[0][0]).not.toContain('max_result_rows');
+  });
 });
 
 describe('killQuery', () => {
