@@ -21,10 +21,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   side pane; effectful statements show **OK**. Each grid row also shows that
   statement's own execution time (the toolbar still shows the script total). The
   click-to-open row pane is the **same sortable + resizable grid** as the main
-  results table (one shared component). Statements run inside a **per-tab
-  ClickHouse HTTP session** (`session_id` + `session_timeout=600`), so a script's
-  temporary tables / `SET`s persist across its separate per-statement requests.
-  Cancel aborts mid-script. Splitting
+  results table (one shared component). A script that needs cross-statement state
+  (a `CREATE TEMPORARY` table or a session `SET`) runs inside a **per-tab
+  ClickHouse HTTP session** so that state persists across its separate
+  per-statement requests; ordinary scripts run session-less. Cancel aborts mid-script. Splitting
   is purely lexical (`src/core/sql-split.js`), skipping `;` inside string/identifier
   literals and `--` / `#` / `/* */` comments. Known limitation: an `INSERT … FORMAT
   …` with inline data containing `;` mis-splits — run those on their own.

@@ -315,12 +315,12 @@ describe('query run', () => {
     // a plain SELECT needs no session, so none is opened (avoids the session race)
     expect(app.chCtx.fetch.mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
   });
-  it('opens a ClickHouse session (600s) only for SQL that needs one (SET / TEMPORARY), and it sticks to the tab', async () => {
+  it('opens a ClickHouse session only for SQL that needs one (SET / TEMPORARY), and it sticks to the tab', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]]);
     app.activeTab().sql = 'SET max_threads = 1';
     await app.actions.run(); // SET → opens a session
     const setUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
-    expect(setUrl).toMatch(/session_timeout=600/);
+    expect(setUrl).not.toMatch(/session_timeout/); // rely on the server default (60s) — see sessionParams
     const sid = /session_id=([^&]+)/.exec(setUrl)[1];
     app.chCtx.fetch.mockClear();
     app.activeTab().sql = 'SELECT 1'; // plain SELECT now, but the tab already has a session

@@ -454,10 +454,13 @@ export function createApp(env = {}) {
   // without this a `CREATE TEMPORARY TABLE …; INSERT …; SELECT …` script can't
   // see its own temp table. The id is per-tab (lazily minted) so tabs don't share
   // state and never collide on the per-session lock (only one query runs at a
-  // time, guarded by `running`). 600s idle timeout (default is 60s).
+  // time, guarded by `running`). No `session_timeout` override is needed:
+  // ClickHouse resets the idle timer when each query is *released* (end of the
+  // request, not the start) and cancels it while a query runs, so the default
+  // (60s) never lapses between a script's back-to-back statements.
   function sessionParams(tab) {
     tab.chSession = tab.chSession || uid('sess-');
-    return { session_id: tab.chSession, session_timeout: 600 };
+    return { session_id: tab.chSession };
   }
   // Only TEMPORARY tables and session `SET`s need a session; permanent DDL/DML and
   // SELECTs are global. So we attach a session_id ONLY when the SQL needs one — or
