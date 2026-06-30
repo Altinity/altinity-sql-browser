@@ -328,6 +328,26 @@ describe('query run', () => {
     const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(/session_id=([^&]+)/.exec(selUrl)[1]).toBe(sid); // sticky: same session id
   });
+  it('refreshes the schema after a successful schema-mutating statement (#diagnose-db-creation)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE DATABASE/.test(sql), resp({ body: streamBody([]) })],
+    ]);
+    await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
+    const spy = vi.spyOn(app, 'loadSchema');
+    app.activeTab().sql = 'CREATE DATABASE t3';
+    await app.actions.run();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it('does not refresh the schema after a plain SELECT', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    await new Promise((r) => setTimeout(r));
+    const spy = vi.spyOn(app, 'loadSchema');
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    expect(spy).not.toHaveBeenCalled();
+  });
   it('keeps the current result view on a plain re-run, and restores a remembered view when opened (#34)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
     const { app } = appForRun(routes, { Chart: class { destroy() {} } }); // Chart seam so the chart view renders
@@ -534,7 +554,35 @@ describe('query run', () => {
     // this script needs no session (permanent table) → session-less (no race)
     expect(urls.some((u) => /session_id=/.test(u))).toBe(false);
   });
-
+  it('refreshes the schema once a script contains a schema-mutating statement that actually ran (#diagnose-db-creation)', async () => {
+    const { app } = appForRun(scriptRoutes());
+    await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
+    const spy = vi.spyOn(app, 'loadSchema');
+    app.activeTab().sql = SCRIPT; // CREATE TABLE t; INSERT …; SELECT …
+    await app.actions.run();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it('still refreshes the schema when a later statement fails — the DDL already ran server-side', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
+    ]);
+    await new Promise((r) => setTimeout(r));
+    const spy = vi.spyOn(app, 'loadSchema');
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+  it('does not refresh the schema for a script with no schema-mutating statement', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'n', type: 'Int' }], data: [['1']] }) })],
+    ]);
+    await new Promise((r) => setTimeout(r));
+    const spy = vi.spyOn(app, 'loadSchema');
+    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    await app.actions.run();
+    expect(spy).not.toHaveBeenCalled();
+  });
   it('a script with CREATE TEMPORARY / SET shares one session across all its statements', async () => {
     const { app } = appForRun([
       [(u, sql) => /TEMPORARY/.test(sql), resp({ text: '' })],

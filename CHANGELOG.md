@@ -67,6 +67,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   loads rather than in-place mutation. This **completes the migration**. (#88, #91)
 
 ### Fixed
+- A newly created, still-empty database (e.g. `CREATE DATABASE`) never appeared
+  in the schema tree, even after a reload/relogin: `loadSchema()` only listed
+  databases that had at least one row in `system.tables`. It now enumerates
+  databases from `system.databases` and attaches tables where they exist, so an
+  empty database shows up immediately. Separately, the schema tree didn't
+  refresh after running DDL at all — `CREATE`/`DROP`/`ALTER`/`RENAME`/
+  `TRUNCATE`/`ATTACH`/`DETACH`/`EXCHANGE` now auto-reload the schema on a
+  successful run, so the tree stays in sync without a manual page reload.
 - Multiquery scripts no longer fail intermittently with **"Network error"**. A
   ClickHouse HTTP session is now attached **only when the SQL actually needs one**
   (a `CREATE TEMPORARY` table or a session `SET`), or when the tab already opened

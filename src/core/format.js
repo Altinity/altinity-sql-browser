@@ -108,6 +108,19 @@ export function detectSqlFormat(sql) {
   return m ? m[1] : null;
 }
 
+const SCHEMA_MUTATING_RE = /^(CREATE|DROP|ALTER|RENAME|TRUNCATE|ATTACH|DETACH|EXCHANGE)\b/i;
+
+/**
+ * True when `sql`'s first statement is a DDL keyword that can change the set
+ * of databases/tables/columns (CREATE/DROP/ALTER/RENAME/TRUNCATE/ATTACH/
+ * DETACH/EXCHANGE) — used to trigger a schema-tree reload after a run. Leading
+ * whitespace/comments are skipped. Pure.
+ */
+export function isSchemaMutatingSql(sql) {
+  const s = String(sql || '').replace(/^(\s|--[^\n]*\n|\/\*[\s\S]*?\*\/)+/, '').trim();
+  return SCHEMA_MUTATING_RE.test(s);
+}
+
 /**
  * Derive a short display name for a saved query: "Query · <table>" when a
  * FROM clause is present, else the first 48 chars of the collapsed SQL.

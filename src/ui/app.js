@@ -13,7 +13,7 @@ import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-spl
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
@@ -574,7 +574,10 @@ export function createApp(env = {}) {
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
       app.state.running.value = false;
-      if (!tab.result.error && !tab.result.cancelled) app.recordHistory(tab, opts && opts.sql);
+      if (!tab.result.error && !tab.result.cancelled) {
+        app.recordHistory(tab, opts && opts.sql);
+        if (isSchemaMutatingSql(runSql)) app.loadSchema(); // not awaited — fire and forget
+      }
     }
   }
 
@@ -670,6 +673,10 @@ export function createApp(env = {}) {
       tab.result.elapsedMs = now() - t0;
       if (aborted) tab.result.cancelled = true;
       app.state.running.value = false;
+      // A statement that actually ran (status !== 'error') and was schema-mutating
+      // refreshes the tree even if a later statement in the script failed — it
+      // already took effect server-side.
+      if (entries.some((e) => e.status !== 'error' && isSchemaMutatingSql(e.sql))) app.loadSchema();
       // One history entry for the whole script — but only on a clean run (mirrors
       // run(): no history for an aborted or failed script).
       if (!aborted && !entries.some((e) => e.status === 'error')) {

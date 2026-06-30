@@ -106,19 +106,28 @@ export async function loadServerVersion(ctx) {
 /**
  * Load the table list grouped by database. `system` is included (handy for
  * dashboards/diagnostics); the redundant INFORMATION_SCHEMA views stay filtered.
+ * Databases are enumerated from `system.databases` (not derived from
+ * `system.tables`) so a freshly created, still-empty database shows up too.
  * Returns [{ db, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
 export async function loadSchema(ctx) {
-  const sql =
-    'SELECT database, name, toUInt64(total_rows) AS total_rows, ' +
-    'toUInt64(total_bytes) AS total_bytes, comment\n' +
-    'FROM system.tables\n' +
-    "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
-    'ORDER BY database, name\n' +
-    'FORMAT JSON';
-  const json = await queryJson(ctx, sql);
+  const [dbJson, tblJson] = await Promise.all([
+    queryJson(ctx,
+      "SELECT name FROM system.databases\n" +
+      "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
+      'ORDER BY name\n' +
+      'FORMAT JSON'),
+    queryJson(ctx,
+      'SELECT database, name, toUInt64(total_rows) AS total_rows, ' +
+      'toUInt64(total_bytes) AS total_bytes, comment\n' +
+      'FROM system.tables\n' +
+      "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
+      'ORDER BY database, name\n' +
+      'FORMAT JSON'),
+  ]);
   const byDb = new Map();
-  for (const r of json.data || []) {
+  for (const r of dbJson.data || []) byDb.set(r.name, []);
+  for (const r of tblJson.data || []) {
     if (!byDb.has(r.database)) byDb.set(r.database, []);
     byDb.get(r.database).push({
       name: r.name,
