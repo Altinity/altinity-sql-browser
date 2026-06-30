@@ -22,10 +22,10 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 - **Deps:** if `node_modules` is missing (fresh worktree), run `npm ci` before any `npm test` / `npm run build`.
 
 ## 2 — Plan
-- From the Acceptance criteria, state: files to touch (pure logic → `src/core/`, render → `src/ui/`; any library/DOM call behind an **injected seam** per rules 2/4/5), the test files you'll add/extend, and the migration order.
+- **Always write the plan — no issue skips this, however small or well-specified.** From the Acceptance criteria, state: files to touch (pure logic → `src/core/`, render → `src/ui/`; any library/DOM call behind an **injected seam** per rules 2/4/5), the test files you'll add/extend, and the migration order. Produce this write-up unconditionally before touching code.
 - 🛑 If the issue is ambiguous, under-specified, or needs a decision **not** already recorded (issue body / `docs/ADR-0001-reactivity.md` / CLAUDE.md), stop and ask. This is a settled-architecture project — don't invent decisions.
 - **High-risk issues get a deeper plan review.** If this is a framework/dependency swap or a large multi-file rewrite — currently **#21** (CM6 / `EditorPort`) and **#66** (graph multi-select), or any issue you judge under-determined despite its Acceptance criteria — then **before writing code**: (1) **second opinion** — spawn a `Plan` subagent (Agent tool, `subagent_type: "Plan"`) to independently stress the approach (seams, migration order, coverage strategy, rollback) and fold its critique into the plan; (2) **🛑 post the resulting plan and wait for my approval** (I review on mobile). Skip this for the well-specified, low-risk issues.
-- Otherwise proceed (most issues carry Acceptance criteria and need no approval).
+- The plan write-up above is required either way; for well-specified, low-risk issues you proceed straight from it (no approval gate — most issues carry Acceptance criteria and need none).
 
 ## 3 — Implement (inner loop)
 - Write the code **and its tests in the same change** (rule 1). Keep `src/core/` pure at 100%; keep new third-party / DOM / high-frequency-pointer code behind an injected seam so the per-file gate holds (rule 5).
