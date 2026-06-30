@@ -79,8 +79,8 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox
-      - name: E2E (Playwright — Chromium + Firefox)
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: E2E (Playwright — Chromium + Firefox + WebKit)
         run: npm run test:e2e
       - uses: actions/upload-artifact@v7
         if: ${{ failure() }}
