@@ -8,3 +8,4 @@
 - [ ] Layers kept honest: pure logic in `src/core/`, network in `src/net/` (injected fetch), DOM in `src/ui/`
 - [ ] No new runtime dependency (or it's a deliberate, justified addition — see CONTRIBUTING)
 - [ ] README / `CHANGELOG.md` (`[Unreleased]`) updated if behavior or the deployed surface changed
+- [ ] Reconciled affected tracked work (roadmap #68, the issue body, ADR/CHANGELOG) if this change reshaped it
