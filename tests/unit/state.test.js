@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId,
   saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, filterSaved, filterHistory, importSaved,
-  deleteSaved, recordHistory, clearHistory, deleteHistory, tabChart,
+  deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabChart,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
 
@@ -421,6 +421,23 @@ describe('history', () => {
     const s = createState(reader());
     recordHistory(s, tab({ result: { rawText: 'x', rows: [], progress: { elapsed_ns: 0 } } }), vi.fn());
     expect(s.history[0].rows).toBeNull();
+  });
+  it('recordHistory records sqlText override (selection run) over tab.sql', () => {
+    const s = createState(reader());
+    recordHistory(s, tab(), vi.fn(), 1000, 'SELECT just_this');
+    expect(s.history[0]).toMatchObject({ sql: 'SELECT just_this', rows: 2 });
+  });
+  it('recordScriptHistory records the whole script with null rows', () => {
+    const s = createState(reader());
+    const save = vi.fn();
+    recordScriptHistory(s, 'CREATE x; INSERT y; SELECT z', 12.6, save, 2000);
+    expect(s.history[0]).toMatchObject({ sql: 'CREATE x; INSERT y; SELECT z', ts: 2000, rows: null, ms: 13 });
+    expect(save).toHaveBeenCalledWith(KEYS.history, s.history);
+  });
+  it('recordScriptHistory skips empty script text', () => {
+    const s = createState(reader());
+    recordScriptHistory(s, '   ', 5, vi.fn());
+    expect(s.history).toHaveLength(0);
   });
   it('recordHistory caps at 50 entries', () => {
     const s = createState(reader());

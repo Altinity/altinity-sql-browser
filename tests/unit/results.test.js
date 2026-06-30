@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, installChartZoomFix } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, openRowsViewer, installChartZoomFix } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey } from '../../src/core/chart-data.js';
@@ -621,5 +621,96 @@ describe('schema lineage result', () => {
     expect(region.querySelector('svg.explain-graph')).toBeNull();
     expect(region.querySelector('.placeholder').textContent).toMatch(/No objects in target_all/);
     expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
+  });
+});
+
+describe('multiquery script grid (#83)', () => {
+  const scriptResult = (over = {}) => ({
+    elapsedMs: 12,
+    script: [
+      { sql: 'CREATE TABLE t (a Int8)', status: 'ok' },
+      { sql: 'SELECT count() AS c\nFROM t', status: 'rows', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1'], ['2']], truncated: false, preview: '1' },
+      { sql: 'SELECT * FROM nope', status: 'rows', columns: [], rows: [] },
+      { sql: 'BAD SQL', status: 'error', error: 'DB::Exception: boom' },
+    ],
+    ...over,
+  });
+
+  it('renders one row per statement with OK / preview / 0-rows / error outcomes', () => {
+    const app = appWithResult(scriptResult());
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.script-grid')).not.toBeNull();
+    expect(region.querySelector('.res-graph-title').textContent).toContain('4 statements');
+    const cells = [...region.querySelectorAll('.script-cell')];
+    expect(cells[0].textContent).toBe('OK');
+    expect(cells[1].textContent).toContain('1'); // preview
+    expect(cells[1].textContent).toContain('2 rows');
+    expect(cells[2].textContent).toBe('(0 rows)');
+    expect(cells[3].textContent).toContain('boom');
+    // SQL is collapsed to one line, full text on the title attribute
+    const sqlCell = region.querySelector('.script-sql');
+    expect(sqlCell.querySelector('.cell-val').textContent).toBe('CREATE TABLE t (a Int8)');
+  });
+
+  it('flags a truncated SELECT in its row meta', () => {
+    const app = appWithResult(scriptResult({
+      script: [{ sql: 'SELECT * FROM big', status: 'rows', columns: [{ name: 'a', type: 'Int' }], rows: [['x']], truncated: true, preview: 'x' }],
+    }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.script-cell.rows').textContent).toContain('first 100');
+  });
+
+  it('clicking a SELECT row opens the rows pane; Escape and backdrop close it', () => {
+    const app = appWithResult(scriptResult());
+    renderResults(app);
+    click(app.dom.resultsRegion.querySelector('.script-cell.rows'));
+    let backdrop = document.querySelector('.cd-backdrop');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop.querySelectorAll('tbody tr')).toHaveLength(2); // both rows
+    expect(backdrop.querySelector('.cd-type').textContent).toContain('2 rows');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    // reopen + close via backdrop click
+    click(app.dom.resultsRegion.querySelector('.script-cell.rows'));
+    backdrop = document.querySelector('.cd-backdrop');
+    click(backdrop);
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+  });
+
+  it('openRowsViewer tolerates missing columns and renders NULL cells empty', () => {
+    const app = makeApp();
+    openRowsViewer(app, { rows: [['a', null]], truncated: true });
+    const backdrop = document.querySelector('.cd-backdrop');
+    expect(backdrop.querySelector('.cd-type').textContent).toContain('1+ row');
+    const cells = [...backdrop.querySelectorAll('tbody td')];
+    expect(cells[cells.length - 1].textContent).toBe(''); // null → empty
+    backdrop.remove();
+  });
+
+  it('toolbar shows live elapsed + Cancel while running, with a running footer', () => {
+    const app = appWithResult(scriptResult(), { running: true });
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    const cancel = region.querySelector('.cancel-act');
+    expect(cancel).not.toBeNull();
+    expect(region.querySelector('.script-running')).not.toBeNull();
+    click(cancel);
+    expect(app.actions.cancel).toHaveBeenCalled();
+  });
+
+  it('toolbar shows total elapsed + a cancelled badge when a script was aborted', () => {
+    const app = appWithResult(scriptResult({ cancelled: true }));
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.cancelled-badge')).not.toBeNull();
+    expect(region.textContent).toContain('12 ms');
+    expect(region.querySelector('.script-running')).toBeNull();
+  });
+
+  it('handles a single-statement script label without an "s"', () => {
+    const app = appWithResult(scriptResult({ script: [{ sql: 'SELECT 1', status: 'ok' }] }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).toContain('1 statement');
   });
 });

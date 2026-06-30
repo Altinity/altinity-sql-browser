@@ -72,6 +72,10 @@ export function createState(read = { loadJSON, loadStr }) {
     running: signal(false),
     abortController: null,
     resultView: signal('table'),
+    // True while the editor has a non-empty (non-whitespace) text selection, so
+    // ⌘+Enter / Run target just that text. Drives the Run button's
+    // "Run" ↔ "Run selection" label (an effect in createApp). Via `.value`.
+    hasSelection: signal(false),
     // `forceExplain` is set by the Explain button to put an ordinary query into
     // EXPLAIN-view mode; a normal Run clears it (session-only). The active view is
     // derived per-run from the typed statement / clicked tab, not stored here.
@@ -294,19 +298,34 @@ export function markLibrarySaved(state) {
   state.libraryDirty.value = false;
 }
 
-/** Record a successful run in history (most-recent first, capped at 50). */
-export function recordHistory(state, tab, save = saveJSON, now = Date.now()) {
-  const sql = String(tab.sql || '').trim();
-  if (!sql) return;
-  state.history.unshift({
-    id: makeId('h', now),
-    sql,
-    ts: now,
-    rows: tab.result.rawText != null ? null : tab.result.rows.length,
-    ms: Math.round(tab.result.progress.elapsed_ns / 1e6),
-  });
+// Push one history entry (most-recent first, capped at 50). Internal — the
+// exported recorders below supply the sql/rows/ms.
+function pushHistory(state, sql, rows, ms, save, now) {
+  const s = String(sql || '').trim();
+  if (!s) return;
+  state.history.unshift({ id: makeId('h', now), sql: s, ts: now, rows, ms });
   state.history = state.history.slice(0, 50);
   save(KEYS.history, state.history);
+}
+
+/**
+ * Record a successful run in history. `sqlText` overrides the recorded SQL (used
+ * when a selection — not the whole tab — was run); it defaults to `tab.sql`.
+ */
+export function recordHistory(state, tab, save = saveJSON, now = Date.now(), sqlText) {
+  pushHistory(
+    state,
+    sqlText != null ? sqlText : tab.sql,
+    tab.result.rawText != null ? null : tab.result.rows.length,
+    Math.round(tab.result.progress.elapsed_ns / 1e6),
+    save, now,
+  );
+}
+
+/** Record a successful multiquery script run as one history entry (the whole
+ *  script text); per-statement row counts aren't meaningful, so rows is null. */
+export function recordScriptHistory(state, sql, ms, save = saveJSON, now = Date.now()) {
+  pushHistory(state, sql, null, Math.round(ms), save, now);
 }
 
 /** Clear all history. */

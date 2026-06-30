@@ -7,8 +7,10 @@
 import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, saveQuery, savedForTab, tabChart,
+  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart,
 } from '../state.js';
+import { splitStatements, isRowReturning } from '../core/sql-split.js';
+import { parseSelectResult, firstRowPreview } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, detectSqlFormat } from '../core/format.js';
@@ -434,7 +436,11 @@ export function createApp(env = {}) {
   async function run(opts) {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
-    if (!tab.sql.trim()) return;
+    // `opts.sql` overrides the source SQL (a single selected statement); otherwise
+    // the whole tab runs, byte-for-byte as before (FORMAT / EXPLAIN detection,
+    // trailing `;`, history).
+    const srcSql = opts && opts.sql != null ? opts.sql : tab.sql;
+    if (!srcSql.trim()) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
 
@@ -447,10 +453,10 @@ export function createApp(env = {}) {
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
     // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
     // the five EXPLAIN views; everything else streams structured (Table).
-    const explicitFmt = detectSqlFormat(tab.sql);
-    const parsed = explicitFmt ? null : parseExplain(tab.sql);
+    const explicitFmt = detectSqlFormat(srcSql);
+    const parsed = explicitFmt ? null : parseExplain(srcSql);
     const explainMode = !explicitFmt && (parsed != null || app.state.forceExplain);
-    let runSql = tab.sql;
+    let runSql = srcSql;
     let fmt;
     let explainView = null;
     if (explainMode) {
@@ -463,9 +469,9 @@ export function createApp(env = {}) {
         || (parsed && detectExplainView(parsed))
         || 'explain';
       fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
-      const inner = parsed ? parsed.inner : tab.sql;
+      const inner = parsed ? parsed.inner : srcSql;
       runSql = explainView === 'explain'
-        ? (parsed ? tab.sql : 'EXPLAIN ' + tab.sql)
+        ? (parsed ? srcSql : 'EXPLAIN ' + srcSql)
         : buildExplainQuery(inner, explainView);
     } else {
       fmt = explicitFmt || 'Table';
@@ -520,8 +526,98 @@ export function createApp(env = {}) {
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
       app.state.running.value = false;
-      if (!tab.result.error && !tab.result.cancelled) app.recordHistory(tab);
+      if (!tab.result.error && !tab.result.cancelled) app.recordHistory(tab, opts && opts.sql);
     }
+  }
+
+  // Run a `;`-separated script sequentially: one ClickHouse request per statement
+  // (CH's HTTP interface runs exactly one statement per request), stopping on the
+  // first failure. Row-returning statements (SELECT/WITH/SHOW/…) are fetched as
+  // JSONCompact capped at 100 rows; everything else runs for effect and reports
+  // OK. The result is a per-statement summary grid (tab.result.script). The whole
+  // script is recorded as one history entry on a clean run. `originalInput` is the
+  // exact text that was split (the selection or the whole editor).
+  async function runScript(statements, originalInput) {
+    if (app.state.running.value) return;
+    await ensureConfig();
+    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    app.state.forceExplain = false;
+    const tab = app.activeTab();
+    const t0 = now();
+    const entries = [];
+    tab.result = { script: entries };
+    app.state.resultSort = { col: null, dir: 'asc' };
+    app.state.runT0 = t0;
+    app.state.abortController = new AbortController();
+    app.state.runTick = setInterval(tickElapsed, 100);
+    let aborted = false;
+    app.state.running.value = true; // the results effect paints the (empty) grid
+    try {
+      for (let i = 0; i < statements.length; i++) {
+        const stmt = statements[i];
+        const rowReturning = isRowReturning(stmt);
+        // Fresh query_id per statement, published before the request so Cancel
+        // issues KILL QUERY against the statement that's actually running.
+        app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0 + '_' + i;
+        let out;
+        try {
+          out = await ch.runQuery(chCtx, stmt, {
+            format: rowReturning ? 'JSONCompact' : 'TSV',
+            queryId: app.state.runQueryId,
+            signal: app.state.abortController.signal,
+            params: rowReturning ? { max_result_rows: 100, result_overflow_mode: 'break' } : undefined,
+          });
+        } catch (e) {
+          if (e.name === 'AbortError') { aborted = true; break; }
+          out = { error: e instanceof TypeError ? 'Network error' : String((e && e.message) || e) };
+        }
+        if (out.error != null) {
+          entries.push({ sql: stmt, status: 'error', error: out.error });
+          renderResults(app);
+          break; // stop-on-first-failure: skip the remaining statements
+        }
+        if (rowReturning) {
+          const sel = parseSelectResult(out.raw, 100);
+          entries.push({ sql: stmt, status: 'rows', columns: sel.columns, rows: sel.rows, truncated: sel.truncated, preview: firstRowPreview(sel.rows) });
+        } else {
+          entries.push({ sql: stmt, status: 'ok' });
+        }
+        renderResults(app);
+      }
+    } finally {
+      clearInterval(app.state.runTick);
+      app.state.runTick = null;
+      app.state.abortController = null;
+      app.state.runQueryId = null;
+      app.state.runT0 = null;
+      tab.result.elapsedMs = now() - t0;
+      if (aborted) tab.result.cancelled = true;
+      app.state.running.value = false;
+      // One history entry for the whole script — but only on a clean run (mirrors
+      // run(): no history for an aborted or failed script).
+      if (!aborted && !entries.some((e) => e.status === 'error')) {
+        recordScriptHistory(app.state, originalInput, tab.result.elapsedMs, saveJSON);
+        if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
+      }
+    }
+  }
+
+  // The Run button / ⌘+Enter entry point. A non-empty (non-whitespace) editor
+  // selection runs just that text; otherwise the whole tab. The chosen text is
+  // split: one statement keeps today's rich Table/Chart/EXPLAIN path (run());
+  // more than one runs sequentially as a script (runScript).
+  function runEntry(opts) {
+    if (app.state.running.value) return;
+    const ta = app.dom.editorTextarea;
+    const sel = ta ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    const hasSel = sel.trim() !== '';
+    const input = hasSel ? sel : app.activeTab().sql;
+    const statements = splitStatements(input);
+    // >1 statement → script grid (a remembered single-result view doesn't apply).
+    if (statements.length > 1) return runScript(statements, input);
+    // 1 statement → today's rich path. Forward opts (e.g. a saved query's
+    // remembered view / Explain); a selection adds the sql override.
+    return run(hasSel ? { ...opts, sql: input } : opts);
   }
   // Stop an in-flight query: abort the stream and KILL QUERY on the server.
   function cancel() {
@@ -532,10 +628,12 @@ export function createApp(env = {}) {
   function setRunBtn(running) {
     if (!app.dom.runBtn) return;
     app.dom.runBtn.disabled = running;
-    // Build the children and drop the null (replaceChildren would otherwise
-    // coerce a null arg into a "null" text node → "Running…null").
+    // "Run selection" while the editor has a non-empty selection (so the mode is
+    // discoverable); plain "Run" otherwise. Build the children and drop the null
+    // (replaceChildren would coerce a null arg into a "null" text node).
+    const label = running ? 'Running…' : (app.state.hasSelection.value ? 'Run selection' : 'Run');
     app.dom.runBtn.replaceChildren(
-      ...[Icon.play(), h('span', null, running ? 'Running…' : 'Run'),
+      ...[Icon.play(), h('span', null, label),
         running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
   app.setRunBtn = setRunBtn;
@@ -676,8 +774,8 @@ export function createApp(env = {}) {
   }
 
   // --- saved / history bridges ------------------------------------------
-  app.recordHistory = (tab) => {
-    recordHistory(app.state, tab, saveJSON);
+  app.recordHistory = (tab, sqlText) => {
+    recordHistory(app.state, tab, saveJSON, undefined, sqlText);
     if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
   };
 
@@ -847,7 +945,7 @@ export function createApp(env = {}) {
 
   // --- actions registry --------------------------------------------------
   app.actions = {
-    run,
+    run: runEntry,
     cancel,
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
@@ -996,8 +1094,20 @@ export function renderApp(app, helpers) {
     app.state.running.value;
     renderResults(app);
   });
-  // The Run button reflects the run state (label + disabled).
-  effect(() => app.setRunBtn(app.state.running.value));
+  // The Run button reflects the run state (label + disabled) and the selection
+  // (Run ↔ Run selection).
+  effect(() => { app.state.hasSelection.value; app.setRunBtn(app.state.running.value); });
+  // Track the editor's text selection into a signal so the Run button label and
+  // ⌘+Enter target just the highlighted text. `selectionchange` is the one event
+  // that fires for keyboard, mouse, and programmatic selection; gate on the
+  // editor being focused so selecting elsewhere (results, address bar) is ignored.
+  app.syncSelection = () => {
+    const ta = app.dom.editorTextarea;
+    const focused = ta && (app.document || document).activeElement === ta;
+    const sel = focused ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    app.state.hasSelection.value = sel.trim() !== '';
+  };
+  (app.document || document).addEventListener('selectionchange', app.syncSelection);
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()
   // calls: re-runs on schema load, load error, filter text, or expand/collapse.
   // Registered here (post-mount) so app.dom.schemaList already exists; the effect

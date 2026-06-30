@@ -475,6 +475,122 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result.rawFormat).toBe('JSON'); // FORMAT clause, not the EXPLAIN default
   });
+
+  // ── multiquery / run-selection (#83) ──────────────────────────────────────
+  const SCRIPT = 'CREATE TABLE t (a Int8); INSERT INTO t VALUES (1); SELECT count() AS c FROM t';
+  const scriptRoutes = () => [
+    [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+    [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
+    [(u, sql) => /SELECT count/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) })],
+  ];
+
+  it('runs a ;-separated script sequentially, one summary row per statement, and records one history entry', async () => {
+    const { app } = appForRun(scriptRoutes());
+    app.state.sidePanel.value = 'history'; // exercise the history repaint in the finally
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    const script = app.activeTab().result.script;
+    expect(script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']);
+    expect(script[2]).toMatchObject({ preview: '1', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1']] });
+    expect(app.state.history).toHaveLength(1);
+    expect(app.state.history[0].sql).toBe(SCRIPT);
+    // SELECT statements are sent with the JSONCompact + row-cap params.
+    const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /max_result_rows=100/.test(u));
+    expect(selUrl).toMatch(/result_overflow_mode=break/);
+  });
+
+  it('stops on the first failing statement and skips the rest (no history)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    const script = app.activeTab().result.script;
+    expect(script).toHaveLength(2); // CREATE ok, INSERT error; SELECT never run
+    expect(script[1]).toMatchObject({ status: 'error' });
+    expect(script[1].error).toMatch(/boom/);
+    expect(app.state.history).toHaveLength(0);
+  });
+
+  it('reports a network error (TypeError) per statement', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), () => { throw new TypeError('fetch failed'); }],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error', error: 'Network error' });
+  });
+
+  it('surfaces a non-abort thrown error message per statement', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), () => { throw new Error('kaput'); }],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error', error: 'kaput' });
+  });
+
+  it('aborts mid-script: marks the result cancelled and records no history', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result.cancelled).toBe(true);
+    expect(app.activeTab().result.script).toHaveLength(1); // CREATE ran; INSERT aborted before pushing
+    expect(app.state.history).toHaveLength(0);
+  });
+
+  it('run-selection: a non-empty selection runs only the selected statement (rich path) and records that text', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    const ta = app.dom.editorTextarea;
+    ta.value = 'SELECT 1; SELECT 2';
+    ta.selectionStart = 0; ta.selectionEnd = 8; // "SELECT 1"
+    app.activeTab().sql = ta.value;
+    await app.actions.run();
+    expect(app.activeTab().result.rows).toEqual([['1']]); // single-statement rich path, not the script grid
+    expect(app.activeTab().result.script).toBeUndefined();
+    expect(app.state.history[0].sql).toBe('SELECT 1'); // the selection, not the whole editor
+  });
+
+  it('runEntry while already running is a no-op', async () => {
+    const { app } = appForRun([]);
+    app.state.running.value = true;
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result).toBeNull();
+  });
+
+  it('a signed-out script run hits onSignedOut and produces no result', async () => {
+    const app = createApp(env({ sessionStorage: memSession({}) }));
+    app.renderApp();
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(app.activeTab().result).toBeNull(); // returns before building the grid
+  });
+
+  it('syncSelection drives hasSelection; setRunBtn flips to "Run selection"', () => {
+    const { app } = appForRun([]);
+    const ta = app.dom.editorTextarea;
+    ta.value = 'SELECT 1; SELECT 2';
+    ta.focus();
+    ta.selectionStart = 0; ta.selectionEnd = 8;
+    app.syncSelection();
+    expect(app.state.hasSelection.value).toBe(true);
+    app.setRunBtn(false);
+    expect(app.dom.runBtn.textContent).toContain('Run selection');
+    // collapsed selection → false; missing textarea → false
+    ta.selectionEnd = 0;
+    app.syncSelection();
+    expect(app.state.hasSelection.value).toBe(false);
+    app.dom.editorTextarea = null;
+    app.syncSelection();
+    expect(app.state.hasSelection.value).toBe(false);
+  });
 });
 
 describe('formatQuery', () => {

@@ -93,6 +93,14 @@ export function renderResults(app) {
   // While running, pin a streaming strip to the top of the body: a determinate
   // fill at read/total when known, else an indeterminate sweep.
   if (app.state.running.value) inner.appendChild(streamStrip(r));
+  // Multiquery script: a per-statement summary grid. Handled before the
+  // single-result chain below (a script result has no `rows`/`rawText`).
+  if (r && r.script) {
+    inner.appendChild(renderScriptGrid(app, r));
+    body.appendChild(inner);
+    region.replaceChildren(body);
+    return;
+  }
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
     inner.appendChild(h('div', { class: 'placeholder starting' },
@@ -149,8 +157,124 @@ function streamStrip(r) {
       : h('i', { class: 'sweep' }));
 }
 
+// The multiquery summary grid: one row per executed statement. Col 1 is the
+// collapsed statement text (full text on hover); Col 2 is the outcome — OK for an
+// effectful statement (DDL/INSERT), the first-row preview for a SELECT (click to
+// open all rows in a side pane), or the error for the failing statement (the last
+// row, since the run stops on first failure).
+function renderScriptGrid(app, r) {
+  const wrap = h('div', { class: 'res-table-wrap script-grid' });
+  const table = document.createElement('table');
+  table.className = 'res-table';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  trh.appendChild(h('th', null, 'Statement'));
+  trh.appendChild(h('th', null, 'Result'));
+  thead.appendChild(trh);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  r.script.forEach((e) => {
+    const tr = document.createElement('tr');
+    tr.appendChild(h('td', { class: 'script-sql', title: e.sql || '' },
+      h('div', { class: 'cell-val' }, (e.sql || '').replace(/\s+/g, ' ').trim())));
+    tr.appendChild(scriptOutcomeCell(app, e));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  if (app.state.running.value) {
+    wrap.appendChild(h('div', { class: 'script-running' },
+      h('span', { class: 'spin' }, Icon.spinner()), h('span', null, 'Running…')));
+  }
+  return wrap;
+}
+
+// Column 2 of one script row, by outcome.
+function scriptOutcomeCell(app, e) {
+  if (e.status === 'error') return h('td', { class: 'script-cell err' }, e.error || 'Error');
+  if (e.status === 'ok') return h('td', { class: 'script-cell ok' }, 'OK');
+  // status === 'rows'
+  if (!e.rows || !e.rows.length) return h('td', { class: 'script-cell' }, '(0 rows)');
+  const n = e.rows.length;
+  const meta = '(' + n + ' row' + (n === 1 ? '' : 's') + (e.truncated ? ', first 100' : '') + ')';
+  return h('td', {
+    class: 'script-cell rows', title: 'Click to view all rows',
+    onclick: () => openRowsViewer(app, e),
+  }, h('span', { class: 'script-preview' }, e.preview || ''), h('span', { class: 'script-meta' }, meta));
+}
+
+/**
+ * Open a right-side pane with the full rows of one script SELECT, as a static
+ * table. Reuses the cell-detail drawer scaffold (.cd-*); a shared Drawer
+ * primitive is deferred to #60. Escape / backdrop / ✕ closes. Exported for tests.
+ */
+export function openRowsViewer(app, entry) {
+  const doc = app.document || document;
+  let backdrop;
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  function close() {
+    if (backdrop) backdrop.remove();
+    doc.removeEventListener('keydown', onKey, true);
+  }
+  const n = entry.rows.length;
+  const head = h('div', { class: 'cd-head' },
+    h('div', { class: 'cd-title' },
+      h('span', { class: 'cd-name' }, 'Result rows'),
+      h('span', { class: 'cd-type' }, n + (entry.truncated ? '+' : '') + ' row' + (n === 1 ? '' : 's'))),
+    h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
+  const body = h('div', { class: 'cd-body' }, scriptRowsTable(entry.columns || [], entry.rows));
+  const panel = h('div', { class: 'cd-panel', onclick: (ev) => ev.stopPropagation() }, head, body);
+  backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
+  doc.body.appendChild(backdrop);
+  doc.addEventListener('keydown', onKey, true);
+  return backdrop;
+}
+
+// A plain (no sort / resize) table of a script SELECT's rows for the side pane.
+function scriptRowsTable(columns, rows) {
+  const table = document.createElement('table');
+  table.className = 'res-table';
+  const trh = document.createElement('tr');
+  trh.appendChild(h('th', { class: 'idx' }, '#'));
+  columns.forEach((c) => trh.appendChild(h('th', { title: c.type || '' }, c.name)));
+  const thead = document.createElement('thead');
+  thead.appendChild(trh);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  rows.forEach((row, ri) => {
+    const tr = document.createElement('tr');
+    tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
+    row.forEach((v) => tr.appendChild(h('td', { class: 'cell' }, h('div', { class: 'cell-val' }, v == null ? '' : String(v)))));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  return h('div', { class: 'res-table-wrap' }, table);
+}
+
 function buildToolbar(app, r) {
   const toolbar = h('div', { class: 'res-toolbar' });
+  if (r && r.script) {
+    // Script view: a title (N statements) + live elapsed / Cancel while running,
+    // else the total elapsed. No view-switcher / copy / export (each statement
+    // owns its own preview + rows pane).
+    const n = r.script.length;
+    toolbar.appendChild(h('div', { class: 'result-view-tabs' },
+      h('span', { class: 'res-graph-title' }, 'Script · ' + n + ' statement' + (n === 1 ? '' : 's'))));
+    toolbar.appendChild(h('div', { style: { flex: '1' } }));
+    if (app.state.running.value) {
+      app.dom.runElapsedEl = h('span', { class: 'v' }, app.elapsedMs().toFixed(0) + ' ms');
+      toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()), app.dom.runElapsedEl));
+      toolbar.appendChild(h('button', {
+        class: 'res-act cancel-act', title: 'Cancel script (Esc)',
+        onclick: () => app.actions.cancel(),
+      }, Icon.close(), h('span', null, 'Cancel'), h('kbd', null, 'Esc')));
+    } else {
+      if (r.cancelled) toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · partial'));
+      toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()),
+        h('span', { class: 'v' }, (r.elapsedMs || 0).toFixed(0) + ' ms')));
+    }
+    return toolbar;
+  }
   if (r && r.schemaGraph) {
     // Schema-lineage view: a title + Expand (fullscreen); no view-switcher / stats.
     const f = r.schemaGraph.focus || {};
