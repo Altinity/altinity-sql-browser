@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat, toSubquery,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -125,6 +125,34 @@ describe('detectSqlFormat', () => {
     expect(detectSqlFormat("SELECT 'FORMAT JSON' AS x")).toBeNull(); // FORMAT not the trailing clause
     expect(detectSqlFormat('')).toBeNull();
     expect(detectSqlFormat(null)).toBeNull();
+  });
+});
+
+describe('isSchemaMutatingSql', () => {
+  it('is true for each schema-mutating DDL keyword, case-insensitively', () => {
+    expect(isSchemaMutatingSql('CREATE DATABASE t3')).toBe(true);
+    expect(isSchemaMutatingSql('create table t (id UInt32) engine=Memory')).toBe(true);
+    expect(isSchemaMutatingSql('DROP TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('ALTER TABLE t ADD COLUMN c UInt8')).toBe(true);
+    expect(isSchemaMutatingSql('RENAME TABLE a TO b')).toBe(true);
+    expect(isSchemaMutatingSql('TRUNCATE TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('ATTACH TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('DETACH TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('EXCHANGE TABLES a AND b')).toBe(true);
+  });
+  it('skips leading whitespace and comments before the keyword', () => {
+    expect(isSchemaMutatingSql('  \n CREATE DATABASE t3')).toBe(true);
+    expect(isSchemaMutatingSql('-- a comment\nCREATE DATABASE t3')).toBe(true);
+    expect(isSchemaMutatingSql('/* block */ DROP TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('-- one\n/* two */\nALTER TABLE t ADD COLUMN c UInt8')).toBe(true);
+  });
+  it('is false for non-DDL statements and empty/null input', () => {
+    expect(isSchemaMutatingSql('SELECT 1')).toBe(false);
+    expect(isSchemaMutatingSql('INSERT INTO t VALUES (1)')).toBe(false);
+    expect(isSchemaMutatingSql('-- DROP TABLE not really')).toBe(false);
+    expect(isSchemaMutatingSql('')).toBe(false);
+    expect(isSchemaMutatingSql(null)).toBe(false);
+    expect(isSchemaMutatingSql(undefined)).toBe(false);
   });
 });
 

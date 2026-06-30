@@ -150,20 +150,34 @@ describe('loadServerVersion', () => {
 });
 
 describe('loadSchema', () => {
-  it('groups tables by db, all collapsed, defaults comment', async () => {
-    const ctx = ctxWith(async () => jsonResp({
-      data: [
-        { database: 'a', name: 't1', total_rows: '1', total_bytes: '2', comment: 'c' },
-        { database: 'a', name: 't2', total_rows: '3', total_bytes: '4' },
-        { database: 'b', name: 't3', total_rows: '5', total_bytes: '6', comment: '' },
-      ],
-    }));
+  it('groups tables by db, all collapsed, defaults comment; includes empty databases', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('FROM system.databases')
+        ? jsonResp({ data: [{ name: 'a' }, { name: 'b' }, { name: 'empty' }] })
+        : jsonResp({
+          data: [
+            { database: 'a', name: 't1', total_rows: '1', total_bytes: '2', comment: 'c' },
+            { database: 'a', name: 't2', total_rows: '3', total_bytes: '4' },
+            { database: 'b', name: 't3', total_rows: '5', total_bytes: '6', comment: '' },
+          ],
+        })
+    ));
     const schema = await loadSchema(ctx);
-    expect(schema).toHaveLength(2);
+    expect(schema).toHaveLength(3);
     expect(schema[0]).toMatchObject({ db: 'a', expanded: false });
     expect(schema[1]).toMatchObject({ db: 'b', expanded: false });
+    expect(schema[2]).toEqual({ db: 'empty', expanded: false, tables: [] });
     expect(schema[0].tables[0]).toEqual({ name: 't1', total_rows: '1', total_bytes: '2', comment: 'c', columns: null });
     expect(schema[0].tables[1].comment).toBe('');
+  });
+  it('handles a table whose database is missing from system.databases', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('FROM system.databases')
+        ? jsonResp({ data: [] })
+        : jsonResp({ data: [{ database: 'orphan', name: 't1', total_rows: '1', total_bytes: '2', comment: '' }] })
+    ));
+    const schema = await loadSchema(ctx);
+    expect(schema).toEqual([{ db: 'orphan', expanded: false, tables: [{ name: 't1', total_rows: '1', total_bytes: '2', comment: '', columns: null }] }]);
   });
   it('handles an empty table list', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
