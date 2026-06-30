@@ -9,6 +9,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- State reactivity now uses `@preact/signals-core` (the third bundled runtime
+  dependency), adopted incrementally per
+  [ADR-0001](docs/ADR-0001-reactivity.md): the tab list, side panel, run state
+  (`running`/`resultView`), and the library title repaint via signal `effect`s
+  instead of manual render calls. No user-facing behavior change. A Preact
+  schema-panel spike was evaluated and **rejected** — the app stays
+  framework-free (ADR-0001 addendum). (#88)
+
 ## [0.1.5] - 2026-06-29
 
 ### Added
