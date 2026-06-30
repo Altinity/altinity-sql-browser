@@ -298,6 +298,14 @@ describe('runQuery', () => {
     await runQuery(ctx, 'x', { queryId: 'abc-123' });
     expect(ctx.fetch.mock.calls[0][0]).toContain('query_id=abc-123');
   });
+  it('passes caller params (e.g. result caps) alongside query_id', async () => {
+    const ctx = ctxWith(async () => textResp('{"meta":[],"data":[]}'));
+    await runQuery(ctx, 'x', { format: 'JSONCompact', queryId: 'q1', params: { max_result_rows: 100, result_overflow_mode: 'break' } });
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('query_id=q1');
+    expect(url).toContain('max_result_rows=100');
+    expect(url).toContain('result_overflow_mode=break');
+  });
   it('streams without wait_end_of_query; raw modes keep it for clean error status', async () => {
     const s = ctxWith(async () => streamResp(['{"row":{}}\n']));
     await runQuery(s, 'x', { format: 'Table' });

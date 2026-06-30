@@ -370,7 +370,9 @@ export async function loadEntityDoc(ctx, name, sqlString) {
  *
  * @param ctx
  * @param sql
- * @param o  { format, signal, onLine(json), onChunk(), onRaw(text) }
+ * @param o  { format, signal, params, onLine(json), onChunk(), onRaw(text) }
+ *           `params` are extra ClickHouse settings/query-string options (e.g.
+ *           multiquery SELECTs pass max_result_rows / result_overflow_mode).
  */
 export async function runQuery(ctx, sql, o = {}) {
   const fmt = o.format || 'Table';
@@ -392,7 +394,9 @@ export async function runQuery(ctx, sql, o = {}) {
     // and surfaces mid-stream errors via the in-band `exception` line instead.
     extra: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), add_http_cors_header: 1 },
     // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
-    params: o.queryId ? { query_id: o.queryId } : {},
+    // Caller-supplied params (o.params) ride alongside — e.g. multiquery SELECTs
+    // add max_result_rows / result_overflow_mode to cap the result server-side.
+    params: { ...(o.queryId ? { query_id: o.queryId } : {}), ...(o.params || {}) },
   });
   const resp = await authedFetch(ctx, url, sql, o.signal);
 
