@@ -457,6 +457,21 @@ describe('query run', () => {
     expect(app.activeTab().result.explainView).toBe('explain');
     expect(sentExplains(e)).toContain('EXPLAIN SELECT 1');
   });
+  it('Explain on a multi-statement script shows a message and sends no EXPLAIN', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    await app.actions.explainQuery();
+    expect(document.querySelector('.share-toast').textContent).toMatch(/multi-statement/);
+    expect(sentExplains(e)).toHaveLength(0); // nothing sent to ClickHouse
+    expect(app.activeTab().result).toBeNull();
+  });
+  it('setExplainView on a multi-statement script is also blocked', async () => {
+    const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
+    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    await app.actions.setExplainView('pipeline');
+    expect(document.querySelector('.share-toast').textContent).toMatch(/multi-statement/);
+    expect(sentExplains(e)).toHaveLength(0);
+  });
   it('runs ESTIMATE as a structured table (streaming), not raw', async () => {
     const { app } = appForRun([
       [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],
@@ -684,6 +699,48 @@ describe('formatQuery', () => {
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).toBeNull(); // error cleared
     expect(app.activeTab().result).toBeNull();
+  });
+  it('formats a multi-statement script one statement at a time, joined by ;<blank>', async () => {
+    const { app } = appFor([
+      [(u, sql) => /create table/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE t\n(\n    a Int8\n)' }] } })],
+      [(u, sql) => /count/.test(sql), resp({ json: { data: [{ q: 'SELECT count()\nFROM t' }] } })],
+    ]);
+    app.activeTab().sql = 'create table t (a Int8); select count() from t';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE t\n(\n    a Int8\n);\n\nSELECT count()\nFROM t\n');
+  });
+  it('multi-statement format is best-effort: an unformattable statement keeps its original text', async () => {
+    const { app } = appFor([
+      [(u, sql) => /create table/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE t (a Int8)' }] } })],
+      [(u, sql) => /bad syntax/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error"}' })],
+    ]);
+    app.activeTab().sql = 'create table t (a Int8); bad syntax here';
+    await app.actions.formatQuery();
+    expect(app.dom.editorTextarea.value).toContain('bad syntax here'); // original kept
+    expect(app.root.querySelector('.results-error')).toBeNull(); // no scary error for the script
+  });
+  it('a multi-statement format clears a prior single-statement format error', async () => {
+    const { app } = appFor([
+      [(u, sql) => /BEWEEN/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error: failed at position 8 (BEWEEN): x"}' })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
+    ]);
+    app.activeTab().sql = 'select x BEWEEN 2';
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.results-error')).not.toBeNull();
+    app.activeTab().sql = 'select 1; select 2'; // now a script
+    await app.actions.formatQuery();
+    expect(app.root.querySelector('.results-error')).toBeNull();
+  });
+  it('setFmtBtn toggles a busy/spinner state and no-ops without the button', () => {
+    const { app } = appFor([]);
+    app.setFmtBtn(true);
+    expect(app.dom.fmtBtn.disabled).toBe(true);
+    expect(app.dom.fmtBtn.textContent).toContain('Formatting…');
+    app.setFmtBtn(false);
+    expect(app.dom.fmtBtn.disabled).toBe(false);
+    expect(app.dom.fmtBtn.textContent).toBe('Format');
+    const noRender = createApp(env()); // no renderApp → no fmtBtn
+    expect(() => noRender.setFmtBtn(true)).not.toThrow();
   });
 });
 

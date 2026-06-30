@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitStatements, leadingKeyword, isRowReturning } from '../../src/core/sql-split.js';
+import { splitStatements, leadingKeyword, isRowReturning, isAutoRunnable } from '../../src/core/sql-split.js';
 
 describe('splitStatements', () => {
   it('returns [] for empty / nullish input', () => {
@@ -111,5 +111,21 @@ describe('isRowReturning', () => {
       'DROP TABLE t', 'ALTER TABLE t ADD COLUMN b Int', '-- comment only', '']) {
       expect(isRowReturning(s)).toBe(false);
     }
+  });
+});
+
+describe('isAutoRunnable', () => {
+  it('is true when every statement is row-returning (one or many)', () => {
+    expect(isAutoRunnable('SELECT 1')).toBe(true);
+    expect(isAutoRunnable('SELECT 1; SHOW TABLES; WITH x AS (SELECT 1) SELECT * FROM x')).toBe(true);
+  });
+  it('is false when any statement is effectful', () => {
+    expect(isAutoRunnable('CREATE TABLE t (a Int)')).toBe(false);
+    expect(isAutoRunnable('DROP TABLE t')).toBe(false);
+    expect(isAutoRunnable('SELECT 1; INSERT INTO t VALUES (1)')).toBe(false);
+  });
+  it('is false for empty / comment-only input', () => {
+    expect(isAutoRunnable('')).toBe(false);
+    expect(isAutoRunnable('  -- just a note  ')).toBe(false);
   });
 });

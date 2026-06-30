@@ -101,3 +101,14 @@ export function leadingKeyword(stmt) {
 export function isRowReturning(stmt) {
   return ROW_RETURNING.has(leadingKeyword(stmt));
 }
+
+/**
+ * True when `sql` is safe to auto-run on open (e.g. clicking a saved query): it
+ * has at least one statement and **every** statement is row-returning. An
+ * effectful statement (CREATE/ALTER/DROP/INSERT/…) anywhere makes it false, so
+ * opening such a query loads it into the editor without executing it. Pure.
+ */
+export function isAutoRunnable(sql) {
+  const stmts = splitStatements(sql);
+  return stmts.length > 0 && stmts.every(isRowReturning);
+}

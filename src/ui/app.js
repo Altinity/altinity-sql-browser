@@ -640,34 +640,71 @@ export function createApp(env = {}) {
         running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
   app.setRunBtn = setRunBtn;
+  // Busy state for the Format button — formatting a multi-statement script is one
+  // request per statement, so it can take a moment; show a spinner + disable.
+  function setFmtBtn(busy) {
+    if (!app.dom.fmtBtn) return;
+    app.dom.fmtBtn.disabled = busy;
+    app.dom.fmtBtn.replaceChildren(
+      busy ? h('span', { class: 'spin' }, Icon.spinner()) : Icon.braces(),
+      busy ? 'Formatting…' : 'Format');
+  }
+  app.setFmtBtn = setFmtBtn;
 
   // Pretty-print the editor's SQL via ClickHouse's formatQuery(), in place. The
   // raw (untrimmed) SQL is sent so a syntax error's reported position maps 1:1
   // onto the editor text. On error we show it persistently in the results panel
   // and jump the caret to the offending token; a later successful format clears
   // that error. Success never touches real run results.
+  // Clear a prior format-error result (a later successful format clears just this).
+  function clearFormatError() {
+    const tab = app.activeTab();
+    if (tab.result && tab.result.formatError) { tab.result = null; renderResults(app); }
+  }
+  // Format one statement via ClickHouse's formatQuery(); returns the formatted text.
+  const formatOne = async (s) => {
+    const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(s) + ') AS q FORMAT JSON');
+    return (json.data && json.data[0] && json.data[0].q) || '';
+  };
+
   async function formatQuery() {
     const raw = app.activeTab().sql || '';
     if (!raw.trim()) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     const tab = app.activeTab();
+    const stmts = splitStatements(raw);
+    setFmtBtn(true); // formatting a script is one request per statement — show busy
     try {
-      const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(raw) + ') AS q FORMAT JSON');
-      const q = (json.data && json.data[0] && json.data[0].q) || '';
-      // Terminate so the caret lands past the last token — otherwise the input
-      // event from the replace re-opens autocomplete on the trailing word.
-      if (q) replaceEditor(app, withStatementBreak(q));
-      if (tab.result && tab.result.formatError) { tab.result = null; renderResults(app); } // clear a prior format error
-    } catch (e) {
-      const msg = String((e && e.message) || e);
-      tab.result = newResult('Table');
-      tab.result.error = msg;
-      tab.result.formatError = true; // a format error, not a run result (so success can clear just this)
-      app.state.resultView.value = 'table';
-      renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
-      const pos = parseErrorPos(msg);
-      if (pos != null) app.dom.editorRevealCaret(pos);
+      if (stmts.length > 1) {
+        // Multi-statement: format each (best-effort — keep the original text for any
+        // statement that won't format, like insertCreate), then reassemble with a
+        // `;` and a blank line between statements.
+        const formatted = await Promise.all(stmts.map((s) => formatOne(s).catch(() => s)));
+        replaceEditor(app, withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
+        clearFormatError();
+        return;
+      }
+      // Single statement: send the raw (untrimmed) SQL so a syntax error's reported
+      // position maps 1:1 onto the editor text; show it persistently + jump the caret.
+      try {
+        const q = await formatOne(raw);
+        // Terminate so the caret lands past the last token — otherwise the input
+        // event from the replace re-opens autocomplete on the trailing word.
+        if (q) replaceEditor(app, withStatementBreak(q));
+        clearFormatError();
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        tab.result = newResult('Table');
+        tab.result.error = msg;
+        tab.result.formatError = true; // a format error, not a run result (so success can clear just this)
+        app.state.resultView.value = 'table';
+        renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
+        const pos = parseErrorPos(msg);
+        if (pos != null) app.dom.editorRevealCaret(pos);
+      }
+    } finally {
+      setFmtBtn(false);
     }
   }
 
@@ -748,11 +785,19 @@ export function createApp(env = {}) {
     openDetailPane(app, node, detail, targetDoc);
   }
 
+  // EXPLAIN wraps the whole editor as a single statement, so it can't run against a
+  // `;`-separated script (ClickHouse would reject `EXPLAIN a; b; …` with a confusing
+  // parse error). Say so with our own message instead.
+  function explainMultiBlocked() {
+    if (splitStatements(app.activeTab().sql).length <= 1) return false;
+    flashToast('Explain isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
+    return true;
+  }
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
-  function explainQuery() { return run({ explain: true }); }
+  function explainQuery() { return explainMultiBlocked() ? undefined : run({ explain: true }); }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
-  function setExplainView(id) { return run({ explainView: id }); }
+  function setExplainView(id) { return explainMultiBlocked() ? undefined : run({ explainView: id }); }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
   // SHOW CREATE, pretty-print it through formatQuery(), and drop it into the

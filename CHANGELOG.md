@@ -22,6 +22,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   is purely lexical (`src/core/sql-split.js`), skipping `;` inside string/identifier
   literals and `--` / `#` / `/* */` comments. Known limitation: an `INSERT … FORMAT
   …` with inline data containing `;` mis-splits — run those on their own.
+  **Format** pretty-prints each statement of a script and rejoins them (`;` + blank
+  line; best-effort — an unformattable statement keeps its text), with a busy
+  spinner on the button. **Explain** shows a clear message instead of a generic
+  ClickHouse error when the editor holds more than one statement. Opening a saved
+  query / history entry **auto-runs only read-only queries** — an effectful one
+  (CREATE/ALTER/DROP/INSERT/…) loads into the editor without executing.
 - Playwright e2e now runs on **WebKit** in addition to Chromium and Firefox, so
   many Safari regressions on the `html{zoom}`-based layout fail CI instead of
   shipping silently. README gained a **Supported browsers** stance: desktop

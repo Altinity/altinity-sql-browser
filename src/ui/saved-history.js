@@ -10,6 +10,7 @@ import { SUBQUERY_MIME } from './editor.js';
 import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
 } from '../state.js';
+import { isAutoRunnable } from '../core/sql-split.js';
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
 // query wrapped as a `( … )` subquery (see the editor's drop handler).
@@ -109,7 +110,7 @@ function renderSaved(app, list) {
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
     }, Icon.star(q.favorite));
 
-    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
+    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view }); } },
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, q.name),
@@ -181,7 +182,7 @@ function renderHistory(app, list) {
     return;
   }
   for (const ent of items) {
-    list.appendChild(h('div', { class: 'history-row', ...dragProps(ent.sql), onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); app.actions.run(); } },
+    list.appendChild(h('div', { class: 'history-row', ...dragProps(ent.sql), onclick: () => { app.actions.loadIntoNewTab('From history', ent.sql); if (isAutoRunnable(ent.sql)) app.actions.run(); } },
       h('button', {
         class: 'sv-act del', title: 'Delete',
         onclick: (e) => { e.stopPropagation(); deleteHistory(state, ent.id, app.saveJSON); renderSavedHistory(app); },

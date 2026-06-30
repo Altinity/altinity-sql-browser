@@ -44,6 +44,16 @@ describe('renderSavedHistory', () => {
     expect(app.updateSaveBtn).toHaveBeenCalled();
   });
 
+  it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    app.state.savedQueries = [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false }];
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.saved-row'));
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('Setup', 'CREATE TABLE t (a Int8)', 's1', undefined);
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
@@ -176,6 +186,16 @@ describe('renderSavedHistory', () => {
     click(rows[0]);
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('From history', 'SELECT 1');
     expect(app.actions.run).toHaveBeenCalled(); // re-runs on restore
+  });
+
+  it('history: an effectful entry loads into the editor but does NOT auto-run', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'history';
+    app.state.history = [{ id: 'h1', sql: 'DROP TABLE t', ts: Date.now(), rows: null, ms: 1 }];
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.history-row'));
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('From history', 'DROP TABLE t');
+    expect(app.actions.run).not.toHaveBeenCalled();
   });
 
   it('history: per-row delete removes just that entry without loading it', () => {
