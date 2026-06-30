@@ -1473,8 +1473,13 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 
 /* multiquery script summary grid */
 .script-grid table.res-table { table-layout: fixed; width: 100%; }
-.script-grid td.script-sql { width: 55%; }
+/* initial proportions (drag-resize then pins px widths, like the data grid) */
+.script-grid th.script-sql, .script-grid td.script-sql { width: 25%; }
+.script-grid th.script-res { width: 65%; }
+.script-grid th.script-time, .script-grid td.script-time { width: 10%; text-align: right; }
+.script-grid th { position: relative; } /* anchor the col-resize-h handle */
 .script-grid td.script-sql .cell-val { font-family: var(--mono); color: var(--fg-mute); }
+.script-grid td.script-time { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); white-space: nowrap; }
 .script-cell { font-family: var(--mono); font-size: 12px; }
 .script-cell.ok { color: #10b981; font-weight: 600; }
 .script-cell.err { color: #ef4444; white-space: normal; word-break: break-word; }

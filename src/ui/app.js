@@ -560,6 +560,7 @@ export function createApp(env = {}) {
         // issues KILL QUERY against the statement that's actually running.
         app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0 + '_' + i;
         let out;
+        const s0 = now(); // this statement's own wall-clock (grid Time column)
         try {
           out = await ch.runQuery(chCtx, stmt, {
             format: rowReturning ? 'JSONCompact' : 'TSV',
@@ -573,16 +574,17 @@ export function createApp(env = {}) {
           if (e.name === 'AbortError') { aborted = true; break; }
           out = { error: e instanceof TypeError ? 'Network error' : String((e && e.message) || e) };
         }
+        const ms = now() - s0;
         if (out.error != null) {
-          entries.push({ sql: stmt, status: 'error', error: out.error });
+          entries.push({ sql: stmt, status: 'error', error: out.error, ms });
           renderResults(app);
           break; // stop-on-first-failure: skip the remaining statements
         }
         if (rowReturning) {
           const sel = parseSelectResult(out.raw, SELECT_ROW_CAP);
-          entries.push({ sql: stmt, status: 'rows', columns: sel.columns, rows: sel.rows, truncated: sel.truncated, preview: firstRowPreview(sel.rows) });
+          entries.push({ sql: stmt, status: 'rows', columns: sel.columns, rows: sel.rows, truncated: sel.truncated, preview: firstRowPreview(sel.rows), ms });
         } else {
-          entries.push({ sql: stmt, status: 'ok' });
+          entries.push({ sql: stmt, status: 'ok', ms });
         }
         renderResults(app);
       }

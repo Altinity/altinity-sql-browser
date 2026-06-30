@@ -628,10 +628,10 @@ describe('multiquery script grid (#83)', () => {
   const scriptResult = (over = {}) => ({
     elapsedMs: 12,
     script: [
-      { sql: 'CREATE TABLE t (a Int8)', status: 'ok' },
-      { sql: 'SELECT count() AS c\nFROM t', status: 'rows', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1'], ['2']], truncated: false, preview: '1' },
-      { sql: 'SELECT * FROM nope', status: 'rows', columns: [], rows: [] },
-      { sql: 'BAD SQL', status: 'error', error: 'DB::Exception: boom' },
+      { sql: 'CREATE TABLE t (a Int8)', status: 'ok', ms: 3 },
+      { sql: 'SELECT count() AS c\nFROM t', status: 'rows', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1'], ['2']], truncated: false, preview: '1', ms: 7 },
+      { sql: 'SELECT * FROM nope', status: 'rows', columns: [], rows: [], ms: 1 },
+      { sql: 'BAD SQL', status: 'error', error: 'DB::Exception: boom', ms: 2 },
     ],
     ...over,
   });
@@ -649,7 +649,7 @@ describe('multiquery script grid (#83)', () => {
     expect(cells[2].textContent).toBe('(0 rows)');
     expect(cells[3].textContent).toContain('boom');
     // SQL is collapsed to one line, full text on the title attribute
-    const sqlCell = region.querySelector('.script-sql');
+    const sqlCell = region.querySelector('tbody td.script-sql');
     expect(sqlCell.querySelector('.cell-val').textContent).toBe('CREATE TABLE t (a Int8)');
   });
 
@@ -712,5 +712,44 @@ describe('multiquery script grid (#83)', () => {
     const app = appWithResult(scriptResult({ script: [{ sql: 'SELECT 1', status: 'ok' }] }));
     renderResults(app);
     expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).toContain('1 statement');
+  });
+
+  it('shows each statement’s own execution time in a third column', () => {
+    const app = appWithResult(scriptResult());
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect([...region.querySelectorAll('thead th')].map((th) => th.textContent.trim())).toEqual(['Statement', 'Result', 'Time']);
+    expect([...region.querySelectorAll('tbody td.script-time')].map((td) => td.textContent)).toEqual(['3 ms', '7 ms', '1 ms', '2 ms']);
+  });
+
+  it('leaves the Time cell blank when a statement has no recorded ms', () => {
+    const app = appWithResult(scriptResult({ script: [{ sql: 'SELECT 1', status: 'ok' }] }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('tbody td.script-time').textContent).toBe('');
+  });
+
+  it('columns are drag-resizable (3 handles; keyed by plain column index)', () => {
+    const app = appWithResult(scriptResult());
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    const r = app.activeTab().result;
+    const handles = region.querySelectorAll('.script-grid th .col-resize-h');
+    expect(handles).toHaveLength(3); // Statement, Result, Time
+    const win = handles[0].ownerDocument.defaultView;
+    handles[1].dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
+    const table = region.querySelector('.res-table');
+    expect(table.classList.contains('fixed')).toBe(true);
+    expect(Object.keys(r.colWidths).sort()).toEqual(['0', '1', '2']); // no 'idx' column
+    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 180 }));
+    expect(r.colWidths[1]).toBe(80); // startW 0 + 80/1
+    win.dispatchEvent(new MouseEvent('mouseup', {}));
+  });
+
+  it('reapplies stored script-grid widths on re-render', () => {
+    const app = appWithResult(scriptResult({ colWidths: { 0: 120, 1: 300, 2: 60 } }));
+    renderResults(app);
+    const cells = app.dom.resultsRegion.querySelectorAll('.script-grid thead th');
+    expect(cells[0].style.width).toBe('120px');
+    expect(cells[2].style.width).toBe('60px');
   });
 });

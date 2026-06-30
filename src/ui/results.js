@@ -31,17 +31,23 @@ export function colResizeWidth(startW, dx, scale) {
   return Math.max(MIN_COL, Math.round(startW + dx / (scale || 1)));
 }
 
+// Map a header cell index to its `r.colWidths` key. The data grid's first cell is
+// the row-number column ('idx'); its data columns are then 0-based. The script
+// grid has no row-number column, so every cell keys by its own index.
+const IDX_KEY = (k) => (k === 0 ? 'idx' : k - 1);
+const PLAIN_KEY = (k) => k;
+
 /**
- * Pin every column of `table` to the px widths in `r.colWidths` (key 'idx' for
- * the row-number column, then 0-based data-column indices) and switch it to
- * fixed layout so columns honor those widths exactly (and the wrap scrolls).
+ * Pin every column of `table` to the px widths in `r.colWidths` (keyed via
+ * `keyOf(cellIndex)`) and switch it to fixed layout so columns honor those widths
+ * exactly (and the wrap scrolls). Shared by the data grid and the script grid.
  */
-function applyFixedWidths(table, r) {
+function applyFixedWidths(table, r, keyOf) {
   table.classList.add('fixed');
   const cells = table.querySelectorAll('thead th');
   let total = 0;
   for (let k = 0; k < cells.length; k++) {
-    const w = r.colWidths[k === 0 ? 'idx' : k - 1];
+    const w = r.colWidths[keyOf(k)];
     cells[k].style.width = w + 'px';
     total += w;
   }
@@ -49,27 +55,28 @@ function applyFixedWidths(table, r) {
   table.style.minWidth = '0';
 }
 
-/** Begin dragging the right edge of header `th` (a data column) to resize it. */
-function startColumnResize(r, th, ev) {
+/** Begin dragging the right edge of header `th` to resize its column. `keyOf`
+ *  maps a cell index to its `r.colWidths` key (see IDX_KEY / PLAIN_KEY). */
+function startColumnResize(r, th, ev, keyOf) {
   ev.preventDefault();
   ev.stopPropagation(); // don't let the handle's mousedown reach the sort header
   const table = th.closest('table');
   const cells = table.querySelectorAll('thead th');
-  const colIndex = [].indexOf.call(cells, th) - 1; // 'idx' is cell 0
+  const colIndex = keyOf([].indexOf.call(cells, th));
   // First resize: freeze every column at its current rendered width, then fix.
   if (!Object.keys(r.colWidths).length) {
     for (let k = 0; k < cells.length; k++) {
-      r.colWidths[k === 0 ? 'idx' : k - 1] = cells[k].offsetWidth;
+      r.colWidths[keyOf(k)] = cells[k].offsetWidth;
     }
   }
-  applyFixedWidths(table, r);
+  applyFixedWidths(table, r, keyOf);
   const win = th.ownerDocument.defaultView;
   const scale = zoomScale(th);
   const startX = ev.clientX;
   const startW = r.colWidths[colIndex];
   const onMove = (m) => {
     r.colWidths[colIndex] = colResizeWidth(startW, m.clientX - startX, scale);
-    applyFixedWidths(table, r);
+    applyFixedWidths(table, r, keyOf);
   };
   const onUp = () => {
     win.removeEventListener('mousemove', onMove);
@@ -162,23 +169,36 @@ function streamStrip(r) {
 // collapsed statement text (full text on hover); Col 2 is the outcome — OK for an
 // effectful statement (DDL/INSERT), the first-row preview for a SELECT (click to
 // open all rows in a side pane), or the error for the failing statement (the last
-// row, since the run stops on first failure).
+// row, since the run stops on first failure); Col 3 is that statement's own
+// execution time (the toolbar still shows the script total). Columns are
+// drag-resizable like the data grid (initial 25 / 65 / 10 from CSS).
 function renderScriptGrid(app, r) {
+  r.colWidths = r.colWidths || {}; // persists drag-resized widths across re-renders
   const wrap = h('div', { class: 'res-table-wrap script-grid' });
   const table = document.createElement('table');
   table.className = 'res-table';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  trh.appendChild(h('th', null, 'Statement'));
-  trh.appendChild(h('th', null, 'Result'));
+  for (const [cls, label] of [['script-sql', 'Statement'], ['script-res', 'Result'], ['script-time', 'Time']]) {
+    const th = h('th', { class: cls }, h('span', { class: 'h-name' }, label),
+      h('span', {
+        class: 'col-resize-h',
+        title: 'Drag to resize column',
+        onmousedown: (e) => startColumnResize(r, th, e, PLAIN_KEY),
+        onclick: (e) => e.stopPropagation(),
+      }));
+    trh.appendChild(th);
+  }
   thead.appendChild(trh);
   table.appendChild(thead);
+  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r, PLAIN_KEY);
   const tbody = document.createElement('tbody');
   r.script.forEach((e) => {
     const tr = document.createElement('tr');
     tr.appendChild(h('td', { class: 'script-sql', title: e.sql || '' },
       h('div', { class: 'cell-val' }, (e.sql || '').replace(/\s+/g, ' ').trim())));
     tr.appendChild(scriptOutcomeCell(app, e));
+    tr.appendChild(h('td', { class: 'script-time' }, e.ms != null ? e.ms.toFixed(0) + ' ms' : ''));
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -408,7 +428,7 @@ export function renderTable(app, r) {
       h('span', {
         class: 'col-resize-h',
         title: 'Drag to resize column',
-        onmousedown: (e) => startColumnResize(r, th, e),
+        onmousedown: (e) => startColumnResize(r, th, e, IDX_KEY),
         onclick: (e) => e.stopPropagation(),
       }));
     trh.appendChild(th);
@@ -416,7 +436,7 @@ export function renderTable(app, r) {
   const thead = document.createElement('thead');
   thead.appendChild(trh);
   table.appendChild(thead);
-  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r);
+  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r, IDX_KEY);
 
   const tbody = document.createElement('tbody');
   rows.slice(0, VIS_CAP).forEach((row, ri) => {

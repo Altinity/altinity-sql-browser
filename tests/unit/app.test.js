@@ -507,6 +507,7 @@ describe('query run', () => {
     const script = app.activeTab().result.script;
     expect(script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']);
     expect(script[2]).toMatchObject({ preview: '1', columns: [{ name: 'c', type: 'UInt64' }], rows: [['1']] });
+    expect(script.every((e) => typeof e.ms === 'number')).toBe(true); // per-statement time recorded
     expect(app.state.history).toHaveLength(1);
     expect(app.state.history[0].sql).toBe(SCRIPT);
     // SELECT statements are sent with the JSONCompact + row-cap params

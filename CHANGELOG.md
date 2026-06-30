@@ -18,7 +18,9 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   text (the Run button flips to **Run selection**); a single selected statement
   still gets the full Table/Chart/EXPLAIN view. Row-returning statements show the
   first row inline (comma-separated) — click to open all rows (capped at 100) in a
-  side pane; effectful statements show **OK**. Cancel aborts mid-script. Splitting
+  side pane; effectful statements show **OK**. Each grid row also shows that
+  statement's own execution time (the toolbar still shows the script total), and
+  the grid's columns are drag-resizable like the data table. Cancel aborts mid-script. Splitting
   is purely lexical (`src/core/sql-split.js`), skipping `;` inside string/identifier
   literals and `--` / `#` / `/* */` comments. Known limitation: an `INSERT … FORMAT
   …` with inline data containing `;` mis-splits — run those on their own.
