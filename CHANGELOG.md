@@ -57,6 +57,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   loads rather than in-place mutation. This **completes the migration**. (#88, #91)
 
 ### Fixed
+- Multiquery scripts no longer fail intermittently with **"Network error"**: the
+  rapid, back-to-back statements of a script share one ClickHouse HTTP session, and
+  a follow-up request could arrive before the server released the session lock —
+  surfacing (behind a proxy/LB) as a reset connection. Each statement now **retries
+  once** on a transient failure (connection reset or `SESSION_IS_LOCKED`) with a
+  fresh `query_id`. Single queries were unaffected and are unchanged.
+- The `session_id` / `query_id` fallback used when `crypto.randomUUID` is
+  unavailable (non-secure `http://` contexts) now mixes in `Math.random` instead of
+  only a coarse `performance.now()`, so two tabs can't mint the same id and collide
+  on the session lock.
 - Result-table **column resize** now uses a splitter model: dragging a column's
   right edge trades width with its right neighbor (the table's total width and the
   other columns stay put), instead of growing the whole table and shifting later

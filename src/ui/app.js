@@ -423,6 +423,20 @@ export function createApp(env = {}) {
 
   // --- query run ---------------------------------------------------------
   const now = () => (env.now || (() => win.performance.now()))();
+  // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
+  // fallback (non-secure context, where randomUUID is undefined) must still be
+  // unique across tabs sharing one time origin — so mix in Math.random, not just
+  // `now()` (performance.now is coarsened and can repeat for back-to-back calls).
+  const uid = (prefix) => (cryptoObj.randomUUID
+    ? cryptoObj.randomUUID()
+    : prefix + now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+  // One retry after this delay (ms) smooths a transient failure on the rapid,
+  // same-session requests of a script (env-injectable; tests set 0).
+  const retryMs = env.retryMs != null ? env.retryMs : 250;
+  const sleep = (ms) => new Promise((r) => win.setTimeout(r, ms));
+  // ClickHouse's transient "session is busy / locked by a concurrent client"
+  // (SESSION_IS_LOCKED, code 373) — retryable once the prior request releases it.
+  const SESSION_BUSY = /SESSION_IS_LOCKED|session .* is locked|locked by a concurrent/i;
   // Milliseconds since the running query started (0 when idle). Used for the
   // live counter, computed fresh so each render/tick shows the current value.
   app.elapsedMs = () => (app.state.runT0 != null ? now() - app.state.runT0 : 0);
@@ -444,7 +458,7 @@ export function createApp(env = {}) {
   // reference loads deliberately run session-less — they fire in parallel and
   // would otherwise deadlock on the lock.
   function sessionParams(tab) {
-    tab.chSession = tab.chSession || (cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'sess-' + now());
+    tab.chSession = tab.chSession || uid('sess-');
     return { session_id: tab.chSession, session_timeout: 600 };
   }
 
@@ -497,7 +511,7 @@ export function createApp(env = {}) {
     if (explainView) tab.result.explainView = explainView;
     app.state.resultSort = { col: null, dir: 'asc' };
     app.state.runT0 = t0;
-    app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0;
+    app.state.runQueryId = uid('q');
     app.state.abortController = new AbortController();
     app.state.runTick = setInterval(tickElapsed, 100);
     // Keep the current Table/JSON/Chart tab across re-runs (#34); a saved-query
@@ -546,6 +560,19 @@ export function createApp(env = {}) {
     }
   }
 
+  // Run one script statement, classifying the outcome for the retry logic: a
+  // Cancel → { aborted }; a connection-level fetch failure → { error:'Network
+  // error', transient } (retryable); any other throw → { error }. Otherwise the
+  // runQuery result itself ({ raw } | { error }).
+  async function attemptStatement(stmt, opts) {
+    try {
+      return await ch.runQuery(chCtx, stmt, opts);
+    } catch (e) {
+      if (e.name === 'AbortError') return { aborted: true };
+      return { error: e instanceof TypeError ? 'Network error' : String((e && e.message) || e), transient: e instanceof TypeError };
+    }
+  }
+
   // Run a `;`-separated script sequentially: one ClickHouse request per statement
   // (CH's HTTP interface runs exactly one statement per request), stopping on the
   // first failure. Row-returning statements (SELECT/WITH/SHOW/…) are fetched as
@@ -572,28 +599,33 @@ export function createApp(env = {}) {
       for (let i = 0; i < statements.length; i++) {
         const stmt = statements[i];
         const rowReturning = isRowReturning(stmt);
-        // Fresh query_id per statement, published before the request so Cancel
-        // issues KILL QUERY against the statement that's actually running.
-        app.state.runQueryId = cryptoObj.randomUUID ? cryptoObj.randomUUID() : 'q' + t0 + '_' + i;
-        let out;
+        // Shared session across the script's statements (temp tables / SET
+        // persist); over-fetch SELECTs by one past the display cap so a truncated
+        // result is detectable (at exactly the cap it isn't).
+        const opts = {
+          format: rowReturning ? 'JSONCompact' : 'TSV',
+          signal: app.state.abortController.signal,
+          params: {
+            ...sessionParams(tab),
+            ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}),
+          },
+        };
         const s0 = now(); // this statement's own wall-clock (grid Time column)
-        try {
-          out = await ch.runQuery(chCtx, stmt, {
-            format: rowReturning ? 'JSONCompact' : 'TSV',
-            queryId: app.state.runQueryId,
-            signal: app.state.abortController.signal,
-            // Shared session across the script's statements (temp tables / SET
-            // persist); over-fetch SELECTs by one past the display cap so a
-            // truncated result is detectable (at exactly the cap it isn't).
-            params: {
-              ...sessionParams(tab),
-              ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}),
-            },
-          });
-        } catch (e) {
-          if (e.name === 'AbortError') { aborted = true; break; }
-          out = { error: e instanceof TypeError ? 'Network error' : String((e && e.message) || e) };
+        // Fresh query_id per attempt, published before the request so Cancel
+        // issues KILL QUERY against the statement that's actually running.
+        app.state.runQueryId = uid('q');
+        let out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
+        // One retry on a transient failure: rapid same-session script requests can
+        // race ClickHouse's async session-lock release — a connection reset
+        // surfaces as a fetch TypeError ("Network error"), a still-held lock as
+        // SESSION_IS_LOCKED. A fresh attempt (new connection, fresh query_id)
+        // almost always succeeds. (A mid-retry Cancel aborts the retry itself.)
+        if (!out.aborted && (out.transient || (out.error != null && SESSION_BUSY.test(out.error)))) {
+          await sleep(retryMs);
+          app.state.runQueryId = uid('q');
+          out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
         }
+        if (out.aborted) { aborted = true; break; }
         const ms = now() - s0;
         if (out.error != null) {
           entries.push({ sql: stmt, status: 'error', error: out.error, ms });

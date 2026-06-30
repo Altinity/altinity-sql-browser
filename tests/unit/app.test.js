@@ -56,6 +56,7 @@ function env(over = {}) {
     Dagre: dagre,
     fetch: makeFetch([]),
     now: () => 0,
+    retryMs: 0, // instant script-statement retry in tests (no real 250ms wait)
     navigator: { clipboard: { writeText: vi.fn(async () => {}) } },
     ...over,
   };
@@ -600,6 +601,55 @@ describe('query run', () => {
     expect(app.activeTab().result.cancelled).toBe(true);
     expect(app.activeTab().result.script).toHaveLength(1); // CREATE ran; INSERT aborted before pushing
     expect(app.state.history).toHaveLength(0);
+  });
+
+  it('retries a statement once on a transient connection reset (Network error → success)', async () => {
+    let creates = 0;
+    const { app } = appForRun([
+      // first attempt resets the connection (fetch TypeError); the retry succeeds
+      [(u, sql) => /CREATE TABLE t/.test(sql), () => { if (creates++ === 0) throw new TypeError('Failed to fetch'); return resp({ text: '' }); }],
+      [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /SELECT count/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) })],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(creates).toBe(2); // one retry
+    expect(app.activeTab().result.script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']); // recovered
+  });
+
+  it('retries a statement once when the ClickHouse session is briefly locked', async () => {
+    let n = 0;
+    const locked = '{"exception":"Code: 373. DB::Exception: Session abc is locked by a concurrent client. (SESSION_IS_LOCKED)"}';
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), () => (n++ === 0 ? resp({ ok: false, status: 500, text: locked }) : resp({ text: '' }))],
+      [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /SELECT count/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) })],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(n).toBe(2); // retried past the transient lock
+    expect(app.activeTab().result.script[0].status).toBe('ok');
+  });
+
+  it('does not retry a genuine query error (stops on the first failure)', async () => {
+    let inserts = 0;
+    const { app } = appForRun([
+      [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
+      [(u, sql) => /INSERT INTO t/.test(sql), () => { inserts++; return resp({ ok: false, status: 400, text: '{"exception":"DB::Exception: bad value"}' }); }],
+    ]);
+    app.activeTab().sql = SCRIPT;
+    await app.actions.run();
+    expect(inserts).toBe(1); // no retry for a non-transient error
+    expect(app.activeTab().result.script[1]).toMatchObject({ status: 'error' });
+  });
+
+  it('session_id falls back to a unique non-UUID id without crypto.randomUUID', async () => {
+    const noUuid = { getRandomValues: (a) => webcrypto.getRandomValues(a) }; // non-secure context: no randomUUID
+    const { app } = appForRun([[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { crypto: noUuid });
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    const url = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    expect(decodeURIComponent(/session_id=([^&]+)/.exec(url)[1])).toMatch(/^sess-/); // collision-resistant fallback
   });
 
   it('run-selection: a non-empty selection runs only the selected statement (rich path) and records that text', async () => {
