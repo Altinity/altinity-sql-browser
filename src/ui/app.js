@@ -102,11 +102,10 @@ export function createApp(env = {}) {
   app.saveStr = saveStr;
   app.savePref = (name, value) => saveStr(KEYS[name], String(value));
   app.FileReader = env.FileReader || win.FileReader;
-  // Exposed seams for the header File menu (file-menu.js): the file-download
-  // helper (defined below) and a library-title refresh (dirty dot + name) run
-  // after a library mutation made outside file-menu.js (e.g. the save popover).
+  // Exposed seam for the header File menu (file-menu.js): the file-download
+  // helper (defined below). The library title (name + dirty dot) repaints via a
+  // libraryName/libraryDirty effect, so callers just mutate those signals.
   app.downloadFile = downloadFile;
-  app.updateLibraryTitle = () => renderLibraryTitle(app);
 
   // --- identity ----------------------------------------------------------
   // The host queries actually go to. chCtx.origin already resolves to the basic
@@ -771,8 +770,7 @@ export function createApp(env = {}) {
       app.updateSaveBtn();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
-      app.updateLibraryTitle();
-      flashToast('Saved', { document: doc });
+      flashToast('Saved', { document: doc }); // saveQuery dirtied the library → title effect adds the dot
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.
@@ -973,6 +971,14 @@ export function renderApp(app, helpers) {
   effect(() => {
     app.state.sidePanel.value;
     renderSavedHistory(app);
+  });
+  // Reactive repaint of the header library title (name + unsaved-changes dot):
+  // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
+  // separately (editingLibrary is not a signal — file-menu.js renders it directly).
+  effect(() => {
+    app.state.libraryName.value;
+    app.state.libraryDirty.value;
+    renderLibraryTitle(app);
   });
   app.loadVersion();
   app.loadSchema();

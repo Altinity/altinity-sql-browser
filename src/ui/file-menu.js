@@ -36,16 +36,18 @@ export function renderLibraryTitle(app) {
   const state = app.state;
   slot.replaceChildren();
   if (app.editingLibrary) {
-    const input = h('input', { class: 'lib-name-input', value: state.libraryName });
+    const input = h('input', { class: 'lib-name-input', value: state.libraryName.value });
     let done = false;
     // Enter/blur commit; Escape cancels. The guard stops the blur fired by the
     // re-render teardown from undoing a cancel (same pattern as saved rename).
     const finish = (commit) => {
       if (done) return;
       done = true;
-      if (commit && input.value.trim()) renameLibrary(state, input.value, app.saveStr);
+      // Leave edit mode first, so the renameLibrary write below repaints the
+      // button view via the title effect rather than a transient input.
       app.editingLibrary = false;
-      renderLibraryTitle(app);
+      if (commit && input.value.trim()) renameLibrary(state, input.value, app.saveStr);
+      renderLibraryTitle(app); // explicit: the cancel/no-op path changes no signal
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); finish(true); }
@@ -59,8 +61,8 @@ export function renderLibraryTitle(app) {
   slot.appendChild(h('button', {
     class: 'lib-name', title: 'Rename library',
     onclick: () => { app.editingLibrary = true; renderLibraryTitle(app); },
-  }, h('span', { class: 'lib-name-text' }, state.libraryName),
-     state.libraryDirty ? h('span', { class: 'lib-dirty', title: 'Unsaved changes since last save / load' }) : null));
+  }, h('span', { class: 'lib-name-text' }, state.libraryName.value),
+     state.libraryDirty.value ? h('span', { class: 'lib-dirty', title: 'Unsaved changes since last save / load' }) : null));
 }
 
 /** Open the File dropdown anchored under the File button (Esc / outside-click close). */
@@ -138,18 +140,17 @@ function readJsonFile(app, file, cb) {
 function saveJsonAction(app) {
   const qs = app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
-  app.downloadFile(fileBase(app.state.libraryName) + '.json', 'application/json',
+  app.downloadFile(fileBase(app.state.libraryName.value) + '.json', 'application/json',
     JSON.stringify(buildExportDoc(qs, new Date().toISOString()), null, 2));
-  markLibrarySaved(app.state);
-  renderLibraryTitle(app);
+  markLibrarySaved(app.state); // clears libraryDirty → title effect drops the dot
   flashToast('Saved ' + queries(qs.length) + ' → .json', { document: app.document });
 }
 
 function downloadAction(app, fmt) {
   const qs = app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
-  if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName) + '.md', 'text/markdown', buildMarkdownDoc(qs));
-  else app.downloadFile(fileBase(app.state.libraryName) + '.sql', 'application/sql', buildSqlDoc(qs));
+  if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName.value) + '.md', 'text/markdown', buildMarkdownDoc(qs));
+  else app.downloadFile(fileBase(app.state.libraryName.value) + '.sql', 'application/sql', buildSqlDoc(qs));
   flashToast('Saved ' + queries(qs.length) + ' → .' + fmt, { document: app.document });
 }
 
@@ -188,11 +189,11 @@ function doNew(app) {
 }
 
 /** Re-sync the surfaces a library change touches: Save button (tab links may be
- *  pruned), the saved list (count + rows), and the title (name + dirty dot). */
+ *  pruned) and the saved list (count + rows). The title (name + dirty dot)
+ *  repaints itself via the libraryName/libraryDirty effect in createApp. */
 function afterLibraryChange(app) {
   app.updateSaveBtn();
   renderSavedHistory(app);
-  renderLibraryTitle(app);
 }
 
 // ── confirm dialogs (reuse the modal-backdrop/card visual language) ──────────

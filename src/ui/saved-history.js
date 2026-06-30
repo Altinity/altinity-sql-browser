@@ -106,7 +106,7 @@ function renderSaved(app, list) {
     if (app.editingSavedId === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
     const star = h('button', {
       class: 'sv-star' + (q.favorite ? ' on' : ''), title: q.favorite ? 'Unfavorite' : 'Favorite',
-      onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); app.updateLibraryTitle(); },
+      onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
     }, Icon.star(q.favorite));
 
     const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); app.actions.run({ view: q.view }); } },
@@ -119,7 +119,7 @@ function renderSaved(app, list) {
         }, Icon.pencil()),
         h('button', {
           class: 'sv-act', title: 'Delete',
-          onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); app.updateLibraryTitle(); },
+          onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); },
         }, Icon.trash())),
       q.description ? h('div', { class: 'desc' }, q.description) : null,
       h('div', { class: 'preview' }, q.sql.split('\n')[0]));
@@ -149,7 +149,6 @@ function savedEditForm(app, q) {
     }
     app.editingSavedId = null;
     renderSavedHistory(app);
-    app.updateLibraryTitle();
   };
   nameInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finish(true); }

@@ -34,8 +34,8 @@ describe('createState', () => {
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.expandedTables).toBeInstanceOf(Set);
-    expect(s.libraryName).toBe(DEFAULT_LIBRARY_NAME);
-    expect(s.libraryDirty).toBe(false);
+    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
+    expect(s.libraryDirty.value).toBe(false);
   });
   it('reads + clamps persisted prefs', () => {
     const s = createState(reader({
@@ -49,7 +49,7 @@ describe('createState', () => {
       [KEYS.libraryName]: 'My team queries',
     }));
     expect(s.theme).toBe('light');
-    expect(s.libraryName).toBe('My team queries');
+    expect(s.libraryName.value).toBe('My team queries');
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);
@@ -274,46 +274,46 @@ describe('library document', () => {
   it('dirty flag: saved-query mutations set it; markLibrarySaved clears it', () => {
     const s = createState(reader());
     const tab = s.tabs.value[0]; tab.sql = 'SELECT 1';
-    expect(s.libraryDirty).toBe(false);
+    expect(s.libraryDirty.value).toBe(false);
     saveQuery(s, tab, 'Q', '', vi.fn());
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
     markLibrarySaved(s);
-    expect(s.libraryDirty).toBe(false);
+    expect(s.libraryDirty.value).toBe(false);
     toggleFavorite(s, tab.savedId, vi.fn());            // favorite the just-saved entry
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
     markLibrarySaved(s);
     renameSaved(s, tab.savedId, 'Q2', undefined, vi.fn());
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
     markLibrarySaved(s);
     deleteSaved(s, tab.savedId, vi.fn());
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
     markLibrarySaved(s);
     importSaved(s, [{ name: 'I', sql: 'i' }], vi.fn(), () => 'gi');
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
   });
 
   it('renameLibrary trims + persists + marks dirty; blank falls back to the default', () => {
     const s = createState(reader());
     const saveName = vi.fn();
     renameLibrary(s, '  My queries  ', saveName);
-    expect(s.libraryName).toBe('My queries');
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryName.value).toBe('My queries');
+    expect(s.libraryDirty.value).toBe(true);
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My queries');
     renameLibrary(s, '   ', saveName);
-    expect(s.libraryName).toBe(DEFAULT_LIBRARY_NAME);
+    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
   });
 
   it('newLibrary clears queries + name, clears dirty, prunes dangling tab links', () => {
     const s = createState(reader());
     s.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
-    s.libraryName = 'Old'; s.libraryDirty = true;
+    s.libraryName.value = 'Old'; s.libraryDirty.value = true;
     s.tabs.value[0].savedId = 's1';                            // dangling after clear → pruned
     s.tabs.value.push(newTabObj('t2'));                        // no savedId → skipped by prune
     const save = vi.fn(), saveName = vi.fn();
     newLibrary(s, save, saveName);
     expect(s.savedQueries).toEqual([]);
-    expect(s.libraryName).toBe(DEFAULT_LIBRARY_NAME);
-    expect(s.libraryDirty).toBe(false);
+    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
+    expect(s.libraryDirty.value).toBe(false);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(save).toHaveBeenCalledWith(KEYS.saved, []);
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
@@ -323,7 +323,7 @@ describe('library document', () => {
     const s = createState(reader());
     s.savedQueries = [{ id: 'old', name: 'X', sql: 'x', favorite: false }];
     s.tabs.value[0].savedId = 'old';                           // becomes dangling → pruned
-    s.libraryDirty = true;
+    s.libraryDirty.value = true;
     const chart = { cfg: { type: 'bar' }, key: 'k' };
     const incoming = [
       { id: 'keep', name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' },
@@ -334,8 +334,8 @@ describe('library document', () => {
     replaceLibrary(s, incoming, 'My Library.json', save, saveName, () => 'g' + (++n));
     expect(s.savedQueries.map((q) => q.id)).toEqual(['keep', 'g1']);
     expect(s.savedQueries[0]).toMatchObject({ name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' });
-    expect(s.libraryName).toBe('My Library');            // extension stripped
-    expect(s.libraryDirty).toBe(false);
+    expect(s.libraryName.value).toBe('My Library');            // extension stripped
+    expect(s.libraryDirty.value).toBe(false);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(save).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My Library');
@@ -363,7 +363,7 @@ describe('library document', () => {
   it('replaceLibrary with no usable file name falls back to the default', () => {
     const s = createState(reader());
     replaceLibrary(s, [{ name: 'A', sql: '1' }], '.json', vi.fn(), vi.fn(), () => 'g');
-    expect(s.libraryName).toBe(DEFAULT_LIBRARY_NAME);
+    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
   });
 
   it('appendLibrary merges via importSaved (dedupe), returns counts, sets dirty', () => {
@@ -375,7 +375,7 @@ describe('library document', () => {
     ], vi.fn(), () => 'gb');
     expect(r).toEqual({ added: 1, updated: 0, skipped: 1 });
     expect(s.savedQueries.map((q) => q.name)).toEqual(['A', 'B']);
-    expect(s.libraryDirty).toBe(true);
+    expect(s.libraryDirty.value).toBe(true);
   });
 
   it('library ops default their persistence seams (real storage helpers)', () => {

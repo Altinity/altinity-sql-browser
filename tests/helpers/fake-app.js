@@ -40,7 +40,6 @@ export function makeApp(over = {}) {
     saveStr: vi.fn(),
     downloadFile: vi.fn(),
     updateSaveBtn: vi.fn(),
-    updateLibraryTitle: vi.fn(),
     elapsedMs: () => 0,
     editingSavedId: null,
     showLogin: vi.fn(),

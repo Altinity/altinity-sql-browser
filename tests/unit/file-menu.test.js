@@ -26,8 +26,8 @@ afterEach(() => document.body.replaceChildren());
 describe('library title', () => {
   it('renders the name + dirty dot; inline rename commits on Enter and persists', () => {
     const app = mount();
-    app.state.libraryName = 'My queries';
-    app.state.libraryDirty = true;
+    app.state.libraryName.value = 'My queries';
+    app.state.libraryDirty.value = true;
     renderLibraryTitle(app);
     expect(app.dom.libraryTitle.querySelector('.lib-name-text').textContent).toBe('My queries');
     expect(app.dom.libraryTitle.querySelector('.lib-dirty')).not.toBeNull();
@@ -37,38 +37,38 @@ describe('library title', () => {
     expect(input.value).toBe('My queries');
     input.value = 'Renamed';
     key(input, 'Enter');
-    expect(app.state.libraryName).toBe('Renamed');
+    expect(app.state.libraryName.value).toBe('Renamed');
     expect(app.editingLibrary).toBe(false);
     expect(app.saveStr).toHaveBeenCalled();
-    app.state.libraryDirty = false;
+    app.state.libraryDirty.value = false;
     renderLibraryTitle(app);
     expect(app.dom.libraryTitle.querySelector('.lib-dirty')).toBeNull();
   });
 
   it('inline rename: Escape cancels, blur commits, empty commit is a no-op, double-fire guarded', () => {
     const app = mount();
-    app.state.libraryName = 'Orig';
+    app.state.libraryName.value = 'Orig';
     renderLibraryTitle(app);
     // Escape cancels
     click(app.dom.libraryTitle.querySelector('.lib-name'));
     let input = app.dom.libraryTitle.querySelector('.lib-name-input');
     input.value = 'X';
     key(input, 'Escape');
-    expect(app.state.libraryName).toBe('Orig');
+    expect(app.state.libraryName.value).toBe('Orig');
     // empty name commit → no rename
     click(app.dom.libraryTitle.querySelector('.lib-name'));
     input = app.dom.libraryTitle.querySelector('.lib-name-input');
     input.value = '   ';
     key(input, 'Enter');
-    expect(app.state.libraryName).toBe('Orig');
+    expect(app.state.libraryName.value).toBe('Orig');
     // blur commits, then a second event on the detached input is guarded
     click(app.dom.libraryTitle.querySelector('.lib-name'));
     input = app.dom.libraryTitle.querySelector('.lib-name-input');
     input.value = 'Blurred';
     input.dispatchEvent(new Event('blur'));
-    expect(app.state.libraryName).toBe('Blurred');
+    expect(app.state.libraryName.value).toBe('Blurred');
     key(input, 'Enter');
-    expect(app.state.libraryName).toBe('Blurred');
+    expect(app.state.libraryName.value).toBe('Blurred');
   });
 
   it('renderLibraryTitle no-ops without a slot', () => {
@@ -120,15 +120,15 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
     app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: true }];
-    app.state.libraryName = 'My Lib';
-    app.state.libraryDirty = true;
+    app.state.libraryName.value = 'My Lib';
+    app.state.libraryDirty.value = true;
     openFileMenu(app);
     click(item(/Save JSON/));
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('My Lib.json');
     expect(mime).toBe('application/json');
     expect(JSON.parse(content).format).toBe('altinity-sql-browser/saved-queries');
-    expect(app.state.libraryDirty).toBe(false);
+    expect(app.state.libraryDirty.value).toBe(false);
     expect(toast()).toBe('Saved 1 query → .json');
   });
 
@@ -139,7 +139,7 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
     app.state.savedQueries = [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: false, description: 'd' }];
-    app.state.libraryName = 'Lib';
+    app.state.libraryName.value = 'Lib';
     openFileMenu(app);
     click(item(/Download Markdown/));
     expect(app.downloadFile.mock.calls.at(-1).slice(0, 2)).toEqual(['Lib.md', 'text/markdown']);
@@ -147,11 +147,11 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     click(item(/Download SQL/));
     expect(app.downloadFile.mock.calls.at(-1).slice(0, 2)).toEqual(['Lib.sql', 'application/sql']);
     // an unnamed / whitespace-only library name falls back to "queries"
-    app.state.libraryName = '';
+    app.state.libraryName.value = '';
     openFileMenu(app);
     click(item(/Download Markdown/));
     expect(app.downloadFile.mock.calls.at(-1)[0]).toBe('queries.md');
-    app.state.libraryName = '   ';
+    app.state.libraryName.value = '   ';
     openFileMenu(app);
     click(item(/Download SQL/));
     expect(app.downloadFile.mock.calls.at(-1)[0]).toBe('queries.sql');
@@ -180,7 +180,7 @@ describe('Open / Append (JSON only)', () => {
     expect(dialog.textContent).toContain('current 2 saved queries');
     click(document.querySelector('.fm-dialog-confirm'));
     expect(app.state.savedQueries.map((q) => q.name)).toEqual(['New', 'New2']);
-    expect(app.state.libraryName).toBe('team');
+    expect(app.state.libraryName.value).toBe('team');
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(toast()).toBe('Opened library · 2 queries');
   });
@@ -198,7 +198,7 @@ describe('Open / Append (JSON only)', () => {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
     expect(app.state.savedQueries.map((q) => q.name)).toEqual(['New']);
-    expect(app.state.libraryName).toBe('lib');
+    expect(app.state.libraryName.value).toBe('lib');
   });
 
   it('Append item closes the menu, merges the file, and toasts counts', () => {
@@ -251,13 +251,13 @@ describe('New Library + confirm dialogs', () => {
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(toast()).toBe('Started a new library');
     app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
-    app.state.libraryName = 'Old';
+    app.state.libraryName.value = 'Old';
     openFileMenu(app);
     click(item(/New Library/));
     expect(document.querySelector('.fm-dialog-card').textContent).toContain('Start a new library?');
     click(document.querySelector('.fm-dialog-confirm'));
     expect(app.state.savedQueries).toEqual([]);
-    expect(app.state.libraryName).toBe('SQL Library');
+    expect(app.state.libraryName.value).toBe('SQL Library');
   });
 
   it('confirm dialog: Cancel, backdrop click, and Escape all dismiss; a card click does not', () => {
