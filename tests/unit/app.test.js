@@ -475,6 +475,45 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result.rawFormat).toBe('JSON'); // FORMAT clause, not the EXPLAIN default
   });
+  const runUrl = (e, re) => e.fetch.mock.calls.findLast((c) => re.test((c[1] && c[1].body) || ''))[0];
+  it('caps a normal SELECT server-side and trims block-boundary overage (flagging capped)', async () => {
+    const { app, e } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody([
+        '{"meta":[{"name":"a","type":"UInt8"}]}\n',
+        '{"row":{"a":"1"}}\n', '{"row":{"a":"2"}}\n', '{"row":{"a":"3"}}\n', // overage past the cap of 2
+      ]) })],
+    ]);
+    app.state.resultRowLimit = 2;
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    const url = runUrl(e, /SELECT 1/);
+    expect(url).toContain('max_result_rows=2');
+    expect(url).toContain('result_overflow_mode=break');
+    expect(app.activeTab().result.rows).toEqual([['1'], ['2']]); // overage trimmed client-side
+    expect(app.activeTab().result.capped).toBe(true);
+  });
+  it('does not cap EXPLAIN/ESTIMATE runs even though ESTIMATE streams as Table', async () => {
+    const { app, e } = appForRun([
+      [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],
+    ]);
+    app.state.resultRowLimit = 100;
+    app.activeTab().sql = 'EXPLAIN ESTIMATE SELECT 1';
+    await app.actions.run();
+    expect(runUrl(e, /ESTIMATE/)).not.toContain('max_result_rows');
+    expect(app.activeTab().result.capped).toBe(false);
+  });
+  it('setResultRowLimit persists the normalized preference and re-runs with the new cap', async () => {
+    const { app, e } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.setResultRowLimit(99); // not an option → snaps back to the default 500
+    expect(app.state.resultRowLimit).toBe(500);
+    expect(globalThis.localStorage.getItem('asb:resultRowLimit')).toBe('500');
+    await app.actions.setResultRowLimit(1000);
+    expect(app.state.resultRowLimit).toBe(1000);
+    expect(runUrl(e, /SELECT 1/)).toContain('max_result_rows=1000'); // re-ran with the new cap
+  });
 });
 
 describe('formatQuery', () => {

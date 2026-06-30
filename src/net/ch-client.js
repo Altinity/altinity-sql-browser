@@ -370,7 +370,7 @@ export async function loadEntityDoc(ctx, name, sqlString) {
  *
  * @param ctx
  * @param sql
- * @param o  { format, signal, onLine(json), onChunk(), onRaw(text) }
+ * @param o  { format, signal, resultRowLimit, onLine(json), onChunk(), onRaw(text) }
  */
 export async function runQuery(ctx, sql, o = {}) {
   const fmt = o.format || 'Table';
@@ -383,6 +383,16 @@ export async function runQuery(ctx, sql, o = {}) {
     : fmt === 'TSV'
       ? 'TabSeparatedWithNamesAndTypes'
       : fmt;
+  // Cap a normal result query server-side: max_result_rows stops the read at N
+  // and result_overflow_mode='break' makes ClickHouse stop cleanly at a block
+  // boundary (no error, no further data pulled) rather than throwing. The caller
+  // decides scope — it passes resultRowLimit for normal SELECTs (Table + explicit
+  // FORMAT) and 0 for EXPLAIN/PIPELINE/ESTIMATE (which also run as 'Table', so the
+  // exemption can't be told apart by format here). `break` can overshoot by up to
+  // a block on the streaming path, which the applyStreamLine guard trims.
+  const cap = o.resultRowLimit > 0
+    ? { max_result_rows: o.resultRowLimit, result_overflow_mode: 'break' }
+    : {};
   const url = chUrl(ctx.origin, {
     format: fmtParam,
     // wait_end_of_query buffers the whole response server-side so the HTTP
@@ -390,7 +400,7 @@ export async function runQuery(ctx, sql, o = {}) {
     // wait for the query to finish: ~16s vs ~0.5s on a 1.3M-row scan). Keep it
     // only for raw modes (read whole anyway); the streaming Table path drops it
     // and surfaces mid-stream errors via the in-band `exception` line instead.
-    extra: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), add_http_cors_header: 1 },
+    extra: { ...(isStreaming ? {} : { wait_end_of_query: 1 }), ...cap, add_http_cors_header: 1 },
     // Tagging the request with a query_id lets Cancel issue KILL QUERY for it.
     params: o.queryId ? { query_id: o.queryId } : {},
   });
