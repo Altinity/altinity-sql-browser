@@ -3,7 +3,6 @@ import { flashToast } from '../../src/ui/toast.js';
 
 beforeEach(() => {
   document.body.innerHTML = '';
-  flashToast._timer = null;
 });
 
 describe('flashToast', () => {
@@ -56,5 +55,18 @@ describe('flashToast', () => {
     clearTimeout.mockClear();
     el.click();
     expect(clearTimeout).not.toHaveBeenCalled();
+  });
+  it('a toast in a different document (e.g. a detached tab) tracks its own timer, independent of one in the main document', () => {
+    const otherDoc = document.implementation.createHTMLDocument('');
+    const mainClear = vi.fn();
+    const otherClear = vi.fn();
+    const mainEl = flashToast('main', { document, setTimeout: vi.fn(() => 1), clearTimeout: mainClear, duration: 500 });
+    const otherEl = flashToast('other', { document: otherDoc, setTimeout: vi.fn(() => 2), clearTimeout: otherClear, duration: 500 });
+    expect(mainEl).not.toBe(otherEl);
+    // Flashing the other document's toast again must not touch the main toast's timer.
+    flashToast('other again', { document: otherDoc, setTimeout: vi.fn(() => 3), clearTimeout: otherClear, duration: 500 });
+    expect(mainClear).not.toHaveBeenCalled();
+    expect(otherClear).toHaveBeenCalledWith(2);
+    expect(mainEl.classList.contains('show')).toBe(true);
   });
 });

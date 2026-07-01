@@ -34,6 +34,9 @@ const lineageDrag = (ident, payload) => ({
   },
 });
 
+const OPEN_ROTATE = 'rotate(0deg)';
+const CLOSED_ROTATE = 'rotate(-90deg)';
+
 // The four spans every tree row shares: chevron, icon, label, meta. `expanded`
 // null → an empty chevron (column rows); true/false → the same down-pointing
 // chevron rotated open/closed (matches the login screen's Advanced disclosure —
@@ -41,12 +44,28 @@ const lineageDrag = (ident, payload) => ({
 const treeRow = (icon, label, meta, { expanded, iconColor } = {}) => [
   h('span', {
     class: 'chev',
-    style: expanded == null ? null : { transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' },
+    style: expanded == null ? null : { transform: expanded ? OPEN_ROTATE : CLOSED_ROTATE },
   }, expanded == null ? null : Icon.chevDown()),
   h('span', { class: 'icon', style: iconColor ? { color: iconColor } : null }, icon),
   h('span', { class: 'label' }, label),
   h('span', { class: 'meta' }, meta),
 ];
+
+// A row's DOM is fully rebuilt on every expand/collapse (renderSchema always
+// `list.replaceChildren()`s — no per-row patching), so the rebuilt `.chev` span
+// is born already at its target rotation and the `.tree-row .chev` CSS
+// transition (styles.css) has no "from" state on that node to interpolate
+// from. Restore it: after the re-render, flash the new node back to its
+// pre-toggle rotation and force a layout read so the browser commits that
+// paint before restoring the target rotation, giving the transition an actual
+// two-frame change to animate across.
+function flipChevron(list, key, wasOpen) {
+  const row = Array.from(list.children).find((el) => el.dataset.key === key);
+  const chev = row.querySelector('.chev');
+  chev.style.transform = wasOpen ? OPEN_ROTATE : CLOSED_ROTATE;
+  void chev.offsetHeight; // force layout so the "from" rotation actually commits
+  chev.style.transform = wasOpen ? CLOSED_ROTATE : OPEN_ROTATE;
+}
 
 // Distinguish single- from double-click WITHOUT the native `dblclick` event.
 // Every row's single-click handler re-renders the tree (replaceChildren), which
@@ -96,11 +115,13 @@ export function renderSchema(app) {
     const dbOpen = state.expanded.value.has(dbKey);
     list.appendChild(h('div', {
       class: 'tree-row bold',
+      'data-key': dbKey,
       title: db.comment || 'Click to expand · double-click to insert · shift-click for SHOW CREATE · drag to Data for Schema',
       onclick: (e) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + qdb); return; }
         if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
         state.expanded.value = toggleKey(state.expanded.value, dbKey);
+        flipChevron(list, dbKey, dbOpen);
       },
       ...lineageDrag(qdb, { kind: 'db', db: db.db }),
     },
@@ -125,6 +146,7 @@ export function renderSchema(app) {
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
         style: { paddingLeft: '24px' },
+        'data-key': tbKey,
         title,
         ...lineageDrag(qname, { kind: 'table', db: db.db, table: tb.name }),
         onclick: (e) => {
@@ -138,6 +160,7 @@ export function renderSchema(app) {
             state.expanded.value = toggleKey(state.expanded.value, tbKey);
             if (willOpen && tb.columns == null) app.actions.loadColumns(db.db, tb.name);
           });
+          flipChevron(list, tbKey, isOpen);
         },
       },
         ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),

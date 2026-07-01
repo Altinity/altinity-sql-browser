@@ -99,6 +99,29 @@ describe('renderSchema tree', () => {
     click(db2Row);
     expect(app.state.expanded.value.has('db:db2')).toBe(true);
   });
+  it('the chevron rotates to the down/open orientation on expand and back on collapse', () => {
+    vi.useFakeTimers();
+    try {
+      const app = withSchema();
+      renderSchema(app);
+      let db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+      expect(db2Row.querySelector('.chev').style.transform).toBe('rotate(-90deg)'); // starts collapsed
+      click(db2Row); // expand
+      expect(db2Row.querySelector('.chev').style.transform).toBe('rotate(0deg)');
+      // The real app re-renders the tree via an effect on `state.expanded` before
+      // any further click can occur; simulate that here so the next click's
+      // handler closes over the post-expand state, same as in production. Also
+      // clear the double-click window (300ms) so the second click isn't read as
+      // the second half of a double-click on the same row (see DBLCLICK_MS).
+      renderSchema(app);
+      vi.advanceTimersByTime(400);
+      db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2');
+      click(db2Row); // collapse
+      expect(db2Row.querySelector('.chev').style.transform).toBe('rotate(-90deg)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('shift-clicking a db inserts its formatted DDL without expanding', () => {
     const app = withSchema();
     renderSchema(app);
@@ -118,9 +141,11 @@ describe('renderSchema tree', () => {
     const app = withSchema();
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
+    expect(ordersRow.querySelector('.chev').style.transform).toBe('rotate(-90deg)'); // starts collapsed
     click(ordersRow);
     expect(app.state.expanded.value.has('tb:db1.orders')).toBe(true);
     expect(app.actions.loadColumns).toHaveBeenCalledWith('db1', 'orders');
+    expect(ordersRow.querySelector('.chev').style.transform).toBe('rotate(0deg)');
   });
   it('collapsing an already-loaded table just re-renders', () => {
     const app = withSchema();
