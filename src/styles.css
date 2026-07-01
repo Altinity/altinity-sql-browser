@@ -1545,6 +1545,29 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border-top: 1px solid var(--border);
 }
 
+/* script-export log pane (#99) */
+.script-export-grid table.res-table { table-layout: fixed; width: 100%; }
+.script-export-grid th.se-num, .script-export-grid td.se-num { width: 34px; text-align: center; color: var(--fg-faint); }
+.script-export-grid th.se-sql { width: 28%; }
+.script-export-grid th.se-type, .script-export-grid td.se-type { width: 60px; color: var(--fg-faint); }
+.script-export-grid th.se-status { width: 90px; }
+.script-export-grid th.se-file { width: 22%; }
+.script-export-grid th.se-bytes, .script-export-grid td.se-bytes { width: 80px; text-align: right; }
+.script-export-grid th.se-time, .script-export-grid td.se-time { width: 80px; text-align: right; }
+.script-export-grid th { position: relative; }
+.script-export-grid td.se-sql .cell-val { font-family: var(--mono); color: var(--fg-mute); }
+.script-export-grid td.se-file { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); overflow: hidden; text-overflow: ellipsis; }
+.script-export-grid td.se-bytes, .script-export-grid td.se-time { font-family: var(--mono); font-size: 11px; color: var(--fg-faint); white-space: nowrap; }
+.se-status-cell { font-family: var(--mono); font-size: 12px; text-transform: capitalize; }
+.se-status-cell.ok { color: #10b981; font-weight: 600; }
+.se-status-cell.failed { color: #ef4444; font-weight: 600; }
+.se-status-cell.cancelled, .se-status-cell.skipped { color: var(--fg-faint); }
+.se-status-cell.running, .se-status-cell.exporting { color: var(--accent); }
+.se-error {
+  font-family: var(--mono); font-size: 11px; color: #ef4444;
+  white-space: normal; word-break: break-word; margin-top: 2px;
+}
+
 /* scrollbars */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }

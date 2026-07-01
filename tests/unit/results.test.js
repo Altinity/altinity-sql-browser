@@ -1069,3 +1069,132 @@ describe('multiquery script grid (#83)', () => {
     expect(cells[2].style.width).toBe('60px');
   });
 });
+
+describe('script-export log pane (#99)', () => {
+  const scriptExportResult = (over = {}) => ({
+    elapsedMs: 42,
+    startedAt: 0,
+    scriptExport: [
+      { i: 0, sql: 'CREATE TABLE t (a Int8)', type: 'effect', status: 'ok', file: null, bytes: 0, startedAt: 0, ms: 5, error: null },
+      { i: 1, sql: 'SELECT * FROM t', type: 'rows', status: 'exporting', file: '002-t.tsv', bytes: 1024, startedAt: 0, ms: null, error: null },
+      {
+        i: 2, sql: 'SELECT 2', type: 'rows', status: 'failed', file: '003-select-2.tsv', bytes: 0, startedAt: 0, ms: 3,
+        error: 'File may be incomplete; server failed after streaming started. boom',
+      },
+    ],
+    ...over,
+  });
+
+  it('renders the column headers and one row per statement with #, type, status, file, bytes, time', () => {
+    const app = appWithResult(scriptExportResult());
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.script-export-grid')).not.toBeNull();
+    expect([...region.querySelectorAll('thead th')].map((th) => th.textContent.trim()))
+      .toEqual(['#', 'Statement', 'Type', 'Status', 'File', 'Bytes', 'Time']);
+    const rows = [...region.querySelectorAll('tbody tr')];
+    expect(rows).toHaveLength(3);
+    expect(rows[0].querySelector('.se-num').textContent).toBe('1');
+    expect(rows[0].querySelector('.se-sql .cell-val').textContent).toBe('CREATE TABLE t (a Int8)');
+    expect(rows[0].querySelector('.se-type').textContent).toBe('effect');
+    expect(rows[0].querySelector('.se-status-cell').textContent).toBe('ok');
+    expect(rows[0].querySelector('.se-file').textContent).toBe('');
+    expect(rows[0].querySelector('.se-bytes').textContent).toBe(''); // effect statements never show bytes
+    expect(rows[0].querySelector('.se-time').textContent).toBe('5 ms');
+  });
+
+  it('shows the file name and formatted bytes for a row-returning statement', () => {
+    const app = appWithResult(scriptExportResult());
+    renderResults(app);
+    const rows = [...app.dom.resultsRegion.querySelectorAll('tbody tr')];
+    expect(rows[1].querySelector('.se-file').textContent).toBe('002-t.tsv');
+    expect(rows[1].querySelector('.se-bytes').textContent).toBe('1.0 KB');
+  });
+
+  it('shows a live now()-startedAt time for the active row (no ms recorded yet)', () => {
+    const app = appWithResult(scriptExportResult(), { running: false });
+    app.now = () => 250;
+    renderResults(app);
+    const rows = [...app.dom.resultsRegion.querySelectorAll('tbody tr')];
+    expect(rows[1].querySelector('.se-time').textContent).toBe('250 ms');
+  });
+
+  it('leaves the Time cell blank for a pending/skipped row with no ms and no startedAt', () => {
+    const app = appWithResult(scriptExportResult({
+      scriptExport: [{ i: 0, sql: 'SELECT 1', type: 'rows', status: 'skipped', file: null, bytes: 0, startedAt: null, ms: 0, error: null }],
+    }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('tbody td.se-time').textContent).toBe('');
+  });
+
+  it('shows the inline error message on a failed row (including the mid-stream "incomplete" note)', () => {
+    const app = appWithResult(scriptExportResult());
+    renderResults(app);
+    const rows = [...app.dom.resultsRegion.querySelectorAll('tbody tr')];
+    expect(rows[2].querySelector('.se-status-cell').classList.contains('failed')).toBe(true);
+    expect(rows[2].querySelector('.se-error').textContent).toContain('File may be incomplete');
+  });
+
+  it('toolbar shows the title, live elapsed + Cancel while exporting; Cancel calls cancelExportScript', () => {
+    const app = appWithResult(scriptExportResult(), { exporting: true });
+    app.now = () => 999;
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.res-graph-title').textContent).toContain('3 statements');
+    expect(region.querySelector('.stat.live').textContent).toContain('999 ms');
+    const cancel = region.querySelector('.cancel-act');
+    expect(cancel).not.toBeNull();
+    click(cancel);
+    expect(app.actions.cancelExportScript).toHaveBeenCalled();
+  });
+
+  it('toolbar shows the total elapsed (no Cancel) once exporting finishes', () => {
+    const app = appWithResult(scriptExportResult(), { exporting: false });
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.cancel-act')).toBeNull();
+    expect(region.textContent).toContain('42 ms');
+  });
+
+  it('shows a cancelled badge when a statement was cancelled', () => {
+    const app = appWithResult(scriptExportResult({
+      scriptExport: [{ i: 0, sql: 'SELECT 1', type: 'rows', status: 'cancelled', file: null, bytes: 0, startedAt: 0, ms: 1, error: null }],
+    }), { exporting: false });
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.cancelled-badge')).not.toBeNull();
+  });
+
+  it('handles a single-statement label without an "s"', () => {
+    const app = appWithResult(scriptExportResult({
+      scriptExport: [{ i: 0, sql: 'SELECT 1', type: 'rows', status: 'ok', file: '001-select-1.tsv', bytes: 10, startedAt: 0, ms: 1, error: null }],
+    }));
+    renderResults(app);
+    expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).toContain('1 statement');
+    expect(app.dom.resultsRegion.querySelector('.res-graph-title').textContent).not.toContain('1 statements');
+  });
+
+  it('columns are drag-resizable, keyed by plain index (7 handles, freeze-on-first-drag)', () => {
+    const r = scriptExportResult(); // no colWidths → freeze path
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    const handles = region.querySelectorAll('.script-export-grid th .col-resize-h');
+    expect(handles).toHaveLength(7);
+    const win = handles[0].ownerDocument.defaultView;
+    handles[0].dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
+    expect(region.querySelector('.script-export-grid .res-table').classList.contains('fixed')).toBe(true);
+    expect(Object.keys(r.colWidths).sort()).toEqual(['0', '1', '2', '3', '4', '5', '6']);
+    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 110 }));
+    win.dispatchEvent(new MouseEvent('mouseup', {}));
+    // clicking the handle itself (not dragging) must not also trigger a column sort/toggle.
+    click(handles[1]);
+  });
+
+  it('reapplies stored script-export-grid widths on re-render', () => {
+    const app = appWithResult(scriptExportResult({ colWidths: { 0: 40, 1: 200, 2: 60, 3: 60, 4: 100, 5: 60, 6: 60 } }));
+    renderResults(app);
+    const cells = app.dom.resultsRegion.querySelectorAll('.script-export-grid thead th');
+    expect(cells[0].style.width).toBe('40px');
+    expect(cells[6].style.width).toBe('60px');
+  });
+});

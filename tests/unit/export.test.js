@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toTSV, formatFileMeta, exportFilename } from '../../src/core/export.js';
+import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../../src/core/export.js';
 
 const cols = [{ name: 'a' }, { name: 'b' }];
 
@@ -57,5 +57,33 @@ describe('exportFilename', () => {
   });
   it('defaults the extension to tsv when omitted', () => {
     expect(exportFilename('result', 0)).toBe('result.tsv');
+  });
+});
+
+describe('scriptExportName', () => {
+  it('zero-pads the index (1-based) and slugs the statement', () => {
+    expect(scriptExportName(0, 'SELECT 1', 'tsv', new Set())).toBe('001-select-1.tsv');
+    expect(scriptExportName(99, 'SELECT 1', 'tsv', new Set())).toBe('100-select-1.tsv');
+    expect(scriptExportName(4, 'SELECT 1', 'csv', new Set())).toBe('005-select-1.csv');
+  });
+  it('slugs from inferQueryName, stripping the "Query · " prefix', () => {
+    expect(scriptExportName(0, 'SELECT * FROM my_table', 'tsv', new Set())).toBe('001-my-table.tsv');
+  });
+  it('falls back to "query" when the statement is empty', () => {
+    expect(scriptExportName(0, '', 'tsv', new Set())).toBe('001-query.tsv');
+  });
+  it('falls back to "query" when the slug sanitizes to nothing (all punctuation)', () => {
+    expect(scriptExportName(0, ';;;', 'tsv', new Set())).toBe('001-query.tsv');
+  });
+  it('truncates the slug to 24 chars', () => {
+    const stmt = 'SELECT * FROM abcdefghijklmnopqrstuvwxyz';
+    expect(scriptExportName(0, stmt, 'tsv', new Set())).toBe('001-abcdefghijklmnopqrstuvwx.tsv');
+  });
+  it('de-dupes against `taken` with -2, -3, …', () => {
+    const taken = new Set(['001-select.tsv', '001-select-2.tsv']);
+    expect(scriptExportName(0, 'SELECT', 'tsv', taken)).toBe('001-select-3.tsv');
+  });
+  it('works without a `taken` set (no dedup)', () => {
+    expect(scriptExportName(0, 'SELECT 1', 'tsv')).toBe('001-select-1.tsv');
   });
 });
