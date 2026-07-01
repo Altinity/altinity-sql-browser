@@ -822,18 +822,25 @@ body {
 .graph-overlay-canvas.schema-canvas.modkey .eg-card rect,
 .graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
 
-/* The schema graph's own browser tab: the panel fills the viewport chromelessly.
-   Divide by --vp-zoom like the panel (see --zoom/--vp-zoom) so the body is exactly
-   one screen tall on both engines (the opener mirrors its measured --vp-zoom onto
-   this tab's <html>; falls back to --zoom otherwise). */
-body.schema-tab { margin: 0; height: calc(100vh / var(--vp-zoom)); overflow: hidden; background: var(--bg-editor); }
+/* A detached view's own browser tab (schema graph, pipeline graph, Data
+   Pane): the panel fills the viewport chromelessly. Divide by --vp-zoom like
+   the panel (see --zoom/--vp-zoom) so the body is exactly one screen tall on
+   both engines (the opener mirrors its measured --vp-zoom onto this tab's
+   <html>; falls back to --zoom otherwise). */
+body.detached-tab { margin: 0; height: calc(100vh / var(--vp-zoom)); overflow: hidden; background: var(--bg-editor); }
 /* Full-bleed in its own browser tab — no backdrop padding, but still divide the
    viewport sizing by --vp-zoom (see --zoom/--vp-zoom) so the panel fills exactly
    one screen instead of overflowing the bottom (which hid the detail pane's DDL). */
-body.schema-tab .graph-overlay-panel {
+body.detached-tab .graph-overlay-panel {
   width: calc(100vw / var(--vp-zoom)); height: calc(100vh / var(--vp-zoom));
   border: none; border-radius: 0;
 }
+
+/* ------------ detached Data Pane (grid mode) ------------ */
+/* The grid-mode counterpart to .graph-overlay-canvas: a plain content mount
+   (no grab cursor/pan background) hosting the same .results/.res-toolbar/
+   .res-body layout as the main results pane. */
+.data-pane-body { flex: 1; min-height: 0; overflow: hidden; }
 
 /* ------------ schema node detail pane (fullscreen graph) ------------ */
 .schema-detail {

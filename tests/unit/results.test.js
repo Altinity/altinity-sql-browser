@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, openRowsViewer, installChartZoomFix, visCap } from '../../src/ui/results.js';
+import { describe, it, expect, vi } from 'vitest';
+import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, openRowsViewer, installChartZoomFix, visCap, expandDataPane } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey } from '../../src/core/chart-data.js';
@@ -146,12 +146,12 @@ describe('renderTable', () => {
     expect(el.querySelector('.h-sort')).not.toBeNull();
     expect(el.querySelector('td.num')).not.toBeNull();
   });
-  it('the Copy button in the footer fires its action', () => {
+  it('the Expand + Copy buttons in the footer are present, Copy fires its action', () => {
     const app = appWithResult(tableResult());
     renderResults(app);
     const acts = [...app.dom.resultsRegion.querySelectorAll('.res-act')];
-    expect(acts.map((b) => b.textContent)).toEqual(['Copy']);
-    click(acts[0]);
+    expect(acts.map((b) => b.textContent)).toEqual(['Expand', 'Copy']);
+    click(acts[1]);
     expect(app.actions.copyResult).toHaveBeenCalled();
   });
   it('no Copy button on an error result', () => {
@@ -160,6 +160,22 @@ describe('renderTable', () => {
     const app = appWithResult(r);
     renderResults(app);
     expect(app.dom.resultsRegion.querySelectorAll('.res-act')).toHaveLength(0);
+  });
+  it('no Expand button for raw text output (Copy still shows)', () => {
+    const r = newResult('TSV');
+    r.rawText = 'a\tb\n1\t2';
+    const app = appWithResult(r);
+    renderResults(app);
+    const acts = [...app.dom.resultsRegion.querySelectorAll('.res-act')];
+    expect(acts.map((b) => b.textContent)).toEqual(['Copy']);
+  });
+  it('no Expand button for a 0-row result (Copy still shows)', () => {
+    const r = tableResult();
+    r.rows = [];
+    const app = appWithResult(r);
+    renderResults(app);
+    const acts = [...app.dom.resultsRegion.querySelectorAll('.res-act')];
+    expect(acts.map((b) => b.textContent)).toEqual(['Copy']);
   });
   it('header shows column names only, with the type as a hover tooltip', () => {
     const el = renderTable(appWithResult(tableResult()), tableResult());
@@ -364,6 +380,112 @@ describe('openCellDetail', () => {
     click(document.querySelector('.cd-panel')); // stopPropagation → stays open
     expect(document.querySelector('.cd-backdrop')).not.toBeNull();
     document.querySelector('.cd-backdrop').remove();
+  });
+  it('builds in a given targetDoc instead of the main document (detached-tab safe)', () => {
+    const childDoc = document.implementation.createHTMLDocument('');
+    openCellDetail(makeApp(), 'c', 'String', 'x', childDoc);
+    expect(document.querySelector('.cd-backdrop')).toBeNull(); // not in the main document
+    const bd = childDoc.querySelector('.cd-backdrop');
+    expect(bd).not.toBeNull();
+    expect(bd.querySelector('.cd-name').textContent).toBe('c');
+    // the Rendered/Source toggle (a later callback) also lands in the same doc
+    openCellDetail(makeApp(), 'html', 'String', '<b>hi</b>', childDoc);
+    const bd2 = [...childDoc.querySelectorAll('.cd-backdrop')].at(-1);
+    click(bd2.querySelectorAll('.cd-seg')[1]); // → Source
+    expect(bd2.querySelector('.cd-pre').ownerDocument).toBe(childDoc);
+  });
+});
+
+describe('expandDataPane', () => {
+  const makeWin = () => {
+    const childDoc = document.implementation.createHTMLDocument('');
+    const ls = {};
+    return {
+      document: childDoc, closed: false,
+      close: vi.fn(), focus: vi.fn(),
+      addEventListener: (t, fn) => { ls[t] = fn; },
+      fire: (t) => ls[t] && ls[t](),
+    };
+  };
+
+  it('overlay fallback: shows the row count, a sortable/copyable grid snapshot, and Copy calls copySnapshot', () => {
+    const app = makeApp();
+    const r = tableResult();
+    expandDataPane(app, r);
+    const overlay = document.querySelector('.graph-overlay');
+    expect(overlay).not.toBeNull();
+    expect(overlay.querySelector('.data-pane-body')).not.toBeNull();
+    expect(overlay.textContent).toContain('2 rows');
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2);
+    const copyBtn = [...overlay.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Copy'));
+    click(copyBtn);
+    expect(app.actions.copySnapshot).toHaveBeenCalledWith(r, document);
+    // sort is local to the snapshot: clicking a header re-sorts just this grid
+    const th = overlay.querySelectorAll('.res-table thead th')[1]; // column 'n'
+    click(th);
+    const firstRowFirstCell = overlay.querySelector('.res-table tbody tr td.cell');
+    expect(firstRowFirstCell.textContent).toBe('1'); // ascending on 'n' → '1' before '2'
+  });
+
+  it('clicking a cell in the overlay snapshot opens the cell-detail drawer in the same document', () => {
+    const app = makeApp();
+    expandDataPane(app, tableResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(overlay.querySelectorAll('.res-table tbody td.cell')[0]);
+    expect(document.querySelector('.cd-backdrop')).not.toBeNull();
+  });
+
+  it('real tab: builds the grid + toolbar in the child document, Copy targets that document', () => {
+    const win = makeWin();
+    const app = makeApp({ openWindow: () => win });
+    const r = tableResult();
+    expandDataPane(app, r);
+    expect(win.document.querySelector('.data-pane-body')).not.toBeNull();
+    expect(win.document.querySelectorAll('.res-table tbody tr')).toHaveLength(2);
+    const copyBtn = [...win.document.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Copy'));
+    click(copyBtn);
+    expect(app.actions.copySnapshot).toHaveBeenCalledWith(r, win.document);
+    // a cell click inside the tab opens the drawer in the TAB's document, not the main one
+    click(win.document.querySelectorAll('.res-table tbody td.cell')[0]);
+    expect(win.document.querySelector('.cd-backdrop')).not.toBeNull();
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+  });
+
+  it('does not repaint when the main app renders a new result: no signal/effect wiring ties the two together', () => {
+    const app = makeApp();
+    const r1 = tableResult();
+    expandDataPane(app, r1);
+    const overlay = document.querySelector('.graph-overlay');
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2);
+    // the main app moves on to a brand-new result (a fresh query run) — the
+    // already-open snapshot has no subscription to react to it.
+    app.activeTab().result = tableResult();
+    renderResults(app);
+    expect(document.querySelectorAll('.graph-overlay')).toHaveLength(1); // still just the one snapshot
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // unchanged
+  });
+
+  it('overlay: ✕ sits last in the title bar, closes on Escape (or backdrop), but not while a cell drawer is open', () => {
+    const app = makeApp();
+    expandDataPane(app, tableResult());
+    const overlay = document.querySelector('.graph-overlay');
+    const barChildren = [...overlay.querySelector('.graph-overlay-bar').children];
+    expect(barChildren.at(-1).className).toBe('graph-overlay-close');
+    click(overlay.querySelectorAll('.res-table tbody td.cell')[0]); // opens a cell drawer
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.querySelector('.cd-backdrop')).toBeNull(); // Escape closed the drawer first
+    expect(document.body.contains(overlay)).toBe(true); // pane itself still open
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // second Escape
+    expect(document.body.contains(overlay)).toBe(false);
+  });
+
+  it('real tab: no ✕ button, and Escape is a no-op (browser tab-close serves that)', () => {
+    const win = makeWin();
+    const app = makeApp({ openWindow: () => win });
+    expandDataPane(app, tableResult());
+    expect(win.document.querySelector('.graph-overlay-close')).toBeNull();
+    win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(win.document.body.contains(win.document.querySelector('.data-pane-body'))).toBe(true);
   });
 });
 

@@ -1,8 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
+import { signal } from '@preact/signals-core';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaView, buildRichSchemaSvg } from '../../src/ui/explain-graph.js';
 
-const APP = { document, Dagre: dagre }; // app stub carrying the dagre layout seam
+// Every detached-view entry point (openPipelineFullscreen/openSchemaView) reads
+// app.state.detachedView (a signal, #100) — a fresh one per stub so counts
+// from one test don't leak into another.
+const detachedState = () => ({ detachedView: signal(0) });
+const APP = { document, Dagre: dagre, state: detachedState() }; // app stub carrying the dagre layout seam
 
 const DOT = `digraph
 {
@@ -45,6 +50,11 @@ describe('renderExplainGraph', () => {
 describe('openPipelineFullscreen', () => {
   afterEach(() => { document.body.innerHTML = ''; });
 
+  // openPipelineFullscreen now shares the detached-view primitive with the
+  // schema graph, whose return value is a controller — not the backdrop —
+  // so (like the schema tests' overlayOf()) query the document for it.
+  const overlayOf = () => document.querySelector('.graph-overlay');
+
   // happy-dom has no layout, so stub the canvas rect the pan/zoom math reads.
   const stubRect = (canvas) => {
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
@@ -62,7 +72,8 @@ describe('openPipelineFullscreen', () => {
   };
 
   it('mounts a fullscreen overlay with the graph and an initial fitted viewBox', () => {
-    const overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    const overlay = overlayOf();
     expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.className).toBe('graph-overlay');
     const svg = overlay.querySelector('svg.explain-graph');
@@ -73,7 +84,8 @@ describe('openPipelineFullscreen', () => {
   });
 
   it('⌘/Ctrl+wheel zooms around the cursor; plain wheel pans', () => {
-    const overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    const overlay = overlayOf();
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const w0 = vbOf(overlay)[2];
@@ -92,7 +104,8 @@ describe('openPipelineFullscreen', () => {
   });
 
   it('double-click fits the graph', () => {
-    const overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    const overlay = overlayOf();
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const fitW = vbOf(overlay)[2];
@@ -103,7 +116,8 @@ describe('openPipelineFullscreen', () => {
   });
 
   it('drag pans the viewBox; a stray mousemove without a drag is a no-op', () => {
-    const overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    const overlay = overlayOf();
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const [x0] = vbOf(overlay);
@@ -119,7 +133,8 @@ describe('openPipelineFullscreen', () => {
   });
 
   it('zoom buttons and Fit reframe the graph', () => {
-    const overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    const overlay = overlayOf();
     const canvas = overlay.querySelector('.graph-overlay-canvas');
     stubRect(canvas);
     const fitW = vbOf(overlay)[2];
@@ -133,31 +148,98 @@ describe('openPipelineFullscreen', () => {
 
   it('closes on Escape, the ✕ button, and a backdrop click (but not a panel click)', () => {
     // Escape
-    let overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    let overlay = overlayOf();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // ignored
     expect(document.body.contains(overlay)).toBe(true);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(document.body.contains(overlay)).toBe(false);
     // panel click does NOT close; ✕ does
-    overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    overlay = overlayOf();
     overlay.querySelector('.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(true);
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
     // backdrop click closes
-    overlay = openPipelineFullscreen(APP, DOT);
+    openPipelineFullscreen(APP, DOT);
+    overlay = overlayOf();
     overlay.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
 
   it('shows a placeholder for an empty graph; an app-less call uses the global document', () => {
-    const overlay = openPipelineFullscreen(null, 'digraph {}'); // null app → global document seam
+    openPipelineFullscreen(null, 'digraph {}'); // null app → global document seam
+    const overlay = overlayOf();
     expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.querySelector('svg.explain-graph')).toBeNull();
     expect(overlay.querySelector('.graph-overlay-zoom')).toBeNull();
     expect(overlay.textContent).toMatch(/Nothing to display/);
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
+  });
+
+  it('tracks app.state.detachedView while open, decrementing on close', () => {
+    const app = { document, Dagre: dagre, state: detachedState() };
+    expect(app.state.detachedView.value).toBe(0);
+    openPipelineFullscreen(app, DOT);
+    expect(app.state.detachedView.value).toBe(1);
+    overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.detachedView.value).toBe(0);
+  });
+});
+
+describe('openPipelineFullscreen — real browser tab', () => {
+  afterEach(() => { document.body.innerHTML = ''; document.documentElement.style.removeProperty('--vp-zoom'); });
+  const makeWin = () => {
+    const childDoc = document.implementation.createHTMLDocument('');
+    const ls = {};
+    return {
+      document: childDoc, closed: false,
+      close: vi.fn(), focus: vi.fn(),
+      addEventListener: (t, fn) => { ls[t] = fn; },
+      fire: (t) => ls[t] && ls[t](),
+    };
+  };
+  const stub = (canvas) => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 }); };
+
+  it('builds the graph in the child document: copies CSS, mirrors theme, fills the tab, no close button', () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    const win = makeWin();
+    const app = { document, Dagre: dagre, stylesText: 'body{color:red}', openWindow: () => win, state: detachedState() };
+    openPipelineFullscreen(app, DOT);
+    expect(win.document.querySelector('style').textContent).toBe('body{color:red}');
+    expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(win.document.title).toBe('Pipeline');
+    expect(win.document.body.className).toBe('detached-tab');
+    expect(win.focus).toHaveBeenCalled();
+    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    stub(canvas);
+    expect(canvas.querySelectorAll('rect.eg-node')).toHaveLength(3);
+    expect(win.document.querySelector('.graph-overlay-close')).toBeNull(); // no JS close in a real tab
+    // pan/zoom still works in the tab's own document
+    canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    expect(canvas.querySelector('svg.explain-graph').getAttribute('viewBox')).not.toBeNull();
+    // Escape is a no-op in a tab (no nested pane, no JS-driven close)
+    win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(win.document.body.contains(canvas)).toBe(true);
+  });
+
+  it('closing the real tab (pagehide) decrements app.state.detachedView', () => {
+    const win = makeWin();
+    const app = { document, Dagre: dagre, openWindow: () => win, state: detachedState() };
+    openPipelineFullscreen(app, DOT);
+    expect(app.state.detachedView.value).toBe(1);
+    win.fire('pagehide');
+    expect(app.state.detachedView.value).toBe(0);
+  });
+
+  it('falls back to the overlay when the window is null or has no document', () => {
+    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => null, state: detachedState() }, DOT);
+    expect(document.querySelector('.graph-overlay')).not.toBeNull();
+    document.body.innerHTML = '';
+    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => ({ document: null }), state: detachedState() }, DOT);
+    expect(document.querySelector('.graph-overlay')).not.toBeNull();
   });
 });
 
@@ -255,7 +337,7 @@ describe('schema lineage graph', () => {
 
   // Overlay-fallback mode: openWindow returns null, so openSchemaView falls back
   // to the in-app modal overlay (mounted in the main document).
-  const overlayApp = (actions = {}) => ({ document, Dagre: dagre, openWindow: () => null, actions });
+  const overlayApp = (actions = {}) => ({ document, Dagre: dagre, openWindow: () => null, actions, state: detachedState() });
   const overlayOf = () => document.querySelector('.graph-overlay');
 
   it('openSchemaView (overlay fallback) mounts the legend incl. Buffer+Merge, then renders and closes', () => {
@@ -309,7 +391,7 @@ describe('schema lineage graph', () => {
   });
 
   it('falls back to the overlay using the global document when app has none', () => {
-    const view = openSchemaView({ Dagre: dagre, openWindow: () => null, actions: { openNodeDetail: vi.fn() } });
+    const view = openSchemaView({ Dagre: dagre, openWindow: () => null, actions: { openNodeDetail: vi.fn() }, state: detachedState() });
     view.render(GRAPH);
     expect(overlayOf()).not.toBeNull(); // app.document undefined → global document
     overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
@@ -377,7 +459,7 @@ describe('schema lineage graph', () => {
 
   it('overlay theme toggle drives the app’s own toggleTheme (keeps state/pref/header in sync)', () => {
     const toggleTheme = vi.fn();
-    const view = openSchemaView({ document, Dagre: dagre, openWindow: () => null, toggleTheme, actions: { openNodeDetail: vi.fn() } });
+    const view = openSchemaView({ document, Dagre: dagre, openWindow: () => null, toggleTheme, actions: { openNodeDetail: vi.fn() }, state: detachedState() });
     const canvas = overlayOf().querySelector('.graph-overlay-canvas');
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
     view.render(GRAPH);
@@ -439,7 +521,7 @@ describe('openSchemaView — real browser tab', () => {
   };
   const tabApp = (win, over = {}) => ({
     document, Dagre: dagre, stylesText: 'body{color:red}', openWindow: () => win,
-    actions: { openNodeDetail: vi.fn(), insertCreate: vi.fn() }, ...over,
+    actions: { openNodeDetail: vi.fn(), insertCreate: vi.fn() }, state: detachedState(), ...over,
   });
   const stub = (canvas) => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 }); };
 
@@ -454,7 +536,7 @@ describe('openSchemaView — real browser tab', () => {
     expect(win.document.documentElement.getAttribute('data-density')).toBeNull();
     // the opener's measured viewport divisor carries onto the tab so its panel fits (#70)
     expect(win.document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('1');
-    expect(win.document.body.className).toBe('schema-tab');
+    expect(win.document.body.className).toBe('detached-tab');
     expect(win.focus).toHaveBeenCalled(); // tab brought to front for key events
     const canvas = win.document.querySelector('.graph-overlay-canvas');
     expect(canvas.getAttribute('tabindex')).toBe('-1'); // focusable → receives ⌘ key events
@@ -744,13 +826,13 @@ describe('openSchemaView — real browser tab', () => {
   });
 
   it('falls back to the overlay when the window is null, has no document, or is COOP-severed', () => {
-    openSchemaView({ document, Dagre: dagre, openWindow: () => null, actions: {} });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => null, actions: {}, state: detachedState() });
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
     document.body.innerHTML = '';
-    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ document: null }), actions: {} });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ document: null }), actions: {}, state: detachedState() });
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
     document.body.innerHTML = '';
-    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ get document() { throw new Error('coop'); } }), actions: {} });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ get document() { throw new Error('coop'); } }), actions: {}, state: detachedState() });
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
   });
 });

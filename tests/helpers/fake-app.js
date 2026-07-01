@@ -68,6 +68,7 @@ export function makeApp(over = {}) {
       connect: vi.fn(),
       share: vi.fn(),
       copyResult: vi.fn(),
+      copySnapshot: vi.fn(),
       exportDirect: vi.fn(),
       cancelExport: vi.fn(),
       save: vi.fn(),

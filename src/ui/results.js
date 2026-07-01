@@ -2,7 +2,7 @@
 // view for TSV/JSON output) plus the renderers. Heavy logic (sorting, axis
 // selection) lives in core/ and is reused here.
 
-import { h, zoomScale } from './dom.js';
+import { h, zoomScale, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes, isNumericType } from '../core/format.js';
@@ -13,6 +13,7 @@ import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
 import { RESULT_ROW_LIMIT_OPTIONS } from '../state.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
+import { openInDetachedTab } from './detached-view.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -428,6 +429,14 @@ function buildToolbar(app, r) {
       }, Icon.expand(), h('span', null, 'Expand')));
     }
     if (!r.error) {
+      // Expand is meaningful only for a real grid — not raw text output (no
+      // columns model) and not an empty result (nothing to show).
+      if (r.rawText == null && r.rows.length > 0) {
+        toolbar.appendChild(h('button', {
+          class: 'res-act', title: 'Open a snapshot of this grid in a new tab (sort, resize, copy)',
+          onclick: () => expandDataPane(app, r),
+        }, Icon.expand(), h('span', null, 'Expand')));
+      }
       toolbar.appendChild(h('button', {
         class: 'res-act', title: 'Copy results to clipboard',
         onclick: () => app.actions.copyResult(),
@@ -460,10 +469,9 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   const { col, dir } = sort;
   const rows = sortRows(rawRows, col, dir);
   const wrap = h('div', { class: 'res-table-wrap' });
-  const table = document.createElement('table');
-  table.className = 'res-table';
+  const table = h('table', { class: 'res-table' });
 
-  const trh = document.createElement('tr');
+  const trh = h('tr', null);
   trh.appendChild(h('th', { style: { textAlign: 'center', color: 'var(--fg-faint)', minWidth: '36px' } }, '#'));
   columns.forEach((c, i) => {
     const isSort = col === i;
@@ -483,14 +491,14 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
       }));
     trh.appendChild(th);
   });
-  const thead = document.createElement('thead');
+  const thead = h('thead', null);
   thead.appendChild(trh);
   table.appendChild(thead);
   if (Object.keys(widths).length) applyFixedWidths(table, widths, IDX_KEY);
 
-  const tbody = document.createElement('tbody');
+  const tbody = h('tbody', null);
   rows.slice(0, cap).forEach((row, ri) => {
-    const tr = document.createElement('tr');
+    const tr = h('tr', null);
     tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
     row.forEach((v, ci) => {
       const isNum = isNumericType(columns[ci].type);
@@ -530,6 +538,61 @@ export function renderTable(app, r) {
 }
 
 /**
+ * Expand the current grid into a detached view (a real tab, else the in-app
+ * overlay) — a frozen snapshot of `r`: it does not update if the user runs a
+ * new query afterward (live-sync would need cross-document reactivity — a
+ * BroadcastChannel/postMessage bridge — real additional scope, not built
+ * speculatively here). Sort + column widths are local to the snapshot; Copy
+ * copies exactly what's shown. No row-limit selector (there is nothing to
+ * re-fetch for a frozen snapshot) and no Export (that's a separate re-run of
+ * the live query to disk, in app.js's editor toolbar — unrelated to this
+ * rendered grid). Exported for tests.
+ */
+export function expandDataPane(app, r) {
+  const mainDoc = (app && app.document) || document;
+  return openInDetachedTab(app, {
+    title: 'Data',
+    mode: 'grid',
+    mount: ({ doc, bar, body, close, closeBtn }) => {
+      const isTab = doc !== mainDoc;
+      if (closeBtn) bar.appendChild(closeBtn); // title bar, top-right — same slot schema/pipeline use
+      const sort = { col: null, dir: 'asc' };
+      const widths = {};
+      const inner = h('div', { class: 'res-body' });
+      const paint = () => withDocument(doc, () => inner.replaceChildren(renderGrid({
+        columns: r.columns,
+        rows: r.rows,
+        sort,
+        onSort: (c, d) => { sort.col = c; sort.dir = d; paint(); },
+        widths,
+        onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
+        cap: visCap(r),
+      })));
+      paint();
+      const toolbar = h('div', { class: 'res-toolbar' },
+        h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()), h('span', { class: 'v' }, r.rows.length + ' rows')),
+        h('div', { style: { flex: '1' } }),
+        h('button', {
+          class: 'res-act', title: 'Copy results to clipboard',
+          onclick: () => app.actions.copySnapshot(r, doc),
+        }, Icon.copy(), h('span', null, 'Copy')));
+      body.appendChild(h('div', { class: 'results data-pane-view' }, toolbar, inner));
+      if (isTab) return null; // no JS-driven close in a real tab (browser tab-close serves that)
+      // Esc closes an open cell-detail drawer first (its own listener, keyed
+      // off isTopDrawer, handles that); a second Esc — no drawer left — closes
+      // the pane, matching the schema/pipeline overlays' Escape convention.
+      const onKey = (e) => {
+        if (e.key !== 'Escape' || doc.querySelector('.cd-backdrop')) return;
+        e.stopPropagation();
+        close();
+      };
+      doc.addEventListener('keydown', onKey, true);
+      return () => doc.removeEventListener('keydown', onKey, true);
+    },
+  });
+}
+
+/**
  * Open a right-side drawer with one cell's full value: pretty-printed (JSON is
  * reindented), and for HTML a Rendered (sandboxed iframe) ↔ Source toggle.
  * Escape or a backdrop/✕ click closes it. Exported for tests.
@@ -542,8 +605,8 @@ function isTopDrawer(doc, el) {
   return all[all.length - 1] === el;
 }
 
-export function openCellDetail(app, name, type, value) {
-  const doc = app.document || document;
+export function openCellDetail(app, name, type, value, targetDoc) {
+  const doc = targetDoc || (app && app.document) || document;
   const text = value == null ? '' : String(value);
   let backdrop;
   const onKey = (e) => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
@@ -552,42 +615,49 @@ export function openCellDetail(app, name, type, value) {
     doc.removeEventListener('keydown', onKey, true);
   }
 
-  const body = h('div', { class: 'cd-body' });
-  const showSource = () => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
+  // withDocument(doc, ...) so every element (including the ones built later,
+  // from the Rendered/Source toggle click) lands in the right realm — vital
+  // when this drawer is opened from inside a detached tab (results.js's
+  // Data Pane), where the ambient doc from the mount()-time call has long
+  // since unwound by the time the user clicks anything.
+  return withDocument(doc, () => {
+    const body = h('div', { class: 'cd-body' });
+    const showSource = () => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
 
-  const head = h('div', { class: 'cd-head' },
-    h('div', { class: 'cd-title' },
-      h('span', { class: 'cd-name' }, name),
-      type ? h('span', { class: 'cd-type' }, type) : null),
-    h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
+    const head = h('div', { class: 'cd-head' },
+      h('div', { class: 'cd-title' },
+        h('span', { class: 'cd-name' }, name),
+        type ? h('span', { class: 'cd-type' }, type) : null),
+      h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
 
-  const panel = h('div', { class: 'cd-panel', onclick: (e) => e.stopPropagation() }, head);
+    const panel = h('div', { class: 'cd-panel', onclick: (e) => e.stopPropagation() }, head);
 
-  if (looksLikeHtml(text)) {
-    const seg = h('div', { class: 'cd-toggle' });
-    const setMode = (mode) => {
-      seg.replaceChildren(
-        h('button', { class: 'cd-seg' + (mode === 'rendered' ? ' on' : ''), onclick: () => setMode('rendered') }, 'Rendered'),
-        h('button', { class: 'cd-seg' + (mode === 'source' ? ' on' : ''), onclick: () => setMode('source') }, 'Source'));
-      if (mode === 'rendered') {
-        const frame = h('iframe', { class: 'cd-frame', sandbox: '' });
-        frame.setAttribute('srcdoc', text);
-        body.replaceChildren(frame);
-      } else {
-        showSource();
-      }
-    };
-    panel.append(seg, body);
-    setMode('rendered');
-  } else {
-    panel.appendChild(body);
-    showSource();
-  }
+    if (looksLikeHtml(text)) {
+      const seg = h('div', { class: 'cd-toggle' });
+      const setMode = (mode) => withDocument(doc, () => {
+        seg.replaceChildren(
+          h('button', { class: 'cd-seg' + (mode === 'rendered' ? ' on' : ''), onclick: () => setMode('rendered') }, 'Rendered'),
+          h('button', { class: 'cd-seg' + (mode === 'source' ? ' on' : ''), onclick: () => setMode('source') }, 'Source'));
+        if (mode === 'rendered') {
+          const frame = h('iframe', { class: 'cd-frame', sandbox: '' });
+          frame.setAttribute('srcdoc', text);
+          body.replaceChildren(frame);
+        } else {
+          showSource();
+        }
+      });
+      panel.append(seg, body);
+      setMode('rendered');
+    } else {
+      panel.appendChild(body);
+      showSource();
+    }
 
-  backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
-  doc.body.appendChild(backdrop);
-  doc.addEventListener('keydown', onKey, true);
-  return backdrop;
+    backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
+    doc.body.appendChild(backdrop);
+    doc.addEventListener('keydown', onKey, true);
+    return backdrop;
+  });
 }
 
 /**

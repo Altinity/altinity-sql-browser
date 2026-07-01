@@ -15,6 +15,7 @@ import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoo
 import { straightEdgePoints, incidentEdges, dragDeltaToSvg, applyPositions, recordPosition, createMoveHistory } from '../core/graph-layout.js';
 import { flashToast } from './toast.js';
 import { clearSchemaSelection } from './schema-detail.js';
+import { openInDetachedTab } from './detached-view.js';
 
 const ZOOM_STEP = 1.2; // per zoom-button press
 const WHEEL_ZOOM_STEP = 1.04; // per ⌘/Ctrl+wheel notch — gentle, so trackpad/wheel zoom isn't jumpy
@@ -299,39 +300,35 @@ function schemaLegend() {
 }
 
 /**
- * Open a pipeline graph in a fullscreen overlay (drag-pan, ⌘/Ctrl+wheel zoom,
- * fit/zoom buttons; Esc / ✕ / backdrop close). `build()` returns
- * `{svg,width,height,nodeCount}`. Reuses the same panel/zoom chrome as the schema
- * view (buildGraphPanel + zoomControls + the right-aligned actions cluster).
+ * Open the pipeline graph as a detached view (drag-pan, ⌘/Ctrl+wheel zoom,
+ * fit/zoom buttons): a real browser tab when possible, else the in-app
+ * overlay (Esc / ✕ / backdrop close — Esc only in the overlay; a real tab has
+ * no JS-driven close, matching the schema tab).
  */
-function openGraphFullscreen(app, title, build) {
-  const doc = (app && app.document) || document;
-  return withDocument(doc, () => {
-    const built = build();
-    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
-    let backdrop;
-    function close() { backdrop.remove(); doc.removeEventListener('keydown', onKey, true); }
-    const { panel, bar, canvas } = buildGraphPanel(title);
-    const actions = h('div', { class: 'graph-overlay-actions' });
-    if (!built.nodeCount) {
-      canvas.appendChild(placeholder('Nothing to display.'));
-    } else {
-      canvas.appendChild(built.svg);
-      const pz = attachPanZoom(canvas, built.svg, built, { refitOnResize: true });
-      actions.appendChild(zoomControls(pz));
-    }
-    actions.appendChild(h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
-    bar.appendChild(actions);
-    backdrop = h('div', { class: 'graph-overlay', onclick: close }, panel);
-    doc.body.appendChild(backdrop);
-    doc.addEventListener('keydown', onKey, true);
-    return backdrop;
-  });
-}
-
-/** Fullscreen pipeline graph (DOT). */
 export function openPipelineFullscreen(app, rawText) {
-  return openGraphFullscreen(app, 'Pipeline', () => buildPipelineSvg(rawText || '', app && app.Dagre));
+  const mainDoc = (app && app.document) || document;
+  return openInDetachedTab(app, {
+    title: 'Pipeline',
+    mode: 'graph',
+    mount: ({ doc, bar, body, close, closeBtn }) => {
+      const isTab = doc !== mainDoc;
+      const built = buildPipelineSvg(rawText || '', app && app.Dagre);
+      const actions = h('div', { class: 'graph-overlay-actions' });
+      if (!built.nodeCount) {
+        body.appendChild(placeholder('Nothing to display.'));
+      } else {
+        body.appendChild(built.svg);
+        const pz = attachPanZoom(body, built.svg, built, { refitOnResize: true });
+        actions.appendChild(zoomControls(pz));
+      }
+      if (closeBtn) actions.appendChild(closeBtn); // last, so it stays the rightmost action
+      bar.appendChild(actions);
+      if (isTab) return null; // no JS-driven close in a real tab (browser tab-close serves that)
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+      doc.addEventListener('keydown', onKey, true);
+      return () => doc.removeEventListener('keydown', onKey, true);
+    },
+  });
 }
 
 // Clicking an object runs SHOW CREATE for it, dropping the (formatted) DDL into
@@ -357,38 +354,12 @@ const schemaDetailClick = (app, targetDoc) => (n, e) => {
   app.actions.openNodeDetail(n, targetDoc);
 };
 
-// The shared chrome for the full schema view: a title bar + an (empty) canvas,
-// inside a panel. Reused by the new browser tab and the in-app overlay fallback;
-// `.graph-overlay-panel` is also the mount point the detail pane looks for.
-function buildGraphPanel(title) {
-  const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
-  // tabindex makes the canvas focusable so the view receives ⌘/Ctrl + key events
-  // (cursor mode, undo/redo) without first clicking — vital for the new tab.
-  const canvas = h('div', { class: 'graph-overlay-canvas', tabindex: '-1' });
-  const panel = h('div', { class: 'graph-overlay-panel', onclick: (e) => e.stopPropagation() }, bar, canvas);
-  return { panel, bar, canvas };
-}
-
 // Zoom-out / zoom-in / fit buttons wired to an attachPanZoom controller.
 function zoomControls(pz) {
   return h('div', { class: 'graph-overlay-zoom' },
     h('button', { class: 'res-act', title: 'Zoom out', onclick: pz.zoomOut }, Icon.minus()),
     h('button', { class: 'res-act', title: 'Zoom in', onclick: pz.zoomIn }, Icon.plus()),
     h('button', { class: 'res-act', title: 'Fit to screen', onclick: pz.fit }, 'Fit'));
-}
-
-// Copy the theme/density data-attributes onto the child tab's <html> so its
-// CSS custom properties resolve to the same colours as the main window. Also
-// carry the opener's measured --vp-zoom (the per-engine viewport-unit divisor,
-// #70) so the tab's fullscreen panel sizes correctly; if the opener never
-// measured it, the tab keeps the CSS default (--vp-zoom: var(--zoom)).
-function mirrorTheme(src, dst) {
-  for (const attr of ['data-theme', 'data-density']) {
-    const v = src.documentElement.getAttribute(attr);
-    if (v != null) dst.documentElement.setAttribute(attr, v);
-  }
-  const vp = src.documentElement.style.getPropertyValue('--vp-zoom');
-  if (vp) dst.documentElement.style.setProperty('--vp-zoom', vp);
 }
 
 // Headline title for a focus: "default" (whole-DB) or "default.events" (table).
@@ -575,7 +546,7 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
           actions.appendChild(h('div', { class: 'graph-overlay-zoom' }, undoBtn, redoBtn));
           actions.appendChild(zoomControls(pz));
         }
-        if (closeBtn) actions.appendChild(closeBtn);
+        if (closeBtn) actions.appendChild(closeBtn); // last, so it stays the rightmost action
         bar.appendChild(actions);
         canvas.focus({ preventScroll: true }); // focus for ⌘/Ctrl key events — but never scroll the header off
       });
@@ -589,71 +560,46 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
   };
 }
 
-// Drive a same-origin about:blank tab from the opener: copy the page CSS + theme,
-// mount the panel, and keep the detail pane targeting the child document. The
-// opener keeps the token + ch-client, so click-to-detail still fetches live.
-function openInTab(app, win, childDoc, mainDoc) {
-  return withDocument(childDoc, () => {
-    childDoc.head.appendChild(h('style', null, app.stylesText || ''));
-    mirrorTheme(mainDoc, childDoc);
-    childDoc.title = 'Schema'; // render() refines this to "Schema:<db>"
-    const { panel, bar, canvas } = buildGraphPanel('Schema');
-    canvas.appendChild(placeholder('Loading…'));
-    // No close button — the browser tab's own close serves that.
-    childDoc.body.className = 'schema-tab';
-    childDoc.body.appendChild(panel);
-    win.focus(); // bring the new tab to the front + give it window focus for key events
-    // Esc closes the open detail pane (the browser tab's own close handles the rest).
-    childDoc.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape') return;
-      const pane = childDoc.querySelector('.schema-detail');
-      if (pane) { e.stopPropagation(); pane.remove(); clearSchemaSelection(childDoc); }
-    }, true);
-    return makeController(app, childDoc, mainDoc, canvas, bar, null);
-  });
-}
-
-// In-app modal overlay — the fallback when a real tab can't be opened (pop-up
-// blocked, window.open null, or COOP severing the opener). Esc / ✕ / backdrop close.
-function openInOverlay(app, mainDoc) {
-  return withDocument(mainDoc, () => {
-    let ctrl;
-    // Esc closes the open detail pane first; a second Esc closes the whole overlay.
-    const onKey = (e) => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      const pane = mainDoc.querySelector('.schema-detail');
-      if (pane) { pane.remove(); clearSchemaSelection(mainDoc); } else close();
-    };
-    let backdrop;
-    // close() also tears down the interaction listeners attached to the main
-    // document (they would otherwise leak — the overlay's host doc outlives it).
-    function close() { backdrop.remove(); mainDoc.removeEventListener('keydown', onKey, true); ctrl.destroy(); }
-    const { panel, bar, canvas } = buildGraphPanel('Schema');
-    canvas.appendChild(placeholder('Loading…'));
-    const closeBtn = h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close());
-    backdrop = h('div', { class: 'graph-overlay', onclick: close }, panel);
-    mainDoc.body.appendChild(backdrop);
-    mainDoc.addEventListener('keydown', onKey, true);
-    ctrl = makeController(app, mainDoc, mainDoc, canvas, bar, closeBtn);
-    return ctrl;
-  });
-}
-
 /**
  * Open the full schema-lineage view and return a `{ render, fail }` controller.
- * Tries a real browser tab first (kept live by the opener); on any failure —
- * pop-up blocked, null window, or COOP-severed document — falls back to the
- * in-app overlay. The window is opened synchronously so it survives the click
+ * A real browser tab when possible (kept live by the opener), else the in-app
+ * overlay — pop-up blocked, null window, or a COOP-severed document all fall
+ * back to it. The view is opened synchronously so it survives the click
  * gesture; the caller fetches lineage, then calls render()/fail().
  */
 export function openSchemaView(app) {
-  const mainDoc = app.document || document;
-  try {
-    const win = app.openWindow('', '_blank');
-    if (win && win.document) return openInTab(app, win, win.document, mainDoc);
-  } catch (e) { /* pop-up blocked or cross-origin document — fall back to overlay */ }
-  return openInOverlay(app, mainDoc);
+  const mainDoc = (app && app.document) || document;
+  let ctrl;
+  openInDetachedTab(app, {
+    title: 'Schema',
+    mode: 'graph',
+    mount: ({ doc, bar, body, close, closeBtn }) => {
+      const isTab = doc !== mainDoc;
+      if (isTab) doc.title = 'Schema'; // render() refines this to "Schema:<db>" — never the main page's title
+      body.appendChild(placeholder('Loading…'));
+      // Esc closes the open detail pane first; a second Esc closes the overlay
+      // (a real tab has no JS-driven close — the browser tab's own close serves it).
+      const onKey = (e) => {
+        if (e.key !== 'Escape') return;
+        if (!isTab) e.stopPropagation();
+        const pane = doc.querySelector('.schema-detail');
+        if (pane) {
+          if (isTab) e.stopPropagation();
+          pane.remove();
+          clearSchemaSelection(doc);
+        } else if (!isTab) {
+          close();
+        }
+      };
+      doc.addEventListener('keydown', onKey, true);
+      // closeBtn is appended inside render()'s own (async, built-on-first-load)
+      // actions cluster — not here — so it lands last within that cluster
+      // rather than stranded next to the title before the cluster exists.
+      ctrl = makeController(app, doc, mainDoc, body, bar, closeBtn);
+      return () => { doc.removeEventListener('keydown', onKey, true); ctrl.destroy(); };
+    },
+  });
+  return { render: (g) => ctrl.render(g), fail: (m) => ctrl.fail(m) };
 }
 
 /**

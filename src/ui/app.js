@@ -970,19 +970,27 @@ export function createApp(env = {}) {
     // A script result is a per-statement grid, not a single exportable table.
     return r && !r.error && !r.script && (r.rawText != null || r.rows.length > 0) ? r : null;
   }
-  function copyResult() {
-    const r = exportableResult();
-    if (!r) { flashToast('Nothing to copy', { document: doc }); return; }
+  // `targetDoc` defaults to the main document, but a detached view (issue
+  // #100's Data Pane) passes its own — the Clipboard API ties writeText's
+  // permission to the *focused* document, so resolving navigator off the main
+  // window unconditionally would risk a NotAllowedError when the click came
+  // from a different (same-origin) top-level browsing context. `env.navigator`
+  // still wins first so tests can inject a stub regardless of which doc they
+  // simulate.
+  function copySnapshot(r, targetDoc) {
+    const d = targetDoc || doc;
+    if (!r) { flashToast('Nothing to copy', { document: d }); return; }
     const text = r.rawText != null ? r.rawText : toTSV(r.columns, r.rows);
-    const clip = (env.navigator || win.navigator || {}).clipboard;
+    const clip = (env.navigator || (d.defaultView || win).navigator || {}).clipboard;
     if (clip && clip.writeText) {
       clip.writeText(text)
-        .then(() => flashToast('Copied to clipboard', { document: doc }))
-        .catch(() => flashToast('Copy failed', { document: doc }));
+        .then(() => flashToast('Copied to clipboard', { document: d }))
+        .catch(() => flashToast('Copy failed', { document: d }));
     } else {
-      flashToast('Copy not supported', { document: doc });
+      flashToast('Copy not supported', { document: d });
     }
   }
+  function copyResult() { copySnapshot(exportableResult(), doc); }
   // --- streaming export (issue #87) ---------------------------------------
   // Full, uncapped export of the current editor query — never the loaded grid
   // — streamed straight to a user-chosen file. Its own query_id + abort, kept
@@ -1263,6 +1271,7 @@ export function createApp(env = {}) {
     connect,
     share,
     copyResult,
+    copySnapshot,
     exportDirect,
     cancelExport,
     save: openSavePopover,

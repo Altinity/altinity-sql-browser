@@ -93,6 +93,12 @@ export function createState(read = { loadJSON, loadStr }) {
     // `running` (the grid run) so an export and a grid run never clobber each
     // other's button/cancel state.
     exporting: signal(false),
+    // Count of currently-open detached views (issue #100) — a schema/pipeline
+    // graph or Data Pane grid, each opened either as a real browser tab or an
+    // in-app overlay fallback. A count (not a bool) so several can be open at
+    // once without one's close() clobbering the others' "is anything open"
+    // signal. Via `.value`.
+    detachedView: signal(0),
     // True while the editor has a non-empty (non-whitespace) text selection, so
     // ⌘+Enter / Run target just that text. Drives the Run button's
     // "Run" ↔ "Run selection" label (an effect in createApp). Via `.value`.
