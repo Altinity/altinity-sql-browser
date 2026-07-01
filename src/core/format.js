@@ -98,14 +98,34 @@ export function withStatementBreak(sql) {
 }
 
 /**
- * The trailing `FORMAT <Name>` clause of a query, or null. ClickHouse requires
- * FORMAT to be the last clause, so we only match it at the end (optionally before
- * a `;`). Lets the results panel switch to raw passthrough when the user picks an
- * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`). Pure.
+ * The trailing `FORMAT <Name>` clause of a query, or null. FORMAT and SETTINGS
+ * are ClickHouse's two clauses that may trail a query in *either* order (its
+ * parser explicitly allows `FORMAT x SETTINGS y` and `SETTINGS y FORMAT x`), so
+ * a FORMAT immediately followed by a SETTINGS clause still counts as trailing.
+ * Lets the results panel switch to raw passthrough when the user picks an
+ * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`, with
+ * or without a following `SETTINGS …`). Pure.
  */
 export function detectSqlFormat(sql) {
-  const m = /\bFORMAT\s+([A-Za-z][A-Za-z0-9]*)\s*;?\s*$/i.exec(String(sql || ''));
+  const m = /\bFORMAT\s+([A-Za-z][A-Za-z0-9]*)\b(?:\s+SETTINGS\b[\s\S]*)?\s*;?\s*$/i.exec(String(sql || ''));
   return m ? m[1] : null;
+}
+
+/**
+ * Resolve an editor query for a full (uncapped) export. If it already ends in
+ * a `FORMAT <name>` clause (detectSqlFormat), the SQL is kept as-is and that
+ * format is reported; otherwise `FORMAT TabSeparatedWithNames` is appended. A
+ * trailing `;` is peeled either way (FORMAT must be the last clause). Empty
+ * input → `{ sql: '', format: 'TabSeparatedWithNames' }` — the caller no-ops
+ * on an empty `sql`. Pure.
+ */
+export function prepareExportSql(sql) {
+  const s = String(sql || '').trim().replace(/;+\s*$/, '').trim();
+  if (!s) return { sql: '', format: 'TabSeparatedWithNames' };
+  const fmt = detectSqlFormat(s);
+  return fmt
+    ? { sql: s, format: fmt }
+    : { sql: s + '\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' };
 }
 
 const SCHEMA_MUTATING_RE = /^(CREATE|DROP|ALTER|RENAME|TRUNCATE|ATTACH|DETACH|EXCHANGE)\b/i;

@@ -21,7 +21,12 @@ function memSession(initial = {}) {
 
 function streamBody(lines) {
   let i = 0;
-  return { getReader: () => ({ read: async () => (i < lines.length ? { done: false, value: new TextEncoder().encode(lines[i++]) } : { done: true }) }) };
+  return {
+    getReader: () => ({
+      read: async () => (i < lines.length ? { done: false, value: new TextEncoder().encode(lines[i++]) } : { done: true }),
+      releaseLock: () => {},
+    }),
+  };
 }
 function resp(opts) {
   return {
@@ -31,7 +36,31 @@ function resp(opts) {
     text: async () => opts.text ?? JSON.stringify(opts.json),
     clone() { return this; },
     body: opts.body,
+    headers: { get: (name) => (opts.headers && opts.headers[name]) ?? null },
   };
+}
+// Build a ClickHouse mid-stream exception frame's raw text (issue #87):
+// \r\n__exception__\r\n<tag>\r\n<message>\n<len> <tag>\r\n__exception__\r\n
+function exceptionFrame(tag, message) {
+  const len = new TextEncoder().encode(message).length;
+  return '\r\n__exception__\r\n' + tag + '\r\n' + message + '\n' + len + ' ' + tag + '\r\n__exception__\r\n';
+}
+// A fake FileSystemWritableFileStream + its handle, for streaming-export tests.
+function fakeFileHandle() {
+  const chunks = [];
+  const writable = {
+    write: vi.fn(async (chunk) => { chunks.push(Uint8Array.from(chunk)); }),
+    close: vi.fn(async () => {}),
+    abort: vi.fn(async () => {}),
+  };
+  return { handle: { createWritable: vi.fn(async () => writable) }, writable, chunks };
+}
+function writtenText(chunks) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const merged = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) { merged.set(c, o); o += c.length; }
+  return new TextDecoder().decode(merged);
 }
 
 // A fetch stub that routes by SQL/URL.
@@ -643,13 +672,12 @@ describe('query run', () => {
     expect(app.chCtx.fetch.mock.calls.some((c) => /just a note/.test(c[1] && c[1].body))).toBe(false);
   });
 
-  it('copy/export treat a script result as non-exportable (no throw)', async () => {
+  it('copyResult treats a script result as non-exportable (no throw)', async () => {
     const { app } = appForRun(scriptRoutes());
     app.activeTab().sql = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result.script).toHaveLength(3);
     expect(() => app.actions.copyResult()).not.toThrow();
-    expect(() => app.actions.exportResult()).not.toThrow();
   });
 
   it('stops on the first failing statement and skips the rest (no history)', async () => {
@@ -1595,36 +1623,19 @@ describe('exhaustive controller coverage', () => {
     await new Promise((r) => setTimeout(r));
     expect(document.querySelector('.share-toast').textContent).toBe('Copy failed');
   });
-  it('exportResult: CSV for structured (name sanitized), JSON for raw, nothing when empty', () => {
+  it('downloadFile: injected env.download wins; native path uses Blob + createObjectURL + revoke', () => {
+    // file-menu.js is the only remaining caller of app.downloadFile; exercise
+    // both branches directly since neither is a UI-clickable action anymore.
     const download = vi.fn();
     const app = createApp(env({ window: fakeWin(), download }));
     app.renderApp();
-    app.activeTab().name = 'My Query!';
-    app.activeTab().result = { columns: [{ name: 'a' }, { name: 'b' }], rows: [['1', 'x']] };
-    app.actions.exportResult();
-    expect(download).toHaveBeenCalledWith('My_Query.csv', 'text/csv', 'a,b\n1,x');
-    app.activeTab().result = { rawText: '[{"a":1}]', rawFormat: 'JSON', rows: [] };
-    app.actions.exportResult();
-    expect(download).toHaveBeenLastCalledWith(expect.stringMatching(/\.json$/), 'application/json', '[{"a":1}]');
-    app.activeTab().result = null;
-    app.actions.exportResult();
-    expect(document.querySelector('.share-toast').textContent).toBe('Nothing to export');
-  });
-  it('exportResult: raw TSV + junk tab name falls back to result.tsv; native Blob path revokes the URL', () => {
-    const download = vi.fn();
-    const app = createApp(env({ window: fakeWin(), download }));
-    app.renderApp();
-    app.activeTab().name = '!!!';
-    app.activeTab().result = { rawText: 'a\tb', rawFormat: 'TSV', rows: [] };
-    app.actions.exportResult();
+    app.downloadFile('result.tsv', 'text/tab-separated-values', 'a\tb');
     expect(download).toHaveBeenCalledWith('result.tsv', 'text/tab-separated-values', 'a\tb');
-    // native path (no env.download): exercises Blob + createObjectURL + revoke
     const createObjectURL = vi.fn(() => 'blob:u');
     const revokeObjectURL = vi.fn();
     const app2 = createApp(env({ window: { ...fakeWin(), URL: { createObjectURL, revokeObjectURL }, Blob: class { constructor(p) { this.p = p; } } } }));
     app2.renderApp();
-    app2.activeTab().result = { columns: [{ name: 'a' }], rows: [['1']] };
-    app2.actions.exportResult();
+    app2.downloadFile('result.csv', 'text/csv', 'a,b');
     expect(createObjectURL).toHaveBeenCalled();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:u');
   });
@@ -1659,6 +1670,291 @@ describe('exhaustive controller coverage', () => {
     app.activeTab().sql = 'SELECT 1';
     await app.actions.run();
     expect(app.state.history.length).toBe(1);
+  });
+});
+
+describe('streaming export (issue #87)', () => {
+  const TAG = 'abcdef0123456789';
+  const fakeWin = () => ({ history: { replaceState: vi.fn() }, navigator: {} });
+
+  it('canExport resolves from the injected seams; the toolbar button reflects it', () => {
+    const disabled = createApp(env({ window: fakeWin() }));
+    disabled.renderApp();
+    expect(disabled.canExport()).toBe(false);
+    expect(disabled.dom.exportBtn.classList.contains('is-disabled')).toBe(true);
+    expect(disabled.dom.exportBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(disabled.dom.exportBtn.title).toMatch(/Chrome\/Edge/);
+
+    const enabled = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
+    enabled.renderApp();
+    expect(enabled.canExport()).toBe(true);
+    expect(enabled.dom.exportBtn.classList.contains('is-disabled')).toBe(false);
+    expect(enabled.dom.exportBtn.getAttribute('aria-disabled')).toBeNull();
+  });
+
+  it('is a no-op when export is unavailable, or when one is already running', async () => {
+    const showSaveFilePicker1 = vi.fn();
+    const unavailable = createApp(env({ window: fakeWin(), showSaveFilePicker: null, isSecureContext: false }));
+    unavailable.renderApp();
+    unavailable.activeTab().sql = 'SELECT 1';
+    await unavailable.actions.exportDirect();
+    expect(showSaveFilePicker1).not.toHaveBeenCalled();
+
+    const showSaveFilePicker2 = vi.fn();
+    const busy = createApp(env({ window: fakeWin(), showSaveFilePicker: showSaveFilePicker2, isSecureContext: true }));
+    busy.renderApp();
+    busy.activeTab().sql = 'SELECT 1';
+    busy.state.exporting.value = true;
+    await busy.actions.exportDirect();
+    expect(showSaveFilePicker2).not.toHaveBeenCalled();
+  });
+
+  it('"Nothing to export" toast when the editor is empty', async () => {
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
+    app.renderApp();
+    app.activeTab().sql = '   ';
+    await app.actions.exportDirect();
+    expect(document.querySelector('.share-toast').textContent).toBe('Nothing to export');
+  });
+
+  it('picker AbortError (user dismissed the dialog) is a silent no-op', async () => {
+    const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(document.querySelector('.share-toast')).toBeNull();
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('a non-abort picker failure toasts "Save dialog failed"', async () => {
+    const showSaveFilePicker = vi.fn(async () => { throw new Error('disk full'); });
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(document.querySelector('.share-toast').textContent).toBe('Save dialog failed: disk full');
+  });
+
+  it('signed out (no token): the picker still opens (transient activation preserved), but no query runs', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const fetch = vi.fn(async () => resp({ json: { data: [] } })); // only the config-doc load, if anything
+    const app = createApp(env({
+      window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch, sessionStorage: memSession({}),
+    }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
+    expect(handle.createWritable).not.toHaveBeenCalled(); // never reached the streaming step
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('streams a clean result to disk (default TSV) and reports completion', async () => {
+    const { handle, writable, chunks } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async (opts) => { showSaveFilePicker.opts = opts; return handle; });
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['a'.repeat(100)]) })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().name = 'My Query!';
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(showSaveFilePicker.opts.suggestedName).toBe('My_Query.tsv');
+    expect(writtenText(chunks)).toBe('a'.repeat(100));
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(document.querySelector('.share-toast').textContent).toBe('Export complete');
+    expect(app.state.exporting.value).toBe(false);
+    const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL);
+    expect(exportCall[0]).toContain('default_format=TabSeparatedWithNames');
+  });
+
+  it('honors an explicit FORMAT in the query for the picker + the request', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async (opts) => { showSaveFilePicker.opts = opts; return handle; });
+    const EXPORT_SQL = 'SELECT 1 FORMAT JSON';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['[]']) })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = EXPORT_SQL;
+    await app.actions.exportDirect();
+    expect(showSaveFilePicker.opts.suggestedName).toMatch(/\.json$/);
+    expect(showSaveFilePicker.opts.types[0].accept).toEqual({ 'application/json': ['.json'] });
+    expect(fetch.mock.calls.some((c) => c[1] && c[1].body === EXPORT_SQL)).toBe(true);
+  });
+
+  it('holds back the trailing 32 KiB and streams the rest incrementally (no full buffering)', async () => {
+    const { handle, writable, chunks } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const big = 'a'.repeat(40960); // > HOLDBACK (32 KiB) in a single chunk
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody([big]) })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    // mid-loop commit (8192 = 40960 - 32768 HOLDBACK) then the EOF flush of the held-back tail.
+    expect(writable.write.mock.calls.map((c) => c[0].length)).toEqual([8192, 32768]);
+    expect(writtenText(chunks)).toBe(big);
+    expect(writable.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('excises a mid-stream exception frame — only clean bytes reach the file; reports "incomplete"', async () => {
+    const { handle, writable, chunks } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const clean = 'x'.repeat(40);
+    const frame = exceptionFrame(TAG, 'DB::Exception: Memory limit (total) exceeded');
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL,
+      () => resp({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(writtenText(chunks)).toBe(clean); // the exception frame never reaches the file
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(document.querySelector('.share-toast').textContent)
+      .toBe('Export incomplete — server error mid-stream: DB::Exception: Memory limit (total) exceeded');
+  });
+
+  it('a stream read failure mid-export aborts the writable and surfaces the error', async () => {
+    const { handle, writable } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    let reads = 0;
+    const body = {
+      getReader: () => ({
+        read: async () => {
+          reads += 1;
+          if (reads === 1) return { done: false, value: new TextEncoder().encode('partial') };
+          throw new Error('network drop');
+        },
+        releaseLock: () => {},
+      }),
+    };
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(writable.abort).toHaveBeenCalledTimes(1); // leaves the partial file, doesn't retry the write
+    expect(document.querySelector('.share-toast').textContent).toBe('Export failed: network drop');
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('a pre-header (non-OK) failure toasts "Export failed" without ever opening the writable', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL,
+      () => resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(document.querySelector('.share-toast').textContent).toBe('Export failed: DB::Exception: nope');
+    expect(handle.createWritable).not.toHaveBeenCalled();
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('exporting.value is true for the duration of the run; cancel aborts the export\'s own signal + issues its own KILL QUERY', async () => {
+    const EXPORT_BODY = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    let resolveExportFetch;
+    const fetch = vi.fn((url, init) => (init && init.body === EXPORT_BODY
+      ? new Promise((res) => { resolveExportFetch = res; })
+      : Promise.resolve(resp({ json: { data: [] } }))));
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    const pending = app.actions.exportDirect();
+    await new Promise((r) => setTimeout(r)); // let the picker + export request kick off
+    expect(app.state.exporting.value).toBe(true);
+    const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_BODY);
+    expect(exportCall[1].signal.aborted).toBe(false);
+
+    app.actions.cancelExport(); // grid run's runQueryId/abortController is untouched — this is the export's own
+    expect(exportCall[1].signal.aborted).toBe(true);
+    resolveExportFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
+
+    expect(app.state.exporting.value).toBe(false);
+    expect(document.querySelector('.share-toast')).toBeNull(); // AbortError → silent
+    expect(fetch.mock.calls.some((c) => c[1] && /KILL QUERY WHERE query_id = 'export-/.test(c[1].body))).toBe(true);
+  });
+
+  it('is blocked on a multi-statement script, mirroring explainMultiBlocked', async () => {
+    const showSaveFilePicker = vi.fn();
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    await app.actions.exportDirect();
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(document.querySelector('.share-toast').textContent)
+      .toBe('Export isn’t available for a multi-statement script — run one statement at a time.');
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('attaches the tab session_id when the tab already has an open session (e.g. after a TEMPORARY TABLE run)', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT * FROM t\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['x']) })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    const tab = app.activeTab();
+    tab.chSession = 'sess-abc';
+    tab.sql = 'SELECT * FROM t';
+    await app.actions.exportDirect();
+    const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL);
+    expect(exportCall[0]).toContain('session_id=sess-abc');
+  });
+
+  it('suppresses the "Export failed" toast when the underlying error is "signed out" (onSignedOut already showed the login screen)', async () => {
+    const { handle } = fakeFileHandle();
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => { throw new Error('signed out'); }]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportDirect();
+    expect(document.querySelector('.share-toast')).toBeNull();
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('a second click while the save-file picker is still open is blocked (exporting flips true before the picker await)', async () => {
+    let rejectPicker;
+    const showSaveFilePicker = vi.fn(() => new Promise((_res, rej) => { rejectPicker = rej; }));
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    const first = app.actions.exportDirect();
+    await new Promise((r) => setTimeout(r)); // let the first call reach the picker await
+    expect(app.state.exporting.value).toBe(true);
+    await app.actions.exportDirect(); // second click: blocked by the re-entrance guard
+    expect(showSaveFilePicker).toHaveBeenCalledTimes(1); // only the first call opened a picker
+    rejectPicker(Object.assign(new Error('x'), { name: 'AbortError' }));
+    await first;
+    expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('setExportBtn reflects the exporting state on the toolbar button, blocking a second click visually too', () => {
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
+    app.renderApp();
+    expect(app.dom.exportBtn.classList.contains('is-disabled')).toBe(false);
+    expect(app.dom.exportBtn.getAttribute('aria-disabled')).toBeNull();
+    app.state.exporting.value = true;
+    expect(app.dom.exportBtn.classList.contains('is-disabled')).toBe(true);
+    expect(app.dom.exportBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(app.dom.exportBtn.title).toBe('Export in progress…');
+    app.state.exporting.value = false;
+    expect(app.dom.exportBtn.classList.contains('is-disabled')).toBe(false);
+    expect(app.dom.exportBtn.getAttribute('aria-disabled')).toBeNull();
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery, prepareExportSql,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -120,11 +120,35 @@ describe('detectSqlFormat', () => {
     expect(detectSqlFormat('select 1 format CSV')).toBe('CSV');
     expect(detectSqlFormat('SELECT 1 FORMAT TabSeparatedWithNames ; ')).toBe('TabSeparatedWithNames');
   });
+  it('still detects FORMAT when followed by a SETTINGS clause (CH allows either order)', () => {
+    expect(detectSqlFormat('SELECT 1 FORMAT CSV SETTINGS max_threads=1')).toBe('CSV');
+    expect(detectSqlFormat('SELECT 1 FORMAT CSV SETTINGS max_threads=1;')).toBe('CSV');
+    expect(detectSqlFormat('SELECT 1 SETTINGS max_threads=1 FORMAT CSV')).toBe('CSV'); // the other order
+  });
   it('returns null without a trailing FORMAT clause', () => {
     expect(detectSqlFormat('SELECT 1')).toBeNull();
     expect(detectSqlFormat("SELECT 'FORMAT JSON' AS x")).toBeNull(); // FORMAT not the trailing clause
     expect(detectSqlFormat('')).toBeNull();
     expect(detectSqlFormat(null)).toBeNull();
+  });
+});
+
+describe('prepareExportSql', () => {
+  it('appends FORMAT TabSeparatedWithNames when the query has no FORMAT clause', () => {
+    expect(prepareExportSql('SELECT 1')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
+  });
+  it('keeps an explicit FORMAT clause verbatim and reports it', () => {
+    expect(prepareExportSql('SELECT 1 FORMAT JSON')).toEqual({ sql: 'SELECT 1 FORMAT JSON', format: 'JSON' });
+    expect(prepareExportSql('SELECT 1 FORMAT Parquet')).toEqual({ sql: 'SELECT 1 FORMAT Parquet', format: 'Parquet' });
+  });
+  it('peels a trailing ; either way', () => {
+    expect(prepareExportSql('SELECT 1;')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
+    expect(prepareExportSql('SELECT 1 FORMAT CSV ; ')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+  });
+  it('empty/whitespace input → empty sql, default format', () => {
+    expect(prepareExportSql('')).toEqual({ sql: '', format: 'TabSeparatedWithNames' });
+    expect(prepareExportSql('   ')).toEqual({ sql: '', format: 'TabSeparatedWithNames' });
+    expect(prepareExportSql(null)).toEqual({ sql: '', format: 'TabSeparatedWithNames' });
   });
 });
 

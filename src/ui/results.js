@@ -432,10 +432,6 @@ function buildToolbar(app, r) {
         class: 'res-act', title: 'Copy results to clipboard',
         onclick: () => app.actions.copyResult(),
       }, Icon.copy(), h('span', null, 'Copy')));
-      toolbar.appendChild(h('button', {
-        class: 'res-act', title: 'Download results as a file',
-        onclick: () => app.actions.exportResult(),
-      }, Icon.download(), h('span', null, 'Export')));
     }
   }
   return toolbar;

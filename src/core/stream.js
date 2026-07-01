@@ -85,6 +85,51 @@ export function parseExceptionText(text) {
   return text;
 }
 
+const EXCEPTION_MARKER = '__exception__'; // ClickHouse WriteBufferFromHTTPServerResponse
+
+// Re-decode a latin1 (1 byte -> 1 char) slice back into proper UTF-8 text.
+const utf8 = (latin1) => new TextDecoder().decode(Uint8Array.from(latin1, (c) => c.charCodeAt(0)));
+
+/**
+ * Find ClickHouse's mid-stream exception frame in the retained tail of a
+ * streamed HTTP response. Once headers (HTTP 200) are sent, a later server-side
+ * failure can't change the status — so ClickHouse (since v24.11) appends a
+ * structured frame to the very end of the body instead:
+ *   \r\n__exception__\r\n<tag>\r\n<message>\n<len> <tag>\r\n__exception__\r\n
+ * `tag` is the 16-byte value ClickHouse ALSO sends up front in the
+ * `X-ClickHouse-Exception-Tag` response header — read it from the response and
+ * pass it here, so a server-chosen random tag (never present in real data by
+ * accident) frames the match with zero false positives. `tailLatin1` is the
+ * retained tail of the body decoded 1 byte -> 1 char (so a char index is a byte
+ * offset, even though the message itself may be UTF-8 multibyte).
+ *
+ * Legacy fallback (`tag` falsy — servers < 24.11 send no tag header): scan for
+ * the plain-text `\nCode: <n>. DB::Exception:` prefix instead (less precise
+ * excision, but still detected + reported). Anchored to the *end* of the tail
+ * (optionally one trailing newline) — a genuine unframed exception is always
+ * the last thing ClickHouse writes, and anchoring avoids misidentifying real
+ * exported data that happens to *contain* that text (e.g. a `system.query_log`
+ * `exception` column) as a server failure, so long as more data follows it.
+ *
+ * Returns `{ message, cleanBytes }` (`cleanBytes` = the byte length of real
+ * data before the frame — what the caller should keep) or `null` when the
+ * tail carries no exception frame. Pure.
+ */
+export function findExceptionFrame(tailLatin1, tag) {
+  const s = String(tailLatin1 || '');
+  if (tag) {
+    const open = '\r\n' + EXCEPTION_MARKER + '\r\n' + tag + '\r\n';
+    const start = s.indexOf(open);
+    if (start < 0) return null;
+    const body = s.slice(start + open.length);
+    const close = body.indexOf('\r\n' + EXCEPTION_MARKER + '\r\n'); // closing trailer
+    const raw = close < 0 ? body : body.slice(0, body.lastIndexOf('\n', close - 1));
+    return { message: utf8(raw).trim(), cleanBytes: start };
+  }
+  const m = /\nCode:\s*\d+\.\s*DB::Exception:[^\n]*\n?$/.exec(s);
+  return m ? { message: utf8(m[0]).trim(), cleanBytes: m.index } : null;
+}
+
 /**
  * The 0-based caret offset a ClickHouse error points at, or null. CH syntax
  * errors carry "failed at position N (token): …" where N is 1-based and relative

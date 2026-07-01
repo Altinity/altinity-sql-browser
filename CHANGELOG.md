@@ -62,6 +62,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   columns/partitions/DDL fetch; database rows show their `comment` as hover text
   when set (else the existing shortcut hints, now also noting drag-to-graph); and
   the no-comment table hover text now also notes drag-to-insert.
+- **Streaming Export** (#87): a new **Export** button in the editor toolbar (next
+  to Share) runs the current editor query **uncapped** and streams the result
+  straight to a user-chosen file via the File System Access API
+  (`showSaveFilePicker` → `resp.body` → disk), bypassing the result grid entirely
+  — memory stays flat regardless of result size. Format follows the query: an
+  explicit trailing `FORMAT <name>` (in either order relative to a `SETTINGS`
+  clause) streams verbatim with a matching file extension; otherwise it defaults
+  to `TabSeparatedWithNames`. An inline progress banner (bytes written · elapsed ·
+  Cancel) tracks the export; Cancel aborts the stream and issues its own
+  `KILL QUERY`, entirely separate from the grid run's cancel state. A **mid-stream**
+  ClickHouse error (after the response has already started, so the HTTP status
+  can't change) is detected via the `X-ClickHouse-Exception-Tag` header + the
+  trailing `__exception__` frame and excised with a hold-back write buffer, so the
+  error text is never written into the file — reported as "Export incomplete"
+  instead. A multi-statement script, or a session-less export of session-scoped
+  SQL (a `CREATE TEMPORARY TABLE` / `SET` from earlier in the same tab), is
+  guarded the same way the rest of the app handles those cases. Chromium + a
+  secure context only (no File System Access API elsewhere) — the button stays
+  visible but `aria-disabled` with an explanatory tooltip. **Replaces** the old
+  result-panel Export (buffered CSV/TSV download of the already-loaded grid);
+  Copy is unaffected.
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime

@@ -13,13 +13,13 @@ import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-spl
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
-import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, prepareExportSql, formatBytes } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
-import { toTSV, toCSV } from '../core/export.js';
-import { newResult, applyStreamLine, parseErrorPos } from '../core/stream.js';
+import { toTSV, formatFileMeta, exportFilename } from '../core/export.js';
+import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
@@ -68,11 +68,22 @@ export function createApp(env = {}) {
     // child tab can inline the page's CSS (about:blank ships none of it).
     openWindow: env.openWindow || ((...a) => win.open(...a)),
     stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style').textContent : ''),
+    // Streaming Export (issue #87) needs the File System Access API and a
+    // secure context; both are injected seams (like openWindow) so tests can
+    // stub them without a real browser. Fixed for the session (browser +
+    // origin don't change), so this is computed once rather than as a signal.
+    showSaveFilePicker: env.showSaveFilePicker
+      || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
+    isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
     // Build stamp ("v0.1.4 (abc1234)") injected at build time via main.js; shown
     // in the user menu so a bug report can be tied to a build. 'dev' in tests /
     // an un-built run where the placeholder was never replaced.
     build: env.build || 'dev',
   };
+  // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
+  // File System Access API. The Export button feature-detects this at build
+  // time and renders aria-disabled + a tooltip rather than hiding outright.
+  app.canExport = () => !!app.showSaveFilePicker && app.isSecureContext;
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
   // a ClickHouse username/password sent as Authorization: Basic, optionally
@@ -723,6 +734,22 @@ export function createApp(env = {}) {
         running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
   app.setRunBtn = setRunBtn;
+  // The Export button reflects both browser support (canExport) and whether an
+  // export is already running — the button stays aria-disabled (not natively
+  // disabled) in either case so its tooltip still shows on hover.
+  function setExportBtn(exporting) {
+    if (!app.dom.exportBtn) return;
+    const can = app.canExport();
+    const disabled = exporting || !can;
+    app.dom.exportBtn.classList.toggle('is-disabled', disabled);
+    if (disabled) app.dom.exportBtn.setAttribute('aria-disabled', 'true');
+    else app.dom.exportBtn.removeAttribute('aria-disabled');
+    app.dom.exportBtn.title = exporting
+      ? 'Export in progress…'
+      : can ? 'Export full result to a file (streams to disk, uncapped)'
+        : 'Large export requires Chrome/Edge over HTTPS';
+  }
+  app.setExportBtn = setExportBtn;
   // Busy state for the Format button — formatting a multi-statement script is one
   // request per statement, so it can take a moment; show a spinner + disable.
   function setFmtBtn(busy) {
@@ -956,22 +983,161 @@ export function createApp(env = {}) {
       flashToast('Copy not supported', { document: doc });
     }
   }
-  function exportResult() {
-    const r = exportableResult();
-    if (!r) { flashToast('Nothing to export', { document: doc }); return; }
-    let content, ext, mime;
-    if (r.rawText != null) {
-      content = r.rawText;
-      ext = r.rawFormat === 'JSON' ? 'json' : 'tsv';
-      mime = ext === 'json' ? 'application/json' : 'text/tab-separated-values';
-    } else {
-      content = toCSV(r.columns, r.rows);
-      ext = 'csv';
-      mime = 'text/csv';
+  // --- streaming export (issue #87) ---------------------------------------
+  // Full, uncapped export of the current editor query — never the loaded grid
+  // — streamed straight to a user-chosen file. Its own query_id + abort, kept
+  // separate from app.state.runQueryId/abortController so an export and a
+  // grid run never clobber each other's cancel state.
+  let exportAbort = null;
+  let exportQueryId = null;
+
+  // Export sends the whole tab as one HTTP request body — same reason as
+  // explainMultiBlocked, EXPLAIN can't run a `;`-separated script either.
+  function exportMultiBlocked(tab) {
+    if (splitStatements(tab.sql).length <= 1) return false;
+    flashToast('Export isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
+    return true;
+  }
+
+  async function exportDirect() {
+    if (app.state.exporting.value) return;
+    if (!app.canExport()) return; // aria-disabled button; defensive guard
+    const tab = app.activeTab();
+    if (exportMultiBlocked(tab)) return;
+    const { sql, format } = prepareExportSql(tab.sql);
+    if (!sql) { flashToast('Nothing to export', { document: doc }); return; }
+    const { ext, mime } = formatFileMeta(format);
+
+    // Flip the flag before the picker (not after, like the file handle) so a
+    // second click while the native dialog is still open is blocked by the
+    // guard above — the button's own disabled state (setExportBtn) also
+    // reflects this via an effect, but the guard is the authority.
+    app.state.exporting.value = true;
+    try {
+      // Picker FIRST, before any await: showSaveFilePicker requires the click's
+      // transient activation, which a prior await (e.g. a token refresh in
+      // ensureConfig/getToken can be a network round trip) would forfeit.
+      let handle;
+      try {
+        handle = await app.showSaveFilePicker({
+          suggestedName: exportFilename(tab.name, Date.now(), ext),
+          types: [{ description: format + ' data', accept: { [mime]: ['.' + ext] } }],
+        });
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // user dismissed the picker
+        flashToast('Save dialog failed: ' + String((e && e.message) || e), { document: doc });
+        return;
+      }
+
+      // Now the awaits are safe — we already hold the file handle.
+      await ensureConfig();
+      if (!(await getToken())) { chCtx.onSignedOut(); return; }
+
+      exportQueryId = 'export-' + uid('');
+      exportAbort = new AbortController();
+      const progress = showExportProgress(cancelExport);
+      try {
+        const resp = await ch.exportQuery(chCtx, sql, {
+          queryId: exportQueryId, signal: exportAbort.signal, format,
+          params: sessionParamsFor(tab, [sql]),
+        });
+        const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
+        const err = await streamToFile(resp, handle, {
+          signal: exportAbort.signal, tag, onProgress: (bytes) => progress.update(bytes),
+        });
+        if (err) flashToast('Export incomplete — server error mid-stream: ' + err, { document: doc });
+        else flashToast('Export complete', { document: doc });
+      } catch (e) {
+        // AbortError (cancelled) and 'signed out' (chCtx.onSignedOut already
+        // rendered the login screen) both already have their own signal — an
+        // extra toast on top would just be a confusing second message.
+        const msg = String((e && e.message) || e);
+        if (!(e && e.name === 'AbortError') && msg !== 'signed out') {
+          flashToast('Export failed: ' + msg, { document: doc });
+        }
+      } finally {
+        progress.remove();
+        exportAbort = null;
+        exportQueryId = null;
+      }
+    } finally {
+      app.state.exporting.value = false;
     }
-    const base = (app.activeTab().name || 'result').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'result';
-    downloadFile(base + '.' + ext, mime, content);
-    flashToast('Exported ' + base + '.' + ext, { document: doc });
+  }
+
+  // Stream `resp.body` to `handle` with a hold-back buffer: ClickHouse's
+  // mid-stream exception frame (findExceptionFrame) is at most 16 KiB and
+  // always trailing, so bytes are only committed to disk once they've aged
+  // out of a 32 KiB window — at EOF the retained tail is inspected and only
+  // the clean prefix is written, so a mid-stream exception is never written
+  // into the file. Memory stays flat (one HOLDBACK-sized buffer) regardless of
+  // result size. Reads the stream directly (not via a TransformStream) because
+  // the write is conditional (withhold, inspect, commit) — a passthrough
+  // transform can't un-write. Returns the CH error message, or null when clean.
+  async function streamToFile(resp, handle, { signal, tag, onProgress }) {
+    const writable = await handle.createWritable();
+    const HOLDBACK = 32 * 1024; // >= ClickHouse's MAX_EXCEPTION_SIZE (16 KiB) + margin
+    const reader = resp.body.getReader();
+    let held = new Uint8Array(0);
+    let written = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+        const merged = new Uint8Array(held.length + value.length);
+        merged.set(held);
+        merged.set(value, held.length);
+        const commit = Math.max(0, merged.length - HOLDBACK);
+        if (commit > 0) {
+          await writable.write(merged.subarray(0, commit));
+          written += commit;
+          onProgress(written);
+        }
+        held = merged.subarray(commit);
+      }
+      // EOF: inspect the retained tail (latin1: 1 char per byte, for byte-accurate slicing).
+      const frame = findExceptionFrame(latin1(held), tag);
+      const clean = frame ? held.subarray(0, frame.cleanBytes) : held;
+      if (clean.length) {
+        await writable.write(clean);
+        written += clean.length;
+        onProgress(written);
+      }
+      await writable.close();
+      return frame ? frame.message : null;
+    } catch (e) {
+      await writable.abort().catch(() => {}); // leave the partial file; report upstream
+      throw e;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const latin1 = (bytes) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return s; };
+
+  // Mirrors cancel() (the grid run) but on the export's own id/abort.
+  function cancelExport() {
+    if (exportAbort) exportAbort.abort();
+    ch.killQuery(chCtx, exportQueryId, sqlString);
+  }
+
+  // Inline progress banner (bytes written + elapsed, with Cancel) — no extra
+  // tab/window; see the issue's "Why inline, not a child tab" rationale.
+  function showExportProgress(onCancel) {
+    const t0 = now();
+    const stat = h('span', { class: 'exp-stat' }, formatBytes(0) + ' · 0s');
+    const el = h('div', { class: 'export-progress' },
+      h('span', { class: 'spin' }, Icon.spinner()),
+      h('span', { class: 'exp-label' }, 'Exporting…'),
+      stat,
+      h('button', { class: 'exp-cancel', title: 'Cancel export', onclick: onCancel }, Icon.close(), h('span', null, 'Cancel')));
+    doc.body.appendChild(el);
+    return {
+      update(bytes) {
+        stat.textContent = formatBytes(bytes) + ' · ' + ((now() - t0) / 1000).toFixed(0) + 's';
+      },
+      remove() { el.remove(); },
+    };
   }
   // Trigger a browser download. Injectable via env.download for tests.
   function downloadFile(filename, mime, content) {
@@ -1097,7 +1263,8 @@ export function createApp(env = {}) {
     connect,
     share,
     copyResult,
-    exportResult,
+    exportDirect,
+    cancelExport,
     save: openSavePopover,
     openUserMenu,
     formatQuery,
@@ -1195,9 +1362,17 @@ export function renderApp(app, helpers) {
   app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
   app.dom.explainBtn = h('button', { class: 'tb-btn', title: 'Explain this query (plan, indexes, pipeline, estimate)', onclick: () => app.actions.explainQuery() }, Icon.plan(), 'Explain');
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
+  // Chromium + secure-context only (app.canExport), and disabled while one is
+  // already running (app.state.exporting — see setExportBtn's effect below).
+  // Aria-disabled with a tooltip rather than natively `disabled` — a natively
+  // disabled button swallows pointer events, so its title tooltip often never
+  // shows, exactly where a "why is this greyed out?" explanation matters most.
+  app.dom.exportBtn = h('button', {
+    class: 'tb-btn', onclick: () => app.actions.exportDirect(),
+  }, Icon.download(), 'Export');
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
-  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.shareBtn);
+  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   // Drop a database/table from the schema tree here → render its lineage graph.
@@ -1240,6 +1415,10 @@ export function renderApp(app, helpers) {
   // The Run button reflects the run state (label + disabled) and the selection
   // (Run ↔ Run selection).
   effect(() => { app.state.hasSelection.value; app.setRunBtn(app.state.running.value); });
+  // The Export button reflects the exporting state — set here (not just at
+  // click-time) so a second click while one export is already running is
+  // blocked visually too, not just by exportDirect's own re-entrance guard.
+  effect(() => { app.setExportBtn(app.state.exporting.value); });
   // Track the editor's text selection into a signal so the Run button label and
   // ⌘+Enter target just the highlighted text. `selectionchange` is the one event
   // that fires for keyboard, mouse, and programmatic selection; gate on the

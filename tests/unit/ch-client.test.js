@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -376,6 +376,34 @@ describe('killQuery', () => {
   it('swallows errors (cancellation must never throw)', async () => {
     const ctx = ctxWith(async () => { throw new Error('boom'); });
     await expect(killQuery(ctx, 'q', sqlString)).resolves.toBeUndefined();
+  });
+});
+
+describe('exportQuery', () => {
+  it('sets query_id + default_format, passes the signal, and returns the raw Response', async () => {
+    const signal = {};
+    const stream = streamResp(['a\tb\n1\tx\n']);
+    const ctx = ctxWith(async () => stream);
+    const resp = await exportQuery(ctx, 'SELECT 1 FORMAT TabSeparatedWithNames', {
+      queryId: 'export-abc', signal, format: 'TabSeparatedWithNames',
+    });
+    expect(resp).toBe(stream);
+    const [url, init] = ctx.fetch.mock.calls[0];
+    expect(url).toContain('default_format=TabSeparatedWithNames');
+    expect(url).toContain('query_id=export-abc');
+    expect(init.signal).toBe(signal);
+    expect(init.body).toBe('SELECT 1 FORMAT TabSeparatedWithNames');
+  });
+  it('defaults to TabSeparatedWithNames and omits query_id when absent', async () => {
+    const ctx = ctxWith(async () => streamResp(['x']));
+    await exportQuery(ctx, 'SELECT 1');
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('default_format=TabSeparatedWithNames');
+    expect(url).not.toContain('query_id');
+  });
+  it('throws the parsed CH exception on a non-OK (pre-header) response', async () => {
+    const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: nope"}', false));
+    await expect(exportQuery(ctx, 'SELECT 1', { format: 'CSV' })).rejects.toThrow('DB::Exception: nope');
   });
 });
 

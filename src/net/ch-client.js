@@ -372,6 +372,32 @@ export async function loadEntityDoc(ctx, name, sqlString) {
 }
 
 /**
+ * Issue an uncapped export query and return the raw streaming Response so the
+ * caller can pipe `resp.body` straight to disk (issue #87). `format` (from
+ * `prepareExportSql` — the query's own FORMAT, or TSV) is set as
+ * `default_format`; the SQL's own FORMAT clause wins when present, so this only
+ * matters when the caller appended one. `queryId` tags the request so cancel
+ * can KILL QUERY it. No `wait_end_of_query`: that buffers the whole response
+ * server-side and would defeat the point of streaming to disk (see the comment
+ * on `runQuery`'s `extra` above) — a failure *after* headers is instead
+ * detected by the caller from the response body (findExceptionFrame) plus the
+ * `X-ClickHouse-Exception-Tag` header. A failure *before* headers throws the
+ * parsed CH exception, same as `queryJson`. `params` rides alongside query_id
+ * (the caller passes the tab's `sessionParamsFor` so an export that depends on
+ * an earlier `CREATE TEMPORARY TABLE` / session `SET` in the same tab sees it —
+ * same as `runQuery`).
+ */
+export async function exportQuery(ctx, sql, { queryId, signal, format, params } = {}) {
+  const url = chUrl(ctx.origin, {
+    format: format || 'TabSeparatedWithNames',
+    params: { ...(queryId ? { query_id: queryId } : {}), ...(params || {}) },
+  });
+  const resp = await authedFetch(ctx, url, sql, signal);
+  if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
+  return resp;
+}
+
+/**
  * Run a query in streaming mode (JSONStringsEachRowWithProgress) or raw mode
  * (TSV/JSON). `onLine(parsedObj)` is called per stream object in streaming
  * mode; `onRaw(text)` once for raw mode. Returns { error } or { raw } shape via

@@ -72,6 +72,37 @@ of scope for a textarea and tracked separately (CodeMirror, issue #21).
 > Production is the vanilla ES-module code under `src/` — there is no React in
 > the shipped app.
 
+## Export
+
+The **Export** button (editor toolbar, next to Share) runs the current editor
+query **uncapped** and streams the result straight to a file you choose — it
+never touches the result grid, so memory stays flat regardless of result size
+(a multi-million-row export is fine). Under the hood: `fetch` streams
+`resp.body` directly into a file opened via the browser's File System Access
+API (`showSaveFilePicker`), so nothing is buffered in RAM at any point.
+
+The output format follows the query: an explicit trailing `FORMAT <name>`
+(before or after a `SETTINGS` clause — ClickHouse allows either order) streams
+verbatim with a matching file extension (`.json`, `.csv`, `.parquet`, …);
+otherwise it defaults to `TabSeparatedWithNames` (`.tsv`) — the cleanest for
+opening in Excel or pandas. A small inline banner tracks progress (bytes
+written, elapsed, **Cancel**); cancelling aborts the stream and issues its own
+`KILL QUERY`, entirely independent of the grid's Run/Cancel.
+
+A ClickHouse error **after** the response has already started streaming can't
+change the HTTP status, so the server signals it in-band instead: an
+`X-ClickHouse-Exception-Tag` header plus a trailing frame in the body (CH
+≥ 24.11; older servers fall back to a plain-text scan). Export detects this,
+holds back the last ~32 KiB of the stream until it can confirm the tail is
+clean, and excises the exception frame before it ever reaches disk — so a
+mid-stream failure is reported as "Export incomplete", never silently baked
+into the file. A multi-statement (`;`-separated) script can't be exported in
+one request (same reason EXPLAIN can't run one) — export a single statement at
+a time.
+
+Needs the File System Access API — see [Supported browsers](#supported-browsers)
+for where that's available.
+
 ## EXPLAIN views
 
 Run an `EXPLAIN` (or click **Explain** in the editor toolbar to explain the
@@ -474,6 +505,12 @@ viewport-unit path is verified manually (tracked in the #71 matrix).
 
 The full system-requirements matrix — minimum browser versions, supported
 ClickHouse server versions, and IdP/OAuth requirements — is tracked in #71.
+
+One feature is narrower than the rest of the app: [**Export**](#export) needs
+the File System Access API, which today is **Chromium-only** (Chrome/Edge) over
+HTTPS or `localhost`. On Firefox, Safari, or plain HTTP, the Export button stays
+visible but disabled with a tooltip explaining why — no other feature is
+affected.
 
 ## Testing
 

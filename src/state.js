@@ -89,6 +89,10 @@ export function createState(read = { loadJSON, loadStr }) {
     running: signal(false),
     abortController: null,
     resultView: signal('table'),
+    // True while a streaming Export (issue #87) is in flight — separate from
+    // `running` (the grid run) so an export and a grid run never clobber each
+    // other's button/cancel state.
+    exporting: signal(false),
     // True while the editor has a non-empty (non-whitespace) text selection, so
     // ⌘+Enter / Run target just that text. Drives the Run button's
     // "Run" ↔ "Run selection" label (an effect in createApp). Via `.value`.

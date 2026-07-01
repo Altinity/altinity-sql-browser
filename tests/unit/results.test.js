@@ -146,17 +146,15 @@ describe('renderTable', () => {
     expect(el.querySelector('.h-sort')).not.toBeNull();
     expect(el.querySelector('td.num')).not.toBeNull();
   });
-  it('Copy and Export buttons in the footer fire their actions', () => {
+  it('the Copy button in the footer fires its action', () => {
     const app = appWithResult(tableResult());
     renderResults(app);
     const acts = [...app.dom.resultsRegion.querySelectorAll('.res-act')];
-    expect(acts.map((b) => b.textContent)).toEqual(['Copy', 'Export']);
+    expect(acts.map((b) => b.textContent)).toEqual(['Copy']);
     click(acts[0]);
     expect(app.actions.copyResult).toHaveBeenCalled();
-    click(acts[1]);
-    expect(app.actions.exportResult).toHaveBeenCalled();
   });
-  it('no Copy/Export buttons on an error result', () => {
+  it('no Copy button on an error result', () => {
     const r = newResult('Table');
     r.error = 'boom';
     const app = appWithResult(r);

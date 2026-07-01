@@ -1,8 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import {
   newResult, applyStreamLine, splitBuffer, parseExceptionText, isAuthExpiredBody,
-  authDeniedMessage, parseErrorPos,
+  authDeniedMessage, parseErrorPos, findExceptionFrame,
 } from '../../src/core/stream.js';
+
+// Build a latin1 (1 byte -> 1 char) string standing in for a streamed body's
+// tail, carrying ClickHouse's mid-stream exception frame after `cleanText`.
+function bytesToLatin1(bytes) {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return s;
+}
+function frameTail(cleanText, tag, message, { closed = true } = {}) {
+  const enc = new TextEncoder();
+  const msgBytes = enc.encode(message);
+  let s = cleanText + '\r\n__exception__\r\n' + tag + '\r\n' + message
+    + '\n' + msgBytes.length + ' ' + tag;
+  if (closed) s += '\r\n__exception__\r\n';
+  return bytesToLatin1(enc.encode(s));
+}
 
 describe('newResult', () => {
   it('creates an empty result carrying the format', () => {
@@ -95,6 +111,56 @@ describe('parseExceptionText', () => {
   });
   it('falls back to raw text when the exception line is malformed JSON', () => {
     expect(parseExceptionText('{"exception": bad')).toBe('{"exception": bad');
+  });
+});
+
+describe('findExceptionFrame', () => {
+  const TAG = 'abcdef0123456789';
+  it('returns null for a clean tail', () => {
+    expect(findExceptionFrame('nothing but data here', TAG)).toBeNull();
+  });
+  it('finds a tagged frame and reports the clean-byte offset + trimmed message', () => {
+    const tail = frameTail('hello world', TAG, 'DB::Exception: Boom');
+    expect(findExceptionFrame(tail, TAG)).toEqual({ message: 'DB::Exception: Boom', cleanBytes: 'hello world'.length });
+  });
+  it('preserves internal newlines in a multi-line message, trimming only the ends', () => {
+    const msg = 'Memory limit exceeded\nStack trace:\n  foo()';
+    const tail = frameTail('rows...', TAG, msg);
+    expect(findExceptionFrame(tail, TAG)).toEqual({ message: msg, cleanBytes: 'rows...'.length });
+  });
+  it('decodes a multibyte UTF-8 message correctly', () => {
+    const msg = 'Ошибка: превышен лимит памяти';
+    const tail = frameTail('clean', TAG, msg);
+    expect(findExceptionFrame(tail, TAG)).toEqual({ message: msg, cleanBytes: 'clean'.length });
+  });
+  it('returns null when the tag does not match (garbled/wrong tag)', () => {
+    const tail = frameTail('clean', TAG, 'boom');
+    expect(findExceptionFrame(tail, 'ffffffffffffffff')).toBeNull();
+  });
+  it('falls back to the raw tail when the closing trailer is missing (truncated stream)', () => {
+    const tail = frameTail('clean', TAG, 'boom', { closed: false });
+    const frame = findExceptionFrame(tail, TAG);
+    expect(frame.cleanBytes).toBe('clean'.length);
+    expect(frame.message).toContain('boom');
+  });
+  it('legacy fallback (no tag): scans for the plain-text Code: N. DB::Exception: prefix', () => {
+    const tail = 'clean12345\nCode: 241. DB::Exception: Memory limit (total) exceeded';
+    expect(findExceptionFrame(tail, null)).toEqual({
+      message: 'Code: 241. DB::Exception: Memory limit (total) exceeded',
+      cleanBytes: 'clean12345'.length,
+    });
+  });
+  it('legacy fallback tolerates one trailing newline after the message', () => {
+    const tail = 'clean\nCode: 241. DB::Exception: boom\n';
+    expect(findExceptionFrame(tail, null)).toEqual({ message: 'Code: 241. DB::Exception: boom', cleanBytes: 'clean'.length });
+  });
+  it('legacy fallback does NOT misidentify real data containing Code:/DB::Exception: text when more data follows (e.g. a system.query_log.exception column)', () => {
+    const tail = 'clean\nCode: 241. DB::Exception: Memory limit exceeded\tmore\nclean\trows\n';
+    expect(findExceptionFrame(tail, null)).toBeNull();
+  });
+  it('legacy fallback returns null with no Code:/DB::Exception: line', () => {
+    expect(findExceptionFrame('all clean, nothing to see', null)).toBeNull();
+    expect(findExceptionFrame('', null)).toBeNull();
   });
 });
 
