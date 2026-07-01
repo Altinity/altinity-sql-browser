@@ -127,6 +127,16 @@ describe('createApp basics', () => {
     expect(createApp(env({ stylesText: undefined })).stylesText).toBe('.x{}');
     styleEl.remove();
   });
+  it('faviconHref resolves from env, from the page <link rel=icon>, or empty when neither is present', () => {
+    expect(createApp(env({ faviconHref: 'data:image/x;base64,AA' })).faviconHref).toBe('data:image/x;base64,AA');
+    expect(createApp(env({ faviconHref: undefined })).faviconHref).toBe(''); // no <link> in the test document
+    const linkEl = document.createElement('link');
+    linkEl.setAttribute('rel', 'icon');
+    linkEl.setAttribute('href', 'data:image/y;base64,BB');
+    document.head.appendChild(linkEl);
+    expect(createApp(env({ faviconHref: undefined })).faviconHref).toBe('data:image/y;base64,BB');
+    linkEl.remove();
+  });
 });
 
 describe('renderApp shell', () => {

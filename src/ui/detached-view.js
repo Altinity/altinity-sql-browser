@@ -42,6 +42,10 @@ function buildPanel(mode, title) {
 function openAsTab(app, win, childDoc, mainDoc, title, mode, mount, onClose) {
   return withDocument(childDoc, () => {
     childDoc.head.appendChild(h('style', null, (app && app.stylesText) || ''));
+    // about:blank ships no favicon either — mirror the opener's so the new tab
+    // doesn't show the browser's generic default icon.
+    const favicon = app && app.faviconHref;
+    if (favicon) childDoc.head.appendChild(h('link', { rel: 'icon', href: favicon }));
     mirrorTheme(mainDoc, childDoc);
     childDoc.title = title;
     const { panel, bar, body } = buildPanel(mode, title);

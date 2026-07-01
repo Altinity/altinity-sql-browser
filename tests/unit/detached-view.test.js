@@ -30,10 +30,11 @@ describe('openInDetachedTab — real browser tab', () => {
     document.documentElement.setAttribute('data-density', 'compact');
     document.documentElement.style.setProperty('--vp-zoom', '2');
     const win = makeWin();
-    const app = { document, stylesText: 'body{color:red}', openWindow: () => win, state: detachedState() };
+    const app = { document, stylesText: 'body{color:red}', faviconHref: 'data:image/svg+xml;base64,AA', openWindow: () => win, state: detachedState() };
     const mount = vi.fn();
     openInDetachedTab(app, { title: 'Widget', mode: 'graph', mount });
     expect(win.document.querySelector('style').textContent).toBe('body{color:red}');
+    expect(win.document.querySelector('link[rel="icon"]').getAttribute('href')).toBe('data:image/svg+xml;base64,AA');
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.documentElement.getAttribute('data-density')).toBe('compact');
     expect(win.document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('2');
@@ -47,6 +48,12 @@ describe('openInDetachedTab — real browser tab', () => {
     expect(arg.bar.querySelector('.graph-overlay-title').textContent).toBe('Widget');
     expect(typeof arg.close).toBe('function');
     expect(win.document.querySelector('.graph-overlay-close')).toBeNull(); // no JS close in a real tab
+  });
+
+  it('skips the favicon <link> entirely when the app has none', () => {
+    const win = makeWin();
+    openInDetachedTab({ openWindow: () => win, state: detachedState() }, { title: 'X', mode: 'graph', mount: () => {} });
+    expect(win.document.querySelector('link[rel="icon"]')).toBeNull();
   });
 
   it('falls back to stylesText="" when the app has none', () => {

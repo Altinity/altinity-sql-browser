@@ -63,11 +63,14 @@ export function createApp(env = {}) {
     // Pipeline-graph layout seam: dagre (injected like Chart). The DOT parser and
     // SVG drawer are ours; dagre only computes node positions + edge bend points.
     Dagre: env.Dagre || win.dagre,
-    // The schema graph opens in a real browser tab driven by this window. Both are
-    // injected seams: openWindow so tests can stub window.open, stylesText so the
-    // child tab can inline the page's CSS (about:blank ships none of it).
+    // The schema graph opens in a real browser tab driven by this window. All
+    // three are injected seams: openWindow so tests can stub window.open,
+    // stylesText/faviconHref so the child tab can inline the page's CSS and
+    // favicon (about:blank ships neither).
     openWindow: env.openWindow || ((...a) => win.open(...a)),
     stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style').textContent : ''),
+    faviconHref: env.faviconHref
+      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]').getAttribute('href') : ''),
     // Streaming Export (issue #87) needs the File System Access API and a
     // secure context; both are injected seams (like openWindow) so tests can
     // stub them without a real browser. Fixed for the session (browser +
