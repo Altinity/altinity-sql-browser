@@ -904,10 +904,17 @@ export function createApp(env = {}) {
 
   // Open the detail pane for a clicked fullscreen node: lazily load the table's full
   // columns / partitions / DDL (best-effort) and mount the pane in the overlay.
+  // Keyed per overlay document (same resolution as openDetailPane's own `doc`) so a
+  // slow fetch for an earlier click can't clobber a newer pane once it resolves —
+  // last-clicked wins, not last-resolved (#97).
+  const latestDetailRequest = new WeakMap();
   async function openNodeDetail(node, targetDoc) {
     if (!node || !node.db || !node.name) return;
+    const overlayDoc = targetDoc || (app && app.document) || document;
+    latestDetailRequest.set(overlayDoc, node);
     openDetailPane(app, node, { columns: 'loading' }, targetDoc);
     const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
+    if (latestDetailRequest.get(overlayDoc) !== node) return; // superseded by a later click
     openDetailPane(app, node, detail, targetDoc);
   }
 

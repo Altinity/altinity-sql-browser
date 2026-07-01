@@ -2411,6 +2411,34 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     document.body.querySelector('.graph-overlay').remove();
   });
 
+  it('a stale detail fetch does not clobber a newer pane — last-clicked wins, not last-resolved (#97)', async () => {
+    let resolveEvents;
+    const eventsColumns = new Promise((r) => { resolveEvents = r; });
+    const routes = [
+      ...lineageRoutes,
+      [(u, sql) => /system\.columns/.test(sql) && /table = 'events'/.test(sql), () => eventsColumns],
+      [(u, sql) => /system\.columns/.test(sql) && /table = 'mv'/.test(sql), resp({ json: { data: [{ name: 'x', type: 'Int32', position: 1 }] } })],
+      [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [] } })], // card-load query (expandSchemaGraph)
+      [(u, sql) => /system\.parts/.test(sql), resp({ json: { data: [] } })],
+      [(u, sql) => /data_skipping_indices/.test(sql), resp({ json: { data: [] } })],
+    ];
+    const { app } = appForRun(routes, { openWindow: () => null });
+    await app.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
+
+    // Click table A (events) — its columns fetch hangs — then quickly click table B
+    // (mv) before A resolves. B's fetch is immediate and mounts first.
+    const first = app.actions.openNodeDetail({ db: 'lin', name: 'events', kind: 'table', id: 'lin.events' });
+    const second = app.actions.openNodeDetail({ db: 'lin', name: 'mv', kind: 'table', id: 'lin.mv' });
+    await second;
+    expect(document.body.querySelector('.schema-detail-head b').textContent).toBe('lin.mv');
+
+    // A resolves last — its stale pane mount must be dropped, not replace B's.
+    resolveEvents(resp({ json: { data: [] } }));
+    await first;
+    expect(document.body.querySelector('.schema-detail-head b').textContent).toBe('lin.mv');
+    document.body.querySelector('.graph-overlay').remove();
+  });
+
   it('attaches a per-result savedPositions map and reuses it when the same result is re-opened', async () => {
     const routes = [
       ...lineageRoutes,

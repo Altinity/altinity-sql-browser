@@ -198,6 +198,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Safari (its pointer/caret/drag corrections self-calibrate to the live rect
   ratio). A `@supports not (zoom: 1)` rule still neutralizes the factor to 1 on
   engines that can't parse `zoom` at all.
+- The fullscreen schema graph's node detail pane could show stale data:
+  clicking table A then quickly clicking table B before A's fetch resolved let
+  A's slower response land last and silently replace B's already-mounted pane
+  and selection ring — last-**resolved** wins instead of last-**clicked**.
+  `openNodeDetail` now tracks the most recently requested node per overlay
+  document and drops a fetch whose click has since been superseded. (#97)
 
 ## [0.1.5] - 2026-06-29
 
