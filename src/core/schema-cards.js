@@ -20,6 +20,9 @@ export const CARD = {
   BADGE_W: 26, // approx width of one role badge (PK/SK/PARTITION/SAMPLING)
   MIN_W: 130,
   MAX_COLS: 16,
+  MAX_IDX: 6, // skip-indices have no dedicated overflow row (unlike columns) — cap the
+              // single idx: line itself so a heavily-indexed table (bloom filters per
+              // Map key/value, tokenbf on Body, …) can't blow the card absurdly wide.
   MAX_TYPE: 28, // truncate the displayed column type — a big Enum/Tuple/Map would
                 // otherwise blow the card (and the whole graph) absurdly wide.
 };
@@ -64,8 +67,10 @@ export function buildCardModel(node, tableRow, columns, skipIndices) {
   }));
   const overflow = Math.max(0, allCols.length - CARD.MAX_COLS);
   const idx = skipIndices || [];
+  const idxOverflow = Math.max(0, idx.length - CARD.MAX_IDX);
   const skipLine = idx.length
-    ? 'idx: ' + idx.map((i) => i.name + ' (' + (i.type || '') + ')').join(', ')
+    ? 'idx: ' + idx.slice(0, CARD.MAX_IDX).map((i) => i.name + ' (' + (i.type || '') + ')').join(', ')
+      + (idxOverflow ? ', +' + idxOverflow + ' more' : '')
     : '';
   return { title: n.label || n.id || '', kind: n.kind || 'table', summary, cols, overflow, skipLine };
 }

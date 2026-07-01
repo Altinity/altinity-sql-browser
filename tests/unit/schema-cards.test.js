@@ -36,6 +36,18 @@ describe('buildCardModel', () => {
     expect(m.overflow).toBe(1);
     expect(m.skipLine).toBe('idx: idx_a (minmax)');
   });
+  it('caps the skip-index line at MAX_IDX with a "+N more" suffix (no dedicated overflow row)', () => {
+    const idx = Array.from({ length: CARD.MAX_IDX + 2 }, (_, i) => ({ name: 'idx_' + i, type: 'bloom_filter' }));
+    const m = buildCardModel({ label: 'db.t', kind: 'table' }, {}, [], idx);
+    const shown = idx.slice(0, CARD.MAX_IDX).map((i) => i.name + ' (bloom_filter)').join(', ');
+    expect(m.skipLine).toBe('idx: ' + shown + ', +2 more');
+  });
+  it('does not append an overflow suffix when the index count is within MAX_IDX', () => {
+    const idx = Array.from({ length: CARD.MAX_IDX }, (_, i) => ({ name: 'idx_' + i, type: 'set' }));
+    const m = buildCardModel({ label: 'db.t', kind: 'table' }, {}, [], idx);
+    expect(m.skipLine).not.toContain('more');
+    expect(m.skipLine.match(/idx_/g)).toHaveLength(CARD.MAX_IDX);
+  });
   it('degrades to a header-only card for a leaf with no row/columns/indices', () => {
     const leaf = buildCardModel({ id: 'ext:mysql', label: 'mysql', kind: 'external' });
     expect(leaf.summary).toBe('external · — rows · —'); // engine falls back to kind

@@ -245,6 +245,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   each pairing an `onclick: close` backdrop with an `onclick: stopPropagation`
   panel. The cell-detail drawer's resize-drag one-shot click-swallow listener
   (#101) is superseded by the same general fix. (#110)
+- The fullscreen schema graph's rich node card had no overflow cap on its
+  `idx:` skip-index line — unlike columns (capped at `MAX_COLS` with a "+N
+  more" row), every skip-index was joined onto one unbounded line. A
+  heavily-indexed table (e.g. an OTel-style log table with a bloom filter per
+  Map key/value plus a tokenbf on the body) produced a single line 1700px+
+  wide, blowing the card — and the whole graph layout — out of proportion.
+  `buildCardModel` now caps the line at `CARD.MAX_IDX` (6) with a "+N more"
+  suffix, mirroring the columns' overflow pattern.
 
 ## [0.1.5] - 2026-06-29
 
