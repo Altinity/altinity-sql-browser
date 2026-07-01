@@ -405,6 +405,13 @@ describe('exportQuery', () => {
     const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: nope"}', false));
     await expect(exportQuery(ctx, 'SELECT 1', { format: 'CSV' })).rejects.toThrow('DB::Exception: nope');
   });
+  it('forwards caller params (e.g. session_id) alongside query_id (#99: script export)', async () => {
+    const ctx = ctxWith(async () => streamResp(['x']));
+    await exportQuery(ctx, 'SELECT 1', { queryId: 'export-abc', params: { session_id: 'sess-1' } });
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('query_id=export-abc');
+    expect(url).toContain('session_id=sess-1');
+  });
 });
 
 describe('loadSchemaLineage', () => {

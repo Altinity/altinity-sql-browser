@@ -18,7 +18,7 @@ import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } fro
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
-import { toTSV, formatFileMeta, exportFilename } from '../core/export.js';
+import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
@@ -74,6 +74,11 @@ export function createApp(env = {}) {
     // origin don't change), so this is computed once rather than as a signal.
     showSaveFilePicker: env.showSaveFilePicker
       || (typeof win.showSaveFilePicker === 'function' ? win.showSaveFilePicker.bind(win) : null),
+    // Script export (issue #99) needs a whole directory, not one file — same
+    // File System Access family as showSaveFilePicker (every browser that has
+    // one has the other), so this is the same seam pattern.
+    showDirectoryPicker: env.showDirectoryPicker
+      || (typeof win.showDirectoryPicker === 'function' ? win.showDirectoryPicker.bind(win) : null),
     isSecureContext: env.isSecureContext != null ? env.isSecureContext : !!win.isSecureContext,
     // Build stamp ("v0.1.4 (abc1234)") injected at build time via main.js; shown
     // in the user menu so a bug report can be tied to a build. 'dev' in tests /
@@ -84,6 +89,10 @@ export function createApp(env = {}) {
   // File System Access API. The Export button feature-detects this at build
   // time and renders aria-disabled + a tooltip rather than hiding outright.
   app.canExport = () => !!app.showSaveFilePicker && app.isSecureContext;
+  // The script-export path additionally needs a directory picker (defensive —
+  // the button's own enabled/tooltip state stays gated on canExport, since every
+  // browser with showSaveFilePicker also has showDirectoryPicker).
+  app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
 
   // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
   // a ClickHouse username/password sent as Authorization: Basic, optionally
@@ -451,6 +460,9 @@ export function createApp(env = {}) {
   // Milliseconds since the running query started (0 when idle). Used for the
   // live counter, computed fresh so each render/tick shows the current value.
   app.elapsedMs = () => (app.state.runT0 != null ? now() - app.state.runT0 : 0);
+  // Exposed so results.js can compute a script-export row's live elapsed time
+  // (now() - e.startedAt) with the same injected clock as exportScript itself.
+  app.now = now;
   // Update only the live elapsed-ms readout (no table re-render). Driven by an
   // interval while running so it ticks even for queries that emit no rows (sleep).
   function tickElapsed() {
@@ -983,28 +995,41 @@ export function createApp(env = {}) {
       flashToast('Copy not supported', { document: doc });
     }
   }
-  // --- streaming export (issue #87) ---------------------------------------
-  // Full, uncapped export of the current editor query — never the loaded grid
-  // — streamed straight to a user-chosen file. Its own query_id + abort, kept
-  // separate from app.state.runQueryId/abortController so an export and a
-  // grid run never clobber each other's cancel state.
+  // --- streaming export (issue #87 single-file / #99 script) --------------
+  // Full, uncapped export of a query — never the loaded grid — streamed
+  // straight to a user-chosen file. Its own query_id + abort, kept separate
+  // from app.state.runQueryId/abortController so an export and a grid run
+  // never clobber each other's cancel state.
   let exportAbort = null;
   let exportQueryId = null;
+  // Script-export state (issue #99) — its own abort/query-id, reassigned each
+  // iteration so Cancel reaches the in-flight statement, and kept distinct
+  // from both app.state.run* and the single-export state above.
+  let exportScriptAbort = null;
+  let exportScriptQueryId = null;
+  let exportScriptCancelled = false;
+  let exportScriptTick = null;
 
-  // Export sends the whole tab as one HTTP request body — same reason as
-  // explainMultiBlocked, EXPLAIN can't run a `;`-separated script either.
-  function exportMultiBlocked(tab) {
-    if (splitStatements(tab.sql).length <= 1) return false;
-    flashToast('Export isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
-    return true;
+  // The Export button dispatches by statement count: one statement keeps the
+  // rich single-file flow below; more than one opens the script-export flow
+  // (its own directory + per-statement log, since one file per script makes
+  // no sense). Mirrors runEntry's split/branch.
+  function exportEntry() {
+    if (app.state.exporting.value) return;
+    const ta = app.dom.editorTextarea;
+    const sel = ta ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    const input = sel.trim() !== '' ? sel : app.activeTab().sql;
+    const statements = splitStatements(input);
+    if (!statements.length) { flashToast('Nothing to export', { document: doc }); return; }
+    if (statements.length === 1) return exportDirect(statements[0]);
+    return exportScriptEntry(statements);
   }
 
-  async function exportDirect() {
+  async function exportDirect(sqlInput) {
     if (app.state.exporting.value) return;
     if (!app.canExport()) return; // aria-disabled button; defensive guard
     const tab = app.activeTab();
-    if (exportMultiBlocked(tab)) return;
-    const { sql, format } = prepareExportSql(tab.sql);
+    const { sql, format } = prepareExportSql(sqlInput);
     if (!sql) { flashToast('Nothing to export', { document: doc }); return; }
     const { ext, mime } = formatFileMeta(format);
 
@@ -1119,6 +1144,135 @@ export function createApp(env = {}) {
   function cancelExport() {
     if (exportAbort) exportAbort.abort();
     ch.killQuery(chCtx, exportQueryId, sqlString);
+  }
+
+  // Directory picker first (transient-activation rule, same as exportDirect's
+  // save-file picker), and skip the prompt entirely when there's nothing to
+  // export — no point asking for a folder a script will never write into.
+  async function exportScriptEntry(statements) {
+    if (!app.canExportScript()) {
+      flashToast('Script export requires Chrome/Edge directory access over HTTPS', { document: doc });
+      return;
+    }
+    if (!statements.some(isRowReturning)) {
+      flashToast('Nothing to export — script has no result-producing statements.', { document: doc });
+      return;
+    }
+    // Flip the flag before the picker (mirrors exportDirect) so a second click
+    // while the directory dialog / auth is still in flight is blocked by
+    // exportEntry's guard — exportScript itself doesn't set this until after
+    // those awaits, which would otherwise leave a re-entrancy window open.
+    app.state.exporting.value = true;
+    try {
+      let dir;
+      try {
+        dir = await app.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // dismissed → silent no-op
+        flashToast('Folder dialog failed: ' + String((e && e.message) || e), { document: doc });
+        return;
+      }
+      await ensureConfig();
+      if (!(await getToken())) { chCtx.onSignedOut(); return; }
+      await exportScript(statements, dir);
+    } finally {
+      // No-op if exportScript already reset it — covers every early-return
+      // path above that never reaches exportScript's own finally.
+      app.state.exporting.value = false;
+    }
+  }
+
+  // Run a script's statements sequentially into `dir`, one file per
+  // row-returning statement, for effect otherwise. A single shared session
+  // carries SET/TEMPORARY state across statements (sessionParamsFor). The log
+  // lives in tab.result.scriptExport — per-statement metadata only (status,
+  // file, bytes, time); the exported rows themselves are never held in
+  // memory/state, so a multi-million-row script export stays flat. Stop on
+  // first failure, mirroring runScript's script grid — but with no retry
+  // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
+  // can't self-collide, and a partially-written file shouldn't be silently
+  // re-attempted).
+  async function exportScript(statements, dir) {
+    const tab = app.activeTab();
+    const t0 = now();
+    const sp = sessionParamsFor(tab, statements);
+    const entries = statements.map((sql, i) => ({
+      i, sql, type: isRowReturning(sql) ? 'rows' : 'effect',
+      status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,
+    }));
+    tab.result = { scriptExport: entries, startedAt: t0 };
+    app.state.resultSort = { col: null, dir: 'asc' };
+    exportScriptCancelled = false;
+    app.state.exporting.value = true;
+    const taken = new Set();
+    try {
+      // Live elapsed for the running row (bytes tick via onProgress; this ticks
+      // time). Started inside the try so a throw here still clears it below —
+      // an interval set before the try would otherwise leak forever.
+      exportScriptTick = setInterval(() => renderResults(app), 200);
+      renderResults(app);
+      for (const e of entries) {
+        if (exportScriptCancelled) { e.status = 'skipped'; continue; }
+        const { sql, format } = prepareExportSql(e.sql);
+        exportScriptQueryId = 'export-' + uid('');
+        exportScriptAbort = new AbortController();
+        const signal = exportScriptAbort.signal;
+        e.startedAt = now();
+        e.status = e.type === 'rows' ? 'exporting' : 'running';
+        renderResults(app);
+        try {
+          if (e.type !== 'rows') {
+            const out = await ch.runQuery(chCtx, e.sql,
+              { format: 'TSV', signal, queryId: exportScriptQueryId, params: sp });
+            if (out.error != null) throw new Error(out.error);
+            e.status = 'ok';
+          } else {
+            const { ext } = formatFileMeta(format);
+            const name = scriptExportName(e.i, e.sql, ext, taken);
+            taken.add(name);
+            e.file = name;
+            const fileHandle = await dir.getFileHandle(name, { create: true });
+            const resp = await ch.exportQuery(chCtx, sql,
+              { queryId: exportScriptQueryId, signal, format, params: sp });
+            const tag = resp.headers.get('X-ClickHouse-Exception-Tag');
+            const midErr = await streamToFile(resp, fileHandle,
+              { signal, tag, onProgress: (b) => { e.bytes = b; } });
+            if (midErr) {
+              e.status = 'failed';
+              e.error = 'File may be incomplete; server failed after streaming started. ' + midErr;
+              e.ms = now() - e.startedAt;
+              break; // stop-on-first-failure
+            }
+            e.status = 'ok';
+          }
+          e.ms = now() - e.startedAt;
+          renderResults(app);
+        } catch (ex) {
+          e.ms = now() - e.startedAt;
+          if (ex && ex.name === 'AbortError') { e.status = 'cancelled'; exportScriptCancelled = true; }
+          else { e.status = 'failed'; e.error = String((ex && ex.message) || ex); }
+          break; // stop-on-first-failure
+        }
+      }
+      for (const e of entries) if (e.status === 'pending') e.status = 'skipped';
+    } finally {
+      clearInterval(exportScriptTick); exportScriptTick = null;
+      exportScriptAbort = null;
+      exportScriptQueryId = null;
+      app.state.exporting.value = false;
+      tab.result.elapsedMs = now() - t0;
+      // A schema-mutating effect statement that actually ran refreshes the tree
+      // (mirrors runScript) even though this export ran outside runScript.
+      if (entries.some((e) => e.status === 'ok' && isSchemaMutatingSql(e.sql))) app.loadSchema();
+      renderResults(app);
+    }
+  }
+
+  // Mirrors cancelExport but on the script's own active id/abort.
+  function cancelExportScript() {
+    exportScriptCancelled = true; // stops the loop from starting the next statement
+    if (exportScriptAbort) exportScriptAbort.abort();
+    ch.killQuery(chCtx, exportScriptQueryId, sqlString);
   }
 
   // Inline progress banner (bytes written + elapsed, with Cancel) — no extra
@@ -1263,8 +1417,10 @@ export function createApp(env = {}) {
     connect,
     share,
     copyResult,
+    exportEntry,
     exportDirect,
     cancelExport,
+    cancelExportScript,
     save: openSavePopover,
     openUserMenu,
     formatQuery,
@@ -1368,7 +1524,7 @@ export function renderApp(app, helpers) {
   // disabled button swallows pointer events, so its title tooltip often never
   // shows, exactly where a "why is this greyed out?" explanation matters most.
   app.dom.exportBtn = h('button', {
-    class: 'tb-btn', onclick: () => app.actions.exportDirect(),
+    class: 'tb-btn', onclick: () => app.actions.exportEntry(),
   }, Icon.download(), 'Export');
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 

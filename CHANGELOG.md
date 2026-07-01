@@ -76,13 +76,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   can't change) is detected via the `X-ClickHouse-Exception-Tag` header + the
   trailing `__exception__` frame and excised with a hold-back write buffer, so the
   error text is never written into the file — reported as "Export incomplete"
-  instead. A multi-statement script, or a session-less export of session-scoped
-  SQL (a `CREATE TEMPORARY TABLE` / `SET` from earlier in the same tab), is
-  guarded the same way the rest of the app handles those cases. Chromium + a
-  secure context only (no File System Access API elsewhere) — the button stays
-  visible but `aria-disabled` with an explanatory tooltip. **Replaces** the old
-  result-panel Export (buffered CSV/TSV download of the already-loaded grid);
-  Copy is unaffected.
+  instead. A session-less export of session-scoped SQL (a `CREATE TEMPORARY
+  TABLE` / `SET` from earlier in the same tab) is guarded the same way the rest
+  of the app handles those cases. Chromium + a secure context only (no File
+  System Access API elsewhere) — the button stays visible but `aria-disabled`
+  with an explanatory tooltip. **Replaces** the old result-panel Export
+  (buffered CSV/TSV download of the already-loaded grid); Copy is unaffected.
+- **Script export** (#99, a follow-up to #87): pressing **Export** on a
+  multi-statement script (instead of a single query) opens a **directory**
+  picker and runs the statements **sequentially** in one shared ClickHouse HTTP
+  session — `SET` / `CREATE TEMPORARY TABLE` state carries across statements the
+  same way a run does. Each row-returning statement streams **uncapped** to its
+  own file (`NNN-slug.ext`, matching the log's `#` column); non-row statements
+  run for effect and log OK/error with no file. A live log pane (metadata only
+  — never the exported rows, so a multi-million-row script export stays flat)
+  shows status/file/bytes/elapsed per statement; Cancel aborts the active
+  statement, issues its own `KILL QUERY`, marks the rest **Skipped**, and keeps
+  already-completed files. Stop-on-first-failure, no retry (unlike a normal
+  script run, which retries a read-only statement once on a transient
+  `SESSION_IS_LOCKED`) — a partially-written file shouldn't be silently
+  re-attempted. A script with no result-producing statements shows a toast
+  instead of prompting for a folder.
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime
