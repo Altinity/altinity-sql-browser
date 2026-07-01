@@ -1,8 +1,11 @@
 // Pure serializers + file-naming helpers for exporting result data. `toTSV`
 // backs the results pane's Copy (pastes into spreadsheets); `formatFileMeta` /
 // `exportFilename` back the streaming Export button (issue #87), which streams
-// a ClickHouse response straight to disk rather than serializing rows itself.
-// No DOM, no globals.
+// a ClickHouse response straight to disk rather than serializing rows itself;
+// `scriptExportName` backs the multi-statement script export (issue #99). No
+// DOM, no globals.
+
+import { inferQueryName } from './format.js';
 
 function cell(v) {
   return v == null ? '' : String(v);
@@ -53,4 +56,22 @@ export function exportFilename(tabName, now, ext) {
   const base = String(tabName || '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '')
     || 'export-' + new Date(now).toISOString().replace(/[:.]/g, '-');
   return base + '.' + (ext || 'tsv');
+}
+
+/**
+ * Deterministic per-statement export filename: `<NNN>-<slug>.<ext>` (e.g.
+ * `001-select.tsv`). `index` is the statement's 0-based position in the script;
+ * the prefix is `index+1` zero-padded to 3, so it matches the log pane's `#`
+ * column (non-row statements consume a number, leaving intentional gaps). `slug`
+ * comes from inferQueryName → sanitized, lowercased, ≤ 24 chars (empty → 'query').
+ * `taken` (Set of names already used this run) de-dupes with `-2`, `-3`, …
+ * Pure — the caller adds the returned name to `taken`.
+ */
+export function scriptExportName(index, stmt, ext, taken) {
+  const num = String(index + 1).padStart(3, '0');
+  const slug = (inferQueryName(stmt).replace(/^Query · /, '') || stmt)
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'query';
+  let name = `${num}-${slug}.${ext}`;
+  for (let n = 2; taken && taken.has(name); n++) name = `${num}-${slug}-${n}.${ext}`;
+  return name;
 }

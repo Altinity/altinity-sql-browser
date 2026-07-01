@@ -138,6 +138,14 @@ export function renderResults(app) {
     region.replaceChildren(body);
     return;
   }
+  // Script export (issue #99): a per-statement log — metadata only, never the
+  // exported rows. Same early-return shape as the r.script branch above.
+  if (r && r.scriptExport) {
+    inner.appendChild(renderScriptExportGrid(app, r));
+    body.appendChild(inner);
+    region.replaceChildren(body);
+    return;
+  }
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
     inner.appendChild(loadingPlaceholder('Starting query…'));
@@ -235,6 +243,70 @@ function renderScriptGrid(app, r) {
   return wrap;
 }
 
+// The script-export log pane (issue #99): one row per statement, metadata
+// only — never the exported rows (that's the memory guarantee). Columns: #,
+// Statement, Type, Status, File, Bytes, Time. Drag-resizable like the other
+// grids; a fresh set of column keys (7, plain-indexed) since it's a different
+// shape from the run script grid.
+function renderScriptExportGrid(app, r) {
+  r.colWidths = r.colWidths || {};
+  const wrap = h('div', { class: 'res-table-wrap script-export-grid' });
+  const table = document.createElement('table');
+  table.className = 'res-table';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  const cols = [
+    ['se-num', '#'], ['se-sql', 'Statement'], ['se-type', 'Type'], ['se-status', 'Status'],
+    ['se-file', 'File'], ['se-bytes', 'Bytes'], ['se-time', 'Time'],
+  ];
+  for (const [cls, label] of cols) {
+    const th = h('th', { class: cls }, h('span', { class: 'h-name' }, label),
+      h('span', {
+        class: 'col-resize-h',
+        title: 'Drag to resize column',
+        onmousedown: (e) => startColumnResize(r.colWidths, th, e, PLAIN_KEY),
+        onclick: (e) => e.stopPropagation(),
+      }));
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+  if (Object.keys(r.colWidths).length) applyFixedWidths(table, r.colWidths, PLAIN_KEY);
+  const tbody = document.createElement('tbody');
+  r.scriptExport.forEach((e) => {
+    const tr = document.createElement('tr');
+    tr.appendChild(h('td', { class: 'se-num' }, String(e.i + 1)));
+    tr.appendChild(h('td', { class: 'se-sql', title: e.sql || '' },
+      h('div', { class: 'cell-val' }, (e.sql || '').replace(/\s+/g, ' ').trim())));
+    tr.appendChild(h('td', { class: 'se-type' }, e.type));
+    tr.appendChild(scriptExportStatusCell(e));
+    tr.appendChild(h('td', { class: 'se-file' }, e.file || ''));
+    tr.appendChild(h('td', { class: 'se-bytes' }, e.type === 'rows' ? formatBytes(e.bytes) : ''));
+    tr.appendChild(h('td', { class: 'se-time' }, scriptExportTime(app, e)));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// Status cell: a colored word, plus the error message inline for a failed row
+// (including the "File may be incomplete…" mid-stream note).
+function scriptExportStatusCell(e) {
+  const cell = h('td', { class: 'script-cell se-status-cell ' + e.status }, e.status);
+  if (e.status === 'failed' && e.error) cell.appendChild(h('div', { class: 'se-error' }, e.error));
+  return cell;
+}
+
+// A live now()-startedAt readout for the active row (ticked by exportScript's
+// 200ms interval — see app.js); e.ms once a statement is done; blank while
+// still pending/skipped (ms defaults to 0, so status — not e.ms — is the gate).
+function scriptExportTime(app, e) {
+  if (e.status === 'running' || e.status === 'exporting') return (app.now() - e.startedAt).toFixed(0) + ' ms';
+  if (e.status === 'pending' || e.status === 'skipped') return '';
+  return e.ms.toFixed(0) + ' ms';
+}
+
 // Column 2 of one script row, by outcome.
 function scriptOutcomeCell(app, e) {
   if (e.status === 'error') return h('td', { class: 'script-cell err' }, e.error || 'Error');
@@ -330,6 +402,30 @@ function buildToolbar(app, r) {
       }, Icon.close(), h('span', null, 'Cancel'), h('kbd', null, 'Esc')));
     } else {
       if (r.cancelled) toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · partial'));
+      toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()),
+        h('span', { class: 'v' }, (r.elapsedMs || 0).toFixed(0) + ' ms')));
+    }
+    return toolbar;
+  }
+  if (r && r.scriptExport) {
+    // Script-export view: a title (N statements) + live elapsed / Cancel while
+    // exporting, else the total elapsed. Same "no view tabs / row-limit / Copy /
+    // Export" shape as the r.script branch — each statement owns its own file.
+    const n = r.scriptExport.length;
+    toolbar.appendChild(h('div', { class: 'result-view-tabs' },
+      h('span', { class: 'res-graph-title' }, 'Export script · ' + n + ' statement' + (n === 1 ? '' : 's'))));
+    toolbar.appendChild(h('div', { style: { flex: '1' } }));
+    if (app.state.exporting.value) {
+      toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()),
+        h('span', { class: 'v' }, (app.now() - r.startedAt).toFixed(0) + ' ms')));
+      toolbar.appendChild(h('button', {
+        class: 'res-act cancel-act', title: 'Cancel export',
+        onclick: () => app.actions.cancelExportScript(),
+      }, Icon.close(), h('span', null, 'Cancel')));
+    } else {
+      if (r.scriptExport.some((e) => e.status === 'cancelled')) {
+        toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · partial'));
+      }
       toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()),
         h('span', { class: 'v' }, (r.elapsedMs || 0).toFixed(0) + ' ms')));
     }
