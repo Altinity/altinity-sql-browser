@@ -85,3 +85,33 @@ export function fixedAnchor(rect, scale, opts = {}) {
     ? { top, right: Math.max(min, (opts.viewportW - rect.right) / scale) }
     : { top, left: Math.max(min, rect.left / scale) };
 }
+
+// Wire a modal backdrop's close-on-click without the false positive from a
+// gesture that starts inside the panel/card and ends over the backdrop (#110)
+// — e.g. dragging a text selection past the panel's edge before releasing. A
+// browser's `click` fires on the nearest common ancestor of the `mousedown`
+// and `mouseup` targets, not the `mousedown` target, so that drag's `click`
+// targets the backdrop directly even though the panel was never in its
+// propagation path (the panel's own stopPropagation, if any, never runs).
+// Track where `mousedown` actually landed instead: `close()` only fires when
+// that mousedown's target was the backdrop itself, i.e. outside the panel.
+// The mousedown listener is capturing on `backdrop` itself (not bubbling):
+// capture visits `backdrop` on the way down to the real target, before any
+// descendant's own stopPropagation can run, so an intervening stopPropagation
+// inside the panel still can't hide the real mousedown target.
+// Returns `detach()` — callers must invoke it from their own close().
+export function attachBackdropClose(backdrop, close) {
+  let downOnBackdrop = false;
+  const onDown = (e) => { downOnBackdrop = e.target === backdrop; };
+  const onClick = () => {
+    const shouldClose = downOnBackdrop;
+    downOnBackdrop = false; // consume — a later click with no mousedown must not reuse it
+    if (shouldClose) close();
+  };
+  backdrop.addEventListener('mousedown', onDown, true);
+  backdrop.addEventListener('click', onClick);
+  return () => {
+    backdrop.removeEventListener('mousedown', onDown, true);
+    backdrop.removeEventListener('click', onClick);
+  };
+}

@@ -5,6 +5,12 @@ import { newResult } from '../../src/core/stream.js';
 import { schemaKey, chartRowCap } from '../../src/core/chart-data.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
+// A genuine backdrop click: mousedown and click both land on `el` itself
+// (#110's attachBackdropClose gates close() on where mousedown landed).
+const backdropClick = (el) => {
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  el.dispatchEvent(new Event('click', { bubbles: true }));
+};
 
 function appWithResult(result, over = {}) {
   const app = makeApp();
@@ -374,12 +380,25 @@ describe('openCellDetail', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(document.querySelector('.cd-backdrop')).toBeNull();
     openCellDetail(app, 'c', 'String', 'x');
-    click(document.querySelector('.cd-backdrop'));
+    backdropClick(document.querySelector('.cd-backdrop'));
     expect(document.querySelector('.cd-backdrop')).toBeNull();
     openCellDetail(app, 'c', 'String', 'x');
-    click(document.querySelector('.cd-panel')); // stopPropagation → stays open
+    backdropClick(document.querySelector('.cd-panel')); // mousedown+click inside the panel → stays open
     expect(document.querySelector('.cd-backdrop')).not.toBeNull();
     document.querySelector('.cd-backdrop').remove();
+  });
+  it('a gesture starting inside the panel and ending (mouseup/click) on the backdrop does not close it (#110)', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'a selectable value');
+    const backdrop = document.querySelector('.cd-backdrop');
+    const pre = backdrop.querySelector('.cd-pre');
+    pre.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // drag starts inside the panel
+    // The click that follows targets the backdrop directly — the nearest
+    // common ancestor of the mousedown (inside .cd-pre) and mouseup targets.
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(document.querySelector('.cd-backdrop')).not.toBeNull();
+    backdropClick(backdrop); // a later, genuine backdrop click still closes it
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
   });
   it('builds in a given targetDoc instead of the main document (detached-tab safe)', () => {
     const childDoc = document.implementation.createHTMLDocument('');
@@ -430,7 +449,6 @@ describe('cell-detail drawer resize (#101)', () => {
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     expect(app.state.cellDrawerPx).toBe(524);
     expect(app.savePref).toHaveBeenCalledWith('cellDrawerPx', 524);
-    click(panel); // the browser's post-mouseup click — consumes the one-shot swallow listener
     document.querySelector('.cd-backdrop').remove();
   });
   it('clamps mid-drag width to [320, 92vw]', () => {
@@ -444,7 +462,6 @@ describe('cell-detail drawer resize (#101)', () => {
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: -2000 })); // way over → 92vw cap
     expect(panel.style.width).toBe(1024 * 0.92 + 'px');
     window.dispatchEvent(new MouseEvent('mouseup', {}));
-    click(panel); // consumes the one-shot swallow listener
     document.querySelector('.cd-backdrop').remove();
   });
   it('finishing a resize drag with the mouse over the backdrop does not close the drawer; a later genuine click still does', () => {
@@ -457,11 +474,13 @@ describe('cell-detail drawer resize (#101)', () => {
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     // The browser follows a drag's mouseup with a `click` targeting the nearest
     // common ancestor of the mousedown/mouseup targets — here, since mouseup
-    // landed outside `.cd-panel`, that's the backdrop itself.
+    // landed outside `.cd-panel`, that's the backdrop itself. attachBackdropClose
+    // (#110) gates close() on the mousedown target (the handle, inside the
+    // panel), so this click alone does not close it.
     backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(document.querySelector('.cd-backdrop')).not.toBeNull(); // swallowed — stays open
-    click(backdrop); // a later, unrelated click outside the drawer
-    expect(document.querySelector('.cd-backdrop')).toBeNull(); // closes normally
+    expect(document.querySelector('.cd-backdrop')).not.toBeNull(); // stays open
+    backdropClick(backdrop); // a later, genuine backdrop click still closes it
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
   });
   it('closing the drawer mid-drag (Escape, mouse still down) cancels the drag: reverts the width, and does not leak listeners that swallow a later click or persist a stale width on a later mouseup', () => {
     const app = makeApp();
@@ -475,8 +494,8 @@ describe('cell-detail drawer resize (#101)', () => {
     expect(document.querySelector('.cd-backdrop')).toBeNull();
     expect(app.state.cellDrawerPx).toBe(560); // reverted — the abandoned drag never committed
 
-    // The drag's own mousemove/mouseup listeners and the click-swallow listener
-    // must have been torn down by the cancel, not just left to resolve later.
+    // The drag's own mousemove/mouseup listeners must have been torn down by
+    // the cancel, not just left to resolve later.
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }));
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     expect(app.state.cellDrawerPx).toBe(560); // a stray mouseup doesn't resurrect + persist the drag
@@ -484,7 +503,7 @@ describe('cell-detail drawer resize (#101)', () => {
 
     openCellDetail(app, 'c2', 'String', 'y'); // an unrelated, later click must work normally
     const backdrop2 = document.querySelector('.cd-backdrop');
-    click(backdrop2);
+    backdropClick(backdrop2);
     expect(document.querySelector('.cd-backdrop')).toBeNull();
   });
 });
@@ -950,7 +969,7 @@ describe('EXPLAIN views', () => {
     click(expand);
     const overlay = document.body.querySelector('.graph-overlay');
     expect(overlay).not.toBeNull();
-    overlay.dispatchEvent(new Event('click', { bubbles: true })); // backdrop click closes + cleans up
+    backdropClick(overlay); // backdrop click closes + cleans up
     expect(document.body.querySelector('.graph-overlay')).toBeNull();
   });
 
@@ -1067,7 +1086,7 @@ describe('multiquery script grid (#83)', () => {
     // reopen + close via backdrop click
     click(app.dom.resultsRegion.querySelector('.script-cell.rows'));
     backdrop = document.querySelector('.cd-backdrop');
-    click(backdrop);
+    backdropClick(backdrop);
     expect(document.querySelector('.cd-backdrop')).toBeNull();
   });
 
@@ -1094,7 +1113,6 @@ describe('multiquery script grid (#83)', () => {
     expect(panel.style.width).toBe('524px');
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     expect(app.state.cellDrawerPx).toBe(524);
-    click(panel); // consumes the one-shot swallow listener (see results.js attachDrawerResize)
     document.querySelector('.cd-backdrop').remove();
   });
 

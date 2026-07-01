@@ -164,6 +164,7 @@ describe('openPipelineFullscreen', () => {
     // backdrop click closes
     openPipelineFullscreen(APP, DOT);
     overlay = overlayOf();
+    overlay.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     overlay.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
@@ -365,7 +366,8 @@ describe('schema lineage graph', () => {
     expect(document.body.contains(overlay)).toBe(false);
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render(GRAPH);
     overlay = overlayOf();
-    overlay.dispatchEvent(new Event('click', { bubbles: true })); // backdrop
+    overlay.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // backdrop
+    overlay.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
 

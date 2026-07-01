@@ -7,7 +7,7 @@
 // content-mount's CSS class ('graph-overlay-canvas' vs 'data-pane-body') so
 // each caller's own CSS still applies.
 
-import { h, withDocument } from './dom.js';
+import { h, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 
 // Copy the theme/density data-attributes onto the child tab's <html> so its
@@ -29,7 +29,7 @@ function mirrorTheme(src, dst) {
 function buildPanel(mode, title) {
   const bar = h('div', { class: 'graph-overlay-bar' }, h('span', { class: 'graph-overlay-title' }, title));
   const body = h('div', { class: mode === 'grid' ? 'data-pane-body' : 'graph-overlay-canvas', tabindex: '-1' });
-  const panel = h('div', { class: 'graph-overlay-panel', onclick: (e) => e.stopPropagation() }, bar, body);
+  const panel = h('div', { class: 'graph-overlay-panel' }, bar, body);
   return { panel, bar, body };
 }
 
@@ -80,14 +80,17 @@ function openAsOverlay(app, mainDoc, title, mode, mount, onClose) {
     let teardown = null;
     let closed = false;
     let backdrop;
+    let detachBackdrop;
     const close = () => {
       if (closed) return;
       closed = true;
+      detachBackdrop();
       backdrop.remove();
       if (teardown) teardown();
       onClose();
     };
-    backdrop = h('div', { class: 'graph-overlay', onclick: close }, panel);
+    backdrop = h('div', { class: 'graph-overlay' }, panel);
+    detachBackdrop = attachBackdropClose(backdrop, close);
     const closeBtn = h('button', { class: 'graph-overlay-close', title: 'Close (Esc)', onclick: close }, Icon.close());
     const ret = mount({ doc: mainDoc, bar, body, close, closeBtn });
     if (typeof ret === 'function') teardown = ret;

@@ -5,7 +5,7 @@
 // effect goes through an injected seam (app.saveJSON / app.saveStr /
 // app.downloadFile / app.FileReader / app.document), so it is fully testable.
 
-import { h, zoomScale, fixedAnchor } from './dom.js';
+import { h, zoomScale, fixedAnchor, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -228,16 +228,18 @@ function openConfirm(app, { title, body, confirmLabel, onConfirm }) {
   const doc = app.document;
   const close = () => {
     doc.removeEventListener('keydown', onKey, true);
+    detachBackdrop();
     if (app.dom.fileDialog) { app.dom.fileDialog.remove(); app.dom.fileDialog = null; }
   };
   const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-  const card = h('div', { class: 'fm-dialog-card', onclick: (e) => e.stopPropagation() },
+  const card = h('div', { class: 'fm-dialog-card' },
     h('div', { class: 'fm-dialog-title' }, title),
     h('div', { class: 'fm-dialog-body' }, body),
     h('div', { class: 'fm-dialog-actions' },
       h('button', { class: 'fm-dialog-cancel', onclick: close }, 'Cancel'),
       h('button', { class: 'fm-dialog-confirm', onclick: () => { close(); onConfirm(); } }, confirmLabel)));
-  const backdrop = h('div', { class: 'fm-dialog-backdrop', onclick: close }, card);
+  const backdrop = h('div', { class: 'fm-dialog-backdrop' }, card);
+  const detachBackdrop = attachBackdropClose(backdrop, close);
   app.dom.fileDialog = backdrop;
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);

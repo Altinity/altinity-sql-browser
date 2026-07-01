@@ -26,14 +26,26 @@ describe('openShortcuts', () => {
   it('closes when the backdrop is clicked', () => {
     const app = makeApp({ document });
     openShortcuts(app);
-    document.querySelector('.modal-backdrop').dispatchEvent(new Event('click'));
+    const backdrop = document.querySelector('.modal-backdrop');
+    backdrop.dispatchEvent(new MouseEvent('mousedown'));
+    backdrop.dispatchEvent(new Event('click'));
     expect(app.state.shortcutsOpen.value).toBe(false);
   });
-  it('card click does not close (stopPropagation)', () => {
+  it('card click does not close', () => {
     const app = makeApp({ document });
     openShortcuts(app);
     const card = document.querySelector('.modal-card');
+    card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     card.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.shortcutsOpen.value).toBe(true);
+  });
+  it('a gesture starting on the card and ending on the backdrop does not close it (#110)', () => {
+    const app = makeApp({ document });
+    openShortcuts(app);
+    const backdrop = document.querySelector('.modal-backdrop');
+    const card = document.querySelector('.modal-card');
+    card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    backdrop.dispatchEvent(new Event('click', { bubbles: true })); // click's target is the backdrop
     expect(app.state.shortcutsOpen.value).toBe(true);
   });
   it('defaults document to global', () => {

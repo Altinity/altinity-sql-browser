@@ -178,9 +178,22 @@ describe('openInDetachedTab — overlay fallback', () => {
     const app = { document, openWindow: () => null, state: detachedState() };
     openInDetachedTab(app, { title: 'X', mode: 'graph', mount: () => {} });
     expect(app.state.detachedView.value).toBe(1);
-    document.querySelector('.graph-overlay').dispatchEvent(new Event('click', { bubbles: true }));
+    const overlay = document.querySelector('.graph-overlay');
+    overlay.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    overlay.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.querySelector('.graph-overlay')).toBeNull();
     expect(app.state.detachedView.value).toBe(0);
+  });
+
+  it('a gesture starting inside the panel and ending on the backdrop does not close it (#110)', () => {
+    openInDetachedTab({ document, openWindow: () => null, state: detachedState() }, {
+      title: 'X', mode: 'graph', mount: ({ body }) => { body.textContent = 'selectable content'; },
+    });
+    const overlay = document.querySelector('.graph-overlay');
+    overlay.querySelector('.graph-overlay-canvas').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    // The browser's post-drag click targets the backdrop directly.
+    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(document.body.contains(overlay)).toBe(true);
   });
 
   it('runs the teardown fn exactly once even when close() is called twice directly', () => {

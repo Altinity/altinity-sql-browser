@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h, s, withDocument, zoomScale, fixedAnchor } from '../../src/ui/dom.js';
+import { h, s, withDocument, zoomScale, fixedAnchor, attachBackdropClose } from '../../src/ui/dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -90,6 +90,67 @@ describe('s (SVG namespace)', () => {
     expect(el.textContent).toContain('x');
     el.dispatchEvent(new Event('click'));
     expect(onclick).toHaveBeenCalled();
+  });
+});
+
+describe('attachBackdropClose (#110)', () => {
+  function setup() {
+    const panel = h('div', { class: 'panel' }, h('div', { class: 'inner' }, 'x'));
+    const backdrop = h('div', { class: 'backdrop' }, panel);
+    document.body.appendChild(backdrop);
+    const close = vi.fn();
+    const detach = attachBackdropClose(backdrop, close);
+    return { backdrop, panel, close, detach };
+  }
+  const down = (el) => el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+  it('closes when mousedown and click both land on the backdrop itself', () => {
+    const { backdrop, close } = setup();
+    down(backdrop);
+    click(backdrop);
+    expect(close).toHaveBeenCalledTimes(1);
+    backdrop.remove();
+  });
+  it('does not close when mousedown lands inside the panel, even if the click targets the backdrop', () => {
+    // Simulates a drag that starts inside the panel and ends outside it — the
+    // browser's click then targets the backdrop directly (#110's repro).
+    const { backdrop, panel, close } = setup();
+    down(panel.querySelector('.inner'));
+    click(backdrop);
+    expect(close).not.toHaveBeenCalled();
+    backdrop.remove();
+  });
+  it('does not close on a click with no preceding mousedown', () => {
+    const { backdrop, close } = setup();
+    click(backdrop);
+    expect(close).not.toHaveBeenCalled();
+    backdrop.remove();
+  });
+  it('does not close a normal click inside the panel (mousedown and click both on a panel descendant)', () => {
+    const { panel, close, backdrop } = setup();
+    const inner = panel.querySelector('.inner');
+    down(inner);
+    click(inner); // bubbles to the backdrop; not stopped by the panel
+    expect(close).not.toHaveBeenCalled();
+    backdrop.remove();
+  });
+  it('does not reuse a stale mousedown-on-backdrop flag for a later click with no mousedown of its own', () => {
+    const { backdrop, close } = setup();
+    down(backdrop);
+    click(backdrop);
+    expect(close).toHaveBeenCalledTimes(1);
+    click(backdrop); // no mousedown before this one — must not close again
+    expect(close).toHaveBeenCalledTimes(1);
+    backdrop.remove();
+  });
+  it('detach() removes both listeners — a later mousedown+click on the backdrop no longer closes', () => {
+    const { backdrop, close, detach } = setup();
+    detach();
+    down(backdrop);
+    click(backdrop);
+    expect(close).not.toHaveBeenCalled();
+    backdrop.remove();
   });
 });
 

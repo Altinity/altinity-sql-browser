@@ -1,6 +1,6 @@
 // Keyboard-shortcuts modal + the global key handler.
 
-import { h } from './dom.js';
+import { h, attachBackdropClose } from './dom.js';
 
 const SHORTCUTS = [
   ['Run query', '⌘↵'],
@@ -28,6 +28,7 @@ export function openShortcuts(app) {
   app.state.shortcutsOpen.value = true;
   const close = () => {
     app.state.shortcutsOpen.value = false;
+    detachBackdrop();
     backdrop.remove();
     doc.removeEventListener('keydown', escHandler);
   };
@@ -37,14 +38,15 @@ export function openShortcuts(app) {
   doc.addEventListener('keydown', escHandler);
   const rowOf = ([label, key]) =>
     h('div', { class: 'row' }, h('span', { class: 'label' }, label), h('kbd', null, key));
-  const card = h('div', { class: 'modal-card', onclick: (e) => e.stopPropagation() },
+  const card = h('div', { class: 'modal-card' },
     h('h2', null, 'Keyboard shortcuts'),
     ...SHORTCUTS.map(rowOf),
     h('div', { class: 'section-label' }, 'Schema tree — database · table · column'),
     ...GESTURES.map(rowOf),
     h('div', { class: 'close-row' }, h('button', { class: 'close-btn', onclick: close }, 'Close')),
   );
-  const backdrop = h('div', { class: 'modal-backdrop', onclick: close }, card);
+  const backdrop = h('div', { class: 'modal-backdrop' }, card);
+  const detachBackdrop = attachBackdropClose(backdrop, close);
   doc.body.appendChild(backdrop);
   return { backdrop, close };
 }

@@ -281,7 +281,9 @@ describe('New Library + confirm dialogs', () => {
     expect(app.state.savedQueries).toHaveLength(2);
     // backdrop click
     openNew();
-    click(document.querySelector('.fm-dialog-backdrop'));
+    const backdrop = document.querySelector('.fm-dialog-backdrop');
+    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    click(backdrop);
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     // card click keeps it open; Escape closes it
     openNew();
@@ -290,5 +292,17 @@ describe('New Library + confirm dialogs', () => {
     key(document, 'Escape');
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(app.state.savedQueries).toHaveLength(2);
+  });
+
+  it('a gesture starting on the card and ending on the backdrop does not dismiss it (#110)', () => {
+    const app = mount();
+    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    openFileMenu(app);
+    click(item(/New Library/));
+    const backdrop = document.querySelector('.fm-dialog-backdrop');
+    const card = document.querySelector('.fm-dialog-card');
+    card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    backdrop.dispatchEvent(new Event('click', { bubbles: true })); // click's target is the backdrop
+    expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
   });
 });
