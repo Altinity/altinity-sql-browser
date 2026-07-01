@@ -204,6 +204,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and selection ring — last-**resolved** wins instead of last-**clicked**.
   `openNodeDetail` now tracks the most recently requested node per overlay
   document and drops a fetch whose click has since been superseded. (#97)
+- Cancelling or hitting a mid-stream error during a streaming Export (#87) left
+  no recoverable file at all: on Chrome's File System Access API,
+  `writable.abort()` leaves a hidden, 0-byte `.crswap` swap file behind and never
+  materializes the visible target. `streamToFile` now `close()`s the writable
+  instead, finalizing whatever bytes were already committed under the target
+  handle, then renames it in place to `<name>.partial` via `FileSystemFileHandle
+  .move()` (Chrome 110+) so a cancelled/failed export leaves a clearly-labeled,
+  inspectable partial artifact. Falls back to leaving the plain (non-renamed)
+  file on browsers without `.move()` support, or if the rename itself fails (#105).
 
 ## [0.1.5] - 2026-06-29
 

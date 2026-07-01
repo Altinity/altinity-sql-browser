@@ -1150,7 +1150,18 @@ export function createApp(env = {}) {
       await writable.close();
       return frame ? frame.message : null;
     } catch (e) {
-      await writable.abort().catch(() => {}); // leave the partial file; report upstream
+      // writable.abort() would discard everything already committed: on
+      // Chrome/File System Access API it leaves a hidden, 0-byte
+      // `.crswap` swap file behind and never materializes the visible
+      // target at all — so a cancelled/failed export recovers nothing.
+      // close() instead finalizes the bytes already written under the
+      // target handle, then move() (Chrome 110+) renames it in place with
+      // a `.partial` suffix so it reads as an inspectable, clearly-labeled
+      // partial artifact rather than a clean export. Best-effort: on
+      // browsers without move() (or if it throws), the file is still
+      // recoverable under its original name, just without the suffix.
+      await writable.close().catch(() => {});
+      if (typeof handle.move === 'function') await handle.move(handle.name + '.partial').catch(() => {});
       throw e;
     } finally {
       reader.releaseLock();
