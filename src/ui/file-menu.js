@@ -68,7 +68,7 @@ export function renderLibraryTitle(app) {
 /** Open the File dropdown anchored under the File button (Esc / outside-click close). */
 export function openFileMenu(app) {
   if (app.dom.fileMenu) return;
-  const doc = app.document || document;
+  const doc = app.document;
   const list = app.state.savedQueries;
   const close = () => {
     doc.removeEventListener('keydown', onKey, true);
@@ -225,7 +225,7 @@ function confirmNew(app) {
 }
 
 function openConfirm(app, { title, body, confirmLabel, onConfirm }) {
-  const doc = app.document || document;
+  const doc = app.document;
   const close = () => {
     doc.removeEventListener('keydown', onKey, true);
     if (app.dom.fileDialog) { app.dom.fileDialog.remove(); app.dom.fileDialog = null; }

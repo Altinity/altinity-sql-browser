@@ -213,6 +213,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   .move()` (Chrome 110+) so a cancelled/failed export leaves a clearly-labeled,
   inspectable partial artifact. Falls back to leaving the plain (non-renamed)
   file on browsers without `.move()` support, or if the rename itself fails (#105).
+- `createApp` built the `app` object with a `doc` field, but every other module
+  (`explain-graph.js`, `results.js`, `schema-detail.js`, `file-menu.js`,
+  `shortcuts.js`, `app.js` itself) read `app.document` instead — never
+  assigned, so `app.document || document` silently always fell back to the
+  global `document`, harmless today only because the two happened to coincide
+  in both production and tests. `app` now exposes `document` (not `doc`), and
+  the fallbacks that were provably unreachable (verified per call site against
+  `makeApp()` / real callers) were dropped; the fallbacks that are
+  deliberately null/minimal-`app`-tolerant (`detached-view.js`,
+  `explain-graph.js`, `schema-detail.js`, and `shortcuts.js` — which has a
+  dedicated `delete app.document` test) were left untouched. (#106)
 
 ## [0.1.5] - 2026-06-29
 

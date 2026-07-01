@@ -331,7 +331,7 @@ function scriptOutcomeCell(app, e) {
  * primitive is deferred to #60). Escape / backdrop / ✕ closes. Exported for tests.
  */
 export function openRowsViewer(app, entry) {
-  const doc = app.document || document;
+  const doc = app.document;
   let backdrop;
   let cancelDrawerDrag = () => {};
   const onKey = (ev) => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
@@ -668,7 +668,7 @@ export function renderTable(app, r) {
  * Exported for tests.
  */
 export function expandDataPane(app, r) {
-  const mainDoc = (app && app.document) || document;
+  const mainDoc = app.document;
   return openInDetachedTab(app, {
     title: 'Data',
     mode: 'grid',
@@ -815,7 +815,7 @@ function attachDrawerResize(app, panel, doc) {
 }
 
 export function openCellDetail(app, name, type, value, targetDoc) {
-  const doc = targetDoc || (app && app.document) || document;
+  const doc = targetDoc || app.document;
   const text = value == null ? '' : String(value);
   let backdrop;
   let cancelDrawerDrag = () => {};

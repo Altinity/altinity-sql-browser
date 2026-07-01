@@ -142,6 +142,12 @@ describe('createApp basics', () => {
     expect(createApp(env({ faviconHref: undefined })).faviconHref).toBe('data:image/y;base64,BB');
     linkEl.remove();
   });
+  it('exposes the injected document as app.document, not just the global document', () => {
+    const customDoc = document.implementation.createHTMLDocument('');
+    const app = createApp(env({ document: customDoc, root: customDoc.createElement('div') }));
+    expect(app.document).toBe(customDoc);
+    expect(app.document).not.toBe(document);
+  });
 });
 
 describe('renderApp shell', () => {

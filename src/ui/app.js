@@ -53,7 +53,7 @@ export function createApp(env = {}) {
     state: createState(),
     dom: {},
     root: env.root || doc.getElementById('root'),
-    doc,
+    document: doc,
     token: ss.getItem('oauth_id_token'),
     refreshToken: ss.getItem('oauth_refresh_token'),
     // Charting seam: the Chart.js constructor (injected so tests stub it) and a
@@ -1478,7 +1478,7 @@ export function createApp(env = {}) {
 
 /** Build the signed-in shell and mount all regions. */
 export function renderApp(app, helpers) {
-  const { state, doc } = app;
+  const { state, document: doc } = app;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
 
@@ -1613,11 +1613,11 @@ export function renderApp(app, helpers) {
   // editor being focused so selecting elsewhere (results, address bar) is ignored.
   app.syncSelection = () => {
     const ta = app.dom.editorTextarea;
-    const focused = ta && (app.document || document).activeElement === ta;
+    const focused = ta && app.document.activeElement === ta;
     const sel = focused ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
     app.state.hasSelection.value = sel.trim() !== '';
   };
-  (app.document || document).addEventListener('selectionchange', app.syncSelection);
+  app.document.addEventListener('selectionchange', app.syncSelection);
   // Reactive repaint of the schema tree — replaces the scattered renderSchema()
   // calls: re-runs on schema load, load error, filter text, or expand/collapse.
   // Registered here (post-mount) so app.dom.schemaList already exists; the effect
