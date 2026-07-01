@@ -126,6 +126,47 @@
   </div>
 </section>
 
+<!-- Export -->
+<section id="export" style="border-top:1px solid var(--border);">
+  <div class="wrap">
+    <div class="feature-row">
+      <div class="txt">
+        <div class="eyebrow">Export</div>
+        <h3>Stream results straight to disk — uncapped</h3>
+        <p>The result grid caps rows on purpose. <strong>Export</strong> doesn't touch it: it streams
+          ClickHouse's response straight into a file you pick (via the File System Access API), so a
+          multi-million-row export runs in flat memory — nothing is buffered in the page.</p>
+        <ul>
+          <li><strong>Any format, by the query</strong> — a trailing <code class="k">FORMAT Parquet</code> /
+            <code class="k">CSV</code> / <code class="k">JSONEachRow</code> / <code class="k">Arrow</code> …
+            streams verbatim with a matching extension; no <code class="k">FORMAT</code> and you get
+            <code class="k">TabSeparatedWithNames</code>.</li>
+          <li><strong>Even a whole script</strong> — Export a <code class="k">;</code>-separated script and
+            pick a <em>folder</em>; each SELECT streams to its own <code class="k">NNN-slug.ext</code> in one
+            shared session (so <code class="k">SET</code> / <code class="k">CREATE TEMPORARY</code> carry across).</li>
+          <li>A banner tracks bytes · elapsed · Cancel; a mid-stream ClickHouse error is caught and excised —
+            reported as "Export incomplete", never baked into the file.</li>
+        </ul>
+        <p style="color:var(--faint);font-size:.9rem;">Needs Chromium + a secure context (the File System
+          Access API); elsewhere the button stays visible but disabled, with a tooltip.</p>
+      </div>
+      <div>
+        <pre class="code"><span class="c"># one query → one file, streamed uncapped</span>
+SELECT * FROM github.github_events
+FORMAT Parquet
+<span class="c">      → github_events.parquet   4.2 GB · 12s</span>
+
+<span class="c"># a multi-statement script → a folder of files</span>
+etl-nightly/
+  001-raw-events.parquet    4.2 GB
+  002-daily-rollup.csv       18 MB
+  003-top-accounts.tsv      2.1 MB
+<span class="c">  (each SELECT streamed in one shared session)</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- Data flow (flagship) -->
 <section id="data-flow">
   <div class="wrap">

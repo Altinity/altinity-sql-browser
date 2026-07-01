@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export streams straight to disk — even a whole script — Altinity SQL Browser</title>
+<meta name="description" content="Export doesn't touch the result grid — it streams ClickHouse's response body straight to a file (or, for a script, a folder of files) via the File System Access API. Uncapped, any format, flat memory, and a mid-stream error is never baked into the file.">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="site">
+  <nav class="wrap nav">
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <button class="nav-toggle" aria-label="Menu">☰</button>
+    <div class="nav-links">
+      <a href="../features.html">Features</a>
+      <a href="../deployment.html">Deployment</a>
+      <a href="../local-app.html">Local app</a>
+      <a href="index.html">Blog</a>
+      <a href="https://antalya.demo.altinity.cloud/sql">Live demo ↗</a>
+      <a class="cta" href="https://github.com/Altinity/altinity-sql-browser">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<article class="wrap post">
+  <div class="kicker">Export</div>
+  <h1>Export streams straight to disk — even a whole script</h1>
+  <div class="post-meta"><span>Altinity engineering</span><span class="dot">·</span><span>June 2026</span><span class="dot">·</span><span>5 min read</span></div>
+  <p class="post-lede">The result grid caps rows so your browser survives. Export doesn't use the grid at all.</p>
+
+  <div class="body">
+    <p>A SQL console has a tension baked in. To stay responsive it caps how many rows it shows — we default
+      to 500. But sometimes you don't want to <em>look</em> at the data, you want to <em>take</em> it: dump a
+      table to Parquet, hand a CSV to a colleague, feed a pipeline. Capping is exactly wrong for that, and
+      buffering a few million rows in a browser tab to assemble a download is how you OOM the tab.</p>
+
+    <p>So Export doesn't touch the grid. Click <strong>Export</strong>, pick a file, and the browser streams
+      ClickHouse's response body straight to disk — <code class="k">resp.body</code> piped into a file opened
+      through the File System Access API. Nothing is buffered in the page; memory stays flat whether the
+      result is a thousand rows or a billion. It runs <strong>uncapped</strong> — a file has no scroll
+      performance to protect.</p>
+
+    <h2>The format is the query</h2>
+    <p>You don't choose a format from a menu — you write it. End the query with
+      <code class="k">FORMAT Parquet</code> and you get a <code class="k">.parquet</code>;
+      <code class="k">CSV</code> → <code class="k">.csv</code>; <code class="k">JSONEachRow</code> →
+      <code class="k">.jsonl</code>; Arrow, ORC, Avro, Native, even <code class="k">SQLInsert</code> —
+      ClickHouse's whole format family, streamed verbatim, with the right extension picked for you. No
+      <code class="k">FORMAT</code> clause and you get <code class="k">TabSeparatedWithNames</code>, the
+      <code class="k">.tsv</code> that opens cleanly in Excel or pandas. The console isn't re-serializing
+      anything — ClickHouse formats the bytes, they flow to the file.</p>
+
+    <pre class="code">SELECT * FROM github.github_events FORMAT Parquet
+<span class="c">→ github_events.parquet     streaming…  4.2 GB · 12s · Cancel</span></pre>
+
+    <h2>Even a whole script</h2>
+    <p>Here's the part I like. Point Export at a multi-statement script — the same
+      <code class="k">;</code>-separated scripts <a href="multiquery.html">multiquery</a> runs — and instead
+      of a file picker you get a <strong>directory</strong> picker. Each statement runs in order in one
+      shared session, and every row-returning statement streams uncapped to its own file, numbered to match
+      the log:</p>
+
+    <pre class="code">etl-nightly/
+  001-raw-events.parquet     4.2 GB
+  002-daily-rollup.csv        18 MB
+  003-top-accounts.tsv       2.1 MB</pre>
+
+    <p>Effectful statements — <code class="k">CREATE</code>, <code class="k">INSERT</code> — run for effect
+      and just log OK. Because it's one session, a <code class="k">CREATE TEMPORARY TABLE</code> in step 1 is
+      still there for the SELECT in step 3. A live log shows status, file, bytes and elapsed per statement —
+      metadata only, never the rows, so exporting a script that emits gigabytes doesn't cost the tab a thing.
+      A nightly-extract that used to be a shell loop of
+      <code class="k">clickhouse-client --queries-file</code> redirects is now: paste, Export, pick a folder.</p>
+
+    <h2>It won't hand you a broken file</h2>
+    <p>Streaming has a nasty failure mode. Once the HTTP response has started, its <code class="k">200</code>
+      is locked in — so a ClickHouse error partway through can't come back as a status code. It arrives as
+      <em>text, in the middle of your data</em>. Pipe that straight to disk and the error becomes a corrupt
+      row in your Parquet file that you discover much later.</p>
+
+    <p>Export guards against it. ClickHouse tags a mid-stream failure — an
+      <code class="k">X-ClickHouse-Exception-Tag</code> header and a trailing exception frame — and the writer
+      holds back the tail of the stream until it can confirm the end is clean, excising that frame before it
+      ever reaches disk. A failed export says <strong>"Export incomplete"</strong>; it never bakes the error
+      into your file. Cancel works the same way: it aborts the stream and issues its own
+      <code class="k">KILL QUERY</code>, independent of whatever the result grid is doing.</p>
+
+    <p>It's Chromium-only for now — the File System Access API isn't everywhere yet, and the button tells you
+      when it can't run. If you're on Chrome, paste a <code class="k">SELECT … FORMAT Parquet</code> on the
+      <a href="https://antalya.demo.altinity.cloud/sql">demo</a> and hit Export, or point it at a script and
+      watch a folder fill up.</p>
+  </div>
+
+  <div class="post-foot">
+    More from the blog:
+    <div class="post-nav">
+      <a href="multiquery.html">Run a whole SQL script →</a>
+      <a href="query-library.html">A query library you can commit →</a>
+      <a href="no-backend-sql-console.html">The SQL console with no backend →</a>
+    </div>
+  </div>
+</article>
+
+<footer class="site">
+  <div class="wrap">
+    <div>© Altinity, Inc. · Apache-2.0 licensed</div>
+    <div class="fnav">
+      <a href="../index.html">Home</a>
+      <a href="../features.html">Features</a>
+      <a href="index.html">Blog</a>
+      <a href="https://github.com/Altinity/altinity-sql-browser">GitHub ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>
