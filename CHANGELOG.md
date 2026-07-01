@@ -119,6 +119,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Also mirrors the app's favicon into every detached tab (a `faviconHref`
   seam, same pattern as the existing `stylesText` one) — `about:blank` ships
   neither, so a real tab previously showed the browser's generic icon.
+- **Cell-detail drawer resize** (#101): the right-hand drawer used by both the
+  cell-detail view and the rows viewer now has a drag handle on its left edge
+  (`splitters.js` gains a fourth `'drawer'` axis alongside `col`/`sideRow`/`row`),
+  clamped to `320px..92vw` and persisted as `cellDrawerPx` — one shared width for
+  both. Fixed a click-through: finishing a resize drag with the mouse released
+  over the backdrop (instead of the panel) previously closed the drawer, since
+  the browser's post-mouseup `click` targets the nearest common ancestor of the
+  mousedown/mouseup targets, bypassing the panel's own `stopPropagation`. Closing
+  the drawer *mid-drag* (e.g. Escape while the mouse button is still down) now
+  also cancels the in-progress drag and reverts the width, rather than leaving
+  stray listeners that would persist a stale width or swallow a later, unrelated
+  click.
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime

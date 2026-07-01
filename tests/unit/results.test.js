@@ -396,6 +396,99 @@ describe('openCellDetail', () => {
   });
 });
 
+describe('cell-detail drawer resize (#101)', () => {
+  it('sets the initial width from the persisted cellDrawerPx pref, and shows a handle', () => {
+    const app = makeApp();
+    app.state.cellDrawerPx = 640;
+    openCellDetail(app, 'c', 'String', 'x');
+    const panel = document.querySelector('.cd-panel');
+    expect(panel.style.width).toBe('640px');
+    expect(panel.querySelector('.cd-resize-h')).not.toBeNull();
+    panel.closest('.cd-backdrop').remove();
+  });
+  it('clamps the initial width to [320, 92vw] (window.innerWidth = 1024 under happy-dom)', () => {
+    const tooNarrow = makeApp();
+    tooNarrow.state.cellDrawerPx = 100;
+    openCellDetail(tooNarrow, 'c', 'String', 'x');
+    expect(document.querySelector('.cd-panel').style.width).toBe('320px');
+    document.querySelector('.cd-backdrop').remove();
+
+    const tooWide = makeApp();
+    tooWide.state.cellDrawerPx = 5000;
+    openCellDetail(tooWide, 'c', 'String', 'x');
+    expect(document.querySelector('.cd-panel').style.width).toBe(1024 * 0.92 + 'px');
+    document.querySelector('.cd-backdrop').remove();
+  });
+  it('dragging the handle resizes the panel and persists the width on mouseup', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x');
+    const panel = document.querySelector('.cd-panel');
+    const handle = panel.querySelector('.cd-resize-h');
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
+    expect(panel.style.width).toBe('524px');
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(app.state.cellDrawerPx).toBe(524);
+    expect(app.savePref).toHaveBeenCalledWith('cellDrawerPx', 524);
+    click(panel); // the browser's post-mouseup click — consumes the one-shot swallow listener
+    document.querySelector('.cd-backdrop').remove();
+  });
+  it('clamps mid-drag width to [320, 92vw]', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x');
+    const panel = document.querySelector('.cd-panel');
+    const handle = panel.querySelector('.cd-resize-h');
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 2000 })); // 1024-2000 < 0 → floor
+    expect(panel.style.width).toBe('320px');
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: -2000 })); // way over → 92vw cap
+    expect(panel.style.width).toBe(1024 * 0.92 + 'px');
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    click(panel); // consumes the one-shot swallow listener
+    document.querySelector('.cd-backdrop').remove();
+  });
+  it('finishing a resize drag with the mouse over the backdrop does not close the drawer; a later genuine click still does', () => {
+    const app = makeApp();
+    openCellDetail(app, 'c', 'String', 'x');
+    const backdrop = document.querySelector('.cd-backdrop');
+    const handle = backdrop.querySelector('.cd-resize-h');
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 }));
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    // The browser follows a drag's mouseup with a `click` targeting the nearest
+    // common ancestor of the mousedown/mouseup targets — here, since mouseup
+    // landed outside `.cd-panel`, that's the backdrop itself.
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(document.querySelector('.cd-backdrop')).not.toBeNull(); // swallowed — stays open
+    click(backdrop); // a later, unrelated click outside the drawer
+    expect(document.querySelector('.cd-backdrop')).toBeNull(); // closes normally
+  });
+  it('closing the drawer mid-drag (Escape, mouse still down) cancels the drag: reverts the width, and does not leak listeners that swallow a later click or persist a stale width on a later mouseup', () => {
+    const app = makeApp();
+    app.state.cellDrawerPx = 560;
+    openCellDetail(app, 'c', 'String', 'x');
+    const handle = document.querySelector('.cd-resize-h');
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // mid-drag, no mouseup yet
+    expect(app.state.cellDrawerPx).toBe(524);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // closes while still dragging
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+    expect(app.state.cellDrawerPx).toBe(560); // reverted — the abandoned drag never committed
+
+    // The drag's own mousemove/mouseup listeners and the click-swallow listener
+    // must have been torn down by the cancel, not just left to resolve later.
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }));
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(app.state.cellDrawerPx).toBe(560); // a stray mouseup doesn't resurrect + persist the drag
+    expect(app.savePref).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
+
+    openCellDetail(app, 'c2', 'String', 'y'); // an unrelated, later click must work normally
+    const backdrop2 = document.querySelector('.cd-backdrop');
+    click(backdrop2);
+    expect(document.querySelector('.cd-backdrop')).toBeNull();
+  });
+});
+
 describe('expandDataPane', () => {
   const makeWin = () => {
     const childDoc = document.implementation.createHTMLDocument('');
@@ -965,6 +1058,23 @@ describe('multiquery script grid (#83)', () => {
     const cells = [...backdrop.querySelectorAll('tbody td')];
     expect(cells[cells.length - 1].textContent).toBe(''); // null → empty
     backdrop.remove();
+  });
+
+  it('openRowsViewer gets the same resizable drawer as openCellDetail (#101)', () => {
+    const app = makeApp();
+    app.state.cellDrawerPx = 700;
+    openRowsViewer(app, { columns: [{ name: 'x', type: 'String' }], rows: [['a']] });
+    const panel = document.querySelector('.cd-panel');
+    expect(panel.style.width).toBe('700px');
+    const handle = panel.querySelector('.cd-resize-h');
+    expect(handle).not.toBeNull();
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 700, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 500 })); // 1024-500
+    expect(panel.style.width).toBe('524px');
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(app.state.cellDrawerPx).toBe(524);
+    click(panel); // consumes the one-shot swallow listener (see results.js attachDrawerResize)
+    document.querySelector('.cd-backdrop').remove();
   });
 
   it('the rows pane is the shared grid: sortable headers + clickable cells', () => {

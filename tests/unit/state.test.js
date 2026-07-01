@@ -31,6 +31,7 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(248);
     expect(s.editorPct).toBe(45);
     expect(s.sideSplitPct).toBe(58);
+    expect(s.cellDrawerPx).toBe(560);
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.schema.value).toBe(null);
@@ -47,6 +48,7 @@ describe('createState', () => {
       [KEYS.sidebarPx]: '9999', // clamps to 420
       [KEYS.editorPct]: '5', // clamps to 15
       [KEYS.sideSplitPct]: '99', // clamps to 85
+      [KEYS.cellDrawerPx]: '100', // clamps up to the 320 floor
       [KEYS.sidePanel]: 'history',
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
@@ -57,6 +59,7 @@ describe('createState', () => {
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);
+    expect(s.cellDrawerPx).toBe(320);
     expect(s.sidePanel.value).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);
