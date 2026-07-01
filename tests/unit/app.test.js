@@ -28,6 +28,10 @@ function streamBody(lines) {
     }),
   };
 }
+// A body whose reader throws on the first read — for mid-export failure tests.
+function throwingBody(message) {
+  return { getReader: () => ({ read: async () => { throw new Error(message); }, releaseLock: () => {} }) };
+}
 function resp(opts) {
   return {
     ok: opts.ok ?? true,
@@ -46,14 +50,15 @@ function exceptionFrame(tag, message) {
   return '\r\n__exception__\r\n' + tag + '\r\n' + message + '\n' + len + ' ' + tag + '\r\n__exception__\r\n';
 }
 // A fake FileSystemWritableFileStream + its handle, for streaming-export tests.
-function fakeFileHandle() {
+function fakeFileHandle(name = 'export.tsv') {
   const chunks = [];
   const writable = {
     write: vi.fn(async (chunk) => { chunks.push(Uint8Array.from(chunk)); }),
     close: vi.fn(async () => {}),
     abort: vi.fn(async () => {}),
   };
-  return { handle: { createWritable: vi.fn(async () => writable) }, writable, chunks };
+  const handle = { name, createWritable: vi.fn(async () => writable), move: vi.fn(async () => {}) };
+  return { handle, writable, chunks };
 }
 function writtenText(chunks) {
   const total = chunks.reduce((n, c) => n + c.length, 0);
@@ -1837,8 +1842,8 @@ describe('streaming export (issue #87)', () => {
       .toBe('Export incomplete — server error mid-stream: DB::Exception: Memory limit (total) exceeded');
   });
 
-  it('a stream read failure mid-export aborts the writable and surfaces the error', async () => {
-    const { handle, writable } = fakeFileHandle();
+  it('a stream read failure mid-export closes (not aborts) the writable and renames it .partial', async () => {
+    const { handle, writable } = fakeFileHandle('My_Query.tsv');
     const showSaveFilePicker = vi.fn(async () => handle);
     const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
     let reads = 0;
@@ -1857,9 +1862,46 @@ describe('streaming export (issue #87)', () => {
     app.renderApp();
     app.activeTab().sql = 'SELECT 1';
     await app.actions.exportEntry();
-    expect(writable.abort).toHaveBeenCalledTimes(1); // leaves the partial file, doesn't retry the write
+    // close (not abort), so the already-committed bytes materialize under the
+    // target handle instead of a hidden 0-byte .crswap orphan being left behind.
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    expect(handle.move).toHaveBeenCalledWith('My_Query.tsv.partial');
     expect(document.querySelector('.share-toast').textContent).toBe('Export failed: network drop');
     expect(app.state.exporting.value).toBe(false);
+  });
+
+  it('falls back to leaving the plain (non-renamed) file when the handle has no move() (no File System Access API move support)', async () => {
+    const { handle, writable } = fakeFileHandle();
+    delete handle.move;
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportEntry();
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(writable.close).toHaveBeenCalledTimes(1);
+    // No TypeError from calling a missing move() — the guard held, and the
+    // original "network drop" error (not a broken-guard error) is what surfaces.
+    expect(document.querySelector('.share-toast').textContent).toBe('Export failed: network drop');
+  });
+
+  it('a failed move() (e.g. name collision) is swallowed — the plain file is still recoverable', async () => {
+    const { handle, writable } = fakeFileHandle();
+    handle.move = vi.fn(async () => { throw new Error('collision'); });
+    const showSaveFilePicker = vi.fn(async () => handle);
+    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
+    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
+    app.renderApp();
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.exportEntry();
+    expect(writable.abort).not.toHaveBeenCalled();
+    expect(handle.move).toHaveBeenCalledTimes(1);
+    // move()'s rejection is swallowed, not propagated in place of the original error.
+    expect(document.querySelector('.share-toast').textContent).toBe('Export failed: network drop');
   });
 
   it('a pre-header (non-OK) failure toasts "Export failed" without ever opening the writable', async () => {
