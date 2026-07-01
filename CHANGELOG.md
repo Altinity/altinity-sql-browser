@@ -119,14 +119,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Also mirrors the app's favicon into every detached tab (a `faviconHref`
   seam, same pattern as the existing `stylesText` one) — `about:blank` ships
   neither, so a real tab previously showed the browser's generic icon.
+- **Cell-detail drawer resize** (#101): the right-hand drawer used by both the
+  cell-detail view and the rows viewer now has a drag handle on its left edge
+  (`splitters.js` gains a fourth `'drawer'` axis alongside `col`/`sideRow`/`row`),
+  clamped to `320px..92vw` and persisted as `cellDrawerPx` — one shared width for
+  both. Fixed a click-through: finishing a resize drag with the mouse released
+  over the backdrop (instead of the panel) previously closed the drawer, since
+  the browser's post-mouseup `click` targets the nearest common ancestor of the
+  mousedown/mouseup targets, bypassing the panel's own `stopPropagation`. Closing
+  the drawer *mid-drag* (e.g. Escape while the mouse button is still down) now
+  also cancels the in-progress drag and reverts the width, rather than leaving
+  stray listeners that would persist a stale width or swallow a later, unrelated
+  click.
 - **UI consistency polish** (#102): the schema tree's expand/collapse chevron
   now rotates a single icon instead of swapping between two glyphs, matching
-  the login screen's Advanced disclosure. The share toast can be dismissed
-  early by clicking it (it no longer blocks clicks while visible). Opening the
-  user menu or the File menu now autofocuses a sensible first item (Log out /
-  New Library). `shortcutsOpen`, `editingSavedId`, and `bannerDismissedFor`
-  moved into `state.js` as signals, consistent with the rest of the ADR-0001
-  migration — no behavior change.
+  the login screen's Advanced disclosure — the rotation actually animates
+  (`flipChevron` restores the pre-toggle angle and forces a layout read before
+  the target, since `renderSchema` rebuilds the row's DOM on every toggle and
+  a freshly-created node has no "from" state for its CSS transition to
+  interpolate from). The share toast can be dismissed early by clicking it (it
+  no longer blocks clicks while visible); its auto-hide timer now lives on the
+  toast element itself rather than a module-level field, so a toast in a
+  detached tab's document can't clobber one in the main document's. Opening
+  the user menu or the File menu now autofocuses a sensible first item (Log
+  out / New Library). `shortcutsOpen`, `editingSavedId`, and
+  `bannerDismissedFor` moved into `state.js` as signals, consistent with the
+  rest of the ADR-0001 migration — no behavior change.
 
 ### Changed
 - State reactivity now uses `@preact/signals-core` (the third bundled runtime

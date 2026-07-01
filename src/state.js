@@ -21,6 +21,7 @@ export const KEYS = {
   sidebarPx: 'asb:sidebarPx',
   editorPct: 'asb:editorPct',
   sideSplitPct: 'asb:sideSplitPct',
+  cellDrawerPx: 'asb:cellDrawerPx',
   sidePanel: 'asb:sidePanel',
   saved: 'asb:saved',
   history: 'asb:history',
@@ -66,6 +67,11 @@ export function createState(read = { loadJSON, loadStr }) {
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),
+    // Cell-detail / rows-viewer drawer width (issue #101). The 92vw upper
+    // bound depends on the live viewport, not this load-time default, so only
+    // the floor is enforced here — clampDrawerWidth (splitters.js) applies the
+    // full [320, 92vw] clamp whenever the drawer is opened or resized.
+    cellDrawerPx: clamp(parseInt(read.loadStr(KEYS.cellDrawerPx, '560'), 10), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through
     // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;

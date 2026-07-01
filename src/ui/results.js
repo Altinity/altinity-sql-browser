@@ -14,6 +14,7 @@ import { SELECT_ROW_CAP } from '../core/script-result.js';
 import { RESULT_ROW_LIMIT_OPTIONS } from '../state.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
+import { startDrag, clampDrawerWidth } from './splitters.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -332,8 +333,10 @@ function scriptOutcomeCell(app, e) {
 export function openRowsViewer(app, entry) {
   const doc = app.document || document;
   let backdrop;
+  let cancelDrawerDrag = () => {};
   const onKey = (ev) => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
   function close() {
+    cancelDrawerDrag();
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
   }
@@ -357,6 +360,7 @@ export function openRowsViewer(app, entry) {
   }));
   paint();
   const panel = h('div', { class: 'cd-panel', onclick: (ev) => ev.stopPropagation() }, head, body);
+  cancelDrawerDrag = attachDrawerResize(app, panel, doc);
   backdrop = h('div', { class: 'cd-backdrop', onclick: close }, panel);
   doc.body.appendChild(backdrop);
   doc.addEventListener('keydown', onKey, true);
@@ -755,12 +759,69 @@ function isTopDrawer(doc, el) {
   return all[all.length - 1] === el;
 }
 
+/**
+ * Wire the left-edge drag handle that resizes the cell-detail / rows-viewer
+ * drawer (#101), shared by openCellDetail and openRowsViewer via splitters.js's
+ * drag controller (a 'drawer' axis alongside 'col'/'sideRow'/'row'). Sets the
+ * initial width from the persisted `cellDrawerPx` pref, clamped to the current
+ * viewport, and appends the handle to `panel`.
+ *
+ * Finishing a resize drag can end with the mouse over `.cd-backdrop` (dragging
+ * left grows the backdrop area under the cursor) — the `click` that follows
+ * mouseup then targets the backdrop directly (the nearest common ancestor of
+ * the mousedown/mouseup targets), bypassing `.cd-panel`'s own stopPropagation
+ * entirely and closing the drawer. A one-shot capturing `click` listener,
+ * installed at drag-start and removed after consuming exactly one event,
+ * swallows exactly that click.
+ *
+ * Returns `cancelDrag()`: the drawer's own `close()` (Escape / backdrop click /
+ * ✕) can fire while the mouse button is still down mid-drag, before that
+ * trailing click ever arrives — without this, the abandoned drag's `mousemove`/
+ * `mouseup`/click-swallow listeners would linger on `win`/`doc` after the panel
+ * is gone, so a later unrelated mouseup would still persist a stale
+ * `cellDrawerPx` and a later unrelated click would be silently swallowed.
+ * `close()` must call it before removing the backdrop. A no-op if no drag is
+ * in progress.
+ */
+function attachDrawerResize(app, panel, doc) {
+  // doc.defaultView is null for a detached document not yet attached to a real
+  // browsing context (e.g. tests' document.implementation.createHTMLDocument());
+  // a real detached tab (window.open()) always has one. Fall back to the
+  // ambient window rather than crash on the (harmless) synthetic-doc case.
+  const win = doc.defaultView || window;
+  panel.style.width = clampDrawerWidth(app.state.cellDrawerPx, win.innerWidth) + 'px';
+  let cancelActive = null;
+  const handle = h('div', {
+    class: 'cd-resize-h',
+    title: 'Drag to resize',
+    onmousedown: (ev) => {
+      const startPx = app.state.cellDrawerPx;
+      const cleanup = () => { doc.removeEventListener('click', swallowClick, true); cancelActive = null; };
+      const swallowClick = (e) => { e.stopPropagation(); cleanup(); };
+      doc.addEventListener('click', swallowClick, true);
+      const stopDrag = startDrag(ev, 'drawer', {
+        win,
+        state: app.state,
+        rectFor: () => ({ width: win.innerWidth }),
+        scale: () => zoomScale(panel),
+        apply: (_axis, value) => { panel.style.width = value + 'px'; },
+        save: (name, value) => app.savePref(name, value),
+      });
+      cancelActive = () => { stopDrag(); app.state.cellDrawerPx = startPx; cleanup(); };
+    },
+  });
+  panel.appendChild(handle);
+  return () => { if (cancelActive) cancelActive(); };
+}
+
 export function openCellDetail(app, name, type, value, targetDoc) {
   const doc = targetDoc || (app && app.document) || document;
   const text = value == null ? '' : String(value);
   let backdrop;
+  let cancelDrawerDrag = () => {};
   const onKey = (e) => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
   function close() {
+    cancelDrawerDrag();
     if (backdrop) backdrop.remove();
     doc.removeEventListener('keydown', onKey, true);
   }
@@ -781,6 +842,7 @@ export function openCellDetail(app, name, type, value, targetDoc) {
       h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
 
     const panel = h('div', { class: 'cd-panel', onclick: (e) => e.stopPropagation() }, head);
+    cancelDrawerDrag = attachDrawerResize(app, panel, doc);
 
     if (looksLikeHtml(text)) {
       const seg = h('div', { class: 'cd-toggle' });
