@@ -898,11 +898,12 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     expect(svg.querySelector('tspan.eg-badge--sk')).not.toBeNull();
     expect([...svg.querySelectorAll('text.eg-col-more')].map((t) => t.textContent)).toContain('+2 more');
     expect(svg.querySelector('text.eg-skipidx').textContent).toBe('idx: i (minmax)');
-    expect(svg.querySelector('text.eg-card-comment').textContent).toBe('raw ingest table');
-    // the comment's <title> is a sibling (not nested in the <text>), so hovering
-    // the row reveals the full (here: same, since it's short) text without
-    // polluting the visible line's own textContent.
-    expect(svg.querySelector('text.eg-card-comment').parentElement.querySelector('title').textContent).toBe('raw ingest table');
+    // the comment is a hover-only <title> on the whole card — same idiom as the
+    // plain inline graph's nodeTitle — never a drawn row, so it can't affect
+    // any other row's position or the card's own size.
+    const card = svg.querySelector('g.eg-card[data-node-id="lin.a"]');
+    expect(card.querySelector('title').textContent).toBe('raw ingest table');
+    expect(card.querySelector('text.eg-card-comment')).toBeNull(); // no such row exists
     // only the labelled edge draws a mid-edge label; the empty-kind edge draws none
     expect([...svg.querySelectorAll('text.eg-edge-label')].map((t) => t.textContent)).toEqual(['feeds']);
   });
@@ -915,29 +916,27 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     expect(headers).toContain('mv · — rows · —'); // engine falls back to kind, no row/byte data
   });
 
-  it('the comment row\'s <title> carries the full untruncated text when the visible line was capped', () => {
+  it('carries the full, untruncated comment in the card\'s <title> even when very long', () => {
     const g = {
       nodes: [{
         id: 'lin.c', label: 'c', kind: 'table', db: 'lin', name: 'c',
         card: {
           title: 'lin.c', kind: 'table', summary: 'MergeTree · 0 rows · 0 B',
-          comment: 'a very long…', commentFull: 'a very long comment that would not fit on the card at all',
+          comment: 'a very long comment that would never fit on the card at all',
           cols: [], overflow: 0, skipLine: '',
         },
       }],
       edges: [],
     };
     const built = buildRichSchemaSvg(g, dagre);
-    const commentText = built.svg.querySelector('text.eg-card-comment');
-    expect(commentText.textContent).toBe('a very long…'); // the capped display line only
-    expect(commentText.parentElement.querySelector('title').textContent)
-      .toBe('a very long comment that would not fit on the card at all');
+    const card = built.svg.querySelector('g.eg-card[data-node-id="lin.c"]');
+    expect(card.querySelector('title').textContent).toBe('a very long comment that would never fit on the card at all');
   });
 
-  it('draws no comment row for a card without one', () => {
+  it('draws no <title> on a card without a comment', () => {
     const g = { nodes: [{ id: 'lin.b', label: 'b', kind: 'table', db: 'lin', name: 'b' }], edges: [] };
     const built = buildRichSchemaSvg(g, dagre);
-    expect(built.svg.querySelector('text.eg-card-comment')).toBeNull();
+    expect(built.svg.querySelector('g.eg-card title')).toBeNull();
   });
 
   it('fires onNode with the clicked node (which carries db/name for SHOW CREATE)', () => {

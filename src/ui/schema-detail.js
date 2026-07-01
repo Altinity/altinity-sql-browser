@@ -14,7 +14,7 @@ import { columnRoles } from '../core/schema-cards.js';
 
 const MIN_H = 90; // smallest pane height; max is panel height - this margin
 const TOP_MARGIN = 100;
-const MAX_HEAD_COMMENT = 80; // table's own comment, next to the kind badge
+const MAX_HEAD_COMMENT = 120; // table's own comment, next to the kind badge — the header row has ~1.5x the room MAX_COL_COMMENT does
 const MAX_COL_COMMENT = 80; // per-column comment — 2x the original 40, more room to read without opening DDL
 
 // A capped `<td>` for a column's comment — always rendered (even empty) so every

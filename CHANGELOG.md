@@ -11,12 +11,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ### Added
 - **Table/column COMMENT display**: a table's `COMMENT` now shows as a native
-  hover tooltip on its node in both the compact inline schema-lineage graph and
-  the fullscreen rich-card graph (capped on the card itself, with the full text
-  still on hover), and in the table-info panel's header next to the kind badge.
-  Column comments show as a new column in that panel's columns table. The
-  panel's "uncompressed" byte column is replaced by "size %" — the percentage
-  of the original (uncompressed) size still on disk after compression.
+  hover tooltip on its node — in both the compact inline schema-lineage graph
+  and the fullscreen rich-card graph, never a drawn line, so it can't affect
+  either graph's layout — and in the table-info panel's header next to the kind
+  badge. Column comments show as a new (wide) column in that panel's columns
+  table. The panel's "uncompressed" byte column is replaced by "size %" — the
+  percentage of the original (uncompressed) size still on disk after
+  compression.
 - **Multiquery + run-selection** (#83): run a `;`-separated script (DDL / INSERT /
   SELECT) in one shot, or run just the highlighted text. ⌘+Enter auto-detects — a
   single statement behaves exactly as before; more than one runs **sequentially**

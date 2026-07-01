@@ -55,16 +55,12 @@ describe('buildCardModel', () => {
     expect(leaf.overflow).toBe(0);
     expect(leaf.skipLine).toBe('');
     expect(leaf.comment).toBe('');
-    expect(leaf.commentFull).toBe('');
   });
-  it('trims and caps the table comment at MAX_COMMENT, but keeps the full text in commentFull for a hover title', () => {
+  it('trims the table comment, untruncated (it\'s a hover-only tooltip on the card, never a drawn row)', () => {
     const m = buildCardModel({ label: 'db.t' }, { comment: '  raw events, ingested by the OTel collector  ' });
     expect(m.comment).toBe('raw events, ingested by the OTel collector');
-    expect(m.commentFull).toBe('raw events, ingested by the OTel collector');
-    const long = buildCardModel({ label: 'db.t' }, { comment: 'x'.repeat(CARD.MAX_COMMENT + 10) });
-    expect(long.comment).toHaveLength(CARD.MAX_COMMENT);
-    expect(long.comment.endsWith('…')).toBe(true);
-    expect(long.commentFull).toHaveLength(CARD.MAX_COMMENT + 10); // untruncated
+    const long = buildCardModel({ label: 'db.t' }, { comment: 'x'.repeat(200) });
+    expect(long.comment).toHaveLength(200); // no cap — nothing renders it inline
   });
   it('has no comment when the table row carries none', () => {
     expect(buildCardModel({ label: 'db.t' }, {}).comment).toBe('');
@@ -109,13 +105,10 @@ describe('cardSize', () => {
     const m = { title: 't', summary: 's', cols: [], overflow: 999, skipLine: 'idx: ' + 'z'.repeat(60) + ' (minmax)' };
     expect(cardSize(m).w).toBeGreaterThan(CARD.MIN_W);
   });
-  it('adds one row for the comment, and honors its width', () => {
+  it('a comment never affects height or width — it\'s a hover-only tooltip, not a row', () => {
     const base = { title: 't', summary: 's', comment: '', cols: [], overflow: 0, skipLine: '' };
-    const withComment = { ...base, comment: 'a table comment' };
-    expect(cardSize(withComment, { rowH: 10, headerH: 20 }).h).toBe(30); // 20 + 1 row
-    expect(cardSize(base, { rowH: 10, headerH: 20 }).h).toBe(20); // no comment → no extra row
-    const wide = { ...base, comment: 'z'.repeat(60) };
-    expect(cardSize(wide).w).toBeGreaterThan(cardSize(base).w);
+    const withComment = { ...base, comment: 'a table comment ' + 'z'.repeat(200) };
+    expect(cardSize(withComment, { rowH: 10, headerH: 20 })).toEqual(cardSize(base, { rowH: 10, headerH: 20 }));
   });
 });
 

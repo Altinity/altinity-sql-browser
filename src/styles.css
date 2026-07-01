@@ -721,7 +721,6 @@ body {
    one row per column with coloured key-role tags. */
 .explain-graph .eg-card-title { fill: var(--fg); font-family: var(--mono); font-size: 11px; font-weight: 700; }
 .explain-graph .eg-card-header { fill: var(--fg-faint); font-family: var(--mono); font-size: 9px; }
-.explain-graph .eg-card-comment { fill: var(--fg-mute); font-family: var(--mono); font-size: 9px; font-style: italic; }
 .explain-graph .eg-card-divider { stroke: var(--border); stroke-width: 1; }
 .explain-graph .eg-col { font-family: var(--mono); font-size: 9px; }
 .explain-graph .eg-col .eg-col-name { fill: var(--fg); }
