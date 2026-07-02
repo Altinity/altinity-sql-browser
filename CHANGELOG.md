@@ -54,6 +54,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ~54% smaller on the wire already, nothing to change there.
 
 ### Fixed
+- **`npm test` flaked on Node 25** (#130): one `app.test.js` case asserted a
+  persisted preference by reading the ambient `globalThis.localStorage` directly,
+  which Node 25's native Web Storage (broken without `--localstorage-file`)
+  leaves without a `getItem` method — a `TypeError` on a clean local run, though
+  CI (Node 22) was unaffected. The test now stubs an in-memory store the way the
+  `storage`/`state` specs already do, insulating the assertion from the host
+  runtime; an `.nvmrc` pins local dev to Node 22 to match CI.
 - The inline schema-lineage graph had a stale-write race (same class as #97):
   running or Explaining a query — or dragging/clicking a second db/table —
   while a lineage fetch was still in flight could let the stale fetch's

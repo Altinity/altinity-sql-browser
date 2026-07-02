@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
@@ -17,6 +17,19 @@ function memSession(initial = {}) {
     setItem: (k, v) => m.set(k, String(v)),
     removeItem: (k) => m.delete(k),
     _map: m,
+  };
+}
+
+// An in-memory Web Storage stub for tests that assert against the app's
+// localStorage seam (storage.js reaches globalThis.localStorage ambiently, not
+// via the injected env). Stubbing the global keeps the assertion insulated from
+// the host runtime's native Web Storage — e.g. Node 25's native localStorage,
+// which without --localstorage-file leaves getItem undefined (issue #130).
+function memStore(initial = {}) {
+  const m = new Map(Object.entries(initial));
+  return {
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => m.set(k, String(v)),
   };
 }
 
@@ -98,6 +111,7 @@ function env(over = {}) {
 }
 
 beforeEach(() => { document.body.innerHTML = ''; document.documentElement.style.removeProperty('--vp-zoom'); });
+afterEach(() => vi.unstubAllGlobals());
 
 describe('createApp basics', () => {
   it('reads the stored token and derives identity', () => {
@@ -894,6 +908,10 @@ describe('query run', () => {
     expect(app.activeTab().result.capped).toBe(false);
   });
   it('setResultRowLimit persists the normalized preference and re-runs with the new cap', async () => {
+    // Route the app's localStorage seam through an in-memory stub so the
+    // persistence assertion below doesn't touch the host runtime's native Web
+    // Storage (broken under Node 25 without --localstorage-file — issue #130).
+    vi.stubGlobal('localStorage', memStore());
     const { app, e } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
