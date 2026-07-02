@@ -85,6 +85,43 @@ export async function queryJson(ctx, sql, signal) {
 }
 
 /**
+ * Run a `system.tables`/`system.columns` query (`sqlBody`, without its FORMAT
+ * clause) with data-lake-catalog visibility enabled, falling back to the plain
+ * query on any non-cancellation, non-auth error. ClickHouse >=25.8 hides
+ * DataLakeCatalog-backed databases (Iceberg/Glue/Unity/HMS/REST catalogs) from
+ * `system.tables` and `system.columns` unless
+ * `show_data_lake_catalogs_in_system_tables = 1` is set (renamed to
+ * `show_remote_databases_in_system_tables` in 26.6, old name kept as an
+ * alias) — so without this, the schema browser and table browser silently show
+ * zero rows for those databases (#122). Servers older than 25.8 don't have the
+ * setting and throw "Unknown setting"; the fallback keeps them working exactly
+ * as before. Once a fallback happens, `ctx.dataLakeCatalogSettingUnsupported`
+ * latches so every later call on this connection (schema loads, table
+ * expands, lineage BFS) goes straight to the plain query instead of paying a
+ * doomed extra round trip forever — the same one-shot-then-remember shape as
+ * `ctx.authConfirmed` in `authedFetch`.
+ *
+ * Two error classes are rethrown immediately, never retried: a caller-aborted
+ * signal (matching `tryQueryData`'s cancellation contract), and 'not signed
+ * in' / 'signed out' — `authedFetch` has already exhausted its own retry and
+ * called `ctx.onSignedOut()` for those, so retrying here would just repeat
+ * the whole token/refresh/sign-out handshake (and its side effects) a second
+ * time for no benefit.
+ */
+async function querySystemAware(ctx, sqlBody, signal) {
+  const plain = () => queryJson(ctx, sqlBody + '\nFORMAT JSON', signal);
+  if (ctx.dataLakeCatalogSettingUnsupported) return plain();
+  try {
+    return await queryJson(ctx, sqlBody + '\nSETTINGS show_data_lake_catalogs_in_system_tables = 1\nFORMAT JSON', signal);
+  } catch (e) {
+    if (signal && signal.aborted && e && e.name === 'AbortError') throw e;
+    if (e && (e.message === 'not signed in' || e.message === 'signed out')) throw e;
+    ctx.dataLakeCatalogSettingUnsupported = true;
+    return plain();
+  }
+}
+
+/**
  * Best-effort `KILL QUERY` for the given query_id (the client also aborts the
  * stream; this stops the server-side work). Swallows errors — cancellation must
  * never throw at the call site, and the user lacking the privilege is non-fatal.
@@ -117,13 +154,12 @@ export async function loadSchema(ctx) {
       "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
       'ORDER BY name\n' +
       'FORMAT JSON'),
-    queryJson(ctx,
+    querySystemAware(ctx,
       'SELECT database, name, toUInt64(total_rows) AS total_rows, ' +
       'toUInt64(total_bytes) AS total_bytes, comment\n' +
       'FROM system.tables\n' +
       "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
-      "ORDER BY database, startsWith(name, '_'), name\n" +
-      'FORMAT JSON'),
+      "ORDER BY database, startsWith(name, '_'), name"),
   ]);
   const byDb = new Map();
   for (const r of dbJson.data || []) byDb.set(r.name, { comment: r.comment || '', tables: [] });
@@ -176,7 +212,7 @@ export async function loadSchemaLineage(ctx, focus, opts = {}) {
     // Card metadata (ignored by the inline graph; used by the rich fullscreen cards).
     + 'toUInt64(ifNull(total_rows, 0)) AS total_rows, toUInt64(ifNull(total_bytes, 0)) AS total_bytes, '
     + 'partition_key, sorting_key, primary_key, sampling_key';
-  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY startsWith(name, '_'), name`, signal);
+  const tablesJson = await querySystemAware(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY startsWith(name, '_'), name`, signal);
   const tables = tablesJson.data || [];
   // Best-effort: a denied/missing system.dictionaries (low-priv users lack
   // SELECT on it) must degrade to no dictionary edges, never abort the graph —
@@ -208,8 +244,8 @@ export async function loadColumns(ctx, db, table, sqlString) {
   const sql =
     'SELECT name, type, comment FROM system.columns ' +
     'WHERE database = ' + sqlString(db) + ' AND table = ' + sqlString(table) + ' ' +
-    'ORDER BY position FORMAT JSON';
-  const json = await queryJson(ctx, sql);
+    'ORDER BY position';
+  const json = await querySystemAware(ctx, sql);
   return (json.data || []).map((r) => ({ name: r.name, type: r.type, comment: r.comment || '' }));
 }
 
@@ -228,10 +264,10 @@ export async function loadSchemaCards(ctx, dbs) {
   // The two reads are independent — run them concurrently (one server round-trip
   // of wall-clock instead of two).
   const [colRows, idxRows] = await Promise.all([
-    tryQueryData(ctx,
+    trySystemAwareQueryData(ctx,
       'SELECT database, table, name, type, is_in_partition_key, is_in_sorting_key, '
       + 'is_in_primary_key, is_in_sampling_key, compression_codec, position '
-      + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position FORMAT JSON'),
+      + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position'),
     tryQueryData(ctx,
       'SELECT database, table, name, type, expr FROM system.data_skipping_indices '
       + 'WHERE database IN (' + list + ') FORMAT JSON'),
@@ -292,24 +328,25 @@ export async function loadLineageTransitive(ctx, focus, opts = {}) {
 /**
  * Per-table detail for the node detail pane: full columns (with key-role flags,
  * per-column comments + compression sizes), per-partition part/row/byte sums, the
- * table's own comment, and the DDL. All reads are best-effort via tryQueryData (a
- * denied/missing system table degrades to empty, never an error). Returns
- * `{ columns, partitions, ddl, comment }`.
+ * table's own comment, and the DDL. All reads are best-effort (a denied/missing
+ * system table degrades to empty, never an error); the system.columns/system.tables
+ * reads also see DataLakeCatalog-backed tables (#122) via trySystemAwareQueryData.
+ * Returns `{ columns, partitions, ddl, comment }`.
  */
 export async function loadTableDetail(ctx, db, table) {
   const byCol = 'database = ' + sqlString(db) + ' AND table = ' + sqlString(table);
   const byName = 'database = ' + sqlString(db) + ' AND name = ' + sqlString(table);
   const [columns, partitions, tableRows] = await Promise.all([
-    tryQueryData(ctx,
+    trySystemAwareQueryData(ctx,
       'SELECT name, type, compression_codec AS codec, comment, '
       + 'is_in_partition_key, is_in_sorting_key, is_in_primary_key, is_in_sampling_key, '
       + 'toUInt64(data_compressed_bytes) AS compressed, toUInt64(data_uncompressed_bytes) AS uncompressed, '
       + 'toUInt64(marks_bytes) AS marks, position '
-      + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position FORMAT JSON'),
+      + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position'),
     tryQueryData(ctx,
       'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
       + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
-    tryQueryData(ctx, 'SELECT create_table_query AS ddl, comment FROM system.tables WHERE ' + byName + ' FORMAT JSON'),
+    trySystemAwareQueryData(ctx, 'SELECT create_table_query AS ddl, comment FROM system.tables WHERE ' + byName),
   ]);
   return {
     columns: columns || [],
@@ -319,25 +356,36 @@ export async function loadTableDetail(ctx, db, table) {
   };
 }
 
-// Run a query for its `data` rows, returning null on ANY error EXCEPT a
-// cancellation of a caller-supplied signal. Editor reference data / schema-
-// lineage best-effort reads are meant to degrade gracefully on a missing
-// system table or a denied SELECT — but when the caller passed a `signal` and
-// aborted it, that means the caller's whole operation was cancelled, not that
-// this particular sub-query failed, so it must propagate rather than be
-// swallowed into "no data, continue" (#124). Gated on `signal.aborted`
-// (not just the error's name) so a caller that never passed a signal — every
-// site except `loadSchemaLineage` — keeps today's unconditional swallow, even
-// if the underlying fetch happens to throw an AbortError-shaped error for some
-// unrelated reason.
-async function tryQueryData(ctx, sql, signal) {
+// Run `runner(ctx, sql, signal)` for its `data` rows, returning null on ANY
+// error EXCEPT a cancellation of a caller-supplied signal. Editor reference
+// data / schema-lineage best-effort reads are meant to degrade gracefully on
+// a missing system table or a denied SELECT — but when the caller passed a
+// `signal` and aborted it, that means the caller's whole operation was
+// cancelled, not that this particular sub-query failed, so it must propagate
+// rather than be swallowed into "no data, continue" (#124). Gated on
+// `signal.aborted` (not just the error's name) so a caller that never passed
+// a signal — every site except `loadSchemaLineage` — keeps today's
+// unconditional swallow, even if the underlying fetch happens to throw an
+// AbortError-shaped error for some unrelated reason.
+async function tryRun(runner, ctx, sql, signal) {
   try {
-    const json = await queryJson(ctx, sql, signal);
+    const json = await runner(ctx, sql, signal);
     return json.data || [];
   } catch (e) {
     if (signal && signal.aborted && e && e.name === 'AbortError') throw e;
     return null;
   }
+}
+
+function tryQueryData(ctx, sql, signal) {
+  return tryRun(queryJson, ctx, sql, signal);
+}
+
+// Same contract as tryQueryData, but via querySystemAware for best-effort
+// system.tables/system.columns reads that must also see DataLakeCatalog-backed
+// databases (#122).
+function trySystemAwareQueryData(ctx, sqlBody, signal) {
+  return tryRun(querySystemAware, ctx, sqlBody, signal);
 }
 
 // First non-empty line of a (possibly multi-line / Markdown) cell, trimmed.

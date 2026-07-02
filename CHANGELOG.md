@@ -76,6 +76,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   segmented control (hidden on desktop) had silently become instead of the
   schema pane — so dragging visibly did nothing. Now targets the schema pane
   directly.
+- **Iceberg/Glue/Unity/HMS/REST-catalog databases showed zero tables** (#122):
+  ClickHouse >=25.8 hides `DataLakeCatalog`-backed databases from
+  `system.tables`/`system.columns` unless
+  `show_data_lake_catalogs_in_system_tables = 1` is set. The schema panel's
+  table list, column expansion, table-detail pane, and schema-lineage graph
+  now request that setting, falling back to the plain query (and remembering
+  the fallback for the rest of the session, mirroring `ctx.authConfirmed`) on
+  servers older than 25.8 that don't have it.
 
 ## [0.2.0] - 2026-07-01
 

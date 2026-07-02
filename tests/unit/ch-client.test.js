@@ -205,6 +205,30 @@ describe('loadSchema', () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadSchema(ctx)).toEqual([]);
   });
+  it('requests data-lake-catalog visibility on the system.tables query (#122 — Iceberg/Glue/Unity tables hidden by default)', async () => {
+    const seen = [];
+    const ctx = ctxWith(async (url, o) => {
+      seen.push(o.body);
+      return jsonResp({ data: [] });
+    });
+    await loadSchema(ctx);
+    const tablesSql = seen.find((s) => s.includes('FROM system.tables'));
+    expect(tablesSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+  });
+  it('falls back to the plain system.tables query when an older ClickHouse rejects the setting', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('FROM system.databases')) return jsonResp({ data: [{ name: 'ice' }] });
+      if (o.body.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) {
+        return textResp('Code: 115. DB::Exception: Unknown setting show_data_lake_catalogs_in_system_tables', false, 500);
+      }
+      return jsonResp({ data: [{ database: 'ice', name: 'orders', total_rows: '1', total_bytes: '2', comment: '' }] });
+    });
+    const schema = await loadSchema(ctx);
+    expect(schema).toEqual([{
+      db: 'ice', comment: '', expanded: false,
+      tables: [{ name: 'orders', total_rows: '1', total_bytes: '2', comment: '', columns: null }],
+    }]);
+  });
 });
 
 describe('loadColumns', () => {
@@ -219,6 +243,40 @@ describe('loadColumns', () => {
   it('handles missing data', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadColumns(ctx, 'db', 't', sqlString)).toEqual([]);
+  });
+  it('falls back to the plain query when an older ClickHouse rejects the data-lake-catalog setting (#122)', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('SETTINGS show_data_lake_catalogs_in_system_tables')
+        ? textResp('Unknown setting show_data_lake_catalogs_in_system_tables', false, 500)
+        : jsonResp({ data: [{ name: 'c1', type: 'Int64', comment: '' }] })
+    ));
+    expect(await loadColumns(ctx, 'ice', 'orders', sqlString)).toEqual([{ name: 'c1', type: 'Int64', comment: '' }]);
+  });
+  it('remembers an unsupported data-lake-catalog setting for the rest of the session (no repeated doomed round trip)', async () => {
+    let settingsAttempts = 0;
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) {
+        settingsAttempts++;
+        return textResp('Unknown setting show_data_lake_catalogs_in_system_tables', false, 500);
+      }
+      return jsonResp({ data: [{ name: 'c1', type: 'Int64', comment: '' }] });
+    });
+    await loadColumns(ctx, 'ice', 'orders', sqlString);
+    await loadColumns(ctx, 'ice', 'orders2', sqlString);
+    expect(settingsAttempts).toBe(1);
+    expect(ctx.dataLakeCatalogSettingUnsupported).toBe(true);
+  });
+  it('does not retry (and does not double sign out) when the token is missing', async () => {
+    const ctx = ctxWith(async () => jsonResp({}), { getToken: vi.fn(async () => null) });
+    await expect(loadColumns(ctx, 'db', 't', sqlString)).rejects.toThrow('not signed in');
+    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
+    expect(ctx.getToken).toHaveBeenCalledTimes(1);
+  });
+  it('does not retry (and does not double sign out) when the server rejects the token outright (403)', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 516. DB::Exception: Authentication failed', false, 403),
+      { refresh: vi.fn(async () => false) });
+    await expect(loadColumns(ctx, 'db', 't', sqlString)).rejects.toThrow('signed out');
+    expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -602,6 +660,42 @@ describe('loadSchemaLineage', () => {
     const out = await loadReferenceData(ctx);
     expect(out).toEqual({ keywords: null, functions: null, formats: null });
   });
+  it('requests data-lake-catalog visibility on the scoped system.tables query (#122 — Iceberg/Glue/Unity tables hidden by default)', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      seen.push(init.body);
+      if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
+      return jsonResp({ data: [] });
+    });
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    const tablesSql = seen.find((s) => /FROM system\.tables/.test(s));
+    expect(tablesSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+  });
+  it('falls back to the plain system.tables query when an older ClickHouse rejects the setting', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      if (sql.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) {
+        return textResp('Unknown setting show_data_lake_catalogs_in_system_tables', false, 500);
+      }
+      return jsonResp({ data: [{ database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' }] });
+    });
+    const out = await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
+    expect(out.tables).toHaveLength(1);
+  });
+  it('does not retry system.tables after a cancellation (propagates instead of falling back)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let tablesCalls = 0;
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      tablesCalls++;
+      const e = new Error('aborted'); e.name = 'AbortError'; throw e;
+    });
+    await expect(loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(tablesCalls).toBe(1);
+  });
 });
 
 describe('loadSchemaCards', () => {
@@ -633,6 +727,26 @@ describe('loadSchemaCards', () => {
     const ctx = ctxWith(() => { throw new Error('should not fetch'); });
     expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {}, skipByKey: {} });
     expect(ctx.fetch).not.toHaveBeenCalled();
+  });
+  it('requests data-lake-catalog visibility on the system.columns query (#122)', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      seen.push(init.body);
+      return jsonResp({ data: [] });
+    });
+    await loadSchemaCards(ctx, ['ice']);
+    const colSql = seen.find((s) => /FROM system\.columns/.test(s));
+    expect(colSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+  });
+  it('falls back to the plain system.columns query when an older ClickHouse rejects the setting', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/data_skipping_indices/.test(sql)) return jsonResp({ data: [] });
+      if (sql.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) return textResp('Unknown setting', false, 500);
+      return jsonResp({ data: [{ database: 'ice', table: 'orders', name: 'id', type: 'Int64', position: 1 }] });
+    });
+    const out = await loadSchemaCards(ctx, ['ice']);
+    expect(out.columnsByKey['ice.orders']).toHaveLength(1);
   });
 });
 
@@ -737,5 +851,29 @@ describe('loadTableDetail', () => {
   it('degrades to empty arrays + empty DDL/comment when the system tables are denied', async () => {
     const ctx = ctxWith(() => jsonResp('Code: 497', false, 500));
     expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], partitions: [], ddl: '', comment: '' });
+  });
+  it('requests data-lake-catalog visibility on system.columns/system.tables (#122 — Iceberg tables\' columns/DDL otherwise hidden)', async () => {
+    const seen = [];
+    const ctx = ctxWith((url, init) => {
+      seen.push(init.body);
+      return jsonResp({ data: [] });
+    });
+    await loadTableDetail(ctx, 'ice', 'orders');
+    const colSql = seen.find((s) => /FROM system\.columns/.test(s));
+    const ddlSql = seen.find((s) => /create_table_query/.test(s));
+    expect(colSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+    expect(ddlSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+  });
+  it('falls back to the plain system.columns/system.tables queries when an older ClickHouse rejects the setting', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/system\.parts/.test(sql)) return jsonResp({ data: [] });
+      if (sql.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) return textResp('Unknown setting', false, 500);
+      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE ice.orders ...', comment: '' }] });
+      return jsonResp({ data: [{ name: 'id', type: 'Int64', comment: '' }] });
+    });
+    const d = await loadTableDetail(ctx, 'ice', 'orders');
+    expect(d.columns).toHaveLength(1);
+    expect(d.ddl).toContain('CREATE TABLE');
   });
 });
