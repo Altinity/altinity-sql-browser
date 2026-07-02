@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
+import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -2502,6 +2503,229 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     await app.actions.expandSchemaGraph({ kind: 'db', db: 'lin' });
     expect(app.activeTab().result.schemaGraph.savedPositions).toBe(positions); // same map reused
     document.body.querySelector('.graph-overlay').remove();
+  });
+
+  // #124 — stale-write race, cancellation, progressive draw.
+  // Local variant of makeFetch that forwards `init` to a function route, so a
+  // route can be signal-aware (reject when the request's own AbortController
+  // fires) — the shared makeFetch above only ever calls `r()` with no args.
+  function makeSignalFetch(routes) {
+    return vi.fn(async (url, init) => {
+      const sql = init && init.body;
+      for (const [test, r] of routes) if (test(url, sql)) return typeof r === 'function' ? r(url, init) : r;
+      return resp({ json: { data: [] } });
+    });
+  }
+  const hangsUntilAborted = (url, init) => new Promise((resolve, reject) => {
+    const abort = () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); };
+    // Real fetch rejects immediately for an already-aborted signal — mirror that
+    // (a bare addEventListener would miss an abort that fired before this request
+    // was even dispatched, since the event has already come and gone).
+    if (init.signal.aborted) abort();
+    else init.signal.addEventListener('abort', abort);
+  });
+  // showSchemaGraph awaits ensureConfig()/getToken() before setting the initial
+  // placeholder — poll (bounded, no real timer) rather than guessing a fixed
+  // microtask-tick count.
+  async function untilResult(app) {
+    for (let i = 0; i < 50 && app.activeTab().result == null; i++) await Promise.resolve();
+  }
+  // showSchemaGraph's Phase-A/Phase-B split only engages at/above
+  // AST_PROGRESSIVE_THRESHOLD view/MV objects (#124 — below it, a single-step
+  // draw avoids flicker on small schemas) — pad a fixture's table list with
+  // throwaway views so a specific scenario's real object(s) can still exercise
+  // the two-phase path under the real (non-test-overridden) default.
+  // 'SELECT pad…' (not just 'SELECT …') so a route matching a specific real
+  // object's exact EXPLAIN AST text (e.g. /EXPLAIN AST SELECT 1/) never
+  // accidentally also matches a padding row's.
+  const paddingViews = (n) => Array.from({ length: n }, (_, i) => (
+    { database: 'lin', name: 'pad' + i, engine: 'View', as_select: 'SELECT pad' + i }
+  ));
+
+  it('run() while a lineage fetch is in flight does not corrupt the query result (regression for #124)', async () => {
+    let resolveTables;
+    const tablesPending = new Promise((r) => { resolveTables = r; });
+    const { app } = appForRun([
+      [(u, sql) => /system\.tables/.test(sql), () => tablesPending],
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    const graphPromise = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' }); // hangs on system.tables
+    await untilResult(app); // let the pre-Phase-A loading placeholder land
+    expect(app.activeTab().result.schemaGraph.loading).toBe(true);
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.rows).toEqual([['1']]);
+    expect(app.activeTab().result.schemaGraph).toBeUndefined();
+    // the stale lineage fetch resolving afterward must not clobber run()'s result
+    resolveTables(resp({ json: { data: [] } }));
+    await graphPromise;
+    expect(app.activeTab().result.rows).toEqual([['1']]);
+    expect(app.activeTab().result.schemaGraph).toBeUndefined();
+  });
+
+  it('runScript() while a lineage fetch is in flight does not corrupt the query result (regression for #124)', async () => {
+    let resolveTables;
+    const tablesPending = new Promise((r) => { resolveTables = r; });
+    const { app } = appForRun([
+      [(u, sql) => /system\.tables/.test(sql), () => tablesPending],
+      [(u, sql) => /SELECT 1/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'a', type: 'UInt8' }], data: [['1']] }) })],
+    ]);
+    const graphPromise = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    await untilResult(app);
+    expect(app.activeTab().result.schemaGraph.loading).toBe(true);
+    app.activeTab().sql = 'SELECT 1;\nSELECT 1'; // >1 statement → runScript path
+    await app.actions.run();
+    expect(app.activeTab().result.script).toBeDefined();
+    expect(app.activeTab().result.schemaGraph).toBeUndefined();
+    resolveTables(resp({ json: { data: [] } }));
+    await graphPromise;
+    expect(app.activeTab().result.script).toBeDefined();
+    expect(app.activeTab().result.schemaGraph).toBeUndefined();
+  });
+
+  it('a second showSchemaGraph before the first resolves shows the second graph only — last-triggered wins, not last-resolved', async () => {
+    let resolveFirst;
+    const firstPending = new Promise((r) => { resolveFirst = r; });
+    const { app } = appForRun([
+      [(u, sql) => /system\.tables/.test(sql) && /database = 'a'/.test(sql), () => firstPending],
+      [(u, sql) => /system\.tables/.test(sql) && /database = 'b'/.test(sql), resp({ json: { data: [
+        { database: 'b', name: 't', engine: 'MergeTree', as_select: '' },
+      ] } })],
+    ]);
+    const first = app.actions.showSchemaGraph({ kind: 'db', db: 'a' });
+    await untilResult(app);
+    const second = app.actions.showSchemaGraph({ kind: 'db', db: 'b' });
+    await second;
+    expect(app.activeTab().result.schemaGraph.focus.db).toBe('b');
+    resolveFirst(resp({ json: { data: [{ database: 'a', name: 'x', engine: 'MergeTree', as_select: '' }] } }));
+    await first;
+    expect(app.activeTab().result.schemaGraph.focus.db).toBe('b'); // unchanged — a's stale resolution was dropped
+  });
+
+  it('cancelSchemaGraph aborts the in-flight fetch; Starting Run cancels it automatically with no unhandled rejection', async () => {
+    const fetchImpl = makeSignalFetch([
+      [(u, sql) => /system\.tables/.test(sql), hangsUntilAborted],
+      [(u, sql) => /SELECT 1/.test(sql), () => resp({ body: streamBody(['{"row":{}}\n']) })],
+    ]);
+    const app = createApp(env({ fetch: fetchImpl }));
+    app.renderApp();
+    app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    await untilResult(app);
+    expect(app.activeTab().result.schemaGraph.loading).toBe(true);
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run(); // aborts the pending lineage fetch via cancelSchemaGraph() at its top
+    expect(app.activeTab().result.schemaGraph).toBeUndefined(); // run()'s own result, not clobbered
+  });
+
+  it('a manual cancel keeps the Phase-A graph, marked partial, once Phase A has already drawn it', async () => {
+    // Padded to AST_PROGRESSIVE_THRESHOLD objects so the two-phase path actually
+    // engages under the real default (see paddingViews).
+    const tables = [
+      { database: 'lin', name: 'mv', engine: 'MaterializedView', as_select: 'SELECT 1 FROM lin.events', create_table_query: '' },
+      ...paddingViews(AST_PROGRESSIVE_THRESHOLD - 1),
+    ];
+    const fetchImpl = makeSignalFetch([
+      [(u, sql) => /system\.dictionaries/.test(sql), () => resp({ json: { data: [] } })],
+      [(u, sql) => /system\.tables/.test(sql), () => resp({ json: { data: tables } })],
+      [(u, sql) => /EXPLAIN AST/.test(sql), hangsUntilAborted],
+    ]);
+    const app = createApp(env({ fetch: fetchImpl }));
+    app.renderApp();
+    const pending = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    // Let Phase A land (tableCount known) while Phase B (EXPLAIN AST) hangs.
+    await untilResult(app);
+    for (let i = 0; i < 50 && app.activeTab().result.schemaGraph.tableCount == null; i++) await Promise.resolve();
+    expect(app.activeTab().result.schemaGraph.tableCount).not.toBeNull();
+    expect(app.activeTab().result.schemaGraph.nodes.length).toBeGreaterThan(0);
+    app.actions.cancelSchemaGraph({ clearResult: true });
+    const sg = app.activeTab().result.schemaGraph;
+    expect(sg.loading).toBe(false);
+    expect(sg.partial).toBe(true);
+    expect(sg.nodes.length).toBeGreaterThan(0); // kept on screen, not cleared
+    await pending; // the aborted EXPLAIN AST rejecting afterward must not resurrect `loading`
+    expect(app.activeTab().result.schemaGraph.loading).toBe(false);
+    expect(app.activeTab().result.schemaGraph.partial).toBe(true);
+  });
+
+  it('a manual cancel before Phase A has drawn anything clears the result to the empty placeholder', async () => {
+    const fetchImpl = makeSignalFetch([
+      [(u, sql) => /system\.tables/.test(sql), hangsUntilAborted],
+    ]);
+    const app = createApp(env({ fetch: fetchImpl }));
+    app.renderApp();
+    const pending = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    await untilResult(app);
+    expect(app.activeTab().result.schemaGraph.loading).toBe(true);
+    expect(app.activeTab().result.schemaGraph.nodes).toEqual([]);
+    app.actions.cancelSchemaGraph({ clearResult: true });
+    expect(app.activeTab().result).toBeNull();
+    await pending;
+    expect(app.activeTab().result).toBeNull(); // stays cleared — no stray write from the aborted fetch
+  });
+
+  it('draws the Phase-A graph (free edges) before EXPLAIN AST resolves, then merges in the view/MV source edges', async () => {
+    let resolveAst;
+    // Every EXPLAIN AST call (the real mv's and all padding views') shares this
+    // one pending promise, so resolving it once releases all of them together —
+    // the padding views picking up a spurious astTables entry from the shared
+    // response doesn't affect the specific edges asserted below (Set#has checks).
+    const astPending = new Promise((r) => { resolveAst = r; });
+    const { app } = appForRun([
+      [(u, sql) => /EXPLAIN AST/.test(sql), () => astPending],
+      [(u, sql) => /system\.dictionaries/.test(sql), resp({ json: { data: [] } })],
+      [(u, sql) => /system\.tables/.test(sql), resp({ json: { data: [
+        { database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' },
+        { database: 'lin', name: 'mv', engine: 'MaterializedView', as_select: 'SELECT 1 FROM lin.events', create_table_query: 'CREATE MATERIALIZED VIEW lin.mv TO lin.dst AS SELECT 1 FROM lin.events' },
+        { database: 'lin', name: 'dst', engine: 'MergeTree', as_select: '' },
+        ...paddingViews(AST_PROGRESSIVE_THRESHOLD - 1),
+      ] } })],
+    ]);
+    const pending = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    await untilResult(app);
+    for (let i = 0; i < 50 && app.activeTab().result.schemaGraph.tableCount == null; i++) await Promise.resolve();
+    const phaseA = app.activeTab().result.schemaGraph;
+    expect(phaseA.loading).toBe(true);
+    expect(phaseA.tableCount).toBe(3 + AST_PROGRESSIVE_THRESHOLD - 1);
+    // Phase A already has the MV → dst "writes" edge (free, parsed from create_table_query)
+    // but not yet the events → mv "feeds" edge (needs EXPLAIN AST — still pending).
+    const phaseAEdges = new Set(phaseA.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
+    expect(phaseAEdges.has('lin.mv>lin.dst:writes')).toBe(true);
+    expect(phaseAEdges.has('lin.events>lin.mv:feeds')).toBe(false);
+    resolveAst(resp({ json: { data: [{ explain: '      TableIdentifier lin.events (alias e)' }] } }));
+    await pending;
+    const finalSg = app.activeTab().result.schemaGraph;
+    expect(finalSg.loading).toBeUndefined();
+    const finalEdges = new Set(finalSg.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
+    expect(finalEdges.has('lin.events>lin.mv:feeds')).toBe(true);
+    expect(finalEdges.has('lin.mv>lin.dst:writes')).toBe(true);
+  });
+
+  it('reports EXPLAIN AST resolution progress on the schemaGraph as each view/MV settles', async () => {
+    let resolveAstV2;
+    const astV2Pending = new Promise((r) => { resolveAstV2 = r; });
+    // v1 + all padding views resolve immediately; v2 alone hangs — so progress
+    // should land at (padding+1)/total without waiting for the whole fetch.
+    const { app } = appForRun([
+      [(u, sql) => /EXPLAIN AST SELECT 2/.test(sql), () => astV2Pending],
+      [(u, sql) => /EXPLAIN AST/.test(sql), resp({ json: { data: [{ explain: '' }] } })],
+      [(u, sql) => /system\.dictionaries/.test(sql), resp({ json: { data: [] } })],
+      [(u, sql) => /system\.tables/.test(sql), resp({ json: { data: [
+        { database: 'lin', name: 'v1', engine: 'View', as_select: 'SELECT 1' },
+        { database: 'lin', name: 'v2', engine: 'View', as_select: 'SELECT 2' },
+        ...paddingViews(AST_PROGRESSIVE_THRESHOLD - 2),
+      ] } })],
+    ]);
+    const pending = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
+    await untilResult(app);
+    for (let i = 0; i < 50 && !app.activeTab().result.schemaGraph.progress; i++) await Promise.resolve();
+    const progress = app.activeTab().result.schemaGraph.progress;
+    expect(progress.total).toBe(AST_PROGRESSIVE_THRESHOLD);
+    expect(progress.done).toBeGreaterThanOrEqual(1);
+    expect(progress.done).toBeLessThan(AST_PROGRESSIVE_THRESHOLD); // v2 hasn't settled yet
+    expect(app.activeTab().result.schemaGraph.loading).toBe(true);
+    resolveAstV2(resp({ json: { data: [{ explain: '' }] } }));
+    await pending;
+    expect(app.activeTab().result.schemaGraph.loading).toBeUndefined();
   });
 });
 

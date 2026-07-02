@@ -98,6 +98,11 @@ export function createState(read = { loadJSON, loadStr }) {
     // effects; `resultView` is the active Table/JSON/Chart tab. Via `.value`.
     running: signal(false),
     abortController: null,
+    // In-flight schema-lineage fetch (issue #124's inline drawer graph) — its own
+    // AbortController, separate from `abortController` (run/script) and the
+    // export controllers, since a graph fetch isn't gated by `running` and a
+    // second click/drag must be able to supersede an in-flight one.
+    schemaGraphAbortController: null,
     resultView: signal('table'),
     // True while a streaming Export (issue #87) is in flight — separate from
     // `running` (the grid run) so an export and a grid run never clobber each

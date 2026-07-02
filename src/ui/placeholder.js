@@ -6,8 +6,13 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 
-export function loadingPlaceholder(msg) {
+// `onCancel`, when given, adds a Cancel button (mirrors the `.exp-cancel`
+// button in results.js's export progress banner) — used by the schema-graph
+// drawer's pre-Phase-A loading state (#124), where there's nothing on screen
+// yet to keep the graph's own toolbar Cancel visible instead.
+export function loadingPlaceholder(msg, onCancel) {
   return h('div', { class: 'placeholder starting' },
     h('span', { class: 'spin' }, Icon.spinner()),
-    h('div', null, msg));
+    h('div', null, msg),
+    onCancel ? h('button', { class: 'exp-cancel', title: 'Cancel', onclick: onCancel }, Icon.close(), h('span', null, 'Cancel')) : null);
 }

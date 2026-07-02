@@ -9,6 +9,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Click a closed database row to draw its schema graph** (#124): expanding a
+  collapsed db in the tree now also draws its lineage in the bottom drawer, the
+  same as dragging it — collapsing again doesn't re-fetch or re-draw.
+  Drag-to-drawer is unchanged. On a schema with 50+ view/MV objects needing
+  `EXPLAIN AST`, the inline graph now draws **progressively**: the free edges
+  (dependencies/target/engine-arg/dictionary — no extra round trip) paint
+  immediately, then a single second layout merges in the view/MV source edges
+  once `EXPLAIN AST` settles, with a "resolving N/M…" toolbar readout. Below
+  that threshold the fetch is fast enough that a visible first paint would just
+  be flicker, so it still draws in one step. The loading placeholder / toolbar
+  now has a working **Cancel**: it aborts the in-flight fetch and either keeps
+  the already-drawn free-edges graph (marked partial) or falls back to the
+  empty-results placeholder, whichever has something to show.
+
+### Fixed
+- The inline schema-lineage graph had a stale-write race (same class as #97):
+  running or Explaining a query — or dragging/clicking a second db/table —
+  while a lineage fetch was still in flight could let the stale fetch's
+  resolution land on the tab's *new* result once it finally settled, silently
+  showing an old graph instead of the actual query output. A request-identity
+  guard now drops any write from a superseded fetch. Separately, an abort
+  during the best-effort `system.dictionaries` read inside the lineage fetch is
+  now correctly propagated as a cancellation instead of silently degrading to
+  "no dictionaries, continue".
+
 ## [0.2.0] - 2026-07-01
 
 ### Added

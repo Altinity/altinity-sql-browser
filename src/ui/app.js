@@ -510,6 +510,7 @@ export function createApp(env = {}) {
     if (!srcSql.trim()) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
 
     // EXPLAIN-view bookkeeping: the Explain button (opts.explain) forces any query
     // into EXPLAIN-view mode; a normal Run clears that; switching an EXPLAIN tab
@@ -632,6 +633,7 @@ export function createApp(env = {}) {
     if (app.state.running.value) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
     app.state.forceExplain = false;
     const tab = app.activeTab();
     const t0 = now();
@@ -833,26 +835,89 @@ export function createApp(env = {}) {
     }
   }
 
-  // Render the ClickHouse object-lineage graph for a dropped database/table into
-  // the data pane (queries system.* + EXPLAIN AST; the editor SQL is untouched).
+  // Abort any in-flight schema-lineage fetch. Called both as a manual Cancel
+  // (clearResult: true — the user asked to stop) and automatically whenever a
+  // new operation takes over the drawer (a fresh graph request, or Run/Explain
+  // replacing the tab's result outright) — in the automatic case the caller
+  // overwrites tab.result itself right after, so aborting the network request
+  // is all that's needed there (the identity guard in showSchemaGraph makes
+  // this belt-and-suspenders, not load-bearing, for correctness).
+  //
+  // With clearResult, the visible result depends on how far the fetch got: if
+  // Phase A (the free-edges graph) had already drawn, keep it on screen marked
+  // `partial` (its view/MV source edges may be incomplete); otherwise there's
+  // nothing worth keeping, so drop back to the normal empty-results placeholder.
+  function cancelSchemaGraph({ clearResult = false } = {}) {
+    if (app.state.schemaGraphAbortController) app.state.schemaGraphAbortController.abort();
+    app.state.schemaGraphAbortController = null;
+    if (!clearResult) return;
+    const tab = app.activeTab();
+    const sg = tab.result && tab.result.schemaGraph;
+    if (!sg || !sg.loading) return;
+    if (sg.nodes && sg.nodes.length) {
+      sg.loading = false;
+      sg.partial = true;
+    } else {
+      tab.result = null;
+    }
+    renderResults(app);
+  }
+
+  // Render the ClickHouse object-lineage graph for a dropped/clicked
+  // database/table into the data pane (queries system.* + EXPLAIN AST; the
+  // editor SQL is untouched). Two-phase on a large schema (#124): draws as soon
+  // as the free edges (dependencies/target/engine-arg/dictionary) are known,
+  // then a single second layout merges in view/MV source edges once EXPLAIN AST
+  // settles — so the pane isn't blank for the whole round trip. Below
+  // AST_PROGRESSIVE_THRESHOLD view/MV objects, loadSchemaLineage skips straight
+  // to one draw instead (onBase/onProgress never fire) — a visible first paint
+  // is just flicker when the whole fetch settles almost as fast anyway.
   async function showSchemaGraph(focus) {
     if (!focus || !focus.db) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    cancelSchemaGraph(); // a new click/drag replaces whatever graph was in flight
     const tab = app.activeTab();
-    // Show a loading placeholder first — the lineage queries (system.* + an
-    // EXPLAIN AST per view/MV) can take a moment on a large database.
+    // Show a loading placeholder first — even Phase A (system.tables +
+    // system.dictionaries) is a network round trip.
     tab.result = newResult('Table');
     tab.result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+    // `result` is the stale-write guard (mirrors #97's identity-guard shape):
+    // captured once, checked before every later write, so a Run/Explain or a
+    // second graph request that replaces tab.result mid-fetch can never have
+    // this call's (Phase A or Phase B) result land on the new tab.result.
+    const result = tab.result;
     renderResults(app);
+    const controller = new AbortController();
+    app.state.schemaGraphAbortController = controller;
     try {
-      const rows = await ch.loadSchemaLineage(chCtx, focus);
-      const g = buildSchemaGraph(rows, focus);
+      const lineage = await ch.loadSchemaLineage(chCtx, focus, {
+        signal: controller.signal,
+        onBase: (base) => {
+          if (tab.result !== result) return; // superseded before Phase A even landed
+          const g = buildSchemaGraph(base, focus);
+          result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
+          renderResults(app);
+        },
+        onProgress: (done, total) => {
+          if (tab.result !== result || !result.schemaGraph || !result.schemaGraph.loading) return;
+          result.schemaGraph.progress = { done, total };
+          renderResults(app);
+        },
+      });
+      if (tab.result !== result) return; // superseded while Phase B was resolving
+      const g = buildSchemaGraph(lineage, focus);
       // tableCount lets the renderer explain an empty result ("N tables, none linked").
-      tab.result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (rows.tables || []).length };
+      result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
     } catch (e) {
+      // AbortError means cancelSchemaGraph() already left the pane in a clean
+      // state (partial graph or the empty placeholder) — nothing more to do.
+      if (e.name === 'AbortError') return;
+      if (tab.result !== result) return;
       tab.result = newResult('Table');
       tab.result.error = String((e && e.message) || e);
+    } finally {
+      if (app.state.schemaGraphAbortController === controller) app.state.schemaGraphAbortController = null;
     }
     renderResults(app);
   }
@@ -1460,6 +1525,7 @@ export function createApp(env = {}) {
     setExplainView,
     setResultRowLimit,
     showSchemaGraph,
+    cancelSchemaGraph,
     expandSchemaGraph,
     openNodeDetail,
     insertCreate,

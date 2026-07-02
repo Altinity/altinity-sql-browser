@@ -99,6 +99,36 @@ describe('renderSchema tree', () => {
     click(db2Row);
     expect(app.state.expanded.value.has('db:db2')).toBe(true);
   });
+  it('clicking a closed db also draws its schema graph (collapsed → expanded only, #124)', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2'); // starts collapsed
+    click(db2Row);
+    expect(app.actions.showSchemaGraph).toHaveBeenCalledWith({ kind: 'db', db: 'db2' });
+  });
+  it('collapsing an open db does not re-draw/re-fetch the schema graph', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db1Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db1'); // starts open
+    click(db1Row); // collapse
+    expect(app.state.expanded.value.has('db:db1')).toBe(false);
+    expect(app.actions.showSchemaGraph).not.toHaveBeenCalled();
+  });
+  it('shift-clicking a closed db inserts DDL without drawing the schema graph', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db2Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db2'); // closed
+    shiftClick(db2Row);
+    expect(app.actions.showSchemaGraph).not.toHaveBeenCalled();
+  });
+  it('double-clicking an already-open db just re-inserts the name (no re-draw)', () => {
+    const app = withSchema();
+    renderSchema(app);
+    const db1Row = rows(app).find((r) => r.querySelector('.label').textContent === 'db1'); // open
+    dblclick(db1Row); // 1st click: collapses (open → closed, no graph); 2nd: the double, inserts the name
+    expect(app.actions.insertAtCursor).toHaveBeenCalledWith('db1');
+    expect(app.actions.showSchemaGraph).not.toHaveBeenCalled();
+  });
   it('the chevron rotates to the down/open orientation on expand and back on collapse', () => {
     vi.useFakeTimers();
     try {

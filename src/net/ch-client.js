@@ -77,9 +77,9 @@ export async function authedFetch(ctx, url, sql, signal) {
   }
 }
 
-/** Run a query and return parsed JSON (FORMAT JSON). Throws on CH error. */
-export async function queryJson(ctx, sql) {
-  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON' }), sql);
+/** Run a query and return parsed JSON (FORMAT JSON). Throws on CH error. `signal` (optional) aborts the request. */
+export async function queryJson(ctx, sql, signal) {
+  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON' }), sql, signal);
   if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
   return resp.json();
 }
@@ -140,6 +140,13 @@ export async function loadSchema(ctx) {
   return [...byDb.entries()].map(([db, v]) => ({ db, comment: v.comment, expanded: false, tables: v.tables }));
 }
 
+// Below this many view/MV objects needing `EXPLAIN AST`, a visible free-edges-
+// first paint is just flicker — the fan-out settles fast enough on a small
+// schema that nobody perceives two draws, only a redraw. `loadSchemaLineage`
+// skips `onBase`/`onProgress` entirely below the threshold so the caller does
+// one single, final draw instead (matching the pre-progressive-draw behavior).
+export const AST_PROGRESSIVE_THRESHOLD = 50;
+
 /**
  * Load object-lineage rows for a database: the `system.tables` columns the graph
  * builder needs + `system.dictionaries` sources, and (for views/MVs) the
@@ -147,8 +154,21 @@ export async function loadSchema(ctx) {
  * `target_table` are intentionally not selected — they're a ClickHouse-Cloud-only
  * column (absent on OSS/Altinity builds), so the MV target is parsed from
  * `create_table_query` in `buildSchemaGraph`. Returns `{ tables, dictionaries }`.
+ *
+ * `opts.signal` cancels every underlying request (including the best-effort
+ * `system.dictionaries` read — an abort there propagates as a rejection of the
+ * whole call, not a silent "no dictionaries"; see `tryQueryData`).
+ * `opts.onBase({tables, dictionaries})` fires as soon as the free data (no
+ * `EXPLAIN AST` needed) is known — the caller can draw a first-pass graph from
+ * it (issue #124's progressive draw) before the per-view/MV source resolution
+ * below even starts. `opts.onProgress(done, total)` fires as each `EXPLAIN AST`
+ * settles (success or best-effort failure), for a "resolving N/M…" indicator.
+ * Both are skipped when fewer than `opts.progressiveThreshold` (default
+ * `AST_PROGRESSIVE_THRESHOLD`) objects need `EXPLAIN AST` — see the constant's
+ * comment.
  */
-export async function loadSchemaLineage(ctx, focus) {
+export async function loadSchemaLineage(ctx, focus, opts = {}) {
+  const { signal, onBase, onProgress, progressiveThreshold = AST_PROGRESSIVE_THRESHOLD } = opts;
   const db = (focus && focus.db) || '';
   const cols = 'database, name, engine, engine_full, create_table_query, as_select, '
     + 'toString(uuid) AS uuid, dependencies_database, dependencies_table, '
@@ -156,18 +176,29 @@ export async function loadSchemaLineage(ctx, focus) {
     // Card metadata (ignored by the inline graph; used by the rich fullscreen cards).
     + 'toUInt64(ifNull(total_rows, 0)) AS total_rows, toUInt64(ifNull(total_bytes, 0)) AS total_bytes, '
     + 'partition_key, sorting_key, primary_key, sampling_key';
-  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY startsWith(name, '_'), name`);
+  const tablesJson = await queryJson(ctx, `SELECT ${cols} FROM system.tables WHERE database = ${sqlString(db)} ORDER BY startsWith(name, '_'), name`, signal);
   const tables = tablesJson.data || [];
   // Best-effort: a denied/missing system.dictionaries (low-priv users lack
-  // SELECT on it) must degrade to no dictionary edges, never abort the graph.
-  const dictionaries = await tryQueryData(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`) || [];
+  // SELECT on it) must degrade to no dictionary edges, never abort the graph —
+  // but a genuine cancellation must still propagate (tryQueryData rethrows it).
+  const dictionaries = await tryQueryData(ctx, `SELECT database, name, source FROM system.dictionaries WHERE database = ${sqlString(db)}`, signal) || [];
   // Robust source extraction for views/MVs: let ClickHouse parse the SELECT.
-  await Promise.all(tables.map(async (t) => {
-    if (!t.as_select || (t.engine !== 'View' && t.engine !== 'MaterializedView')) return;
+  const astTargets = tables.filter((t) => t.as_select && (t.engine === 'View' || t.engine === 'MaterializedView'));
+  const total = astTargets.length;
+  const progressive = total >= progressiveThreshold;
+  if (progressive && onBase) onBase({ tables, dictionaries });
+  let done = 0;
+  await Promise.all(astTargets.map(async (t) => {
     try {
-      const ast = await queryJson(ctx, 'EXPLAIN AST ' + t.as_select);
+      const ast = await queryJson(ctx, 'EXPLAIN AST ' + t.as_select, signal);
       t.astTables = parseAstTables((ast.data || []).map((r) => r.explain).join('\n'));
-    } catch { /* best-effort — leave astTables undefined */ }
+    } catch (e) {
+      if (signal && signal.aborted && e && e.name === 'AbortError') throw e;
+      /* best-effort — leave astTables undefined */
+    } finally {
+      done++;
+      if (progressive && onProgress) onProgress(done, total);
+    }
   }));
   return { tables, dictionaries };
 }
@@ -288,14 +319,23 @@ export async function loadTableDetail(ctx, db, table) {
   };
 }
 
-// Run a query for its `data` rows, returning null on ANY error. Editor
-// reference data is best-effort: a missing system table on older ClickHouse (or
-// a denied SELECT) must degrade gracefully, never surface as a query error.
-async function tryQueryData(ctx, sql) {
+// Run a query for its `data` rows, returning null on ANY error EXCEPT a
+// cancellation of a caller-supplied signal. Editor reference data / schema-
+// lineage best-effort reads are meant to degrade gracefully on a missing
+// system table or a denied SELECT — but when the caller passed a `signal` and
+// aborted it, that means the caller's whole operation was cancelled, not that
+// this particular sub-query failed, so it must propagate rather than be
+// swallowed into "no data, continue" (#124). Gated on `signal.aborted`
+// (not just the error's name) so a caller that never passed a signal — every
+// site except `loadSchemaLineage` — keeps today's unconditional swallow, even
+// if the underlying fetch happens to throw an AbortError-shaped error for some
+// unrelated reason.
+async function tryQueryData(ctx, sql, signal) {
   try {
-    const json = await queryJson(ctx, sql);
+    const json = await queryJson(ctx, sql, signal);
     return json.data || [];
-  } catch {
+  } catch (e) {
+    if (signal && signal.aborted && e && e.name === 'AbortError') throw e;
     return null;
   }
 }

@@ -158,9 +158,13 @@ export function renderResults(app) {
   } else if (r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r.schemaGraph) {
-    inner.appendChild(r.schemaGraph.loading
-      ? loadingPlaceholder('Loading data flow…')
-      : renderSchemaGraph(app, r));
+    // Progressive draw (#124): once Phase A resolves (tableCount known) the
+    // real graph draws even while Phase B (per-view/MV EXPLAIN AST) is still
+    // loading — only the pre-Phase-A window (nothing known yet, always still
+    // loading by construction) shows the cancellable placeholder.
+    inner.appendChild(r.schemaGraph.tableCount != null
+      ? renderSchemaGraph(app, r)
+      : loadingPlaceholder('Loading data flow…', () => app.actions.cancelSchemaGraph({ clearResult: true })));
   } else if (r.explainView) {
     inner.appendChild(renderExplainView(app, r));
   } else if (r.rawText != null) {
@@ -441,16 +445,32 @@ function buildToolbar(app, r) {
   }
   if (r && r.schemaGraph) {
     // Schema-lineage view: a title + Expand (fullscreen); no view-switcher / stats.
-    const f = r.schemaGraph.focus || {};
+    const sg = r.schemaGraph;
+    const f = sg.focus || {};
     const title = f.kind === 'table' ? f.db + '.' + f.table : f.db;
     toolbar.appendChild(h('div', { class: 'result-view-tabs' }, h('span', { class: 'res-graph-title' }, 'Schema · ' + title)));
+    if (sg.partial) toolbar.appendChild(h('span', { class: 'cancelled-badge' }, 'Cancelled · view/MV sources may be incomplete'));
     toolbar.appendChild(h('div', { style: { flex: '1' } }));
-    // Expand is meaningless until the graph has loaded, or when there's nothing
-    // to draw (no connected objects → the pane shows a message, not a graph).
-    if (!r.schemaGraph.loading && r.schemaGraph.nodes.length) {
+    if (sg.loading && sg.tableCount != null) {
+      // Phase A has already drawn the graph into the body; Phase B (per-view/MV
+      // EXPLAIN AST) is still resolving — a live progress readout + Cancel, same
+      // shape as the run-in-progress stat/cancel block below. Pre-Phase-A (no
+      // graph in the body yet) the loading placeholder carries its own Cancel
+      // instead, so this doesn't duplicate it.
+      if (sg.progress) {
+        toolbar.appendChild(h('div', { class: 'stat live' }, h('span', { class: 'ic spin' }, Icon.spinner()),
+          h('span', { class: 'v' }, 'resolving ' + sg.progress.done + '/' + sg.progress.total + ' view sources…')));
+      }
+      toolbar.appendChild(h('button', {
+        class: 'res-act cancel-act', title: 'Cancel schema graph',
+        onclick: () => app.actions.cancelSchemaGraph({ clearResult: true }),
+      }, Icon.close(), h('span', null, 'Cancel')));
+    } else if (!sg.loading && sg.nodes.length) {
+      // Expand is meaningless when there's nothing to draw (no connected
+      // objects → the pane shows a message, not a graph).
       toolbar.appendChild(h('button', {
         class: 'res-act', title: 'Open the graph fullscreen with rich cards (pan & zoom)',
-        onclick: () => app.actions.expandSchemaGraph(r.schemaGraph.focus),
+        onclick: () => app.actions.expandSchemaGraph(sg.focus),
       }, Icon.expand(), h('span', null, 'Expand')));
     }
     return toolbar;

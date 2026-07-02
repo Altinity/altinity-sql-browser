@@ -122,6 +122,11 @@ export function renderSchema(app) {
         if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
         state.expanded.value = toggleKey(state.expanded.value, dbKey);
         flipChevron(list, dbKey, dbOpen);
+        // Only the collapsed → expanded transition also draws the schema graph
+        // (issue #124) — collapsing an open db must not re-fetch/re-draw/steal
+        // focus back to the drawer, and re-clicking an already-open db is a no-op
+        // above (dbOpen unchanged), so this only fires on a genuine expand.
+        if (!dbOpen) app.actions.showSchemaGraph({ kind: 'db', db: db.db });
       },
       ...lineageDrag(qdb, { kind: 'db', db: db.db }),
     },

@@ -83,6 +83,7 @@ export function makeApp(over = {}) {
       setExplainView: vi.fn(),
       setResultRowLimit: vi.fn(),
       showSchemaGraph: vi.fn(),
+      cancelSchemaGraph: vi.fn(),
       expandSchemaGraph: vi.fn(),
       openNodeDetail: vi.fn(),
       insertCreate: vi.fn(),

@@ -987,6 +987,7 @@ describe('schema lineage result', () => {
       focus: { kind: 'db', db: 'lin' },
       nodes: [{ id: 'lin.a', label: 'a', kind: 'table' }, { id: 'lin.mv', label: 'mv', kind: 'mv' }],
       edges: [{ from: 'lin.a', to: 'lin.mv', kind: 'feeds' }],
+      tableCount: 2, // Phase A resolved (#124) — no longer `loading`
     };
     return r;
   }
@@ -1026,13 +1027,61 @@ describe('schema lineage result', () => {
   });
   it('a DB with no objects shows the message and no Expand button', () => {
     const r = newResult('Table');
-    r.schemaGraph = { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [] };
+    r.schemaGraph = { focus: { kind: 'db', db: 'target_all' }, nodes: [], edges: [], tableCount: 0 };
     const app = appWithResult(r);
     renderResults(app);
     const region = app.dom.resultsRegion;
     expect(region.querySelector('svg.explain-graph')).toBeNull();
     expect(region.querySelector('.placeholder').textContent).toMatch(/No objects in target_all/);
     expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
+  });
+
+  // #124 — progressive draw + cancellation.
+  it('the pre-Phase-A loading placeholder has a working Cancel button', () => {
+    const r = newResult('Table');
+    r.schemaGraph = { focus: { kind: 'db', db: 'lin' }, loading: true, nodes: [], edges: [] };
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    const btn = region.querySelector('.placeholder.starting .exp-cancel');
+    expect(btn).not.toBeNull();
+    click(btn);
+    expect(app.actions.cancelSchemaGraph).toHaveBeenCalledWith({ clearResult: true });
+  });
+  it('draws the graph once Phase A resolves even while Phase B is still loading, with a progress readout + Cancel in the toolbar', () => {
+    const r = newResult('Table');
+    r.schemaGraph = {
+      focus: { kind: 'db', db: 'lin' },
+      nodes: [{ id: 'lin.a', label: 'a', kind: 'table' }],
+      edges: [],
+      tableCount: 1,
+      loading: true,
+      progress: { done: 1, total: 3 },
+    };
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    // Phase A already drew the graph, not the placeholder.
+    expect(region.querySelector('svg.explain-graph')).not.toBeNull();
+    expect(region.querySelector('.placeholder.starting')).toBeNull();
+    expect(region.textContent).toMatch(/resolving 1\/3 view sources/);
+    const cancel = [...region.querySelectorAll('.res-act')].find((b) => /Cancel/.test(b.textContent));
+    expect(cancel).toBeTruthy();
+    click(cancel);
+    expect(app.actions.cancelSchemaGraph).toHaveBeenCalledWith({ clearResult: true });
+    // no Expand while still loading
+    expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeFalsy();
+  });
+  it('shows a partial badge for a cancelled-but-kept Phase-A graph, and no Cancel/progress once not loading', () => {
+    const r = graphResult();
+    r.schemaGraph.partial = true;
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.cancelled-badge')).not.toBeNull();
+    expect([...region.querySelectorAll('.res-act')].find((b) => /Cancel/.test(b.textContent))).toBeFalsy();
+    // still loaded (not loading) → Expand is back
+    expect([...region.querySelectorAll('.res-act')].find((b) => /Expand/.test(b.textContent))).toBeTruthy();
   });
 });
 

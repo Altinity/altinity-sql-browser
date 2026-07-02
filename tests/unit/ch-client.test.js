@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -484,6 +484,123 @@ describe('loadSchemaLineage', () => {
     await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' });
     const tablesSql = seen.find((s) => /FROM system\.tables/.test(s));
     expect(tablesSql).toMatch(/ORDER BY startsWith\(name, '_'\), name/);
+  });
+
+  // #124 — progressive draw + cancellation.
+  it('calls onBase with the free-edges data before any EXPLAIN AST resolves', async () => {
+    let resolveAst;
+    const astPending = new Promise((r) => { resolveAst = r; });
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) return astPending;
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: [
+        { database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' },
+        { database: 'lin', name: 'mv', engine: 'MaterializedView', as_select: 'SELECT 1 FROM lin.events', create_table_query: '' },
+      ] });
+    });
+    let resolveBaseSeen;
+    const baseSeen = new Promise((r) => { resolveBaseSeen = r; });
+    // progressiveThreshold: 1 forces the two-phase path with this tiny (1-astTarget)
+    // fixture — production leaves it at the AST_PROGRESSIVE_THRESHOLD default.
+    const pending = loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase: resolveBaseSeen, progressiveThreshold: 1 });
+    const base = await baseSeen; // resolves exactly when onBase fires — deterministic, no microtask counting
+    expect(base.tables).toHaveLength(2);
+    resolveAst(jsonResp({ data: [{ explain: '' }] }));
+    await pending;
+  });
+  it('calls onProgress as each EXPLAIN AST settles, with a done/total count', async () => {
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) return jsonResp({ data: [{ explain: '' }] });
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: [
+        { database: 'lin', name: 'v1', engine: 'View', as_select: 'SELECT 1' },
+        { database: 'lin', name: 'v2', engine: 'View', as_select: 'SELECT 2' },
+      ] });
+    });
+    const progress = [];
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' },
+      { onProgress: (done, total) => progress.push([done, total]), progressiveThreshold: 1 });
+    expect(progress).toHaveLength(2);
+    expect(progress.every(([, total]) => total === 2)).toBe(true);
+    expect(progress.map(([done]) => done).sort()).toEqual([1, 2]);
+  });
+  it('skips onBase/onProgress below the progressive threshold (small schemas draw in one step, no flicker)', async () => {
+    let resolveAst;
+    const astPending = new Promise((r) => { resolveAst = r; });
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) return astPending;
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: [{ database: 'lin', name: 'v', engine: 'View', as_select: 'SELECT 1' }] });
+    });
+    const onBase = vi.fn();
+    const onProgress = vi.fn();
+    // 1 astTarget is far below the default threshold — onBase must NOT fire even
+    // though the free-edges data (tables/dictionaries) is known well before the
+    // single EXPLAIN AST resolves.
+    const pending = loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase, onProgress });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(onBase).not.toHaveBeenCalled();
+    resolveAst(jsonResp({ data: [{ explain: '' }] }));
+    await pending;
+    expect(onBase).not.toHaveBeenCalled();
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+  it('calls onBase/onProgress at exactly the threshold (>= is progressive, not just >)', async () => {
+    const views = Array.from({ length: AST_PROGRESSIVE_THRESHOLD }, (_, i) => ({
+      database: 'lin', name: 'v' + i, engine: 'View', as_select: 'SELECT ' + i,
+    }));
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) return jsonResp({ data: [{ explain: '' }] });
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: views });
+    });
+    const onBase = vi.fn();
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase });
+    expect(onBase).toHaveBeenCalledTimes(1);
+  });
+  it('threads an aborted signal through to fetch (network layer sees it)', async () => {
+    const controller = new AbortController();
+    const seenSignals = [];
+    const ctx = ctxWith((url, init) => {
+      seenSignals.push(init.signal);
+      if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
+      return jsonResp({ data: [] });
+    });
+    await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { signal: controller.signal });
+    expect(seenSignals.every((s) => s === controller.signal)).toBe(true);
+  });
+  it('propagates a cancellation during the best-effort system.dictionaries read instead of degrading to no dictionaries', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/system\.dictionaries/.test(sql)) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      return jsonResp({ data: [{ database: 'lin', name: 'events', engine: 'MergeTree', as_select: '' }] });
+    });
+    await expect(loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+  it('propagates a cancellation during a per-view EXPLAIN AST instead of degrading to no astTables', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = ctxWith((url, init) => {
+      const sql = init.body;
+      if (/EXPLAIN AST/.test(sql)) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
+      return jsonResp({ data: [{ database: 'lin', name: 'v', engine: 'View', as_select: 'SELECT 1' }] });
+    });
+    await expect(loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+  it('does NOT rethrow an AbortError-shaped error from a call that never passed a signal (unrelated best-effort reads stay unaffected)', async () => {
+    const ctx = ctxWith(() => { const e = new Error('boom'); e.name = 'AbortError'; throw e; });
+    // loadReferenceData's underlying tryQueryData calls never pass a signal — an
+    // AbortError there (e.g. a coincidental fetch abort unrelated to #124's
+    // cancellation) must still degrade gracefully, not surface as a rejection.
+    const out = await loadReferenceData(ctx);
+    expect(out).toEqual({ keywords: null, functions: null, formats: null });
   });
 });
 
