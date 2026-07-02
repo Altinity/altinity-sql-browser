@@ -746,6 +746,12 @@ body {
   display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 70%;
   font-size: 10.5px; color: var(--fg-mute);
 }
+/* Reserve room below the legend overlay so the fitted graph's top row doesn't
+   render flush under it — the legend is absolutely positioned over the canvas,
+   not in normal flow, so without this the two visually collide. */
+.explain-graph-view.schema-graph-view > svg.explain-graph {
+  height: calc(100% - 28px); margin-top: 28px;
+}
 .schema-graph-legend .sg-leg { display: flex; align-items: center; gap: 5px; }
 .schema-graph-legend .sg-swatch { width: 11px; height: 11px; border-radius: 2px; border: 1px solid var(--border); display: inline-block; }
 .sg-swatch--table { background: var(--bg-chip); border-color: var(--border); }
