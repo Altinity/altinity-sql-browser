@@ -42,6 +42,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the already-drawn free-edges graph (marked partial) or falls back to the
   empty-results placeholder, whichever has something to show.
 
+### Changed
+- The build now minifies `src/styles.css` with esbuild's CSS transform (same
+  minifier already used for the JS bundle) instead of inlining it raw — the
+  stylesheet was shipping every source comment and all its indentation
+  verbatim. Cuts the served artifact by ~23 KB (~4.7%), no new dependency
+  (esbuild already provides the CSS minifier). Investigated gzip too: every
+  demo cluster already serves the SPA gzip-compressed (ClickHouse's HTTP
+  server compresses any static-handler response when the client sends
+  `Accept-Encoding: gzip`, independent of any config in this repo) — verified
+  ~54% smaller on the wire already, nothing to change there.
+
 ### Fixed
 - The inline schema-lineage graph had a stale-write race (same class as #97):
   running or Explaining a query — or dragging/clicking a second db/table —

@@ -6,7 +6,7 @@
 // that installs into any ClickHouse cluster's user_files and is served by an
 // <http_handlers> static rule — it still makes zero third-party requests.
 
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +49,10 @@ async function main() {
   // as the styles/script splices below. replaceAll is robust to either quote
   // style minify may emit around the literal.
   const script = result.outputFiles[0].text.replaceAll('__ASB_BUILD__', await buildStamp());
-  const styles = await readFile(resolve(root, 'src/styles.css'), 'utf8');
+  // esbuild's CSS transform (same minifier as the JS path above) — src/styles.css
+  // was previously inlined raw, shipping every source comment/indent to the browser.
+  const stylesSrc = await readFile(resolve(root, 'src/styles.css'), 'utf8');
+  const styles = (await transform(stylesSrc, { loader: 'css', minify: true })).code;
   const template = await readFile(resolve(here, 'template.html'), 'utf8');
 
   // The runtime deps (Chart.js, dagre, @preact/signals-core) are MIT and inlined

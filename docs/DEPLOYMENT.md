@@ -43,6 +43,12 @@ your `--issuer`; deploy that rendered file. For a manual install with a
 non-Google IdP, edit the `connect-src` line to your issuer + token-endpoint
 origins.
 
+No compression config is needed here: ClickHouse's HTTP server transparently
+gzips any response — including this static handler's — when the client sends
+`Accept-Encoding: gzip` (every browser does), independent of `<http_handlers>`
+config or the `enable_http_compression` query setting. Verified live on all
+three demo clusters: the ~500 KB artifact goes over the wire at ~230 KB.
+
 ## 4. Make ClickHouse accept the JWT
 
 The SPA sends `Authorization: Bearer <id_token>` on every query. ClickHouse must
