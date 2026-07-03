@@ -55,7 +55,10 @@ export const MOBILE_BREAKPOINT_PX = 768;
 /** A blank query tab. `chartCfg`/`chartKey` hold the per-tab chart config and
  * the schema signature it was derived for (re-derived when the schema changes). */
 export function newTabObj(id) {
-  return { id, name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null };
+  // `varValues` holds the entered values for `{name:Type}` query parameters
+  // (#134), keyed by name. In-memory only — it is intentionally not serialized
+  // to saved queries, share links, or localStorage.
+  return { id, name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null, varValues: {} };
 }
 
 /**

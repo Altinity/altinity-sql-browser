@@ -11,6 +11,7 @@ import {
   MOBILE_BREAKPOINT_PX,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
+import { readStatementParams, paramArgs, unfilledParams, missingValues } from '../core/query-params.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
@@ -505,6 +506,19 @@ export function createApp(env = {}) {
   function sessionParamsFor(tab, sqls) {
     return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
+  // Block execution while any {name:Type} variable in the active tab is unfilled
+  // (#134), toasting which. Gating on the whole tab.sql — the exact set the
+  // variable strip shows — keeps every execution path consistent: the Run button
+  // (setRunBtn), the Run/⌘↵ path, Explain, and Export all agree.
+  function varGateBlocked() {
+    const tab = app.activeTab();
+    const missing = tab ? unfilledParams(tab.sql, tab.varValues) : [];
+    if (missing.length) {
+      flashToast('Enter a value for: ' + missing.join(', '), { document: doc });
+      return true;
+    }
+    return false;
+  }
 
   async function run(opts) {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
@@ -514,6 +528,7 @@ export function createApp(env = {}) {
     // trailing `;`, history).
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sql;
     if (!srcSql.trim()) return;
+    if (varGateBlocked()) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
@@ -583,7 +598,10 @@ export function createApp(env = {}) {
         resultRowLimit: rowLimit,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
-        params: sessionParamsFor(tab, [srcSql]),
+        // Native ClickHouse query parameters (#134): pass entered values as
+        // param_<name> so the server substitutes them (only for row-returning
+        // SQL — paramArgs no-ops on a CREATE VIEW / DDL, leaving it verbatim).
+        params: { ...sessionParamsFor(tab, [srcSql]), ...paramArgs(srcSql, tab.varValues) },
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -637,6 +655,7 @@ export function createApp(env = {}) {
   // exact text that was split (the selection or the whole editor).
   async function runScript(statements, originalInput) {
     if (app.state.running.value) return;
+    if (varGateBlocked()) return; // block a script run with unfilled variables
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
@@ -663,7 +682,10 @@ export function createApp(env = {}) {
         const opts = {
           format: rowReturning ? 'JSONCompact' : 'TSV',
           signal: app.state.abortController.signal,
-          params: { ...sp, ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
+          // paramArgs is per-statement and self-gates on isRowReturning, so a
+          // DDL / CREATE VIEW statement in the script is sent with its
+          // {name:Type} placeholders intact (#134).
+          params: { ...sp, ...paramArgs(stmt, tab.varValues), ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
         };
         const s0 = now(); // this statement's own wall-clock (grid Time column)
         // Fresh query_id per attempt, published before the request so Cancel
@@ -733,6 +755,9 @@ export function createApp(env = {}) {
     const input = hasSel ? sel : app.activeTab().sql;
     const statements = splitStatements(input);
     if (!statements.length) return; // nothing runnable (empty / comments-only)
+    // The unfilled-variable gate (#134) lives in run()/runScript() — the shared
+    // execution choke points — so Explain, row-limit re-runs, and Export are
+    // gated too, not just this path.
     // Mobile (#126): a run jumps the bottom-nav to the Results panel so the data
     // the user just asked for is what they see next.
     if (app.state.isMobile.value) app.state.mobileView.value = 'results';
@@ -748,9 +773,19 @@ export function createApp(env = {}) {
     if (app.state.abortController) app.state.abortController.abort();
     ch.killQuery(chCtx, app.state.runQueryId, sqlString);
   }
-  function setRunBtn(running) {
+  function setRunBtn(running, missing) {
     if (!app.dom.runBtn) return;
-    app.dom.runBtn.disabled = running;
+    // Disabled while running, or while any detected {name:Type} query variable
+    // is still empty (#134) — with a tooltip so the greyed-out button explains
+    // itself. Execution paths (run/runScript) enforce the same gate. A caller
+    // that already has the missing set (renderVarStrip) passes it to avoid
+    // re-lexing; otherwise we compute it here.
+    const tab = app.activeTab();
+    if (missing == null) missing = running || !tab ? [] : unfilledParams(tab.sql, tab.varValues);
+    app.dom.runBtn.disabled = running || missing.length > 0;
+    app.dom.runBtn.title = missing.length
+      ? 'Enter a value for: ' + missing.join(', ')
+      : '';
     // "Run selection" while the editor has a non-empty selection (so the mode is
     // discoverable); plain "Run" otherwise. Build the children and drop the null
     // (replaceChildren would coerce a null arg into a "null" text node).
@@ -760,6 +795,40 @@ export function createApp(env = {}) {
         running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
   app.setRunBtn = setRunBtn;
+  // Repaint the query-variable strip (#134) for the active tab. Rebuilds the
+  // inputs only when the detected {name:Type} set changes (signature guard), so
+  // typing in the SQL editor doesn't thrash the row or steal focus from an input
+  // the user is filling. Always re-syncs the Run button's disabled/tooltip state.
+  function renderVarStrip() {
+    const strip = app.dom.varStrip;
+    if (!strip) return;
+    const tab = app.activeTab();
+    const vars = tab ? readStatementParams(tab.sql) : [];
+    const sig = (tab ? tab.id + '|' : '') + vars.map((v) => v.name + ':' + v.type).join(',');
+    if (sig !== app.dom.varStripSig) {
+      app.dom.varStripSig = sig;
+      if (!vars.length) {
+        strip.replaceChildren();
+        strip.style.display = 'none';
+      } else {
+        strip.style.display = '';
+        strip.replaceChildren(...vars.map((v) => {
+          const input = h('input', {
+            type: 'text', class: 'var-input',
+            value: (tab.varValues && tab.varValues[v.name]) || '',
+            placeholder: v.type, title: v.name + ': ' + v.type, 'aria-label': v.name,
+            oninput: (e) => {
+              (tab.varValues || (tab.varValues = {}))[v.name] = e.target.value;
+              setRunBtn(app.state.running.value, missingValues(vars, tab.varValues));
+            },
+          });
+          return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, v.name), input);
+        }));
+      }
+    }
+    setRunBtn(app.state.running.value, missingValues(vars, tab && tab.varValues));
+  }
+  app.renderVarStrip = renderVarStrip;
   // The Export button reflects both browser support (canExport) and whether an
   // export is already running — the button stays aria-disabled (not natively
   // disabled) in either case so its tooltip still shows on hover.
@@ -1108,6 +1177,7 @@ export function createApp(env = {}) {
   // no sense). Mirrors runEntry's split/branch.
   function exportEntry() {
     if (app.state.exporting.value) return;
+    if (varGateBlocked()) return; // don't export with unfilled variables (#134)
     const ta = app.dom.editorTextarea;
     const sel = ta ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
     const input = sel.trim() !== '' ? sel : app.activeTab().sql;
@@ -1156,7 +1226,8 @@ export function createApp(env = {}) {
       try {
         const resp = await ch.exportQuery(chCtx, sql, {
           queryId: exportQueryId, signal: exportAbort.signal, format,
-          params: sessionParamsFor(tab, [sql]),
+          // Native query-parameter substitution (#134), same as run().
+          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs(sql, tab.varValues) },
         });
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
         const err = await streamToFile(resp, handle, {
@@ -1317,6 +1388,10 @@ export function createApp(env = {}) {
       for (const e of entries) {
         if (exportScriptCancelled) { e.status = 'skipped'; continue; }
         const { sql, format } = prepareExportSql(e.sql);
+        // Per-statement query-parameter args (#134): paramArgs self-gates on
+        // isRowReturning, so an effect/DDL statement (incl. CREATE VIEW) is sent
+        // with its {name:Type} placeholders intact.
+        const params = { ...sp, ...paramArgs(e.sql, tab.varValues) };
         exportScriptQueryId = 'export-' + uid('');
         exportScriptAbort = new AbortController();
         const signal = exportScriptAbort.signal;
@@ -1326,7 +1401,7 @@ export function createApp(env = {}) {
         try {
           if (e.type !== 'rows') {
             const out = await ch.runQuery(chCtx, e.sql,
-              { format: 'TSV', signal, queryId: exportScriptQueryId, params: sp });
+              { format: 'TSV', signal, queryId: exportScriptQueryId, params });
             if (out.error != null) throw new Error(out.error);
             e.status = 'ok';
           } else {
@@ -1336,7 +1411,7 @@ export function createApp(env = {}) {
             e.file = name;
             const fileHandle = await dir.getFileHandle(name, { create: true });
             const resp = await ch.exportQuery(chCtx, sql,
-              { queryId: exportScriptQueryId, signal, format, params: sp });
+              { queryId: exportScriptQueryId, signal, format, params });
             const tag = resp.headers.get('X-ClickHouse-Exception-Tag');
             const midErr = await streamToFile(resp, fileHandle,
               { signal, tag, onProgress: (b) => { e.bytes = b; } });
@@ -1660,6 +1735,12 @@ export function renderApp(app, helpers) {
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
   const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
+  // Query-variable strip (#134): one input per detected {name:Type} placeholder,
+  // in a single row that scrolls horizontally (never wraps) when there are many.
+  // Hidden (no vertical space) until the active tab has variables — see
+  // renderVarStrip. Sits below the toolbar so it doesn't compete with the
+  // splitter-sized editor for height.
+  app.dom.varStrip = h('div', { class: 'var-strip', style: { display: 'none' } });
   app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   // Drop a database/table from the schema tree here → render its lineage graph.
@@ -1680,7 +1761,7 @@ export function renderApp(app, helpers) {
   });
   app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });
 
-  const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
+  const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.varStrip, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
   app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
   const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, workbench);
 
@@ -1709,6 +1790,7 @@ export function renderApp(app, helpers) {
     renderTabs(app);
     if (app.dom.editorSync) app.dom.editorSync();
     app.updateSaveBtn();
+    app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
   });
   // Reactive repaint of the results pane: re-runs on a tab switch, a Table/JSON/
   // Chart view change, or a run-state flip. (renderResults' activeTab() also
