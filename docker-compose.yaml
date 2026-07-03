@@ -7,7 +7,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8900
-      SQL_BROWSER_PROBE: "${SQL_BROWSER_PROBE:-1}"
+      SQL_BROWSER_PROBE: "${SQL_BROWSER_PROBE:-0}"
       SQL_BROWSER_PROBE_TIMEOUT: "${SQL_BROWSER_PROBE_TIMEOUT:-4}"
     volumes:
       - "${HOME}/.clickhouse-client:/home/asb/.clickhouse-client:ro"

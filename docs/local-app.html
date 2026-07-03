@@ -111,7 +111,10 @@
     <pre class="code">docker compose up --build   <span class="c"># mounts ~/.clickhouse-client read-only and serves /sql on :8900</span></pre>
     <p>That path uses the same Python runner as the curl-installed local app, so the Saved connection picker,
       generated <code class="k">config.json</code>, and optional host reachability probe all behave the same way.
-      Set <code class="k">SQL_BROWSER_PROBE=0</code> if you want to keep every configured host without probing.</p>
+      Docker disables <code class="k">SQL_BROWSER_PROBE</code> by default because the probe runs inside the container:
+      host-only names like <code class="k">localhost</code> or entries from your host <code class="k">/etc/hosts</code>
+      can work fine in the browser while failing from Docker. Re-enable the probe with
+      <code class="k">SQL_BROWSER_PROBE=1</code> only when those hosts are reachable from inside the container too.</p>
 
     <h3 style="margin-top:26px;">Environment overrides</h3>
     <div class="table-scroll">
