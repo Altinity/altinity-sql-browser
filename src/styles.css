@@ -1179,6 +1179,13 @@ body.detached-tab .graph-overlay-panel {
 .editor-region .cm-editor { height: 100%; background: var(--bg-editor); color: var(--fg); font-size: 13px; }
 .cm-editor.cm-focused { outline: none; }
 .cm-editor .cm-scroller { font-family: var(--mono); line-height: 22px; }
+/* Hide the scroller's native bars (wheel/trackpad/keys still scroll) — the
+   textarea editor always did. The app's styled ::-webkit-scrollbar renders as
+   a classic always-painted bar whenever an element is scrollable, and under
+   real-Safari zoom rounding the scroller can read as scrollable by a few
+   phantom px, painting both bars over a query that visibly fits (#21). */
+.cm-editor .cm-scroller { scrollbar-width: none; }
+.cm-editor .cm-scroller::-webkit-scrollbar { display: none; }
 .cm-editor .cm-content { padding: 12px 0; caret-color: var(--accent); tab-size: 2; }
 .cm-editor .cm-line { padding: 0 14px; }
 .cm-editor .cm-cursor { border-left-color: var(--accent); }
