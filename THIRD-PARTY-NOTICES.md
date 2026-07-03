@@ -1,9 +1,10 @@
 # Third-party notices
 
 The Altinity SQL Browser is licensed under Apache-2.0 (see `LICENSE`). The built
-single-file artifact (`dist/sql.html`) inlines the three runtime dependencies
-below; this file reproduces their MIT license texts as required, and the same
-notices are embedded as a comment at the top of the built artifact.
+single-file artifact (`dist/sql.html`) inlines the four runtime dependencies
+below (CodeMirror 6 ships as several packages); this file reproduces their MIT
+license texts as required, and the same notices are embedded as a comment at
+the top of the built artifact.
 
 ---
 
@@ -40,6 +41,35 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 The MIT License (MIT)
 
 Copyright (c) 2022-present Preact Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## CodeMirror 6 (the SQL editor) and its dependencies
+
+The editor is composed of these MIT-licensed packages, all inlined into the
+artifact. Each carries the license text below with its own copyright line:
+
+- `@codemirror/state` — v6.7.0, `@codemirror/view` — v6.43.4,
+  `@codemirror/commands` — v6.10.4, `@codemirror/language` — v6.12.4,
+  `@codemirror/lang-sql` — v6.10.0, `@codemirror/autocomplete` — v6.20.3,
+  `@codemirror/search` — v6.7.1 — Copyright (C) 2018-2021 by Marijn Haverbeke
+  <marijn@haverbeke.berlin> and others
+- `@lezer/common` — v1.5.2, `@lezer/highlight` — v1.2.3, `@lezer/lr` — v1.4.10,
+  `style-mod` — v4.1.3 — Copyright (C) 2018 by Marijn Haverbeke
+  <marijn@haverbeke.berlin> and others
+- `w3c-keyname` — v2.2.8 — Copyright (C) 2016 by Marijn Haverbeke
+  <marijn@haverbeke.berlin> and others
+- `crelt` — v1.0.7 — Copyright (C) 2020 by Marijn Haverbeke <marijn@haverbeke.berlin>
+- `@marijn/find-cluster-break` — v1.0.3 — Copyright (C) 2024 by Marijn Haverbeke
+  <marijn@haverbeke.berlin>
+
+MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 

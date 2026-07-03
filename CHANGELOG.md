@@ -10,6 +10,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **The SQL editor is now CodeMirror 6** (#21) — the deliberate 4th bundled
+  runtime dependency, replacing the hand-rolled textarea editor wholesale
+  behind the #143 `EditorPort` seam (`src/editor/codemirror-adapter.js`;
+  `main.js` swaps one injected factory). What changes for users: **per-tab
+  undo history** (the shared textarea undo stack couldn't do this), real
+  IME/touch editing, CM6's find/replace panel (`⌘F`), and measured-text
+  rendering (no more fixed-glyph-width geometry). Highlighting still tracks
+  the connected server's `system.keywords`/`functions` — the sets now feed a
+  ClickHouse `SQLDialect` swapped via a Compartment on connect — and
+  completion keeps the pure `core/completions.js` candidate set + ranking
+  (CM6 renders the UI; `filter: false` preserves our order). Global shortcuts
+  (`⌘↵` run, `⌘⇧↵` format, `⌘S`/`⌘⇧S`) stay on the document handler — CM6's
+  conflicting `Mod-Enter` binding is stripped so an open completion can never
+  swallow the run chord. Deleted with the cutover: the textarea adapter,
+  `editor-complete/intel/search`, `core/editor-{marks,geometry,brackets,search}`
+  and the `maskLiterals`-based literal masking (~2,600 LOC incl. tests) —
+  execCommand undo, four-way scroll sync, and the editor's `html{zoom}`
+  popover bridging all go with them. Signature help is dropped in this parity
+  v0 (#60 rebuilds docs properly); function docs show as the completion info
+  tooltip and on hover. Bundle: **+402,911 B raw (+83%) / +132,903 B gzip
+  (+85%)** (484,674 → 887,585 raw; 155,810 → 288,713 gzip) — over the issue's
+  raw estimate, accepted at the plan gate as the price of the Phase-4 editor
+  foundation (#84 schema-aware autocomplete builds directly on this).
 - **The SQL editor now sits behind an injected `EditorPort` seam** (#143): the
   hand-rolled textarea editor moved from `src/ui/` to `src/editor/` and is the
   first adapter (`createTextareaEditor`) of a small port interface

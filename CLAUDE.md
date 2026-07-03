@@ -1,7 +1,7 @@
 # Contributor guide — altinity-sql-browser
 
 A modular ES-module SPA that builds to one self-contained HTML file served from
-ClickHouse. No framework; runtime deps are rare and deliberate (currently three,
+ClickHouse. No framework; runtime deps are rare and deliberate (currently four,
 all bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
@@ -25,7 +25,8 @@ all bundled — see hard rule 4). Quality is held by tests.
    (see README "Configuring OAuth").
 4. **The build is esbuild only; runtime deps are rare and deliberate.** Source
    files are the tested files; esbuild bundles `src/main.js` → `dist/sql.html`.
-   There are **three** bundled runtime dependencies — **Chart.js** (the Chart
+   There are **four** bundled runtime dependencies — **CodeMirror 6** (the SQL
+   editor, behind the `EditorPort` seam — #21), **Chart.js** (the Chart
    result view), **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
    **@preact/signals-core** (the reactivity primitive — see
    `docs/ADR-0001-reactivity.md`) — all inlined into the artifact, so the page
@@ -35,8 +36,10 @@ all bundled — see hard rule 4). Quality is held by tests.
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
    `src/core/chart-data.js`; DOT→positions in `src/core/dot-layout.js`, both
    100%-covered) and make the library call an **injected seam** (`app.Chart` /
-   `app.Dagre`, like the fetch/crypto seams) so the DOM wrapper stays fully tested
-   rather than dropping below the coverage gate.
+   `app.Dagre` / `env.Editor`, like the fetch/crypto seams) so the DOM wrapper
+   stays fully tested rather than dropping below the coverage gate. (The CM6
+   adapter is the port-shaped variant: the *factory* is injected, and the
+   adapter is unit-tested against the real library under happy-dom.)
 5. **No UI framework; signals for state, imperative adapters for islands.** State
    reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),
    migrated slice-by-slice (ADR-0001). **No React/Preact/Solid** — a Preact spike
@@ -45,9 +48,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    paradigm the roadmap doesn't justify. The hard, third-party, or
    high-frequency-pointer surfaces (the editor, the EXPLAIN/schema graphs,
    Chart.js, result-grid resize/sort) stay **imperative behind an injected seam** —
-   signals coordinate state, they don't own every mousemove. CodeMirror 6 is the
-   pre-approved next runtime dep, behind an `EditorPort` seam, to land when
-   schema-aware autocomplete (#84) does (#21). When a *second* consumer of a
+   signals coordinate state, they don't own every mousemove. The editor is
+   **CodeMirror 6** behind the `EditorPort` seam (#21, landed ahead of #84 —
+   the completion source swaps to from-scope data there). When a *second* consumer of a
    complex UI pattern appears, extract a shared primitive (e.g. `EditorPort`,
    `GraphSurface`, a result-view registry, `Drawer`) rather than copy it — but
    don't build a primitive speculatively for a single caller.

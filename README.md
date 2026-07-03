@@ -8,9 +8,10 @@ schema-aware autocomplete, streaming results with table / JSON / chart views,
 saved queries, history, and shareable links. It ships as a
 **single self-contained HTML file served from ClickHouse itself** (no Node
 server, no CDN, no external fonts) — the page makes **zero third-party
-requests** and renders in the OS's native UI font. Its two bundled runtime
-dependencies — **Chart.js** (the chart result view) and **@dagrejs/dagre** (the
-EXPLAIN pipeline-graph layout) — are inlined into that one file.
+requests** and renders in the OS's native UI font. Its four bundled runtime
+dependencies — **CodeMirror 6** (the SQL editor), **Chart.js** (the chart
+result view), **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
+**@preact/signals-core** (state reactivity) — are inlined into that one file.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase
 held at **100% test coverage**.
@@ -34,25 +35,31 @@ only moving parts are ClickHouse's HTTP handlers and your OAuth provider.
 
 ## SQL editor
 
-The editor is a hand-rolled `<textarea>` over a syntax-highlighted `<pre>` (no
-editor library — it adds nothing to the single served file). On top of that:
+The editor is **CodeMirror 6** behind an injected `EditorPort` seam (#143/#21)
+— bundled and inlined like the other runtime deps, so the page still makes
+zero third-party requests. On top of it:
 
-- **Find / replace** — `Cmd/Ctrl+F` opens a panel with a live match count,
-  prev/next (Enter / Shift+Enter), case / whole-word / regex toggles, and a
-  replace row. Matches highlight via a transparent overlay layered below the
-  syntax tokens, so highlighting and search never interfere.
-- **Bracket matching + auto-close** — typing `(` `[` or a quote inserts the
-  pair (or wraps the selection); typing a closer or quote steps over it;
-  Backspace inside an empty pair deletes both. The pair adjacent to the caret
-  is highlighted. (`{`/`}` auto-close is intentionally omitted.)
-- **Autocomplete** — typing a word (or after `table.`) opens a ranked dropdown
-  of keywords, functions, databases, tables, and already-loaded columns;
-  ↑/↓/Enter/Tab/Esc and click to accept; functions insert `name(`.
-- **Signature help + hover docs** — inside a function call, a popover shows the
-  signature with the active argument bolded; hovering a function or a
-  ClickHouse keyword shows its signature/description. Both read the same cached
-  reference data — `system.functions.{syntax,description}` (loaded with #25) and
-  a small built-in keyword-doc set — so they never query on the keystroke path.
+- **Per-tab undo** — each query tab keeps its own edit history; switching tabs
+  parks and restores it.
+- **Find / replace** — `Cmd/Ctrl+F` opens CM6's search panel (app-styled) with
+  prev/next, case / whole-word / regex toggles, and replace.
+- **Bracket matching + auto-close** — typing `(` or `[` inserts the pair (or
+  wraps the selection); typing a closer steps over it; Backspace inside an
+  empty pair deletes both; the pair adjacent to the caret is highlighted.
+  (`{`/`}` and quote auto-close are intentionally omitted — `{}` would fight
+  the `{name:Type}` query variables.)
+- **Autocomplete** — typing a word (or after `table.`) opens a ranked list of
+  keywords, functions, databases, tables, and already-loaded columns —
+  the candidate set and ranking are the app's own (`core/completions.js`),
+  rendered through CM6's completion UI; ↑/↓/Enter/Tab/Esc and click to accept;
+  functions insert `name()` with the caret between the parens, and the active
+  row's description shows in an info tooltip.
+- **Hover docs** — hovering a function or a ClickHouse keyword shows its
+  signature/description from the same cached reference data —
+  `system.functions.{syntax,description}` (loaded with #25) and a small
+  built-in keyword-doc set — so they never query on the keystroke path.
+  (In-call signature help was dropped in the CM6 parity cut; the reference
+  docs pane (#60) rebuilds it properly.)
 - **Drag to insert** — drag a schema table/column, or a **Library/History** row,
   onto the editor: a schema identifier drops as text at the caret, and a
   saved/history query drops as a `( … )` subquery at the drop point (its trailing
@@ -77,8 +84,8 @@ the server's keyword and function lists — is fetched **once per connection**
 from `system.keywords` and `system.functions` (best-effort; it falls back to a
 built-in set on older ClickHouse), cached in memory, and merged with the
 in-memory schema. Highlighting then tracks the connected server's actual
-keyword/function set, so it's version-correct. Folding and multi-cursor are out
-of scope for a textarea and tracked separately (CodeMirror, issue #21).
+keyword/function set — the lists feed a ClickHouse `SQLDialect` that is
+reconfigured on connect — so it's version-correct.
 
 > Design source of truth: the "Altinity Play" Claude Design project (external).
 > Production is the vanilla ES-module code under `src/` — there is no React in
@@ -418,14 +425,13 @@ Preview the rendered artifacts without touching ClickHouse:
 ```
 src/
   core/      pure logic — format, jwt, pkce, sql-highlight, share, sort,
-             stream, storage, chart-data, and the editor logic: completions
-             (reference data + ranking), editor-search (find), editor-brackets
-             (match/auto-close), editor-marks (overlay), editor-geometry
-             (caret) — no DOM, no globals
+             stream, storage, chart-data, completions (editor reference data
+             + ranking) — no DOM, no globals
   net/       oauth-config, oauth, ch-client (injected fetch seam)
-  ui/        dom (hyperscript), icons, + render modules (login, editor +
-             editor-search/editor-complete, tabs, schema, results,
-             saved-history, shortcuts, splitters, toast, app)
+  editor/    the EditorPort seam (editor-port) + its CodeMirror 6 adapter
+             (codemirror-adapter) — injected via createApp(env)
+  ui/        dom (hyperscript), icons, + render modules (login, tabs, schema,
+             results, saved-history, shortcuts, splitters, toast, app)
   state.js   state model + pure operations
   main.js    bootstrap (OAuth callback, share-links, initial render)
   styles.css
@@ -453,7 +459,7 @@ Engines do diverge on one thing — **viewport units under `zoom`**: Chromium's
 on both (#70). An engine that can't parse `zoom` at all falls back via
 `@supports not (zoom: 1)` to a consistent 1× layout.
 
-CI exercises the editor-alignment, editor-insertion, schema-graph and
+CI exercises the editor (CM6 behaviors + insertion paths), schema-graph and
 EXPLAIN-pipeline specs on all three engines (`webkit` added in #69), plus a
 panel-sizing spec. **Caveat:** Playwright's WebKit applies `zoom` to
 `getBoundingClientRect`/viewport units like Chromium, *not* like real Safari, so
@@ -495,11 +501,10 @@ suite needs no mocking libraries.
 
 ### End-to-end (real browser)
 
-happy-dom has no real layout or scrollbars, so render-layer bugs (e.g. the
-editor highlight drifting behind the selection when a scrollbar shrinks the
-textarea's client box) can't be caught by the unit suite. A small Playwright
-harness mounts the real `src/` modules in **Chromium, Firefox and WebKit** for
-those cases — WebKit is the Safari proxy and the engine most likely to diverge
+happy-dom has no real layout or scrollbars, so render-layer bugs (keyboard
+routing through the real engine, completion popup timing, drop-point geometry)
+can't be caught by the unit suite. A small Playwright harness mounts the real
+`src/` modules in **Chromium, Firefox and WebKit** for those cases — WebKit is the Safari proxy and the engine most likely to diverge
 on the `html{zoom}`-based layout (see [Supported browsers](#supported-browsers)).
 
 ```bash

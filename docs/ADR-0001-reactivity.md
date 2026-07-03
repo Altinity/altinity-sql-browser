@@ -183,3 +183,24 @@ edit, not a new `effect()`. Housing them in `state.js` rather than on `app`
 matches every other slice in this file; #88's "last slice" note above refers to
 the schema panel specifically, not every remaining plain field in the
 codebase — this is a smaller, unrelated follow-up tidying three of those.
+
+## Addendum — the editor is CodeMirror 6 behind the EditorPort seam (#143/#21)
+
+The decision's "imperative adapters behind injected seams for the hard,
+third-party, or high-frequency-pointer surfaces" clause is now realized for the
+editor: #143 extracted the `EditorPort` interface (mount / getValue /
+getSelection / insertAtCursor / replaceDocument / revealOffset / syncFromState /
+refreshReference / onDocChange, injected as `env.Editor`), and #21 swapped the
+adapter from the hand-rolled textarea to **CodeMirror 6** — the fourth bundled
+runtime dependency. Signals still coordinate the state (`hasSelection`,
+tab/effect wiring, the app-level `onDocChange` subscriber owns the
+`tab.sql`/dirty writes); CM6 owns every keystroke, selection, undo, and
+measurement inside the port. Per-tab `EditorState`s give per-tab undo — a
+capability the shared-textarea design structurally lacked — and the adapter is
+unit-tested against the real CM6 under happy-dom (the coverage gate holds
+without a fake-editor seam). The tokenizer stays in `core/sql-highlight.js` for
+completion context; the CM6 dialect gets the same server keyword/function sets
+via a `Compartment` reconfigure. Nothing about the state model changed — this
+addendum records that the editor island now has its intended long-term
+implementation, and that #84 (schema-aware autocomplete) plugs into the CM6
+completion source rather than growing new overlay machinery.
