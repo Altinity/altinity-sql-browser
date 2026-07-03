@@ -67,8 +67,10 @@ editor library — it adds nothing to the single served file). On top of that:
   `DateTime`, `Array(…)`, `Map(…)` all work) and the SQL text is sent unchanged.
   Only row-returning statements are substituted, so a `CREATE VIEW … {x:String} …`
   definition is stored with its placeholder intact (a ClickHouse parameterized
-  view). Run, `⌘↵`, Explain, and Export all honor it. (This is `{name:Type}`
-  substitution, not the `{{name}}` composable-query macro.)
+  view). Run, `⌘↵`, Explain, and Export all honor it. Values are **remembered by
+  variable name** — shared across every query and persisted across reloads — so a
+  value typed once is prefilled wherever the same variable appears. (This is
+  `{name:Type}` substitution, not the `{{name}}` composable-query macro.)
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

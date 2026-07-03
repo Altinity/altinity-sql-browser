@@ -20,7 +20,7 @@ const reader = (over = {}) => ({
 
 describe('newTabObj', () => {
   it('creates a blank tab', () => {
-    expect(newTabObj('t9')).toEqual({ id: 't9', name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null, varValues: {} });
+    expect(newTabObj('t9')).toEqual({ id: 't9', name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null });
   });
 });
 

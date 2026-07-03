@@ -134,6 +134,8 @@ export function createApp(env = {}) {
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
   app.savePref = (name, value) => saveStr(KEYS[name], String(value));
+  // Persist the shared query-variable values (#134) after each edit.
+  app.saveVarValues = () => saveJSON(KEYS.varValues, app.state.varValues);
   app.FileReader = env.FileReader || win.FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
@@ -512,7 +514,7 @@ export function createApp(env = {}) {
   // (setRunBtn), the Run/⌘↵ path, Explain, and Export all agree.
   function varGateBlocked() {
     const tab = app.activeTab();
-    const missing = tab ? unfilledParams(tab.sql, tab.varValues) : [];
+    const missing = tab ? unfilledParams(tab.sql, app.state.varValues) : [];
     if (missing.length) {
       flashToast('Enter a value for: ' + missing.join(', '), { document: doc });
       return true;
@@ -601,7 +603,7 @@ export function createApp(env = {}) {
         // Native ClickHouse query parameters (#134): pass entered values as
         // param_<name> so the server substitutes them (only for row-returning
         // SQL — paramArgs no-ops on a CREATE VIEW / DDL, leaving it verbatim).
-        params: { ...sessionParamsFor(tab, [srcSql]), ...paramArgs(srcSql, tab.varValues) },
+        params: { ...sessionParamsFor(tab, [srcSql]), ...paramArgs(srcSql, app.state.varValues) },
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -685,7 +687,7 @@ export function createApp(env = {}) {
           // paramArgs is per-statement and self-gates on isRowReturning, so a
           // DDL / CREATE VIEW statement in the script is sent with its
           // {name:Type} placeholders intact (#134).
-          params: { ...sp, ...paramArgs(stmt, tab.varValues), ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
+          params: { ...sp, ...paramArgs(stmt, app.state.varValues), ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
         };
         const s0 = now(); // this statement's own wall-clock (grid Time column)
         // Fresh query_id per attempt, published before the request so Cancel
@@ -781,7 +783,7 @@ export function createApp(env = {}) {
     // that already has the missing set (renderVarStrip) passes it to avoid
     // re-lexing; otherwise we compute it here.
     const tab = app.activeTab();
-    if (missing == null) missing = running || !tab ? [] : unfilledParams(tab.sql, tab.varValues);
+    if (missing == null) missing = running || !tab ? [] : unfilledParams(tab.sql, app.state.varValues);
     app.dom.runBtn.disabled = running || missing.length > 0;
     app.dom.runBtn.title = missing.length
       ? 'Enter a value for: ' + missing.join(', ')
@@ -795,16 +797,20 @@ export function createApp(env = {}) {
         running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
   }
   app.setRunBtn = setRunBtn;
-  // Repaint the query-variable strip (#134) for the active tab. Rebuilds the
-  // inputs only when the detected {name:Type} set changes (signature guard), so
-  // typing in the SQL editor doesn't thrash the row or steal focus from an input
-  // the user is filling. Always re-syncs the Run button's disabled/tooltip state.
+  // Repaint the query-variable strip (#134) for the active tab. Values live in
+  // the shared, persisted `state.varValues` (keyed by variable name), so a value
+  // typed once is reused by every query that references the same variable and is
+  // restored on reload. Inputs rebuild only when the detected {name:Type} set
+  // changes (signature guard) — so typing in the SQL editor doesn't thrash the
+  // row or steal focus, and switching between tabs with the same variables keeps
+  // the (already-correct, shared) values in place. Always re-syncs the Run
+  // button's disabled/tooltip state.
   function renderVarStrip() {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
     const vars = tab ? readStatementParams(tab.sql) : [];
-    const sig = (tab ? tab.id + '|' : '') + vars.map((v) => v.name + ':' + v.type).join(',');
+    const sig = vars.map((v) => v.name + ':' + v.type).join(',');
     if (sig !== app.dom.varStripSig) {
       app.dom.varStripSig = sig;
       if (!vars.length) {
@@ -815,18 +821,19 @@ export function createApp(env = {}) {
         strip.replaceChildren(...vars.map((v) => {
           const input = h('input', {
             type: 'text', class: 'var-input',
-            value: (tab.varValues && tab.varValues[v.name]) || '',
+            value: app.state.varValues[v.name] || '',
             placeholder: v.type, title: v.name + ': ' + v.type, 'aria-label': v.name,
             oninput: (e) => {
-              (tab.varValues || (tab.varValues = {}))[v.name] = e.target.value;
-              setRunBtn(app.state.running.value, missingValues(vars, tab.varValues));
+              app.state.varValues[v.name] = e.target.value;
+              app.saveVarValues();
+              setRunBtn(app.state.running.value, missingValues(vars, app.state.varValues));
             },
           });
           return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, v.name), input);
         }));
       }
     }
-    setRunBtn(app.state.running.value, missingValues(vars, tab && tab.varValues));
+    setRunBtn(app.state.running.value, missingValues(vars, app.state.varValues));
   }
   app.renderVarStrip = renderVarStrip;
   // The Export button reflects both browser support (canExport) and whether an
@@ -1227,7 +1234,7 @@ export function createApp(env = {}) {
         const resp = await ch.exportQuery(chCtx, sql, {
           queryId: exportQueryId, signal: exportAbort.signal, format,
           // Native query-parameter substitution (#134), same as run().
-          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs(sql, tab.varValues) },
+          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs(sql, app.state.varValues) },
         });
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
         const err = await streamToFile(resp, handle, {
@@ -1391,7 +1398,7 @@ export function createApp(env = {}) {
         // Per-statement query-parameter args (#134): paramArgs self-gates on
         // isRowReturning, so an effect/DDL statement (incl. CREATE VIEW) is sent
         // with its {name:Type} placeholders intact.
-        const params = { ...sp, ...paramArgs(e.sql, tab.varValues) };
+        const params = { ...sp, ...paramArgs(e.sql, app.state.varValues) };
         exportScriptQueryId = 'export-' + uid('');
         exportScriptAbort = new AbortController();
         const signal = exportScriptAbort.signal;

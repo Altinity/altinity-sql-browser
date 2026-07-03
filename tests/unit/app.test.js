@@ -495,17 +495,40 @@ describe('query run', () => {
     expect(app.dom.varStrip.style.display).toBe('none');
     expect(app.dom.runBtn.disabled).toBe(false);
   });
-  it('query variables (#134): typing a value updates the tab and re-enables Run', () => {
+  it('query variables (#134): typing a value updates the shared store, persists, and re-enables Run', () => {
+    vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);
-    const tab = app.activeTab();
-    tab.sql = 'SELECT {id:UInt32}';
+    app.activeTab().sql = 'SELECT {id:UInt32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '42';
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(tab.varValues.id).toBe('42');
+    expect(app.state.varValues.id).toBe('42'); // shared, name-keyed store (not per-tab)
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varValues')).id).toBe('42'); // persisted
     expect(app.dom.runBtn.disabled).toBe(false);
     expect(app.dom.runBtn.title).toBe('');
+  });
+  it('query variables (#134): a value is shared across queries — reused/prefilled by name', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {database:String}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'analytics';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // a *different* query using the same variable prefills the value, no retyping
+    app.activeTab().sql = 'SELECT count() FROM {database:String}.events WHERE 1';
+    app.renderVarStrip();
+    expect(app.dom.varStrip.querySelector('.var-input').value).toBe('analytics');
+    expect(app.dom.runBtn.disabled).toBe(false); // already satisfied from the shared store
+  });
+  it('query variables (#134): a persisted value is restored on load and prefilled', () => {
+    vi.stubGlobal('localStorage', memStore({ 'asb:varValues': JSON.stringify({ table: 'events' }) }));
+    const { app } = appForRun([]);
+    expect(app.state.varValues.table).toBe('events'); // loaded from localStorage at startup
+    app.activeTab().sql = 'SELECT * FROM {table:String}';
+    app.renderVarStrip();
+    expect(app.dom.varStrip.querySelector('.var-input').value).toBe('events');
+    expect(app.dom.runBtn.disabled).toBe(false);
   });
   it('query variables (#134): a run with an unfilled variable is blocked and toasts', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
@@ -523,7 +546,7 @@ describe('query run', () => {
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
     tab.sql = 'WITH {database:String} AS d, {table:String} AS t SELECT 1';
-    tab.varValues = { database: 'default', table: 'events' };
+    app.state.varValues = { database: 'default', table: 'events' };
     await app.actions.run();
     const [url, init] = app.chCtx.fetch.mock.calls[0];
     expect(url).toMatch(/param_database=default/);
@@ -537,7 +560,7 @@ describe('query run', () => {
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
     tab.sql = 'CREATE VIEW v AS SELECT {x:String}';
-    tab.varValues = { x: 'default' }; // even with a value present, a view is not substituted
+    app.state.varValues = { x: 'default' }; // even with a value present, a view is not substituted
     await app.actions.run(); // not row-returning, no variables shown → runs freely
     const [url, init] = app.chCtx.fetch.mock.calls[0];
     expect(url).not.toMatch(/param_x/);
@@ -552,7 +575,7 @@ describe('query run', () => {
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
     tab.sql = 'CREATE VIEW v AS SELECT {x:String}; SELECT {id:UInt32}';
-    tab.varValues = { id: '5' }; // x is confined to the view → not required, not sent
+    app.state.varValues = { id: '5' }; // x is confined to the view → not required, not sent
     await app.actions.run(); // >1 statement → runScript
     const viewCall = app.chCtx.fetch.mock.calls.find((c) => /CREATE VIEW/.test(c[1].body));
     const selCall = app.chCtx.fetch.mock.calls.find((c) => /SELECT \{id/.test(c[1].body));
@@ -1890,9 +1913,8 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['x']) })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    const tab = app.activeTab();
-    tab.sql = 'SELECT {database:String}';
-    tab.varValues = { database: 'default' };
+    app.activeTab().sql = 'SELECT {database:String}';
+    app.state.varValues = { database: 'default' };
     await app.actions.exportEntry();
     const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL);
     expect(exportCall[0]).toMatch(/param_database=default/);
