@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Deployment — Altinity SQL Browser</title>
-<meta name="description" content="Three ways to deploy the Altinity SQL Browser: hosted on your ClickHouse cluster, as a local curl-installed app, or from a source checkout. Plus OAuth setup and security headers.">
+<meta name="description" content="Four ways to deploy the Altinity SQL Browser: hosted on your ClickHouse cluster, as a local curl-installed app, in Docker, or from a source checkout. Plus OAuth setup and security headers.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -29,9 +29,9 @@
 <section class="hero center" style="padding:60px 0 50px;">
   <div class="wrap">
     <span class="pill">Deployment</span>
-    <h1>Three deployment modes</h1>
-    <p class="lede">Pick the one that fits: a shared app hosted on your cluster, a personal local app, or a
-      dev checkout. They all build from the same single-file artifact.</p>
+    <h1>Four deployment modes</h1>
+    <p class="lede">Pick the one that fits: a shared app hosted on your cluster, a personal local app, a Dockerized
+      local runner, or a dev checkout. They all build from the same single-file artifact.</p>
   </div>
 </section>
 
@@ -41,15 +41,15 @@
     <div class="table-scroll">
       <table class="cmp">
         <thead>
-          <tr><th>&nbsp;</th><th>Hosted on ClickHouse</th><th>Local app (curl)</th><th>From source</th></tr>
+          <tr><th>&nbsp;</th><th>Hosted on ClickHouse</th><th>Local app (curl)</th><th>Docker local runner</th><th>From source</th></tr>
         </thead>
         <tbody>
-          <tr><td class="feat">Who it's for</td><td>A whole team, shared URL</td><td>One developer, your laptop</td><td>Contributors</td></tr>
-          <tr><td class="feat">Served from</td><td>ClickHouse <code class="k">/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td></tr>
-          <tr><td class="feat">Prerequisites</td><td>Cluster admin + an IdP</td><td><code class="k">python3</code> + curl</td><td>Node.js + npm</td></tr>
-          <tr><td class="feat">Auth</td><td class="yes">SSO (OIDC) or Basic</td><td>Your saved connections</td><td>Your saved connections</td></tr>
-          <tr><td class="feat">Connects to</td><td>That cluster</td><td>Any cluster in your config</td><td>Any cluster in your config</td></tr>
-          <tr><td class="feat">Install</td><td><code class="k">deploy/install.sh</code></td><td>one <code class="k">curl | sh</code></td><td><code class="k">npm run local</code></td></tr>
+          <tr><td class="feat">Who it's for</td><td>A whole team, shared URL</td><td>One developer, your laptop</td><td>Local/shared testing</td><td>Contributors</td></tr>
+          <tr><td class="feat">Served from</td><td>ClickHouse <code class="k">/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td></tr>
+          <tr><td class="feat">Prerequisites</td><td>Cluster admin + an IdP</td><td><code class="k">python3</code> + curl</td><td>Docker</td><td>Node.js + npm</td></tr>
+          <tr><td class="feat">Auth</td><td class="yes">SSO (OIDC) or Basic</td><td>Your saved connections</td><td>Your saved connections</td><td>Your saved connections</td></tr>
+          <tr><td class="feat">Connects to</td><td>That cluster</td><td>Any cluster in your config</td><td>Any cluster in your config</td><td>Any cluster in your config</td></tr>
+          <tr><td class="feat">Install</td><td><code class="k">deploy/install.sh</code></td><td>one <code class="k">curl | sh</code></td><td><code class="k">docker compose up --build</code></td><td><code class="k">npm run local</code></td></tr>
         </tbody>
       </table>
     </div>
@@ -117,10 +117,25 @@ CLICKHOUSE_PASSWORD=… ./deploy/install.sh \
   </div>
 </section>
 
-<!-- Mode 3: source -->
+<!-- Mode 3: docker -->
+<section>
+  <div class="wrap narrow">
+    <div class="eyebrow">Mode 3 · Docker local runner</div>
+    <h2>Run the existing local app in a container</h2>
+    <p>The container image packages the same zero-dependency Python runner used by the curl-installed local app.
+      It serves <code class="k">/sql</code> and a generated <code class="k">/config.json</code>, then reads saved
+      connections from a mounted <code class="k">clickhouse-client</code> config directory.</p>
+    <pre class="code">docker compose up --build
+SQL_BROWSER_PROBE=0 docker compose up --build   <span class="c"># skip startup /ping checks, keep all hosts</span></pre>
+    <p>The repo also ships Kubernetes examples under <code class="k">deploy/k8s/</code>: a Deployment, Service,
+      ConfigMap-backed connection file, and an Ingress example for cluster testing.</p>
+  </div>
+</section>
+
+<!-- Mode 4: source -->
 <section class="alt">
   <div class="wrap narrow">
-    <div class="eyebrow">Mode 3 · From source</div>
+    <div class="eyebrow">Mode 4 · From source</div>
     <h2>Build and develop</h2>
     <pre class="code">git clone https://github.com/Altinity/altinity-sql-browser
 cd altinity-sql-browser
