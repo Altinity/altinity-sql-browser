@@ -84,17 +84,42 @@ export function langExtensionFor(app) {
   ];
 }
 
+// Closers and quotes our input guard steps over when typed directly before
+// that same character.
+const STEP_OVER = new Set([')', ']', "'", '"', '`']);
+
 /**
- * Literal-aware bracket input: CM6's closeBrackets consults the syntax tree
- * for quotes but NOT for brackets, so without this a `(` typed inside a
- * string or comment would auto-insert a stray `)` into the literal — the
- * exact case the old masked-text guard suppressed. Runs ahead of
- * closeBrackets (Prec.high) and types the bare character there instead.
+ * Pairing guards CM6 doesn't provide (editor-brackets.js parity), run ahead
+ * of closeBrackets (Prec.high):
+ * - type-over: a closer/quote typed directly before that same character steps
+ *   over it — including pre-existing text (CM6's closedBracketAt only tracks
+ *   pairs it inserted this session) and inside literals, so a string can
+ *   always be closed normally;
+ * - brackets never pair inside String/Comment/QuotedIdentifier (closeBrackets
+ *   is only tree-aware for same-char quotes);
+ * - quotes never pair inside Comment/QuotedIdentifier, and a quote typed over
+ *   a selection inside a String replaces it instead of wrapping.
+ * Mirrors closeBrackets' own bail-outs first: never rewrite the DOM mid-IME
+ * composition, and only act when the reported range IS the selection (a
+ * browser-generated correction elsewhere must not be re-anchored to it).
  */
-export function bracketInLiteral(view, from, to, text) {
-  if (text !== '(' && text !== '[') return false;
-  const node = syntaxTree(view.state).resolveInner(from, -1);
-  if (!LITERAL_NODE.test(node.name)) return false;
+export function inputGuards(view, from, to, text) {
+  if (text.length !== 1) return false;
+  if (view.compositionStarted || view.state.readOnly) return false;
+  const sel = view.state.selection.main;
+  if (from !== sel.from || to !== sel.to) return false;
+  if (from === to && STEP_OVER.has(text) && view.state.sliceDoc(to, to + 1) === text) {
+    view.dispatch({ selection: { anchor: to + 1 }, userEvent: 'input.type', scrollIntoView: true });
+    return true;
+  }
+  const isBracket = text === '(' || text === '[';
+  const isQuote = text === "'" || text === '"' || text === '`';
+  if (!isBracket && !isQuote) return false;
+  const node = syntaxTree(view.state).resolveInner(from, -1).name;
+  const quiet = isBracket
+    ? LITERAL_NODE.test(node)
+    : /Comment|QuotedIdentifier/.test(node) || (from !== to && /String/.test(node));
+  if (!quiet) return false;
   view.dispatch(view.state.replaceSelection(text), { userEvent: 'input.type', scrollIntoView: true });
   return true;
 }
@@ -108,9 +133,11 @@ export function bracketInLiteral(view, from, to, text) {
  */
 export function completionSourceFor(app) {
   return (ctx) => {
-    // completionContext never reads past the caret — slice, don't serialize
-    // the whole rope on the keystroke path.
-    const doc = ctx.state.sliceDoc(0, ctx.pos);
+    // completionContext reads at most to the end of the caret's token — slice
+    // to the line end instead of serializing the whole rope per keystroke
+    // (cutting AT the caret would misread an open backtick-identifier whose
+    // escaped-backtick ends up last-before-the-cut as already closed).
+    const doc = ctx.state.sliceDoc(0, ctx.state.doc.lineAt(ctx.pos).to);
     const c = completionContext(doc, ctx.pos);
     if (!c.qualified && c.word.length < 1 && !ctx.explicit) return null;
     const items = rankCompletions(app.completions || [], c);
@@ -163,9 +190,12 @@ export function infoFor(app, it) {
 
 // SQL function calls are case-insensitive: resolve the hovered word against
 // the reference keys the way the old editor-intel lookupFn did (#27) — exact,
-// then lower (server keys are mostly canonical-lowercase), then UPPER.
+// then lower (server keys are mostly canonical-lowercase), then UPPER. Own
+// properties only: a column named `constructor` must not hover a phantom card
+// off Object.prototype.
+const own = (m, k) => (Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined);
 const lookupFn = (functions, word) =>
-  functions[word] || functions[word.toLowerCase()] || functions[word.toUpperCase()];
+  own(functions, word) || own(functions, word.toLowerCase()) || own(functions, word.toUpperCase());
 
 /**
  * Hover docs (#27 parity v0): keyword docs from the static set, function
@@ -276,7 +306,7 @@ export function createCodeMirrorEditor(app) {
     drawSelection(),
     dropCursor(),
     bracketMatching(),
-    Prec.high(EditorView.inputHandler.of(bracketInLiteral)),
+    Prec.high(EditorView.inputHandler.of(inputGuards)),
     closeBrackets(),
     syntaxHighlighting(sqlClasses),
     langCompartment.of(langExt),
@@ -291,8 +321,10 @@ export function createCodeMirrorEditor(app) {
       ...historyKeymap,
       // Global chords (⌘↵ run, ⌘⇧↵ format, ⌘S/⌘⇧S, Esc) live on the document
       // handler (main.js) — drop CM6's Mod-Enter (insertBlankLine) so ⌘↵
-      // bubbles out unhandled instead of inserting a blank line.
-      ...defaultKeymap.filter((b) => b.key !== 'Mod-Enter'),
+      // bubbles out unhandled, and its Escape (simplifySelection) so Esc with
+      // a selection still cancels a running query instead of being consumed
+      // (completion/search bind their own Escape and keep working).
+      ...defaultKeymap.filter((b) => b.key !== 'Mod-Enter' && b.key !== 'Escape'),
     ]),
     EditorView.updateListener.of((u) => {
       // Suppress only when EVERY transaction is a sync — an update that
@@ -352,6 +384,12 @@ export function createCodeMirrorEditor(app) {
         userEvent: 'input.replace',
         scrollIntoView: true,
       });
+      // Toolbar-initiated replaces (Format, SHOW CREATE) must leave ⌘Z live —
+      // the old adapter focused too. Deferred a microtask: happy-dom delivers
+      // selectionchange synchronously, and a focused view + an immediately
+      // following range-selection dispatch would re-enter CM6's update.
+      const v = view;
+      queueMicrotask(() => { if (view === v) v.focus(); });
     },
     revealOffset: (pos) => {
       if (!view) return;

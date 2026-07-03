@@ -3,7 +3,7 @@ import { undoDepth, undo } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import {
   createCodeMirrorEditor, langExtensionFor, completionSourceFor, applyFor,
-  infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, bracketInLiteral, syncTx,
+  infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, inputGuards, syncTx,
 } from '../../src/editor/codemirror-adapter.js';
 import { activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
@@ -139,6 +139,16 @@ describe('document edits through the port', () => {
     expect(view.state.selection.main.head).toBe(0);
   });
 
+  it('replaceDocument refocuses the editor so ⌘Z works right after a toolbar Format', async () => {
+    const { port, view } = mounted();
+    port.replaceDocument('SELECT 1');
+    await Promise.resolve(); // the focus is microtask-deferred (happy-dom selectionchange re-entrancy)
+    expect(document.activeElement).toBe(view.contentDOM);
+    port.destroy();
+    port.replaceDocument('x'); // and the deferred focus is view-guarded — no zombie focus after destroy
+    await Promise.resolve();
+  });
+
   it('hasFocus tracks the view focus state', () => {
     const { port, view } = mounted();
     expect(port.hasFocus()).toBe(view.hasFocus);
@@ -190,11 +200,13 @@ describe('per-tab EditorState (syncFromState)', () => {
   });
 
   it('same tab + external tab.sql change reconciles the doc WITHOUT emitting (no false dirty)', () => {
-    const { port, app, changes } = mounted();
+    const { port, view, app, changes } = mounted();
     activeTab(app.state).sql = 'SELECT 42';
     port.syncFromState();
     expect(port.getValue()).toBe('SELECT 42');
     expect(changes).toEqual([]); // annotation-guarded — a sync is not a user edit
+    undo(view);
+    expect(port.getValue()).toBe('SELECT 42'); // the reconcile never entered the undo history
   });
 
   it('tab switches park and restore per-tab undo history', () => {
@@ -344,6 +356,14 @@ describe('completionSourceFor', () => {
     expect(r.options.map((o) => o.label)).toEqual(['fare']);
   });
 
+  it('an escaped backtick before the caret does not fake a closed identifier (no spurious popup)', () => {
+    // Slicing AT the caret made the open `a\`b token end in a backtick, so it
+    // read as CLOSED → word '' → a spurious keyword/table popup whose accept
+    // would splice INSIDE the identifier. Slicing to line end keeps the
+    // open-identifier word ('a\\`' — matches nothing) and stays silent.
+    expect(src(ctx('SELECT `a\\`b` FROM trips', 11, true))).toBe(null);
+  });
+
   it('returns null when nothing matches', () => {
     expect(src(ctx('zzzznope', 8))).toBe(null);
     expect(completionSourceFor(makeApp({ completions: undefined }))(ctx('se', 2))).toBe(null);
@@ -407,14 +427,15 @@ describe('hoverSourceFor', () => {
     expect(hoverSourceFor({ refData: null })(view, 1)).toBe(null);
   });
 
-  it('unknown words get no tooltip; keywords get their static doc', () => {
+  it('unknown words get no tooltip; keywords get their static doc (multi-line offsets)', () => {
     const { view } = mounted({ refData: ref });
     const hover = hoverSourceFor({ refData: ref });
-    view.dispatch({ changes: { from: 0, to: 0, insert: 'mystery PREWHERE' } });
-    expect(hover(view, 2)).toBe(null);
-    const tip = hover(view, 10);
-    expect(tip.pos).toBe(8);
-    expect(tip.end).toBe(16);
+    // Line 3 — pins the line.from offset arithmetic (word lookup AND tooltip range)
+    view.dispatch({ changes: { from: 0, to: 0, insert: '\n\nmystery PREWHERE' } });
+    expect(hover(view, 4)).toBe(null);
+    const tip = hover(view, 12);
+    expect(tip.pos).toBe(10);
+    expect(tip.end).toBe(18);
     expect(tip.create().dom.textContent).toMatch(/before reading other columns/);
   });
 
@@ -537,20 +558,57 @@ describe('reference-data lifecycle', () => {
   });
 });
 
-describe('literal awareness (the old maskLiterals role)', () => {
-  it('bracketInLiteral types a bare bracket inside strings/comments and defers elsewhere', () => {
+describe('input guards (the old editor-brackets.js role)', () => {
+  it('types a bare bracket inside strings/comments and defers elsewhere', () => {
     const { view } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'a b' -- note" } });
     view.dispatch({ selection: { anchor: 10 } }); // inside the string
-    expect(bracketInLiteral(view, 10, 10, '(')).toBe(true);
+    expect(inputGuards(view, 10, 10, '(')).toBe(true);
     expect(view.state.doc.toString()).toBe("SELECT 'a (b' -- note"); // bare ( — no stray )
     const end = view.state.doc.length;
     view.dispatch({ selection: { anchor: end } }); // inside the trailing comment
-    expect(bracketInLiteral(view, end, end, '[')).toBe(true);
+    expect(inputGuards(view, end, end, '[')).toBe(true);
     expect(view.state.doc.toString().endsWith('note[')).toBe(true);
     view.dispatch({ selection: { anchor: 6 } }); // plain code → closeBrackets' turn
-    expect(bracketInLiteral(view, 6, 6, '(')).toBe(false);
-    expect(bracketInLiteral(view, 6, 6, 'x')).toBe(false); // not a bracket at all
+    expect(inputGuards(view, 6, 6, '(')).toBe(false);
+    expect(inputGuards(view, 6, 6, 'x')).toBe(false); // not a pairing char at all
+  });
+
+  it('quotes stay quiet inside comments and backtick identifiers, and replace a selection inside a string', () => {
+    const { view } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: '-- rock ' } });
+    view.dispatch({ selection: { anchor: 8 } });
+    expect(inputGuards(view, 8, 8, "'")).toBe(true); // no '' pair in the comment
+    expect(view.state.doc.toString()).toBe("-- rock '");
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "SELECT 'hello world'" }, selection: { anchor: 14, head: 19 } }); // 'world' selected
+    expect(inputGuards(view, 14, 19, "'")).toBe(true); // replaced, not wrapped
+    expect(view.state.doc.toString()).toBe("SELECT 'hello ''");
+    // in plain code a quote defers to closeBrackets (pairing/wrapping is its job)
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'abc' }, selection: { anchor: 0 } });
+    expect(inputGuards(view, 0, 0, "'")).toBe(false);
+  });
+
+  it('steps over a pre-existing closer or quote (not just pairs CM6 inserted itself)', () => {
+    const { view } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: "f(x)'s'" } });
+    view.dispatch({ selection: { anchor: 3 } }); // before the )
+    expect(inputGuards(view, 3, 3, ')')).toBe(true);
+    expect(view.state.doc.toString()).toBe("f(x)'s'"); // nothing inserted…
+    expect(view.state.selection.main.head).toBe(4);    // …caret stepped over
+    view.dispatch({ selection: { anchor: 6 } }); // before the closing quote
+    expect(inputGuards(view, 6, 6, "'")).toBe(true);
+    expect(view.state.doc.toString()).toBe("f(x)'s'");
+    expect(view.state.selection.main.head).toBe(7);
+  });
+
+  it('bails out like closeBrackets does: multi-char input, readOnly, or a range that is not the selection', () => {
+    const { view } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: "'ab'" }, selection: { anchor: 2 } });
+    expect(inputGuards(view, 2, 2, '((')).toBe(false); // multi-char
+    expect(inputGuards(view, 1, 1, '(')).toBe(false);  // range ≠ selection (browser-generated correction)
+    const ro = new (view.constructor)({ state: EditorState.create({ doc: "'a'", extensions: [EditorState.readOnly.of(true)] }) });
+    expect(inputGuards(ro, 1, 1, '(')).toBe(false);    // readOnly
+    ro.destroy();
   });
 
   it('hover stays quiet inside strings and comments (no phantom docs over prose)', () => {

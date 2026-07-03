@@ -50,7 +50,21 @@ test.describe('CM6 editor', () => {
     expect(value.toUpperCase()).toBe('SELECT');
   });
 
+  test('auto-pairing: pairs in code, steps over closers, stays quiet inside literals', async ({ page }) => {
+    await page.keyboard.type('select (');   // ( pairs in code
+    await page.keyboard.type(')');          // typing the closer steps over, no double
+    await page.keyboard.type(" '");         // quote pairs in code
+    await page.keyboard.type('a(');         // ( inside the string must NOT inject a stray )
+    const value = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
+    expect(value).toBe("select () 'a('");
+  });
+
   test('tab switches keep per-tab undo histories', async ({ page }) => {
+    const doc = () => window.__app.dom.editorView.state.doc.toString();
+    const switchTab = (id) => {
+      window.__app.state.activeTabId.value = id;
+      window.__port.syncFromState();
+    };
     await page.keyboard.type('one');
     await page.evaluate(() => {
       const { state } = window.__app;
@@ -60,15 +74,18 @@ test.describe('CM6 editor', () => {
     });
     await page.click('.cm-content');
     await page.keyboard.type('two');
-    await page.keyboard.press('Control+z'); // undoes t2's edit only
-    const t2 = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
-    expect(t2).not.toContain('one');
-    await page.evaluate(() => {
-      window.__app.state.activeTabId.value = 't1';
-      window.__port.syncFromState();
-    });
-    const t1 = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
-    expect(t1).toBe('one'); // t1 untouched by t2's undo
+    // round-trip t2 → t1 → t2, THEN undo: only a parked per-tab history can
+    // undo the 'two' typing here — a fresh-state impostor would leave 'two'.
+    await page.evaluate(`(${switchTab.toString()})('t1')`);
+    const t1 = await page.evaluate(doc);
+    expect(t1).toBe('one');
+    await page.evaluate(`(${switchTab.toString()})('t2')`);
+    await page.click('.cm-content');
+    await page.keyboard.press('Control+z');
+    const t2AfterUndo = await page.evaluate(doc);
+    expect(t2AfterUndo).toBe(''); // t2's history survived the round trip
+    await page.evaluate(`(${switchTab.toString()})('t1')`);
+    expect(await page.evaluate(doc)).toBe('one'); // t1 untouched by t2's undo
   });
 
   test('⌘F opens the app-styled search panel; Esc closes it', async ({ page }) => {
