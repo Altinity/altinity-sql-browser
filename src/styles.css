@@ -1227,6 +1227,89 @@ body.detached-tab .graph-overlay-panel {
 .sql-ident { color: var(--fg); }
 .sql-op { color: var(--fg-mute); }
 
+/* ------------ SQL editor chrome (CodeMirror 6, #21) ------------
+   The adapter maps lang-sql's tokens onto the .sql-* classes above via a
+   HighlightStyle, so token colors + light/dark theming stay in this file.
+   Everything below is editor chrome: layout, gutter, selection, panels. */
+.editor-region .cm-editor { height: 100%; background: var(--bg-editor); color: var(--fg); font-size: 13px; }
+.cm-editor.cm-focused { outline: none; }
+.cm-editor .cm-scroller { font-family: var(--mono); line-height: 22px; }
+.cm-editor .cm-content { padding: 12px 0; caret-color: var(--accent); tab-size: 2; }
+.cm-editor .cm-line { padding: 0 14px; }
+.cm-editor .cm-cursor { border-left-color: var(--accent); }
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in oklab, var(--accent) 28%, transparent);
+}
+.cm-editor .cm-gutters {
+  background: var(--bg-gutter); color: var(--fg-faint);
+  border-right: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement { min-width: 44px; padding: 0 8px 0 0; }
+/* Bracket-pair highlight at the caret (#24 parity). */
+.cm-editor .cm-matchingBracket { background: color-mix(in oklab, var(--accent) 34%, transparent); border-radius: 2px; }
+.cm-editor .cm-nonmatchingBracket { background: color-mix(in oklab, #ef4444 30%, transparent); border-radius: 2px; }
+/* Find/replace panel (#23 parity — CM6's panel, app-styled). */
+.cm-editor .cm-panels { background: var(--bg-modal); color: var(--fg); border: none; z-index: 5; }
+.cm-editor .cm-panels-top { border-bottom: 1px solid var(--border); }
+.cm-panel.cm-search { font-family: var(--ui); font-size: 12px; padding: 7px 10px; }
+.cm-panel.cm-search input[type='checkbox'] { accent-color: var(--accent); }
+.cm-panel.cm-search .cm-textfield {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font-size: 12px; font-family: var(--mono); outline: none;
+  height: 26px; padding: 0 8px;
+}
+.cm-panel.cm-search .cm-button {
+  height: 24px; padding: 0 8px; border: none; border-radius: 4px;
+  background: var(--bg-chip); color: var(--fg); cursor: pointer; font-size: 11px;
+  background-image: none;
+}
+.cm-panel.cm-search .cm-button:hover { background: var(--bg-hover); }
+.cm-panel.cm-search [name='close'] { color: var(--fg-mute); font-size: 16px; padding: 0 6px; cursor: pointer; }
+.cm-editor .cm-searchMatch { background: color-mix(in oklab, var(--accent) 24%, transparent); border-radius: 2px; }
+.cm-editor .cm-searchMatch-selected { background: color-mix(in oklab, var(--accent) 55%, transparent); }
+/* Tooltips: completion list, completion info, hover docs. */
+.cm-tooltip {
+  background: var(--bg-modal); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--fg);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .4);
+}
+.cm-tooltip.cm-tooltip-autocomplete { font-family: var(--ui); overflow: hidden; }
+.cm-tooltip-autocomplete > ul { font-family: var(--mono); font-size: 12.5px; max-height: 248px; padding: 4px; }
+.cm-tooltip-autocomplete > ul > li { padding: 4px 8px; border-radius: 5px; display: flex; align-items: center; gap: 9px; }
+.cm-tooltip-autocomplete > ul > li[aria-selected] { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--fg); }
+.cm-tooltip-autocomplete .cm-completionLabel { flex-shrink: 0; }
+.cm-tooltip-autocomplete .cm-completionDetail {
+  margin-left: auto; max-width: 150px; text-align: right;
+  font-size: 10.5px; font-style: normal; color: var(--fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Kind chips — same glyphs/colors as the old dropdown (K ƒ Σ ⇄ ▦ ▪ ◈ ≡). */
+.cm-completionIcon {
+  width: 17px; height: 17px; flex-shrink: 0; border-radius: 4px; box-sizing: border-box;
+  background: var(--bg-chip); font-size: 11px; font-weight: 700; font-family: var(--mono);
+  display: flex; align-items: center; justify-content: center; padding: 0; opacity: 1;
+}
+.cm-completionIcon::after { content: '·'; }
+.cm-completionIcon-keyword::after { content: 'K'; color: #C586C0; }
+.cm-completionIcon-fn::after { content: 'ƒ'; color: #DCDCAA; }
+.cm-completionIcon-agg::after { content: 'Σ'; color: #E0B341; }
+.cm-completionIcon-cast::after { content: '⇄'; color: #4FC1FF; }
+.cm-completionIcon-table::after { content: '▦'; color: var(--accent); }
+.cm-completionIcon-column::after { content: '▪'; color: #92E1D8; }
+.cm-completionIcon-db::after { content: '◈'; color: #A0A0A8; }
+.cm-completionIcon-format::after { content: '≡'; color: #A0A0A8; }
+.cm-tooltip.cm-completionInfo {
+  padding: 7px 10px; max-width: 280px;
+  font-family: var(--ui); font-size: 11px; color: var(--fg-mute); line-height: 1.45;
+}
+/* Hover docs (#27): our card inside CM6's tooltip container. */
+.cm-tooltip .hover-card-cm {
+  position: static; width: 280px; border: none; background: transparent;
+  box-shadow: none; pointer-events: auto;
+}
+
 /* Mark overlay (#23 search highlights, #24 bracket pair): transparent <pre>
    below the token <pre>; only the marked spans paint a background. */
 .sql-mark-overlay {
