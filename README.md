@@ -246,10 +246,14 @@ docker compose up --build
 Then open `http://localhost:8900/sql`.
 
 By default `docker-compose.yaml` bind-mounts your host `~/.clickhouse-client` directory
-into the container read-only. Useful overrides:
+into the container read-only and disables the startup reachability probe. That is
+intentional: the probe runs inside the container, while the browser connects to
+ClickHouse directly from your host, so host-only names like `localhost` or
+entries resolved via your host `/etc/hosts` can be valid in the browser but fail
+when probed from Docker. Useful overrides:
 
 ```bash
-SQL_BROWSER_PROBE=0 docker compose up --build   # keep all hosts; skip /ping checks
+SQL_BROWSER_PROBE=1 docker compose up --build   # re-enable container-side /ping checks
 PORT=9000 docker compose up --build             # publish on another local port
 ```
 
@@ -319,8 +323,10 @@ docker compose up --build
 
 The container exposes `http://localhost:8900/sql` and reads saved connections
 from a read-only mount of `~/.clickhouse-client` into `/home/asb/.clickhouse-client`.
-Set `SQL_BROWSER_PROBE=0` when you want to keep all hosts without the startup
-reachability probe.
+Docker Compose disables `SQL_BROWSER_PROBE` by default because the probe runs in
+the container and may incorrectly drop host-only aliases such as `localhost` or
+names resolved through your host `/etc/hosts`. Re-enable it with
+`SQL_BROWSER_PROBE=1` if your saved hosts are reachable from inside Docker too.
 
 ## Installing on any ClickHouse cluster
 
