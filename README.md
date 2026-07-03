@@ -43,11 +43,12 @@ zero third-party requests. On top of it:
   parks and restores it.
 - **Find / replace** — `Cmd/Ctrl+F` opens CM6's search panel (app-styled) with
   prev/next, case / whole-word / regex toggles, and replace.
-- **Bracket matching + auto-close** — typing `(` or `[` inserts the pair (or
-  wraps the selection); typing a closer steps over it; Backspace inside an
-  empty pair deletes both; the pair adjacent to the caret is highlighted.
-  (`{`/`}` and quote auto-close are intentionally omitted — `{}` would fight
-  the `{name:Type}` query variables.)
+- **Bracket matching + auto-close** — typing `(` `[` or a quote inserts the
+  pair (or wraps the selection); typing a closer or quote steps over it;
+  Backspace inside an empty pair deletes both; the pair adjacent to the caret
+  is highlighted. Auto-close stays quiet inside strings and comments, and
+  `{`/`}` is intentionally omitted — it would fight the `{name:Type}` query
+  variables.
 - **Autocomplete** — typing a word (or after `table.`) opens a ranked list of
   keywords, functions, databases, tables, and already-loaded columns —
   the candidate set and ranking are the app's own (`core/completions.js`),
@@ -61,9 +62,10 @@ zero third-party requests. On top of it:
   (In-call signature help was dropped in the CM6 parity cut; the reference
   docs pane (#60) rebuilds it properly.)
 - **Drag to insert** — drag a schema table/column, or a **Library/History** row,
-  onto the editor: a schema identifier drops as text at the caret, and a
-  saved/history query drops as a `( … )` subquery at the drop point (its trailing
-  `FORMAT`/`;` stripped). Undoable; click-to-load still works for keyboard users.
+  onto the editor: a schema identifier drops as text at the drop point (the
+  drop cursor tracks the pointer), and a saved/history query drops there as a
+  `( … )` subquery (its trailing `FORMAT`/`;` stripped). Undoable;
+  click-to-load still works for keyboard users.
   Dragging a **database or table onto the results pane** instead renders a
   [data flow graph](#data-flow-graph).
 - **Query variables** — write a ClickHouse typed placeholder like

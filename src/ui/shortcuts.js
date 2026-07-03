@@ -56,6 +56,10 @@ export function openShortcuts(app) {
  * `app` provides state + the action callbacks; `signedIn` gates editing keys.
  */
 export function handleKeydown(e, app) {
+  // A key the editor already consumed (CM6 preventDefaults what it handles —
+  // e.g. Esc closing the completion popup or search panel) must not ALSO
+  // trigger a global action like cancelling the running query.
+  if (e.defaultPrevented) return null;
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
   // Esc cancels an in-flight query (aborts the stream + KILL QUERY).

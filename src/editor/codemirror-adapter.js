@@ -3,26 +3,28 @@
 // measured text, IME/touch, search panel, completion UI — while the app keeps
 // talking through the same EditorPort, and the SQL knowledge stays pure in
 // core (`completions.js` ranking, reference data). Injected via
-// `createApp(env)` (`env.Editor`) exactly like the textarea adapter it
-// replaces; app-level tests keep running on `createNoopPort`.
+// `createApp(env)` (`env.Editor`, the Chart/Dagre precedent) exactly like the
+// textarea adapter it replaces; app-level tests keep running on
+// `createNoopPort`.
 //
 // Testing note: the adapter is unit-tested against the REAL CM6 under
 // happy-dom (construct/dispatch/undo all work headless). The inner pieces —
-// dialect builder, completion source, hover source, drop handler, Tab
-// command — are exported for direct invocation where headless measurement
-// (`coordsAtPos`/`posAtCoords`) makes event-driven coverage unreliable.
+// dialect builder, completion source, hover source, drop handler, input
+// handler, Tab command — are exported for direct invocation where headless
+// measurement (`coordsAtPos`/`posAtCoords`) makes event-driven coverage
+// unreliable.
 
-import { EditorState, Compartment, Annotation } from '@codemirror/state';
+import { EditorState, Compartment, Annotation, Transaction, Prec } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, hoverTooltip } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { bracketMatching, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { bracketMatching, syntaxHighlighting, syntaxTree, HighlightStyle } from '@codemirror/language';
 import { sql, SQLDialect } from '@codemirror/lang-sql';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { tags } from '@lezer/highlight';
 import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions, wordAt } from '../core/completions.js';
-import { toSubquery } from '../core/format.js';
+import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
 
@@ -30,8 +32,13 @@ import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
 // reach onDocChange subscribers — the app-level subscriber writes tab.sql +
 // dirty, and a tab switch dirtying the incoming tab would be a bug. User edits
 // and port edits (insertAtCursor/replaceDocument/drop) DO emit, matching the
-// textarea adapter's input-event semantics.
-const syncTx = Annotation.define();
+// textarea adapter's input-event semantics. Sync transactions also stay out
+// of the undo history: ⌘Z must not resurrect a doc the app already replaced.
+export const syncTx = Annotation.define(); // exported for the mixed-update emit spec
+const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(false)];
+// The whole-document change spec — shared by replaceDocument and both
+// syncFromState reconcile paths so their shapes can't drift.
+const fullReplace = (state, text) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
 
 // Map the lang-sql token tags onto the EXISTING .sql-* stylesheet classes
 // (styles.css) — token colors and light/dark theming stay in the stylesheet,
@@ -48,34 +55,48 @@ const sqlClasses = HighlightStyle.define([
   { tag: tags.operator, class: 'sql-op' },
 ]);
 
-// Completion kind → CM6 option `type`. Custom strings are fine — each renders
-// as a .cm-completionIcon-<type> node the stylesheet gives a glyph + color,
-// mirroring the old dropdown's K/ƒ/Σ/⇄/▦/▪/◈/≡ chips.
-const CM_TYPE = {
-  keyword: 'keyword', fn: 'fn', agg: 'agg', cast: 'cast',
-  table: 'table', column: 'column', db: 'db', format: 'format',
-};
+// String/comment/backtick-ident syntax nodes — the contexts where bracket
+// auto-close and hover docs must stay quiet (the old adapter's maskLiterals
+// role, now answered by CM6's syntax tree).
+const LITERAL_NODE = /String|Comment|QuotedIdentifier/;
 
 /**
  * The ClickHouse-flavored SQL language extension for the current reference
  * data: server keywords/function names when loaded (#25), the built-in
- * fallback sets otherwise. Backticks and double quotes are identifier quotes
- * in ClickHouse; strings take backslash escapes. Auto-close stays limited to
- * `(` and `[` — quotes and `{` deliberately don't pair (parity with
- * core/editor-brackets.js; `{}` would fight the #134 `{name:Type}` variables).
+ * fallback sets otherwise. Both word lists are lowercased — lang-sql looks
+ * dialect words up via `word.toLowerCase()`, so a verbatim `toDateTime` would
+ * never match. Backticks and double quotes are identifier quotes in
+ * ClickHouse; strings take backslash escapes. Auto-close covers `(`, `[`, and
+ * the three quotes (parity with the deleted core/editor-brackets.js) — `{`
+ * deliberately doesn't pair (it would fight the #134 `{name:Type}` variables).
  */
 export function langExtensionFor(app) {
   const ref = app.refData;
   const dialect = SQLDialect.define({
     keywords: (ref ? ref.keywords : []).join(' ').toLowerCase(),
-    builtin: Object.keys(ref ? ref.functions : {}).join(' '),
+    builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
     backslashEscapes: true,
     identifierQuotes: '`"',
   });
   return [
     sql({ dialect }),
-    dialect.language.data.of({ closeBrackets: { brackets: ['(', '['] } }),
+    dialect.language.data.of({ closeBrackets: { brackets: ['(', '[', "'", '"', '`'] } }),
   ];
+}
+
+/**
+ * Literal-aware bracket input: CM6's closeBrackets consults the syntax tree
+ * for quotes but NOT for brackets, so without this a `(` typed inside a
+ * string or comment would auto-insert a stray `)` into the literal — the
+ * exact case the old masked-text guard suppressed. Runs ahead of
+ * closeBrackets (Prec.high) and types the bare character there instead.
+ */
+export function bracketInLiteral(view, from, to, text) {
+  if (text !== '(' && text !== '[') return false;
+  const node = syntaxTree(view.state).resolveInner(from, -1);
+  if (!LITERAL_NODE.test(node.name)) return false;
+  view.dispatch(view.state.replaceSelection(text), { userEvent: 'input.type', scrollIntoView: true });
+  return true;
 }
 
 /**
@@ -87,7 +108,9 @@ export function langExtensionFor(app) {
  */
 export function completionSourceFor(app) {
   return (ctx) => {
-    const doc = ctx.state.doc.toString();
+    // completionContext never reads past the caret — slice, don't serialize
+    // the whole rope on the keystroke path.
+    const doc = ctx.state.sliceDoc(0, ctx.pos);
     const c = completionContext(doc, ctx.pos);
     if (!c.qualified && c.word.length < 1 && !ctx.explicit) return null;
     const items = rankCompletions(app.completions || [], c);
@@ -99,7 +122,7 @@ export function completionSourceFor(app) {
       options: items.map((it) => ({
         label: it.label,
         detail: it.detail || undefined,
-        type: CM_TYPE[it.kind] || 'fn',
+        type: it.kind, // chip glyph via .cm-completionIcon-<kind>; unknown kinds get the base '·'
         apply: applyFor(it),
         info: infoFor(app, it),
       })),
@@ -127,7 +150,7 @@ export function applyFor(it) {
 // FUNCTION must yield a DOM node (a bare string is only legal when `info`
 // itself is the string) — CM6's addInfoPane appendChild()s the result.
 export function infoFor(app, it) {
-  const doc = (text) => (text ? h('div', { class: 'cm-info-doc' }, text) : null);
+  const doc = (text) => (text ? h('div', null, text) : null);
   if (it.kind === 'keyword') {
     return () => doc(app.refData && app.refData.keywordDocs[it.label.toUpperCase()]);
   }
@@ -138,24 +161,35 @@ export function infoFor(app, it) {
   return undefined;
 }
 
+// SQL function calls are case-insensitive: resolve the hovered word against
+// the reference keys the way the old editor-intel lookupFn did (#27) — exact,
+// then lower (server keys are mostly canonical-lowercase), then UPPER.
+const lookupFn = (functions, word) =>
+  functions[word] || functions[word.toLowerCase()] || functions[word.toUpperCase()];
+
 /**
  * Hover docs (#27 parity v0): keyword docs from the static set, function
- * signature + return type + lazily-fetched description. Signature help (the
- * caret-following arg highlighter) is dropped in v0 — #60 rebuilds docs
- * properly on this foundation.
+ * signature + return type + lazily-fetched description. Quiet inside
+ * strings/comments/quoted identifiers (no phantom docs over literal prose).
+ * Signature help (the caret-following arg highlighter) is dropped in v0 —
+ * #60 rebuilds docs properly on this foundation.
  */
 export function hoverSourceFor(app) {
   return (view, pos) => {
-    const w = wordAt(view.state.doc.toString(), pos);
-    if (!w || !app.refData) return null;
+    if (!app.refData) return null;
+    if (LITERAL_NODE.test(syntaxTree(view.state).resolveInner(pos, 0).name)) return null;
+    // Identifiers can't span lines — scan the line, not the whole doc.
+    const line = view.state.doc.lineAt(pos);
+    const w = wordAt(line.text, pos - line.from);
+    if (!w) return null;
     const kwDoc = app.refData.keywordDocs[w.word.toUpperCase()];
-    const fn = app.refData.functions[w.word];
+    const fn = lookupFn(app.refData.functions, w.word);
     if (!kwDoc && !fn) return null;
     return {
-      pos: w.from,
-      end: w.to,
+      pos: line.from + w.from,
+      end: line.from + w.to,
       create: () => {
-        const dom = h('div', { class: 'hover-card hover-card-cm' });
+        const dom = h('div', { class: 'hover-card' });
         if (fn) {
           dom.appendChild(h('div', { class: 'hover-sig' }, fn.sig || w.word + '()',
             fn.ret ? h('span', { class: 'hover-ret' }, ' → ' + fn.ret) : null));
@@ -175,29 +209,20 @@ export function hoverSourceFor(app) {
 
 /**
  * Drop handler for the app's drag sources (schema identifiers, saved/history
- * queries). Returns true when it consumed the event (so CM6's native text
- * drop can't double-insert). Exported for direct tests — happy-dom's
- * posAtCoords can't exercise the coordinate fallback via real events.
+ * queries). Both land at the POINTER position (falling back to the caret when
+ * the point doesn't map to text) — the dropCursor extension shows the user
+ * exactly that target while dragging. Returns true when it consumed the event
+ * (so CM6's native text drop can't double-insert). Exported for direct tests —
+ * happy-dom's posAtCoords can't exercise the coordinate fallback via real
+ * events.
  */
 export function handleDrop(app, view, e) {
   const dt = e.dataTransfer;
   if (!dt) return false;
-  const ident = dt.getData(IDENT_MIME);
-  if (ident) {
-    e.preventDefault();
-    view.dispatch(view.state.replaceSelection(ident), { userEvent: 'input.drop', scrollIntoView: true });
-    view.focus();
-    return true;
-  }
-  const sub = dt.getData(SUBQUERY_MIME);
-  if (sub) {
-    const text = toSubquery(sub);
-    if (!text) return false;
-    e.preventDefault();
-    // Land at the pointer; fall back to the caret when the drop point doesn't
-    // map to a text position.
+  const insertAt = (text) => {
     const at = view.posAtCoords({ x: e.clientX, y: e.clientY });
     const pos = at == null ? view.state.selection.main.head : at;
+    e.preventDefault();
     view.dispatch({
       changes: { from: pos, to: pos, insert: text },
       selection: { anchor: pos + text.length },
@@ -206,6 +231,14 @@ export function handleDrop(app, view, e) {
     });
     view.focus();
     return true;
+  };
+  const ident = dt.getData(IDENT_MIME);
+  if (ident) return insertAt(ident);
+  const sub = dt.getData(SUBQUERY_MIME);
+  if (sub) {
+    const text = toSubquery(sub);
+    if (!text) return false;
+    return insertAt(text);
   }
   return false; // not our drag — leave native behavior alone
 }
@@ -230,7 +263,10 @@ export function createCodeMirrorEditor(app) {
   const emit = (value) => { for (const cb of subs) cb(value); };
   const langCompartment = new Compartment();
   const tabStates = new Map(); // tabId → parked EditorState (per-tab undo)
-  let langExt = langExtensionFor(app);
+  // Resolved lazily at first mount, NOT at factory time: createApp constructs
+  // the port before it assembles the built-in fallback refData, and an eager
+  // snapshot here would mount an empty dialect (no keywords at all).
+  let langExt = null;
   let view = null;
   let shownTabId = null;
 
@@ -240,6 +276,7 @@ export function createCodeMirrorEditor(app) {
     drawSelection(),
     dropCursor(),
     bracketMatching(),
+    Prec.high(EditorView.inputHandler.of(bracketInLiteral)),
     closeBrackets(),
     syntaxHighlighting(sqlClasses),
     langCompartment.of(langExt),
@@ -258,7 +295,9 @@ export function createCodeMirrorEditor(app) {
       ...defaultKeymap.filter((b) => b.key !== 'Mod-Enter'),
     ]),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged && !u.transactions.some((tr) => tr.annotation(syncTx))) {
+      // Suppress only when EVERY transaction is a sync — an update that
+      // coalesces a user edit with a reconcile must still reach tab.sql.
+      if (u.docChanged && !u.transactions.every((tr) => tr.annotation(syncTx))) {
         emit(u.state.doc.toString());
       }
     }),
@@ -268,7 +307,10 @@ export function createCodeMirrorEditor(app) {
     }),
   ];
 
-  const freshState = (doc) => EditorState.create({ doc, extensions: extensions() });
+  const freshState = (doc) => {
+    if (!langExt) langExt = langExtensionFor(app);
+    return EditorState.create({ doc, extensions: extensions() });
+  };
 
   return {
     mount: (container) => {
@@ -276,8 +318,10 @@ export function createCodeMirrorEditor(app) {
         const tab = activeTab(app.state); // state guarantees ≥1 tab
         shownTabId = tab.id;
         view = new EditorView({ state: freshState(tab.sql) });
-        app.dom.editorView = view; // for e2e/debug reach-in; the app uses the port
       }
+      // renderApp resets app.dom on every run — re-register the reach-in ref
+      // (e2e/debug only; the app itself talks through the port).
+      app.dom.editorView = view;
       container.replaceChildren(view.dom);
     },
     destroy: () => {
@@ -301,10 +345,9 @@ export function createCodeMirrorEditor(app) {
     },
     replaceDocument: (text) => {
       if (!view) return;
-      const cur = view.state.doc.toString();
-      if (cur === text) return; // idempotent Format re-run — no edit, no undo entry
+      if (view.state.doc.length === text.length && view.state.doc.toString() === text) return; // idempotent Format re-run
       view.dispatch({
-        changes: { from: 0, to: cur.length, insert: text },
+        ...fullReplace(view.state, text),
         selection: { anchor: text.length },
         userEvent: 'input.replace',
         scrollIntoView: true,
@@ -312,8 +355,7 @@ export function createCodeMirrorEditor(app) {
     },
     revealOffset: (pos) => {
       if (!view) return;
-      const p = Math.max(0, Math.min(pos | 0, view.state.doc.length));
-      view.dispatch({ selection: { anchor: p }, scrollIntoView: true });
+      view.dispatch({ selection: { anchor: clamp(pos | 0, 0, view.state.doc.length) }, scrollIntoView: true });
       view.focus();
     },
     syncFromState: () => {
@@ -324,13 +366,10 @@ export function createCodeMirrorEditor(app) {
       if (shownTabId === tab.id) {
         // Same tab (the effect also fires on unrelated tab-list changes):
         // reconcile only an external tab.sql change; equal doc = strict no-op
-        // (selection/scroll/completion untouched).
-        const cur = view.state.doc.toString();
-        if (cur !== tab.sql) {
-          view.dispatch({
-            changes: { from: 0, to: cur.length, insert: tab.sql },
-            annotations: syncTx.of(true),
-          });
+        // (selection/scroll/completion untouched). Length check first — the
+        // effect fires on every tab op and O(doc) compares add up.
+        if (view.state.doc.length !== tab.sql.length || view.state.doc.toString() !== tab.sql) {
+          view.dispatch({ ...fullReplace(view.state, tab.sql), annotations: syncAnnotations() });
         }
         return;
       }
@@ -341,10 +380,15 @@ export function createCodeMirrorEditor(app) {
         // write — re-apply the current language and reconcile the doc via
         // detached updates (undo history survives; no view listener fires).
         next = next.update({ effects: langCompartment.reconfigure(langExt) }).state;
-        const doc = next.doc.toString();
-        if (doc !== tab.sql) {
-          next = next.update({ changes: { from: 0, to: doc.length, insert: tab.sql }, annotations: syncTx.of(true) }).state;
+        if (next.doc.length !== tab.sql.length || next.doc.toString() !== tab.sql) {
+          next = next.update({ ...fullReplace(next, tab.sql), annotations: syncAnnotations() }).state;
         }
+        // Collapse the restored selection to its head: an invisible parked
+        // selection would silently retarget ⌘↵/Export (which read
+        // getSelection() without a focus check) — the old adapter's
+        // value-reassignment collapsed it too.
+        const head = clamp(next.selection.main.head, 0, next.doc.length);
+        next = next.update({ selection: { anchor: head }, annotations: syncAnnotations() }).state;
       } else {
         next = freshState(tab.sql);
       }

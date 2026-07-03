@@ -73,6 +73,15 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
     expect(app.actions.run).toHaveBeenCalled();
   });
+  it('a key the editor already consumed (defaultPrevented) never triggers a global action', () => {
+    const app = makeApp();
+    app.state.running.value = true;
+    // e.g. Esc that just closed the CM6 completion popup / search panel (#21)
+    expect(handleKeydown(ev({ key: 'Escape', defaultPrevented: true }), app)).toBeNull();
+    expect(app.actions.cancel).not.toHaveBeenCalled();
+    expect(handleKeydown(ev({ metaKey: true, key: 'Enter', defaultPrevented: true }), app)).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
   it('Escape cancels a running query, and is a no-op otherwise', () => {
     const app = makeApp();
     app.state.running.value = false;

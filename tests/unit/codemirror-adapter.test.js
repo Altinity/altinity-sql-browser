@@ -3,31 +3,28 @@ import { undoDepth, undo } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import {
   createCodeMirrorEditor, langExtensionFor, completionSourceFor, applyFor,
-  infoFor, hoverSourceFor, handleDrop, insertTwoSpaces,
+  infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, bracketInLiteral, syncTx,
 } from '../../src/editor/codemirror-adapter.js';
-import { createState, activeTab, newTabObj } from '../../src/state.js';
+import { activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
+import { makeApp as baseApp } from '../helpers/fake-app.js';
 
 // The CM6 adapter runs against the REAL CodeMirror under happy-dom — no fake
 // editor. Construction, dispatch, undo, and keymaps all work headless; only
 // coordinate measurement doesn't, which is why the inner sources/handlers are
 // exported and invoked directly where needed.
 
-const storage = { loadStr: (k, d) => d, loadJSON: (k, d) => d };
-
-function makeApp(over = {}) {
-  const refData = assembleReferenceData(null);
-  return {
-    state: createState(storage),
-    dom: {},
-    document,
-    refData,
-    completions: [],
-    entityDoc: undefined,
-    ...over,
-  };
-}
+// The shared fake-app, narrowed to what the adapter reads: a fresh dom bag
+// (mount registers editorView into it), reference data, and NO entityDoc by
+// default (infoFor treats a missing loader as "no info").
+const makeApp = (over = {}) => baseApp({
+  dom: {},
+  refData: assembleReferenceData(null),
+  completions: [],
+  entityDoc: undefined,
+  ...over,
+});
 
 // Mount a fresh port + view; subscribe like app.js does (#143) so tab.sql
 // tracks the view.
@@ -253,6 +250,26 @@ describe('per-tab EditorState (syncFromState)', () => {
     expect(port.getValue()).toBe('fresh');
   });
 
+  it("a restored tab's parked selection is collapsed (no invisible run/export target)", () => {
+    const { port, view, app } = mounted();
+    port.replaceDocument('SELECT 1; SELECT 2');
+    view.dispatch({ selection: { anchor: 10, head: 18 } }); // select 'SELECT 2'
+    addTab(app, 't2', 'two');
+    app.state.activeTabId.value = 't2';
+    port.syncFromState();
+    app.state.activeTabId.value = 't1';
+    port.syncFromState();
+    expect(port.getSelection()).toEqual({ start: 18, end: 18, text: '' }); // caret kept, range gone
+  });
+
+  it('an update mixing a user edit with a sync transaction still emits (tab.sql must not go stale)', () => {
+    const { view, changes } = mounted();
+    const user = view.state.update({ changes: { from: 0, to: 0, insert: 'user' } });
+    const sync = user.state.update({ changes: { from: 0, to: 0, insert: 'x' }, annotations: syncTx.of(true) });
+    view.update([user, sync]); // one coalesced view update, two transactions
+    expect(changes).toEqual(['xuser']); // the user edit reached onDocChange
+  });
+
   it('refreshReference() reconfigures the live view and parked states on restore', () => {
     const { port, app } = mounted();
     port.replaceDocument('select magicword from t');
@@ -281,7 +298,7 @@ describe('langExtensionFor', () => {
     const ext = langExtensionFor({ refData: null });
     expect(Array.isArray(ext)).toBe(true);
     const st = EditorState.create({ doc: 'x', extensions: ext });
-    expect(st.languageDataAt('closeBrackets', 0)[0]).toEqual({ brackets: ['(', '['] });
+    expect(st.languageDataAt('closeBrackets', 0)[0]).toEqual({ brackets: ['(', '[', "'", '"', '`'] }); // quotes pair (editor-brackets.js parity)
   });
 });
 
@@ -315,10 +332,10 @@ describe('completionSourceFor', () => {
     expect(r.options.find((o) => o.label === 'odd')).toBeUndefined();
   });
 
-  it('maps unknown kinds to the fn icon and omits missing detail', () => {
+  it('passes the kind through as the icon type and omits missing detail', () => {
     const r = src(ctx('odd', 3));
     const o = r.options.find((x) => x.label === 'odd');
-    expect(o.type).toBe('fn');
+    expect(o.type).toBe('mystery'); // unknown kinds render the base '·' chip via CSS
     expect(o.detail).toBeUndefined();
   });
 
@@ -436,14 +453,24 @@ describe('handleDrop', () => {
     expect(e.preventDefault).not.toHaveBeenCalled();
   });
 
-  it('inserts a schema identifier at the caret', () => {
+  it('inserts a schema identifier at the pointer position (what dropCursor promised)', () => {
     const { view, app, changes } = mounted();
-    view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT  FROM t' }, selection: { anchor: 7 } });
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT  FROM t' }, selection: { anchor: 0 } });
+    view.posAtCoords = () => 7; // the pointer, not the parked caret
     const e = evt({ [IDENT_MIME]: 'fare' });
     expect(handleDrop(app, view, e)).toBe(true);
     expect(e.preventDefault).toHaveBeenCalled();
     expect(view.state.doc.toString()).toBe('SELECT fare FROM t');
+    expect(view.state.selection.main.head).toBe(11); // caret after the dropped text
     expect(changes.at(-1)).toBe('SELECT fare FROM t'); // drop is a real edit — it emits
+  });
+
+  it('falls back to the caret when the identifier drop point maps to no position', () => {
+    const { view, app } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'ab' }, selection: { anchor: 1 } });
+    view.posAtCoords = () => null;
+    expect(handleDrop(app, view, evt({ [IDENT_MIME]: 'X' }))).toBe(true);
+    expect(view.state.doc.toString()).toBe('aXb');
   });
 
   it('drops a saved query as a subquery at the pointer position', () => {
@@ -476,5 +503,77 @@ describe('handleDrop', () => {
     expect(handleDrop(app, view, evt({ [SUBQUERY_MIME]: 'SELECT 2' }))).toBe(true);
     expect(view.state.doc.toString()).toBe('a(\nSELECT 2\n)b');
     expect(handleDrop(app, view, evt({ [SUBQUERY_MIME]: '   ' }))).toBe(false);
+  });
+});
+
+describe('reference-data lifecycle', () => {
+  it('mount resolves the dialect lazily — refData assigned after the factory still paints (createApp order)', () => {
+    const app = makeApp({ refData: null });
+    const port = createCodeMirrorEditor(app); // createApp builds the port BEFORE assembling refData
+    app.refData = assembleReferenceData(null); // …then assigns the built-in fallback pre-render
+    activeTab(app.state).sql = 'select 1 from t';
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    port.mount(host);
+    const kw = [...app.dom.editorView.dom.querySelectorAll('.sql-keyword')].map((n) => n.textContent);
+    expect(kw).toContain('select'); // NOT an empty dialect at first paint
+  });
+
+  it('camelCase server function names highlight (dialect words are lowercased on both sides)', () => {
+    const app = makeApp({
+      refData: assembleReferenceData({
+        keywords: ['SELECT', 'FROM'],
+        functions: { toDateTime: { kind: 'fn', sig: 'toDateTime(x)', ret: '', desc: '' } },
+        formats: ['CSV'],
+      }),
+    });
+    const port = createCodeMirrorEditor(app);
+    activeTab(app.state).sql = 'select toDateTime(x) from t';
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    port.mount(host);
+    const fns = [...app.dom.editorView.dom.querySelectorAll('.sql-func')].map((n) => n.textContent);
+    expect(fns).toContain('toDateTime'); // lang-sql looks words up lowercased
+  });
+});
+
+describe('literal awareness (the old maskLiterals role)', () => {
+  it('bracketInLiteral types a bare bracket inside strings/comments and defers elsewhere', () => {
+    const { view } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'a b' -- note" } });
+    view.dispatch({ selection: { anchor: 10 } }); // inside the string
+    expect(bracketInLiteral(view, 10, 10, '(')).toBe(true);
+    expect(view.state.doc.toString()).toBe("SELECT 'a (b' -- note"); // bare ( — no stray )
+    const end = view.state.doc.length;
+    view.dispatch({ selection: { anchor: end } }); // inside the trailing comment
+    expect(bracketInLiteral(view, end, end, '[')).toBe(true);
+    expect(view.state.doc.toString().endsWith('note[')).toBe(true);
+    view.dispatch({ selection: { anchor: 6 } }); // plain code → closeBrackets' turn
+    expect(bracketInLiteral(view, 6, 6, '(')).toBe(false);
+    expect(bracketInLiteral(view, 6, 6, 'x')).toBe(false); // not a bracket at all
+  });
+
+  it('hover stays quiet inside strings and comments (no phantom docs over prose)', () => {
+    const ref = assembleReferenceData(null);
+    const { view } = mounted({ refData: ref });
+    view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'count' -- count rows" } });
+    const hover = hoverSourceFor({ refData: ref });
+    expect(hover(view, 10)).toBe(null); // 'count' inside the string
+    expect(hover(view, 20)).toBe(null); // 'count' inside the comment
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT count(x)' } });
+    expect(hover(view, 9)).not.toBe(null); // the real call still documents
+  });
+
+  it('hover resolves function names case-insensitively (SQL calls are case-insensitive)', () => {
+    const ref = assembleReferenceData({
+      keywords: ['SELECT'],
+      functions: { sum: { kind: 'agg', sig: 'sum(x)', ret: '', desc: 'adds' } },
+      formats: ['CSV'],
+    });
+    const { view } = mounted({ refData: ref });
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT SUM(x)' } });
+    const tip = hoverSourceFor({ refData: ref })(view, 9);
+    expect(tip).not.toBe(null);
+    expect(tip.create().dom.textContent).toContain('sum(x)');
   });
 });
