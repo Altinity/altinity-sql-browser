@@ -4,6 +4,7 @@
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
+import { createNoopPort } from '../../src/editor/editor-port.js';
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
 // exposes a destroy() spy, so the chart glue is testable without a real canvas.
@@ -37,6 +38,7 @@ export function makeApp(over = {}) {
     host: () => 'test.host',
     build: 'v0.0.0-test',
     activeTab: () => activeTab(state),
+    editor: createNoopPort(), // render modules call the port unconditionally (#143)
     isSignedIn: () => true,
     email: () => 'me@example.com',
     savePref: vi.fn(),

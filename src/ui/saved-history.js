@@ -6,7 +6,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
-import { SUBQUERY_MIME } from './editor.js';
+import { SUBQUERY_MIME } from './dnd-mime.js';
 import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
 } from '../state.js';

@@ -1,6 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHighlightInto, mountEditor, insertAtCursor, replaceEditor, IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/editor.js';
+import { renderHighlightInto, createTextareaEditor } from '../../src/editor/textarea-adapter.js';
+import { IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { makeApp } from '../helpers/fake-app.js';
+
+// Port-backed stand-ins for the pre-#143 module-level API: each test mounts
+// through a fresh EditorPort exactly the way app.js does — including the
+// app-level onDocChange subscriber that now owns the tab.sql/dirty writes —
+// and the old helper names keep the specs below readable.
+const mountEditor = (app, container) => {
+  app.editor = createTextareaEditor(app);
+  app.editor.onDocChange((value) => {
+    const tab = app.activeTab();
+    tab.sql = value;
+    tab.dirty = true;
+  });
+  app.editor.mount(container);
+  return app.editor;
+};
+const insertAtCursor = (app, text) => app.editor.insertAtCursor(text);
+const replaceEditor = (app, text) => app.editor.replaceDocument(text);
 
 describe('renderHighlightInto', () => {
   it('paints tokens as spans and whitespace as text, ending with newline', () => {
@@ -50,15 +68,35 @@ describe('mountEditor', () => {
     // the shared token cache must invalidate on the refData change (not just on text change)
     expect(app.dom.editorPre.querySelector('.sql-keyword').textContent).toBe('FOO');
   });
-  it('typing updates the tab, marks dirty, repaints, and rerenders', () => {
+  it('typing repaints and reports the change through onDocChange (#143)', () => {
     const { app, ta } = mount();
+    // The adapter only emits; the state writes (tab.sql/dirty) live in the
+    // subscriber (the mountEditor helper wires the same one app.js registers).
+    const seen = [];
+    app.editor.onDocChange((value) => seen.push(value));
     ta.value = 'SELECT 2\nFROM t';
     ta.dispatchEvent(new Event('input'));
+    expect(seen).toEqual(['SELECT 2\nFROM t']);
     expect(app.activeTab().sql).toBe('SELECT 2\nFROM t');
     expect(app.activeTab().dirty).toBe(true);
     expect(app.dom.editorGutter.children.length).toBe(2);
-    expect(app.actions.rerenderTabs).toHaveBeenCalled();
-    expect(app.actions.updateSaveBtn).toHaveBeenCalled();
+  });
+  it('onDocChange unsubscribe stops delivery; destroy() drops all subscribers', () => {
+    const { app, ta } = mount();
+    const seen = [];
+    const unsub = app.editor.onDocChange((value) => seen.push(value));
+    ta.value = 'a';
+    ta.dispatchEvent(new Event('input'));
+    unsub();
+    ta.value = 'b';
+    ta.dispatchEvent(new Event('input'));
+    expect(seen).toEqual(['a']);
+    const kept = [];
+    app.editor.onDocChange((value) => kept.push(value));
+    app.editor.destroy();
+    ta.value = 'c';
+    ta.dispatchEvent(new Event('input')); // emit after destroy → no-op
+    expect(kept).toEqual([]);
   });
   it('scroll syncs pre + gutter to the textarea on both axes', () => {
     const { app, ta } = mount();
@@ -168,9 +206,9 @@ describe('insertAtCursor', () => {
     expect(ta.value).toBe('SELECT x FROM t');
     expect(app.activeTab().sql).toBe('SELECT x FROM t');
   });
-  it('no-ops without a textarea', () => {
-    const app = makeApp();
-    expect(() => insertAtCursor(app, 'x')).not.toThrow();
+  it('no-ops without a textarea (port created, not yet mounted)', () => {
+    const port = createTextareaEditor(makeApp());
+    expect(() => port.insertAtCursor('x')).not.toThrow();
   });
   it('tries execCommand first but splices manually when it is a no-op (Firefox <textarea>)', () => {
     const app = makeApp();
@@ -216,9 +254,52 @@ describe('replaceEditor', () => {
     try { replaceEditor(app, 'SELECT 1'); } finally { document.execCommand = orig; }
     expect(ta.value).toBe('SELECT 1');
   });
-  it('no-ops without a textarea', () => {
+  it('no-ops without a textarea (port created, not yet mounted)', () => {
+    const port = createTextareaEditor(makeApp());
+    expect(() => port.replaceDocument('x')).not.toThrow();
+  });
+});
+
+describe('the EditorPort surface (#143)', () => {
+  it('tolerates every method before mount — createApp wires consumers first', () => {
+    const port = createTextareaEditor(makeApp());
+    expect(port.getValue()).toBe('');
+    expect(port.getSelection()).toEqual({ start: 0, end: 0, text: '' });
+    expect(port.hasFocus()).toBe(false);
+    expect(() => port.focus()).not.toThrow();
+    expect(() => port.revealOffset(3)).not.toThrow();
+    expect(() => port.syncFromState()).not.toThrow();
+    expect(() => port.refreshReference()).not.toThrow();
+    expect(() => port.destroy()).not.toThrow();
+  });
+  it('reflects the mounted textarea: value, selection, focus, reveal, sync', () => {
     const app = makeApp();
-    expect(() => replaceEditor(app, 'x')).not.toThrow();
+    app.activeTab().sql = 'SELECT abc FROM t';
+    const container = document.createElement('div');
+    document.body.appendChild(container); // focus/activeElement needs attachment
+    try {
+      const port = createTextareaEditor(app);
+      port.mount(container);
+      const ta = app.dom.editorTextarea;
+      expect(port.getValue()).toBe('SELECT abc FROM t');
+      ta.selectionStart = 7;
+      ta.selectionEnd = 10;
+      expect(port.getSelection()).toEqual({ start: 7, end: 10, text: 'abc' });
+      port.focus();
+      expect(port.hasFocus()).toBe(true);
+      port.revealOffset(0);
+      expect(ta.selectionStart).toBe(0);
+      // syncFromState / refreshReference both run the full sync() — the
+      // zero-behavior-change contract for refData arrival (#143; relaxed in #21).
+      app.activeTab().sql = 'SELECT 2';
+      port.syncFromState();
+      expect(ta.value).toBe('SELECT 2');
+      app.activeTab().sql = 'SELECT 3';
+      port.refreshReference();
+      expect(ta.value).toBe('SELECT 3');
+    } finally {
+      document.body.removeChild(container);
+    }
   });
 });
 

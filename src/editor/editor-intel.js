@@ -19,7 +19,7 @@
 
 const HOVER_DWELL_MS = 350;
 
-import { h } from './dom.js';
+import { h } from '../ui/dom.js';
 import { signatureContext, wordAt } from '../core/completions.js';
 
 export function createIntel(host) {

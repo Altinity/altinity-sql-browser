@@ -5,7 +5,7 @@ import { batch } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
-import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './editor.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 
 // Copy-on-write expand toggle: returns a new Set with `key` added or removed, so
 // assigning it to the `expanded` signal triggers the repaint effect (signals

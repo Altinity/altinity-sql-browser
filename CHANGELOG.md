@@ -9,6 +9,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **The SQL editor now sits behind an injected `EditorPort` seam** (#143): the
+  hand-rolled textarea editor moved from `src/ui/` to `src/editor/` and is the
+  first adapter (`createTextareaEditor`) of a small port interface
+  (`src/editor/editor-port.js`) injected through `createApp(env)` like
+  Chart/Dagre. The editor's state writes on typing (`tab.sql`/dirty, tab strip,
+  Save button, #134 var strip) moved out of the adapter into an app-level
+  `onDocChange` subscriber, and drag-and-drop MIME constants live in a neutral
+  `src/ui/dnd-mime.js`. No user-visible change; this is the prep step that
+  makes the CodeMirror 6 swap (#21) a reversible one-line adapter change.
+  Bundle: +966 B raw / +428 B gzip (the port module — no new dependency).
+
 ### Added
 - **Query variables** (#134): typed ClickHouse placeholders — `{name:Type}` —
   are detected while you edit, and a single-line strip below the editor toolbar

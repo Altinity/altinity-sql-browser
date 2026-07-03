@@ -60,19 +60,19 @@ describe('selectTab', () => {
 describe('newTab / loadIntoNewTab', () => {
   it('newTab appends a blank tab + focuses', () => {
     const app = makeApp();
-    app.dom.editorTextarea = { focus: vi.fn() };
+    app.editor.focus = vi.fn(); // tabs.js focuses through the port (#143)
     newTab(app);
     expect(app.state.tabs.value).toHaveLength(2);
     expect(app.activeTab().name).toBe('Untitled');
-    expect(app.dom.editorTextarea.focus).toHaveBeenCalled();
+    expect(app.editor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab seeds name + sql, links savedId, and focuses the editor', () => {
     const app = makeApp();
-    app.dom.editorTextarea = { focus: vi.fn() };
+    app.editor.focus = vi.fn();
     loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1');
     expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1', savedId: 's1' });
     expect(app.activeTab().chartCfg).toBeNull(); // no chart payload → stays null
-    expect(app.dom.editorTextarea.focus).toHaveBeenCalled();
+    expect(app.editor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab restores a chart payload (cfg cloned, key set)', () => {
     const app = makeApp();
