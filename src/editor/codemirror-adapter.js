@@ -123,14 +123,17 @@ export function applyFor(it) {
 
 // The active row's description: static keyword docs immediately, function
 // docs lazily via app.entityDoc (cached, one query per name ever — #27).
-// CM6 shows it as a side tooltip (the old dropdown used a footer).
+// CM6 shows it as a side tooltip (the old dropdown used a footer). An `info`
+// FUNCTION must yield a DOM node (a bare string is only legal when `info`
+// itself is the string) — CM6's addInfoPane appendChild()s the result.
 export function infoFor(app, it) {
+  const doc = (text) => (text ? h('div', { class: 'cm-info-doc' }, text) : null);
   if (it.kind === 'keyword') {
-    return () => (app.refData && app.refData.keywordDocs[it.label.toUpperCase()]) || null;
+    return () => doc(app.refData && app.refData.keywordDocs[it.label.toUpperCase()]);
   }
   if (it.kind === 'fn' || it.kind === 'agg' || it.kind === 'cast') {
     if (!app.entityDoc) return undefined;
-    return () => Promise.resolve(app.entityDoc(it.label)).then((doc) => doc || null);
+    return () => Promise.resolve(app.entityDoc(it.label)).then(doc);
   }
   return undefined;
 }

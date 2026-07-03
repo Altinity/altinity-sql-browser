@@ -351,15 +351,19 @@ describe('applyFor', () => {
 
 describe('infoFor', () => {
   const ref = assembleReferenceData(null);
-  it('keywords resolve the static doc (or null when absent)', () => {
+  it('keywords resolve the static doc as a DOM node (CM6 appendChild()s an info fn result)', () => {
     const app = makeApp({ refData: ref });
-    expect(infoFor(app, { kind: 'keyword', label: 'FORMAT' })()).toMatch(/output format/);
+    const node = infoFor(app, { kind: 'keyword', label: 'FORMAT' })();
+    expect(node.nodeType).toBe(1); // a bare string would throw in CM6's addInfoPane
+    expect(node.textContent).toMatch(/output format/);
     expect(infoFor(app, { kind: 'keyword', label: 'ZZZ' })()).toBe(null);
     expect(infoFor(makeApp({ refData: null }), { kind: 'keyword', label: 'FORMAT' })()).toBe(null);
   });
   it('functions fetch lazily through app.entityDoc; empty doc → null', async () => {
     const app = makeApp({ entityDoc: vi.fn(async (n) => (n === 'sum' ? 'adds things' : '')) });
-    await expect(infoFor(app, { kind: 'agg', label: 'sum' })()).resolves.toBe('adds things');
+    const node = await infoFor(app, { kind: 'agg', label: 'sum' })();
+    expect(node.nodeType).toBe(1);
+    expect(node.textContent).toBe('adds things');
     await expect(infoFor(app, { kind: 'fn', label: 'nope' })()).resolves.toBe(null);
   });
   it('no entityDoc / other kinds → no info', () => {
