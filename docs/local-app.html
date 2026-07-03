@@ -28,9 +28,10 @@
 
 <section class="hero center">
   <div class="wrap">
-    <span class="pill">Local app · curl | sh</span>
+    <span class="pill">Local app · curl | sh or Docker</span>
     <h1>Run the SQL Browser on your laptop</h1>
-    <p class="lede">One command installs a launcher and a zero-dependency Python runner. It serves the app at
+    <p class="lede">One command installs a launcher and a zero-dependency Python runner. The same runner can also
+      be started from Docker. It serves the app at
       <code class="code-inline" style="color:#7fd4e8;">localhost:8900/sql</code> and points it at the clusters
       already in your <code class="code-inline" style="color:#7fd4e8;">clickhouse-client</code> config.</p>
     <div class="curl">
@@ -105,6 +106,12 @@
 
     <h3 style="margin-top:26px;">Run it from a source checkout instead</h3>
     <pre class="code">npm run local      <span class="c"># build dist/sql.html, then start the picker on :8900</span></pre>
+
+    <h3 style="margin-top:26px;">Run it from Docker instead</h3>
+    <pre class="code">docker compose up --build   <span class="c"># mounts ~/.clickhouse-client read-only and serves /sql on :8900</span></pre>
+    <p>That path uses the same Python runner as the curl-installed local app, so the Saved connection picker,
+      generated <code class="k">config.json</code>, and optional host reachability probe all behave the same way.
+      Set <code class="k">SQL_BROWSER_PROBE=0</code> if you want to keep every configured host without probing.</p>
 
     <h3 style="margin-top:26px;">Environment overrides</h3>
     <div class="table-scroll">

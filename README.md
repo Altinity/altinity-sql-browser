@@ -232,6 +232,36 @@ npm run build          # → dist/sql.html (single file)
 npm run dev            # build + serve dist/ at http://localhost:8900
 ```
 
+### Run in Docker
+
+The Docker image packages the existing zero-dependency Python runner, so the
+container keeps the same behavior as the local app: it serves `/sql`,
+generates `/config.json`, reads ClickHouse connections from
+`~/.clickhouse-client`, and optionally probes which hosts are reachable.
+
+```bash
+docker compose up --build
+```
+
+Then open `http://localhost:8900/sql`.
+
+By default `docker-compose.yaml` bind-mounts your host `~/.clickhouse-client` directory
+into the container read-only. Useful overrides:
+
+```bash
+SQL_BROWSER_PROBE=0 docker compose up --build   # keep all hosts; skip /ping checks
+PORT=9000 docker compose up --build             # publish on another local port
+```
+
+You can also build and run the image directly:
+
+```bash
+docker build -t altinity-sql-browser:local .
+docker run --rm -p 8900:8900 \
+  -v "$HOME/.clickhouse-client:/home/asb/.clickhouse-client:ro" \
+  altinity-sql-browser:local
+```
+
 ### Run locally against your own ClickHouse
 
 **Install (no clone, no Node — just `python3`):**
@@ -280,6 +310,17 @@ interface sends `Access-Control-Allow-Origin` for requests with an `Origin` head
 by default, so a stock server works. For an **OAuth** connection you also register
 `http://localhost:8900/sql` as a redirect URI with the IdP. Override the serve port
 with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
+
+**From Docker** (no Node on the host, same runner behavior):
+
+```bash
+docker compose up --build
+```
+
+The container exposes `http://localhost:8900/sql` and reads saved connections
+from a read-only mount of `~/.clickhouse-client` into `/home/asb/.clickhouse-client`.
+Set `SQL_BROWSER_PROBE=0` when you want to keep all hosts without the startup
+reachability probe.
 
 ## Installing on any ClickHouse cluster
 
@@ -372,6 +413,7 @@ src/
   styles.css
 build/        esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
+deploy/k8s/   sample Deployment, Service, ConfigMap, Ingress example
 tests/        vitest + happy-dom, one spec per module
 docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
               CLICKHOUSE-OAUTH.md, CLICKHOUSE-OSS-OAUTH.md

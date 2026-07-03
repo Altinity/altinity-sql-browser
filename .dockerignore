@@ -1,0 +1,9 @@
+node_modules
+coverage
+dist
+test-results
+playwright-report
+.git
+.github
+.claude
+docs/assets/img

@@ -1,5 +1,16 @@
 # Deployment
 
+There are now two distinct deployment surfaces:
+
+1. **ClickHouse-native hosted mode** — upload `sql.html` + `sql-config.json` into
+   ClickHouse `user_files/` and serve them from the cluster itself.
+2. **Containerized local-runner mode** — run the existing Python local server in
+   Docker or Kubernetes for local/shared testing, with connections mounted from a
+   ClickHouse client config file.
+
+This document focuses on the first mode. For the containerized local runner, see
+the Docker section in `README.md` and the sample manifests in `deploy/k8s/`.
+
 The app is three things on the target ClickHouse:
 1. `user_files/sql.html` — the SPA, served at `/sql`
 2. `user_files/sql-config.json` — OAuth config, served at `/sql/config.json`

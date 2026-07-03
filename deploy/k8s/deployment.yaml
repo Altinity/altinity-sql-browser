@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sql-browser-connections
+data:
+  config.xml: |
+    <clickhouse>
+      <connections_credentials>
+        <connection>
+          <name>replace-me</name>
+          <hostname>clickhouse.example.com</hostname>
+          <secure>1</secure>
+          <http_port>8443</http_port>
+          <user>default</user>
+          <password>replace-me</password>
+        </connection>
+      </connections_credentials>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: altinity-sql-browser
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: altinity-sql-browser
+  template:
+    metadata:
+      labels:
+        app: altinity-sql-browser
+    spec:
+      containers:
+        - name: sql-browser
+          image: altinity-sql-browser:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8900"
+            - name: SQL_BROWSER_PROBE
+              value: "0"
+          ports:
+            - name: http
+              containerPort: 8900
+          readinessProbe:
+            httpGet:
+              path: /config.json
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /sql
+              port: http
+          volumeMounts:
+            - name: clickhouse-config
+              mountPath: /home/asb/.clickhouse-client/config.xml
+              subPath: config.xml
+              readOnly: true
+      volumes:
+        - name: clickhouse-config
+          configMap:
+            name: sql-browser-connections
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: altinity-sql-browser
+spec:
+  selector:
+    app: altinity-sql-browser
+  ports:
+    - name: http
+      port: 8900
+      targetPort: http
