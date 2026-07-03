@@ -3,35 +3,55 @@
 <head>
   <meta charset="utf-8" />
   <title>editor harness</title>
-  <!-- the real stylesheet, so .sql-textarea / .sql-pre lay out exactly as shipped -->
+  <!-- the real stylesheet, so the CM6 editor lays out exactly as shipped -->
   <link rel="stylesheet" href="/src/styles.css" />
   <style>
     html, body { margin: 0; background: #111; }
-    /* .sql-editor is height/width:100%, so the mount host needs a fixed box. */
+    /* the app mounts into a sized editor-region; give the host the same box */
     #host { width: 680px; height: 340px; }
+    #host .cm-editor { height: 100%; }
   </style>
 </head>
 <body data-theme="dark">
   <div id="host"></div>
-  <!-- Mount the real editor module with a minimal stub controller. No bundling:
-       the browser resolves the /src ESM graph directly. -->
-  <!-- Resolve the bare `@preact/signals-core` specifier that src/state.js imports.
-       esbuild inlines it for the shipped artifact; raw ESM in the browser needs
-       this map (the e2e server serves the repo root, so /node_modules is live). -->
+  <!-- Mount the real CM6 adapter with a minimal stub controller. No bundling:
+       the browser resolves the /src ESM graph directly, so every bare
+       specifier the graph imports needs an import-map entry (the #89
+       unbundled-harness gotcha) — esbuild inlines these for the shipped
+       artifact. -->
   <script type="importmap">
-    { "imports": { "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs" } }
+    { "imports": {
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+      "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
+      "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
+      "@codemirror/commands": "/node_modules/@codemirror/commands/dist/index.js",
+      "@codemirror/language": "/node_modules/@codemirror/language/dist/index.js",
+      "@codemirror/lang-sql": "/node_modules/@codemirror/lang-sql/dist/index.js",
+      "@codemirror/autocomplete": "/node_modules/@codemirror/autocomplete/dist/index.js",
+      "@codemirror/search": "/node_modules/@codemirror/search/dist/index.js",
+      "@lezer/common": "/node_modules/@lezer/common/dist/index.js",
+      "@lezer/highlight": "/node_modules/@lezer/highlight/dist/index.js",
+      "@lezer/lr": "/node_modules/@lezer/lr/dist/index.js",
+      "style-mod": "/node_modules/style-mod/src/style-mod.js",
+      "w3c-keyname": "/node_modules/w3c-keyname/index.js",
+      "crelt": "/node_modules/crelt/index.js",
+      "@marijn/find-cluster-break": "/node_modules/@marijn/find-cluster-break/src/index.js"
+    } }
   </script>
   <script type="module">
-    import { createTextareaEditor } from '/src/editor/textarea-adapter.js';
+    import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
     import { createState, activeTab } from '/src/state.js';
+    import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
-    const app = { state, dom: {}, document };
+    const refData = assembleReferenceData(null);
+    const app = { state, dom: {}, document, refData, completions: buildCompletions(refData, []) };
     window.__app = app;
-    const port = createTextareaEditor(app);
+    const port = createCodeMirrorEditor(app);
+    window.__port = port;
     // Mirror app.js's onDocChange subscriber (#143) so the harness tab tracks
-    // the view — without it, a syncFromState()/re-mount in a spec would snap
-    // ta.value back to the tab's stale (empty) sql.
+    // the view — without it, a syncFromState() in a spec would snap the doc
+    // back to the tab's stale (empty) sql.
     port.onDocChange((value) => {
       const tab = activeTab(state);
       tab.sql = value;
@@ -39,18 +59,11 @@
     });
     port.mount(document.getElementById('host'));
 
-    // Expose the real insertion primitives the schema double-clicks use, so the
-    // e2e can drive them synchronously (inside a real dblclick handler) — that's
-    // the gesture/selection context where Firefox's execCommand path misbehaves.
+    // The real insertion primitives the schema double-clicks use, so specs can
+    // drive them synchronously inside a real gesture handler.
     window.__insertAtCursor = (t) => port.insertAtCursor(t);
     window.__replaceEditor = (t) => port.replaceDocument(t);
-
-    // Set editor content the way typing/replace does (drives paint()).
-    window.__setSql = (sql) => {
-      const ta = app.dom.editorTextarea;
-      ta.value = sql;
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-    };
+    window.__setSql = (sql) => port.replaceDocument(sql);
     window.__ready = true;
   </script>
 </body>

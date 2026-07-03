@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
-import { createTextareaEditor } from '../../src/editor/textarea-adapter.js';
+import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 
 function jwt(payload) {
@@ -103,7 +103,7 @@ function env(over = {}) {
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: webcrypto,
     Dagre: dagre,
-    Editor: createTextareaEditor, // the real adapter — app tests exercise editor-backed flows (#143)
+    Editor: createCodeMirrorEditor, // the real adapter — app tests exercise editor-backed flows (#143/#21)
     fetch: makeFetch([]),
     now: () => 0,
     retryMs: 0, // instant script-statement retry in tests (no real 250ms wait)
@@ -184,7 +184,7 @@ describe('renderApp shell', () => {
     const { app } = rendered();
     expect(app.root.querySelector('.app-header')).not.toBeNull();
     expect(app.root.querySelector('.sidebar')).not.toBeNull();
-    expect(app.root.querySelector('.sql-editor')).not.toBeNull();
+    expect(app.root.querySelector('.cm-editor')).not.toBeNull();
     // user control shows the short name (local-part) + full email on hover
     expect(app.dom.userBtn.querySelector('.user-short').textContent).toBe('me');
     expect(app.dom.userBtn.getAttribute('title')).toBe('me@example.com');
@@ -487,9 +487,8 @@ describe('query run', () => {
   });
   it('typing drives the real onDocChange subscriber: tab.sql/dirty, tab strip, Save button, var strip (#143)', () => {
     const { app } = appForRun([]);
-    const ta = app.dom.editorTextarea;
-    ta.value = 'SELECT {p:UInt8}';
-    ta.dispatchEvent(new Event('input'));
+    const view = app.dom.editorView;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT {p:UInt8}' } });
     // the subscriber (registered once in createApp) owns the state writes…
     expect(app.activeTab().sql).toBe('SELECT {p:UInt8}');
     expect(app.activeTab().dirty).toBe(true);
@@ -859,9 +858,8 @@ describe('query run', () => {
 
   it('a comment-only selection is a no-op (nothing is sent)', async () => {
     const { app } = appForRun([]);
-    const ta = app.dom.editorTextarea;
-    ta.value = '-- just a note';
-    ta.selectionStart = 0; ta.selectionEnd = ta.value.length;
+    app.editor.replaceDocument('-- just a note');
+    app.dom.editorView.dispatch({ selection: { anchor: 0, head: app.editor.getValue().length } });
     app.activeTab().sql = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result).toBeNull(); // no run started
@@ -988,10 +986,8 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
-    const ta = app.dom.editorTextarea;
-    ta.value = 'SELECT 1; SELECT 2';
-    ta.selectionStart = 0; ta.selectionEnd = 8; // "SELECT 1"
-    app.activeTab().sql = ta.value;
+    app.editor.replaceDocument('SELECT 1; SELECT 2');
+    app.dom.editorView.dispatch({ selection: { anchor: 0, head: 8 } }); // "SELECT 1"
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]); // single-statement rich path, not the script grid
     expect(app.activeTab().result.script).toBeUndefined();
@@ -1016,19 +1012,19 @@ describe('query run', () => {
 
   it('syncSelection drives hasSelection; setRunBtn flips to "Run selection"', () => {
     const { app } = appForRun([]);
-    const ta = app.dom.editorTextarea;
-    ta.value = 'SELECT 1; SELECT 2';
-    ta.focus();
-    ta.selectionStart = 0; ta.selectionEnd = 8;
+    let focused = true;
+    let sel = { start: 0, end: 8, text: 'SELECT 1' };
+    app.editor = { ...app.editor, hasFocus: () => focused, getSelection: () => sel };
     app.syncSelection();
     expect(app.state.hasSelection.value).toBe(true);
     app.setRunBtn(false);
     expect(app.dom.runBtn.textContent).toContain('Run selection');
-    // collapsed selection → false; missing textarea → false
-    ta.selectionEnd = 0;
+    // collapsed selection → false; unfocused editor → false
+    sel = { start: 0, end: 0, text: '' };
     app.syncSelection();
     expect(app.state.hasSelection.value).toBe(false);
-    app.dom.editorTextarea = null;
+    sel = { start: 0, end: 8, text: 'SELECT 1' };
+    focused = false;
     app.syncSelection();
     expect(app.state.hasSelection.value).toBe(false);
   });
@@ -1094,7 +1090,7 @@ describe('formatQuery', () => {
     await app.actions.formatQuery();
     // withStatementBreak appends a newline so the caret lands past the last
     // token — otherwise the replace re-opens autocomplete on it (#format bug).
-    expect(app.dom.editorTextarea.value).toBe('SELECT\n  1\n');
+    expect(app.editor.getValue()).toBe('SELECT\n  1\n');
   });
   it('no-ops on empty SQL', async () => {
     const { app, e } = appFor([]);
@@ -1115,13 +1111,13 @@ describe('formatQuery', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)"}' })],
     ]);
     app.activeTab().sql = 'select x BEWEEN 2';
-    app.dom.editorTextarea.value = 'select x BEWEEN 2';
+    app.editor.replaceDocument('select x BEWEEN 2');
     await app.actions.formatQuery();
-    expect(app.dom.editorTextarea.value).toBe('select x BEWEEN 2'); // editor unchanged
+    expect(app.editor.getValue()).toBe('select x BEWEEN 2'); // editor unchanged
     const err = app.root.querySelector('.results-error');
     expect(err).not.toBeNull();
     expect(err.textContent).toContain('Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)'); // full original message, untruncated
-    expect(app.dom.editorTextarea.selectionStart).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
+    expect(app.dom.editorView.state.selection.main.head).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
     expect(app.activeTab().result.formatError).toBe(true);
   });
   it('a later successful format clears a prior format error', async () => {
@@ -1144,7 +1140,7 @@ describe('formatQuery', () => {
     ]);
     app.activeTab().sql = 'create table t (a Int8); select count() from t';
     await app.actions.formatQuery();
-    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE t\n(\n    a Int8\n);\n\nSELECT count()\nFROM t\n');
+    expect(app.editor.getValue()).toBe('CREATE TABLE t\n(\n    a Int8\n);\n\nSELECT count()\nFROM t\n');
   });
   it('multi-statement format is best-effort: an unformattable statement keeps its original text', async () => {
     const { app } = appFor([
@@ -1153,7 +1149,7 @@ describe('formatQuery', () => {
     ]);
     app.activeTab().sql = 'create table t (a Int8); bad syntax here';
     await app.actions.formatQuery();
-    expect(app.dom.editorTextarea.value).toContain('bad syntax here'); // original kept
+    expect(app.editor.getValue()).toContain('bad syntax here'); // original kept
     expect(app.root.querySelector('.results-error')).toBeNull(); // no scary error for the script
   });
   it('a multi-statement format clears a prior single-statement format error', async () => {
@@ -1194,7 +1190,7 @@ describe('insertCreate', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE db.t\n(\n  a Int\n)' }] } })],
     ]);
     await app.actions.insertCreate('db.t');
-    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE db.t\n(\n  a Int\n)');
+    expect(app.editor.getValue()).toBe('CREATE TABLE db.t\n(\n  a Int\n)');
   });
   it('falls back to the raw DDL when formatting fails', async () => {
     const { app } = appFor([
@@ -1202,23 +1198,23 @@ describe('insertCreate', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"x"}' })],
     ]);
     await app.actions.insertCreate('db.t');
-    expect(app.dom.editorTextarea.value).toBe('CREATE TABLE db.t (a Int)');
+    expect(app.editor.getValue()).toBe('CREATE TABLE db.t (a Int)');
   });
   it('no-ops when SHOW CREATE returns no statement', async () => {
     const { app } = appFor([
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [] } })],
     ]);
-    app.dom.editorTextarea.value = 'keep';
+    app.editor.replaceDocument('keep');
     await app.actions.insertCreate('db.t');
-    expect(app.dom.editorTextarea.value).toBe('keep');
+    expect(app.editor.getValue()).toBe('keep');
   });
   it('surfaces a SHOW CREATE failure without changing the editor', async () => {
     const { app } = appFor([
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: no table"}' })],
     ]);
-    app.dom.editorTextarea.value = 'keep';
+    app.editor.replaceDocument('keep');
     await app.actions.insertCreate('db.t');
-    expect(app.dom.editorTextarea.value).toBe('keep');
+    expect(app.editor.getValue()).toBe('keep');
     expect(document.body.querySelector('.share-toast')).not.toBeNull();
   });
   it('signs out when there is no usable token', async () => {
@@ -2252,10 +2248,8 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    const ta = app.dom.editorTextarea;
-    ta.value = 'SELECT 1; SELECT 2';
-    ta.selectionStart = 0; ta.selectionEnd = 8; // "SELECT 1" — a single statement
-    app.activeTab().sql = ta.value;
+    app.editor.replaceDocument('SELECT 1; SELECT 2');
+    app.dom.editorView.dispatch({ selection: { anchor: 0, head: 8 } }); // "SELECT 1" — a single statement
     await app.actions.exportEntry();
     expect(showSaveFilePicker).toHaveBeenCalledTimes(1); // one selected statement → single-file path
     expect(showDirectoryPicker).not.toHaveBeenCalled();

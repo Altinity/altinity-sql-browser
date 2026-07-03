@@ -239,29 +239,3 @@ export function wordAt(value, pos) {
   if (s === e) return null;
   return { word: value.slice(s, e), from: s, to: e };
 }
-
-/**
- * If `pos` is inside a function call `name(… )`, return {name, argIdx} — the
- * enclosing function and which argument the caret is on (commas counted at
- * depth 0). Used by signature help (#27). Returns null outside a call; a `;` or
- * newline at depth 0 ends the search (don't cross statements/lines).
- */
-export function signatureContext(value, pos) {
-  let depth = 0;
-  let argIdx = 0;
-  for (let i = pos - 1; i >= 0; i--) {
-    const c = value[i];
-    if (c === ')') depth++;
-    else if (c === '(') {
-      if (depth === 0) {
-        let e = i;
-        while (e > 0 && /[A-Za-z0-9_]/.test(value[e - 1])) e--;
-        const name = value.slice(e, i);
-        return name ? { name, argIdx } : null;
-      }
-      depth--;
-    } else if (c === ',' && depth === 0) argIdx++;
-    else if ((c === ';' || c === '\n') && depth === 0) return null;
-  }
-  return null;
-}
