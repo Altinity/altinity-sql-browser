@@ -3,11 +3,15 @@
 // SELECT) we split it here and POST each statement in turn (the same model as
 // `clickhouse-client --multiquery`). Splitting is purely lexical: it skips `;`
 // inside '…' / "…" / `…` literals (honoring both `\'` backslash and `''` doubled
-// escapes) and inside -- / # line comments and /* */ block comments.
+// escapes) and inside -- / # line comments and /* */ block comments. The literal
+// /comment lexing lives in the shared scanner (sql-spans.js), used by both this
+// splitter and query-params.js so the tokenizing rules can't diverge.
 //
 // Known limitation: `INSERT … FORMAT CSV\n<inline data>` whose inline data
 // contains a `;` will mis-split — the splitter has no way to know where the
 // format payload ends. Inline-data inserts should be run on their own.
+
+import { scanSpans } from './sql-spans.js';
 
 /**
  * Split `sql` into individual statements on top-level `;`. Literals and comments
@@ -18,55 +22,24 @@
  */
 export function splitStatements(sql) {
   const text = String(sql || '');
-  const n = text.length;
   const out = [];
   let buf = '';
   let hasCode = false; // the current fragment holds runnable (non-comment) text
-  let i = 0;
   const push = () => { if (hasCode) out.push(buf.trim()); buf = ''; hasCode = false; };
-  while (i < n) {
-    const c = text[i];
-    const c2 = text[i + 1];
-    // -- and # line comments: copy verbatim to end of line (not code).
-    if ((c === '-' && c2 === '-') || c === '#') {
-      let j = i;
-      while (j < n && text[j] !== '\n') j++;
-      buf += text.slice(i, j);
-      i = j;
-      continue;
-    }
-    // /* */ block comment (non-nesting, matching ClickHouse): copy verbatim.
-    if (c === '/' && c2 === '*') {
-      let j = i + 2;
-      while (j < n && !(text[j] === '*' && text[j + 1] === '/')) j++;
-      j = Math.min(n, j + 2); // include the closing */ (or run to EOF if unterminated)
-      buf += text.slice(i, j);
-      i = j;
-      continue;
-    }
-    // '…' string, "…" / `…` quoted identifier. Backslash escapes the next char;
-    // a doubled quote (`''`) is an escaped quote, not a terminator.
-    if (c === "'" || c === '"' || c === '`') {
-      const quote = c;
+  for (const span of scanSpans(text)) {
+    const chunk = text.slice(span.start, span.end);
+    // Comments and literals are copied verbatim (a `;` inside them is not a
+    // separator). A literal is runnable text (sets hasCode); a comment is not.
+    if (span.kind === 'comment') { buf += chunk; continue; }
+    if (span.kind === 'string') { buf += chunk; hasCode = true; continue; }
+    // Code: split on top-level `;`; other non-whitespace marks the fragment
+    // as runnable so a comment-only fragment is dropped.
+    for (let k = 0; k < chunk.length; k++) {
+      const c = chunk[k];
+      if (c === ';') { push(); continue; }
       buf += c;
-      let j = i + 1;
-      while (j < n) {
-        const d = text[j];
-        if (d === '\\') { buf += text.slice(j, j + 2); j += 2; continue; }
-        if (d === quote) {
-          if (text[j + 1] === quote) { buf += d + quote; j += 2; continue; }
-          buf += d; j += 1; break;
-        }
-        buf += d; j += 1;
-      }
-      i = j;
-      hasCode = true;
-      continue;
+      if (!/\s/.test(c)) hasCode = true;
     }
-    if (c === ';') { push(); i += 1; continue; }
-    buf += c;
-    if (!/\s/.test(c)) hasCode = true;
-    i += 1;
   }
   push();
   return out;

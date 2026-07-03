@@ -99,6 +99,23 @@ describe('detectParams', () => {
   it('skips a {} with no colon', () => {
     expect(detectParams('SELECT {cluster}')).toEqual([]);
   });
+
+  it('keeps a `}` inside a quoted portion of the type (#139)', () => {
+    // The `'}'` is a string literal inside the Enum type — it must not close the
+    // placeholder early. Before the shared span-scanner this yielded a truncated
+    // type of `Enum8('`.
+    expect(detectParams("SELECT {e:Enum8('}' = 1, 'ok' = 2)}")).toEqual([
+      { name: 'e', type: "Enum8('}' = 1, 'ok' = 2)" },
+    ]);
+  });
+
+  it('keeps a `{` inside a quoted portion of the type (#139)', () => {
+    // A `{` inside a literal is passthrough, so it does not read as a nested
+    // brace that would bail out of the placeholder.
+    expect(detectParams("SELECT {e:Enum8('{' = 1)}")).toEqual([
+      { name: 'e', type: "Enum8('{' = 1)" },
+    ]);
+  });
 });
 
 describe('readStatementParams', () => {

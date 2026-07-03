@@ -24,7 +24,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   **shared by variable name across every query and persisted** (`asb:varValues`),
   so a value typed once is reused — prefilled automatically — wherever the same
   variable appears, and survives reloads. (Distinct from #39's `{{name}}`
-  composable-query CTE-merge — different syntax and purpose.)
+  composable-query CTE-merge — different syntax and purpose.) The literal/comment
+  lexing shared with the script splitter now lives in one scanner
+  (`src/core/sql-spans.js`, #139), which also makes detection quote-aware inside a
+  type — a `}` in `{e:Enum8('}' = 1)}` no longer truncates the placeholder.
 - **Best-effort mobile mode** (#126): below a 768px viewport the shell becomes a
   **bottom-tab-nav workbench** — a bottom bar switches between three full-screen
   panels, **Tables / Editor / Results**, instead of squeezing the desktop
