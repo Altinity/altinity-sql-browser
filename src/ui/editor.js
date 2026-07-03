@@ -275,6 +275,7 @@ export function mountEditor(app, container) {
     intel.refreshSignature(); // and signature help (#27)
     app.actions.rerenderTabs();
     app.actions.updateSaveBtn();
+    if (app.renderVarStrip) app.renderVarStrip(); // re-detect {name:Type} variables (#134)
   });
   ta.addEventListener('scroll', () => { syncScroll(); intel.hide(); });
   ta.addEventListener('mousemove', (e) => intel.onMouseMove(e));

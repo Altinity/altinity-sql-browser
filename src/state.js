@@ -27,6 +27,7 @@ export const KEYS = {
   history: 'asb:history',
   libraryName: 'asb:libraryName',
   resultRowLimit: 'asb:resultRowLimit',
+  varValues: 'asb:varValues',
 };
 
 /** Row-limit options for the result cap selector (shared between state + UI). */
@@ -132,6 +133,11 @@ export function createState(read = { loadJSON, loadStr }) {
     // derived per-run from the typed statement / clicked tab, not stored here.
     forceExplain: false,
     resultSort: { col: null, dir: 'asc' },
+    // Entered values for `{name:Type}` query parameters (#134), keyed by variable
+    // name and shared across every tab/query, so a value typed once is reused
+    // wherever the same variable appears. Persisted (asb:varValues) so it also
+    // survives reloads. A plain object, mutated in place + re-saved by app.js.
+    varValues: read.loadJSON(KEYS.varValues, {}),
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
     savedQueries: read.loadJSON(KEYS.saved, []),
     // Which saved row (if any) is showing its inline edit form (saved-history.js).

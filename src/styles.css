@@ -1088,6 +1088,38 @@ body.detached-tab .graph-overlay-panel {
 }
 .ed-toolbar > * { flex-shrink: 0; }
 .ed-toolbar::-webkit-scrollbar { display: none; }
+/* Query-variable strip (#134): one field per detected {name:Type}. A single
+   row that swipe-scrolls horizontally when it overflows (many variables, or a
+   narrow/mobile workbench) — never wraps to a second line and never clips. */
+.var-strip {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 10px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0; flex-wrap: nowrap;
+  overflow-x: auto; scrollbar-width: none;
+}
+.var-strip::-webkit-scrollbar { display: none; }
+.var-field {
+  display: inline-flex; align-items: center; gap: 6px;
+  flex-shrink: 0;
+}
+.var-name {
+  font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  white-space: nowrap;
+}
+.var-name::after { content: ':'; color: var(--fg-mute); }
+.var-input {
+  height: 24px; width: 150px; padding: 0 8px;
+  background: var(--bg-input); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 5px;
+  font-size: 11.5px; font-family: inherit;
+}
+.var-input::placeholder { color: var(--fg-faint); }
+.var-input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;

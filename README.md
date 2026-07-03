@@ -59,6 +59,18 @@ editor library — it adds nothing to the single served file). On top of that:
   `FORMAT`/`;` stripped). Undoable; click-to-load still works for keyboard users.
   Dragging a **database or table onto the results pane** instead renders a
   [data flow graph](#data-flow-graph).
+- **Query variables** — write a ClickHouse typed placeholder like
+  `{database:String}` in a query and a strip below the toolbar shows an input for
+  each detected variable; **Run stays disabled until they're all filled**. The
+  values are sent as ClickHouse's native `param_<name>` arguments, so the server
+  substitutes them per the declared type (injection-safe — `String`, `Identifier`,
+  `DateTime`, `Array(…)`, `Map(…)` all work) and the SQL text is sent unchanged.
+  Only row-returning statements are substituted, so a `CREATE VIEW … {x:String} …`
+  definition is stored with its placeholder intact (a ClickHouse parameterized
+  view). Run, `⌘↵`, Explain, and Export all honor it. Values are **remembered by
+  variable name** — shared across every query and persisted across reloads — so a
+  value typed once is prefilled wherever the same variable appears. (This is
+  `{name:Type}` substitution, not the `{{name}}` composable-query macro.)
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

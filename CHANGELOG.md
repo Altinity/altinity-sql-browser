@@ -10,6 +10,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Query variables** (#134): typed ClickHouse placeholders — `{name:Type}` —
+  are detected while you edit, and a single-line strip below the editor toolbar
+  shows one input per variable (it scrolls horizontally when there are many, and
+  is hidden when there are none). **Run is disabled until every variable has a
+  value.** On execution the values ride along as ClickHouse's native
+  `param_<name>` query-string arguments, so the *server* substitutes them per the
+  declared type (injection-safe; `String`/`Identifier`/`DateTime`/`Array`/`Map`
+  all work) — the SQL text is sent unchanged. Substitution applies to
+  row-returning statements only, so a `CREATE VIEW … {x:String} …` definition is
+  stored verbatim (matching ClickHouse parameterized views). Run, ⌘↵, Explain,
+  and Export all honor the same gate and pass the same params. Entered values are
+  **shared by variable name across every query and persisted** (`asb:varValues`),
+  so a value typed once is reused — prefilled automatically — wherever the same
+  variable appears, and survives reloads. (Distinct from #39's `{{name}}`
+  composable-query CTE-merge — different syntax and purpose.)
 - **Best-effort mobile mode** (#126): below a 768px viewport the shell becomes a
   **bottom-tab-nav workbench** — a bottom bar switches between three full-screen
   panels, **Tables / Editor / Results**, instead of squeezing the desktop
