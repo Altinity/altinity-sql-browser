@@ -1,5 +1,6 @@
 services:
   sql-browser:
+    image: altinity-sql-browser:local
     build:
       context: .
     ports:
