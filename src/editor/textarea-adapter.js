@@ -1,7 +1,11 @@
-// The SQL editor: a textarea overlaid on a syntax-highlighted <pre>, with a
-// line-number gutter. Highlighting reuses the pure tokenizer in core.
+// The textarea EditorPort adapter (#143): a textarea overlaid on a
+// syntax-highlighted <pre>, with a line-number gutter. Highlighting reuses the
+// pure tokenizer in core. The app talks to the editor only through the
+// EditorPort returned by `createTextareaEditor` (see editor-port.js);
+// everything else in this file is adapter-internal. Replaced wholesale by the
+// CodeMirror 6 adapter when #21 lands.
 
-import { h, zoomScale } from './dom.js';
+import { h, zoomScale } from '../ui/dom.js';
 import { tokenize, maskFromTokens } from '../core/sql-highlight.js';
 import { buildMarkSegments } from '../core/editor-marks.js';
 import { matchBracketAt, bracketEdit } from '../core/editor-brackets.js';
@@ -11,6 +15,7 @@ import { createSearch } from './editor-search.js';
 import { createComplete } from './editor-complete.js';
 import { createIntel } from './editor-intel.js';
 import { activeTab } from '../state.js';
+import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
 
 // Editor layout metrics (kept in lockstep with .sql-editor in styles.css):
 // integer line-height so the textarea and overlay <pre>s lay out identically.
@@ -20,19 +25,6 @@ const PAD_X = 14;
 // Width of one monospace glyph at the editor's 13px font — a constant (the font
 // is fixed) used only to anchor the autocomplete popover near the caret (#26).
 const CHAR_WIDTH_PX = 7.8;
-
-// dataTransfer MIME used when dragging a schema identifier onto the editor.
-// A dedicated type (not text/plain) scopes the drop handler to schema-tree
-// drags, leaving native text drag-within-the-textarea untouched.
-export const IDENT_MIME = 'application/x-asb-identifier';
-
-// dataTransfer MIME for dragging a whole saved/history query onto the editor; the
-// drop wraps it as a `( … )` subquery at the drop position (see the drop handler).
-export const SUBQUERY_MIME = 'application/x-asb-subquery';
-
-// dataTransfer MIME for dragging a database/table from the schema tree onto the
-// results pane → render its lineage graph. Payload is JSON `{kind, db, table?}`.
-export const SCHEMA_GRAPH_MIME = 'application/x-asb-schema-graph';
 
 /**
  * Paint tokenized SQL into `preEl` (whitespace as text, tokens as spans).
@@ -68,10 +60,53 @@ function gutterLines(sql) {
 }
 
 /**
+ * The textarea editor behind the EditorPort seam (#143). Port methods read the
+ * `app.dom.editor*` refs at call time — never closure state from a particular
+ * mount — so they tolerate pre-mount calls and re-mounting (renderApp resets
+ * `app.dom`, then mount() re-registers fresh internals). A future adapter
+ * (#21) must keep that property: closing over one mount's internals goes stale
+ * on the next renderApp. destroy() is terminal (see editor-port.js).
+ * @returns {import('./editor-port.js').EditorPort}
+ */
+export function createTextareaEditor(app) {
+  // Doc-change subscribers: the adapter emits on every text change; the
+  // app-level subscriber owns the state writes (tab.sql/dirty) and the
+  // dependent repaints the input handler used to perform itself.
+  const subs = new Set();
+  const emit = (value) => { for (const cb of subs) cb(value); };
+  return {
+    mount: (container) => mountEditor(app, container, emit),
+    destroy: () => { subs.clear(); },
+    focus: () => { const ta = app.dom.editorTextarea; if (ta) ta.focus(); },
+    hasFocus: () => {
+      const ta = app.dom.editorTextarea;
+      return !!ta && app.document.activeElement === ta;
+    },
+    getValue: () => { const ta = app.dom.editorTextarea; return ta ? ta.value : ''; },
+    getSelection: () => {
+      const ta = app.dom.editorTextarea;
+      if (!ta) return { start: 0, end: 0, text: '' };
+      return { start: ta.selectionStart, end: ta.selectionEnd, text: ta.value.slice(ta.selectionStart, ta.selectionEnd) };
+    },
+    insertAtCursor: (text) => insertAtCursor(app, text),
+    replaceDocument: (text) => replaceEditor(app, text),
+    revealOffset: (pos) => { if (app.dom.editorRevealCaret) app.dom.editorRevealCaret(pos); },
+    syncFromState: () => { if (app.dom.editorSync) app.dom.editorSync(); },
+    // Zero-behavior-change (#143): refData arrival runs the same full sync()
+    // the old app.dom.editorSync call site did — including hiding the popovers
+    // and reassigning ta.value. A caret/popover-preserving re-tokenize is
+    // deliberately deferred to the CM6 adapter (#21).
+    refreshReference: () => { if (app.dom.editorSync) app.dom.editorSync(); },
+    onDocChange: (cb) => { subs.add(cb); return () => subs.delete(cb); },
+  };
+}
+
+/**
  * Mount the editor into `container`. Registers app.dom.editor* refs and an
  * app.dom.editorSync() that re-reads the active tab into the view.
+ * `emitDocChange(value)` fires on every text change (see createTextareaEditor).
  */
-export function mountEditor(app, container) {
+function mountEditor(app, container, emitDocChange = () => {}) {
   const gutter = h('div', { class: 'sql-gutter' });
   // Mark overlay: a transparent <pre> below the token <pre>, carrying only the
   // search/bracket highlight backgrounds (#23/#24) — the token render path is
@@ -265,17 +300,17 @@ export function mountEditor(app, container) {
   };
 
   ta.addEventListener('input', () => {
-    const tab = activeTab(app.state);
-    tab.sql = ta.value;
-    tab.dirty = true;
+    // Report the change FIRST: the app-level onDocChange subscriber owns the
+    // tab.sql/dirty writes (#143), and the pre-port handler committed those
+    // before any repaint — keeping that order means an exception in the
+    // paint/popover path below can never leave state behind the visible text
+    // (⌘↵/⌘S must always see what the user sees).
+    emitDocChange(ta.value);
     paintTokens(ta.value);
     search.recompute(); // text changed → refresh match positions, then overlay
     paintMarks();
     complete.refresh(); // re-evaluate autocomplete at the new caret (#26)
     intel.refreshSignature(); // and signature help (#27)
-    app.actions.rerenderTabs();
-    app.actions.updateSaveBtn();
-    if (app.renderVarStrip) app.renderVarStrip(); // re-detect {name:Type} variables (#134)
   });
   ta.addEventListener('scroll', () => { syncScroll(); intel.hide(); });
   ta.addEventListener('mousemove', (e) => intel.onMouseMove(e));
@@ -396,8 +431,8 @@ function bracketDiff(a, b) {
   return { from: p, to: a.length - s, ins: b.slice(p, b.length - s) };
 }
 
-/** Insert `text` at the textarea cursor (undoable). */
-export function insertAtCursor(app, text) {
+/** Insert `text` at the textarea cursor (undoable). Port: insertAtCursor. */
+function insertAtCursor(app, text) {
   const ta = app.dom.editorTextarea;
   if (!ta) return;
   applyEdit(ta, text);
@@ -410,9 +445,9 @@ export function insertAtCursor(app, text) {
  * a legitimate no-op that ALSO collapses the selection to the end — so a
  * change-detection fallback would splice at the caret and *append*. We instead
  * no-op when already on target, and only fall back when execCommand failed to
- * reach it.
+ * reach it. Port: replaceDocument.
  */
-export function replaceEditor(app, text) {
+function replaceEditor(app, text) {
   const ta = app.dom.editorTextarea;
   if (!ta) return;
   if (ta.value === text) return; // already the target — nothing to do (no append)

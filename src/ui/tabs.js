@@ -44,7 +44,7 @@ export function newTab(app) {
     app.state.tabs.value = [...app.state.tabs.value, newTabObj(id)];
     app.state.activeTabId.value = id;
   });
-  if (app.dom.editorTextarea) app.dom.editorTextarea.focus();
+  app.editor.focus();
 }
 
 /**
@@ -68,7 +68,7 @@ export function loadIntoNewTab(app, name, sql, savedId = null, chart = null) {
     app.state.tabs.value = [...app.state.tabs.value, tab];
     app.state.activeTabId.value = id;
   });
-  if (app.dom.editorTextarea) app.dom.editorTextarea.focus();
+  app.editor.focus();
 }
 
 /** Close a tab (never the last one), re-selecting a neighbour if needed. */

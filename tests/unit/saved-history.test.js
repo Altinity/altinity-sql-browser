@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSavedHistory } from '../../src/ui/saved-history.js';
-import { SUBQUERY_MIME } from '../../src/ui/editor.js';
+import { SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));

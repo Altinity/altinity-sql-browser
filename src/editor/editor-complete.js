@@ -16,7 +16,7 @@
 //   getKeywordDocs(),                 // () => { KEYWORD: doc } for the footer
 // }
 
-import { h } from './dom.js';
+import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions } from '../core/completions.js';
 
 // Debounce the footer's function-description fetch so holding ↓ through a long

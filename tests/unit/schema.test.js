@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSchema } from '../../src/ui/schema.js';
-import { IDENT_MIME, SCHEMA_GRAPH_MIME } from '../../src/ui/editor.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME } from '../../src/ui/dnd-mime.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];

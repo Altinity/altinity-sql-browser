@@ -29,7 +29,8 @@ import { viewportZoom } from '../core/zoom-support.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
-import { mountEditor, insertAtCursor, replaceEditor, SCHEMA_GRAPH_MIME } from './editor.js';
+import { createNoopPort } from '../editor/editor-port.js';
+import { SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
@@ -149,6 +150,25 @@ export function createApp(env = {}) {
   // a default :443, so a 443 cluster shows a bare hostname; an 8443 one shows :8443.)
   app.host = () => originHost(chCtx.origin) || 'clickhouse';
   app.activeTab = () => activeTab(app.state);
+
+  // --- editor seam (#143) --------------------------------------------------
+  // Like Chart/Dagre, the editor adapter factory is injected: main.js passes
+  // the textarea adapter (the CM6 adapter swaps in with #21); headless app
+  // tests omit it and get the noop port. The instance is created here — before
+  // renderApp mounts it — so every consumer can call the port unconditionally.
+  app.Editor = env.Editor || createNoopPort;
+  app.editor = app.Editor(app);
+  // The editor→state inversion (#143): the adapter reports each text change;
+  // the state writes live here. Order matters — updateSaveBtn and the #134
+  // variables strip read tab.sql, so the tab writes come first.
+  app.editor.onDocChange((value) => {
+    const tab = app.activeTab();
+    tab.sql = value;
+    tab.dirty = true;
+    app.actions.rerenderTabs();
+    app.updateSaveBtn();
+    app.renderVarStrip();
+  });
   // A `?host=` query param pre-fills the credential server address on the login
   // screen (and disables SSO, which only targets the serving host).
   app.hostHint = new URLSearchParams(loc.search || '').get('host') || '';
@@ -383,7 +403,7 @@ export function createApp(env = {}) {
     app.refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
     app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
     app.rebuildCompletions();
-    if (app.dom.editorSync) app.dom.editorSync(); // re-highlight with server keywords
+    app.editor.refreshReference(); // re-highlight with server keywords
   };
   // A prominent, dismissible banner for schema/auth failures — the schema-panel
   // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
@@ -751,8 +771,7 @@ export function createApp(env = {}) {
   // more than one runs sequentially as a script (runScript).
   function runEntry(opts) {
     if (app.state.running.value) return;
-    const ta = app.dom.editorTextarea;
-    const sel = ta ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    const sel = app.editor.getSelection().text;
     const hasSel = sel.trim() !== '';
     const input = hasSel ? sel : app.activeTab().sql;
     const statements = splitStatements(input);
@@ -893,7 +912,7 @@ export function createApp(env = {}) {
         // statement that won't format, like insertCreate), then reassemble with a
         // `;` and a blank line between statements.
         const formatted = await Promise.all(stmts.map((s) => formatOne(s).catch(() => s)));
-        replaceEditor(app, withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
+        app.editor.replaceDocument(withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
         clearFormatError();
         return;
       }
@@ -903,7 +922,7 @@ export function createApp(env = {}) {
         const q = await formatOne(raw);
         // Terminate so the caret lands past the last token — otherwise the input
         // event from the replace re-opens autocomplete on the trailing word.
-        if (q) replaceEditor(app, withStatementBreak(q));
+        if (q) app.editor.replaceDocument(withStatementBreak(q));
         clearFormatError();
       } catch (e) {
         const msg = String((e && e.message) || e);
@@ -913,7 +932,7 @@ export function createApp(env = {}) {
         app.state.resultView.value = 'table';
         renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
         const pos = parseErrorPos(msg);
-        if (pos != null) app.dom.editorRevealCaret(pos);
+        if (pos != null) app.editor.revealOffset(pos);
       }
     } finally {
       setFmtBtn(false);
@@ -1107,7 +1126,7 @@ export function createApp(env = {}) {
         const fmt = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
         out = (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
       } catch { /* formatting is best-effort — fall back to the raw DDL */ }
-      replaceEditor(app, out);
+      app.editor.replaceDocument(out);
     } catch (e) {
       flashToast('SHOW CREATE failed: ' + String((e && e.message) || e), { document: doc });
     }
@@ -1185,8 +1204,7 @@ export function createApp(env = {}) {
   function exportEntry() {
     if (app.state.exporting.value) return;
     if (varGateBlocked()) return; // don't export with unfilled variables (#134)
-    const ta = app.dom.editorTextarea;
-    const sel = ta ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    const sel = app.editor.getSelection().text;
     const input = sel.trim() !== '' ? sel : app.activeTab().sql;
     const statements = splitStatements(input);
     if (!statements.length) { flashToast('Nothing to export', { document: doc }); return; }
@@ -1636,8 +1654,8 @@ export function createApp(env = {}) {
     openShortcuts: () => openShortcuts(app),
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
-    insertAtCursor: (text) => { insertAtCursor(app, text); toEditorOnMobile(); },
-    replaceEditor: (text) => { replaceEditor(app, text); toEditorOnMobile(); },
+    insertAtCursor: (text) => { app.editor.insertAtCursor(text); toEditorOnMobile(); },
+    replaceEditor: (text) => { app.editor.replaceDocument(text); toEditorOnMobile(); },
     loadColumns,
     rerenderTabs: () => renderTabs(app),
     rerenderResults: () => renderResults(app),
@@ -1787,7 +1805,7 @@ export function renderApp(app, helpers) {
 
   app.root.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
 
-  mountEditor(app, app.dom.editorRegion);
+  app.editor.mount(app.dom.editorRegion);
   // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
   // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
   // just mutate the signals.
@@ -1795,7 +1813,7 @@ export function renderApp(app, helpers) {
     app.state.tabs.value;
     app.state.activeTabId.value;
     renderTabs(app);
-    if (app.dom.editorSync) app.dom.editorSync();
+    app.editor.syncFromState();
     app.updateSaveBtn();
     app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
   });
@@ -1821,9 +1839,7 @@ export function renderApp(app, helpers) {
   // that fires for keyboard, mouse, and programmatic selection; gate on the
   // editor being focused so selecting elsewhere (results, address bar) is ignored.
   app.syncSelection = () => {
-    const ta = app.dom.editorTextarea;
-    const focused = ta && app.document.activeElement === ta;
-    const sel = focused ? ta.value.slice(ta.selectionStart, ta.selectionEnd) : '';
+    const sel = app.editor.hasFocus() ? app.editor.getSelection().text : '';
     app.state.hasSelection.value = sel.trim() !== '';
   };
   app.document.addEventListener('selectionchange', app.syncSelection);

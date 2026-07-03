@@ -13,8 +13,8 @@
 //   repaintMarks(),               // ask the editor to repaint the mark overlay
 // }
 
-import { h } from './dom.js';
-import { Icon } from './icons.js';
+import { h } from '../ui/dom.js';
+import { Icon } from '../ui/icons.js';
 import { findMatches, validRegex } from '../core/editor-search.js';
 import { caretLineCol } from '../core/editor-geometry.js';
 

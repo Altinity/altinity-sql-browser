@@ -13,8 +13,11 @@ all bundled — see hard rule 4). Quality is held by tests.
 2. **Keep the layers honest.** Pure logic goes in `src/core/` (no DOM, no
    globals). Network goes in `src/net/` with the fetch seam *injected*, never
    imported. DOM rendering goes in `src/ui/` as functions that take the `app`
-   controller. Side-effectful environment access (location, crypto, storage,
-   fetch) is injected through `createApp(env)` so everything is testable.
+   controller — except the editor, which lives in `src/editor/` behind the
+   injected `EditorPort` seam (#143): only `main.js` imports an adapter, and
+   everything else talks to `app.editor`. Side-effectful environment access
+   (location, crypto, storage, fetch) is injected through `createApp(env)` so
+   everything is testable.
 3. **No secrets in git.** `config.json` (rendered) is gitignored; only
    `deploy/config.json.example` is committed. Remember `config.json` is served
    to browsers: prefer a PKCE public client; if an IdP requires a
@@ -63,6 +66,7 @@ Touch these in one change:
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
 | `src/ui/*` | hyperscript, icons, render modules, controller |
+| `src/editor/*` | `EditorPort` seam + editor adapters (#143; CM6 lands here, #21) |
 | `src/state.js` | state model + pure ops |
 | `src/main.js` | bootstrap (OAuth callback, share-links) |
 | `build/build.mjs` | esbuild → `dist/sql.html` |

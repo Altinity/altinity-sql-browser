@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
+import { createTextareaEditor } from '../../src/editor/textarea-adapter.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 
 function jwt(payload) {
@@ -102,6 +103,7 @@ function env(over = {}) {
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: webcrypto,
     Dagre: dagre,
+    Editor: createTextareaEditor, // the real adapter — app tests exercise editor-backed flows (#143)
     fetch: makeFetch([]),
     now: () => 0,
     retryMs: 0, // instant script-statement retry in tests (no real 250ms wait)
@@ -326,9 +328,18 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     expect(app.completions.some((c) => c.kind === 'column' && c.label === 'c' && c.parent === 't')).toBe(true);
   });
   it('loadReference tolerates being called before the editor mounts', async () => {
-    const app = createApp(env()); // no renderApp → no app.dom.editorSync
+    const app = createApp(env()); // no renderApp → refreshReference hits the unmounted guard
     await expect(app.loadReference()).resolves.toBeUndefined();
     expect(app.refData).toBeTruthy();
+  });
+  it('without env.Editor the noop port stands in — headless consumers stay callable (#143)', async () => {
+    const e = env();
+    delete e.Editor;
+    const app = createApp(e);
+    await expect(app.loadReference()).resolves.toBeUndefined(); // refreshReference on the noop port
+    expect(app.editor.hasFocus()).toBe(false);
+    expect(app.editor.getSelection()).toEqual({ start: 0, end: 0, text: '' });
+    expect(() => app.actions.insertAtCursor('x')).not.toThrow();
   });
   it('loadColumns folds the newly-loaded columns into the completion list (#26)', async () => {
     const e = env({ fetch: makeFetch([
@@ -473,6 +484,23 @@ describe('query run', () => {
     expect(app.dom.runBtn.disabled).toBe(false);
     expect(app.dom.runBtn.textContent).toContain('Run');
     expect(app.dom.runBtn.querySelector('kbd')).not.toBeNull();
+  });
+  it('typing drives the real onDocChange subscriber: tab.sql/dirty, tab strip, Save button, var strip (#143)', () => {
+    const { app } = appForRun([]);
+    const ta = app.dom.editorTextarea;
+    ta.value = 'SELECT {p:UInt8}';
+    ta.dispatchEvent(new Event('input'));
+    // the subscriber (registered once in createApp) owns the state writes…
+    expect(app.activeTab().sql).toBe('SELECT {p:UInt8}');
+    expect(app.activeTab().dirty).toBe(true);
+    // …and runs its dependents AFTER them: the var strip read the new text
+    // (visible strip proves the tab.sql write happened first), and the Run
+    // button picked up the unfilled-variable gate.
+    expect(app.dom.varStrip.style.display).not.toBe('none');
+    expect(app.dom.varStrip.querySelector('.var-name').textContent).toBe('p');
+    expect(app.dom.runBtn.disabled).toBe(true);
+    // the tab strip re-rendered with the dirty marker
+    expect(app.dom.qtabsInner.querySelector('.dirty')).not.toBeNull();
   });
   it('query variables (#134): renders an input per detected {name:Type}, hides when none', () => {
     const { app } = appForRun([]);

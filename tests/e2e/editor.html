@@ -22,19 +22,28 @@
     { "imports": { "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs" } }
   </script>
   <script type="module">
-    import { mountEditor, insertAtCursor, replaceEditor } from '/src/ui/editor.js';
-    import { createState } from '/src/state.js';
+    import { createTextareaEditor } from '/src/editor/textarea-adapter.js';
+    import { createState, activeTab } from '/src/state.js';
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
-    const app = { state, dom: {}, actions: { rerenderTabs() {}, updateSaveBtn() {} } };
+    const app = { state, dom: {}, document };
     window.__app = app;
-    mountEditor(app, document.getElementById('host'));
+    const port = createTextareaEditor(app);
+    // Mirror app.js's onDocChange subscriber (#143) so the harness tab tracks
+    // the view — without it, a syncFromState()/re-mount in a spec would snap
+    // ta.value back to the tab's stale (empty) sql.
+    port.onDocChange((value) => {
+      const tab = activeTab(state);
+      tab.sql = value;
+      tab.dirty = true;
+    });
+    port.mount(document.getElementById('host'));
 
     // Expose the real insertion primitives the schema double-clicks use, so the
     // e2e can drive them synchronously (inside a real dblclick handler) — that's
     // the gesture/selection context where Firefox's execCommand path misbehaves.
-    window.__insertAtCursor = (t) => insertAtCursor(app, t);
-    window.__replaceEditor = (t) => replaceEditor(app, t);
+    window.__insertAtCursor = (t) => port.insertAtCursor(t);
+    window.__replaceEditor = (t) => port.replaceDocument(t);
 
     // Set editor content the way typing/replace does (drives paint()).
     window.__setSql = (sql) => {
