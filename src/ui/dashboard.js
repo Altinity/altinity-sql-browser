@@ -1,22 +1,32 @@
-// The standalone read-only Dashboard page (#149 D1). Render module over the
+// The standalone read-only Dashboard page (#149 D1–D3). Render module over the
 // `app` controller: it builds a header + a grid of chart tiles, one per
 // favorited Library query (a snapshot taken when the tab opens — Refresh re-runs
 // the data, it does not re-scan the Library). Each tile runs its SQL read-only
 // via `app.runTile` and draws through the shared `renderChart` seam; single-row
-// (KPI) and non-chartable favorites are skipped, counted in a header note. KPI
-// tiles, filters, layout, and export arrive in later phases (D2–D7).
+// (KPI) and non-chartable favorites are skipped, counted in a header note. A
+// global filter bar (D3, below) drives the same `{name:Type}` mechanism the SQL
+// Browser workbench uses, fanning it out across every favorite instead of one
+// query at a time. KPI tiles, per-tile overrides, and export arrive in later
+// phases (D5–D8).
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './results.js';
 import { schemaKey } from '../core/chart-data.js';
-import { classifyTile } from '../core/dashboard.js';
+import { classifyTile, dashboardParams } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
+import { readStatementParams, unfilledParams } from '../core/query-params.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
 // browser's per-host pool and the cluster) on open and on every Refresh.
 const TILE_CONCURRENCY = 6;
+
+// Idle time after the last keystroke in a filter field before it triggers a
+// re-run (#149 D3) — longer than the FROM-scope column-load debounce
+// (codemirror-adapter.js) since this fires a real query, not a metadata fetch.
+// Enter/blur bypass this entirely for a fast explicit-commit path.
+const FILTER_DEBOUNCE_MS = 500;
 
 /**
  * Build a segmented control (`Arrange | Report`, `2 | 3`): a row of buttons of
@@ -66,15 +76,18 @@ async function runPool(items, limit, worker) {
   return results;
 }
 
-// Render one favorite into a freshly-appended tile card: run its SQL (via
-// app.runTile), then draw the chart, drop the card (skip), or show the error.
-// Resolves to the outcome ('chart' | 'skip' | 'error') so the caller can tally
-// the skipped count. A chartable tile pushes a `{ destroy }` handle onto `tiles`
-// so the caller can tear its Chart.js instance down on the next Refresh (else
-// orphaned charts + their ResizeObservers leak on a long-lived tab).
-async function renderTile(app, q, grid, tiles) {
-  const body = h('div', { class: 'dash-tile-body' },
-    h('div', { class: 'dash-tile-load' }, Icon.spinner(), h('span', null, 'Loading…')));
+// One favorite's tile card, built once per dashboard load (favorite order) and
+// never removed/re-appended: a filter change can flip a tile between
+// skip ⇄ unfilled ⇄ chart repeatedly, and removing/re-inserting DOM nodes would
+// both reorder the grid and orphan the "same" tile's identity. Every later
+// state transition (`setSlotLoading`/`setSlotUnfilled`/`applyTileResult`)
+// updates this same slot's contents/visibility in place instead. `gen` is a
+// per-tile monotonically increasing generation counter guarding against
+// out-of-order responses (edit A, then B, before A's request returns — B's
+// response must win); `destroy` tears down the slot's live Chart.js instance
+// (if any) before it's replaced.
+function buildTileSlot(q) {
+  const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
   // Header: the favorite's name, plus its saved description as a subtitle when it
   // has one (single line, ellipsized) — mirrors the design mockup's tile header.
@@ -82,31 +95,123 @@ async function renderTile(app, q, grid, tiles) {
     h('span', { class: 'dash-tile-name', title: q.name }, q.name));
   if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
   const card = h('div', { class: 'dash-tile' }, head, body, foot);
-  grid.appendChild(card);
+  return { card, body, foot, gen: 0, status: null, destroy: null };
+}
 
-  const r = await app.runTile(q.sql);
+function destroySlotChart(slot) {
+  if (slot.destroy) { slot.destroy(); slot.destroy = null; }
+}
+
+function setSlotLoading(slot) {
+  destroySlotChart(slot);
+  slot.card.style.display = '';
+  slot.body.replaceChildren(h('div', { class: 'dash-tile-load' }, Icon.spinner(), h('span', null, 'Loading…')));
+  slot.foot.replaceChildren();
+}
+
+// A tile whose SQL still has an empty/absent {name:Type} value never calls
+// app.runTile — it shows this placeholder instead (reusing the card's header/
+// footer chrome so it doesn't look broken), and stays visible: unlike a
+// classifyTile `skip`, one filter value away it becomes chartable, so it is
+// NOT counted in the header's "N not shown" note.
+function setSlotUnfilled(slot, missing) {
+  destroySlotChart(slot);
+  slot.status = 'unfilled';
+  slot.card.style.display = '';
+  slot.body.replaceChildren(h('div', { class: 'dash-tile-unfilled' }, 'Enter a value for: ' + missing.join(', ')));
+  slot.foot.replaceChildren();
+}
+
+function applyTileResult(app, q, slot, r) {
+  destroySlotChart(slot);
   if (r.error != null) {
-    body.replaceChildren(h('div', { class: 'dash-tile-error' }, r.error));
-    return 'error';
+    slot.status = 'error';
+    slot.card.style.display = '';
+    slot.body.replaceChildren(h('div', { class: 'dash-tile-error' }, r.error));
+    slot.foot.replaceChildren();
+    return;
   }
   const cls = classifyTile(r.columns, r.rows, q.chart);
-  if (cls.kind === 'skip') { card.remove(); return 'skip'; }
-
+  if (cls.kind === 'skip') {
+    slot.status = 'skip';
+    slot.card.style.display = 'none';
+    // Clear a previous chart's DOM (its Chart.js instance is already torn
+    // down by destroySlotChart above) so a tile that flips chart → skip on a
+    // later refresh/filter change doesn't leave a dead canvas hidden in the DOM.
+    slot.body.replaceChildren();
+    slot.foot.replaceChildren();
+    return;
+  }
+  slot.status = 'chart';
+  slot.card.style.display = '';
   // Seed an isolated per-tile config with the resolved cfg + its schema key so
   // renderChart honours it (a schema-key mismatch would make it re-derive with
   // autoChart, discarding a favorite's saved chart shape). controls:false — D1
   // tiles are read-only, so renderChart omits the Type/X/Y config bar entirely
-  // (and so never re-renders); its Chart.js instance is torn down centrally on
-  // the next Refresh via the `tiles` handle below.
+  // (and so never re-renders); its Chart.js instance is torn down via
+  // destroySlotChart above, on the next result for this same slot.
   const res = { columns: r.columns, rows: r.rows };
   const chartTab = { chartKey: schemaKey(r.columns), chartCfg: cls.cfg };
   let inst = null;
-  body.replaceChildren(renderChart(app, res, {
+  slot.body.replaceChildren(renderChart(app, res, {
     tab: chartTab, setChart: (c) => { inst = c; }, running: false, controls: false, hideGrid: true,
   }));
-  tiles.push({ destroy: () => inst.destroy() });
-  foot.replaceChildren(...tileFooter(r.meta));
-  return 'chart';
+  slot.destroy = () => inst.destroy();
+  slot.foot.replaceChildren(...tileFooter(r.meta));
+}
+
+// Run (or re-run) one favorite's tile into its slot: gate on unfilled
+// `{name:Type}` values first (never calling app.runTile while any are empty),
+// otherwise fetch and classify. `onSettled()` fires after every transition
+// (unfilled or fetched) so the caller can recompute the live "N not shown"
+// count. The generation bump happens before the gate check so a superseded
+// in-flight fetch is discarded even if the newer edit resolves to "unfilled".
+async function runSlotTile(app, q, slot, onSettled) {
+  const myGen = ++slot.gen;
+  const missing = unfilledParams(q.sql, app.state.varValues);
+  if (missing.length) {
+    setSlotUnfilled(slot, missing);
+    onSettled();
+    return;
+  }
+  setSlotLoading(slot);
+  const r = await app.runTile(q.sql);
+  if (slot.gen !== myGen) return; // a newer edit started after this fetch; discard
+  applyTileResult(app, q, slot, r);
+  onSettled();
+}
+
+// The global filter bar (#149 D3): one field per `{name:Type}` parameter
+// referenced by any favorite, sharing `app.state.varValues` with the SQL
+// Browser workbench. Hidden entirely (no row, no spacing) when there are no
+// detected params — same convention as the workbench's `var-strip`. Typing
+// debounces before calling `onCommit(name)`; Enter or blur fires immediately,
+// clearing any pending debounce so a value never applies twice.
+function buildFilterBar(app, params, onCommit) {
+  if (!params.length) return h('div', { class: 'dash-filters', style: { display: 'none' } });
+  return h('div', { class: 'dash-filters' }, ...params.map((p) => {
+    let timer = null;
+    const commitNow = () => {
+      if (timer == null) return;
+      clearTimeout(timer);
+      timer = null;
+      onCommit(p.name);
+    };
+    const input = h('input', {
+      type: 'text', class: 'var-input',
+      value: app.state.varValues[p.name] || '',
+      placeholder: p.type, title: p.name + ': ' + p.type, 'aria-label': p.name,
+      oninput: (e) => {
+        app.state.varValues[p.name] = e.target.value;
+        app.saveVarValues();
+        clearTimeout(timer);
+        timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
+      },
+      onkeydown: (e) => { if (e.key === 'Enter') commitNow(); },
+      onblur: commitNow,
+    });
+    return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, p.name), input);
+  }));
 }
 
 /** Render the dashboard into `app.root`. */
@@ -149,14 +254,15 @@ export function renderDashboard(app) {
   const empty = h('div', { class: 'dash-empty', style: { display: favorites.length ? 'none' : '' } },
     'No favorites yet — star a query in the Library to add it to the dashboard.');
 
-  // Layout toolbar (#149 D2), the row that becomes the filter bar in D4. The
-  // Arrange|Report switcher is the primary control; the 2/3 column count is a
-  // secondary setting, meaningful only in Arrange (hidden in Report's single
-  // column). Both are presentation-only: `apply()` reshapes the grid and the
-  // tiles' Chart.js instances resize themselves via their ResizeObserver — no
-  // tile re-query. State is mutated + persisted (asb:dashLayout/dashCols) so the
-  // choice survives reloads and Refresh (which rebuilds the grid's children, not
-  // the grid element, so its class/`--dash-cols` persist across a refresh).
+  // Layout toolbar (#149 D2) + global filter bar (#149 D3). The Arrange|Report
+  // switcher is the primary control; the 2/3 column count is a secondary
+  // setting, meaningful only in Arrange (hidden in Report's single column).
+  // Both are presentation-only: `apply()` reshapes the grid and the tiles'
+  // Chart.js instances resize themselves via their ResizeObserver — no tile
+  // re-query. State is mutated + persisted (asb:dashLayout/dashCols) so the
+  // choice survives reloads and Refresh. The filter bar sits between them; it
+  // is entirely absent (no row, no spacing) when no favorite references a
+  // `{name:Type}` parameter.
   const apply = () => {
     grid.classList.toggle('is-report', state.dashLayout === 'report');
     grid.style.setProperty('--dash-cols', String(state.dashCols));
@@ -180,8 +286,10 @@ export function renderDashboard(app) {
     });
   const colsWrap = h('div', { class: 'dash-cols-wrap' },
     h('span', { class: 'dash-seg-label' }, 'Columns'), colsSeg.el);
+  const filterBar = buildFilterBar(app, dashboardParams(favorites), (name) => runAffected(name));
   const toolbar = h('div', { class: 'dash-toolbar' },
     layoutSeg.el,
+    filterBar,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
     colsWrap);
   apply();
@@ -192,39 +300,59 @@ export function renderDashboard(app) {
   app.root.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' }, header, toolbar), empty, grid));
 
-  // Chart.js instances of the tiles currently in the grid, torn down before the
-  // next Refresh rebuilds them (grid.replaceChildren() alone would orphan them,
-  // leaking the charts + their ResizeObservers on a long-lived tab).
-  let liveTiles = [];
+  // One stable slot per favorite (favorite order), built lazily on the first
+  // successful run (below) and reused for the tab's lifetime — a filter edit
+  // or Refresh updates a slot's contents/visibility in place rather than
+  // inserting/removing grid children (see buildTileSlot).
+  let slots = [];
 
-  const refresh = async () => {
+  const updateSkipNote = () => {
+    const skipped = slots.filter((s) => s.status === 'skip').length;
+    if (skipped) {
+      skipNote.style.display = '';
+      skipNote.textContent = skipped + ' not shown';
+      skipNote.title = skipped + ' single-row (KPI) or non-chartable favorite(s) — coming in a later phase.';
+    } else {
+      skipNote.style.display = 'none';
+    }
+  };
+
+  // Re-run only the favorites whose SQL references `name` (a filter field's
+  // debounced/committed edit, #149 D3) — not the whole grid. A no-op before
+  // the first successful run (slots not built yet).
+  function runAffected(name) {
+    if (!slots.length) return;
+    const targets = favorites
+      .map((q, i) => [q, i])
+      .filter(([q]) => readStatementParams(q.sql).some((p) => p.name === name));
+    return Promise.all(targets.map(([q, i]) => runSlotTile(app, q, slots[i], updateSkipNote)));
+  }
+
+  const runAll = async () => {
     // Resolve (and refresh) the auth token ONCE up front. This both avoids N
     // tiles racing an expired-token refresh and lets a lost session redirect to
     // login exactly once — rather than each tile firing onSignedOut in parallel.
     if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
     refreshBtn.disabled = true;
-    liveTiles.forEach((t) => t.destroy());
-    liveTiles = [];
-    grid.replaceChildren();
-    let skipped = 0;
+    if (!slots.length) {
+      slots = favorites.map((q) => buildTileSlot(q));
+      slots.forEach((s) => grid.appendChild(s.card));
+    }
+    // Every favorite re-runs on a full refresh (unlike a filter's targeted
+    // runAffected). Mark every slot loading up front rather than leaving
+    // tiles beyond TILE_CONCURRENCY's window showing stale content (or, on
+    // first load, an empty card) until the pool gets around to them.
+    slots.forEach((s) => setSlotLoading(s));
     // try/finally so the button always re-enables and the timestamp always
-    // updates — even if a tile render unexpectedly throws (runTile itself is
-    // total, so this is belt-and-suspenders against the pool rejecting).
+    // updates — even if a tile render unexpectedly throws (runSlotTile itself
+    // is total, so this is belt-and-suspenders against the pool rejecting).
     try {
-      const outcomes = await runPool(favorites, TILE_CONCURRENCY, (q) => renderTile(app, q, grid, liveTiles));
-      skipped = outcomes.filter((o) => o === 'skip').length;
+      await runPool(favorites, TILE_CONCURRENCY, (q, i) => runSlotTile(app, q, slots[i], updateSkipNote));
     } finally {
-      if (skipped) {
-        skipNote.style.display = '';
-        skipNote.textContent = skipped + ' not shown';
-        skipNote.title = skipped + ' single-row (KPI) or non-chartable favorite(s) — coming in a later phase.';
-      } else {
-        skipNote.style.display = 'none';
-      }
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       refreshBtn.disabled = false;
     }
   };
-  refreshBtn.onclick = refresh;
-  return refresh();
+  refreshBtn.onclick = runAll;
+  return runAll();
 }

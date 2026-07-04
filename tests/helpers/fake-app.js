@@ -48,6 +48,7 @@ export function makeApp(over = {}) {
     toggleTheme: vi.fn(),
     email: () => 'me@example.com',
     savePref: vi.fn(),
+    saveVarValues: vi.fn(),
     saveJSON: vi.fn(),
     saveStr: vi.fn(),
     downloadFile: vi.fn(),

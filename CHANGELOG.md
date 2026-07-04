@@ -42,7 +42,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   name, the chart now draws on the **tile's own background** (instead of the
   darker results-table background), and the value-axis **gridlines are hidden**
   on tiles (they read as noisy light lines on a dark panel). Drag-to-reorder and
-  1/2-column tile spans arrive in the next phase (#149 D3).
+  1/2-column tile spans arrive in a later phase (#149 D4).
+- **Dashboard (phase 3): global filter bar** (#149, #152). A **filter bar** in
+  the dashboard toolbar renders one text field per `{name:Type}` parameter
+  detected across every favorited tile's SQL (`dashboardParams`, unique by
+  name, first-appearance order) — absent entirely when no favorite has one.
+  Fields share the same persisted `state.varValues` the SQL Browser workbench
+  already uses (#134): a value typed on the dashboard shows up in the
+  workbench's variable strip for the same name, and vice versa. Typing
+  debounces (~500 ms idle) before re-running only the tiles that reference the
+  changed name — not the whole grid; Enter or blur commits immediately,
+  bypassing the debounce. A tile whose SQL still has an empty/absent parameter
+  never runs its query — it shows a distinct "Enter a value for: …" placeholder
+  (excluded from the "N not shown" count, since one filter value away it
+  becomes chartable). Tiles now live in **stable per-favorite slots** built up
+  front and updated in place (loading/unfilled/error/chart) rather than
+  inserted/removed, so a filter-driven tile flipping states repeatedly never
+  reorders the grid or orphans its identity; each slot's fetch carries a
+  monotonically increasing generation counter so a superseded in-flight
+  response can never overwrite a newer edit's result. `ch-client.js`'s
+  `queryJson`/`queryDashboardTile` gained an optional `params` argument
+  (backward compatible) to forward `param_<name>` args to ClickHouse. Per-tile
+  Type/X/Y overrides, KPI tiles, and dropdown/cascading filters arrive in later
+  phases (#149 D5–D7).
 - **Schema-aware, FROM-driven autocompletion** (#84) — column completion now
   fires *while you type*, driven by the statement's `FROM`/`JOIN` clause, so you
   no longer have to expand a table in the sidebar first. A new pure module

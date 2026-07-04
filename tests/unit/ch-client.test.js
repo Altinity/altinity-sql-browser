@@ -69,6 +69,18 @@ describe('queryDashboardTile', () => {
     const ctx = ctxWith(async () => textResp('Code: 164. DB::Exception: Cannot execute query in readonly mode', false, 500));
     await expect(queryDashboardTile(ctx, 'DROP TABLE t')).rejects.toThrow(/readonly mode/);
   });
+  it('forwards params as param_<name> query-string args (#149 D3)', async () => {
+    const ctx = ctxWith(async () => jsonResp({ meta: [], data: [] }));
+    await queryDashboardTile(ctx, 'SELECT {year:UInt16}\nFORMAT JSON', undefined, { param_year: '2024' });
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('param_year=2024');
+  });
+  it('omits params entirely when not passed (backward compatible)', async () => {
+    const ctx = ctxWith(async () => jsonResp({ meta: [], data: [] }));
+    await queryDashboardTile(ctx, 'SELECT 1\nFORMAT JSON');
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).not.toContain('param_');
+  });
 });
 
 describe('authedFetch', () => {
@@ -150,6 +162,13 @@ describe('queryJson', () => {
   it('throws the CH exception on error', async () => {
     const ctx = ctxWith(async () => textResp('{"exception":"DB::Exception: x"}', false, 500));
     await expect(queryJson(ctx, 'bad')).rejects.toThrow('DB::Exception: x');
+  });
+  it('forwards params as param_<name> query-string args, omitted when absent', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [] }));
+    await queryJson(ctx, 'SELECT {id:UInt32}', undefined, undefined, { param_id: '5' });
+    expect(ctx.fetch.mock.calls[0][0]).toContain('param_id=5');
+    await queryJson(ctx, 'SELECT 1');
+    expect(ctx.fetch.mock.calls[1][0]).not.toContain('param_');
   });
 });
 

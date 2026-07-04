@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase, dashboardTileSql, parseJsonResult, classifyTile,
-  normalizeDashLayout, normalizeDashCols,
+  normalizeDashLayout, normalizeDashCols, dashboardParams,
 } from '../../src/core/dashboard.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
@@ -126,6 +126,27 @@ describe('normalizeDashCols', () => {
   });
 });
 
+describe('dashboardParams', () => {
+  it('unions params across favorites, unique by name, first-appearance order', () => {
+    const favorites = [
+      { sql: 'SELECT * FROM t WHERE y = {year:UInt16}' },
+      { sql: 'SELECT * FROM u WHERE y = {year:UInt16} AND r = {region:String}' },
+    ];
+    expect(dashboardParams(favorites)).toEqual([
+      { name: 'year', type: 'UInt16' },
+      { name: 'region', type: 'String' },
+    ]);
+  });
+  it('ignores a param that only appears in a non-row-returning statement', () => {
+    const favorites = [{ sql: "CREATE VIEW v AS SELECT {x:String}" }];
+    expect(dashboardParams(favorites)).toEqual([]);
+  });
+  it('is defensive about an empty/absent favorites list', () => {
+    expect(dashboardParams([])).toEqual([]);
+    expect(dashboardParams(undefined)).toEqual([]);
+  });
+});
+
 // ── core/auth-handoff.js ─────────────────────────────────────────────────────
 function memSession(initial = {}) {
   const m = new Map(Object.entries(initial));
@@ -234,7 +255,11 @@ describe('renderDashboard', () => {
     const runTile = vi.fn(async (sql) => (sql === 'kpi' ? kpiResult() : chartResult()));
     const app = dashApp(favorites, runTile);
     await renderDashboard(app);
-    expect(app.root.querySelectorAll('.dash-tile').length).toBe(1); // KPI tile removed
+    // Stable per-favorite slots (#149 D3): a skipped tile's card stays in the
+    // DOM (its identity is preserved for a later filter re-run) but hidden.
+    const tiles = [...app.root.querySelectorAll('.dash-tile')];
+    expect(tiles.length).toBe(2);
+    expect(tiles.filter((t) => t.style.display !== 'none')).toHaveLength(1);
     const note = app.root.querySelector('.dash-skip');
     expect(note.style.display).toBe('');
     expect(note.textContent).toBe('1 not shown');
@@ -293,6 +318,43 @@ describe('renderDashboard', () => {
     await app.root.querySelector('.dash-btn').onclick();
     expect(charts).toHaveLength(2);
     expect(charts[0].destroyed).toBe(true); // prior instance destroyed, not orphaned
+  });
+
+  it('a tile that flips chart -> skip on Refresh clears its old chart DOM (no dead canvas lingers)', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], runTile);
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
+    runTile.mockImplementation(async () => kpiResult()); // next refresh becomes a skip (KPI)
+    await app.root.querySelector('.dash-btn').onclick();
+    expect(app.root.querySelector('.dash-tile').style.display).toBe('none');
+    expect(app.root.querySelector('.dash-tile canvas')).toBeNull(); // stale chart DOM cleared, not just hidden
+  });
+
+  it('Refresh marks every tile loading immediately (no stale content lingers beyond the concurrency window)', async () => {
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const favorites = Array.from({ length: 8 }, (_, i) => ({ id: String(i), name: 'Q' + i, sql: 'q' + i, favorite: true }));
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    await renderDashboard(app);
+    expect(app.root.querySelectorAll('.dash-tile canvas').length).toBe(8);
+
+    const resolvers = [];
+    runTile.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)));
+    const refreshed = app.root.querySelector('.dash-btn').onclick();
+    await flush();
+    // All 8 tiles show "Loading…" up front, even though TILE_CONCURRENCY (6)
+    // means only 6 queries are actually in flight — none show the prior chart.
+    expect(app.root.querySelectorAll('.dash-tile-load').length).toBe(8);
+    expect(app.root.querySelectorAll('.dash-tile canvas').length).toBe(0);
+    // TILE_CONCURRENCY (6) means only 6 of the 8 queries are in flight yet;
+    // resolving them frees pool slots for the remaining 2 — drain in rounds.
+    for (let round = 0; round < 4; round++) {
+      resolvers.splice(0).forEach((r) => r(chartResult()));
+      await flush();
+    }
+    await refreshed;
+    expect(app.root.querySelectorAll('.dash-tile canvas').length).toBe(8);
   });
 
   it('shows an empty state when there are no favorites', async () => {
@@ -382,6 +444,178 @@ describe('renderDashboard', () => {
   });
 });
 
+// ── D3: global filter bar ────────────────────────────────────────────────────
+describe('renderDashboard — global filter bar (#149 D3)', () => {
+  const paramFav = (id, sql) => ({ id, name: id, sql, favorite: true });
+  const setInput = (el, value) => {
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const pressEnter = (el) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  // A macrotask tick — flushes every pending microtask (including chained
+  // awaits across runSlotTile/runPool), unlike a single `await Promise.resolve()`.
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const fieldInput = (root, name) => root.querySelector('.var-field input[aria-label="' + name + '"]');
+
+  it('shows no filter row when no favorite has a {name:Type} param', async () => {
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true }], vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    const filters = app.root.querySelector('.dash-filters');
+    expect(filters.style.display).toBe('none');
+    expect(filters.querySelectorAll('.var-field').length).toBe(0);
+  });
+
+  it('renders one field per param detected across favorites, first-appearance order', async () => {
+    const favorites = [
+      paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}'),
+      paramFav('2', 'SELECT * FROM u WHERE r = {region:String}'),
+    ];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    app.state.varValues = { year: '2024', region: 'us' };
+    await renderDashboard(app);
+    const filters = app.root.querySelector('.dash-filters');
+    expect(filters.style.display).not.toBe('none');
+    expect([...filters.querySelectorAll('.var-name')].map((n) => n.textContent)).toEqual(['year', 'region']);
+    expect(fieldInput(app.root, 'year').value).toBe('2024');
+  });
+
+  it('typing debounces before the affected tile(s) re-run; an unaffected tile is untouched', async () => {
+    vi.useFakeTimers();
+    try {
+      const favorites = [
+        paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}'),
+        paramFav('2', 'SELECT * FROM u WHERE y = {year:UInt16}'),
+        paramFav('3', 'SELECT * FROM v WHERE r = {region:String}'),
+      ];
+      const runTile = vi.fn(async () => chartResult());
+      const app = dashApp(favorites, runTile);
+      app.state.varValues = { year: '2023', region: 'us' };
+      await renderDashboard(app);
+      expect(runTile).toHaveBeenCalledTimes(3);
+
+      setInput(fieldInput(app.root, 'year'), '2024');
+      expect(runTile).toHaveBeenCalledTimes(3); // debounced — no re-run yet
+      await vi.advanceTimersByTimeAsync(499);
+      expect(runTile).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runTile).toHaveBeenCalledTimes(5); // only the 2 'year' tiles re-ran
+      expect(runTile.mock.calls.filter((c) => c[0] === favorites[2].sql)).toHaveLength(1); // region tile untouched
+      expect(app.state.varValues.year).toBe('2024'); // shared with the workbench's varValues
+      expect(app.saveVarValues).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Enter fires the re-run immediately, bypassing the debounce', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    const input = fieldInput(app.root, 'year');
+    setInput(input, '2024');
+    pressEnter(input);
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(2);
+  });
+
+  it('Enter/blur with no pending edit is a no-op (nothing to commit)', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    const input = fieldInput(app.root, 'year');
+    pressEnter(input); // no prior 'input' event — no pending debounce to fire
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(1);
+  });
+
+  it('editing a filter before the dashboard has ever run a tile is a no-op', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    app.ensureFreshToken = vi.fn(async () => false); // session can't be refreshed — no slots built
+    await renderDashboard(app);
+    expect(runTile).not.toHaveBeenCalled();
+    const input = fieldInput(app.root, 'year');
+    setInput(input, '2024');
+    pressEnter(input);
+    await flush();
+    expect(runTile).not.toHaveBeenCalled(); // still a no-op — nothing to update
+  });
+
+  it('blur fires the re-run immediately, bypassing the debounce', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    const input = fieldInput(app.root, 'year');
+    setInput(input, '2024');
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(2);
+  });
+
+  it('a tile with an unfilled param shows a placeholder and never calls runTile; filling it runs the tile', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile); // no varValues set — 'year' unfilled
+    await renderDashboard(app);
+    expect(runTile).not.toHaveBeenCalled();
+    const placeholder = app.root.querySelector('.dash-tile-unfilled');
+    expect(placeholder.textContent).toBe('Enter a value for: year');
+    // An unfilled tile is not counted in the "N not shown" note.
+    expect(app.root.querySelector('.dash-skip').style.display).toBe('none');
+
+    const input = fieldInput(app.root, 'year');
+    setInput(input, '2024');
+    pressEnter(input);
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(1);
+    expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
+    expect(app.root.querySelector('.dash-tile-unfilled')).toBeNull();
+  });
+
+  it('discards a stale response when a newer edit\'s response arrives first (last edit wins)', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const resolvers = [];
+    const runTile = vi.fn(() => new Promise((resolve) => resolvers.push(resolve)));
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    const rendered = renderDashboard(app);
+    await flush();
+    expect(resolvers).toHaveLength(1);
+    resolvers[0](chartResult());
+    await rendered;
+
+    const input = fieldInput(app.root, 'year');
+    setInput(input, 'A');
+    pressEnter(input);
+    await flush();
+    expect(resolvers).toHaveLength(2);
+    setInput(input, 'B');
+    pressEnter(input);
+    await flush();
+    expect(resolvers).toHaveLength(3);
+
+    // The newer edit ('B') resolves first; the superseded ('A') resolves after.
+    resolvers[2]({ error: 'B wins' });
+    await flush();
+    resolvers[1]({ error: 'A is stale — must be discarded' });
+    await flush();
+
+    expect(app.root.querySelector('.dash-tile-error').textContent).toBe('B wins');
+  });
+});
+
 // ── app.js: runTile + auth handoff wiring ────────────────────────────────────
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -439,6 +673,15 @@ describe('app.runTile', () => {
       fetch: makeFetch([[(u, sql) => /SELECT/.test(sql || ''), resp({ ok: false, status: 500, text: 'Cannot execute query in readonly mode' })]]),
     }));
     expect((await app.runTile('SELECT 1')).error).toMatch(/readonly/);
+  });
+  it('substitutes state.varValues as param_<name> args (#149 D3)', async () => {
+    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
+      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
+    const app = createApp(appEnv({ fetch }));
+    app.state.varValues.year = '2024';
+    await app.runTile('SELECT {year:UInt16} AS n');
+    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
+    expect(queryCall[0]).toContain('param_year=2024');
   });
   it('errors (without driving sign-out) when there is no token', async () => {
     const app = createApp(appEnv({ sessionStorage: memSession({}) }));

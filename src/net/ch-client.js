@@ -80,10 +80,12 @@ export async function authedFetch(ctx, url, sql, signal) {
 /**
  * Run a query and return parsed JSON (FORMAT JSON). Throws on CH error. `signal`
  * (optional) aborts the request. `extra` (optional) adds HTTP query-string
- * settings (e.g. `{ readonly: 2 }` for a read-only tile).
+ * settings (e.g. `{ readonly: 2 }` for a read-only tile). `params` (optional)
+ * adds `param_<name>` query-string args for native ClickHouse query parameters
+ * (#134) — omitted for every existing call site, so this is backward compatible.
  */
-export async function queryJson(ctx, sql, signal, extra) {
-  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON', extra }), sql, signal);
+export async function queryJson(ctx, sql, signal, extra, params) {
+  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON', extra, params }), sql, signal);
   if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
   return resp.json();
 }
@@ -93,10 +95,12 @@ export async function queryJson(ctx, sql, signal, extra) {
  * the `readonly=2` HTTP setting, so a favorite that happens to contain a write
  * (INSERT / ALTER / DROP / …) is rejected server-side rather than executed when
  * the dashboard opens or refreshes — level 2 still permits SELECT and
- * query-level `SETTINGS`. Returns parsed JSON; throws CH's reason on error.
+ * query-level `SETTINGS`. `params` (optional, #149 D3) forwards `param_<name>`
+ * args for the dashboard's global filter bar. Returns parsed JSON; throws CH's
+ * reason on error.
  */
-export function queryDashboardTile(ctx, sql, signal) {
-  return queryJson(ctx, sql, signal, { readonly: 2 });
+export function queryDashboardTile(ctx, sql, signal, params) {
+  return queryJson(ctx, sql, signal, { readonly: 2 }, params);
 }
 
 /**

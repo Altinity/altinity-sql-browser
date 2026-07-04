@@ -1767,6 +1767,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-cols-wrap { display: inline-flex; align-items: center; gap: 8px; }
 .dash-seg-cols .dash-seg-btn { padding: 4px 10px; font-family: var(--mono); }
 .dash-seg-label { font-size: 11px; color: var(--fg-faint); }
+/* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
+   workbench's var-field/var-name/var-input classes. Sits in the toolbar's
+   existing flex-wrap row (no new sticky/scroll container needed); absent
+   entirely (display:none, no gap) when no favorite has a param. */
+.dash-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -1844,6 +1849,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   margin: auto; padding: 12px; color: var(--error-fg); background: var(--error-bg);
   border: 1px solid var(--error-bd); border-radius: 8px; font-size: 12px;
   font-family: var(--mono); max-width: 90%;
+}
+/* A tile blocked on an empty {name:Type} filter value (#149 D3) — one filter
+   value away from chartable, so it reads as a prompt, not an error. */
+.dash-tile-unfilled {
+  margin: auto; padding: 12px; color: var(--fg-mute); font-size: 12px; text-align: center;
 }
 .dash-tile-foot {
   display: flex; align-items: center; gap: 12px; padding: 7px 12px;

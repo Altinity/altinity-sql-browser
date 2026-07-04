@@ -1647,9 +1647,12 @@ export function createApp(env = {}) {
 
   // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
   // server-side by queryDashboardTile), FORMAT JSON, transformed to the
-  // array-row shape renderChart wants. Returns { columns, rows, meta } on
-  // success or { error } on failure. The token is resolved up front by
-  // ensureFreshToken (above), so this does not itself drive sign-out.
+  // array-row shape renderChart wants. Substitutes the shared `state.varValues`
+  // as `param_<name>` args (#149 D3), mirroring the workbench's run() — a
+  // no-op when the tile's SQL has no `{name:Type}` placeholder. Returns
+  // { columns, rows, meta } on success or { error } on failure. The token is
+  // resolved up front by ensureFreshToken (above), so this does not itself
+  // drive sign-out.
   async function runTile(sql) {
     try {
       // ensureConfig + getToken are inside the try: getToken→refresh can THROW on
@@ -1659,7 +1662,8 @@ export function createApp(env = {}) {
       // cheap and keeps runTile usable on its own.
       await ensureConfig();
       if (!(await getToken())) return { error: 'Not signed in' };
-      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql));
+      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), undefined,
+        paramArgs(sql, app.state.varValues));
       return parseJsonResult(json);
     } catch (e) {
       return { error: String((e && e.message) || e) };
