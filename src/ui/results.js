@@ -962,6 +962,7 @@ export function installChartZoomFix(chart, canvas) {
  * `opts.running` overrides the run-state gate — a detached snapshot's `r` is
  * always already-complete, independent of whatever the live tab is doing.
  * `opts.controls === false` omits the Type/X/Y config bar (read-only tiles).
+ * `opts.hideGrid` suppresses the value-axis gridlines (dashboard tiles — #149).
  */
 export function renderChart(app, r, opts = {}) {
   const tab = opts.tab || app.activeTab();
@@ -1019,7 +1020,7 @@ export function renderChart(app, r, opts = {}) {
   // contradicting the "first N rows" note. It would also sort up to VIS_CAP
   // rows just to discard all but the first `cap`.
   const chart = installChartZoomFix(
-    new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar))),
+    new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), { hideGrid: opts.hideGrid })),
     canvas);
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,

@@ -207,6 +207,19 @@ describe('renderDashboard', () => {
     expect(app.root.querySelector('.dash-tile-foot').textContent).toContain('rows');
   });
 
+  it('renders the saved description as a tile subtitle when present, omits it otherwise', async () => {
+    const favorites = [
+      { id: '1', name: 'With desc', sql: 'a', favorite: true, description: 'Daily totals by category' },
+      { id: '2', name: 'No desc', sql: 'b', favorite: true },
+    ];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    const descs = [...app.root.querySelectorAll('.dash-tile-desc')];
+    expect(descs).toHaveLength(1);
+    expect(descs[0].textContent).toBe('Daily totals by category');
+    expect(descs[0].getAttribute('title')).toBe('Daily totals by category');
+  });
+
   it('uses the singular chip label with exactly one favorite', async () => {
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
     await renderDashboard(app);

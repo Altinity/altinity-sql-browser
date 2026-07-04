@@ -313,9 +313,12 @@ const withAlpha = (hex, frac) => {
 /**
  * Build a complete Chart.js config object (type + data + themed options) from a
  * result and the user's `cfg`. Pure: returns a plain object (Chart.js draws it).
- * `colors` is a resolved token bundle from `chartColors`.
+ * `colors` is a resolved token bundle from `chartColors`. `opts.hideGrid`
+ * suppresses the value-axis gridlines (dashboard tiles draw on the panel
+ * background where a light gridline reads as noise — #149; the tick labels
+ * stay), keeping the chart body clean like the design's tiles.
  */
-export function chartJsConfig(columns, rows, cfg, colors) {
+export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const { labels, datasets } = buildChartData(columns, rows, cfg);
   const pal = colors.palette;
   const horizontal = cfg.type === 'hbar';
@@ -336,7 +339,7 @@ export function chartJsConfig(columns, rows, cfg, colors) {
   });
 
   const multi = datasets.length > 1;
-  const grid = { color: colors.borderFaint, drawBorder: false };
+  const grid = { color: colors.borderFaint, drawBorder: false, display: !opts.hideGrid };
   const ticks = { color: colors.fgMute, font: { family: colors.mono, size: 10 } };
   const valueTicks = { ...ticks, callback: (v) => chartNumFmt(typeof v === 'number' ? v : Number(v)) };
 

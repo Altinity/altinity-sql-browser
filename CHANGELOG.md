@@ -37,8 +37,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   (hidden in Report's single column). Both are presentation-only — switching
   reshapes the grid and the chart tiles resize themselves, with no tile re-query
   — and the choice is persisted per browser (`asb:dashLayout` / `asb:dashCols`),
-  surviving reloads and Refresh. Drag-to-reorder and 1/2-column tile spans arrive
-  in the next phase (#149 D3).
+  surviving reloads and Refresh. Chart tiles were also brought closer to the
+  design: the saved query **description** shows as a subtitle under the tile
+  name, the chart now draws on the **tile's own background** (instead of the
+  darker results-table background), and the value-axis **gridlines are hidden**
+  on tiles (they read as noisy light lines on a dark panel). Drag-to-reorder and
+  1/2-column tile spans arrive in the next phase (#149 D3).
 - **Schema-aware, FROM-driven autocompletion** (#84) — column completion now
   fires *while you type*, driven by the statement's `FROM`/`JOIN` clause, so you
   no longer have to expand a table in the sidebar first. A new pure module

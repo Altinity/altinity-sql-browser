@@ -287,6 +287,15 @@ describe('chartJsConfig', () => {
     expect(cfg.options.scales.y.grid.display).toBe(false); // category axis
     expect(cfg.data.datasets[0].backgroundColor).toBe(colors.palette[0]);
   });
+  it('shows value-axis gridlines by default, hides them with opts.hideGrid (#149)', () => {
+    const shown = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+    expect(shown.options.scales.y.grid.display).toBe(true);
+    const hidden = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, { hideGrid: true });
+    expect(hidden.options.scales.y.grid.display).toBe(false);
+    // the horizontal-bar value axis (x) is hidden too, not just the category axis
+    const hbar = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors, { hideGrid: true });
+    expect(hbar.options.scales.x.grid.display).toBe(false);
+  });
   it('vertical column keeps indexAxis x', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
     expect(cfg.type).toBe('bar');

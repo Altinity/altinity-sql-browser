@@ -76,9 +76,12 @@ async function renderTile(app, q, grid, tiles) {
   const body = h('div', { class: 'dash-tile-body' },
     h('div', { class: 'dash-tile-load' }, Icon.spinner(), h('span', null, 'Loading…')));
   const foot = h('div', { class: 'dash-tile-foot' });
-  const card = h('div', { class: 'dash-tile' },
-    h('div', { class: 'dash-tile-head' }, h('span', { class: 'dash-tile-name', title: q.name }, q.name)),
-    body, foot);
+  // Header: the favorite's name, plus its saved description as a subtitle when it
+  // has one (single line, ellipsized) — mirrors the design mockup's tile header.
+  const head = h('div', { class: 'dash-tile-head' },
+    h('span', { class: 'dash-tile-name', title: q.name }, q.name));
+  if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
+  const card = h('div', { class: 'dash-tile' }, head, body, foot);
   grid.appendChild(card);
 
   const r = await app.runTile(q.sql);
@@ -99,7 +102,7 @@ async function renderTile(app, q, grid, tiles) {
   const chartTab = { chartKey: schemaKey(r.columns), chartCfg: cls.cfg };
   let inst = null;
   body.replaceChildren(renderChart(app, res, {
-    tab: chartTab, setChart: (c) => { inst = c; }, running: false, controls: false,
+    tab: chartTab, setChart: (c) => { inst = c; }, running: false, controls: false, hideGrid: true,
   }));
   tiles.push({ destroy: () => inst.destroy() });
   foot.replaceChildren(...tileFooter(r.meta));

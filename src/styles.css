@@ -1824,8 +1824,18 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   font-size: 13px; font-weight: 600; color: var(--fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
 }
+/* Saved-query description subtitle under the tile name (matches the design). */
+.dash-tile-desc {
+  font-size: 11px; color: var(--fg-mute); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; }
 .dash-tile-body > .chart-view { flex: 1; min-width: 0; }
+/* The chart draws on the tile's own background (--bg-side), not the darker
+   results-table bg the workbench chart view uses; this both matches the design
+   and lets the faint value-axis gridlines recede instead of standing out on a
+   near-black panel in dark mode. */
+.dash-tile .chart-view, .dash-tile .chart-empty { background: transparent; }
 .dash-tile-load {
   display: flex; align-items: center; gap: 8px; margin: auto;
   color: var(--fg-faint); font-size: 12px;
