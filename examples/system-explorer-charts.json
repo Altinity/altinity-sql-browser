@@ -1,0 +1,201 @@
+{
+  "format": "altinity-sql-browser/saved-queries",
+  "version": 1,
+  "exportedAt": "2026-07-04T19:47:55.982Z",
+  "queries": [
+    {
+      "id": "sys-1",
+      "name": "Currently running queries",
+      "sql": "SELECT query_id, user, elapsed, read_rows, formatReadableSize(memory_usage) AS memory, left(query, 80) AS query\nFROM system.processes\nORDER BY elapsed DESC\nLIMIT 20",
+      "favorite": false,
+      "description": "Live snapshot of system.processes — every query executing right now, slowest first. Empty when the cluster is idle; that's a real \"nothing running\" result, not an error."
+    },
+    {
+      "id": "sys-2",
+      "name": "Merges in progress",
+      "sql": "SELECT database, table, elapsed, round(progress * 100, 1) AS pct_done, num_parts, is_mutation, formatReadableSize(total_size_bytes_compressed) AS size\nFROM system.merges\nORDER BY elapsed DESC\nLIMIT 20",
+      "favorite": false,
+      "description": "Live snapshot of system.merges — background merges currently running, with progress and compressed size. Usually empty between merge cycles on a small cluster."
+    },
+    {
+      "id": "sys-3",
+      "name": "Mutations in progress",
+      "sql": "SELECT database, table, mutation_id, command, parts_to_do, latest_fail_reason\nFROM system.mutations\nWHERE NOT is_done\nORDER BY create_time\nLIMIT 20",
+      "favorite": false,
+      "description": "Unfinished ALTER UPDATE/DELETE mutations from system.mutations, with the failure reason if one is stuck retrying."
+    },
+    {
+      "id": "sys-4",
+      "name": "Replication status",
+      "sql": "SELECT database, table, is_leader, is_readonly, absolute_delay, queue_size, inserts_in_queue, merges_in_queue\nFROM system.replicas\nORDER BY absolute_delay DESC\nLIMIT 20",
+      "favorite": false,
+      "description": "system.replicas health per table — leadership, read-only state, replication delay, and queue depth. Sorted worst-lag-first."
+    },
+    {
+      "id": "sys-5",
+      "name": "Stuck replication queue entries",
+      "sql": "SELECT database, table, type, create_time, num_tries, last_exception\nFROM system.replication_queue\nWHERE num_tries > 0\nORDER BY num_tries DESC\nLIMIT 20",
+      "favorite": false,
+      "description": "system.replication_queue entries that have already failed and retried at least once, with the last exception — the first place to look when a replica falls behind."
+    },
+    {
+      "id": "sys-6",
+      "name": "Largest tables by disk usage",
+      "sql": "SELECT concat(database, '.', table) AS table, sum(bytes_on_disk) AS disk_bytes\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY disk_bytes DESC\nLIMIT 15",
+      "favorite": true,
+      "description": "Every active part in system.parts, summed per table, largest first. Horizontal Bar — hover any bar for the exact byte count.",
+      "chart": {
+        "cfg": {
+          "type": "hbar",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "table:String|disk_bytes:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-7",
+      "name": "Active parts by table",
+      "sql": "SELECT concat(database, '.', table) AS table, count() AS parts\nFROM system.parts\nWHERE active\nGROUP BY database, table\nORDER BY parts DESC\nLIMIT 15",
+      "favorite": true,
+      "description": "Active part *count* per table (not size) — a table climbing here between refreshes is trending toward \"too many parts\". Horizontal Bar.",
+      "chart": {
+        "cfg": {
+          "type": "hbar",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "table:String|parts:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-8",
+      "name": "Cumulative error counters",
+      "sql": "SELECT name, value AS times\nFROM system.errors\nWHERE value > 0\nORDER BY value DESC\nLIMIT 15",
+      "favorite": true,
+      "description": "system.errors — every error code the server has hit since last restart, most frequent first. A quick \"what's actually going wrong here\" check. Horizontal Bar.",
+      "chart": {
+        "cfg": {
+          "type": "hbar",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "name:String|times:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-9",
+      "name": "Queries per minute",
+      "sql": "SELECT toStartOfMinute(event_time) AS t, count() AS queries\nFROM system.query_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String}) AND type = 'QueryFinish'\nGROUP BY t\nORDER BY t",
+      "favorite": true,
+      "description": "Finished-query volume from system.query_log, bucketed per minute, over a {from:String}/{to:String} range (shared with every other time-ranged query below — the Dashboard filter bar renders one From/To pair that drives them all). A DateTime X axis is auto-detected as a time series → Line chart.",
+      "chart": {
+        "cfg": {
+          "type": "line",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "t:DateTime|queries:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-10",
+      "name": "Slowest query patterns — avg duration",
+      "sql": "SELECT left(any(query), 50) AS query, avg(query_duration_ms) AS avg_duration_ms\nFROM system.query_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String}) AND type = 'QueryFinish'\nGROUP BY normalized_query_hash\nORDER BY avg_duration_ms DESC\nLIMIT 15",
+      "favorite": true,
+      "description": "Distinct query shapes (system.query_log grouped by normalized_query_hash) ranked by average duration over a {from:String}/{to:String} range. Horizontal Bar of a non-count measure.",
+      "chart": {
+        "cfg": {
+          "type": "hbar",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "query:String|avg_duration_ms:Float64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-11",
+      "name": "Query errors over time",
+      "sql": "SELECT toStartOfHour(event_time) AS t, errorCodeToName(exception_code) AS error, count() AS n\nFROM system.query_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String}) AND exception_code != 0\nGROUP BY t, error\nORDER BY t",
+      "favorite": true,
+      "description": "Failed queries from system.query_log over a {from:String}/{to:String} range, broken down by ClickHouse error name. The \"error\" column is used as the Series, producing grouped/stacked bars per error code.",
+      "chart": {
+        "cfg": {
+          "type": "bar",
+          "x": 0,
+          "y": [
+            2
+          ],
+          "series": 1
+        },
+        "key": "t:DateTime|error:LowCardinality(String)|n:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-12",
+      "name": "Part lifecycle events over time",
+      "sql": "SELECT toStartOfHour(event_time) AS t, event_type, count() AS n\nFROM system.part_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String})\nGROUP BY t, event_type\nORDER BY t",
+      "favorite": true,
+      "description": "system.part_log over a {from:String}/{to:String} range — new/merged/mutated/downloaded/removed parts per hour, one query instead of five separate panels. \"event_type\" is the Series.",
+      "chart": {
+        "cfg": {
+          "type": "bar",
+          "x": 0,
+          "y": [
+            2
+          ],
+          "series": 1
+        },
+        "key": "t:DateTime|event_type:Enum8('NewPart' = 1, 'MergeParts' = 2, 'DownloadPart' = 3, 'RemovePart' = 4, 'MutatePart' = 5, 'MovePart' = 6, 'MergePartsStart' = 7, 'MutatePartStart' = 8)|n:UInt64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-13",
+      "name": "Memory usage over time",
+      "sql": "SELECT toStartOfMinute(event_time) AS t, avg(CurrentMetric_MemoryTracking) AS memory_bytes\nFROM system.metric_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String})\nGROUP BY t\nORDER BY t",
+      "favorite": true,
+      "description": "Average tracked memory (system.metric_log's CurrentMetric_MemoryTracking) per minute over a {from:String}/{to:String} range. Line chart.",
+      "chart": {
+        "cfg": {
+          "type": "line",
+          "x": 0,
+          "y": [
+            1
+          ],
+          "series": null
+        },
+        "key": "t:DateTime|memory_bytes:Float64"
+      },
+      "view": "chart"
+    },
+    {
+      "id": "sys-14",
+      "name": "Query cost breakdown — slowest patterns (detail)",
+      "sql": "SELECT\n    normalized_query_hash,\n    left(argMax(query, query_duration_ms), 60) AS sample_query,\n    count() AS executions,\n    max(query_duration_ms) AS max_ms,\n    avg(query_duration_ms) AS avg_ms,\n    sum(read_rows) AS read_rows,\n    formatReadableSize(sum(read_bytes)) AS read_bytes,\n    quantile(0.99)(memory_usage) AS p99_memory\nFROM system.query_log\nWHERE event_time BETWEEN parseDateTimeBestEffort({from:String}) AND parseDateTimeBestEffort({to:String}) AND type = 'QueryFinish'\nGROUP BY normalized_query_hash\nORDER BY avg_ms DESC\nLIMIT 15",
+      "favorite": false,
+      "description": "The deep-dive version of \"Slowest query patterns\": executions, max/avg duration, rows and bytes read, and p99 memory per query shape over a {from:String}/{to:String} range. Table view — too many columns for one chart, but the full picture behind the bar chart above."
+    }
+  ]
+}

@@ -23,7 +23,12 @@ on the project site. Try it live on the Antalya demo cluster: **https://antalya.
 The [**ontime chart demo**](docs/ONTIME-CHART-DEMO.md) is a ready-made library of 10
 queries (load [`examples/ontime-charts.json`](examples/ontime-charts.json) via
 **File ▾ → Open**) that walks through every chart type and feature against the public
-`ontime` flight dataset.
+`ontime` flight dataset. The [**system explorer demo**](docs/SYSTEM-EXPLORER-DEMO.md)
+is a 14-query library (load [`examples/system-explorer-charts.json`](examples/system-explorer-charts.json)
+via **File ▾ → Append**) that introspects ClickHouse's own `system` database —
+running queries, merges/replication health, and historical query/part/error
+activity — with a shared From/To filter driving every time-ranged Dashboard tile
+at once.
 
 ## How it works
 
