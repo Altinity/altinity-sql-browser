@@ -1,0 +1,12 @@
+{
+  "app_tag": null,
+  "app_commit": "6410a06ad71edbe051132957bf6523258f757e29",
+  "app_build_stamp": "v0.2.0 (6410a06)",
+  "captured_at": "2026-07-04T06:12:41Z",
+  "captured_by": "claude-code + chrome-devtools-mcp",
+  "target_host": "antalya.demo.altinity.cloud",
+  "clickhouse_version": "26.3.10",
+  "browser": "Chrome (agent, localhost:9222)",
+  "desktop_viewport": "1440x900@2x",
+  "mobile_viewport": "390x844@2x"
+}

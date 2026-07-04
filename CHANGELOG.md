@@ -20,12 +20,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   the peer window are verified); a cold/bookmarked visit falls back to the normal
   login flow, which returns to the dashboard after sign-in. Tile queries run
   **read-only** (`readonly=2`), so a favorite that happens to contain a write is
-  rejected server-side rather than executed on open/refresh. Single-row (KPI) and
-  non-chartable favorites are skipped for now with an "N not shown" note. KPI
-  tiles, global filters, drag-to-arrange layout, per-tile controls, and export
-  arrive in later phases (#149 D2–D7). Known limitation: two tabs independently
-  refreshing a *rotating* OAuth refresh token can race (BroadcastChannel sync
-  deferred).
+  rejected server-side rather than executed on open/refresh. Tiles fetch with a
+  bounded concurrency (so a large favorites list doesn't stampede the cluster),
+  the auth token is resolved once before they fan out (no intra-tab refresh
+  race), and a handed-off-but-expired token is refreshed rather than forcing a
+  re-login. Single-row (KPI) and non-chartable favorites are skipped for now with
+  an "N not shown" note. KPI tiles, global filters, drag-to-arrange layout,
+  per-tile controls, and export arrive in later phases (#149 D2–D7). Known
+  limitation: two tabs independently refreshing a *rotating* OAuth refresh token
+  can race (BroadcastChannel sync deferred).
+- **Schema-aware, FROM-driven autocompletion** (#84) — column completion now
+  fires *while you type*, driven by the statement's `FROM`/`JOIN` clause, so you
+  no longer have to expand a table in the sidebar first. A new pure module
+  `src/core/from-scope.js` resolves the caret's statement into its base tables
+  (`{db, table, alias}[]`, reusing the SQL tokenizer so strings/comments/`;`
+  never fool it), and completion uses it three ways: **aliases resolve**
+  (`e.` after `FROM events e` offers `events`' columns), **unqualified columns
+  are scoped** to the statement's tables (an unrelated loaded table's columns
+  are no longer suggested), and **columns load lazily** on a **debounced idle
+  tick** (300 ms, never on the keystroke path) — deduped via the existing
+  `'loading'` sentinel, cached per connection, and the open dropdown refreshes
+  when they arrive. `db.table.`/`table.` qualification still works; with no
+  FROM in view completion degrades gracefully to the global pool. Non-goals
+  (v1): CTE/subquery-derived scopes, `USING`, `SELECT *` expansion, table
+  functions. Builds directly on the CM6 editor (#21).
 
 ### Fixed
 - **Editor scrollbars are back, and the whole UI's scrollbars behave

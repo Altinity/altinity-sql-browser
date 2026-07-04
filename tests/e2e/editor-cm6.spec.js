@@ -94,4 +94,28 @@ test.describe('CM6 editor', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.cm-panel.cm-search')).toHaveCount(0);
   });
+
+  test('FROM-aware completion: an alias offers its table columns (#84)', async ({ page }) => {
+    // Seed the candidate pool with a column of `events` (as if its columns were
+    // loaded) plus an unrelated table's column that must NOT surface for `e.`.
+    await page.evaluate(() => {
+      window.__app.completions = window.__app.completions.concat([
+        { label: 'user_id', kind: 'column', insert: 'user_id', detail: 'UInt64', parent: 'events' },
+        { label: 'other_col', kind: 'column', insert: 'other_col', detail: 'String', parent: 'unrelated' },
+      ]);
+    });
+    // `e.` resolves through `FROM events e` (same line, FROM precedes the caret).
+    await page.keyboard.type('select e. from events e');
+    // Put the caret just after the `e.` and open completion there explicitly.
+    await page.evaluate(() => {
+      const v = window.__app.dom.editorView;
+      v.dispatch({ selection: { anchor: 9 } }); // after "select e."
+      v.focus();
+    });
+    await page.keyboard.press('Control+Space');
+    const tip = page.locator('.cm-tooltip-autocomplete');
+    await expect(tip).toBeVisible();
+    await expect(tip.getByText('user_id')).toBeVisible();
+    await expect(tip.getByText('other_col')).toHaveCount(0); // out-of-alias column suppressed
+  });
 });

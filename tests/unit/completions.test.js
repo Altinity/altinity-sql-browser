@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   assembleReferenceData, buildCompletions, completionContext, rankCompletions,
-  wordAt,
+  resolveScopeAlias, wordAt,
 } from '../../src/core/completions.js';
 import { SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-highlight.js';
 
@@ -179,6 +179,71 @@ describe('rankCompletions', () => {
     // 'ontime','Origin','Month'(substring 'o'),'substring'? no. prefix: ontime/Origin
     expect(r.map((i) => i.label)).toContain('ontime');
     expect(r).not.toContainEqual(expect.objectContaining({ label: 'SELECT' }));
+  });
+});
+
+describe('resolveScopeAlias', () => {
+  const scope = [{ db: null, table: 'events', alias: 'e' }, { db: 'db', table: 'users', alias: null }];
+  it('resolves an alias to its table name', () => {
+    expect(resolveScopeAlias('e', scope)).toBe('events');
+  });
+  it('leaves a bare table name / unknown qualifier unchanged', () => {
+    expect(resolveScopeAlias('events', scope)).toBe('events'); // no alias matches → as-is
+    expect(resolveScopeAlias('users', scope)).toBe('users');
+    expect(resolveScopeAlias('nope', scope)).toBe('nope');
+  });
+  it('is a no-op with no scope or a null parent', () => {
+    expect(resolveScopeAlias('e', undefined)).toBe('e');
+    expect(resolveScopeAlias('e', null)).toBe('e');
+    expect(resolveScopeAlias(null, scope)).toBeNull();
+  });
+});
+
+describe('FROM-scoped rankCompletions (#84)', () => {
+  const items = [
+    { label: 'SELECT', kind: 'keyword' },
+    { label: 'events', kind: 'table', parent: 'app' },
+    { label: 'users', kind: 'table', parent: 'app' },
+    { label: 'ts', kind: 'column', parent: 'events' },
+    { label: 'user_id', kind: 'column', parent: 'events' },
+    { label: 'name', kind: 'column', parent: 'users' },
+    { label: 'unrelated', kind: 'column', parent: 'other' },
+  ];
+  const scope = [{ db: null, table: 'events', alias: 'e' }, { db: null, table: 'users', alias: 'u' }];
+
+  it('qualified alias resolves to the aliased table columns', () => {
+    const r = rankCompletions(items, { word: '', qualified: true, parent: 'e', scope });
+    expect(r.map((i) => i.label)).toEqual(['ts', 'user_id']); // e → events
+  });
+  it('qualified bare table name still works with a scope present', () => {
+    const r = rankCompletions(items, { word: '', qualified: true, parent: 'users', scope });
+    expect(r.map((i) => i.label)).toEqual(['name']);
+  });
+  it('unqualified: only in-scope columns compete, boosted above tables/keywords', () => {
+    const r = rankCompletions(items, { word: 'u', qualified: false, parent: null, scope });
+    const labels = r.map((i) => i.label);
+    expect(labels).toContain('user_id'); // events (in scope), substring 'u'... actually prefix
+    expect(labels).toContain('users');   // table still offered
+    expect(labels).not.toContain('unrelated'); // out-of-scope column suppressed
+    // an in-scope column with a prefix match leads the schema/keyword rows
+    expect(r[0].label).toBe('user_id');
+  });
+  it('multi-table FROM/JOIN scopes to all joined tables', () => {
+    const r = rankCompletions(items, { word: 'n', qualified: false, parent: null, scope });
+    expect(r.map((i) => i.label)).toContain('name'); // users column (joined) offered
+    expect(r.map((i) => i.label)).not.toContain('unrelated');
+  });
+  it('no scope → global pool unchanged (out-of-scope columns still offered)', () => {
+    const r = rankCompletions(items, { word: 'u', qualified: false, parent: null });
+    expect(r.map((i) => i.label)).toContain('unrelated');
+  });
+  it('an empty scope array behaves like no scope', () => {
+    const r = rankCompletions(items, { word: 'u', qualified: false, parent: null, scope: [] });
+    expect(r.map((i) => i.label)).toContain('unrelated');
+  });
+  it('a scope with no resolvable table names behaves like no scope (no columns suppressed)', () => {
+    const r = rankCompletions(items, { word: 'u', qualified: false, parent: null, scope: [{ alias: 'x', table: null }] });
+    expect(r.map((i) => i.label)).toContain('unrelated');
   });
 });
 
