@@ -217,6 +217,18 @@ describe('renderDashboard', () => {
     expect(app.root.querySelector('.dash-tile-foot').children.length).toBe(1);
   });
 
+  it('has a theme toggle wired to app.toggleTheme', async () => {
+    const toggleTheme = vi.fn();
+    const app = makeApp({ runTile: vi.fn(async () => chartResult()), toggleTheme });
+    app.state.theme = 'dark'; // exercise the dark-theme icon branch
+    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'q', favorite: true }];
+    await renderDashboard(app);
+    const btn = app.root.querySelector('.dash-icobtn');
+    expect(btn).toBeTruthy();
+    btn.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(toggleTheme).toHaveBeenCalled();
+  });
+
   it('drops a tile whose request was aborted (not counted as skipped)', async () => {
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => ({ aborted: true })));
     await renderDashboard(app);

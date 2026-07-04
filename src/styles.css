@@ -1741,11 +1741,20 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* ── Dashboard (#149 D1) ───────────────────────────────────────────────────
    The standalone /sql/dashboard page: sticky header + a responsive grid of
    read-only chart tiles rendered from favorited Library queries. */
+/* The dashboard's own scroll container: #root is a fixed overflow:hidden flex
+   column (the workbench shell), so the dashboard fills it and scrolls itself. */
+.dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
 .dash-header {
   position: sticky; top: 0; z-index: 40; display: flex; align-items: center;
   gap: 12px; padding: 11px 20px; background: var(--bg-header);
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
 }
+.dash-icobtn {
+  width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
+  border-radius: 7px; cursor: pointer;
+}
+.dash-icobtn:hover { background: var(--bg-hover); color: var(--fg); }
 .dash-back {
   display: inline-flex; align-items: center; gap: 6px; color: var(--fg-mute);
   text-decoration: none; font-size: 12px; padding: 4px 9px; border-radius: 6px;
@@ -1770,11 +1779,19 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-btn:hover { background: var(--bg-hover); }
 .dash-btn:disabled { opacity: .55; cursor: default; }
+/* Arrange grid: 3 across on wide screens (the design's default), degrading to
+   2 then 1 as width shrinks. A configurable 2/3-column switcher + drag-reorder
+   land in D5. */
 .dash-grid {
   display: grid; gap: 14px; padding: 18px 20px 40px;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   max-width: 1560px; margin: 0 auto;
 }
+@media (max-width: 1100px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
+/* D1 shows charts read-only; the inline per-tile config bar (from renderChart)
+   is hidden — a settings-popover to reveal Type/X/Y arrives in D6. */
+.dash-tile .chart-config { display: none; }
 .dash-empty { padding: 60px 20px; text-align: center; color: var(--fg-mute); font-size: 13px; }
 .dash-tile {
   display: flex; flex-direction: column; overflow: hidden; min-height: 300px;

@@ -76,6 +76,12 @@ export function renderDashboard(app) {
   const updated = h('span', { class: 'dash-updated' });
   const refreshBtn = h('button', { class: 'dash-btn', title: 'Re-run all tiles' },
     Icon.refresh(), h('span', null, 'Refresh'));
+  // Theme toggle, mirroring the workbench header: reuse app.toggleTheme (persists
+  // the pref + flips data-theme), and register the button as app.dom.themeBtn so
+  // that helper repaints its icon on toggle.
+  const themeBtn = h('button', { class: 'dash-icobtn', title: 'Toggle theme', onclick: () => app.toggleTheme() });
+  themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
+  app.dom.themeBtn = themeBtn;
 
   const header = h('div', { class: 'dash-header' },
     h('a', { class: 'dash-back', href: '/sql', title: 'Back to SQL Browser' },
@@ -87,13 +93,17 @@ export function renderDashboard(app) {
     h('span', { class: 'dash-chip dash-src', title: app.host() },
       h('span', { class: 'dash-dot' }), app.host()),
     updated,
+    themeBtn,
     refreshBtn);
 
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: favorites.length ? 'none' : '' } },
     'No favorites yet — star a query in the Library to add it to the dashboard.');
 
-  app.root.replaceChildren(header, empty, grid);
+  // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
+  // dashboard needs its own scroll container — otherwise a tall grid clips with
+  // no vertical scroll. The sticky header lives inside it.
+  app.root.replaceChildren(h('div', { class: 'dash-page' }, header, empty, grid));
 
   const refresh = async () => {
     refreshBtn.disabled = true;
