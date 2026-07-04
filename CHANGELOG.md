@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-04
+
 ### Added
 - **Dashboard (phase 1): open your favorited Library queries as a read-only
   dashboard in a new tab** (#149). A new **File ▾ → "Open as dashboard"** item
@@ -543,7 +545,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Altinity/altinity-sql-browser/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Altinity/altinity-sql-browser/compare/v0.1.3...v0.1.4
