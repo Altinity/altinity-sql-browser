@@ -4,7 +4,9 @@ import { EditorState } from '@codemirror/state';
 import {
   createCodeMirrorEditor, langExtensionFor, completionSourceFor, applyFor,
   infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, inputGuards, syncTx,
+  loadScopeColumns,
 } from '../../src/editor/codemirror-adapter.js';
+import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
@@ -368,6 +370,20 @@ describe('completionSourceFor', () => {
     expect(src(ctx('zzzznope', 8))).toBe(null);
     expect(completionSourceFor(makeApp({ completions: undefined }))(ctx('se', 2))).toBe(null);
   });
+
+  it('is FROM-aware: an alias resolves to its table columns (#84)', () => {
+    const scoped = makeApp({
+      completions: [
+        { label: 'ts', kind: 'column', insert: 'ts', parent: 'events' },
+        { label: 'other', kind: 'column', insert: 'other', parent: 'unrelated' },
+      ],
+      refData: ref,
+    });
+    const s = completionSourceFor(scoped);
+    // `e.` with `FROM events e` on the same line → events' columns, not unrelated
+    const r = s(ctx('SELECT e. FROM events e', 9));
+    expect(r.options.map((o) => o.label)).toEqual(['ts']);
+  });
 });
 
 describe('applyFor', () => {
@@ -633,5 +649,93 @@ describe('input guards (the old editor-brackets.js role)', () => {
     const tip = hoverSourceFor({ refData: ref })(view, 9);
     expect(tip).not.toBe(null);
     expect(tip.create().dom.textContent).toContain('sum(x)');
+  });
+});
+
+describe('FROM-scope column loading (#84)', () => {
+  // A schema with one FROM-able table whose columns aren't loaded yet.
+  const withSchema = (over = {}) => {
+    const app = makeApp(over);
+    app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
+    return app;
+  };
+  const setDoc = (view, text) => view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+    selection: { anchor: text.length },
+  });
+
+  it('loadScopeColumns fetches the statement FROM tables whose columns are unloaded', async () => {
+    const { app, view } = mounted();
+    app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
+    setDoc(view, 'SELECT x FROM events');
+    const fetched = await loadScopeColumns(app, view);
+    expect(fetched).toBe(true);
+    expect(app.actions.loadColumns).toHaveBeenCalledWith('app', 'events');
+  });
+
+  it('loadScopeColumns is a no-op (no fetch) when nothing needs loading', async () => {
+    const { app, view } = mounted();
+    app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: [{ name: 'ts' }] }] }];
+    setDoc(view, 'SELECT x FROM events');
+    expect(await loadScopeColumns(app, view)).toBe(false);
+    expect(app.actions.loadColumns).not.toHaveBeenCalled();
+  });
+
+  it('the debounced tick refreshes an OPEN completion once the columns arrive', async () => {
+    vi.useFakeTimers();
+    try {
+      const app = withSchema({
+        completions: [{ label: 'ts', kind: 'column', insert: 'ts', parent: 'events' }],
+      });
+      const port = createCodeMirrorEditor(app);
+      const host = document.createElement('div');
+      document.body.appendChild(host);
+      port.mount(host);
+      const view = app.dom.editorView;
+      // A user edit schedules the tick; an open completion is the refresh target.
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT t FROM events' }, selection: { anchor: 8 } });
+      startCompletion(view);
+      expect(completionStatus(view.state)).toBeTruthy(); // a completion session is live
+      // Fire the tick AND flush the loadColumns promise chain → the guarded
+      // refresh (view still live + completion open) re-runs the source.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(app.actions.loadColumns).toHaveBeenCalledWith('app', 'events');
+      expect(completionStatus(view.state)).toBeTruthy(); // stayed live through the refresh
+      port.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('debounces the prefetch on user edits and coalesces a typing burst', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app, view } = mounted();
+      app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
+      // Two rapid edits: the second clears the first pending timer (coalesce).
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT x FROM eve' } });
+      view.dispatch({ changes: { from: view.state.doc.length, to: view.state.doc.length, insert: 'nts' } });
+      expect(app.actions.loadColumns).not.toHaveBeenCalled(); // nothing on the keystroke path
+      // No completion open → the tick fetches but skips the dropdown refresh.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(app.actions.loadColumns).toHaveBeenCalledTimes(1);
+      expect(app.actions.loadColumns).toHaveBeenCalledWith('app', 'events');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a pending prefetch timer is cleared on destroy (no fire after teardown)', () => {
+    vi.useFakeTimers();
+    try {
+      const { app, port, view } = mounted();
+      app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT x FROM events' } });
+      port.destroy();
+      vi.advanceTimersByTime(300);
+      expect(app.actions.loadColumns).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

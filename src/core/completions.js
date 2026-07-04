@@ -113,16 +113,18 @@ export function buildCompletions(ref, schema) {
  * The word being typed at the caret, whether it is qualified (after a dot —
  * `table.` → that table's columns), and whether it sits inside a FORMAT clause
  * (`afterFormat` — the preceding token is FORMAT → complete output-format names).
- * Returns {word, from, to, qualified, parent, afterFormat}.
+ * Returns {word, from, to, qualified, parent, afterFormat}. `toks` optionally
+ * supplies a pre-computed `tokenize(value)` so the completion path (which also
+ * runs from-scope) lexes the caret prefix once, not twice.
  */
-export function completionContext(value, pos) {
+export function completionContext(value, pos, toks) {
   // The word being typed is either inside an OPEN backtick-quoted identifier (a
   // `non-bare-name… still being typed) or a bare [A-Za-z0-9_] run. We use the SQL
   // tokenizer to find an open backtick so a backtick inside a string/comment (or
   // an escaped `\`` in a closed name) can't fool us. `from` is where an accepted
   // candidate replaces to — the opening backtick in the quoted case, so accepting
   // never doubles the backtick.
-  const open = openBacktickStart(value, pos);
+  const open = openBacktickStart(value, pos, toks);
   let from;
   let word;
   if (open >= 0) {
@@ -157,9 +159,9 @@ export function completionContext(value, pos) {
 // contains the caret, or -1. Uses the tokenizer so a backtick inside a string or
 // comment isn't mistaken for an identifier quote, and an escaped `\`` inside a
 // closed name doesn't desync a naive parity count.
-function openBacktickStart(value, pos) {
+function openBacktickStart(value, pos, toks) {
   let off = 0;
-  for (const [type, text] of tokenize(value)) {
+  for (const [type, text] of toks || tokenize(value)) {
     const end = off + text.length;
     if (off < pos && pos <= end && type === 'ident' && text[0] === '`') {
       // open = the caret is inside the run before any closing backtick (an
@@ -185,15 +187,41 @@ function identBefore(value, end) {
 }
 
 /**
- * Rank candidates for `ctx`. Qualified → only that table's columns. Otherwise
- * prefix matches before substring; columns/tables boosted over keywords once
- * ≥1 char is typed. Empty word (and not qualified) → keywords + tables only.
- * Capped for a tight dropdown.
+ * Resolve a qualifier (`ctx.parent`, the identifier before the dot) through the
+ * statement's FROM scope: an alias (`e` from `FROM events e`) resolves to its
+ * table name; a bare table name (or anything not in scope) is returned as-is so
+ * `events.` keeps working with no scope. Pure — `scope` is the
+ * `{db, table, alias}[]` from core/from-scope.js (#84), or absent.
+ */
+export function resolveScopeAlias(parent, scope) {
+  if (!scope || parent == null) return parent;
+  for (const r of scope) if (r.alias === parent) return r.table;
+  return parent;
+}
+
+// The set of in-scope table names (for unqualified column scoping), or null when
+// there is no FROM scope — null means "keep today's global behavior".
+function scopeTableSet(scope) {
+  if (!scope || !scope.length) return null;
+  const s = new Set();
+  for (const r of scope) if (r.table) s.add(r.table);
+  return s.size ? s : null;
+}
+
+/**
+ * Rank candidates for `ctx`. Qualified → only that table's columns (resolving an
+ * alias through `ctx.scope` first). Otherwise prefix matches before substring;
+ * columns/tables boosted over keywords once ≥1 char is typed. When a FROM scope
+ * is present, unqualified column suggestions are scoped to the statement's
+ * tables (out-of-scope columns dropped, in-scope ones boosted); with no scope
+ * the global pool is used unchanged. Empty word (and not qualified) → keywords +
+ * tables only. Capped for a tight dropdown.
  */
 export function rankCompletions(items, ctx) {
   const w = ctx.word.toLowerCase();
   if (ctx.qualified) {
-    const cols = items.filter((it) => it.kind === 'column' && it.parent === ctx.parent);
+    const target = resolveScopeAlias(ctx.parent, ctx.scope);
+    const cols = items.filter((it) => it.kind === 'column' && it.parent === target);
     return (w ? cols.filter((c) => c.label.toLowerCase().includes(w)) : cols).slice(0, 50);
   }
   if (ctx.afterFormat) {
@@ -205,14 +233,19 @@ export function rankCompletions(items, ctx) {
   if (!w) {
     return items.filter((it) => it.kind === 'keyword' || it.kind === 'table').slice(0, 40);
   }
+  const scopeTables = scopeTableSet(ctx.scope);
   const scored = [];
   for (const it of items) {
     if (it.kind === 'format') continue; // formats only inside a FORMAT clause
+    // FROM-scoped: only columns of the statement's tables compete unqualified;
+    // an unrelated loaded table's columns aren't suggested (#84). No scope → all.
+    if (it.kind === 'column' && scopeTables && !scopeTables.has(it.parent)) continue;
     const l = it.label.toLowerCase();
     const idx = l.indexOf(w);
     if (idx === -1) continue;
     let score = idx === 0 ? 0 : 100 + idx;              // prefix beats substring
     if (it.kind === 'column' || it.kind === 'table') score -= 10; // boost schema
+    if (it.kind === 'column' && scopeTables) score -= 15; // in-scope columns lead
     if (it.kind === 'keyword') {
       // A clause keyword sharing a name with an obscure function wins the tie
       // once enough of it is typed (≥3 chars, prefix) — e.g. `for` → FORMAT, not

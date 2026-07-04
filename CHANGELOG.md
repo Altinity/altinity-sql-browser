@@ -9,6 +9,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Schema-aware, FROM-driven autocompletion** (#84) — column completion now
+  fires *while you type*, driven by the statement's `FROM`/`JOIN` clause, so you
+  no longer have to expand a table in the sidebar first. A new pure module
+  `src/core/from-scope.js` resolves the caret's statement into its base tables
+  (`{db, table, alias}[]`, reusing the SQL tokenizer so strings/comments/`;`
+  never fool it), and completion uses it three ways: **aliases resolve**
+  (`e.` after `FROM events e` offers `events`' columns), **unqualified columns
+  are scoped** to the statement's tables (an unrelated loaded table's columns
+  are no longer suggested), and **columns load lazily** on a **debounced idle
+  tick** (300 ms, never on the keystroke path) — deduped via the existing
+  `'loading'` sentinel, cached per connection, and the open dropdown refreshes
+  when they arrive. `db.table.`/`table.` qualification still works; with no
+  FROM in view completion degrades gracefully to the global pool. Non-goals
+  (v1): CTE/subquery-derived scopes, `USING`, `SELECT *` expansion, table
+  functions. Builds directly on the CM6 editor (#21).
+
 ### Changed
 - **The SQL editor is now CodeMirror 6** (#21) — the deliberate 4th bundled
   runtime dependency, replacing the hand-rolled textarea editor wholesale

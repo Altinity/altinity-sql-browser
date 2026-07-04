@@ -19,11 +19,13 @@ import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, hoverToolti
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxHighlighting, syntaxTree, HighlightStyle } from '@codemirror/language';
 import { sql, SQLDialect } from '@codemirror/lang-sql';
-import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { search, searchKeymap } from '@codemirror/search';
 import { tags } from '@lezer/highlight';
 import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions, wordAt } from '../core/completions.js';
+import { fromScopeAt, pendingColumnLoads } from '../core/from-scope.js';
+import { tokenize } from '../core/sql-highlight.js';
 import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
@@ -138,8 +140,16 @@ export function completionSourceFor(app) {
     // (cutting AT the caret would misread an open backtick-identifier whose
     // escaped-backtick ends up last-before-the-cut as already closed).
     const doc = ctx.state.sliceDoc(0, ctx.state.doc.lineAt(ctx.pos).to);
-    const c = completionContext(doc, ctx.pos);
+    // Lex the caret prefix once and share it: both completionContext (open-
+    // backtick detection) and fromScopeAt need the same token stream.
+    const toks = tokenize(doc);
+    const c = completionContext(doc, ctx.pos, toks);
     if (!c.qualified && c.word.length < 1 && !ctx.explicit) return null;
+    // FROM-aware ranking (#84): resolve `e.` → events, and scope unqualified
+    // columns to the statement's FROM/JOIN tables. The slice already covers the
+    // lines before the caret, so a FROM above the caret is in view; a FROM below
+    // it degrades gracefully to the global pool (no scope).
+    c.scope = fromScopeAt(doc, ctx.pos, toks);
     const items = rankCompletions(app.completions || [], c);
     if (!items.length) return null;
     return {
@@ -280,6 +290,28 @@ export function insertTwoSpaces(view) {
   return true;
 }
 
+// Idle delay before the FROM-scope column prefetch runs (#84). Column metadata
+// is fetched on this debounced tick, NEVER on the keystroke path (the standing
+// editor rule) — long enough that a burst of typing collapses to one tick.
+const COLUMN_LOAD_DELAY_MS = 300;
+
+/**
+ * FROM-driven lazy column loading (#84): parse the statement around the caret,
+ * find its FROM/JOIN tables whose columns aren't loaded yet, and fetch them via
+ * the app's existing `loadColumns` (which writes the `'loading'` sentinel to
+ * dedupe, caches per connection, and rebuilds `app.completions`). Uses the whole
+ * document (not the keystroke-path line slice) so a FROM below the caret still
+ * prefetches. Resolves to whether it fetched anything — the caller refreshes an
+ * open dropdown only after re-checking the view is still live (destroy race).
+ * Exported for direct tests (timer-free).
+ */
+export function loadScopeColumns(app, view) {
+  const scope = fromScopeAt(view.state.doc.toString(), view.state.selection.main.head);
+  const pending = pendingColumnLoads(scope, app.state.schema.value);
+  if (!pending.length) return Promise.resolve(false);
+  return Promise.all(pending.map((p) => app.actions.loadColumns(p.db, p.table))).then(() => true);
+}
+
 /**
  * The CM6 editor behind the EditorPort seam. Port methods tolerate pre-mount
  * calls (no view yet → no-op / empty results). mount() is re-runnable: a
@@ -299,6 +331,25 @@ export function createCodeMirrorEditor(app) {
   let langExt = null;
   let view = null;
   let shownTabId = null;
+  let colTimer = null; // debounce handle for the FROM-scope column prefetch (#84)
+
+  // Schedule the debounced idle-tick column load (#84). Coalesces a typing
+  // burst into one tick; cleared on destroy so a torn-down view never fires.
+  // After the async fetch, re-check `view === v` (the file's replaceDocument
+  // idiom) before touching the view: a destroy() between tick and resolve nulls
+  // `view`, and re-running the completion source on a torn-down view would
+  // throw. Refresh a live, open completion so freshly-loaded columns appear.
+  const scheduleColumnLoad = () => {
+    if (colTimer) clearTimeout(colTimer);
+    colTimer = setTimeout(() => {
+      colTimer = null;
+      const v = view;
+      if (!v) return;
+      loadScopeColumns(app, v).then((loaded) => {
+        if (loaded && view === v && completionStatus(v.state)) startCompletion(v);
+      });
+    }, COLUMN_LOAD_DELAY_MS);
+  };
 
   const extensions = () => [
     lineNumbers(),
@@ -331,6 +382,7 @@ export function createCodeMirrorEditor(app) {
       // coalesces a user edit with a reconcile must still reach tab.sql.
       if (u.docChanged && !u.transactions.every((tr) => tr.annotation(syncTx))) {
         emit(u.state.doc.toString());
+        scheduleColumnLoad(); // user edit → prefetch the statement's FROM columns (#84)
       }
     }),
     EditorView.domEventHandlers({
@@ -359,6 +411,7 @@ export function createCodeMirrorEditor(app) {
     destroy: () => {
       subs.clear();
       tabStates.clear();
+      if (colTimer) { clearTimeout(colTimer); colTimer = null; }
       if (view) view.destroy();
       view = null;
     },
