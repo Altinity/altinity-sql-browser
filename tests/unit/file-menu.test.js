@@ -23,6 +23,31 @@ const picker = (i) => document.querySelectorAll('.file-menu input[type=file]')[i
 
 afterEach(() => document.body.replaceChildren());
 
+describe('open as dashboard', () => {
+  it('opens the dashboard when at least one query is favorited', () => {
+    const app = mount();
+    app.actions.openDashboard = vi.fn();
+    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true }];
+    openFileMenu(app);
+    const btn = item(/Open as dashboard/);
+    expect(btn).toBeTruthy();
+    click(btn);
+    expect(app.actions.openDashboard).toHaveBeenCalled();
+  });
+
+  it('is disabled (with a reason) and toasts when there are no favorites', () => {
+    const app = mount();
+    app.actions.openDashboard = vi.fn();
+    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: false }];
+    openFileMenu(app);
+    const btn = item(/Open as dashboard/);
+    expect(btn.textContent).toContain('no favorites');
+    click(btn);
+    expect(app.actions.openDashboard).not.toHaveBeenCalled();
+    expect(toast()).toContain('Star a query');
+  });
+});
+
 describe('library title', () => {
   it('renders the name + dirty dot; inline rename commits on Enter and persists', () => {
     const app = mount();
@@ -85,9 +110,9 @@ describe('file menu', () => {
     ];
     openFileMenu(app);
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual(
-      ['New Library', 'Save JSON', 'Open…', 'Append…', 'Download Markdown', 'Download SQL']);
+      ['New Library', 'Open as dashboard', 'Save JSON', 'Open…', 'Append…', 'Download Markdown', 'Download SQL']);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Save library', 'Load from file', 'Share / publish']);
+      ['Dashboard', 'Save library', 'Load from file', 'Share / publish']);
     expect(document.querySelector('.fm-count').textContent).toBe('2 queries in Library');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
@@ -175,7 +200,7 @@ describe('Open / Append (JSON only)', () => {
     openFileMenu(app);
     const replaceInput = picker(0);
     replaceInput.click = vi.fn();
-    click(item(/Open/));
+    click(item(/Open…/));
     expect(document.querySelector('.file-menu')).toBeNull(); // menu closed
     expect(replaceInput.click).toHaveBeenCalled();
     // user picks a file → confirm dialog (current library non-empty, plural copy)

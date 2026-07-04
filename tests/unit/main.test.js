@@ -16,6 +16,8 @@ function fakeApp(over = {}) {
     ensureConfig: vi.fn(async () => ({})),
     setTokens: vi.fn(function (id) { this.token = id; }),
     renderApp: vi.fn(),
+    renderDashboard: vi.fn(),
+    receiveAuthHandoff: vi.fn(async () => false),
     showLogin: vi.fn(),
     // Default mirrors the real controller: signed in iff a token is held.
     // Tests that exercise a basic session override this directly.
@@ -178,6 +180,42 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sql).toBe('');
     expect(app.state.tabs.value[0].name).toBe('Untitled');
+  });
+
+  const dashLoc = (over = {}) => ({ href: 'https://ch/sql/dashboard', origin: 'https://ch', pathname: '/sql/dashboard', search: '', hash: '', ...over });
+
+  it('renders the dashboard when signed in on the /sql/dashboard route', async () => {
+    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    await bootstrap(app, fakeEnv({ location: dashLoc() }));
+    expect(app.renderDashboard).toHaveBeenCalled();
+    expect(app.renderApp).not.toHaveBeenCalled();
+  });
+
+  it('attempts the auth handoff, then renders the dashboard once it signs the tab in', async () => {
+    const app = fakeApp();
+    app.receiveAuthHandoff = vi.fn(async () => { app.token = valid; return true; });
+    const env = fakeEnv({ location: dashLoc(), opener: { postMessage: vi.fn() } });
+    await bootstrap(app, env);
+    expect(app.receiveAuthHandoff).toHaveBeenCalledWith(env);
+    expect(app.renderDashboard).toHaveBeenCalled();
+    expect(app.showLogin).not.toHaveBeenCalled();
+  });
+
+  it('falls back to login on a cold dashboard visit with no handoff', async () => {
+    const app = fakeApp();
+    await bootstrap(app, fakeEnv({ location: dashLoc() }));
+    expect(app.receiveAuthHandoff).toHaveBeenCalled();
+    expect(app.showLogin).toHaveBeenCalledWith(null);
+    expect(app.renderDashboard).not.toHaveBeenCalled();
+  });
+
+  it('skips editor share-link seeding on the dashboard route', async () => {
+    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const sql = 'SELECT 1';
+    const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
+    await bootstrap(app, fakeEnv({ location: dashLoc({ href: 'https://ch/sql/dashboard' + hash, hash }) }));
+    expect(app.state.tabs.value[0].sql).toBe(''); // not seeded — dashboard has no editor tab
+    expect(app.renderDashboard).toHaveBeenCalled();
   });
 
   it('preserves extra query params while stripping oauth ones', async () => {

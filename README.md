@@ -374,7 +374,12 @@ see "Security headers" below), and uploads the SPA + config into ClickHouse
 
 1. Add the rendered `dist/http_handlers.xml` to the server's `config.d/` (or push
    it as an ACM cluster setting `config.d/sql-browser.xml`) and reload ClickHouse.
-2. Register the redirect URI `https://<ch-host>/sql` with your OAuth IdP.
+   The SPA handler serves both `/sql` (the workbench) and `/sql/dashboard` (the
+   favorites dashboard) from the same file.
+2. Register the redirect URI `https://<ch-host>/sql` with your OAuth IdP. If users
+   will open `/sql/dashboard` via a cold/bookmarked link (rather than from the app,
+   which hands credentials over in-session), also register
+   `https://<ch-host>/sql/dashboard` so that direct sign-in can complete.
 3. Make sure ClickHouse accepts the bearer JWT — either a CH
    `<token_processors>` entry validating your IdP's JWKS, or a delegated
    `<http_authentication_servers>` verifier. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

@@ -84,10 +84,21 @@ export function openFileMenu(app) {
     meta ? h('span', { class: 'fm-meta' }, meta) : null);
   const sep = () => h('div', { class: 'fm-sep' });
   const empty = list.length === 0;
+  const hasFav = list.some((q) => q.favorite);
 
   const newLibraryItem = item(Icon.plus(), 'New Library', null, () => { close(); newLibraryAction(app); });
+  // Open the favorited subset of the Library as a standalone dashboard (#149).
+  // Enabled only when at least one query is starred; otherwise it explains why.
+  const dashboardItem = item(Icon.layers(), 'Open as dashboard', hasFav ? null : 'no favorites', () => {
+    close();
+    if (!hasFav) { flashToast('Star a query to add it to the dashboard', { document: app.document }); return; }
+    app.actions.openDashboard();
+  });
   const menu = h('div', { class: 'file-menu' },
     newLibraryItem,
+    sep(),
+    h('div', { class: 'fm-section' }, 'Dashboard'),
+    dashboardItem,
     sep(),
     h('div', { class: 'fm-section' }, 'Save library'),
     item(Icon.download(), 'Save JSON', '.json', () => { close(); saveJsonAction(app); }),

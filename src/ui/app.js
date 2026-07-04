@@ -26,6 +26,8 @@ import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
+import { configBase, dashboardTileSql, parseJsonResult } from '../core/dashboard.js';
+import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
@@ -35,6 +37,7 @@ import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.
 import { effect, batch } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
+import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -117,7 +120,9 @@ export function createApp(env = {}) {
   // config.json may list several IdPs. Fetch the doc once; resolve OIDC
   // discovery per selected IdP. The chosen IdP id is persisted so it survives
   // the OAuth redirect (like oauth_state) and drives token exchange/refresh.
-  const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, loc.pathname));
+  // configBase strips a trailing `/dashboard` so config.json / OAuth discovery
+  // resolve from the SPA base (`/sql/config.json`) on the dashboard route too.
+  const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, configBase(loc.pathname)));
   const resolvedCache = new Map();
   app.idpId = ss.getItem('oauth_idp') || null;
   function selectIdp(id) { app.idpId = id; ss.setItem('oauth_idp', id); }
@@ -1623,6 +1628,101 @@ export function createApp(env = {}) {
   // that changes the editor content; a no-op on desktop.
   const toEditorOnMobile = () => { if (app.state.isMobile.value) app.state.mobileView.value = 'editor'; };
 
+  // --- dashboard (#149 D1) ----------------------------------------------
+  // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
+  // server-side by queryDashboardTile), FORMAT JSON, transformed to the
+  // array-row shape renderChart wants. Returns { columns, rows, meta } on
+  // success, { error } on failure, or { aborted } on a cancelled request.
+  async function runTile(sql, signal) {
+    try {
+      // ensureConfig + getToken are inside the try: getToken→refresh can THROW on
+      // a network/IdP failure, and a tile must degrade to { error } rather than
+      // reject (a rejected tile would break the whole grid's Promise.all).
+      await ensureConfig();
+      if (!(await getToken())) { chCtx.onSignedOut(); return { error: 'Not signed in' }; }
+      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), signal);
+      return parseJsonResult(json);
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { aborted: true };
+      return { error: String((e && e.message) || e) };
+    }
+  }
+  app.runTile = runTile;
+  app.renderDashboard = () => renderDashboard(app);
+
+  // One-time cross-tab auth handoff. The dashboard opens in a new same-origin
+  // tab whose sessionStorage starts empty; rather than force a second sign-in,
+  // this (opener) tab grants its live credentials once when the child asks.
+  // Both sides pin the target origin AND the peer window; a timeout stops the
+  // opener listening if the child never asks. Message contract: core/auth-handoff.
+  // Two windows: the child waits HANDOFF_MS for a grant once it *asks* (a
+  // same-origin reply is near-instant, so this is short); the opener listens far
+  // longer (HANDOFF_LISTEN_MS) because it must survive the child's cold JS load
+  // before the child can ask — a short opener window would drop a slow tab's
+  // request and force a needless re-login.
+  const HANDOFF_MS = env.handoffMs != null ? env.handoffMs : 4000;
+  const HANDOFF_LISTEN_MS = env.handoffListenMs != null ? env.handoffListenMs : 30000;
+  function sendAuthHandoff(child) {
+    const onMsg = (e) => {
+      if (!isAuthRequest(e, loc.origin, child)) return;
+      const creds = snapshotAuth(ss);
+      // Only grant when we actually hold credentials — never hand over an empty
+      // snapshot (which the child would have to reject anyway).
+      if (hasAuth(creds)) child.postMessage({ type: AUTH_GRANT, creds }, loc.origin);
+      win.removeEventListener('message', onMsg);
+    };
+    win.addEventListener('message', onMsg);
+    win.setTimeout(() => win.removeEventListener('message', onMsg), HANDOFF_LISTEN_MS);
+  }
+  // Open the dashboard in a new tab and stand ready to hand it our credentials.
+  function openDashboard() {
+    const child = app.openWindow(loc.origin + '/sql/dashboard');
+    if (child) sendAuthHandoff(child);
+  }
+  app.openDashboard = openDashboard;
+
+  // Restore a handed-off credential snapshot into BOTH this tab's sessionStorage
+  // and the already-constructed in-memory auth fields — token/authMode/idp/origin
+  // were snapshotted from an empty ss at construction, so writing keys back alone
+  // wouldn't take effect until a reload.
+  function applyAuthSnapshot(creds) {
+    restoreAuth(ss, creds);
+    if (creds.ch_basic_auth) {
+      app.authMode = 'basic';
+      chCtx.origin = creds.ch_basic_origin || loc.origin;
+    } else {
+      if (creds.oauth_id_token) setTokens(creds.oauth_id_token, creds.oauth_refresh_token);
+      if (creds.oauth_idp) app.idpId = creds.oauth_idp;
+      chCtx.origin = creds.oauth_origin || loc.origin;
+    }
+  }
+  // Child side: ask the opener for credentials once. Resolves true once a valid
+  // grant is applied; false when there's no opener or the request times out (a
+  // cold/bookmarked visit → the caller falls through to the normal login flow).
+  app.receiveAuthHandoff = (handoffEnv) => new Promise((resolve) => {
+    const opener = handoffEnv.opener;
+    if (!opener) { resolve(false); return; }
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      win.removeEventListener('message', onMsg);
+      resolve(ok);
+    };
+    const onMsg = (e) => {
+      if (!isAuthGrant(e, loc.origin, opener)) return;
+      // Ignore an empty grant (opener signed out / mid-sign-in) — keep waiting so
+      // the request times out into the normal login rather than falsely
+      // reporting success with no credentials applied.
+      if (!hasAuth(e.data.creds)) return;
+      applyAuthSnapshot(e.data.creds);
+      finish(true);
+    };
+    win.addEventListener('message', onMsg);
+    opener.postMessage({ type: AUTH_REQUEST }, loc.origin);
+    win.setTimeout(() => finish(false), HANDOFF_MS);
+  });
+
   // --- actions registry --------------------------------------------------
   app.actions = {
     run: runEntry,
@@ -1652,6 +1752,7 @@ export function createApp(env = {}) {
     openNodeDetail,
     insertCreate: async (target) => { await insertCreate(target); toEditorOnMobile(); },
     openShortcuts: () => openShortcuts(app),
+    openDashboard,
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
     insertAtCursor: (text) => { app.editor.insertAtCursor(text); toEditorOnMobile(); },

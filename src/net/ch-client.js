@@ -85,6 +85,19 @@ export async function queryJson(ctx, sql, signal) {
 }
 
 /**
+ * Run a favorite's SQL for a read-only dashboard tile (#149): `FORMAT JSON` plus
+ * the `readonly=2` HTTP setting, so a favorite that happens to contain a write
+ * (INSERT / ALTER / DROP / …) is rejected server-side rather than executed when
+ * the dashboard opens or refreshes — level 2 still permits SELECT and
+ * query-level `SETTINGS`. Returns parsed JSON; throws CH's reason on error.
+ */
+export async function queryDashboardTile(ctx, sql, signal) {
+  const resp = await authedFetch(ctx, chUrl(ctx.origin, { format: 'JSON', extra: { readonly: 2 } }), sql, signal);
+  if (!resp.ok) throw new Error(parseExceptionText(await resp.text()));
+  return resp.json();
+}
+
+/**
  * Run a `system.tables`/`system.columns` query (`sqlBody`, without its FORMAT
  * clause) with data-lake-catalog visibility enabled, falling back to the plain
  * query on any non-cancellation, non-auth error. ClickHouse >=25.8 hides

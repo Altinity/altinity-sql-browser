@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD,
+  chUrl, authedFetch, queryJson, queryDashboardTile, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -53,6 +53,21 @@ describe('chUrl', () => {
     expect(url).toContain('default_format=JSON');
     expect(url).toContain('wait_end_of_query=1');
     expect(url).toContain('x=a%20b');
+  });
+});
+
+describe('queryDashboardTile', () => {
+  it('runs read-only (readonly=2) + FORMAT JSON and returns parsed JSON', async () => {
+    const ctx = ctxWith(async () => jsonResp({ meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] }));
+    const out = await queryDashboardTile(ctx, 'SELECT 1 AS n\nFORMAT JSON');
+    expect(out.data).toEqual([{ n: 1 }]);
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('default_format=JSON');
+    expect(url).toContain('readonly=2');
+  });
+  it('throws CH reason on a non-ok response', async () => {
+    const ctx = ctxWith(async () => textResp('Code: 164. DB::Exception: Cannot execute query in readonly mode', false, 500));
+    await expect(queryDashboardTile(ctx, 'DROP TABLE t')).rejects.toThrow(/readonly mode/);
   });
 });
 

@@ -71,6 +71,7 @@ export const Icon = {
   eyeOff: () => iconEl('<path d="M5.4 3.3A5.6 5.6 0 0 1 7 3c3.7 0 5.7 4 5.7 4a9.6 9.6 0 0 1-1.7 2.1M8.6 8.6A1.7 1.7 0 0 1 5.4 5.4M1.3 7S3.3 3 7 3m-5.7 4a9.6 9.6 0 0 0 1.7 2.1"/><path d="M1.8 1.8l10.4 10.4"/>', 14, 14, 1.4),
   server: () => iconEl('<rect x="1.8" y="2" width="8.4" height="3.4" rx="1"/><rect x="1.8" y="6.6" width="8.4" height="3.4" rx="1"/><path d="M3.8 3.7h.01M3.8 8.3h.01"/>', 12, 12, 1.3),
   arrow: () => svg('M2 6h7.5M7 3.5L9.5 6 7 8.5', 12, 12, { stroke: 1.6 }),
+  refresh: () => svg('M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8', 12, 12, { stroke: 1.5 }),
   // Same glyph as the JSON view tab so the Format button's { } matches it.
   braces: () => svg('M4 1.5C2.5 1.5 2.5 3 2.5 4S2.5 5 1.5 6c1 1 1 2 1 2s0 1.5 1.5 1.5M8 1.5c1.5 0 1.5 1.5 1.5 2.5s0 1 1 2c-1 1-1 2-1 2s0 1.5-1.5 1.5', 12, 12),
   // EXPLAIN button + Explain view: an indented plan-tree of lines.

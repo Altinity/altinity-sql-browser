@@ -9,6 +9,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard (phase 1): open your favorited Library queries as a read-only
+  dashboard in a new tab** (#149). A new **File ▾ → "Open as dashboard"** item
+  (enabled once at least one query is starred) opens `/sql/dashboard` — the same
+  single served artifact, reached by a client-side route — and renders each
+  favorited, chartable query as a live chart tile, reusing the existing Chart.js
+  result view. The new tab is authenticated by a **one-time, same-origin
+  `postMessage` credential handoff** from the opener (both the target origin and
+  the peer window are verified); a cold/bookmarked visit falls back to the normal
+  login flow, which returns to the dashboard after sign-in. Tile queries run
+  **read-only** (`readonly=2`), so a favorite that happens to contain a write is
+  rejected server-side rather than executed on open/refresh. Single-row (KPI) and
+  non-chartable favorites are skipped for now with an "N not shown" note. KPI
+  tiles, global filters, drag-to-arrange layout, per-tile controls, and export
+  arrive in later phases (#149 D2–D7). Known limitation: two tabs independently
+  refreshing a *rotating* OAuth refresh token can race (BroadcastChannel sync
+  deferred).
+
 ### Fixed
 - **Editor scrollbars are back, and the whole UI's scrollbars behave
   consistently again.** The console no longer renders at 1.2× via `html{zoom}`

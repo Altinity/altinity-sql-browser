@@ -6,6 +6,7 @@
 
   Routes:
     GET /sql              -> the SPA (dist/sql.html in user_files)
+    GET /sql/dashboard    -> the SAME SPA (client-side route: the favorites dashboard)
     GET /sql/config.json  -> the OAuth config (issuer + client_id [+ audience])
 
   The SPA POSTs queries to "/" with `Authorization: Bearer <id_token>`; that is
@@ -23,7 +24,10 @@
 <clickhouse>
   <http_handlers>
     <rule name="sql_browser_spa">
-      <url>regex:^/sql/?$</url>
+      <!-- Serves the SPA for both the workbench (/sql) and the client-side
+           dashboard route (/sql/dashboard) from the same sql.html. The
+           config.json rule below is anchored separately, so it still matches. -->
+      <url>regex:^/sql(/dashboard)?/?$</url>
       <methods>GET</methods>
       <handler>
         <type>static</type>

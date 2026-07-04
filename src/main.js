@@ -11,11 +11,16 @@ import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneChartCfg } from './core/chart-data.js';
+import { isDashboardRoute } from './core/dashboard.js';
 
 export async function bootstrap(app, env) {
   const loc = env.location;
   const ss = env.sessionStorage;
   const hist = env.history;
+  // The standalone dashboard route (#149) reuses this same bootstrap + app: it
+  // shares the OAuth-callback handling below, but renders the dashboard instead
+  // of the workbench and skips editor-only share-link seeding.
+  const dash = isDashboardRoute(loc.pathname);
   const u = new URL(loc.href);
   const code = u.searchParams.get('code');
   const stateParam = u.searchParams.get('state');
@@ -55,22 +60,31 @@ export async function bootstrap(app, env) {
   // A shared query (SQL + chart config) rides in the URL hash, which is lost
   // through the OAuth redirect (and we strip it below). Stash it in
   // sessionStorage so it survives the round-trip and restore it once we're back.
-  let shared = decodeShare(loc.hash);
-  if (shared.sql) ss.setItem('oauth_shared', JSON.stringify(shared));
-  else {
-    try { shared = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '', chart: null }; }
-    catch { shared = { sql: '', chart: null }; }
-  }
-  if (shared.sql) {
-    const t0 = app.state.tabs.value[0];
-    t0.sql = shared.sql;
-    t0.name = 'Shared query';
-    if (shared.chart && shared.chart.cfg) {
-      t0.chartCfg = cloneChartCfg(shared.chart.cfg);
-      t0.chartKey = shared.chart.key ?? null;
+  // The dashboard route has no editor tab to seed, so it skips this entirely.
+  if (!dash) {
+    let shared = decodeShare(loc.hash);
+    if (shared.sql) ss.setItem('oauth_shared', JSON.stringify(shared));
+    else {
+      try { shared = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '', chart: null }; }
+      catch { shared = { sql: '', chart: null }; }
     }
-    hist.replaceState(null, '', loc.pathname + loc.search);
+    if (shared.sql) {
+      const t0 = app.state.tabs.value[0];
+      t0.sql = shared.sql;
+      t0.name = 'Shared query';
+      if (shared.chart && shared.chart.cfg) {
+        t0.chartCfg = cloneChartCfg(shared.chart.cfg);
+        t0.chartKey = shared.chart.key ?? null;
+      }
+      hist.replaceState(null, '', loc.pathname + loc.search);
+    }
   }
+
+  // A freshly-opened dashboard tab is signed out (per-tab sessionStorage); try a
+  // one-time credential handoff from the opener before deciding what to render.
+  // A cold/bookmarked visit has no opener → falls through to the login screen,
+  // which after sign-in returns to /sql/dashboard and renders the dashboard.
+  if (dash && !app.isSignedIn()) await app.receiveAuthHandoff(env);
 
   if (app.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.
@@ -79,7 +93,7 @@ export async function bootstrap(app, env) {
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.ensureConfig();
-    app.renderApp();
+    if (dash) app.renderDashboard(); else app.renderApp();
   } else {
     app.showLogin(callbackError);
   }
@@ -95,6 +109,7 @@ if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
     sessionStorage: window.sessionStorage,
     history: window.history,
     fetch: window.fetch.bind(window),
+    opener: window.opener, // dashboard tab reads its opener for the auth handoff
   });
 }
 /* c8 ignore stop */
