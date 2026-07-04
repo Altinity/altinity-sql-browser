@@ -9,6 +9,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Editor scrollbars are back, and the whole UI's scrollbars behave
+  consistently again.** The console no longer renders at 1.2× via `html{zoom}`
+  (`--zoom` is now `1` — native size). `zoom:1.2` (= 6/5) landed element box
+  sizes on fractional device pixels, and the leftover sub-pixel made scroll
+  containers — the CodeMirror editor most visibly — read as "scrollable by
+  ~1px" over content that visibly fit, painting a **phantom scrollbar** (the
+  same rounding also drove the Safari viewport-unit divergence, #70). #145 had
+  hidden the editor's bars outright to dodge it; with zoom removed the editor
+  now uses the app's standard themed scrollbars like every other pane — a
+  vertical bar for a long query, a horizontal bar for a long line, and nothing
+  when the content fits. The UI is ~20% smaller than before; use browser zoom
+  (⌘+) to enlarge. The now-dormant zoom-bridging machinery (`--vp-zoom`
+  measurement, Chart/menu-anchor/splitter zoom correction) is left in place for
+  a separate teardown (roadmap #68).
+
 ### Changed
 - **The SQL editor is now CodeMirror 6** (#21) — the deliberate 4th bundled
   runtime dependency, replacing the hand-rolled textarea editor wholesale
