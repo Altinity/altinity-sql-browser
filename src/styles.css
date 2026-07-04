@@ -1744,11 +1744,29 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* The dashboard's own scroll container: #root is a fixed overflow:hidden flex
    column (the workbench shell), so the dashboard fills it and scrolls itself. */
 .dash-page { height: 100%; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
+/* Header + layout toolbar share one sticky top bar (#149 D2) so the
+   Arrange/Report switcher stays visible while the grid scrolls. */
+.dash-topbar { position: sticky; top: 0; z-index: 40; background: var(--bg-header); }
 .dash-header {
-  position: sticky; top: 0; z-index: 40; display: flex; align-items: center;
+  display: flex; align-items: center;
   gap: 12px; padding: 11px 20px; background: var(--bg-header);
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
 }
+/* Layout toolbar (#149 D2) — becomes the filter bar in D4. */
+.dash-toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 20px; background: var(--bg-header); border-bottom: 1px solid var(--border);
+}
+.dash-seg { display: inline-flex; background: var(--bg-chip); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+.dash-seg-btn {
+  appearance: none; border: none; background: none; cursor: pointer;
+  padding: 4px 12px; border-radius: 6px; font: 500 12px var(--ui); color: var(--fg-mute);
+}
+.dash-seg-btn:hover { color: var(--fg); }
+.dash-seg-btn.is-active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.dash-cols-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.dash-seg-cols .dash-seg-btn { padding: 4px 10px; font-family: var(--mono); }
+.dash-seg-label { font-size: 11px; color: var(--fg-faint); }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -1779,16 +1797,19 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-btn:hover { background: var(--bg-hover); }
 .dash-btn:disabled { opacity: .55; cursor: default; }
-/* Arrange grid: 3 across on wide screens (the design's default), degrading to
-   2 then 1 as width shrinks. A configurable 2/3-column switcher + drag-reorder
-   land in D5. */
+/* Arrange grid: the persisted column count (2 or 3, via `--dash-cols`, default
+   3) on wide screens, degrading to 2 then 1 as width shrinks. The 2/3 switcher
+   lives in the toolbar (#149 D2); drag-reorder + 1/2-col span land in D3. */
 .dash-grid {
   display: grid; gap: 14px; padding: 18px 20px 40px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--dash-cols, 3), minmax(0, 1fr));
   max-width: 1560px; margin: 0 auto;
 }
 @media (max-width: 1100px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
+/* Report mode (#149 D2): one full-width scrolling column with taller tiles. */
+.dash-grid.is-report { grid-template-columns: 1fr; max-width: 1100px; }
+.dash-grid.is-report .dash-tile { min-height: 440px; }
 /* D1 shows charts read-only: renderChart is called with controls:false so the
    Type/X/Y config bar isn't built at all (a settings-popover arrives in D6). */
 .dash-empty { padding: 60px 20px; text-align: center; color: var(--fg-mute); font-size: 13px; }

@@ -32,6 +32,26 @@ export function configBase(pathname) {
 }
 
 /**
+ * Dashboard layout modes (#149 D2): `arrange` = uniform multi-column grid
+ * (default), `report` = single full-width scrolling column with taller tiles.
+ * Persisted per browser (`asb:dashLayout`).
+ */
+export const DASH_LAYOUTS = ['arrange', 'report'];
+
+/** Snap a persisted layout to a known mode, defaulting to `arrange`. Pure. */
+export function normalizeDashLayout(v) {
+  return DASH_LAYOUTS.includes(v) ? v : 'arrange';
+}
+
+/** Column-count options for Arrange mode (persisted `asb:dashCols`). */
+export const DASH_COLS = [2, 3];
+
+/** Snap a persisted column count to 2 or 3, defaulting to 3. Pure. */
+export function normalizeDashCols(n) {
+  return DASH_COLS.includes(n) ? n : 3;
+}
+
+/**
  * A favorite's SQL prepared for a one-shot tile fetch: `FORMAT JSON` appended
  * unless the query already ends in its own trailing `FORMAT` clause (which we
  * leave intact; a non-JSON format just errors the tile gracefully rather than

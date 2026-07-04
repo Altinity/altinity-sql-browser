@@ -41,6 +41,8 @@ describe('createState', () => {
     expect(s.expanded.value.size).toBe(0);
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
+    expect(s.dashLayout).toBe('arrange');
+    expect(s.dashCols).toBe(3);
   });
   it('reads + clamps persisted prefs', () => {
     const s = createState(reader({
@@ -53,9 +55,13 @@ describe('createState', () => {
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
       [KEYS.libraryName]: 'My team queries',
+      [KEYS.dashLayout]: 'report',
+      [KEYS.dashCols]: '2',
     }));
     expect(s.theme).toBe('light');
     expect(s.libraryName.value).toBe('My team queries');
+    expect(s.dashLayout).toBe('report');
+    expect(s.dashCols).toBe(2);
     expect(s.sidebarPx).toBe(420);
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);

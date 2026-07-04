@@ -18,6 +18,27 @@ import { formatBytes, formatRows } from '../core/format.js';
 // browser's per-host pool and the cluster) on open and on every Refresh.
 const TILE_CONCURRENCY = 6;
 
+/**
+ * Build a segmented control (`Arrange | Report`, `2 | 3`): a row of buttons of
+ * which exactly one reads active. `getActive` returns the currently-selected
+ * value; `onPick(value)` fires on a click. Returns `{ el, sync }` — `sync()`
+ * repaints the active button from `getActive()` (called after a pick so the
+ * two controls can share one `apply()`).
+ */
+function buildSeg(cls, options, getActive, onPick) {
+  const btns = options.map(([, label]) =>
+    h('button', { class: 'dash-seg-btn', type: 'button' }, label));
+  const sync = () => btns.forEach((b, i) => {
+    const on = options[i][0] === getActive();
+    b.classList.toggle('is-active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  btns.forEach((b, i) => { b.onclick = () => onPick(options[i][0]); });
+  const el = h('div', { class: 'dash-seg ' + cls, role: 'group' }, ...btns);
+  sync();
+  return { el, sync };
+}
+
 /** Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't return. */
 function tileFooter(meta) {
   const parts = [h('span', null, formatRows(meta.rows) + ' rows')];
@@ -125,10 +146,48 @@ export function renderDashboard(app) {
   const empty = h('div', { class: 'dash-empty', style: { display: favorites.length ? 'none' : '' } },
     'No favorites yet — star a query in the Library to add it to the dashboard.');
 
+  // Layout toolbar (#149 D2), the row that becomes the filter bar in D4. The
+  // Arrange|Report switcher is the primary control; the 2/3 column count is a
+  // secondary setting, meaningful only in Arrange (hidden in Report's single
+  // column). Both are presentation-only: `apply()` reshapes the grid and the
+  // tiles' Chart.js instances resize themselves via their ResizeObserver — no
+  // tile re-query. State is mutated + persisted (asb:dashLayout/dashCols) so the
+  // choice survives reloads and Refresh (which rebuilds the grid's children, not
+  // the grid element, so its class/`--dash-cols` persist across a refresh).
+  const apply = () => {
+    grid.classList.toggle('is-report', state.dashLayout === 'report');
+    grid.style.setProperty('--dash-cols', String(state.dashCols));
+    colsWrap.style.display = state.dashLayout === 'report' ? 'none' : '';
+    layoutSeg.sync();
+    colsSeg.sync();
+  };
+  const layoutSeg = buildSeg('dash-seg-layout', [['arrange', 'Arrange'], ['report', 'Report']],
+    () => state.dashLayout, (v) => {
+      if (v === state.dashLayout) return;
+      state.dashLayout = v;
+      app.savePref('dashLayout', v);
+      apply();
+    });
+  const colsSeg = buildSeg('dash-seg-cols', [[2, '2'], [3, '3']],
+    () => state.dashCols, (v) => {
+      if (v === state.dashCols) return;
+      state.dashCols = v;
+      app.savePref('dashCols', v);
+      apply();
+    });
+  const colsWrap = h('div', { class: 'dash-cols-wrap' },
+    h('span', { class: 'dash-seg-label' }, 'Columns'), colsSeg.el);
+  const toolbar = h('div', { class: 'dash-toolbar' },
+    layoutSeg.el,
+    h('div', { class: 'dash-spacer', style: { flex: '1' } }),
+    colsWrap);
+  apply();
+
   // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
   // dashboard needs its own scroll container — otherwise a tall grid clips with
-  // no vertical scroll. The sticky header lives inside it.
-  app.root.replaceChildren(h('div', { class: 'dash-page' }, header, empty, grid));
+  // no vertical scroll. The header + toolbar share one sticky top bar inside it.
+  app.root.replaceChildren(h('div', { class: 'dash-page' },
+    h('div', { class: 'dash-topbar' }, header, toolbar), empty, grid));
 
   // Chart.js instances of the tiles currently in the grid, torn down before the
   // next Refresh rebuilds them (grid.replaceChildren() alone would orphan them,

@@ -5,6 +5,7 @@
 import { clamp } from './core/format.js';
 import { mergeSaved } from './core/saved-io.js';
 import { cloneChartCfg } from './core/chart-data.js';
+import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 import { signal } from '@preact/signals-core';
 
@@ -28,6 +29,8 @@ export const KEYS = {
   libraryName: 'asb:libraryName',
   resultRowLimit: 'asb:resultRowLimit',
   varValues: 'asb:varValues',
+  dashLayout: 'asb:dashLayout',
+  dashCols: 'asb:dashCols',
 };
 
 /** Row-limit options for the result cap selector (shared between state + UI). */
@@ -74,6 +77,11 @@ export function createState(read = { loadJSON, loadStr }) {
     // One persisted preference, default 500; a non-option stored value snaps
     // back to the default so the selector always reflects a real choice.
     resultRowLimit: normalizeRowLimit(parseInt(read.loadStr(KEYS.resultRowLimit, '500'), 10)),
+    // Dashboard layout prefs (#149 D2), persisted per browser. Plain (non-signal)
+    // like theme/density — the standalone dashboard page reads them at build time
+    // and mutates + re-saves on the Arrange/Report + column-count controls.
+    dashLayout: normalizeDashLayout(read.loadStr(KEYS.dashLayout, 'arrange')),
+    dashCols: normalizeDashCols(parseInt(read.loadStr(KEYS.dashCols, '3'), 10)),
     sidebarPx: clamp(parseInt(read.loadStr(KEYS.sidebarPx, '248'), 10), 180, 420),
     editorPct: num(KEYS.editorPct, 45, 15, 85),
     sideSplitPct: num(KEYS.sideSplitPct, 58, 25, 85),

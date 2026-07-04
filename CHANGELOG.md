@@ -29,6 +29,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   per-tile controls, and export arrive in later phases (#149 D2–D7). Known
   limitation: two tabs independently refreshing a *rotating* OAuth refresh token
   can race (BroadcastChannel sync deferred).
+- **Dashboard (phase 2): Arrange / Report layout switcher** (#149). A toolbar
+  below the dashboard header (the future filter bar) adds a primary **Arrange |
+  Report** segmented control: **Arrange** is the uniform multi-column grid, and
+  **Report** lays the tiles out as a single full-width scrolling column with
+  taller charts. A secondary **Columns 2 | 3** control tunes the Arrange grid
+  (hidden in Report's single column). Both are presentation-only — switching
+  reshapes the grid and the chart tiles resize themselves, with no tile re-query
+  — and the choice is persisted per browser (`asb:dashLayout` / `asb:dashCols`),
+  surviving reloads and Refresh. Drag-to-reorder and 1/2-column tile spans arrive
+  in the next phase (#149 D3).
 - **Schema-aware, FROM-driven autocompletion** (#84) — column completion now
   fires *while you type*, driven by the statement's `FROM`/`JOIN` clause, so you
   no longer have to expand a table in the sidebar first. A new pure module
