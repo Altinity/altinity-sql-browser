@@ -8,11 +8,18 @@
 // for the header's "N not shown" note.
 
 import { autoChart, chartCfgValid, cloneChartCfg, normalizeChartCfg } from './chart-data.js';
-import { detectSqlFormat } from './format.js';
+import { withTrailingFormat } from './format.js';
 
-/** True on the standalone dashboard route (`/sql/dashboard`, trailing slash ok). */
+/**
+ * True on the standalone dashboard route (a path ending in `/dashboard`,
+ * trailing slash ok). Matches on the `/dashboard` suffix rather than a pinned
+ * `/sql/dashboard` so it stays consistent with `configBase` (which strips the
+ * same suffix) and survives the SPA being mounted somewhere other than `/sql`.
+ * The server only serves the artifact at its SPA routes, so nothing unexpected
+ * reaches this predicate.
+ */
 export function isDashboardRoute(pathname) {
-  return /\/sql\/dashboard\/?$/.test(pathname || '');
+  return /\/dashboard\/?$/.test(pathname || '');
 }
 
 /**
@@ -25,16 +32,15 @@ export function configBase(pathname) {
 }
 
 /**
- * A favorite's SQL prepared for a one-shot tile fetch: strip a trailing `;` and
- * append `FORMAT JSON` — unless the query already ends in its own trailing
- * `FORMAT` clause (which we leave intact; a non-JSON format just errors the tile
- * gracefully rather than being silently doubled). Trailing-FORMAT detection
- * reuses `detectSqlFormat`, which correctly handles ClickHouse's
- * `FORMAT x SETTINGS y` ordering.
+ * A favorite's SQL prepared for a one-shot tile fetch: `FORMAT JSON` appended
+ * unless the query already ends in its own trailing `FORMAT` clause (which we
+ * leave intact; a non-JSON format just errors the tile gracefully rather than
+ * being silently doubled). Delegates to `withTrailingFormat`, which strips a
+ * trailing `;`/comments and reuses `detectSqlFormat` (handling ClickHouse's
+ * `FORMAT x SETTINGS y` ordering). Empty input → '' (no favorite is empty).
  */
 export function dashboardTileSql(sql) {
-  const trimmed = String(sql || '').replace(/;\s*$/, '').trimEnd();
-  return detectSqlFormat(trimmed) ? trimmed : trimmed + '\nFORMAT JSON';
+  return withTrailingFormat(sql, 'JSON').sql;
 }
 
 /**

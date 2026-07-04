@@ -961,6 +961,7 @@ export function installChartZoomFix(chart, canvas) {
  * slot instead, or closing one view's chart would tear down another's).
  * `opts.running` overrides the run-state gate — a detached snapshot's `r` is
  * always already-complete, independent of whatever the live tab is doing.
+ * `opts.controls === false` omits the Type/X/Y config bar (read-only tiles).
  */
 export function renderChart(app, r, opts = {}) {
   const tab = opts.tab || app.activeTab();
@@ -974,35 +975,41 @@ export function renderChart(app, r, opts = {}) {
   const cfg = chartCfgFor(tab, r.columns);
   if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 
-  const f = chartFieldOptions(r.columns, cfg);
+  // `opts.controls === false` omits the interactive Type/X/Y config bar entirely
+  // (the read-only dashboard tile — #149): the chart draws, but no field controls
+  // are built, rather than building them and hiding them with CSS.
+  let bar = null;
+  if (opts.controls !== false) {
+    const f = chartFieldOptions(r.columns, cfg);
 
-  // Each handler mutates the shared cfg (= tab.chartCfg) and re-renders;
-  // chartCfgFor folds the cross-field invariants (pie → single measure,
-  // series ≠ X) on the way back in, so the handlers don't normalize themselves.
-  const bar = h('div', { class: 'chart-config' });
-  bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; rerender(); }));
-  bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); rerender(); }));
-  bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; rerender(); }));
-  if (f.showMulti) {
-    bar.appendChild(h('button', {
-      class: 'chart-toggle', title: 'Plot every numeric column as its own series',
-      onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; rerender(); },
-    }, f.multiActive ? 'Single series' : 'All measures'));
-  }
-  if (f.showSeries) {
-    bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
-      cfg.series = v === '' ? null : Number(v);
-      rerender();
-    }));
-  }
-  // The chart plots at most cap points for the current type; say so when the
-  // result is bigger (the table still shows everything) — no silent
-  // truncation. Recomputed on every rerender (the Type select's onChange),
-  // so switching type re-slices and updates the note in lockstep.
-  const cap = chartRowCap(cfg.type);
-  if (r.rows.length > cap) {
-    bar.appendChild(h('span', { class: 'chart-cap-note' },
-      'first ' + cap + ' of ' + formatRows(r.rows.length) + ' rows'));
+    // Each handler mutates the shared cfg (= tab.chartCfg) and re-renders;
+    // chartCfgFor folds the cross-field invariants (pie → single measure,
+    // series ≠ X) on the way back in, so the handlers don't normalize themselves.
+    bar = h('div', { class: 'chart-config' });
+    bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; rerender(); }));
+    bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); rerender(); }));
+    bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; rerender(); }));
+    if (f.showMulti) {
+      bar.appendChild(h('button', {
+        class: 'chart-toggle', title: 'Plot every numeric column as its own series',
+        onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; rerender(); },
+      }, f.multiActive ? 'Single series' : 'All measures'));
+    }
+    if (f.showSeries) {
+      bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
+        cfg.series = v === '' ? null : Number(v);
+        rerender();
+      }));
+    }
+    // The chart plots at most cap points for the current type; say so when the
+    // result is bigger (the table still shows everything) — no silent
+    // truncation. Recomputed on every rerender (the Type select's onChange),
+    // so switching type re-slices and updates the note in lockstep.
+    const cap = chartRowCap(cfg.type);
+    if (r.rows.length > cap) {
+      bar.appendChild(h('span', { class: 'chart-cap-note' },
+        'first ' + cap + ' of ' + formatRows(r.rows.length) + ' rows'));
+    }
   }
 
   const canvas = h('canvas', null); // via h() so it lands in the right document (detached-tab safe)

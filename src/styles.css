@@ -1789,9 +1789,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 @media (max-width: 1100px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
-/* D1 shows charts read-only; the inline per-tile config bar (from renderChart)
-   is hidden — a settings-popover to reveal Type/X/Y arrives in D6. */
-.dash-tile .chart-config { display: none; }
+/* D1 shows charts read-only: renderChart is called with controls:false so the
+   Type/X/Y config bar isn't built at all (a settings-popover arrives in D6). */
 .dash-empty { padding: 60px 20px; text-align: center; color: var(--fg-mute); font-size: 13px; }
 .dash-tile {
   display: flex; flex-direction: column; overflow: hidden; min-height: 300px;

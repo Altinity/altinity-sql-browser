@@ -17,6 +17,7 @@ describe('isDashboardRoute', () => {
   it('matches the dashboard path (with or without a trailing slash), nothing else', () => {
     expect(isDashboardRoute('/sql/dashboard')).toBe(true);
     expect(isDashboardRoute('/sql/dashboard/')).toBe(true);
+    expect(isDashboardRoute('/tools/sql/dashboard')).toBe(true); // mount-agnostic (matches configBase)
     expect(isDashboardRoute('/sql')).toBe(false);
     expect(isDashboardRoute('/sql/config.json')).toBe(false);
     expect(isDashboardRoute(undefined)).toBe(false);
@@ -44,9 +45,13 @@ describe('dashboardTileSql', () => {
     expect(dashboardTileSql('SELECT 1 FORMAT JSON SETTINGS max_threads=1'))
       .toBe('SELECT 1 FORMAT JSON SETTINGS max_threads=1');
   });
-  it('is defensive about empty/absent SQL', () => {
-    expect(dashboardTileSql('')).toBe('\nFORMAT JSON');
-    expect(dashboardTileSql(undefined)).toBe('\nFORMAT JSON');
+  it('peels a trailing comment so an existing FORMAT is not doubled', () => {
+    expect(dashboardTileSql('SELECT 1 FORMAT JSON -- daily')).toBe('SELECT 1 FORMAT JSON');
+    expect(dashboardTileSql('SELECT 1 /* note */')).toBe('SELECT 1\nFORMAT JSON');
+  });
+  it('is defensive about empty/absent SQL (empty in → empty out)', () => {
+    expect(dashboardTileSql('')).toBe('');
+    expect(dashboardTileSql(undefined)).toBe('');
   });
 });
 
@@ -229,11 +234,33 @@ describe('renderDashboard', () => {
     expect(toggleTheme).toHaveBeenCalled();
   });
 
-  it('drops a tile whose request was aborted (not counted as skipped)', async () => {
-    const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => ({ aborted: true })));
+  it('redirects to login once (no tiles) when the session cannot be refreshed', async () => {
+    const onSignedOut = vi.fn();
+    const app = makeApp({
+      runTile: vi.fn(async () => chartResult()),
+      ensureFreshToken: vi.fn(async () => false),
+      chCtx: { onSignedOut },
+    });
+    app.state.savedQueries = [
+      { id: '1', name: 'Q', sql: 'q', favorite: true },
+      { id: '2', name: 'R', sql: 'r', favorite: true },
+    ];
     await renderDashboard(app);
+    expect(onSignedOut).toHaveBeenCalledTimes(1); // one redirect, not one per tile
+    expect(app.runTile).not.toHaveBeenCalled();
     expect(app.root.querySelectorAll('.dash-tile').length).toBe(0);
-    expect(app.root.querySelector('.dash-skip').style.display).toBe('none');
+  });
+
+  it('tears down the previous tiles Chart.js instances on Refresh (no leak)', async () => {
+    const charts = [];
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
+    const Base = app.Chart;
+    app.Chart = class extends Base { constructor(...a) { super(...a); charts.push(this); } };
+    await renderDashboard(app);
+    expect(charts).toHaveLength(1);
+    await app.root.querySelector('.dash-btn').onclick();
+    expect(charts).toHaveLength(2);
+    expect(charts[0].destroyed).toBe(true); // prior instance destroyed, not orphaned
   });
 
   it('shows an empty state when there are no favorites', async () => {
@@ -252,13 +279,12 @@ describe('renderDashboard', () => {
     expect(runTile).toHaveBeenCalledTimes(2);
   });
 
-  it('per-tile chart controls redraw the tile (destroying the prior chart)', async () => {
+  it('renders read-only tiles with no interactive chart-config bar (D1)', async () => {
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
     await renderDashboard(app);
-    const typeSel = app.root.querySelector('.dash-tile .chart-select');
-    typeSel.value = 'line';
-    typeSel.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull(); // redrawn, no throw
+    expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
+    expect(app.root.querySelector('.dash-tile .chart-config')).toBeNull(); // controls omitted, not hidden
+    expect(app.root.querySelector('.dash-tile .chart-select')).toBeNull();
   });
 });
 
@@ -320,13 +346,7 @@ describe('app.runTile', () => {
     }));
     expect((await app.runTile('SELECT 1')).error).toMatch(/readonly/);
   });
-  it('returns { aborted } when the request is aborted', async () => {
-    const app = createApp(appEnv({
-      fetch: makeFetch([[(u, sql) => /SELECT/.test(sql || ''), () => { const e = new Error('x'); e.name = 'AbortError'; throw e; }]]),
-    }));
-    expect(await app.runTile('SELECT 1')).toEqual({ aborted: true });
-  });
-  it('signs out and errors when there is no token', async () => {
+  it('errors (without driving sign-out) when there is no token', async () => {
     const app = createApp(appEnv({ sessionStorage: memSession({}) }));
     expect(await app.runTile('SELECT 1')).toEqual({ error: 'Not signed in' });
   });

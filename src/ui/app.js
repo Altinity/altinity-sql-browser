@@ -122,7 +122,11 @@ export function createApp(env = {}) {
   // the OAuth redirect (like oauth_state) and drives token exchange/refresh.
   // configBase strips a trailing `/dashboard` so config.json / OAuth discovery
   // resolve from the SPA base (`/sql/config.json`) on the dashboard route too.
-  const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, configBase(loc.pathname)));
+  // The same base is the single source of truth for the workbench↔dashboard
+  // links (openDashboard, the dashboard's Back link) rather than hardcoding
+  // `/sql` in several shapes.
+  app.basePath = configBase(loc.pathname);
+  const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, app.basePath));
   const resolvedCache = new Map();
   app.idpId = ss.getItem('oauth_idp') || null;
   function selectIdp(id) { app.idpId = id; ss.setItem('oauth_idp', id); }
@@ -1629,21 +1633,35 @@ export function createApp(env = {}) {
   const toEditorOnMobile = () => { if (app.state.isMobile.value) app.state.mobileView.value = 'editor'; };
 
   // --- dashboard (#149 D1) ----------------------------------------------
+  // ensureConfig + getToken, resolving (and refreshing) the auth token ONCE.
+  // The dashboard calls this before fanning tiles out, so the tiles never each
+  // race an expired-token refresh (a rotating refresh token used N-ways at once
+  // would invalidate itself), and a single sign-out is handled by the caller
+  // instead of N tiles each firing onSignedOut. Also used by bootstrap to
+  // refresh a handed-off-but-expired token before falling back to login.
+  async function ensureFreshToken() {
+    await ensureConfig();
+    return !!(await getToken());
+  }
+  app.ensureFreshToken = ensureFreshToken;
+
   // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
   // server-side by queryDashboardTile), FORMAT JSON, transformed to the
   // array-row shape renderChart wants. Returns { columns, rows, meta } on
-  // success, { error } on failure, or { aborted } on a cancelled request.
-  async function runTile(sql, signal) {
+  // success or { error } on failure. The token is resolved up front by
+  // ensureFreshToken (above), so this does not itself drive sign-out.
+  async function runTile(sql) {
     try {
       // ensureConfig + getToken are inside the try: getToken→refresh can THROW on
       // a network/IdP failure, and a tile must degrade to { error } rather than
       // reject (a rejected tile would break the whole grid's Promise.all).
+      // ensureConfig is memoized, so calling it here and in ensureFreshToken is
+      // cheap and keeps runTile usable on its own.
       await ensureConfig();
-      if (!(await getToken())) { chCtx.onSignedOut(); return { error: 'Not signed in' }; }
-      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), signal);
+      if (!(await getToken())) return { error: 'Not signed in' };
+      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql));
       return parseJsonResult(json);
     } catch (e) {
-      if (e && e.name === 'AbortError') return { aborted: true };
       return { error: String((e && e.message) || e) };
     }
   }
@@ -1676,7 +1694,7 @@ export function createApp(env = {}) {
   }
   // Open the dashboard in a new tab and stand ready to hand it our credentials.
   function openDashboard() {
-    const child = app.openWindow(loc.origin + '/sql/dashboard');
+    const child = app.openWindow(loc.origin + app.basePath + '/dashboard');
     if (child) sendAuthHandoff(child);
   }
   app.openDashboard = openDashboard;

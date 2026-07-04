@@ -191,6 +191,12 @@ describe('prepareExportSql', () => {
     expect(prepareExportSql('   ')).toEqual({ sql: '', format: 'TabSeparatedWithNames' });
     expect(prepareExportSql(null)).toEqual({ sql: '', format: 'TabSeparatedWithNames' });
   });
+  it('peels trailing comments before resolving FORMAT (line + block)', () => {
+    // A trailing comment must not hide an existing FORMAT (else it doubles), nor
+    // swallow an appended one.
+    expect(prepareExportSql('SELECT 1 FORMAT CSV -- note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+    expect(prepareExportSql('SELECT 1 /* note */')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
+  });
 });
 
 describe('isSchemaMutatingSql', () => {

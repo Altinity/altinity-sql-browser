@@ -84,7 +84,13 @@ export async function bootstrap(app, env) {
   // one-time credential handoff from the opener before deciding what to render.
   // A cold/bookmarked visit has no opener → falls through to the login screen,
   // which after sign-in returns to /sql/dashboard and renders the dashboard.
-  if (dash && !app.isSignedIn()) await app.receiveAuthHandoff(env);
+  if (dash && !app.isSignedIn()) {
+    await app.receiveAuthHandoff(env);
+    // The opener may hand over an *expired* id_token whose refresh token is still
+    // good (an idle opener refreshes only lazily). Attempt a refresh before
+    // giving up — otherwise a valid handoff would still bounce to a full re-login.
+    if (!app.isSignedIn()) await app.ensureFreshToken();
+  }
 
   if (app.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.

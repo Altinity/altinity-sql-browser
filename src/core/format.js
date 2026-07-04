@@ -137,20 +137,37 @@ export function detectSqlFormat(sql) {
 }
 
 /**
- * Resolve an editor query for a full (uncapped) export. If it already ends in
- * a `FORMAT <name>` clause (detectSqlFormat), the SQL is kept as-is and that
- * format is reported; otherwise `FORMAT TabSeparatedWithNames` is appended. A
- * trailing `;` is peeled either way (FORMAT must be the last clause). Empty
- * input → `{ sql: '', format: 'TabSeparatedWithNames' }` — the caller no-ops
- * on an empty `sql`. Pure.
+ * Peel a trailing `;` and any trailing SQL comments (line `-- …` / block
+ * `/* … *​/`) from `sql`, then resolve its output format: if what remains already
+ * ends in a `FORMAT <name>` clause (detectSqlFormat) that format is kept and
+ * reported; otherwise `fallbackFormat` is appended. Comments are peeled *before*
+ * the check so a `… FORMAT JSON -- note` isn't mis-read as unformatted (which
+ * would double the FORMAT) and so an appended clause lands after real SQL rather
+ * than after a line comment that would swallow it. Empty input → `{ sql: '',
+ * format: fallbackFormat }` (nothing is appended to an empty query). Pure —
+ * shared by the export prep and the dashboard tile fetch so this edge handling
+ * lives in one place.
+ */
+export function withTrailingFormat(sql, fallbackFormat) {
+  let s = String(sql || '').trim().replace(/;+\s*$/, '').trim();
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/--[^\n]*$/, '').replace(/\/\*[\s\S]*?\*\/\s*$/, '').trim();
+  } while (s !== prev);
+  const fmt = detectSqlFormat(s);
+  if (fmt) return { sql: s, format: fmt };
+  return { sql: s ? s + '\nFORMAT ' + fallbackFormat : s, format: fallbackFormat };
+}
+
+/**
+ * Resolve an editor query for a full (uncapped) export: its own trailing
+ * `FORMAT`, or `FORMAT TabSeparatedWithNames`. See `withTrailingFormat`. Empty
+ * input → `{ sql: '', format: 'TabSeparatedWithNames' }` — the caller no-ops on
+ * an empty `sql`. Pure.
  */
 export function prepareExportSql(sql) {
-  const s = String(sql || '').trim().replace(/;+\s*$/, '').trim();
-  if (!s) return { sql: '', format: 'TabSeparatedWithNames' };
-  const fmt = detectSqlFormat(s);
-  return fmt
-    ? { sql: s, format: fmt }
-    : { sql: s + '\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' };
+  return withTrailingFormat(sql, 'TabSeparatedWithNames');
 }
 
 const SCHEMA_MUTATING_RE = /^(CREATE|DROP|ALTER|RENAME|TRUNCATE|ATTACH|DETACH|EXCHANGE)\b/i;

@@ -40,6 +40,12 @@ export function makeApp(over = {}) {
     activeTab: () => activeTab(state),
     editor: createNoopPort(), // render modules call the port unconditionally (#143)
     isSignedIn: () => true,
+    // Dashboard (#149) surface: auth is resolved once before tiles fan out, the
+    // Back link derives from the SPA base, and onSignedOut redirects on failure.
+    ensureFreshToken: vi.fn(async () => true),
+    chCtx: { onSignedOut: vi.fn() },
+    basePath: '/sql',
+    toggleTheme: vi.fn(),
     email: () => 'me@example.com',
     savePref: vi.fn(),
     saveJSON: vi.fn(),

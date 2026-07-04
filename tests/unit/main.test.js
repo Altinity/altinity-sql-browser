@@ -18,6 +18,7 @@ function fakeApp(over = {}) {
     renderApp: vi.fn(),
     renderDashboard: vi.fn(),
     receiveAuthHandoff: vi.fn(async () => false),
+    ensureFreshToken: vi.fn(async () => false),
     showLogin: vi.fn(),
     // Default mirrors the real controller: signed in iff a token is held.
     // Tests that exercise a basic session override this directly.
@@ -205,8 +206,21 @@ describe('bootstrap', () => {
     const app = fakeApp();
     await bootstrap(app, fakeEnv({ location: dashLoc() }));
     expect(app.receiveAuthHandoff).toHaveBeenCalled();
+    expect(app.ensureFreshToken).toHaveBeenCalled(); // tried a refresh before giving up
     expect(app.showLogin).toHaveBeenCalledWith(null);
     expect(app.renderDashboard).not.toHaveBeenCalled();
+  });
+
+  it('refreshes an expired handed-off token before falling back to login', async () => {
+    // The handoff applies an expired id_token (isSignedIn() still false); a
+    // refresh via ensureFreshToken recovers a valid one, so we render — not login.
+    const app = fakeApp({ isSignedIn() { return this.token === valid; } });
+    app.receiveAuthHandoff = vi.fn(async () => { app.token = 'expired'; return true; });
+    app.ensureFreshToken = vi.fn(async () => { app.token = valid; return true; });
+    await bootstrap(app, fakeEnv({ location: dashLoc(), opener: { postMessage: vi.fn() } }));
+    expect(app.ensureFreshToken).toHaveBeenCalled();
+    expect(app.renderDashboard).toHaveBeenCalled();
+    expect(app.showLogin).not.toHaveBeenCalled();
   });
 
   it('skips editor share-link seeding on the dashboard route', async () => {
