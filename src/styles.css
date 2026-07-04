@@ -7,15 +7,18 @@ html { zoom: var(--zoom); }
   --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
   --accent: #0079AD;
   --accent-dim: #005F8A;
-  /* Page zoom. Normal flow scales cleanly, but viewport units interact with
-     `zoom` differently per engine: on Chromium `vh`/`vw` ignore `zoom`, so a
-     `100vh`/`100vw` element renders --zoom times too big and overflows; on
-     WebKit/Safari they track `zoom`, so `100vh` is exactly one screen. The
-     fullscreen graph panels below divide their viewport sizing by --vp-zoom —
-     the per-engine divisor measured at runtime (app.applyViewportZoom, #70):
-     ~--zoom on Chromium, ~1 on Safari. It defaults to --zoom here so behavior is
-     unchanged (Chromium-correct) until the measurement runs / if JS is off. */
-  --zoom: 1.2;
+  /* Page zoom. The console used to render at 1.2x via `html{zoom}` for a larger
+     default size, but `zoom:1.2` (=6/5) lands box sizes on fractional device
+     pixels, and the sub-pixel remainder made scroll containers read as
+     "scrollable by ~1px" over content that visibly fit — a phantom scrollbar
+     (and the same rounding drove the Safari viewport-unit divergence #70). So
+     the scale is now 1 (native size; users enlarge with browser zoom). This
+     puts every engine into the state the `@supports not (zoom:1)` fallback
+     below already defined and tested — the whole zoom-bridging machinery
+     (--vp-zoom measurement, Chart/menu-anchor/splitter zoom correction) stays
+     but is now dormant at divisor 1. Full teardown of that dead code is tracked
+     separately (roadmap #68 "full html{zoom} removal", gated on GraphSurface). */
+  --zoom: 1;
   --vp-zoom: var(--zoom);
 }
 
@@ -1178,14 +1181,13 @@ body.detached-tab .graph-overlay-panel {
    Everything below is editor chrome: layout, gutter, selection, panels. */
 .editor-region .cm-editor { height: 100%; background: var(--bg-editor); color: var(--fg); font-size: 13px; }
 .cm-editor.cm-focused { outline: none; }
+/* The scroller uses the app's global styled ::-webkit-scrollbar (below), so a
+   long query shows a vertical bar and a long line a horizontal one — matching
+   the results grid. #145 hid these because html{zoom} sub-pixel rounding made
+   the scroller read as scrollable over a query that visibly fit (a phantom
+   bar); with zoom removed (--zoom:1) the bars only appear for genuine
+   overflow, so the hide is no longer needed. */
 .cm-editor .cm-scroller { font-family: var(--mono); line-height: 22px; }
-/* Hide the scroller's native bars (wheel/trackpad/keys still scroll) — the
-   textarea editor always did. The app's styled ::-webkit-scrollbar renders as
-   a classic always-painted bar whenever an element is scrollable, and under
-   real-Safari zoom rounding the scroller can read as scrollable by a few
-   phantom px, painting both bars over a query that visibly fits (#21). */
-.cm-editor .cm-scroller { scrollbar-width: none; }
-.cm-editor .cm-scroller::-webkit-scrollbar { display: none; }
 .cm-editor .cm-content { padding: 12px 0; caret-color: var(--accent); tab-size: 2; }
 .cm-editor .cm-line { padding: 0 14px; }
 .cm-editor .cm-cursor { border-left-color: var(--accent); }
