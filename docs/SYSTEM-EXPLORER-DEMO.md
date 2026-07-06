@@ -1,4 +1,4 @@
-# System explorer demo — introspecting ClickHouse itself
+# System explorer demo — introspecting ClickHouse® itself
 
 A ready-made **Library** of 14 queries against ClickHouse's own `system` database —
 running queries, merges/mutations/replication health, storage, and historical

@@ -64,7 +64,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   monotonically increasing generation counter so a superseded in-flight
   response can never overwrite a newer edit's result. `ch-client.js`'s
   `queryJson`/`queryDashboardTile` gained an optional `params` argument
-  (backward compatible) to forward `param_<name>` args to ClickHouse. Per-tile
+  (backward compatible) to forward `param_<name>` args to ClickHouse®. Per-tile
   Type/X/Y overrides, KPI tiles, and dropdown/cascading filters arrive in later
   phases (#149 D5–D7).
 - **Schema-aware, FROM-driven autocompletion** (#84) — column completion now

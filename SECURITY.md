@@ -1,7 +1,7 @@
 # Security Policy
 
-The Altinity SQL Browser is a single self-contained HTML file (no application
-backend) served from a ClickHouse cluster's `user_files/` by an
+The Altinity® SQL Browser is a single self-contained HTML file (no application
+backend) served from a ClickHouse® cluster's `user_files/` by an
 `<http_handlers>` static rule. It talks only to that ClickHouse server and your
 OAuth IdP, and makes zero third-party requests. The notes below describe how to
 report a vulnerability and the threat model you should deploy against.

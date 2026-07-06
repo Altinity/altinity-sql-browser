@@ -1,7 +1,7 @@
 # Chart demo — the `ontime` flight dataset
 
 A ready-made **Library** of 10 analytical queries that show off every chart type and
-feature in the Altinity SQL Browser, running against the public US flight-history
+feature in the Altinity® SQL Browser, running against the public US flight-history
 dataset (`ontime`, ~230M rows, 1987–2025) on the Antalya demo cluster.
 
 - **Live demo:** **https://antalya.demo.altinity.cloud/sql**

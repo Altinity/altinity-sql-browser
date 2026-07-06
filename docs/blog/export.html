@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Export streams straight to disk — even a whole script — Altinity SQL Browser</title>
+<title>Export streams straight to disk — even a whole script — Altinity® SQL Browser</title>
 <meta name="description" content="Export doesn't touch the result grid — it streams ClickHouse's response body straight to a file (or, for a script, a folder of files) via the File System Access API. Uncapped, any format, flat memory, and a mid-stream error is never baked into the file.">
 <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="../assets/site.css">
@@ -12,7 +12,7 @@
 
 <header class="site">
   <nav class="wrap nav">
-    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity SQL Browser</span></a>
+    <a class="brand" href="../index.html"><img src="../assets/logo.svg" alt=""><span>Altinity® SQL Browser</span></a>
     <button class="nav-toggle" aria-label="Menu">☰</button>
     <div class="nav-links">
       <a href="../features.html">Features</a>
@@ -52,7 +52,7 @@
       ClickHouse's whole format family, streamed verbatim, with the right extension picked for you. No
       <code class="k">FORMAT</code> clause and you get <code class="k">TabSeparatedWithNames</code>, the
       <code class="k">.tsv</code> that opens cleanly in Excel or pandas. The console isn't re-serializing
-      anything — ClickHouse formats the bytes, they flow to the file.</p>
+      anything — ClickHouse® formats the bytes, they flow to the file.</p>
 
     <pre class="code">SELECT * FROM github.github_events FORMAT Parquet
 <span class="c">→ github_events.parquet     streaming…  4.2 GB · 12s · Cancel</span></pre>

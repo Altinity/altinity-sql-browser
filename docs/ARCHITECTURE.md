@@ -4,7 +4,7 @@
 
 ```
 core/   pure logic         — strings/numbers/JWT/PKCE/SQL-tokenize/stream-parse
-net/    integration        — OAuth (config+flow) and the ClickHouse HTTP client
+net/    integration        — OAuth (config+flow) and the ClickHouse® HTTP client
 ui/     presentation       — hyperscript (h), icons, and render modules
 state   model              — the state object and pure operations over it
 main    bootstrap          — OAuth callback handling + initial render

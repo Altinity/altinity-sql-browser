@@ -1803,7 +1803,7 @@ export function renderApp(app, helpers) {
     h('span', { class: 'user-short' }, userShortName(app.email())), Icon.chevDown());
   const header = h('div', { class: 'app-header' },
     h('div', { class: 'logo-mark' }, 'A'),
-    h('div', { class: 'logo-name' }, 'Altinity SQL Browser'),
+    h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
     h('div', { class: 'env-chip' }, app.host()),
     h('div', { class: 'hd-divider' }),
     ...libraryControls(app),

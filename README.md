@@ -1,8 +1,8 @@
-# Altinity SQL Browser
+# Altinity® SQL Browser
 
 **🌐 Website & screenshots: [docs.altinity.com/altinity-sql-browser](https://docs.altinity.com/altinity-sql-browser/)**
 
-An OAuth-gated **SQL browser for any ClickHouse cluster** — schema explorer,
+An OAuth-gated **SQL browser for any ClickHouse® cluster** — schema explorer,
 tabbed SQL editor with syntax highlighting, find/replace, bracket matching, and
 schema-aware autocomplete, streaming results with table / JSON / chart views,
 saved queries, history, and shareable links. It ships as a

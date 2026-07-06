@@ -1,6 +1,6 @@
 # Third-party notices
 
-The Altinity SQL Browser is licensed under Apache-2.0 (see `LICENSE`). The built
+The Altinity® SQL Browser is licensed under Apache-2.0 (see `LICENSE`). The built
 single-file artifact (`dist/sql.html`) inlines the four runtime dependencies
 below (CodeMirror 6 ships as several packages); this file reproduces their MIT
 license texts as required, and the same notices are embedded as a comment at

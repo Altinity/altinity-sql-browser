@@ -2,7 +2,7 @@
 
 There are now two distinct deployment surfaces:
 
-1. **ClickHouse-native hosted mode** — upload `sql.html` + `sql-config.json` into
+1. **ClickHouse®-native hosted mode** — upload `sql.html` + `sql-config.json` into
    ClickHouse `user_files/` and serve them from the cluster itself.
 2. **Containerized local-runner mode** — run the existing Python local server in
    Docker or Kubernetes for local/shared testing, with connections mounted from a

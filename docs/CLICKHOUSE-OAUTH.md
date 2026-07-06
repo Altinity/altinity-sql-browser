@@ -1,4 +1,4 @@
-# Configuring ClickHouse (Antalya) to accept OAuth JWTs
+# Configuring ClickHouse® (Antalya) to accept OAuth JWTs
 
 The SQL browser authenticates each user with your OAuth/OIDC provider in the
 browser, then sends the resulting JWT to ClickHouse on **every query**:
@@ -8,7 +8,7 @@ POST /  Authorization: Bearer <jwt>
 ```
 
 For ClickHouse to accept that, it must (1) validate the JWT and (2) map it to a
-ClickHouse user with some roles. The **Altinity Antalya** build does this
+ClickHouse user with some roles. The **Altinity® Antalya** build does this
 natively with a `<token_processors>` entry plus a `<token>` user-directory — no
 sidecar, no shared service account; every query runs as the real user.
 

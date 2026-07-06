@@ -1,6 +1,6 @@
-# Serving the assets across a ClickHouse cluster
+# Serving the assets across a ClickHouse® cluster
 
-The Altinity SQL Browser is served *from ClickHouse itself* — there is no
+The Altinity® SQL Browser is served *from ClickHouse itself* — there is no
 separate web server. That makes "how do the asset bytes reach every node?" a
 real design question on a multi-node cluster, because **ClickHouse does not
 replicate the `user_files/` directory**: it is a node-local folder.

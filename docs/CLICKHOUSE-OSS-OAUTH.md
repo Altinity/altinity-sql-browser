@@ -1,4 +1,4 @@
-# OAuth on stock/OSS ClickHouse via ch-jwt-verify
+# OAuth on stock/OSS ClickHouse® via ch-jwt-verify
 
 Stock (OSS) ClickHouse has no `<token_processors>`, so it can't validate a
 `Bearer` JWT itself (it returns `Code: 516. 'Bearer' HTTP Authorization scheme

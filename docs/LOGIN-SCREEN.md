@@ -1,7 +1,7 @@
 # Configuring the login screen
 
 The sign-in screen offers up to three sign-in paths at once — SSO, a
-ClickHouse username/password, and a picker for connecting to a different
+ClickHouse® username/password, and a picker for connecting to a different
 server — so a first-time visitor can see more controls than their deployment
 actually needs (#123). All of it is a `config.json` choice; this page is the
 full reference for that config, and for what each part of the screen does.

@@ -1,8 +1,8 @@
-# Contributing to the Altinity SQL Browser
+# Contributing to the Altinity® SQL Browser
 
 Thanks for your interest! This is a modular, no-framework ES-module SPA that
 builds to **one self-contained HTML file** (`dist/sql.html`) served from a
-ClickHouse cluster. Quality is held by tests and a strict layering discipline —
+ClickHouse® cluster. Quality is held by tests and a strict layering discipline —
 please read the hard rules below before opening a PR.
 
 ## Quickstart
