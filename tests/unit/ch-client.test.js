@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, queryDashboardTile, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD,
+  chUrl, authedFetch, queryJson, queryDashboardTile, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 
@@ -183,6 +183,18 @@ describe('loadServerVersion', () => {
   });
 });
 
+describe('byUnderscoreThenName', () => {
+  it('sorts underscore-prefixed names after regular ones, either argument order', () => {
+    expect(byUnderscoreThenName('_hidden', 'orders')).toBe(1);
+    expect(byUnderscoreThenName('orders', '_hidden')).toBe(-1);
+  });
+  it('sorts two regular (or two underscore) names lexically, including equal', () => {
+    expect(byUnderscoreThenName('a', 'b')).toBe(-1);
+    expect(byUnderscoreThenName('b', 'a')).toBe(1);
+    expect(byUnderscoreThenName('a', 'a')).toBe(0);
+  });
+});
+
 describe('loadSchema', () => {
   it('groups tables by db, all collapsed, defaults comment; includes empty databases', async () => {
     const ctx = ctxWith(async (url, o) => (
@@ -239,29 +251,81 @@ describe('loadSchema', () => {
     const ctx = ctxWith(async () => jsonResp({}));
     expect(await loadSchema(ctx)).toEqual([]);
   });
-  it('requests data-lake-catalog visibility on the system.tables query (#122 — Iceberg/Glue/Unity tables hidden by default)', async () => {
+  it('excludes DataLakeCatalog databases from the main system.tables query, querying each separately (#162)', async () => {
     const seen = [];
     const ctx = ctxWith(async (url, o) => {
       seen.push(o.body);
+      if (o.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'default' }, { name: 'ice', engine: 'DataLakeCatalog' }] });
+      }
+      if (o.body.includes("database = 'ice'")) return jsonResp({ data: [{ database: 'ice', name: 'orders' }] });
       return jsonResp({ data: [] });
     });
-    await loadSchema(ctx);
-    const tablesSql = seen.find((s) => s.includes('FROM system.tables'));
-    expect(tablesSql).toContain('SETTINGS show_data_lake_catalogs_in_system_tables = 1');
+    const schema = await loadSchema(ctx);
+    const mainTablesSql = seen.find((s) => s.includes('FROM system.tables') && !s.includes("database = 'ice'"));
+    expect(mainTablesSql).toContain("WHERE database NOT IN ('INFORMATION_SCHEMA', 'information_schema', 'ice')");
+    expect(mainTablesSql).not.toContain('show_data_lake_catalogs_in_system_tables');
+    const catalogSql = seen.find((s) => s.includes("database = 'ice'"));
+    expect(catalogSql).toBe("SELECT database, name FROM system.tables WHERE database = 'ice'\nSETTINGS show_data_lake_catalogs_in_system_tables = 1\nFORMAT JSON");
+    expect(schema.find((d) => d.db === 'ice').tables).toEqual([{ name: 'orders', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
   });
-  it('falls back to the plain system.tables query when an older ClickHouse rejects the setting', async () => {
+  it('zero-fills stats for catalog tables and sorts them underscore-last (#162 — stats aren\'t fetchable without risking the abort)', async () => {
     const ctx = ctxWith(async (url, o) => {
-      if (o.body.includes('FROM system.databases')) return jsonResp({ data: [{ name: 'ice' }] });
-      if (o.body.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) {
-        return textResp('Code: 115. DB::Exception: Unknown setting show_data_lake_catalogs_in_system_tables', false, 500);
+      if (o.body.includes('FROM system.databases')) return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      if (o.body.includes('FROM system.tables') && o.body.includes("database = 'ice'")) {
+        return jsonResp({ data: [{ database: 'ice', name: '_hidden' }, { database: 'ice', name: 'orders' }, { database: 'ice', name: 'logs.cold_logs' }] });
       }
-      return jsonResp({ data: [{ database: 'ice', name: 'orders', total_rows: '1', total_bytes: '2', comment: '' }] });
+      return jsonResp({ data: [] });
     });
     const schema = await loadSchema(ctx);
     expect(schema).toEqual([{
       db: 'ice', comment: '', expanded: false,
-      tables: [{ name: 'orders', total_rows: '1', total_bytes: '2', comment: '', columns: null }],
+      tables: [
+        { name: 'logs.cold_logs', total_rows: 0, total_bytes: 0, comment: '', columns: null },
+        { name: 'orders', total_rows: 0, total_bytes: 0, comment: '', columns: null },
+        { name: '_hidden', total_rows: 0, total_bytes: 0, comment: '', columns: null },
+      ],
     }]);
+  });
+  it('falls back to the plain per-catalog query when an older ClickHouse rejects the setting', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('FROM system.databases')) return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      if (o.body.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) {
+        return textResp('Code: 115. DB::Exception: Unknown setting show_data_lake_catalogs_in_system_tables', false, 500);
+      }
+      if (o.body.includes("database = 'ice'")) return jsonResp({ data: [{ database: 'ice', name: 'orders' }] });
+      return jsonResp({ data: [] });
+    });
+    const schema = await loadSchema(ctx);
+    expect(schema).toEqual([{
+      db: 'ice', comment: '', expanded: false,
+      tables: [{ name: 'orders', total_rows: 0, total_bytes: 0, comment: '', columns: null }],
+    }]);
+  });
+  it('treats a shape-miss (no data field) catalog response as zero tables', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('FROM system.databases')) return jsonResp({ data: [{ name: 'ice', engine: 'DataLakeCatalog' }] });
+      if (o.body.includes("database = 'ice'")) return jsonResp({});
+      return jsonResp({ data: [] });
+    });
+    const schema = await loadSchema(ctx);
+    expect(schema).toEqual([{ db: 'ice', comment: '', expanded: false, tables: [] }]);
+  });
+  it('shows one broken catalog database as empty without disabling or failing any other database (#162/ClickHouse#110032)', async () => {
+    const ctx = ctxWith(async (url, o) => {
+      if (o.body.includes('FROM system.databases')) {
+        return jsonResp({ data: [{ name: 'default' }, { name: 'broken', engine: 'DataLakeCatalog' }, { name: 'healthy', engine: 'DataLakeCatalog' }] });
+      }
+      if (o.body.includes("database = 'broken'")) {
+        return textResp('Code: 36. DB::Exception: Received error 36 while fetching table metadata for existing table \'broken.bad\'. (BAD_ARGUMENTS)', false, 500);
+      }
+      if (o.body.includes("database = 'healthy'")) return jsonResp({ data: [{ database: 'healthy', name: 't1' }] });
+      return jsonResp({ data: [{ database: 'default', name: 't0', total_rows: '1', total_bytes: '2', comment: '' }] });
+    });
+    const schema = await loadSchema(ctx);
+    expect(schema.find((d) => d.db === 'default').tables).toEqual([{ name: 't0', total_rows: '1', total_bytes: '2', comment: '', columns: null }]);
+    expect(schema.find((d) => d.db === 'broken').tables).toEqual([]);
+    expect(schema.find((d) => d.db === 'healthy').tables).toEqual([{ name: 't1', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
   });
 });
 

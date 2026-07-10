@@ -106,7 +106,7 @@ export function queryDashboardTile(ctx, sql, signal, params) {
 /**
  * Run a `system.tables`/`system.columns` query (`sqlBody`, without its FORMAT
  * clause) with data-lake-catalog visibility enabled, falling back to the plain
- * query on any non-cancellation, non-auth error. ClickHouse >=25.8 hides
+ * query only when the setting itself is unsupported. ClickHouse >=25.8 hides
  * DataLakeCatalog-backed databases (Iceberg/Glue/Unity/HMS/REST catalogs) from
  * `system.tables` and `system.columns` unless
  * `show_data_lake_catalogs_in_system_tables = 1` is set (renamed to
@@ -114,18 +114,28 @@ export function queryDashboardTile(ctx, sql, signal, params) {
  * alias) — so without this, the schema browser and table browser silently show
  * zero rows for those databases (#122). Servers older than 25.8 don't have the
  * setting and throw "Unknown setting"; the fallback keeps them working exactly
- * as before. Once a fallback happens, `ctx.dataLakeCatalogSettingUnsupported`
+ * as before. Once that fallback happens, `ctx.dataLakeCatalogSettingUnsupported`
  * latches so every later call on this connection (schema loads, table
  * expands, lineage BFS) goes straight to the plain query instead of paying a
  * doomed extra round trip forever — the same one-shot-then-remember shape as
  * `ctx.authConfirmed` in `authedFetch`.
  *
- * Two error classes are rethrown immediately, never retried: a caller-aborted
- * signal (matching `tryQueryData`'s cancellation contract), and 'not signed
- * in' / 'signed out' — `authedFetch` has already exhausted its own retry and
- * called `ctx.onSignedOut()` for those, so retrying here would just repeat
- * the whole token/refresh/sign-out handshake (and its side effects) a second
- * time for no benefit.
+ * Any OTHER error (e.g. a per-table Iceberg/Glue metadata failure inside the
+ * catalog itself — ClickHouse's `system.tables` aborts the whole query for a
+ * catalog database the instant any column beyond `database`/`name` surfaces
+ * one unresolvable table; see ClickHouse/ClickHouse#110032 and #162) is
+ * rethrown, never latched: it says nothing about whether the *setting* is
+ * supported, and latching on it would incorrectly disable catalog visibility
+ * for every other (unrelated, healthy) catalog for the rest of the session.
+ * Callers that query a single data-lake-catalog database (`loadSchema`) treat
+ * that rethrown error as a per-database, best-effort failure instead.
+ *
+ * Two error classes are rethrown immediately, before that check: a
+ * caller-aborted signal (matching `tryQueryData`'s cancellation contract), and
+ * 'not signed in' / 'signed out' — `authedFetch` has already exhausted its own
+ * retry and called `ctx.onSignedOut()` for those, so retrying here would just
+ * repeat the whole token/refresh/sign-out handshake (and its side effects) a
+ * second time for no benefit.
  */
 async function querySystemAware(ctx, sqlBody, signal) {
   const plain = () => queryJson(ctx, sqlBody + '\nFORMAT JSON', signal);
@@ -135,8 +145,37 @@ async function querySystemAware(ctx, sqlBody, signal) {
   } catch (e) {
     if (signal && signal.aborted && e && e.name === 'AbortError') throw e;
     if (e && (e.message === 'not signed in' || e.message === 'signed out')) throw e;
+    if (!(e && /Unknown setting/i.test(e.message))) throw e;
     ctx.dataLakeCatalogSettingUnsupported = true;
     return plain();
+  }
+}
+
+/**
+ * List table names for one `DataLakeCatalog`-engine database (Iceberg/Glue/…),
+ * requesting only `database, name`. ClickHouse's `system.tables` has a fast
+ * path for exactly those two columns that never opens each table's storage
+ * object — so, unlike any query that also asks for `total_rows`/`total_bytes`/
+ * `comment`, one broken/unresolvable table in the catalog can't abort or
+ * silently truncate the listing (ClickHouse/ClickHouse#110032, found via #162:
+ * an unrelated bad table hid a perfectly healthy catalog's tables entirely).
+ * Row/byte stats and comments genuinely aren't available this way for
+ * data-lake-catalog tables — `loadSchema` fills those in as zero/empty rather
+ * than trying to fetch them.
+ *
+ * Best-effort: a failure here (e.g. a wholly unreachable catalog endpoint, or
+ * — pre-25.8 — a rejected `show_data_lake_catalogs_in_system_tables` setting
+ * that isn't itself the "unknown setting" case `querySystemAware` already
+ * handles) shows this one database as empty rather than failing the whole
+ * schema load or, via `ctx.dataLakeCatalogSettingUnsupported`, hiding every
+ * other catalog too.
+ */
+async function loadDataLakeCatalogTableNames(ctx, db) {
+  try {
+    const json = await querySystemAware(ctx, `SELECT database, name FROM system.tables WHERE database = ${sqlString(db)}`);
+    return (json.data || []).map((r) => r.name);
+  } catch {
+    return [];
   }
 }
 
@@ -159,29 +198,53 @@ export async function loadServerVersion(ctx) {
   return row.v || '';
 }
 
+/** `startsWith('_')`-then-name ordering, matching the `system.tables` `ORDER BY`. Pure. */
+export function byUnderscoreThenName(a, b) {
+  const au = a.startsWith('_');
+  const bu = b.startsWith('_');
+  if (au !== bu) return au ? 1 : -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /**
  * Load the table list grouped by database. `system` is included (handy for
  * dashboards/diagnostics); the redundant INFORMATION_SCHEMA views stay filtered.
  * Databases are enumerated from `system.databases` (not derived from
  * `system.tables`) so a freshly created, still-empty database shows up too.
+ *
+ * `DataLakeCatalog`-engine databases (Iceberg/Glue/Unity/HMS/REST catalogs) are
+ * queried separately from everything else, one request per catalog database,
+ * via `loadDataLakeCatalogTableNames` — seeing #162/ClickHouse#110032's
+ * docstrings for why: a single query across every database, once any catalog
+ * table is broken, either aborts entirely or silently drops tables depending
+ * on `database_datalake_require_metadata_access`. Their `total_rows`/
+ * `total_bytes`/`comment` are zero/empty rather than fetched — not available
+ * without hitting that failure mode.
+ *
  * Returns [{ db, comment, expanded, tables: [{name,total_rows,total_bytes,comment,columns:null}] }].
  */
 export async function loadSchema(ctx) {
-  const [dbJson, tblJson] = await Promise.all([
+  const dbJson = await queryJson(ctx,
+    "SELECT name, comment, engine FROM system.databases\n" +
+    "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
+    'ORDER BY name\n' +
+    'FORMAT JSON');
+  const dbRows = dbJson.data || [];
+  const catalogDbs = dbRows.filter((r) => r.engine === 'DataLakeCatalog').map((r) => r.name);
+  const exclude = ['INFORMATION_SCHEMA', 'information_schema', ...catalogDbs].map(sqlString).join(', ');
+
+  const [tblJson, catalogTables] = await Promise.all([
     queryJson(ctx,
-      "SELECT name, comment FROM system.databases\n" +
-      "WHERE name NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
-      'ORDER BY name\n' +
-      'FORMAT JSON'),
-    querySystemAware(ctx,
       'SELECT database, name, toUInt64(total_rows) AS total_rows, ' +
       'toUInt64(total_bytes) AS total_bytes, comment\n' +
       'FROM system.tables\n' +
-      "WHERE database NOT IN ('INFORMATION_SCHEMA','information_schema')\n" +
-      "ORDER BY database, startsWith(name, '_'), name"),
+      `WHERE database NOT IN (${exclude})\n` +
+      "ORDER BY database, startsWith(name, '_'), name\n" +
+      'FORMAT JSON'),
+    Promise.all(catalogDbs.map(async (db) => ({ db, names: await loadDataLakeCatalogTableNames(ctx, db) }))),
   ]);
   const byDb = new Map();
-  for (const r of dbJson.data || []) byDb.set(r.name, { comment: r.comment || '', tables: [] });
+  for (const r of dbRows) byDb.set(r.name, { comment: r.comment || '', tables: [] });
   for (const r of tblJson.data || []) {
     if (!byDb.has(r.database)) byDb.set(r.database, { comment: '', tables: [] });
     byDb.get(r.database).tables.push({
@@ -191,6 +254,16 @@ export async function loadSchema(ctx) {
       comment: r.comment || '',
       columns: null,
     });
+  }
+  for (const { db, names } of catalogTables) {
+    // db is always already a byDb key here: catalogDbs (and so catalogTables'
+    // db) comes from dbRows itself, unlike r.database above — that one comes
+    // from system.tables, which can legitimately name a database
+    // system.databases doesn't list.
+    const entry = byDb.get(db);
+    for (const name of [...names].sort(byUnderscoreThenName)) {
+      entry.tables.push({ name, total_rows: 0, total_bytes: 0, comment: '', columns: null });
+    }
   }
   return [...byDb.entries()].map(([db, v]) => ({ db, comment: v.comment, expanded: false, tables: v.tables }));
 }

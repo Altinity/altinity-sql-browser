@@ -9,6 +9,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Schema panel: a broken table in one data-lake-catalog database no longer
+  hides every catalog database's tables** (#162). `loadSchema` queried
+  `system.tables` across every database in one shot; once ClickHouse resolves
+  per-table metadata for a `DataLakeCatalog` (Iceberg/Glue/…) database, a
+  single unresolvable table there either aborts the whole query or (depending
+  on `database_datalake_require_metadata_access`) silently drops tables from
+  *other*, healthy catalogs too — traced to a ClickHouse-side gap, reported
+  upstream as [ClickHouse/ClickHouse#110032](https://github.com/ClickHouse/ClickHouse/issues/110032).
+  Each `DataLakeCatalog`-engine database is now queried separately, requesting
+  only `database, name` — the one shape ClickHouse can resolve without opening
+  each table's storage object, so one broken table can't take down anything
+  else. Trade-off: `total_rows`/`total_bytes`/`comment` for catalog tables show
+  as zero/empty rather than being fetched.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added
