@@ -23,8 +23,10 @@ import { effectiveFilterActive } from '../state.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
+import { buildEnumField } from './enum-field.js';
 import { recentOptions } from '../core/recent-values.js';
 import { isDateLikeType } from '../core/relative-time.js';
+import { enumValues } from '../core/param-type.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -240,6 +242,11 @@ function buildFilterBar(app, params, onCommit, getField) {
     // stays free-text; D3's debounce/Enter/blur commit semantics are
     // unchanged either way.
     const dateLike = isDateLikeType(p.type);
+    // #172 v1 only here — the declaration travels with the tile SQL, so a
+    // dashboard filter can read it directly; v2 (schema-cache inference)
+    // is workbench-only (the Dashboard has no schema cache — #160's curated
+    // `filter:` query is its no-declaration alternative).
+    const enumOpts = enumValues(p.type);
     let combo = null;
     let input;
     const onValueInput = () => {
@@ -273,7 +280,23 @@ function buildFilterBar(app, params, onCommit, getField) {
       timer = null;
       onCommit(p.name);
     };
-    if (dateLike) {
+    if (enumOpts) {
+      combo = buildEnumField({
+        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
+        baseTitle, values: enumOpts, onValueInput, onCommit: onPick, getRecents, onClearRecent,
+      });
+      input = combo.input;
+      input.addEventListener('focus', () => combo.onFocus());
+      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+      input.addEventListener('keydown', (e) => {
+        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
+        if (e.key !== 'Enter') return;
+        onCommitHard();
+      });
+      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+      input.addEventListener('compositionstart', () => combo.onCompositionStart());
+      input.addEventListener('compositionend', () => combo.onCompositionEnd());
+    } else if (dateLike) {
       combo = buildRelativeTimeField({
         document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
         baseTitle, wallNow: app.wallNow,

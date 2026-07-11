@@ -144,6 +144,44 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   workbench variables strip (app.js) and the Dashboard's global filter bar
   (#149 D3, dashboard.js) record on their respective success paths and share
   the same dropdown/footer wiring.
+- **Enum variables render as a dropdown of their allowed values** (#172), two
+  tiers, zero new network requests. **v1 (declared type, both surfaces):** a
+  variable declared `{name:Enum8(…)}`/`Enum16(…)` (`Nullable(…)` unwrapped)
+  gets a dropdown listing its member names, parsed straight out of the
+  declaration by new pure `enumMembers`/`enumValues` (`src/core/param-type.js`,
+  100% covered — reuses the shared string-span scanner so escaped quotes
+  (`'a''b'`), braces (`'}'`), spacing variants, negative codes, and unicode
+  member names all parse exactly like ClickHouse's own literal grammar).
+  Membership is enforced (#170's invalid affordance, blocking) via a new
+  `param-validate.js` branch: a LIVE-VERIFIED server fact (ClickHouse 26.3.13)
+  is that a bare numeric code string (`1`) is ALSO accepted for a declared
+  Enum param, binding as the member with that code — so validation accepts
+  member names AND matching numeric codes, rejecting everything else with a
+  reason that lists (and, past 8, samples + counts) the allowed values. Works
+  in both the workbench variables strip and the Dashboard filter bar, since
+  the declaration travels with the tile SQL. **v2 (schema-cache inference,
+  workbench only, suggestions — never blocking):** a plain `{s:String}`
+  compared directly to a column (`col = {s}` or `{s} = col`, qualified/aliased
+  forms included — an expression, `IN`, `BETWEEN`, or the same param compared
+  to two different columns all yield no match) whose *cached* type (#84's
+  schema cache) is an Enum offers the identical dropdown, purely as
+  suggestions: the declared type stays `String`, so a non-member still
+  executes — the cache can lag the server. New pure
+  `src/core/param-comparison.js` (`paramComparisonColumns`, 100% covered) finds
+  the syntactic column reference; a new `resolveComparisonColumnType` in
+  `src/core/from-scope.js` resolves it against the statement's FROM scope and
+  the loaded schema (exactly one confident match required — ambiguous or
+  not-yet-loaded degrades silently to a plain input, upgrading automatically
+  once the column lands on the existing idle-tick loader). **Third consumer of
+  the shared combobox** (`src/ui/combobox.js`, #174 §1) via new
+  `src/ui/enum-field.js`: enum values render under a "Values" header once
+  recents (#171) are also wired (paired labeling, exactly relative-time-
+  field.js's own rule), a large `Enum16` (thousands of members) type-to-filters
+  the COMPLETE member list first and only then caps the rendered rows at
+  `ENUM_DROPDOWN_CAP` (≈200) with a "type to narrow" hint, so a member past the
+  cap stays reachable by typing. `param-scan.js` gained a position-carrying
+  `scanParamOccurrences` (the existing `scanParamDeclarations` is now a thin
+  wrapper over it) so v2 can locate each param occurrence's FROM scope.
 
 ### Fixed
 - **Multi-statement SQL now binds query parameters per statement everywhere**

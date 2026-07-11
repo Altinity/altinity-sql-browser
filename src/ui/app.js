@@ -47,8 +47,12 @@ import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
+import { buildEnumField } from './enum-field.js';
 import { recordRecent, clearRecent, clearAllRecent, recentOptions } from '../core/recent-values.js';
 import { isDateLikeType } from '../core/relative-time.js';
+import { enumValues, parseParamType } from '../core/param-type.js';
+import { paramComparisonColumns } from '../core/param-comparison.js';
+import { resolveComparisonColumnType } from '../core/from-scope.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
@@ -541,6 +545,14 @@ export function createApp(env = {}) {
       setCols([]);
     }
     app.rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
+    // #172 v2: a newly-loaded column may now resolve a String var's schema-
+    // cache-inferred enum suggestion (paramComparisonColumns +
+    // resolveComparisonColumnType) — repaint so it can upgrade from a plain
+    // input the moment the idle-tick load lands, not just on the next
+    // keystroke/tab-switch. renderVarStrip's own signature guard (which now
+    // folds in each var's resolved enum options, see below) skips the actual
+    // DOM rebuild when nothing changed, so this is a cheap no-op otherwise.
+    app.renderVarStrip();
   }
 
   // --- query run ---------------------------------------------------------
@@ -1010,12 +1022,40 @@ export function createApp(env = {}) {
   // doesn't thrash the row or steal focus, and switching between tabs with the
   // same variables keeps the (already-correct, shared) values in place. Always
   // re-syncs the Run button's disabled/tooltip state.
+  //
+  // #172: which enum member list (if any) a var's field should offer —
+  // v1 (the declared Enum8/Enum16 type, `enumValues`) wins when present, since
+  // that's authoritative and blocking (#170 validates it as a real Enum); only
+  // when a var is plain `String` does v2 kick in — the workbench's own SQL +
+  // already-loaded schema cache (`paramComparisonColumns` +
+  // `resolveComparisonColumnType`), never a new query, and only ever a
+  // suggestion (the declared type stays String, so #170 never blocks on it).
+  function enumOptionsFor(v, sql, comparisonColumns) {
+    const declared = enumValues(v.type);
+    if (declared) return declared;
+    if (parseParamType(v.type).base !== 'String') return null;
+    const cmp = comparisonColumns[v.name];
+    if (!cmp) return null;
+    const colType = resolveComparisonColumnType(sql, cmp.pos, cmp, app.state.schema.value);
+    return colType ? enumValues(colType) : null;
+  }
   function renderVarStrip() {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
     const vars = tab ? fieldControls(tabAnalysis(tab.sql)) : [];
-    const sig = vars.map((v) => v.name + ':' + v.type + (v.optional ? '?' : '')).join(',');
+    // #172 v2 reads the tab's SQL directly (workbench-only — the Dashboard has
+    // no schema cache and gets v1 only, straight from fieldControls' v.type).
+    const comparisonColumns = tab ? paramComparisonColumns(tab.sql) : {};
+    // The signature folds in each var's currently-resolved enum options (both
+    // tiers) — not just name/type/optional — so a column landing on the idle-
+    // tick loader (loadColumns calls renderVarStrip on completion) upgrades a
+    // v2 field from plain input to the dropdown even though the {name:Type}
+    // set itself never changed.
+    const sig = vars.map((v) => {
+      const opts = tab ? enumOptionsFor(v, tab.sql, comparisonColumns) : null;
+      return v.name + ':' + v.type + (v.optional ? '?' : '') + (opts ? ':enum' + opts.length : '');
+    }).join(',');
     if (sig !== app.dom.varStripSig) {
       app.dom.varStripSig = sig;
       if (!vars.length) {
@@ -1038,6 +1078,10 @@ export function createApp(env = {}) {
           // called first from the same handlers (see relative-time-field.js's
           // header comment on why this beats two independent listeners).
           const dateLike = isDateLikeType(v.type);
+          // #172: v1 (declared Enum8/Enum16) or v2 (schema-cache-inferred,
+          // String-typed only) member list, if any — takes priority over the
+          // date-like branch below (an Enum type is never date-like anyway).
+          const enumOpts = enumOptionsFor(v, tab.sql, comparisonColumns);
           let combo = null;
           let input;
           const onValueInput = () => {
@@ -1071,7 +1115,23 @@ export function createApp(env = {}) {
           // param exists before #160 lands.)
           const getRecents = (text) => recentOptions(app.state.varRecent, v.name, v.type, text);
           const onClearRecent = () => app.clearVarRecent(v.name);
-          if (dateLike) {
+          if (enumOpts) {
+            combo = buildEnumField({
+              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
+              baseTitle, values: enumOpts, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
+            });
+            input = combo.input;
+            input.addEventListener('focus', () => combo.onFocus());
+            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+            input.addEventListener('keydown', (e) => {
+              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
+              if (e.key !== 'Enter') return;
+              onCommitHard();
+            });
+            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+            input.addEventListener('compositionstart', () => combo.onCompositionStart());
+            input.addEventListener('compositionend', () => combo.onCompositionEnd());
+          } else if (dateLike) {
             combo = buildRelativeTimeField({
               document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
               baseTitle, wallNow, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,

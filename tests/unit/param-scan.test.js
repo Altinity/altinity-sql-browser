@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scanParamDeclarations } from '../../src/core/param-scan.js';
+import { scanParamDeclarations, scanParamOccurrences } from '../../src/core/param-scan.js';
 import { detectParams } from '../../src/core/query-params.js';
 
 describe('scanParamDeclarations', () => {
@@ -49,6 +49,27 @@ describe('scanParamDeclarations', () => {
     expect(scanParamDeclarations('SELECT {x:String')).toEqual([]);
     expect(scanParamDeclarations('SELECT {cluster}')).toEqual([]);
     expect(scanParamDeclarations("SELECT {1:2}, {'k':'v'}")).toEqual([]);
+  });
+});
+
+// #172 v2's paramComparisonColumns builds on this position data.
+describe('scanParamOccurrences', () => {
+  it('adds start/end char offsets of the whole {…} span, otherwise matching scanParamDeclarations', () => {
+    const sql = 'SELECT {x:String} WHERE a = {y:UInt8}';
+    const occs = scanParamOccurrences(sql);
+    expect(occs).toEqual([
+      { name: 'x', type: 'String', start: sql.indexOf('{x:String}'), end: sql.indexOf('{x:String}') + '{x:String}'.length },
+      { name: 'y', type: 'UInt8', start: sql.indexOf('{y:UInt8}'), end: sql.indexOf('{y:UInt8}') + '{y:UInt8}'.length },
+    ]);
+    for (const o of occs) {
+      expect(sql.slice(o.start, o.end)).toBe(`{${o.name}:${o.type}}`);
+    }
+    expect(scanParamDeclarations(sql)).toEqual(occs.map(({ name, type }) => ({ name, type })));
+  });
+
+  it('returns [] for empty / paramless SQL, same as the wrapper', () => {
+    expect(scanParamOccurrences('')).toEqual([]);
+    expect(scanParamOccurrences('SELECT 1')).toEqual([]);
   });
 });
 

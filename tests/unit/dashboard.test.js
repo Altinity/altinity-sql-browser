@@ -868,6 +868,54 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       expect(app.saveVarValues).not.toHaveBeenCalled(); // nothing edited yet — just restored
     });
   });
+
+  // #172 v1 — the Dashboard only ever gets the declared-type dropdown (the
+  // declaration travels with the tile SQL); v2's schema-cache inference is
+  // workbench-only (no schema cache here).
+  describe('#172 enum variables (v1, from the tile SQL declaration)', () => {
+    const ENUM_TYPE = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";
+    it('renders a dropdown of the declared members', async () => {
+      const favorites = [paramFav('1', `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`)];
+      const app = dashApp(favorites, vi.fn(async () => chartResult()));
+      await renderDashboard(app);
+      const input = fieldInput(app.root, 'status');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.root.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('gates a non-member value inline (blocking, since the declared type is a real Enum)', async () => {
+      const favorites = [paramFav('1', `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`)];
+      const runTile = vi.fn(async () => chartResult());
+      const app = dashApp(favorites, runTile);
+      await renderDashboard(app);
+      const input = fieldInput(app.root, 'status');
+      setInput(input, 'nope');
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      await flush();
+      expect(input.classList.contains('is-invalid')).toBe(true);
+      expect(app.root.querySelector('.dash-tile-unfilled')).not.toBeNull();
+    });
+    it('a bare numeric code matching a declared code is accepted (live-server fact)', async () => {
+      const favorites = [paramFav('1', `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`)];
+      const runTile = vi.fn(async () => chartResult());
+      const app = dashApp(favorites, runTile);
+      await renderDashboard(app);
+      const input = fieldInput(app.root, 'status');
+      setInput(input, '2');
+      pressEnter(input);
+      await flush();
+      expect(input.classList.contains('is-invalid')).toBe(false);
+      expect(runTile).toHaveBeenLastCalledWith(expect.any(String), { param_status: '2' });
+    });
+    it('a non-enum String param keeps the plain recents combobox (no v2 here — no schema cache on the Dashboard)', async () => {
+      const favorites = [paramFav('1', 'SELECT * FROM t WHERE r = {region:String}')];
+      const app = dashApp(favorites, vi.fn(async () => chartResult()));
+      await renderDashboard(app);
+      const input = fieldInput(app.root, 'region');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      expect(app.root.querySelectorAll('[role="option"]')).toHaveLength(0); // no recents recorded, no enum values
+    });
+  });
 });
 
 // ── D3 + #171: recent-value recording + the recents dropdown ────────────────
