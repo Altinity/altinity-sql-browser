@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase, dashboardTileSql, parseJsonResult, classifyTile,
-  normalizeDashLayout, normalizeDashCols, dashboardParams,
+  normalizeDashLayout, normalizeDashCols,
 } from '../../src/core/dashboard.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
@@ -126,26 +126,9 @@ describe('normalizeDashCols', () => {
   });
 });
 
-describe('dashboardParams', () => {
-  it('unions params across favorites, unique by name, first-appearance order', () => {
-    const favorites = [
-      { sql: 'SELECT * FROM t WHERE y = {year:UInt16}' },
-      { sql: 'SELECT * FROM u WHERE y = {year:UInt16} AND r = {region:String}' },
-    ];
-    expect(dashboardParams(favorites)).toEqual([
-      { name: 'year', type: 'UInt16' },
-      { name: 'region', type: 'String' },
-    ]);
-  });
-  it('ignores a param that only appears in a non-row-returning statement', () => {
-    const favorites = [{ sql: "CREATE VIEW v AS SELECT {x:String}" }];
-    expect(dashboardParams(favorites)).toEqual([]);
-  });
-  it('is defensive about an empty/absent favorites list', () => {
-    expect(dashboardParams([])).toEqual([]);
-    expect(dashboardParams(undefined)).toEqual([]);
-  });
-});
+// (dashboardParams moved into the parameter pipeline in #165 — the filter bar's
+// field discovery is now `fieldControls(analysis)`, tested with the pipeline in
+// param-pipeline.test.js and end-to-end in the filter-bar suite below.)
 
 // ── core/auth-handoff.js ─────────────────────────────────────────────────────
 function memSession(initial = {}) {
@@ -638,6 +621,81 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     await flush();
 
     expect(app.root.querySelector('.dash-tile-error').textContent).toBe('B wins');
+  });
+
+  // ── #165: optional blocks on the dashboard ────────────────────────────────
+  const optFav = (id) => paramFav(id, 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/');
+
+  it('#165: a block-only param is listed in the filter bar with the optional affordance', async () => {
+    const app = dashApp([optFav('1')], vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    const field = app.root.querySelector('.dash-filters .var-field');
+    expect(field.classList.contains('is-optional')).toBe(true);
+    expect(field.querySelector('.var-name').textContent).toBe('d');
+    expect(fieldInput(app.root, 'd').title).toContain('optional');
+  });
+
+  it('#165: a blank optional filter deactivates the predicate instead of blocking — the tile runs materialized', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([optFav('1')], runTile); // no value, no activation
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile-unfilled')).toBeNull(); // NOT gated
+    expect(runTile).toHaveBeenCalledTimes(1);
+    const [sql, args] = runTile.mock.calls[0];
+    expect(sql).toBe('SELECT * FROM t WHERE 1 '); // block omitted from the wire text
+    expect(args).toEqual({}); // param_d never sent
+  });
+
+  it('#165: typing a value activates the block — the affected tile re-runs with the predicate + arg', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([optFav('1')], runTile);
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'd');
+    setInput(input, 'abc');
+    expect(app.state.filterActive.d).toBe(true); // text control syncs activation
+    expect(app.saveFilterActive).toHaveBeenCalled();
+    pressEnter(input);
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(2);
+    const [sql, args] = runTile.mock.calls[1];
+    expect(sql).toBe('SELECT * FROM t WHERE 1  AND d = {d:String} ');
+    expect(args).toEqual({ param_d: 'abc' });
+    // …and blanking it flips activation off and re-runs without the predicate.
+    setInput(input, '');
+    expect(app.state.filterActive.d).toBe(false);
+    pressEnter(input);
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(3);
+    expect(runTile.mock.calls[2]).toEqual(['SELECT * FROM t WHERE 1 ', {}]);
+  });
+
+  it('#165: a required (non-block) param still blocks the tile with the placeholder', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {y:UInt16} /*[ AND d = {d:String} ]*/')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    await renderDashboard(app);
+    expect(runTile).not.toHaveBeenCalled();
+    expect(app.root.querySelector('.dash-tile-unfilled').textContent).toBe('Enter a value for: y');
+    // the required field carries no optional affordance
+    expect(fieldInput(app.root, 'y').closest('.var-field').classList.contains('is-optional')).toBe(false);
+  });
+
+  it('#165: a stale persisted value with activation off keeps the block omitted', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([optFav('1')], runTile);
+    app.state.varValues = { d: 'stale' };
+    app.state.filterActive = { d: false };
+    await renderDashboard(app);
+    expect(runTile.mock.calls[0]).toEqual(['SELECT * FROM t WHERE 1 ', {}]);
+  });
+
+  it('#165: a block-free favorite keeps its exact bytes on the wire', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const sql = 'SELECT * FROM t WHERE y = {year:UInt16};'; // trailing ; kept verbatim
+    const app = dashApp([paramFav('1', sql)], runTile);
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledWith(sql, { param_year: '2024' });
   });
 });
 

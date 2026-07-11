@@ -647,6 +647,113 @@ describe('query run', () => {
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
     expect(document.body.querySelector('.share-toast').textContent).toContain('array value');
   });
+  it('optional blocks (#165): Run enables with the optional param blank; the block and its arg are omitted', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.renderVarStrip();
+    expect(app.dom.runBtn.disabled).toBe(false); // blank optional never gates
+    await app.actions.run();
+    const [url, init] = app.chCtx.fetch.mock.calls[0];
+    expect(init.body).toBe('SELECT * FROM t WHERE 1 '); // inactive block removed from the wire
+    expect(url).not.toMatch(/param_d/); // its param is never sent
+  });
+  it('optional blocks (#165): typing a value activates the block — predicate included, param bound', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'abc';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.state.filterActive.d).toBe(true); // text control syncs activation
+    await app.actions.run();
+    const [url, init] = app.chCtx.fetch.mock.calls[0];
+    expect(init.body).toBe('SELECT * FROM t WHERE 1  AND d = {d:String} '); // markers stripped, content kept
+    expect(url).toMatch(/param_d=abc/);
+  });
+  it('optional blocks (#165): the strip lists a block-only param with the optional affordance', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {y:UInt16} FROM t /*[ AND d = {d:String} ]*/';
+    app.renderVarStrip();
+    const fields = [...app.dom.varStrip.querySelectorAll('.var-field')];
+    expect(fields.map((f) => f.querySelector('.var-name').textContent)).toEqual(['y', 'd']);
+    expect(fields.map((f) => f.classList.contains('is-optional'))).toEqual([false, true]);
+    expect(fields[1].querySelector('.var-input').title).toContain('optional');
+    // the required param still gates Run
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.title).toContain('y');
+    expect(app.dom.runBtn.title).not.toContain('d');
+  });
+  it('optional blocks (#165): activation persists alongside the value (own storage key)', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT 1 /*[ AND d = {d:String} ]*/';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'v1';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:filterActive'))).toEqual({ d: true });
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varValues'))).toEqual({ d: 'v1' });
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:filterActive'))).toEqual({ d: false });
+  });
+  it('optional blocks (#165): a persisted active:false with a stale value keeps the block omitted', async () => {
+    vi.stubGlobal('localStorage', memStore({
+      'asb:varValues': JSON.stringify({ d: 'stale' }),
+      'asb:filterActive': JSON.stringify({ d: false }),
+    }));
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    await app.actions.run();
+    const [url, init] = app.chCtx.fetch.mock.calls[0];
+    expect(init.body).toBe('SELECT * FROM t WHERE 1 '); // dormant value is inert
+    expect(url).not.toMatch(/param_d/);
+  });
+  it('optional blocks (#165): a template error blocks the run with a toast', async () => {
+    const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT 1 /*[ AND 1 = 1 ]*/'; // parameterless block
+    await app.actions.run();
+    expect(app.chCtx.fetch.mock.calls.length).toBe(0);
+    expect(document.body.querySelector('.share-toast').textContent).toContain('optional block');
+  });
+  it('optional blocks (#165): Explain wraps the materialized statement, not the raw template', async () => {
+    const { app } = appForRun([[() => true, resp({ text: 'plan' })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.state.varValues = { d: 'x' };
+    app.state.filterActive = { d: true };
+    await app.actions.explainQuery();
+    const [url, init] = app.chCtx.fetch.mock.calls.find((c) => c[1] && c[1].body);
+    expect(init.body).toMatch(/^EXPLAIN/);
+    expect(init.body).toContain('AND d = {d:String}'); // active block content in
+    expect(init.body).not.toContain('/*['); // markers never reach the server
+    expect(url).toMatch(/param_d=x/);
+  });
+  it('optional blocks (#165): a script sends each statement materialized, args per statement', async () => {
+    const { app } = appForRun([[() => true, resp({ text: '{"meta":[],"data":[]}' })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT 1 /*[ AND a = {a:String} ]*/; SELECT 2 /*[ AND b = {b:String} ]*/';
+    app.state.varValues = { a: 'x' };
+    app.state.filterActive = { a: true };
+    await app.actions.run(); // >1 statement → runScript
+    const bodies = app.chCtx.fetch.mock.calls.map((c) => c[1] && c[1].body);
+    expect(bodies).toContain('SELECT 1  AND a = {a:String} '); // active block in
+    expect(bodies).toContain('SELECT 2 '); // inactive block out
+    const aCall = app.chCtx.fetch.mock.calls.find((c) => /SELECT 1/.test(c[1].body));
+    expect(aCall[0]).toMatch(/param_a=x/);
+    const bCall = app.chCtx.fetch.mock.calls.find((c) => /SELECT 2/.test(c[1].body));
+    expect(bCall[0]).not.toMatch(/param_b/);
+  });
   it('the wall clock (#173) is its own injected seam, distinct from the duration clock', () => {
     const app = createApp(env({ wallNow: () => 777 })); // injected → tests can pin the wave clock
     expect(app.wallNow()).toBe(777);
@@ -1190,6 +1297,32 @@ describe('formatQuery', () => {
     app.activeTab().sql = 'select 1; select 2'; // now a script
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).toBeNull();
+  });
+  it('optional blocks (#165): a single statement with a block is skipped with a notice — no server call', async () => {
+    const { app, e } = appFor([]);
+    await Promise.resolve(); // let render's loadVersion/loadSchema settle
+    e.fetch.mockClear();
+    app.activeTab().sql = 'select 1 /*[ AND d = {d:String} ]*/';
+    app.editor.replaceDocument('select 1 /*[ AND d = {d:String} ]*/');
+    await app.actions.formatQuery();
+    expect(e.fetch).not.toHaveBeenCalled(); // never round-tripped through formatQuery()
+    expect(app.editor.getValue()).toBe('select 1 /*[ AND d = {d:String} ]*/'); // untouched
+    expect(document.body.querySelector('.share-toast').textContent)
+      .toContain('optional blocks — not formatted');
+  });
+  it('optional blocks (#165): a script formats the other statements and skips the template with a notice', async () => {
+    const { app, e } = appFor([
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
+    ]);
+    app.activeTab().sql = 'select 1; select 2 /*[ AND d = {d:String} ]*/';
+    await app.actions.formatQuery();
+    expect(app.editor.getValue()).toBe('SELECT 1;\n\nselect 2 /*[ AND d = {d:String} ]*/\n');
+    expect(document.body.querySelector('.share-toast').textContent)
+      .toContain('1 statement contains optional blocks — not formatted');
+    // exactly one formatQuery round trip — the template statement never went out
+    const fmtCalls = e.fetch.mock.calls.filter((c) => /formatQuery/.test(c[1] && c[1].body));
+    expect(fmtCalls).toHaveLength(1);
+    expect(fmtCalls[0][1].body).not.toContain('{d:String}');
   });
   it('setFmtBtn toggles a busy/spinner state and no-ops without the button', () => {
     const { app } = appFor([]);

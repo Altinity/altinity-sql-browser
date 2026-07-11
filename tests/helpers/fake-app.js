@@ -49,6 +49,7 @@ export function makeApp(over = {}) {
     email: () => 'me@example.com',
     savePref: vi.fn(),
     saveVarValues: vi.fn(),
+    saveFilterActive: vi.fn(),
     saveJSON: vi.fn(),
     saveStr: vi.fn(),
     downloadFile: vi.fn(),

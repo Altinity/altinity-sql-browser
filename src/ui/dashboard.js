@@ -13,9 +13,13 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './results.js';
 import { schemaKey } from '../core/chart-data.js';
-import { classifyTile, dashboardParams } from '../core/dashboard.js';
+import { classifyTile } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
-import { analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs } from '../core/param-pipeline.js';
+import {
+  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
+} from '../core/param-pipeline.js';
+import { hasOptionalBlocks } from '../core/optional-blocks.js';
+import { effectiveFilterActive } from '../state.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -183,18 +187,24 @@ async function runSlotTile(app, q, slot, onSettled, src) {
     return;
   }
   setSlotLoading(slot);
-  const r = await app.runTile(q.sql, mergedSourceArgs(src));
+  // The wire text is the wave's materialized execution view (#165) — only when
+  // the favorite actually is a template; block-free SQL keeps its exact bytes.
+  const execSql = hasOptionalBlocks(q.sql) ? mergedSourceSql(src, q.sql) : q.sql;
+  const r = await app.runTile(execSql, mergedSourceArgs(src));
   if (slot.gen !== myGen) return; // a newer edit started after this fetch; discard
   applyTileResult(app, q, slot, r);
   onSettled();
 }
 
 // The global filter bar (#149 D3): one field per `{name:Type}` parameter
-// referenced by any favorite, sharing `app.state.varValues` with the SQL
-// Browser workbench. Hidden entirely (no row, no spacing) when there are no
-// detected params — same convention as the workbench's `var-strip`. Typing
-// debounces before calling `onCommit(name)`; Enter or blur fires immediately,
-// clearing any pending debounce so a value never applies twice.
+// referenced by any favorite — detected on the all-active analysis view
+// (#165), so a param confined to /*[ ]*/ optional blocks is listed too, marked
+// optional (blank keeps its predicates out instead of blocking the tile) —
+// sharing `app.state.varValues`/`app.state.filterActive` with the SQL Browser
+// workbench. Hidden entirely (no row, no spacing) when there are no detected
+// params — same convention as the workbench's `var-strip`. Typing debounces
+// before calling `onCommit(name)`; Enter or blur fires immediately, clearing
+// any pending debounce so a value never applies twice.
 function buildFilterBar(app, params, onCommit) {
   if (!params.length) return h('div', { class: 'dash-filters', style: { display: 'none' } });
   return h('div', { class: 'dash-filters' }, ...params.map((p) => {
@@ -208,17 +218,25 @@ function buildFilterBar(app, params, onCommit) {
     const input = h('input', {
       type: 'text', class: 'var-input',
       value: app.state.varValues[p.name] || '',
-      placeholder: p.type, title: p.name + ': ' + p.type, 'aria-label': p.name,
+      placeholder: p.type,
+      title: p.name + ': ' + p.type + (p.optional ? ' — optional: blank leaves its filter block out' : ''),
+      'aria-label': p.name,
       oninput: (e) => {
         app.state.varValues[p.name] = e.target.value;
+        // Text controls sync activation with the value (#165): an activation
+        // flip re-runs affected tiles exactly like a value change (same
+        // debounce + generation guard downstream).
+        app.state.filterActive[p.name] = e.target.value !== '';
         app.saveVarValues();
+        app.saveFilterActive();
         clearTimeout(timer);
         timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
       },
       onkeydown: (e) => { if (e.key === 'Enter') commitNow(); },
       onblur: commitNow,
     });
-    return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, p.name), input);
+    return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
+      h('span', { class: 'var-name' }, p.name), input);
   }));
 }
 
@@ -240,7 +258,9 @@ export function renderDashboard(app) {
     id: tileId(i), label: q.name, kind: 'tile', sql: q.sql, bindPolicy: 'row-returning',
   })));
   const prepareWave = () => prepareParameterizedBatch(analysis, {
-    values: app.state.varValues, active: {}, wallNowMs: app.wallNow(), validationMode: 'execute',
+    values: app.state.varValues,
+    active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
+    wallNowMs: app.wallNow(), validationMode: 'execute',
   }).sources;
 
   const favChip = h('span', { class: 'dash-chip dash-fav' },
@@ -306,7 +326,7 @@ export function renderDashboard(app) {
     });
   const colsWrap = h('div', { class: 'dash-cols-wrap' },
     h('span', { class: 'dash-seg-label' }, 'Columns'), colsSeg.el);
-  const filterBar = buildFilterBar(app, dashboardParams(favorites), (name) => runAffected(name));
+  const filterBar = buildFilterBar(app, fieldControls(analysis), (name) => runAffected(name));
   const toolbar = h('div', { class: 'dash-toolbar' },
     layoutSeg.el,
     filterBar,
@@ -339,8 +359,9 @@ export function renderDashboard(app) {
 
   // Re-run only the favorites whose SQL references `name` (a filter field's
   // debounced/committed edit, #149 D3) — not the whole grid. Affected-source
-  // detection comes from the analysis (#173), so it will keep seeing params
-  // inside currently-inactive optional blocks once #165 lands. A no-op before
+  // detection comes from the analysis (#173): `optionalIn` keeps a tile
+  // affected even while the param's optional blocks are inactive (#165), so an
+  // activation flip re-runs it exactly like a value change. A no-op before
   // the first successful run (slots not built yet).
   function runAffected(name) {
     if (!slots.length) return;

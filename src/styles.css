@@ -1112,6 +1112,12 @@ body.detached-tab .graph-overlay-panel {
   white-space: nowrap;
 }
 .var-name::after { content: ':'; color: var(--fg-mute); }
+/* Optional-variable affordance (#165): a parameter confined to optional filter
+   blocks may stay blank — blank keeps its predicates out instead of gating Run
+   or a dashboard tile. Its name is muted and suffixed with a "?" so the strip
+   reads required vs optional at a glance (the input title spells it out). */
+.var-field.is-optional .var-name { color: var(--fg-mute); }
+.var-field.is-optional .var-name::after { content: '?'; color: var(--fg-faint); }
 .var-input {
   height: 24px; width: 150px; padding: 0 8px;
   background: var(--bg-input); color: var(--fg);

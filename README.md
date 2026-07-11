@@ -85,6 +85,38 @@ zero third-party requests. On top of it:
   variable name** — shared across every query and persisted across reloads — so a
   value typed once is prefilled wherever the same variable appears. (This is
   `{name:Type}` substitution, not the `{{name}}` composable-query macro.)
+- **Optional filter blocks** — an empty filter can also mean "no filter": wrap
+  a predicate in a comment-marked block and it is included only while every
+  parameter inside it has a value:
+
+  ```sql
+  SELECT * FROM events
+  WHERE tenant_id = {tenant_id:UInt64}
+  /*[ AND d = {d:String} ]*/
+  ```
+
+  Here `tenant_id` stays required, while a blank `d` simply removes the whole
+  `AND d = …` predicate before the query is sent (typing a value puts it back
+  and re-binds `param_d`; parameters of an omitted block are never sent). The
+  strip marks such block-only parameters optional (`name?`), and the Dashboard
+  filter bar behaves the same way — a blank optional filter runs the tile
+  unfiltered instead of blocking it. Values are never interpolated into the
+  SQL: the materialized query still carries `{name:Type}` placeholders and
+  ClickHouse does the typed substitution. The syntax is **SQL-transparent**: to
+  any tool that doesn't know the convention (an external client, server-side
+  `formatQuery()`, a code review) each block is an ordinary comment, so the raw
+  template parses and runs anywhere — with all filters inactive, which is
+  exactly the intended default. Limitations (each rejected with a clear error,
+  never silently mangled): blocks don't nest, must contain at least one
+  parameter, and can't hold a `;` or a whole statement; block content can never
+  contain `*/` in any form — not even inside a string literal, where
+  ClickHouse's comment lexer would still end the comment early (an in-string
+  `*/` or `]*/` is reported as "content ends inside a string literal").
+  Non-row-returning statements (DDL, parameterized views) are never
+  materialized. Because
+  server-side `formatQuery()` would strip the markers, **Format skips a
+  statement containing optional blocks** (with a notice) and formats the rest
+  of the script normally.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

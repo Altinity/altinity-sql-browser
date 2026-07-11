@@ -10,6 +10,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Optional SQL blocks `/*[ … ]*/` with explicit filter activation** (#165).
+  A comment-wrapped predicate — `WHERE 1 /*[ AND d = {d:String} ]*/` — is
+  included only while every parameter inside it is active; a blank filter now
+  means "no filter" instead of blocking the run. The raw template is
+  SQL-transparent (each block is a plain comment to any tool that doesn't know
+  the convention, so it runs anywhere with all filters inactive), and values
+  still bind only through native `{name:Type}` parameters — never
+  interpolated. Wired through the #173 pipeline's two materializations: the
+  all-active *analysis view* feeds the variables strip, the dashboard filter
+  bar and affected-tile detection (block-only params get an "optional"
+  affordance and never gate Run/tiles), and the *execution view* is what runs
+  and exports — parameters of omitted blocks are never sent as `param_` args.
+  Activation is explicit state (`state.filterActive`, persisted alongside
+  `varValues`, blank ⇒ inactive for text controls, not carried in share
+  links). Non-row-returning statements are never materialized; nested,
+  unbalanced, parameterless, `;`-containing, whole-statement, or
+  `*/`-containing blocks produce clear errors; and the Format action skips a
+  statement containing blocks (with a notice) rather than round-tripping a
+  template through server-side `formatQuery()`.
 - **Shared parameter pipeline (Phase 7.0)** (#173). A pure, two-phase,
   multi-source parameter pipeline — `analyzeParameterizedSources` (per-field
   declarations across all occurrences, per-source requiredness, cross-source
