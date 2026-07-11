@@ -44,6 +44,7 @@ import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
+import { applyFieldState } from './var-field.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
@@ -560,15 +561,20 @@ export function createApp(env = {}) {
   const activeMap = () => effectiveFilterActive(app.state.varValues, app.state.filterActive);
   // Analyze + prepare `sql` as the workbench's single parameterized source
   // (#173): one call per SQL string per wave, drawing values from the shared
-  // varValues (+ the #165 activation map). Returns the prepared source
-  // ({statements, missing, invalid, errors, runnable}); args for a request come
-  // from its statements (or mergedSourceArgs when the SQL ships as one
-  // request), and each statement's `sql` is its execution view (#165) —
-  // byte-identical for SQL without optional blocks.
-  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
+  // varValues (+ the #165 activation map). Returns the full prepared batch
+  // ({fields, sources, diagnostics}) — `fields` is per-`{name:Type}` (#170's
+  // validated state, for the var-strip's inline affordance); `sources[0]` is
+  // this single source's `{statements, missing, invalid, errors, runnable}`.
+  // Args for a request come from a source's statements (or mergedSourceArgs
+  // when the SQL ships as one request); each statement's `sql` is its
+  // execution view (#165) — byte-identical for SQL without optional blocks.
+  function prepareTabBatch(sql, wallNowMs, validationMode = 'execute') {
     return prepareParameterizedBatch(tabAnalysis(sql), {
       values: app.state.varValues, active: activeMap(), wallNowMs, validationMode,
-    }).sources[0];
+    });
+  }
+  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
+    return prepareTabBatch(sql, wallNowMs, validationMode).sources[0];
   }
   // The execution text of one statement (#165): only active optional blocks
   // retained, markers stripped — byte-identical for SQL without blocks. Follows
@@ -866,19 +872,28 @@ export function createApp(env = {}) {
     if (app.state.abortController) app.state.abortController.abort();
     ch.killQuery(chCtx, app.state.runQueryId, sqlString);
   }
-  function setRunBtn(running, missing) {
+  function setRunBtn(running, gate) {
     if (!app.dom.runBtn) return;
     // Disabled while running, or while any detected {name:Type} query variable
-    // is still empty (#134) — with a tooltip so the greyed-out button explains
-    // itself. Execution paths (run/runScript) enforce the same gate. A caller
-    // that already has the missing set (renderVarStrip) passes it to avoid
-    // re-lexing; otherwise we compute it here.
+    // is missing, invalid (#170), or fails to serialize (#170 review finding:
+    // the button's visible disabled state must match varGateBlocked's actual
+    // gate, which already blocks on missing+invalid+errors) — with a tooltip
+    // so the greyed-out button explains itself. Execution paths (run/
+    // runScript) enforce the same gate via varGateBlocked. A caller that
+    // already has the prepared source (renderVarStrip) passes its
+    // {missing, invalid, errors} to avoid re-preparing; otherwise we compute
+    // it here in 'input' mode — a merely 'incomplete' value (#170) stays
+    // display-only and doesn't grey out the button while still focused.
     const tab = app.activeTab();
-    if (missing == null) missing = running || !tab ? [] : prepareTabSource(tab.sql, wallNow(), 'input').missing;
-    app.dom.runBtn.disabled = running || missing.length > 0;
-    app.dom.runBtn.title = missing.length
-      ? 'Enter a value for: ' + missing.join(', ')
-      : '';
+    if (gate == null) {
+      const src = running || !tab ? null : prepareTabSource(tab.sql, wallNow(), 'input');
+      gate = src ? { missing: src.missing, invalid: src.invalid, errors: src.errors } : { missing: [], invalid: [], errors: [] };
+    }
+    const blockers = gate.missing.concat(gate.invalid);
+    app.dom.runBtn.disabled = running || blockers.length > 0 || gate.errors.length > 0;
+    app.dom.runBtn.title = blockers.length
+      ? 'Enter a value for: ' + blockers.join(', ')
+      : gate.errors.length ? gate.errors[0] : '';
     // "Run selection" while the editor has a non-empty selection (so the mode is
     // discoverable); plain "Run" otherwise. Build the children and drop the null
     // (replaceChildren would coerce a null arg into a "null" text node).
@@ -913,12 +928,17 @@ export function createApp(env = {}) {
         strip.style.display = 'none';
       } else {
         strip.style.display = '';
+        // The freshly-(re)built strip paints each field's already-committed
+        // state ('execute' mode — no field is mid-typing right after a
+        // rebuild, e.g. a tab switch restoring a previously-invalid value).
+        const initialFields = prepareTabBatch(tab.sql, wallNow(), 'execute').fields;
         strip.replaceChildren(...vars.map((v) => {
+          const baseTitle = v.name + ': ' + v.type + (v.optional ? ' — optional: blank leaves its filter block out' : '');
           const input = h('input', {
             type: 'text', class: 'var-input',
             value: app.state.varValues[v.name] || '',
             placeholder: v.type,
-            title: v.name + ': ' + v.type + (v.optional ? ' — optional: blank leaves its filter block out' : ''),
+            title: baseTitle,
             'aria-label': v.name,
             oninput: (e) => {
               app.state.varValues[v.name] = e.target.value;
@@ -926,9 +946,27 @@ export function createApp(env = {}) {
               app.state.filterActive[v.name] = e.target.value !== '';
               app.saveVarValues();
               app.saveFilterActive();
-              setRunBtn(app.state.running.value);
+              // 'input' mode (#170): a plausible prefix stays neutral while
+              // the field is focused — only a value that's already certainly
+              // wrong shows the inline error here.
+              const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
+              applyFieldState(input, batch.fields[v.name], baseTitle);
+              setRunBtn(app.state.running.value, batch.sources[0]);
+            },
+            onblur: () => {
+              // Hardens 'incomplete' → 'invalid' on commit (#170).
+              const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+              applyFieldState(input, batch.fields[v.name], baseTitle);
+              setRunBtn(app.state.running.value, batch.sources[0]);
+            },
+            onkeydown: (e) => {
+              if (e.key !== 'Enter') return;
+              const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+              applyFieldState(input, batch.fields[v.name], baseTitle);
+              setRunBtn(app.state.running.value, batch.sources[0]);
             },
           });
+          applyFieldState(input, initialFields[v.name], baseTitle);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
             h('span', { class: 'var-name' }, v.name), input);
         }));
