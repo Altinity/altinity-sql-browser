@@ -264,7 +264,15 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
           || (verdict.state === 'incomplete' && validationMode === 'execute');
         if (hardInvalid) {
           if (!invalid.includes(p.name)) invalid.push(p.name);
-          note(p.name, 'invalid', verdict.reason);
+          // A verdict hardened here from 'incomplete' (rather than a validator
+          // that already said 'invalid') never carries a `reason` — the value
+          // was never itself rejected, only its still-mid-typing state was
+          // hardened by the 'execute' mode. Without a fallback the tooltip
+          // silently goes blank (falls back to the field's base title,
+          // hiding that anything's wrong at all) — surface a generic reason
+          // instead (#170 review). This is the single spot both the var-strip
+          // and the dashboard filter bar's field affordance read from.
+          note(p.name, 'invalid', verdict.reason || 'Incomplete value');
           continue;
         }
         if (verdict.state === 'incomplete') {

@@ -58,6 +58,10 @@ describe('#170 end-to-end: the real validator wired as the pipeline default (no 
     expect(lenient.sources[0]).toMatchObject({ invalid: [], runnable: true });
     const strict = prepareParameterizedBatch(a, { values: { n: '-' }, validationMode: 'execute' });
     expect(strict.fields.n.state).toBe('invalid');
+    // #170 review: a value hardened from 'incomplete' (rather than a
+    // validator-rejected value) never got its own reason from
+    // param-validate.js — the fallback keeps the tooltip from going blank.
+    expect(strict.fields.n.reason).toBe('Incomplete value');
     expect(strict.sources[0]).toMatchObject({ invalid: ['n'], runnable: false });
   });
   it('a valid typed value runs normally, still serialized and bound', () => {
@@ -471,6 +475,9 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
     expect(lenient.sources[0].statements[0].args).toEqual({}); // but no arg is sent for it
     const strict = prepareParameterizedBatch(a, { values: { d: '2024-' }, validationMode: 'execute', stages });
     expect(strict.fields.d.state).toBe('invalid');
+    // A stage that returns the bare 'incomplete' string (no reason at all)
+    // still gets the fallback reason once hardened (#170 review).
+    expect(strict.fields.d.reason).toBe('Incomplete value');
     expect(strict.sources[0].invalid).toEqual(['d']);
     expect(strict.sources[0].runnable).toBe(false);
   });

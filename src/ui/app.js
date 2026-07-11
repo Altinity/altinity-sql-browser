@@ -62,6 +62,17 @@ export function createApp(env = {}) {
   const app = {
     state: createState(),
     dom: {},
+    // #170 review: names of `{name:Type}` variables whose value has hardened
+    // to invalid (blur/Enter/execute committed a strict verdict of invalid).
+    // setRunBtn's gate-less fallback (called from unrelated re-renders —
+    // renderVarStrip's tail call on every SQL-editor keystroke, and the
+    // hasSelection effect on every cursor/selection move) recomputes in
+    // lenient 'input' mode, which reads a still-incomplete prefix (e.g. a
+    // lone '-') as merely incomplete, not invalid — without this bookkeeping
+    // that recompute would silently re-enable Run while the field itself
+    // still paints red. Editing the field's value again (its own `oninput`)
+    // clears the name here, returning it to normal lenient behavior.
+    hardenedVars: new Set(),
     root: env.root || doc.getElementById('root'),
     document: doc,
     token: ss.getItem('oauth_id_token'),
@@ -872,6 +883,16 @@ export function createApp(env = {}) {
     if (app.state.abortController) app.state.abortController.abort();
     ch.killQuery(chCtx, app.state.runQueryId, sqlString);
   }
+  // Keep `app.hardenedVars` (#170 review) in sync with a field's just-computed
+  // 'execute'-mode verdict: added when it's invalid, cleared otherwise — so a
+  // corrected-then-reharded value, or a variable that simply stopped being
+  // invalid, doesn't linger in the set. Shared by every place that commits a
+  // strict verdict for a field (blur, Enter, and the strip's initial/rebuild
+  // paint, which is itself an 'execute'-mode read of the persisted value).
+  function hardenVar(name, field) {
+    if (field && field.state === 'invalid') app.hardenedVars.add(name);
+    else app.hardenedVars.delete(name);
+  }
   function setRunBtn(running, gate) {
     if (!app.dom.runBtn) return;
     // Disabled while running, or while any detected {name:Type} query variable
@@ -883,11 +904,28 @@ export function createApp(env = {}) {
     // already has the prepared source (renderVarStrip) passes its
     // {missing, invalid, errors} to avoid re-preparing; otherwise we compute
     // it here in 'input' mode — a merely 'incomplete' value (#170) stays
-    // display-only and doesn't grey out the button while still focused.
+    // display-only and doesn't grey out the button while still focused. That
+    // fallback also folds in `app.hardenedVars` (#170 review) so a value that
+    // already hardened to invalid on blur/Enter stays blocking even when this
+    // gate-less recompute is triggered by something unrelated to that field.
     const tab = app.activeTab();
     if (gate == null) {
-      const src = running || !tab ? null : prepareTabSource(tab.sql, wallNow(), 'input');
-      gate = src ? { missing: src.missing, invalid: src.invalid, errors: src.errors } : { missing: [], invalid: [], errors: [] };
+      if (running || !tab) {
+        gate = { missing: [], invalid: [], errors: [] };
+      } else {
+        const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
+        const src = batch.sources[0];
+        // #170 review: a field that hardened to invalid (blur/Enter/execute
+        // committed a strict invalid verdict) must keep blocking Run even
+        // though this fallback recomputes in lenient 'input' mode — which
+        // reads a still-incomplete prefix like '-' as merely incomplete, not
+        // invalid. Only names this batch actually declares are considered, so
+        // a hardened flag for a variable that dropped out of the tab's SQL
+        // (or belongs to a different tab) doesn't block Run forever; the
+        // `!src.invalid.includes` filter just avoids listing a name twice.
+        const hardened = [...app.hardenedVars].filter((name) => name in batch.fields && !src.invalid.includes(name));
+        gate = { missing: src.missing, invalid: src.invalid.concat(hardened), errors: src.errors };
+      }
     }
     const blockers = gate.missing.concat(gate.invalid);
     app.dom.runBtn.disabled = running || blockers.length > 0 || gate.errors.length > 0;
@@ -946,6 +984,9 @@ export function createApp(env = {}) {
               app.state.filterActive[v.name] = e.target.value !== '';
               app.saveVarValues();
               app.saveFilterActive();
+              // Editing the value un-hardens it (#170 review): back to
+              // neutral, lenient behavior until it's committed again.
+              app.hardenedVars.delete(v.name);
               // 'input' mode (#170): a plausible prefix stays neutral while
               // the field is focused — only a value that's already certainly
               // wrong shows the inline error here.
@@ -956,16 +997,19 @@ export function createApp(env = {}) {
             onblur: () => {
               // Hardens 'incomplete' → 'invalid' on commit (#170).
               const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+              hardenVar(v.name, batch.fields[v.name]);
               applyFieldState(input, batch.fields[v.name], baseTitle);
               setRunBtn(app.state.running.value, batch.sources[0]);
             },
             onkeydown: (e) => {
               if (e.key !== 'Enter') return;
               const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+              hardenVar(v.name, batch.fields[v.name]);
               applyFieldState(input, batch.fields[v.name], baseTitle);
               setRunBtn(app.state.running.value, batch.sources[0]);
             },
           });
+          hardenVar(v.name, initialFields[v.name]);
           applyFieldState(input, initialFields[v.name], baseTitle);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
             h('span', { class: 'var-name' }, v.name), input);

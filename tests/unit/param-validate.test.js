@@ -52,19 +52,23 @@ describe('validateParamValue: Int/UInt — range-checked via BigInt', () => {
     valid('UInt256', '0');
     invalid('Int256', 'x');
   });
-  it('rejects SQL-literal forms the param path does not accept', () => {
+  it('rejects SQL-literal forms the param path does not accept, with a syntax-shaped reason (#170 review)', () => {
     for (const v of ['+5', '+42', '0x1F', '1_0', '1e2', '5.0', ' 5', '5 ', '007', '00']) {
-      invalid('UInt32', v);
-      invalid('Int32', v);
+      invalid('UInt32', v, 'Expected a whole number (digits only, no minus sign)');
+      invalid('Int32', v, 'Expected a whole number (digits only)');
     }
   });
   it("a lone '-' is incomplete (neutral while typing) for both Int and UInt", () => {
     incomplete('Int32', '-');
     incomplete('UInt32', '-'); // never becomes valid, but neutral until it hardens
   });
-  it('non-digit garbage is invalid outright, not incomplete', () => {
-    invalid('UInt32', 'abc');
-    invalid('Int32', 'abc');
+  it('non-digit garbage is invalid outright, not incomplete, with the syntax-shaped reason', () => {
+    invalid('UInt32', 'abc', 'Expected a whole number (digits only, no minus sign)');
+    invalid('Int32', 'abc', 'Expected a whole number (digits only)');
+  });
+  it("a negative value for a UInt is a range violation, not a syntax one — keeps the range-shaped reason (#170 review)", () => {
+    invalid('UInt8', '-1', 'Expected UInt8 from 0 to 255');
+    invalid('UInt32', '-42', 'Expected UInt32 from 0 to 4294967295');
   });
 });
 

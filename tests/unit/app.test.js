@@ -788,6 +788,40 @@ describe('query run', () => {
     expect(input.classList.contains('is-invalid')).toBe(true); // blur commits — hardens to invalid
     expect(app.dom.runBtn.disabled).toBe(true);
   });
+  it('typed validation (#170 review): a hardened invalid value keeps blocking Run across unrelated re-renders, until the field itself is edited', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:Int32}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '-';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true })); // hardens '-' to invalid
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+
+    // renderVarStrip's own tail call (fired on every SQL-editor keystroke via
+    // onDocChange) recomputes Run's gate gate-less, in lenient 'input' mode —
+    // which alone would read the still-incomplete '-' as merely incomplete
+    // and silently re-enable Run while the field still paints red. The
+    // signature is unchanged (same {n:Int32}), so this only re-derives the
+    // Run button, exactly the path that regressed.
+    app.renderVarStrip();
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.title).toContain('n');
+    expect(input.classList.contains('is-invalid')).toBe(true);
+
+    // Same gate-less fallback, reached from the hasSelection effect (fires on
+    // every cursor/selection move).
+    app.state.hasSelection.value = true;
+    expect(app.dom.runBtn.disabled).toBe(true);
+
+    // Editing the field's own value clears its hardened flag — lenient
+    // 'input'-mode behavior resumes, and a now-valid value re-enables Run.
+    input.value = '-5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.dom.runBtn.disabled).toBe(false);
+  });
   it('typed validation (#170): Enter also hardens an incomplete value', () => {
     const { app } = appForRun([]);
     app.activeTab().sql = 'SELECT {n:Float64}';

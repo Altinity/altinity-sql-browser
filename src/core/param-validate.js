@@ -20,7 +20,11 @@
 //   - `'valid'`      — accepted as-is.
 //   - `'invalid'`    — certainly rejected (or, for Int/UInt only, silently
 //                      wrapped by the server — see the range-check note
-//                      below); `reason` is a specific, actionable message.
+//                      below); `reason` is a specific, actionable message —
+//                      for Int/UInt, a syntax failure ('abc', '+5', '007')
+//                      gets a distinct, syntax-shaped reason from a range
+//                      failure ('256', '-129'), so the two don't read as the
+//                      same complaint (#170 review).
 //   - `'incomplete'` — a plausible mid-typing prefix (`'-'`, `'1e'`, a half
 //                      UUID): neutral while the field is focused, hardens to
 //                      `'invalid'` on blur/Enter/execute (the pipeline, not
@@ -56,6 +60,7 @@ function intBounds(signed, bits) {
 function validateIntUint(signed, bits, base, value) {
   const { min, max } = intBounds(signed, bits);
   const full = signed ? INT_FULL : UINT_FULL;
+  const rangeReason = `Expected ${base} from ${min} to ${max}`;
   if (full.test(value)) {
     const n = BigInt(value);
     // CRITICAL NUANCE (live-verified): an out-of-range value is ACCEPTED by
@@ -64,7 +69,7 @@ function validateIntUint(signed, bits, base, value) {
     // server strictness — it blocks a value the server would silently
     // corrupt into a different number, which the acceptance criteria call
     // out explicitly (#170).
-    if (n < min || n > max) return { status: 'invalid', reason: `Expected ${base} from ${min} to ${max}` };
+    if (n < min || n > max) return { status: 'invalid', reason: rangeReason };
     return { status: 'valid' };
   }
   // A lone sign is the one genuinely ambiguous typing prefix here — for Int
@@ -77,7 +82,23 @@ function validateIntUint(signed, bits, base, value) {
   // "incomplete" state needed for those (unlike Float/UUID below, digits
   // don't grow into something newly-invalid the way a lone '-' can resolve).
   if (value === '-') return { status: 'incomplete' };
-  return { status: 'invalid', reason: `Expected ${base} from ${min} to ${max}` };
+  // A UInt value that's otherwise a well-formed *signed* integer (e.g. '-1')
+  // is numerically out of range (below 0), not a syntax problem — keep the
+  // range-shaped reason so "-1 for a UInt8" reads as "too low", matching the
+  // in-range/out-of-range framing above, not "not a number".
+  if (!signed && INT_FULL.test(value)) return { status: 'invalid', reason: rangeReason };
+  // Everything else here (letters, decimals, exponents, a leading '+',
+  // leading zeros, underscores, hex, whitespace) can never become valid by
+  // appending more characters — it's a syntax failure, not a range one, so it
+  // gets a distinct, syntax-shaped reason (#170 review) rather than reusing
+  // the range message, which would misleadingly suggest '256' and 'abc' failed
+  // for the same reason.
+  return {
+    status: 'invalid',
+    reason: signed
+      ? 'Expected a whole number (digits only)'
+      : 'Expected a whole number (digits only, no minus sign)',
+  };
 }
 
 // ── Float32 / Float64 ────────────────────────────────────────────────────
