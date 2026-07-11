@@ -30,24 +30,27 @@ import { splitStatements, isRowReturning } from './sql-split.js';
 import { scanParamDeclarations } from './param-scan.js';
 import { parseParamType, conflictingTypes } from './param-type.js';
 import { serializeParamValue } from './param-serialize.js';
+import { materializeOptionalBlocks, countOptionalBlocks, ALL_ACTIVE } from './optional-blocks.js';
 
 export const BIND_POLICIES = ['row-returning', 'all'];
 
 // ── Stage seams ──────────────────────────────────────────────────────────────
-// Shipped as identity/unknown passes; the named issues replace them (or inject
-// richer implementations through the optional `stages` argument, which is also
-// how tests exercise the downstream classification today).
+// The two #165 materialization stages below are real (optional-blocks.js); the
+// #169/#170 stages are still identity/unknown passes replaced when those land.
+// The optional `stages` argument overrides any of them per call — which is also
+// how tests exercise the downstream classification today.
 
-/** #165's analysis materialization: every optional block retained. Identity
- *  until #165 lands. Pure. */
+/** #165's analysis materialization: every optional block retained, markers
+ *  stripped — the view all param discovery works on, so parameters inside
+ *  currently-inactive blocks stay discoverable. Pure. */
 export function analysisView(sql) {
-  return sql;
+  return materializeOptionalBlocks(sql, ALL_ACTIVE).sql;
 }
 
-/** #165's execution materialization: only *active* optional blocks retained
- *  (per the `active` map). Identity until #165 lands. Pure. */
-export function executionView(sql, active) { // eslint-disable-line no-unused-vars
-  return sql;
+/** #165's execution materialization: only *active* optional blocks retained,
+ *  per the `active` map (a block needs every one of its params active). Pure. */
+export function executionView(sql, active) {
+  return materializeOptionalBlocks(sql, active).sql;
 }
 
 /** #169's relative-value resolver (`-1h` → epoch seconds), on the wave's wall
@@ -85,7 +88,6 @@ const normVerdict = (v) => (typeof v === 'string' ? { state: v } : v);
  * @param {{analysisView?: Function}} [stages]
  */
 export function analyzeParameterizedSources(sources, stages = {}) {
-  const aView = stages.analysisView || analysisView;
   const fields = {};
   const fieldFor = (name) => fields[name] || (fields[name] = {
     declarations: [],
@@ -99,16 +101,36 @@ export function analyzeParameterizedSources(sources, stages = {}) {
     const errors = [];
     const bindPolicy = s.bindPolicy || 'row-returning';
     if (!BIND_POLICIES.includes(bindPolicy)) errors.push(`unknown bindPolicy "${s.bindPolicy}"`);
-    const statements = splitStatements(s.sql).map((sql, statement) => {
+    const stmts = splitStatements(s.sql);
+    // #165 rule 4: a statement living entirely inside an optional block is a
+    // comment-only fragment the splitter drops — surface that as a clear error
+    // instead of silently ignoring the hidden statement.
+    if (countOptionalBlocks(s.sql) !== stmts.reduce((n, t) => n + countOptionalBlocks(t), 0)) {
+      errors.push('optional block: a block cannot wrap a whole statement');
+    }
+    const statements = stmts.map((sql, statement) => {
       const bind = bindPolicy === 'all' || isRowReturning(sql);
-      const params = scanParamDeclarations(aView(sql));
+      // #165: only bound statements materialize. A non-row-returning statement
+      // passes through verbatim (rule 2) — its optional blocks stay the plain
+      // comments they are, invisible to the scanner, and never validated.
+      let scanSql = sql;
+      let outside = null;
+      if (bind) {
+        const mat = materializeOptionalBlocks(sql, ALL_ACTIVE);
+        for (const e of mat.errors) errors.push(e);
+        scanSql = stages.analysisView ? stages.analysisView(sql) : mat.sql;
+        // A param the raw scan sees sits outside every block (blocks are
+        // comments to it) → required in this source (rule 8); one visible only
+        // in the analysis view is confined to blocks → optional here (rule 9).
+        outside = new Set(scanParamDeclarations(sql).map((p) => p.name));
+      }
+      const params = scanParamDeclarations(scanSql);
       for (const p of params) {
         const f = fieldFor(p.name);
         f.declarations.push({ source: s.id, statement, type: p.type, bound: bind });
-        // v1 requiredness: every bound occurrence is required; `optionalIn`
-        // fills in when #165's optional blocks land (a param confined to an
-        // optional block is optional in that source).
-        if (bind && !f.requiredIn.includes(s.id)) f.requiredIn.push(s.id);
+        if (!bind) continue;
+        const bucket = outside.has(p.name) ? f.requiredIn : f.optionalIn;
+        if (!bucket.includes(s.id)) bucket.push(s.id);
       }
       return { sql, bind, params };
     });
@@ -117,6 +139,10 @@ export function analyzeParameterizedSources(sources, stages = {}) {
   });
   const diagnostics = [];
   for (const [name, f] of Object.entries(fields)) {
+    // Required wins per source (#165): a param required outside a block in ANY
+    // statement of a source is required there, even if it also sits inside
+    // other blocks of the same source.
+    f.optionalIn = f.optionalIn.filter((id) => !f.requiredIn.includes(id));
     f.requiredAnywhere = f.requiredIn.length > 0;
     f.optionalAnywhere = f.optionalIn.length > 0;
     const types = conflictingTypes(f.declarations);
@@ -151,6 +177,10 @@ const VERDICT_RANK = { ok: 1, incomplete: 2, invalid: 3 };
  * - `errors` (template/serialization/config) are neither `missing` nor
  *   `invalid`; all three make the source not `runnable`, and none of them
  *   ever blocks a sibling source.
+ * - `active` (#165) is the optional-block activation map (see
+ *   `effectiveFilterActive` in state.js): inactive blocks drop out of the
+ *   execution view, so their params are never bound; an *active* param whose
+ *   stored value is empty binds a real empty string instead of gating.
  * - Field states: `missing` (empty but required somewhere in this batch's
  *   execution views) | `inactive` (does not participate in any bound execution
  *   statement) | `incomplete` (display-only; hardens to `invalid` under
@@ -200,12 +230,16 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
         seen.add(p.name);
         boundAnywhere.add(p.name);
         const type = parseParamType(p.type);
-        const rawValue = values[p.name];
-        if (emptyValue(rawValue)) {
+        const stored = values[p.name];
+        if (emptyValue(stored) && !active[p.name]) {
           if (!missing.includes(p.name)) missing.push(p.name);
           missingAnywhere.add(p.name);
           continue;
         }
+        // An explicitly-activated empty value binds as a real empty string
+        // (#165) — distinct from inactive/missing; text controls keep blank ⇒
+        // inactive, so an empty required param still gates as missing above.
+        const rawValue = emptyValue(stored) ? '' : stored;
         const resolvedValue = resolve(rawValue, type, wallNowMs);
         const verdict = normVerdict(validate(resolvedValue, type, validationMode));
         const hardInvalid = verdict.state === 'invalid'
@@ -251,7 +285,7 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
 
   const fields = {};
   for (const name of Object.keys(analysis.fields)) {
-    if (emptyValue(values[name])) {
+    if (emptyValue(values[name]) && !active[name]) {
       fields[name] = { state: missingAnywhere.has(name) ? 'missing' : 'inactive' };
     } else if (!boundAnywhere.has(name)) {
       fields[name] = { state: 'inactive' };
@@ -276,4 +310,38 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
  */
 export function mergedSourceArgs(source) {
   return Object.assign({}, ...source.statements.map((s) => s.args));
+}
+
+/**
+ * The execution text of a whole prepared source as one request body: its
+ * materialized statements re-joined on the splitter's separator. `fallback`
+ * (the caller's original SQL) is returned for an empty source (comments-only
+ * SQL yields no statements). Callers that want byte-identical passthrough for
+ * template-free SQL should only swap this in when `hasOptionalBlocks` says the
+ * source actually is a template. Pure.
+ * @param {{statements: {sql: string}[]}} source a prepared source
+ * @param {string} [fallback]
+ */
+export function mergedSourceSql(source, fallback = '') {
+  return source.statements.map((s) => s.sql).join(';\n') || fallback;
+}
+
+/**
+ * The ordered control list a variables strip / dashboard filter bar renders
+ * from an analysis (#165): one entry per field with at least one *bound*
+ * declaration (a param confined to DDL — e.g. a parameterized view — is never
+ * substituted, so it gets no input), in first-appearance order. `type` is the
+ * first bound declaration's; `optional` is true when no source requires the
+ * param (it appears only inside optional blocks wherever it binds). Pure.
+ * @param {ReturnType<typeof analyzeParameterizedSources>} analysis
+ * @returns {{name: string, type: string, optional: boolean}[]}
+ */
+export function fieldControls(analysis) {
+  const out = [];
+  for (const [name, f] of Object.entries(analysis.fields)) {
+    const bound = f.declarations.find((d) => d.bound);
+    if (!bound) continue;
+    out.push({ name, type: bound.type, optional: !f.requiredAnywhere });
+  }
+  return out;
 }

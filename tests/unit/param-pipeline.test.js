@@ -8,15 +8,23 @@ import {
   analyzeParameterizedSources,
   prepareParameterizedBatch,
   mergedSourceArgs,
+  mergedSourceSql,
+  fieldControls,
 } from '../../src/core/param-pipeline.js';
 import { paramArgs } from '../../src/core/query-params.js';
 
 const src = (id, sql, over = {}) => ({ id, label: id, kind: 'tab', sql, ...over });
 
-describe('stage seams (identity/unknown passes until #165/#169/#170)', () => {
-  it('analysisView / executionView are identity', () => {
+describe('stage functions (#165 real; #169/#170 identity/unknown until they land)', () => {
+  it('analysisView / executionView are identity for SQL without optional blocks', () => {
     expect(analysisView('SELECT 1')).toBe('SELECT 1');
     expect(executionView('SELECT 1', { a: true })).toBe('SELECT 1');
+  });
+  it('analysisView strips markers keeping every block; executionView keeps only active blocks (#165)', () => {
+    const sql = 'SELECT 1 /*[ AND a = {a:String} ]*/';
+    expect(analysisView(sql)).toBe('SELECT 1  AND a = {a:String} ');
+    expect(executionView(sql, {})).toBe('SELECT 1 ');
+    expect(executionView(sql, { a: true })).toBe('SELECT 1  AND a = {a:String} ');
   });
   it('resolveRelativeValue is identity; validateParamValue returns unknown', () => {
     expect(resolveRelativeValue('-1h', { base: 'DateTime' }, 123)).toBe('-1h');
@@ -98,13 +106,67 @@ describe('analyzeParameterizedSources', () => {
     expect(a.diagnostics[0]).toMatchObject({ kind: 'type-conflict', name: 'x' });
   });
 
-  it('runs the analysis materialization seam so inactive-block params stay discoverable (#165)', () => {
-    // A stand-in #165 analysisView: reveal the /*[ … ]*/ optional block.
-    const stages = { analysisView: (sql) => sql.replace('/*[', '').replace(']*/', '') };
+  it('discovers inactive-block params on the analysis materialization (#165): optional, not required', () => {
     const a = analyzeParameterizedSources(
-      [src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')], stages);
+      [src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')]);
     expect(a.fields.a).toBeDefined();
-    expect(a.fields.a.requiredIn).toEqual(['A']);
+    expect(a.fields.a.optionalIn).toEqual(['A']);
+    expect(a.fields.a.requiredIn).toEqual([]);
+    expect(a.fields.a.optionalAnywhere).toBe(true);
+    expect(a.fields.a.requiredAnywhere).toBe(false);
+  });
+
+  it('an injected stages.analysisView still overrides the built-in materialization', () => {
+    const stages = { analysisView: (sql) => sql.replace('{hidden}', '{a:String}') };
+    const a = analyzeParameterizedSources([src('A', 'SELECT {hidden} FROM t')], stages);
+    expect(a.fields.a.declarations).toHaveLength(1);
+    expect(a.fields.a.optionalIn).toEqual(['A']); // not visible to the raw scan → optional
+  });
+
+  it('#165 requiredness: required in one source, optional in another; required wins within a source', () => {
+    const a = analyzeParameterizedSources([
+      src('req', 'SELECT * FROM t WHERE d = {d:String}'),
+      src('opt', 'SELECT * FROM u WHERE 1 /*[ AND d = {d:String} ]*/'),
+      src('both', 'SELECT {d:String} FROM v /*[ WHERE x = {d:String} ]*/'),
+    ]);
+    expect(a.fields.d.requiredIn).toEqual(['req', 'both']);
+    expect(a.fields.d.optionalIn).toEqual(['opt']); // 'both': required outside a block wins
+    expect(a.fields.d.requiredAnywhere).toBe(true);
+    expect(a.fields.d.optionalAnywhere).toBe(true);
+  });
+
+  it('#165 cross-statement reconciliation: block-only in one statement, required in another → required', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SELECT 1 /*[ WHERE d = {d:String} ]*/; SELECT {d:String}'),
+    ]);
+    expect(a.fields.d.requiredIn).toEqual(['A']);
+    expect(a.fields.d.optionalIn).toEqual([]);
+  });
+
+  it('#165 rule 2: a non-row-returning statement is never materialized — its blocks stay comments', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'CREATE VIEW v AS SELECT 1 /*[ WHERE d = {d:String} ]*/'),
+    ]);
+    expect(a.fields.d).toBeUndefined(); // invisible: a plain comment in DDL
+    expect(a.sources[0].errors).toEqual([]); // and never validated (rule 2)
+  });
+
+  it('#165 template errors are per-source errors', () => {
+    const a = analyzeParameterizedSources([
+      src('bad', 'SELECT 1 /*[ AND 1 = 1 ]*/'),
+      src('ok', 'SELECT 1'),
+    ]);
+    expect(a.sources[0].errors[0]).toContain('at least one {name:Type} parameter');
+    expect(a.sourceErrors.bad).toHaveLength(1);
+    expect(a.sources[1].errors).toEqual([]);
+  });
+
+  it('#165 rule 4: a whole statement hidden inside a block is a clear error, not a silent drop', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SELECT 1;\n/*[ SELECT {a:String} ]*/'),
+    ]);
+    expect(a.sources[0].errors).toEqual(['optional block: a block cannot wrap a whole statement']);
+    expect(a.sources[0].statements).toHaveLength(1); // the visible statement still analyzed
   });
 });
 
@@ -236,23 +298,93 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
     expect(snap).toMatchObject({ rawValue: '1', resolvedValue: '1:resolved', serializedValue: '1:resolved' });
   });
 
-  it('execution view (#165 seam) drops inactive blocks: their params are not bound, not missing', () => {
-    const stages = {
-      analysisView: (sql) => sql.replace('/*[', '').replace(']*/', ''),
-      executionView: (sql, active) => (active.a
-        ? sql.replace('/*[', '').replace(']*/', '')
-        : sql.replace(/\/\*\[[\s\S]*\]\*\//, '')),
-    };
-    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')], stages);
-    expect(a.fields.a.requiredIn).toEqual(['A']); // discoverable in the analysis view
-    const off = prepareParameterizedBatch(a, { values: {}, active: {}, stages });
+  it('execution view (#165) drops inactive blocks: their params are not bound, not missing', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')]);
+    expect(a.fields.a.optionalIn).toEqual(['A']); // discoverable in the analysis view
+    const off = prepareParameterizedBatch(a, { values: {}, active: {} });
     expect(off.sources[0].missing).toEqual([]); // dropped from the execution view → not required
     expect(off.sources[0].runnable).toBe(true);
     expect(off.sources[0].statements[0].sql).toBe('SELECT * FROM t ');
+    expect(off.sources[0].statements[0].boundParams).toEqual([]); // never bound
+    expect(off.sources[0].statements[0].args).toEqual({});
     expect(off.fields.a.state).toBe('inactive');
-    const on = prepareParameterizedBatch(a, { values: { a: 'x' }, active: { a: true }, stages });
+    const on = prepareParameterizedBatch(a, { values: { a: 'x' }, active: { a: true } });
+    expect(on.sources[0].statements[0].sql).toBe('SELECT * FROM t  WHERE a = {a:String} ');
     expect(on.sources[0].statements[0].args).toEqual({ param_a: 'x' });
     expect(on.fields.a.state).toBe('ok');
+  });
+
+  it('an injected stages.executionView still overrides the built-in materialization', () => {
+    const stages = { executionView: (sql) => sql.replace('t', 'u') };
+    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t')]);
+    const p = prepareParameterizedBatch(a, { stages });
+    expect(p.sources[0].statements[0].sql).toBe('SELECT * FROM u');
+  });
+
+  it('#165: active:false with a stale stored value → block omitted, the dormant value is inert', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')]);
+    const p = prepareParameterizedBatch(a, { values: { a: 'stale' }, active: { a: false } });
+    expect(p.sources[0].statements[0].sql).toBe('SELECT * FROM t ');
+    expect(p.sources[0].statements[0].args).toEqual({});
+    expect(p.sources[0].runnable).toBe(true);
+    expect(p.fields.a.state).toBe('inactive'); // value present but nowhere bound
+  });
+
+  it("#165: active:true with value:'' → block retained and the empty string binds", () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t /*[ WHERE a = {a:String} ]*/')]);
+    const p = prepareParameterizedBatch(a, { values: { a: '' }, active: { a: true }, validationMode: 'execute' });
+    expect(p.sources[0].statements[0].sql).toBe('SELECT * FROM t  WHERE a = {a:String} ');
+    expect(p.sources[0].statements[0].args).toEqual({ param_a: '' }); // a real empty-string value
+    expect(p.sources[0].missing).toEqual([]);
+    expect(p.sources[0].runnable).toBe(true);
+    expect(p.fields.a.state).toBe('ok');
+    // …and an absent stored value under explicit activation binds '' too.
+    const noValue = prepareParameterizedBatch(a, { values: {}, active: { a: true } });
+    expect(noValue.sources[0].statements[0].boundParams[0]).toMatchObject({ rawValue: '', serializedValue: '' });
+  });
+
+  it('#165: a required (outside-block) param stays required — blank still gates', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SELECT * FROM t WHERE tenant = {tenant:UInt64} /*[ AND d = {d:String} ]*/'),
+    ]);
+    const p = prepareParameterizedBatch(a, { values: {}, active: {} });
+    expect(p.sources[0].missing).toEqual(['tenant']);
+    expect(p.sources[0].runnable).toBe(false);
+    expect(p.fields.tenant.state).toBe('missing');
+    expect(p.fields.d.state).toBe('inactive');
+    const filled = prepareParameterizedBatch(a, { values: { tenant: '7' }, active: {} });
+    expect(filled.sources[0].statements[0].args).toEqual({ param_tenant: '7' }); // no param_d
+    expect(filled.sources[0].runnable).toBe(true);
+  });
+
+  it('#165 first load: no values, no activation entries — optional params default inactive, nothing throws', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT 1 /*[ AND d = {d:String} ]*/')]);
+    const p = prepareParameterizedBatch(a); // no opts at all
+    expect(p.sources[0].runnable).toBe(true);
+    expect(p.fields.d.state).toBe('inactive');
+  });
+
+  it('#165: a template error makes the source not runnable, sql passes through verbatim', () => {
+    const sql = 'SELECT 1 /*[ broken';
+    const a = analyzeParameterizedSources([src('A', sql)]);
+    const p = prepareParameterizedBatch(a, { values: {}, active: {} });
+    expect(p.sources[0].errors[0]).toContain('unbalanced');
+    expect(p.sources[0].runnable).toBe(false);
+    expect(p.sources[0].statements[0].sql).toBe(sql);
+  });
+
+  it('#165 regression: nested array literals (with and without params) are untouched end-to-end', () => {
+    const a = analyzeParameterizedSources([
+      src('plain', 'SELECT [[1, 2], [3, 4]]'),
+      src('param', 'SELECT [[{a:UInt8}, 2], [3, 4]]'),
+    ]);
+    expect(a.sources[0].errors).toEqual([]);
+    expect(a.fields.a.requiredIn).toEqual(['param']); // an ordinary required param
+    const p = prepareParameterizedBatch(a, { values: { a: '9' }, active: {} });
+    expect(p.sources[0].statements[0].sql).toBe('SELECT [[1, 2], [3, 4]]');
+    expect(p.sources[1].statements[0].sql).toBe('SELECT [[{a:UInt8}, 2], [3, 4]]');
+    expect(p.sources[1].statements[0].args).toEqual({ param_a: '9' });
+    expect(p.sources.map((s) => s.runnable)).toEqual([true, true]);
   });
 
   it("validationMode: 'input' keeps incomplete display-only; 'execute' hardens it to invalid", () => {
@@ -345,5 +477,41 @@ describe('integration parity + regression sweep', () => {
     const a = analyzeParameterizedSources([src('A', 'SELECT {a:Array(UInt64)}; SELECT {a:Array(String)}, {b:String}')]);
     const p = prepareParameterizedBatch(a, { values: { a: ['1'], b: 'x' } });
     expect(mergedSourceArgs(p.sources[0])).toEqual({ param_a: "['1']", param_b: 'x' });
+  });
+
+  it('mergedSourceSql joins the materialized statements; falls back for an empty source', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SET x = 1; SELECT 1 /*[ AND d = {d:String} ]*/'),
+      src('B', '-- comments only'),
+    ]);
+    const p = prepareParameterizedBatch(a, { values: {}, active: {} });
+    expect(mergedSourceSql(p.sources[0])).toBe('SET x = 1;\nSELECT 1 ');
+    expect(mergedSourceSql(p.sources[1], 'FALLBACK')).toBe('FALLBACK');
+    expect(mergedSourceSql(p.sources[1])).toBe('');
+  });
+});
+
+describe('fieldControls (#165 — the variables strip / filter bar list)', () => {
+  it('lists bound fields in first-appearance order with the optional flag', () => {
+    const a = analyzeParameterizedSources([
+      src('t1', 'SELECT {year:UInt16} FROM t /*[ WHERE d = {d:String} ]*/'),
+      src('t2', 'SELECT {region:String} FROM u'),
+    ]);
+    expect(fieldControls(a)).toEqual([
+      { name: 'year', type: 'UInt16', optional: false },
+      { name: 'd', type: 'String', optional: true },
+      { name: 'region', type: 'String', optional: false },
+    ]);
+  });
+  it('excludes a param confined to DDL (never substituted → no input)', () => {
+    const a = analyzeParameterizedSources([src('A', 'CREATE VIEW v AS SELECT {x:String}')]);
+    expect(fieldControls(a)).toEqual([]);
+  });
+  it('a param required anywhere is not optional, even if block-only elsewhere', () => {
+    const a = analyzeParameterizedSources([
+      src('opt', 'SELECT 1 /*[ WHERE d = {d:String} ]*/'),
+      src('req', 'SELECT {d:String}'),
+    ]);
+    expect(fieldControls(a)).toEqual([{ name: 'd', type: 'String', optional: false }]);
   });
 });

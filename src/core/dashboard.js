@@ -9,7 +9,6 @@
 
 import { autoChart, chartCfgValid, cloneChartCfg, normalizeChartCfg } from './chart-data.js';
 import { withTrailingFormat } from './format.js';
-import { readStatementParams } from './query-params.js';
 
 /**
  * True on the standalone dashboard route (a path ending in `/dashboard`,
@@ -85,28 +84,10 @@ export function parseJsonResult(json) {
   };
 }
 
-/**
- * The union of every `{name:Type}` parameter referenced by any favorite's
- * row-returning SQL (#149 D3): unique by name, first-appearance order
- * (favorite order, then in-SQL order — `readStatementParams`' own order per
- * favorite). Drives which fields the dashboard's global filter bar renders;
- * a favorite with no row-returning statement contributes nothing. Pure.
- * @param {{sql: string}[]} favorites
- * @returns {{name: string, type: string}[]}
- */
-export function dashboardParams(favorites) {
-  const out = [];
-  const seen = new Set();
-  for (const fav of favorites || []) {
-    for (const p of readStatementParams(fav.sql)) {
-      if (!seen.has(p.name)) {
-        seen.add(p.name);
-        out.push(p);
-      }
-    }
-  }
-  return out;
-}
+// (The filter bar's field discovery moved to the parameter pipeline in #165:
+// `fieldControls(analysis)` in param-pipeline.js replaces the old
+// `dashboardParams(favorites)` union — the analysis view also sees params
+// confined to optional blocks, which readStatementParams never could.)
 
 /**
  * Classify a favorite's result into a dashboard tile. In D1:

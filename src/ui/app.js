@@ -8,11 +8,13 @@ import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart, normalizeRowLimit,
-  MOBILE_BREAKPOINT_PX,
+  MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
-import { readStatementParams, missingValues } from '../core/query-params.js';
-import { analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs } from '../core/param-pipeline.js';
+import {
+  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, fieldControls,
+} from '../core/param-pipeline.js';
+import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
@@ -147,6 +149,8 @@ export function createApp(env = {}) {
   app.savePref = (name, value) => saveStr(KEYS[name], String(value));
   // Persist the shared query-variable values (#134) after each edit.
   app.saveVarValues = () => saveJSON(KEYS.varValues, app.state.varValues);
+  // Persist the optional-block activation map (#165) alongside varValues.
+  app.saveFilterActive = () => saveJSON(KEYS.filterActive, app.state.filterActive);
   app.FileReader = env.FileReader || win.FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
@@ -545,18 +549,32 @@ export function createApp(env = {}) {
   function sessionParamsFor(tab, sqls) {
     return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
-  // Analyze + prepare `sql` as the workbench's single parameterized source
-  // (#173): one call per SQL string per wave, drawing values from the shared
-  // varValues. Returns the prepared source ({statements, missing, invalid,
-  // errors, runnable}); args for a request come from its statements (or
-  // mergedSourceArgs when the SQL ships as one request).
-  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
-    const analysis = analyzeParameterizedSources([
+  // The workbench SQL as the pipeline's single parameterized source (#173).
+  function tabAnalysis(sql) {
+    return analyzeParameterizedSources([
       { id: 'tab', label: 'editor tab', kind: 'tab', sql, bindPolicy: 'row-returning' },
     ]);
-    return prepareParameterizedBatch(analysis, {
-      values: app.state.varValues, active: {}, wallNowMs, validationMode,
+  }
+  // The optional-block activation map (#165): explicit filterActive entries
+  // win; params without one derive activation from their stored value.
+  const activeMap = () => effectiveFilterActive(app.state.varValues, app.state.filterActive);
+  // Analyze + prepare `sql` as the workbench's single parameterized source
+  // (#173): one call per SQL string per wave, drawing values from the shared
+  // varValues (+ the #165 activation map). Returns the prepared source
+  // ({statements, missing, invalid, errors, runnable}); args for a request come
+  // from its statements (or mergedSourceArgs when the SQL ships as one
+  // request), and each statement's `sql` is its execution view (#165) —
+  // byte-identical for SQL without optional blocks.
+  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
+    return prepareParameterizedBatch(tabAnalysis(sql), {
+      values: app.state.varValues, active: activeMap(), wallNowMs, validationMode,
     }).sources[0];
+  }
+  // The execution text of one statement (#165): only active optional blocks
+  // retained, markers stripped — byte-identical for SQL without blocks. Follows
+  // the #134 bind gate: a non-row-returning statement passes through verbatim.
+  function execStatementSql(stmt) {
+    return isRowReturning(stmt) ? executionView(stmt, activeMap()) : stmt;
   }
   // Block execution while any {name:Type} variable in the active tab is unfilled
   // or invalid, or while its value can't serialize (e.g. an array value against
@@ -600,13 +618,19 @@ export function createApp(env = {}) {
     if (opts && opts.explain) app.state.forceExplain = true;
     else if (!(opts && opts.explainView != null)) app.state.forceExplain = false;
 
+    // Every downstream decision + the request itself operate on the statement's
+    // execution view (#165): inactive optional blocks removed, markers
+    // stripped — byte-identical to srcSql for SQL without blocks. History still
+    // records the template (srcSql / tab.sql).
+    const execSql = execStatementSql(srcSql);
+
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
     // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
     // the five EXPLAIN views; everything else streams structured (Table).
-    const explicitFmt = detectSqlFormat(srcSql);
-    const parsed = explicitFmt ? null : parseExplain(srcSql);
+    const explicitFmt = detectSqlFormat(execSql);
+    const parsed = explicitFmt ? null : parseExplain(execSql);
     const explainMode = !explicitFmt && (parsed != null || app.state.forceExplain);
-    let runSql = srcSql;
+    let runSql = execSql;
     let fmt;
     let explainView = null;
     if (explainMode) {
@@ -619,10 +643,10 @@ export function createApp(env = {}) {
         || (parsed && detectExplainView(parsed))
         || 'explain';
       fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
-      const inner = parsed ? parsed.inner : srcSql;
+      const inner = parsed ? parsed.inner : execSql;
       const explainOpts = { pretty: supportsExplainPretty(app.state.serverVersion) };
       runSql = explainView === 'explain' && parsed
-        ? srcSql
+        ? execSql
         : buildExplainQuery(inner, explainView, explainOpts);
     } else {
       fmt = explicitFmt || 'Table';
@@ -741,6 +765,11 @@ export function createApp(env = {}) {
     try {
       for (let i = 0; i < statements.length; i++) {
         const stmt = statements[i];
+        // The wire text is the pipeline's per-statement execution view (#165):
+        // inactive optional blocks removed for row-returning statements,
+        // verbatim (byte-identical) for everything else and for block-free SQL.
+        // The result grid keeps showing the authored `stmt`.
+        const execStmt = paramSrc.statements[i].sql;
         const rowReturning = isRowReturning(stmt);
         // Over-fetch SELECTs by one past the display cap so a truncated result is
         // detectable (at exactly the cap it isn't).
@@ -756,7 +785,7 @@ export function createApp(env = {}) {
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
         app.state.runQueryId = uid('q');
-        let out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
+        let out = await attemptStatement(execStmt, { ...opts, queryId: app.state.runQueryId });
         // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
         // rejected before running → safe to retry (any statement). A connection
         // reset (fetch TypeError → "Network error") leaves it UNKNOWN whether the
@@ -766,7 +795,7 @@ export function createApp(env = {}) {
         if (!out.aborted && (locked || (out.transient && rowReturning))) {
           await sleep(retryMs);
           app.state.runQueryId = uid('q');
-          out = await attemptStatement(stmt, { ...opts, queryId: app.state.runQueryId });
+          out = await attemptStatement(execStmt, { ...opts, queryId: app.state.runQueryId });
         }
         if (out.aborted) { aborted = true; break; }
         // A connection reset on a non-idempotent statement: don't silently retry —
@@ -862,17 +891,21 @@ export function createApp(env = {}) {
   // Repaint the query-variable strip (#134) for the active tab. Values live in
   // the shared, persisted `state.varValues` (keyed by variable name), so a value
   // typed once is reused by every query that references the same variable and is
-  // restored on reload. Inputs rebuild only when the detected {name:Type} set
-  // changes (signature guard) — so typing in the SQL editor doesn't thrash the
-  // row or steal focus, and switching between tabs with the same variables keeps
-  // the (already-correct, shared) values in place. Always re-syncs the Run
-  // button's disabled/tooltip state.
+  // restored on reload. The listed set comes from the all-active analysis view
+  // (#165): a param confined to /*[ ]*/ optional blocks stays listed — marked
+  // optional (blank allowed; blank keeps its blocks inactive) — while a param
+  // outside blocks stays required. Typing keeps `state.filterActive` in sync
+  // (blank ⇒ inactive, typed ⇒ active). Inputs rebuild only when the detected
+  // {name:Type} set changes (signature guard) — so typing in the SQL editor
+  // doesn't thrash the row or steal focus, and switching between tabs with the
+  // same variables keeps the (already-correct, shared) values in place. Always
+  // re-syncs the Run button's disabled/tooltip state.
   function renderVarStrip() {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
-    const vars = tab ? readStatementParams(tab.sql) : [];
-    const sig = vars.map((v) => v.name + ':' + v.type).join(',');
+    const vars = tab ? fieldControls(tabAnalysis(tab.sql)) : [];
+    const sig = vars.map((v) => v.name + ':' + v.type + (v.optional ? '?' : '')).join(',');
     if (sig !== app.dom.varStripSig) {
       app.dom.varStripSig = sig;
       if (!vars.length) {
@@ -884,18 +917,24 @@ export function createApp(env = {}) {
           const input = h('input', {
             type: 'text', class: 'var-input',
             value: app.state.varValues[v.name] || '',
-            placeholder: v.type, title: v.name + ': ' + v.type, 'aria-label': v.name,
+            placeholder: v.type,
+            title: v.name + ': ' + v.type + (v.optional ? ' — optional: blank leaves its filter block out' : ''),
+            'aria-label': v.name,
             oninput: (e) => {
               app.state.varValues[v.name] = e.target.value;
+              // Text controls sync activation with the value (#165).
+              app.state.filterActive[v.name] = e.target.value !== '';
               app.saveVarValues();
-              setRunBtn(app.state.running.value, missingValues(vars, app.state.varValues));
+              app.saveFilterActive();
+              setRunBtn(app.state.running.value);
             },
           });
-          return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, v.name), input);
+          return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
+            h('span', { class: 'var-name' }, v.name), input);
         }));
       }
     }
-    setRunBtn(app.state.running.value, missingValues(vars, app.state.varValues));
+    setRunBtn(app.state.running.value);
   }
   app.renderVarStrip = renderVarStrip;
   // The Export button reflects both browser support (canExport) and whether an
@@ -944,19 +983,32 @@ export function createApp(env = {}) {
   async function formatQuery() {
     const raw = app.activeTab().sql || '';
     if (!raw.trim()) return;
+    const stmts = splitStatements(raw);
+    // #165 Format policy: a statement containing /*[ ]*/ optional blocks is
+    // never round-tripped through server-side formatQuery() — it would drop or
+    // mangle the markers, silently destroying the template. Skip it with a
+    // notice; other statements in a script still format normally.
+    if (stmts.length <= 1 && hasOptionalBlocks(raw)) {
+      flashToast('Statement contains optional blocks — not formatted', { document: doc });
+      return;
+    }
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     const tab = app.activeTab();
-    const stmts = splitStatements(raw);
     setFmtBtn(true); // formatting a script is one request per statement — show busy
     try {
       if (stmts.length > 1) {
         // Multi-statement: format each (best-effort — keep the original text for any
-        // statement that won't format, like insertCreate), then reassemble with a
-        // `;` and a blank line between statements.
-        const formatted = await Promise.all(stmts.map((s) => formatOne(s).catch(() => s)));
+        // statement that won't format, like insertCreate; skip a template, #165),
+        // then reassemble with a `;` and a blank line between statements.
+        const skipped = stmts.filter((s) => hasOptionalBlocks(s)).length;
+        const formatted = await Promise.all(stmts.map((s) => (hasOptionalBlocks(s) ? s : formatOne(s).catch(() => s))));
         app.editor.replaceDocument(withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
         clearFormatError();
+        if (skipped) {
+          flashToast(skipped + (skipped === 1 ? ' statement contains' : ' statements contain')
+            + ' optional blocks — not formatted', { document: doc });
+        }
         return;
       }
       // Single statement: send the raw (untrimmed) SQL so a syntax error's reported
@@ -1260,7 +1312,8 @@ export function createApp(env = {}) {
     if (app.state.exporting.value) return;
     if (!app.canExport()) return; // aria-disabled button; defensive guard
     const tab = app.activeTab();
-    const { sql, format } = prepareExportSql(sqlInput);
+    // Export streams the execution view (#165) — identical bytes without blocks.
+    const { sql, format } = prepareExportSql(execStatementSql(sqlInput));
     if (!sql) { flashToast('Nothing to export', { document: doc }); return; }
     const { ext, mime } = formatFileMeta(format);
 
@@ -1459,7 +1512,10 @@ export function createApp(env = {}) {
       renderResults(app);
       for (const e of entries) {
         if (exportScriptCancelled) { e.status = 'skipped'; continue; }
-        const { sql, format } = prepareExportSql(e.sql);
+        // Wire text = the pipeline's per-statement execution view (#165);
+        // verbatim for effect/DDL statements and for block-free SQL.
+        const execStmt = paramSrc.statements[e.i].sql;
+        const { sql, format } = prepareExportSql(execStmt);
         // Per-statement prepared args (#134/#173): the pipeline binds only
         // row-returning statements, so an effect/DDL statement (incl. CREATE
         // VIEW) is sent with its {name:Type} placeholders intact.
@@ -1472,7 +1528,7 @@ export function createApp(env = {}) {
         renderResults(app);
         try {
           if (e.type !== 'rows') {
-            const out = await ch.runQuery(chCtx, e.sql,
+            const out = await ch.runQuery(chCtx, execStmt,
               { format: 'TSV', signal, queryId: exportScriptQueryId, params });
             if (out.error != null) throw new Error(out.error);
             e.status = 'ok';
@@ -1686,9 +1742,10 @@ export function createApp(env = {}) {
   // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
   // server-side by queryDashboardTile), FORMAT JSON, transformed to the
   // array-row shape renderChart wants. `params` are the tile's prepared
-  // `param_<name>` args from the dashboard's per-wave batch (#149 D3/#173);
-  // when omitted (a standalone call) they are prepared here from the shared
-  // `state.varValues`, mirroring the workbench's run(). Returns
+  // `param_<name>` args from the dashboard's per-wave batch (#149 D3/#173) —
+  // the dashboard then passes `sql` already materialized (#165); when omitted
+  // (a standalone call) both are prepared here from the shared
+  // `state.varValues`/`state.filterActive`, mirroring the workbench's run(). Returns
   // { columns, rows, meta } on success or { error } on failure. The token is
   // resolved up front by ensureFreshToken (above), so this does not itself
   // drive sign-out.
@@ -1701,8 +1758,16 @@ export function createApp(env = {}) {
       // cheap and keeps runTile usable on its own.
       await ensureConfig();
       if (!(await getToken())) return { error: 'Not signed in' };
-      const args = params || mergedSourceArgs(prepareTabSource(sql, wallNow()));
-      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), undefined, args);
+      let text = sql;
+      let args = params;
+      if (!args) {
+        const src = prepareTabSource(sql, wallNow());
+        args = mergedSourceArgs(src);
+        // #165: swap in the materialized execution text only when the SQL
+        // actually is a template — block-free favorites keep their exact bytes.
+        if (hasOptionalBlocks(sql)) text = mergedSourceSql(src, sql);
+      }
+      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(text), undefined, args);
       return parseJsonResult(json);
     } catch (e) {
       return { error: String((e && e.message) || e) };

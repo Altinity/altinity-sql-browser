@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
-  KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId,
+  KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId, effectiveFilterActive,
   saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, filterSaved, filterHistory, importSaved,
   deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabChart,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
@@ -43,6 +43,8 @@ describe('createState', () => {
     expect(s.libraryDirty.value).toBe(false);
     expect(s.dashLayout).toBe('arrange');
     expect(s.dashCols).toBe(3);
+    expect(s.varValues).toEqual({});
+    expect(s.filterActive).toEqual({}); // #165: own key, defaults empty
   });
   it('reads + clamps persisted prefs', () => {
     const s = createState(reader({
@@ -57,6 +59,8 @@ describe('createState', () => {
       [KEYS.libraryName]: 'My team queries',
       [KEYS.dashLayout]: 'report',
       [KEYS.dashCols]: '2',
+      [KEYS.varValues]: { d: 'stale' },
+      [KEYS.filterActive]: { d: false },
     }));
     expect(s.theme).toBe('light');
     expect(s.libraryName.value).toBe('My team queries');
@@ -69,12 +73,29 @@ describe('createState', () => {
     expect(s.sidePanel.value).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);
+    expect(s.varValues).toEqual({ d: 'stale' });
+    expect(s.filterActive).toEqual({ d: false }); // restored alongside varValues (#165)
   });
   it('defaults the reader to storage helpers', () => {
     vi.stubGlobal('localStorage', memStore({ [KEYS.theme]: 'light' }));
     const s = createState();
     expect(s.tabs.value[0].id).toBe('t1');
     expect(s.theme).toBe('light');
+  });
+});
+
+describe('effectiveFilterActive (#165)', () => {
+  it('an explicit filterActive entry wins over the stored value', () => {
+    expect(effectiveFilterActive({ d: 'stale' }, { d: false })).toEqual({ d: false });
+    expect(effectiveFilterActive({ d: '' }, { d: true })).toEqual({ d: true }); // active empty string
+    expect(effectiveFilterActive({ d: 'x' }, { d: 1 })).toEqual({ d: true }); // coerced to boolean
+  });
+  it('a param with no entry derives activation from value non-emptiness (pre-#165 persistence)', () => {
+    expect(effectiveFilterActive({ a: 'x', b: '', c: null }, {})).toEqual({ a: true, b: false, c: false });
+  });
+  it('first load: no values, no entries — empty map, nothing throws', () => {
+    expect(effectiveFilterActive()).toEqual({});
+    expect(effectiveFilterActive({}, { d: true })).toEqual({ d: true });
   });
 });
 
