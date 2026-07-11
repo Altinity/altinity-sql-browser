@@ -20,58 +20,26 @@
 //     views work.
 
 import { splitStatements, isRowReturning } from './sql-split.js';
-import { scanSpans } from './sql-spans.js';
-
-// A parameter name is a bare SQL identifier; the type is a data-type expression
-// that starts with a letter (String, Nullable(String), Array(UInt8),
-// Map(String, UInt8), Decimal(10, 2), …). Requiring a letter-led type is what
-// tells a real `{db:String}` apart from a map literal like `{1:2}` / `{'k':v}`
-// (whose right-hand side is a value, not a type name). A type carries no braces
-// of its own, so a placeholder is delimited by the next `}` — except one inside
-// a quoted portion of the type (e.g. `Enum8('}' = 1)`), which the scanner marks
-// opaque so it is skipped.
-const PARAM_RE = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z].*)$/;
+import { scanParamDeclarations } from './param-scan.js';
 
 /**
  * Detect ClickHouse `{name:Type}` parameters in `sql`, in first-appearance
  * order, unique by name (the first type seen wins). Placeholders inside
- * string / backtick literals and -- / # / block comments are skipped. Pure.
+ * string / backtick literals and -- / # / block comments are skipped. A
+ * compatibility wrapper over `scanParamDeclarations` (param-scan.js, #173),
+ * which is the all-occurrences primitive the parameter pipeline's conflict
+ * detection is built on. Pure.
  * @param {string} sql
  * @returns {{name: string, type: string}[]}
  */
 export function detectParams(sql) {
-  const text = String(sql || '');
-  const n = text.length;
-  // Mark every character that lies inside an opaque '…'/"…"/`…` literal or a
-  // comment, using the shared scanner. Placeholders are only recognized in code,
-  // and — crucially — a `{`/`}` inside a literal is passthrough, not a delimiter,
-  // so a quoted `}` in a type like `Enum8('}' = 1, 'ok' = 2)` no longer closes
-  // the placeholder early (the fix #139 folds into this refactor).
-  const opaque = new Uint8Array(n);
-  for (const { kind, start, end } of scanSpans(text)) {
-    if (kind !== 'code') opaque.fill(1, start, end);
-  }
   const out = [];
   const seen = new Set();
-  let i = 0;
-  while (i < n) {
-    if (opaque[i] || text[i] !== '{') { i += 1; continue; }
-    // Scan to the matching (code, non-opaque) `}`. Chars inside a literal/comment
-    // are passthrough content. Stop early on a nested code `{` (e.g. the
-    // `{{name}}` composable-query macro, #39) so it never reads as a parameter.
-    let j = i + 1;
-    while (j < n && !(!opaque[j] && (text[j] === '}' || text[j] === '{'))) j++;
-    if (j < n && text[j] === '}') {
-      const m = PARAM_RE.exec(text.slice(i + 1, j).trim());
-      if (m && !seen.has(m[1])) {
-        seen.add(m[1]);
-        out.push({ name: m[1], type: m[2].trim() });
-      }
-      i = j + 1;
-      continue;
+  for (const p of scanParamDeclarations(sql)) {
+    if (!seen.has(p.name)) {
+      seen.add(p.name);
+      out.push(p);
     }
-    // No closing `}` (or a nested `{` first) — step over this brace and go on.
-    i += 1;
   }
   return out;
 }
