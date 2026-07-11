@@ -20,6 +20,7 @@ import {
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
+import { applyFieldState } from './var-field.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -113,16 +114,16 @@ function setSlotLoading(slot) {
   slot.foot.replaceChildren();
 }
 
-// A tile whose SQL still has an empty/absent {name:Type} value never calls
-// app.runTile — it shows this placeholder instead (reusing the card's header/
-// footer chrome so it doesn't look broken), and stays visible: unlike a
-// classifyTile `skip`, one filter value away it becomes chartable, so it is
-// NOT counted in the header's "N not shown" note.
-function setSlotUnfilled(slot, missing) {
+// A tile whose SQL still has an empty/absent, or invalid (#170), {name:Type}
+// value never calls app.runTile — it shows this placeholder instead (reusing
+// the card's header/footer chrome so it doesn't look broken), and stays
+// visible: unlike a classifyTile `skip`, one filter value away it becomes
+// chartable, so it is NOT counted in the header's "N not shown" note.
+function setSlotUnfilled(slot, names) {
   destroySlotChart(slot);
   slot.status = 'unfilled';
   slot.card.style.display = '';
-  slot.body.replaceChildren(h('div', { class: 'dash-tile-unfilled' }, 'Enter a value for: ' + missing.join(', ')));
+  slot.body.replaceChildren(h('div', { class: 'dash-tile-unfilled' }, 'Enter a value for: ' + names.join(', ')));
   slot.foot.replaceChildren();
 }
 
@@ -165,8 +166,10 @@ function applyTileResult(app, q, slot, r) {
 }
 
 // Run (or re-run) one favorite's tile into its slot, gated by its prepared
-// source from the wave's batch (#173): unfilled `{name:Type}` values show the
-// placeholder (never calling app.runTile), a per-source error (e.g. a value
+// source from the wave's batch (#173): unfilled OR invalid (#170) `{name:Type}`
+// values show the placeholder (never calling app.runTile — an invalid value
+// left to reach the server would either error confusingly or, for Int/UInt,
+// silently wrap; see param-validate.js), a per-source error (e.g. a value
 // that can't serialize for this tile's declaration) shows an error card —
 // blocking only this tile, never its siblings — otherwise fetch with the
 // batch's prepared args and classify. `onSettled()` fires after every
@@ -176,8 +179,8 @@ function applyTileResult(app, q, slot, r) {
 // to "unfilled".
 async function runSlotTile(app, q, slot, onSettled, src) {
   const myGen = ++slot.gen;
-  if (src.missing.length) {
-    setSlotUnfilled(slot, src.missing);
+  if (src.missing.length || src.invalid.length) {
+    setSlotUnfilled(slot, src.missing.concat(src.invalid));
     onSettled();
     return;
   }
@@ -204,11 +207,17 @@ async function runSlotTile(app, q, slot, onSettled, src) {
 // workbench. Hidden entirely (no row, no spacing) when there are no detected
 // params — same convention as the workbench's `var-strip`. Typing debounces
 // before calling `onCommit(name)`; Enter or blur fires immediately, clearing
-// any pending debounce so a value never applies twice.
-function buildFilterBar(app, params, onCommit) {
+// any pending debounce so a value never applies twice. `getField(name, mode)`
+// reads the field's current #170-validated state ('input' while typing —
+// neutral on a plausible prefix; 'execute' on blur/Enter — hardens it) for
+// the shared invalid-field affordance (var-field.js); `commitNow`'s no-op
+// short-circuit (nothing pending) is independent of that repaint, so blurring
+// an untouched-since-last-commit field still (re)shows the right state.
+function buildFilterBar(app, params, onCommit, getField) {
   if (!params.length) return h('div', { class: 'dash-filters', style: { display: 'none' } });
   return h('div', { class: 'dash-filters' }, ...params.map((p) => {
     let timer = null;
+    const baseTitle = p.name + ': ' + p.type + (p.optional ? ' — optional: blank leaves its filter block out' : '');
     const commitNow = () => {
       if (timer == null) return;
       clearTimeout(timer);
@@ -219,7 +228,7 @@ function buildFilterBar(app, params, onCommit) {
       type: 'text', class: 'var-input',
       value: app.state.varValues[p.name] || '',
       placeholder: p.type,
-      title: p.name + ': ' + p.type + (p.optional ? ' — optional: blank leaves its filter block out' : ''),
+      title: baseTitle,
       'aria-label': p.name,
       oninput: (e) => {
         app.state.varValues[p.name] = e.target.value;
@@ -229,12 +238,21 @@ function buildFilterBar(app, params, onCommit) {
         app.state.filterActive[p.name] = e.target.value !== '';
         app.saveVarValues();
         app.saveFilterActive();
+        applyFieldState(input, getField(p.name, 'input'), baseTitle);
         clearTimeout(timer);
         timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
       },
-      onkeydown: (e) => { if (e.key === 'Enter') commitNow(); },
-      onblur: commitNow,
+      onkeydown: (e) => {
+        if (e.key !== 'Enter') return;
+        applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+        commitNow();
+      },
+      onblur: () => {
+        applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+        commitNow();
+      },
     });
+    applyFieldState(input, getField(p.name, 'execute'), baseTitle);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), input);
   }));
@@ -257,11 +275,15 @@ export function renderDashboard(app) {
   const analysis = analyzeParameterizedSources(favorites.map((q, i) => ({
     id: tileId(i), label: q.name, kind: 'tile', sql: q.sql, bindPolicy: 'row-returning',
   })));
-  const prepareWave = () => prepareParameterizedBatch(analysis, {
+  const prepareBatch = (validationMode = 'execute') => prepareParameterizedBatch(analysis, {
     values: app.state.varValues,
     active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
-    wallNowMs: app.wallNow(), validationMode: 'execute',
-  }).sources;
+    wallNowMs: app.wallNow(), validationMode,
+  });
+  const prepareWave = () => prepareBatch('execute').sources;
+  // The filter bar's per-keystroke field-state read (#170): 'input' while
+  // typing (neutral on a plausible prefix), 'execute' on blur/Enter (hardens).
+  const getFilterField = (name, mode) => prepareBatch(mode).fields[name];
 
   const favChip = h('span', { class: 'dash-chip dash-fav' },
     Icon.star(true),
@@ -326,7 +348,7 @@ export function renderDashboard(app) {
     });
   const colsWrap = h('div', { class: 'dash-cols-wrap' },
     h('span', { class: 'dash-seg-label' }, 'Columns'), colsSeg.el);
-  const filterBar = buildFilterBar(app, fieldControls(analysis), (name) => runAffected(name));
+  const filterBar = buildFilterBar(app, fieldControls(analysis), (name) => runAffected(name), getFilterField);
   const toolbar = h('div', { class: 'dash-toolbar' },
     layoutSeg.el,
     filterBar,

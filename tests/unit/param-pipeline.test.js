@@ -15,7 +15,7 @@ import { paramArgs } from '../../src/core/query-params.js';
 
 const src = (id, sql, over = {}) => ({ id, label: id, kind: 'tab', sql, ...over });
 
-describe('stage functions (#165 real; #169/#170 identity/unknown until they land)', () => {
+describe('stage functions (#165/#170 real; #169 identity until it lands)', () => {
   it('analysisView / executionView are identity for SQL without optional blocks', () => {
     expect(analysisView('SELECT 1')).toBe('SELECT 1');
     expect(executionView('SELECT 1', { a: true })).toBe('SELECT 1');
@@ -26,12 +26,50 @@ describe('stage functions (#165 real; #169/#170 identity/unknown until they land
     expect(executionView(sql, {})).toBe('SELECT 1 ');
     expect(executionView(sql, { a: true })).toBe('SELECT 1  AND a = {a:String} ');
   });
-  it('resolveRelativeValue is identity; validateParamValue returns unknown', () => {
+  it('resolveRelativeValue is identity (#169 not landed); validateParamValue passes through an out-of-scope type', () => {
     expect(resolveRelativeValue('-1h', { base: 'DateTime' }, 123)).toBe('-1h');
     expect(validateParamValue('x', { base: 'String' }, 'execute')).toBe('unknown');
   });
+  it('validateParamValue (#170) adapts param-validate.js\'s {status,reason} into the stage contract', () => {
+    // valid → 'valid' (falls through the caller's checks exactly like 'unknown'/'ok')
+    expect(validateParamValue('255', { base: 'UInt8' }, 'execute')).toBe('valid');
+    // invalid → {state, reason}
+    expect(validateParamValue('256', { base: 'UInt8' }, 'execute'))
+      .toEqual({ state: 'invalid', reason: 'Expected UInt8 from 0 to 255' });
+    // incomplete → 'incomplete'
+    expect(validateParamValue('-', { base: 'Int32' }, 'input')).toBe('incomplete');
+  });
   it('exports the two bind policies', () => {
     expect(BIND_POLICIES).toEqual(['row-returning', 'all']);
+  });
+});
+
+describe('#170 end-to-end: the real validator wired as the pipeline default (no stage override)', () => {
+  it('a range-invalid Int/UInt value gates its source and carries a specific reason', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {n:UInt8}')]);
+    const p = prepareParameterizedBatch(a, { values: { n: '256' }, validationMode: 'input' });
+    expect(p.sources[0]).toMatchObject({ invalid: ['n'], runnable: false });
+    expect(p.fields.n).toEqual({ state: 'invalid', reason: 'Expected UInt8 from 0 to 255' });
+  });
+  it("an incomplete value ('input' mode) is display-only; the same value hardens to invalid under 'execute'", () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {n:Int32}')]);
+    const lenient = prepareParameterizedBatch(a, { values: { n: '-' }, validationMode: 'input' });
+    expect(lenient.fields.n.state).toBe('incomplete');
+    expect(lenient.sources[0]).toMatchObject({ invalid: [], runnable: true });
+    const strict = prepareParameterizedBatch(a, { values: { n: '-' }, validationMode: 'execute' });
+    expect(strict.fields.n.state).toBe('invalid');
+    // #170 review: a value hardened from 'incomplete' (rather than a
+    // validator-rejected value) never got its own reason from
+    // param-validate.js — the fallback keeps the tooltip from going blank.
+    expect(strict.fields.n.reason).toBe('Incomplete value');
+    expect(strict.sources[0]).toMatchObject({ invalid: ['n'], runnable: false });
+  });
+  it('a valid typed value runs normally, still serialized and bound', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {n:UInt8}')]);
+    const p = prepareParameterizedBatch(a, { values: { n: '42' }, validationMode: 'execute' });
+    expect(p.fields.n).toEqual({ state: 'ok' });
+    expect(p.sources[0]).toMatchObject({ runnable: true });
+    expect(p.sources[0].statements[0].args).toEqual({ param_n: '42' });
   });
 });
 
@@ -210,6 +248,11 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
     expect(broken.missing).toEqual([]);
     expect(broken.errors[0]).toContain('{db}'); // structural: array value, scalar declaration
     expect(ok.statements[0].args).toEqual({});
+    // #173 review finding, fixed under #170: a serialization failure must not
+    // leave the FIELD's own rollup reading 'ok' — it never actually bound.
+    expect(broken.invalid).toEqual([]); // per-source `invalid` stays the validator's alone
+    expect(p.fields.db.state).toBe('invalid');
+    expect(p.fields.db.reason).toBe(broken.errors[0]);
   });
 
   it('a source-config error (bad bindPolicy) flows into the prepared source and kills runnable', () => {
@@ -432,6 +475,9 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
     expect(lenient.sources[0].statements[0].args).toEqual({}); // but no arg is sent for it
     const strict = prepareParameterizedBatch(a, { values: { d: '2024-' }, validationMode: 'execute', stages });
     expect(strict.fields.d.state).toBe('invalid');
+    // A stage that returns the bare 'incomplete' string (no reason at all)
+    // still gets the fallback reason once hardened (#170 review).
+    expect(strict.fields.d.reason).toBe('Incomplete value');
     expect(strict.sources[0].invalid).toEqual(['d']);
     expect(strict.sources[0].runnable).toBe(false);
   });

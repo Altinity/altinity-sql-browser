@@ -604,12 +604,14 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     resolvers[0](chartResult());
     await rendered;
 
+    // Distinct but still UInt16-valid values (#170: an invalid value would
+    // never reach app.runTile at all, short-circuiting this race).
     const input = fieldInput(app.root, 'year');
-    setInput(input, 'A');
+    setInput(input, '11');
     pressEnter(input);
     await flush();
     expect(resolvers).toHaveLength(2);
-    setInput(input, 'B');
+    setInput(input, '22');
     pressEnter(input);
     await flush();
     expect(resolvers).toHaveLength(3);
@@ -621,6 +623,55 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     await flush();
 
     expect(app.root.querySelector('.dash-tile-error').textContent).toBe('B wins');
+  });
+
+  // ── #170: typed client-side validation ──────────────────────────────────────
+  it('#170: an invalid value shows the inline error and gates the tile like an unfilled one', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    const input = fieldInput(app.root, 'year');
+    setInput(input, 'abc');
+    pressEnter(input);
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(1); // never re-fetched with the bad value
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.root.querySelector('.dash-tile-unfilled').textContent).toBe('Enter a value for: year');
+  });
+  it("#170: a plausible mid-typing prefix stays neutral while typing, hardens on blur", () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:Int32}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '5' };
+    return renderDashboard(app).then(async () => {
+      const input = fieldInput(app.root, 'year');
+      setInput(input, '-');
+      expect(input.classList.contains('is-invalid')).toBe(false); // neutral — could still become '-5'
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      await flush();
+      expect(input.classList.contains('is-invalid')).toBe(true); // blur hardens it
+    });
+  });
+  it('#170: correcting an invalid value clears the affordance and re-runs the tile', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2023' };
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'year');
+    setInput(input, 'abc');
+    pressEnter(input);
+    await flush();
+    expect(app.root.querySelector('.dash-tile-unfilled')).not.toBeNull();
+    setInput(input, '2025');
+    pressEnter(input);
+    await flush();
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.root.querySelector('.dash-tile-unfilled')).toBeNull();
+    expect(runTile).toHaveBeenCalledTimes(2); // initial + the corrected re-run
   });
 
   // ── #165: optional blocks on the dashboard ────────────────────────────────

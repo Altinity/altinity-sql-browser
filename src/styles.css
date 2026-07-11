@@ -1129,6 +1129,22 @@ body.detached-tab .graph-overlay-panel {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
 }
+/* Typed-validation invalid affordance (#170): a value that's certainly wrong
+   for its declared type — shared by the workbench var-strip and the
+   Dashboard's global filter bar (both build on var-field.js's
+   applyFieldState). Only 'invalid' gets this; 'incomplete' (a plausible
+   mid-typing prefix) stays visually neutral until it hardens on blur/Enter/
+   execute. The reason string ("Expected UInt8 from 0 to 255") replaces the
+   field's normal title, shown via the native tooltip on hover/focus. */
+.var-input.is-invalid {
+  border-color: var(--error-bd);
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+.var-input.is-invalid:focus {
+  border-color: var(--error-bd);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--error-fg) 22%, transparent);
+}
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;

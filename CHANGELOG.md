@@ -29,6 +29,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `*/`-containing blocks produce clear errors; and the Format action skips a
   statement containing blocks (with a notice) rather than round-tripping a
   template through server-side `formatQuery()`.
+- **Typed client-side validation for `{name:Type}` variable inputs** (#170).
+  A value is now checked against its declared type *before* the query is
+  sent, for the numeric/scalar families that are cheap to validate purely:
+  `Int8…Int256`/`UInt8…UInt256` (range-checked via `BigInt`; wraps like
+  `256` for `UInt8` are blocked client-side even though ClickHouse's param
+  path would silently accept and wrap them), `Float32`/`Float64` (decimal /
+  scientific notation, `inf`/`nan`), `Bool` (a narrow, never-`invalid`
+  accept-set — its live accept grammar isn't fully enumerable), and `UUID`
+  (hyphenated or 32-hex compact). `String`/`Array`/`Map`/`Decimal`/`Enum`/
+  `Date*` and any unrecognized type are always passed through unvalidated
+  (`Enum` membership is #172; `Date`/`DateTime` relative expressions are
+  #169). New pure `src/core/param-validate.js` (100% covered) plugs into
+  #173's pipeline as its validation stage. A value is `invalid` only when
+  ClickHouse's actual param-value grammar (verified live — not the SQL
+  literal grammar) certainly rejects it; a plausible mid-typing prefix
+  (`-`, `1e`, a half UUID) reads as neutral `incomplete` while the field is
+  focused and hardens to the inline error on blur/Enter/execute. The
+  workbench var-strip and the Dashboard's global filter bar (#149 D3) share
+  one small affordance (`src/ui/var-field.js`) for the invalid-field styling
+  + reason tooltip; an invalid value gates exactly like an unfilled one (Run
+  disabled workbench-side, the tile placeholder dashboard-side). Also fixes
+  two dormant gaps the validation stage exposed: the Run button's disabled
+  state now reflects `invalid`/source errors, not just `missing` (previously
+  only visually out of sync with the actual gate), and a field whose value
+  fails serialization no longer rolls up as `ok` in `prepareParameterizedBatch`'s
+  per-field state.
 - **Shared parameter pipeline (Phase 7.0)** (#173). A pure, two-phase,
   multi-source parameter pipeline — `analyzeParameterizedSources` (per-field
   declarations across all occurrences, per-source requiredness, cross-source

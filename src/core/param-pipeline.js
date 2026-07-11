@@ -31,6 +31,7 @@ import { scanParamDeclarations } from './param-scan.js';
 import { parseParamType, conflictingTypes } from './param-type.js';
 import { serializeParamValue } from './param-serialize.js';
 import { materializeOptionalBlocks, countOptionalBlocks, ALL_ACTIVE } from './optional-blocks.js';
+import { validateParamValue as validateTypedValue } from './param-validate.js';
 
 export const BIND_POLICIES = ['row-returning', 'all'];
 
@@ -59,11 +60,18 @@ export function resolveRelativeValue(rawValue, type, wallNowMs) { // eslint-disa
   return rawValue;
 }
 
-/** #170's per-type validator. Returns `'unknown'` (not validated — treated as
- *  ok for gating) until #170 lands; the contract is a state string
- *  `'ok' | 'invalid' | 'incomplete' | 'unknown'` or `{state, reason}`. Pure. */
+/** #170's per-type validator: adapts `param-validate.js`'s `{status,
+ *  reason?}` contract (`'valid'|'invalid'|'incomplete'|'unknown'`, checked
+ *  against the *type*, permissive by construction) to this pipeline's stage
+ *  contract — a state string `'ok'|'incomplete'|'invalid'|'unknown'` or
+ *  `{state, reason}` (a bare 'unknown', like 'valid', reads as "ok" to the
+ *  caller below, which only branches on the exact 'invalid'/'incomplete'
+ *  strings). `validationMode`'s incomplete→invalid hardening happens in
+ *  `prepareParameterizedBatch`, not here — this stage only classifies. Pure.
+ */
 export function validateParamValue(resolvedValue, type, validationMode) { // eslint-disable-line no-unused-vars
-  return 'unknown';
+  const v = validateTypedValue(type, resolvedValue);
+  return v.status === 'invalid' ? { state: 'invalid', reason: v.reason } : v.status;
 }
 
 const emptyValue = (v) => v == null || v === '';
@@ -256,7 +264,15 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
           || (verdict.state === 'incomplete' && validationMode === 'execute');
         if (hardInvalid) {
           if (!invalid.includes(p.name)) invalid.push(p.name);
-          note(p.name, 'invalid', verdict.reason);
+          // A verdict hardened here from 'incomplete' (rather than a validator
+          // that already said 'invalid') never carries a `reason` — the value
+          // was never itself rejected, only its still-mid-typing state was
+          // hardened by the 'execute' mode. Without a fallback the tooltip
+          // silently goes blank (falls back to the field's base title,
+          // hiding that anything's wrong at all) — surface a generic reason
+          // instead (#170 review). This is the single spot both the var-strip
+          // and the dashboard filter bar's field affordance read from.
+          note(p.name, 'invalid', verdict.reason || 'Incomplete value');
           continue;
         }
         if (verdict.state === 'incomplete') {
@@ -264,14 +280,21 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
           note(p.name, 'incomplete');
           continue;
         }
-        note(p.name, 'ok');
         const ser = serializeParamValue(resolvedValue, type, p.name);
         if (!ser.ok) {
           // Serialization failures (incl. a structurally incompatible stored
-          // value) are source-level errors: they block this source only.
+          // value) are source-level errors: they block this source only —
+          // `invalid`/`errors` stay exactly as before (#173 review finding).
+          // But the FIELD's own rollup must not read 'ok' when the value it
+          // validated against couldn't actually be sent anywhere: downgrade
+          // it to 'invalid' (with the serialization error as the reason) so
+          // #171/#172 consumers reading `fields[name]` don't render a
+          // blocked field as fine.
           errors.push(ser.error);
+          note(p.name, 'invalid', ser.error);
           continue;
         }
+        note(p.name, 'ok');
         args['param_' + p.name] = ser.value;
         boundParams.push(Object.freeze({
           name: p.name,

@@ -754,6 +754,128 @@ describe('query run', () => {
     const bCall = app.chCtx.fetch.mock.calls.find((c) => /SELECT 2/.test(c[1].body));
     expect(bCall[0]).not.toMatch(/param_b/);
   });
+  it('typed validation (#170): a clearly-invalid value shows the inline error immediately and disables Run', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'abc'; // not a plausible prefix of anything — invalid, not incomplete
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.title).toContain('n');
+  });
+  it('typed validation (#170): an out-of-range value shows a specific reason, exceeding server strictness on purpose', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '256'; // the live server accepts this and silently wraps to 0 — blocked client-side instead
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(input.title).toBe('Expected UInt8 from 0 to 255');
+  });
+  it("typed validation (#170): a plausible mid-typing prefix ('-') stays neutral while focused, hardens on blur", () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:Int32}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '-';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false); // neutral — could still become '-5'
+    expect(app.dom.runBtn.disabled).toBe(false); // 'input' mode never hardens
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(true); // blur commits — hardens to invalid
+    expect(app.dom.runBtn.disabled).toBe(true);
+  });
+  it('typed validation (#170 review): a hardened invalid value keeps blocking Run across unrelated re-renders, until the field itself is edited', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:Int32}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '-';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true })); // hardens '-' to invalid
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+
+    // renderVarStrip's own tail call (fired on every SQL-editor keystroke via
+    // onDocChange) recomputes Run's gate gate-less, in lenient 'input' mode —
+    // which alone would read the still-incomplete '-' as merely incomplete
+    // and silently re-enable Run while the field still paints red. The
+    // signature is unchanged (same {n:Int32}), so this only re-derives the
+    // Run button, exactly the path that regressed.
+    app.renderVarStrip();
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.title).toContain('n');
+    expect(input.classList.contains('is-invalid')).toBe(true);
+
+    // Same gate-less fallback, reached from the hasSelection effect (fires on
+    // every cursor/selection move).
+    app.state.hasSelection.value = true;
+    expect(app.dom.runBtn.disabled).toBe(true);
+
+    // Editing the field's own value clears its hardened flag — lenient
+    // 'input'-mode behavior resumes, and a now-valid value re-enables Run.
+    input.value = '-5';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.dom.runBtn.disabled).toBe(false);
+  });
+  it('typed validation (#170): Enter also hardens an incomplete value', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:Float64}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '1e'; // live-rejected, but a genuine mid-typing state
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+  });
+  it('typed validation (#170): correcting an invalid value clears the affordance and re-enables Run', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'abc';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(app.dom.runBtn.disabled).toBe(true);
+    input.value = '42';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.dom.runBtn.disabled).toBe(false);
+  });
+  it('typed validation (#170): an out-of-scope type (String) is never marked invalid', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {s:String}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'anything at all, ,,, {}';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.dom.runBtn.disabled).toBe(false);
+  });
+  it('typed validation (#170): a run is blocked and toasts for an invalid (not just missing) variable', async () => {
+    const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.state.varValues = { n: '256' };
+    await app.actions.run();
+    expect(app.chCtx.fetch.mock.calls.length).toBe(0);
+    expect(document.body.querySelector('.share-toast').textContent).toContain('n');
+  });
+  it('typed validation (#170): a persisted invalid value paints the affordance on strip (re)build, e.g. a tab switch', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.state.varValues = { n: '256' };
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.dom.runBtn.disabled).toBe(true);
+  });
   it('the wall clock (#173) is its own injected seam, distinct from the duration clock', () => {
     const app = createApp(env({ wallNow: () => 777 })); // injected → tests can pin the wave clock
     expect(app.wallNow()).toBe(777);
