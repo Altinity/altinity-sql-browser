@@ -22,6 +22,8 @@ import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
+import { buildRecentField } from './recent-field.js';
+import { recentOptions } from '../core/recent-values.js';
 import { isDateLikeType } from '../core/relative-time.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
@@ -198,6 +200,12 @@ async function runSlotTile(app, q, slot, onSettled, src) {
   const r = await app.runTile(execSql, mergedSourceArgs(src));
   if (slot.gen !== myGen) return; // a newer edit started after this fetch; discard
   applyTileResult(app, q, slot, r);
+  // #171: this tile completed successfully — record its bound params (the
+  // exact wave's boundParams snapshot, so a param confined to an inactive
+  // optional block — never in `src.statements[*].boundParams` — is never
+  // recorded). A superseded/discarded fetch (the `return` above) never
+  // reaches here at all.
+  if (r.error == null) app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
   onSettled();
 }
 
@@ -250,20 +258,26 @@ function buildFilterBar(app, params, onCommit, getField) {
       applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
       commitNow();
     };
+    // #171: live-filtered recents for this field (type + typed text), read
+    // fresh on every open/keystroke (never a snapshot — see recent-field.js's
+    // header comment). (#160's curated-param opt-out hook: nothing to check
+    // yet — no curated param exists before #160 lands.)
+    const getRecents = (text) => recentOptions(app.state.varRecent, p.name, p.type, text);
+    const onClearRecent = () => app.clearVarRecent(p.name);
+    // A preset/recent pick is a deliberate, complete action (like Enter) —
+    // run immediately, bypassing the debounce `onValueInput` just armed,
+    // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
+    const onPick = () => {
+      applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
+      clearTimeout(timer);
+      timer = null;
+      onCommit(p.name);
+    };
     if (dateLike) {
       combo = buildRelativeTimeField({
         document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
         baseTitle, wallNow: app.wallNow,
-        onValueInput,
-        // A preset pick is a deliberate, complete action (like Enter) — run
-        // immediately, bypassing the debounce `onValueInput` just armed,
-        // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
-        onCommit: () => {
-          applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
-          clearTimeout(timer);
-          timer = null;
-          onCommit(p.name);
-        },
+        onValueInput, onCommit: onPick, getRecents, onClearRecent,
       });
       input = combo.input;
       input.addEventListener('focus', () => combo.onFocus());
@@ -277,16 +291,21 @@ function buildFilterBar(app, params, onCommit, getField) {
       input.addEventListener('compositionstart', () => combo.onCompositionStart());
       input.addEventListener('compositionend', () => combo.onCompositionEnd());
     } else {
-      input = h('input', {
-        type: 'text', class: 'var-input',
-        value: app.state.varValues[p.name] || '',
-        placeholder: p.type,
-        title: baseTitle,
-        'aria-label': p.name,
-        oninput: onValueInput,
-        onkeydown: (e) => { if (e.key === 'Enter') onCommitHard(); },
-        onblur: onCommitHard,
+      combo = buildRecentField({
+        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
+        baseTitle, onValueInput, onCommit: onPick, getRecents, onClearRecent,
       });
+      input = combo.input;
+      input.addEventListener('focus', () => combo.onFocus());
+      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+      input.addEventListener('keydown', (e) => {
+        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
+        if (e.key !== 'Enter') return;
+        onCommitHard();
+      });
+      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+      input.addEventListener('compositionstart', () => combo.onCompositionStart());
+      input.addEventListener('compositionend', () => combo.onCompositionEnd());
     }
     applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
