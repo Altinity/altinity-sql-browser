@@ -1473,6 +1473,172 @@ describe('query run', () => {
     expect(app.state.resultRowLimit).toBe(1000);
     expect(runUrl(e, /SELECT 1/)).toContain('max_result_rows=1000'); // re-ran with the new cap
   });
+
+  describe('enum variables (#172)', () => {
+    const ENUM_TYPE = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";
+    it('v1: a declared Enum8 variable renders a dropdown of its members', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v1: a non-member value is gated inline (blocking — the declared type is a real Enum)', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      expect(app.dom.runBtn.disabled).toBe(true);
+      expect(input.classList.contains('is-invalid')).toBe(true);
+      expect(input.title).toMatch(/Expected one of: 'active', 'deleted', 'banned'/);
+    });
+    it('v1: a bare numeric code matching a declared code passes (live-server fact)', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.value = '2';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      expect(app.dom.runBtn.disabled).toBe(false);
+      expect(input.classList.contains('is-invalid')).toBe(false);
+    });
+    it('v2: a String var compared to a column not yet loaded stays a plain input (no dropdown, no recents recorded)', () => {
+      const { app } = appForRun([]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      expect(app.dom.varStrip.querySelectorAll('[role="option"]')).toHaveLength(0);
+    });
+    it('v2: the dropdown appears once the idle-tick loader caches the compared column as an Enum — zero new queries beyond the one column load', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.renderVarStrip();
+      let input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      expect(app.dom.varStrip.querySelectorAll('[role="option"]')).toHaveLength(0); // not loaded yet
+      await app.actions.loadColumns('d', 'events'); // the CM6 adapter's idle-tick load, or a schema-panel expand
+      // The strip's own signature guard folds in each var's resolved enum
+      // options (not just name/type/optional) — the {name:Type} SET itself
+      // never changed, only the schema cache did, and the field still upgrades.
+      input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v2: a non-member value still executes (suggestion-only — the declared type stays String)', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+        [(u, sql) => /SELECT \* FROM events/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.renderVarStrip();
+      await app.actions.loadColumns('d', 'events');
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.value = 'not-a-member';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      expect(input.classList.contains('is-invalid')).toBe(false);
+      expect(app.dom.runBtn.disabled).toBe(false);
+      await app.actions.run();
+      expect(app.chCtx.fetch.mock.calls.some(([url]) => /param_s=not-a-member/.test(url))).toBe(true);
+    });
+    it('v1: Enter with no active option (list closed) falls through to the plain hard-commit/harden path', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(app.dom.runBtn.disabled).toBe(true);
+      expect(input.classList.contains('is-invalid')).toBe(true);
+    });
+    it('v1: Enter with an active option commits it via keydown (combobox delegation)', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      expect(input.value).toBe('active'); // the first member, committed
+      expect(input.getAttribute('aria-expanded')).toBe('false');
+    });
+    it('v2: ambiguous (JOIN, unqualified column) degrades silently to a plain input', () => {
+      const { app } = appForRun([]);
+      app.state.schema.value = [{ db: 'd', tables: [
+        { name: 'events', columns: [{ name: 'status', type: ENUM_TYPE }] },
+        { name: 'other', columns: [] },
+      ] }];
+      app.activeTab().sql = 'SELECT * FROM events e JOIN other o ON 1=1 WHERE status = {s:String}';
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      expect(app.dom.varStrip.querySelectorAll('[role="option"]')).toHaveLength(0);
+    });
+    it('v2: a background column load never steals focus mid-typing — the strip rebuild defers until blur, then applies', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.renderVarStrip();
+      const region = app.dom.varStrip.querySelectorAll('.var-input')[1];
+      region.focus(); // real focus: sets document.activeElement AND fires the field's focus listener (dropdown opens)
+      region.value = 'us-';
+      region.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(region.getAttribute('aria-expanded')).toBe('true'); // recents dropdown open (empty is fine — it's open state that matters)
+      // The background idle-tick column load completes while the user is
+      // mid-typing in the UNRELATED region field: the {s} upgrade must NOT
+      // rebuild the strip out from under them.
+      await app.actions.loadColumns('d', 'events');
+      expect(document.activeElement).toBe(region);                              // focus survived
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).toBe(region);  // same node — no rebuild
+      expect(region.value).toBe('us-');                                         // typed text survived
+      expect(region.getAttribute('aria-expanded')).toBe('true');                // open dropdown survived
+      // On blur (focus leaves the strip) the deferred upgrade applies: the
+      // strip rebuilds and {s} now offers the schema-cache-inferred dropdown.
+      region.blur();
+      const rebuilt = app.dom.varStrip.querySelectorAll('.var-input');
+      expect(rebuilt[1]).not.toBe(region); // strip was rebuilt after blur
+      expect(rebuilt[1].value).toBe('us-'); // the typed value carried through varValues
+      rebuilt[0].dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v2: moving focus BETWEEN strip fields keeps the deferred rebuild pending — it only applies once focus leaves the strip', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.renderVarStrip();
+      const inputs = app.dom.varStrip.querySelectorAll('.var-input');
+      const sInput = inputs[0];
+      const region = inputs[1];
+      region.focus();
+      await app.actions.loadColumns('d', 'events'); // deferred: focus is inside the strip
+      // Tabbing from region to the s field: the focusout's relatedTarget is
+      // still inside the strip, so the deferral holds — no rebuild yet.
+      region.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: sInput }));
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).toBe(region);
+      // Focus finally leaves the strip → the deferred upgrade applies.
+      region.blur();
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).not.toBe(region);
+    });
+  });
 });
 
 describe('recent-value history (#171)', () => {

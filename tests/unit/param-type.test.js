@@ -4,6 +4,8 @@ import {
   normalizeParamType,
   typeLexKind,
   conflictingTypes,
+  enumMembers,
+  enumValues,
 } from '../../src/core/param-type.js';
 
 describe('parseParamType', () => {
@@ -110,5 +112,106 @@ describe('conflictingTypes', () => {
   it('returns the distinct normalized set, first-seen order, on a disagreement', () => {
     expect(conflictingTypes([{ type: 'UInt64' }, { type: 'String' }, { type: 'UInt64' }]))
       .toEqual(['UInt64', 'String']);
+  });
+});
+
+// #172 v1 — parsing an Enum declaration's members straight out of the type text.
+describe('enumMembers / enumValues', () => {
+  it('parses Enum8 members in declaration order', () => {
+    expect(enumMembers("Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)")).toEqual([
+      { name: 'active', code: 1 },
+      { name: 'deleted', code: 2 },
+      { name: 'banned', code: 3 },
+    ]);
+    expect(enumValues("Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)")).toEqual(['active', 'deleted', 'banned']);
+  });
+
+  it('parses Enum16 the same way', () => {
+    expect(enumValues("Enum16('a' = 1, 'b' = 2)")).toEqual(['a', 'b']);
+  });
+
+  it('tolerates spacing variants around = and , and no spaces at all', () => {
+    expect(enumMembers("Enum8('a'=1,'b'=2)")).toEqual([{ name: 'a', code: 1 }, { name: 'b', code: 2 }]);
+    expect(enumMembers("Enum8( 'a'   =   1 ,   'b' = 2 )")).toEqual([{ name: 'a', code: 1 }, { name: 'b', code: 2 }]);
+  });
+
+  it('accepts negative codes', () => {
+    expect(enumMembers("Enum8('neg' = -5, 'zero' = 0)")).toEqual([{ name: 'neg', code: -5 }, { name: 'zero', code: 0 }]);
+  });
+
+  it('unescapes a doubled single quote inside a member name', () => {
+    expect(enumValues("Enum8('a''b' = 1)")).toEqual(["a'b"]);
+  });
+
+  it('unescapes a backslash-escaped quote inside a member name', () => {
+    expect(enumValues("Enum8('a\\'b' = 1)")).toEqual(["a'b"]);
+  });
+
+  it("parses a brace as a member name — the same declaration param-scan.js's opaque scan already lets through", () => {
+    expect(enumValues("Enum8('}' = 1, 'ok' = 2)")).toEqual(['}', 'ok']);
+  });
+
+  it('parses a unicode member name', () => {
+    expect(enumValues("Enum8('日本語' = 1, 'ok' = 2)")).toEqual(['日本語', 'ok']);
+  });
+
+  it('unwraps Nullable(Enum8(...))', () => {
+    expect(enumValues("Nullable(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
+  });
+
+  it('returns null for a non-enum type', () => {
+    for (const t of ['String', 'UInt8', 'Array(String)', "FixedString(4)"]) {
+      expect(enumValues(t)).toBeNull();
+      expect(enumMembers(t)).toBeNull();
+    }
+  });
+
+  it('accepts an already-parsed type object, same as parseParamType-family siblings', () => {
+    expect(enumValues(parseParamType("Enum8('a' = 1)"))).toEqual(['a']);
+  });
+
+  // ClickHouse's documented Enum syntax allows OMITTING codes: implicit
+  // members auto-number — the first from 1, each later one from the previous
+  // member's code + 1 (explicit codes reset the counter).
+  it('fully-implicit members auto-number from 1', () => {
+    expect(enumMembers("Enum8('hello', 'world')")).toEqual([
+      { name: 'hello', code: 1 },
+      { name: 'world', code: 2 },
+    ]);
+    expect(enumValues("Enum8('hello', 'world')")).toEqual(['hello', 'world']);
+  });
+
+  it("mixed explicit-then-implicit continues from the previous code (ClickHouse docs' own example)", () => {
+    expect(enumMembers("Enum8('One' = 1, 'Two', 'Three')")).toEqual([
+      { name: 'One', code: 1 },
+      { name: 'Two', code: 2 },
+      { name: 'Three', code: 3 },
+    ]);
+  });
+
+  it('an implicit member after a negative code continues upward from it', () => {
+    expect(enumMembers("Enum8('a' = -2, 'b')")).toEqual([
+      { name: 'a', code: -2 },
+      { name: 'b', code: -1 },
+    ]);
+  });
+
+  it('a later explicit code resets the auto-numbering counter', () => {
+    expect(enumMembers("Enum8('a', 'b' = 10, 'c')")).toEqual([
+      { name: 'a', code: 1 },
+      { name: 'b', code: 10 },
+      { name: 'c', code: 11 },
+    ]);
+  });
+
+  it('a single implicit member (no code, no next span at all) gets code 1', () => {
+    expect(enumMembers("Enum8('lonely')")).toEqual([{ name: 'lonely', code: 1 }]);
+    expect(enumValues("Enum8('lonely')")).toEqual(['lonely']);
+  });
+
+  it('a bare Enum8 with no member list: enumMembers [] but enumValues null — never an empty dropdown', () => {
+    expect(enumMembers('Enum8')).toEqual([]);
+    expect(enumValues('Enum8')).toBeNull();
+    expect(enumValues('Enum8()')).toBeNull();
   });
 });

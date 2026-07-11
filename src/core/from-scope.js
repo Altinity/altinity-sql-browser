@@ -141,6 +141,45 @@ function dedupe(refs) {
 }
 
 /**
+ * #172 v2: resolve a `paramComparisonColumns` (param-comparison.js) syntactic
+ * `{qualifier, column}` reference against the FROM scope at `pos` and the
+ * loaded `schema` — the referenced column's cached type string, or `null`
+ * when it can't be resolved with confidence:
+ *   - the qualifier doesn't match exactly one in-scope table (no match, or an
+ *     ambiguous one — ties aren't guessed at);
+ *   - unqualified, when the statement's scope has anything other than
+ *     exactly one table (an unqualified column is only unambiguous in a
+ *     single-table query);
+ *   - the column isn't loaded (yet) on that table, or (rare) resolves to
+ *     conflicting types across more than one same-named table.
+ * Matches `pendingColumnLoads`'s own db-qualified-or-not lookup rule. Zero
+ * network — only reads what `schema` already holds. Pure.
+ * @param {string} text the workbench SQL
+ * @param {number} pos the param occurrence's char offset (paramComparisonColumns's `pos`)
+ * @param {{qualifier: string|null, column: string}} ref
+ * @param {{db: string, tables: {name: string, columns?: any}[]}[]} schema
+ * @returns {string|null}
+ */
+export function resolveComparisonColumnType(text, pos, ref, schema) {
+  const scope = fromScopeAt(text, pos);
+  const candidates = scope.filter((r) => ref.qualifier == null || r.alias === ref.qualifier || r.table === ref.qualifier);
+  if (candidates.length !== 1) return null;
+  const { db, table } = candidates[0];
+  let found = null;
+  for (const d of schema || []) {
+    if (db != null && d.db !== db) continue;
+    for (const tb of d.tables || []) {
+      if (tb.name !== table || !Array.isArray(tb.columns)) continue;
+      const col = tb.columns.find((c) => c.name === ref.column);
+      if (!col) continue;
+      if (found != null && found !== col.type) return null; // conflicting types across same-named tables
+      found = col.type;
+    }
+  }
+  return found;
+}
+
+/**
  * Which of the scope's tables still need their columns fetched: the `{db, table}`
  * entries present in `schema` whose `columns` are neither loaded (an array) nor
  * in-flight (`'loading'`). Matched by db when the ref is db-qualified, else

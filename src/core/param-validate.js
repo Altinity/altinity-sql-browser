@@ -37,7 +37,7 @@
 // shape (same convention as `param-serialize.js`); `Nullable(T)` unwraps for
 // free since `parseParamType` already flattens it to `T`'s shape.
 
-import { parseParamType } from './param-type.js';
+import { parseParamType, enumMembers } from './param-type.js';
 
 const INT_UINT = /^(U?)Int(8|16|32|64|128|256)$/;
 
@@ -177,6 +177,53 @@ function validateUuid(value) {
   return { status: 'invalid', reason: 'Expected a UUID (8-4-4-4-12 hex, hyphenated or not)' };
 }
 
+// ── Enum8 / Enum16 (#172 v1 — declared-type membership) ─────────────────────
+// The declared Enum type is authoritative: ClickHouse rejects any string that
+// isn't one of its member names. LIVE-SERVER FACT (ClickHouse 26.3.13): the
+// server ALSO accepts a bare numeric code string (`1`) for a declared Enum
+// param, binding it as the member with that code — so membership here checks
+// BOTH the member names and the integer-string codes. A signed, unpadded
+// integer format (no leading zero, no leading `+`) is required for the code
+// path — the same literal shape Int/UInt validation above already demands —
+// since that's the only form live-verified to bind.
+const ENUM_CODE_FORMAT = /^-?(0|[1-9]\d*)$/;
+
+// How many member names the 'invalid' reason samples before summarizing the
+// rest as a count — long enough to usually name the value the author meant,
+// short enough that the reason stays a one-line tooltip even for a huge Enum16.
+const ENUM_REASON_SAMPLE = 8;
+
+function enumReason(members) {
+  const shown = members.slice(0, ENUM_REASON_SAMPLE).map((m) => `'${m.name}'`).join(', ');
+  const rest = members.length > ENUM_REASON_SAMPLE ? `, … (${members.length} total)` : '';
+  return `Expected one of: ${shown}${rest}`;
+}
+
+function validateEnum(type, value) {
+  const members = enumMembers(type);
+  // No parseable members (e.g. `Enum8` with a malformed/empty member list) —
+  // nothing to check against, so this degrades to the same passthrough an
+  // unrecognized type gets.
+  if (!members || !members.length) return { status: 'unknown' };
+  if (members.some((m) => m.name === value)) return { status: 'valid' };
+  if (ENUM_CODE_FORMAT.test(value) && members.some((m) => m.code === Number(value))) {
+    return { status: 'valid' };
+  }
+  // Neutral mid-typing prefixes (#170's timing model — "don't show red on the
+  // very first keystroke", hardening to invalid on blur/Enter/execute): a
+  // strict prefix of some member's NAME, a lone '-' (could still grow into a
+  // negative code), or digits that are a strict prefix of some declared
+  // code's string form ('1' on the way to code 12 — mirrors the name-prefix
+  // rule; a full number no code can extend, like '3' against codes {1, 2},
+  // stays immediately invalid, matching the live-verified server rejection).
+  const codePrefix = ENUM_CODE_FORMAT.test(value)
+    && members.some((m) => { const s = String(m.code); return s !== value && s.startsWith(value); });
+  if (value === '-' || codePrefix || members.some((m) => m.name !== value && m.name.startsWith(value))) {
+    return { status: 'incomplete' };
+  }
+  return { status: 'invalid', reason: enumReason(members) };
+}
+
 /**
  * Validate `value` (the field's current text) against its declared parameter
  * `type`. Pure. See the module doc above for the full status contract.
@@ -196,8 +243,11 @@ export function validateParamValue(type, value) {
   if (base === 'Float32' || base === 'Float64') return validateFloat(base, s);
   if (base === 'Bool' || base === 'Boolean') return validateBool(s);
   if (base === 'UUID') return validateUuid(s);
-  // String, Array(…), Map(…), Decimal(…), Enum…, Date/DateTime, and any
-  // unrecognized shape: out of v1 scope (or, for Decimal/Enum/Date*, owned by
-  // #172/#169) — always pass through.
+  if (base === 'Enum8' || base === 'Enum16') return validateEnum(t, s);
+  // String, Array(…), Map(…), Decimal(…), Date/DateTime, and any unrecognized
+  // shape: out of v1 scope (or, for Decimal/Date*, owned by #169) — always
+  // pass through. (#172 v2's schema-cache-inferred Enum suggestions never
+  // reach here as an Enum — the declared type stays whatever it really is,
+  // e.g. String — which is exactly why v2 is suggestion-only, never blocking.)
   return { status: 'unknown' };
 }

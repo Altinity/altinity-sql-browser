@@ -1182,6 +1182,14 @@ body.detached-tab .graph-overlay-panel {
   padding: 2px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
 }
 .var-combo-preview.is-error { color: var(--error-fg); }
+/* Large-enum "type to narrow" hint (#172): shown only while the rendered
+   options are a capped subset of the full type-to-filter match set — the
+   member list itself is never truncated, only what's rendered per keystroke
+   (enum-field.js's `filterEnumValues`). */
+.var-combo-hint {
+  font-size: 10.5px; font-family: var(--mono); color: var(--fg-mute);
+  padding: 2px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
 /* "Clear recent" dropdown footer (#171, combo-footer.js) — a separate
    position:fixed box anchored just under `.var-combo-list` (see that
    module's header comment for why it's not rendered as an option INSIDE the

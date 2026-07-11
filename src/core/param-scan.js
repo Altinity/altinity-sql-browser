@@ -25,12 +25,15 @@ const PARAM_RE = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z].*)$/;
 /**
  * Every ClickHouse `{name:Type}` declaration in `sql`, in appearance order,
  * one entry per occurrence (no dedup — a name may repeat, with the same or a
- * conflicting type). Placeholders inside string / backtick literals and
- * -- / # / block comments are skipped. Pure.
+ * conflicting type), with the character offsets of the WHOLE `{…}` span
+ * (`start` at `{`, `end` one past the matching `}`) — #172 v2's
+ * `paramComparisonColumns` needs these to locate each occurrence's
+ * surrounding tokens and, later, its FROM scope. Placeholders inside string /
+ * backtick literals and -- / # / block comments are skipped. Pure.
  * @param {string} sql
- * @returns {{name: string, type: string}[]}
+ * @returns {{name: string, type: string, start: number, end: number}[]}
  */
-export function scanParamDeclarations(sql) {
+export function scanParamOccurrences(sql) {
   const text = String(sql || '');
   const n = text.length;
   // Mark every character that lies inside an opaque '…'/"…"/`…` literal or a
@@ -53,7 +56,7 @@ export function scanParamDeclarations(sql) {
     while (j < n && !(!opaque[j] && (text[j] === '}' || text[j] === '{'))) j++;
     if (j < n && text[j] === '}') {
       const m = PARAM_RE.exec(text.slice(i + 1, j).trim());
-      if (m) out.push({ name: m[1], type: m[2].trim() });
+      if (m) out.push({ name: m[1], type: m[2].trim(), start: i, end: j + 1 });
       i = j + 1;
       continue;
     }
@@ -61,4 +64,18 @@ export function scanParamDeclarations(sql) {
     i += 1;
   }
   return out;
+}
+
+/**
+ * Every ClickHouse `{name:Type}` declaration in `sql`, in appearance order,
+ * one entry per occurrence (no dedup — a name may repeat, with the same or a
+ * conflicting type). Placeholders inside string / backtick literals and
+ * -- / # / block comments are skipped. A thin wrapper over
+ * `scanParamOccurrences` that drops the position fields — the shape every
+ * existing caller (query-params.js, param-pipeline.js) already expects. Pure.
+ * @param {string} sql
+ * @returns {{name: string, type: string}[]}
+ */
+export function scanParamDeclarations(sql) {
+  return scanParamOccurrences(sql).map(({ name, type }) => ({ name, type }));
 }
