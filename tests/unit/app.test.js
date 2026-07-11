@@ -581,6 +581,120 @@ describe('query run', () => {
     // the SQL text itself is untouched — ClickHouse does the substitution
     expect(init.body).toContain('{database:String}');
   });
+  it('relative time (#169): a DateTime var gets the combobox — focus opens the preset list', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    expect(input.getAttribute('role')).toBe('combobox');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect(input.getAttribute('aria-expanded')).toBe('true');
+    expect(app.dom.varStrip.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+    expect(app.dom.varStrip.querySelector('.var-combo-preview')).not.toBeNull();
+  });
+  it('relative time (#169): a non-date type keeps the plain input (no combobox)', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {n:UInt32}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    expect(input.hasAttribute('role')).toBe(false);
+  });
+  it('relative time (#169): picking a preset inserts the expression, persists it (not the resolved value), and shows a live preview', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([], { wallNow: () => 1751200000000 });
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const opt = app.dom.varStrip.querySelector('[role="option"]'); // first preset: -15m
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(input.value).toBe('-15m'); // the expression stays in the field
+    expect(app.state.varValues.from).toBe('-15m'); // …and is what's stored/persisted
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varValues')).from).toBe('-15m');
+    const preview = app.dom.varStrip.querySelector('.var-combo-preview');
+    expect(preview.textContent).toContain('-15m →');
+  });
+  it('relative time (#169): an invalid (near-miss) expression disables Run with a structured reason', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'now/q';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true })); // hardens (#170)
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(app.dom.runBtn.title).toContain('from');
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(input.title).toMatch(/Not a valid relative time expression/);
+  });
+  it('relative time (#169): Enter with the preset list closed hardens/gates via the same keydown path as a plain field', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'now/q';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(input.classList.contains('is-invalid')).toBe(true);
+  });
+  it('relative time (#169): Enter with an active preset option commits it via keydown instead of hardening the prior text', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.focus(); // a real focus (not a synthetic dispatchEvent) — matches document.activeElement
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(input.value).toBe('-15m'); // the first preset, committed — not left as invalid/empty text
+    expect(input.getAttribute('aria-expanded')).toBe('false'); // list closed by the commit
+  });
+  it('relative time (#169): a filled relative expression resolves to epoch seconds on the wave clock and re-resolves on the next run', async () => {
+    const { app, e } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    const tab = app.activeTab();
+    tab.sql = 'SELECT {from:DateTime}';
+    app.state.varValues = { from: '-1h' };
+    await app.actions.run();
+    const [url1] = app.chCtx.fetch.mock.calls[0];
+    expect(url1).toMatch(new RegExp(`param_from=${Math.round((1751200000000 - 3600000) / 1000)}(?:&|$)`));
+    // advance the injected clock and re-run: the stored expression re-resolves
+    // to a different absolute value (the moving window, #173's batch clock)
+    e.wallNow = () => 1751200000000 + 3600000;
+    app.chCtx.fetch.mockClear();
+    await app.actions.run();
+    const [url2] = app.chCtx.fetch.mock.calls[0];
+    expect(url2).toMatch(new RegExp(`param_from=${Math.round(1751200000000 / 1000)}(?:&|$)`));
+  });
+  it('relative time (#169): a Date var formats as a calendar date; non-date types are unaffected by a relative-looking value', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    const tab = app.activeTab();
+    tab.sql = 'SELECT {day:Date}, {tag:String}';
+    app.state.varValues = { day: 'now', tag: '-1h' }; // a String var keeps a relative-looking value verbatim
+    await app.actions.run();
+    const [url] = app.chCtx.fetch.mock.calls[0];
+    const expectedDay = new Date(1751200000000).toISOString().slice(0, 10);
+    expect(url).toMatch(new RegExp(`param_day=${expectedDay}(?:&|$)`));
+    expect(url).toMatch(/param_tag=-1h(?:&|$)/);
+  });
+  it('relative time (#169): composes with an optional /*[ ]*/ block (#165) — a relative value inside an active block resolves and binds', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    const tab = app.activeTab();
+    tab.sql = 'SELECT * FROM t WHERE 1 /*[ AND d >= {from:DateTime} ]*/';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '-1h';
+    input.dispatchEvent(new Event('input', { bubbles: true })); // activates the block (#165) and stores the expression
+    await app.actions.run();
+    const [url, init] = app.chCtx.fetch.mock.calls[0];
+    expect(init.body).toContain('AND d >= {from:DateTime}'); // block materialized (active)
+    expect(url).toMatch(new RegExp(`param_from=${Math.round((1751200000000 - 3600000) / 1000)}(?:&|$)`));
+  });
   it('query variables (#134): a CREATE VIEW definition is sent unchanged (no substitution)', async () => {
     const { app } = appForRun([[(u, sql) => /CREATE VIEW/.test(sql), resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));

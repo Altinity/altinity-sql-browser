@@ -7,8 +7,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "node build/build.mjs",
-    "test": "vitest run --coverage --config tests/vitest.config.ts",
-    "test:watch": "vitest --config tests/vitest.config.ts",
+    "test": "TZ=America/New_York vitest run --coverage --config tests/vitest.config.ts",
+    "test:watch": "TZ=America/New_York vitest --config tests/vitest.config.ts",
     "test:e2e": "playwright test",
     "dev": "node build/build.mjs && python3 -m http.server -d dist 8900",
     "local": "node build/build.mjs && python3 build/local.py"

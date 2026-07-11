@@ -15,7 +15,7 @@ import { paramArgs } from '../../src/core/query-params.js';
 
 const src = (id, sql, over = {}) => ({ id, label: id, kind: 'tab', sql, ...over });
 
-describe('stage functions (#165/#170 real; #169 identity until it lands)', () => {
+describe('stage functions (#165/#169/#170 real)', () => {
   it('analysisView / executionView are identity for SQL without optional blocks', () => {
     expect(analysisView('SELECT 1')).toBe('SELECT 1');
     expect(executionView('SELECT 1', { a: true })).toBe('SELECT 1');
@@ -26,8 +26,15 @@ describe('stage functions (#165/#170 real; #169 identity until it lands)', () =>
     expect(executionView(sql, {})).toBe('SELECT 1 ');
     expect(executionView(sql, { a: true })).toBe('SELECT 1  AND a = {a:String} ');
   });
-  it('resolveRelativeValue is identity (#169 not landed); validateParamValue passes through an out-of-scope type', () => {
-    expect(resolveRelativeValue('-1h', { base: 'DateTime' }, 123)).toBe('-1h');
+  it('resolveRelativeValue (#169) resolves a relative expression against the given clock', () => {
+    expect(resolveRelativeValue('-1h', { base: 'DateTime' }, 3600123)).toBe('0');
+    // a near-miss comes back as the {error} sentinel, not a value
+    expect(resolveRelativeValue('now/q', { base: 'DateTime' }, 123)).toEqual({ error: expect.any(String) });
+    // non-date types and absolute values are untouched
+    expect(resolveRelativeValue('-1h', { base: 'String' }, 123)).toBe('-1h');
+    expect(resolveRelativeValue('2026-07-11', { base: 'Date' }, 123)).toBe('2026-07-11');
+  });
+  it('validateParamValue passes through an out-of-scope type', () => {
     expect(validateParamValue('x', { base: 'String' }, 'execute')).toBe('unknown');
   });
   it('validateParamValue (#170) adapts param-validate.js\'s {status,reason} into the stage contract', () => {
@@ -70,6 +77,50 @@ describe('#170 end-to-end: the real validator wired as the pipeline default (no 
     expect(p.fields.n).toEqual({ state: 'ok' });
     expect(p.sources[0]).toMatchObject({ runnable: true });
     expect(p.sources[0].statements[0].args).toEqual({ param_n: '42' });
+  });
+});
+
+describe('#169 end-to-end: the real relative-time resolver wired as the pipeline default', () => {
+  it('a relative expression resolves to a formatted literal and binds; the stored/raw value stays the expression', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}')]);
+    const nowMs = 1751200000000; // fixed wave clock
+    const p = prepareParameterizedBatch(a, { values: { from: '-1h' }, wallNowMs: nowMs, validationMode: 'execute' });
+    expect(p.fields.from).toEqual({ state: 'ok' });
+    expect(p.sources[0]).toMatchObject({ runnable: true });
+    const expected = String(Math.round((nowMs - 3600000) / 1000));
+    expect(p.sources[0].statements[0].args).toEqual({ param_from: expected });
+    const snap = p.sources[0].statements[0].boundParams[0];
+    expect(snap.rawValue).toBe('-1h'); // the expression, not the resolved instant (#169: it re-resolves every wave)
+    expect(snap.resolvedValue).toBe(expected);
+    expect(snap.serializedValue).toBe(expected);
+  });
+  it('a near-miss relative expression gates its source invalid with a structured reason, never sent', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}')]);
+    const p = prepareParameterizedBatch(a, { values: { from: 'now/q' }, wallNowMs: 123, validationMode: 'input' });
+    expect(p.sources[0]).toMatchObject({ invalid: ['from'], runnable: false });
+    expect(p.fields.from.state).toBe('invalid');
+    expect(p.fields.from.reason).toMatch(/Not a valid relative time expression/);
+    expect(p.sources[0].statements[0].args).toEqual({});
+  });
+  it('an absolute value for a date-like type keeps working unchanged', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {d:Date}')]);
+    const p = prepareParameterizedBatch(a, { values: { d: '2026-07-11' }, wallNowMs: 123 });
+    expect(p.fields.d).toEqual({ state: 'ok' });
+    expect(p.sources[0].statements[0].args).toEqual({ param_d: '2026-07-11' });
+  });
+  it('non-date-typed variables are completely unaffected by a relative-looking value', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {s:String}')]);
+    const p = prepareParameterizedBatch(a, { values: { s: '-1h' }, wallNowMs: 123 });
+    expect(p.fields.s).toEqual({ state: 'ok' });
+    expect(p.sources[0].statements[0].args).toEqual({ param_s: '-1h' });
+  });
+  it('one pinned wallNowMs resolves the same relative value across every statement of the wave', () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}; SELECT {from:DateTime}')]);
+    const nowMs = 1751200000000;
+    const p = prepareParameterizedBatch(a, { values: { from: '-1h' }, wallNowMs: nowMs });
+    const expected = String(Math.round((nowMs - 3600000) / 1000));
+    expect(p.sources[0].statements[0].args.param_from).toBe(expected);
+    expect(p.sources[0].statements[1].args.param_from).toBe(expected);
   });
 });
 

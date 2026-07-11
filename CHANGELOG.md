@@ -55,14 +55,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   only visually out of sync with the actual gate), and a field whose value
   fails serialization no longer rolls up as `ok` in `prepareParameterizedBatch`'s
   per-field state.
+- **Relative time expressions for date/time variables** (#169). A
+  `Date`/`Date32`/`DateTime`/`DateTime64(N)` (any `Nullable(…)`-wrapped)
+  variable now accepts Grafana-grammar relative expressions — `-1h`,
+  `now-7d`, `now/d` — alongside absolute values: the stored value is the
+  expression, so it re-resolves against "now" on every workbench Run,
+  Dashboard load/Refresh, or filter-change wave instead of freezing a
+  timestamp the moment it's typed. New pure `src/core/relative-time.js`
+  (100% covered) — `resolveRelativeValue`/`isDateLikeType`/
+  `resolveVarValues` — parses the grammar (case-sensitive units; `s`/`m`/`h`
+  offsets are fixed durations, `d`/`w`/`M`/`y` offsets and all `/u` rounding
+  are local-timezone calendar arithmetic with DST-safe "same wall-clock time"
+  semantics and month-end clamping) and formats per declared type (local
+  calendar date / integer epoch seconds / epoch seconds with an `N`-digit
+  fraction — live-verified against ClickHouse 26.3.13's `param_*` path). A
+  near-miss expression (starts `now…` or sign+digits but fails to parse)
+  gates via #170's existing invalid-field machinery — no second affordance.
+  Plugs into #173's pipeline as the real `resolveRelativeValue` stage
+  (previously identity). The UI is the first consumer of a new accessible
+  type-to-filter combobox primitive (`src/ui/combobox.js`, #174 §1 — full
+  keyboard map, ARIA `combobox`/`listbox`/`option` roles, IME-composition
+  safety, mousedown-before-blur commit) composed in
+  `src/ui/relative-time-field.js` with a live resolved-value preview labeled
+  in the browser's own timezone; both the workbench var-strip and the
+  Dashboard's global filter bar (#149 D3) upgrade their date-like fields to
+  it, unchanged for every other type.
 - **Shared parameter pipeline (Phase 7.0)** (#173). A pure, two-phase,
   multi-source parameter pipeline — `analyzeParameterizedSources` (per-field
   declarations across all occurrences, per-source requiredness, cross-source
   type-conflict diagnostics) and `prepareParameterizedBatch` (per-source
   `{statements, missing, invalid, errors, runnable}` verdicts, immutable
   `boundParams` snapshots, per-param field states) — that
-  #165/#169/#170/#171/#172/#160/#175 plug into via identity/unknown stage
-  seams. Includes a typed serializer: `Array(T)` values bind as ClickHouse
+  #165/#169/#170/#171/#172/#160/#175 plug into via stage seams (#165/#169/#170
+  real from their own entries above; #171/#172/#160/#175 still identity/
+  unknown until they land). Includes a typed serializer: `Array(T)` values bind as ClickHouse
   array literals with correct quote/backslash escaping, big integers
   (`UInt64`/`UInt128`/`UInt256`, `Int128`/`Int256`) stay strings end-to-end
   (never through a JS `Number`), and scalar-string values remain
