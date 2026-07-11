@@ -167,6 +167,22 @@ zero third-party requests. On top of it:
   wall-clock rendering differs. The trade-off this implies: "now" is the
   **client's** clock, which can skew from the server's `now()` — the same
   trade-off Grafana makes, accepted rather than compensated for.
+- **Recent values** — every `{name:Type}` field also remembers the **10 most
+  recently used** values per variable name, offered in a dropdown on focus
+  (type-to-filter; click inserts, Esc/blur closes, the field stays free-text).
+  A value is recorded only when a statement or dashboard tile **completes
+  successfully** — never on a keystroke, never from a failed statement — and
+  only the params that were actually sent (a param confined to an inactive
+  optional filter block, or left blank, is never recorded). For a relative
+  time expression the **typed expression** is remembered (`-1h`), not the
+  resolved instant, so it keeps re-resolving on reuse; a date-like field's
+  dropdown combines its presets and recents in one list. History is
+  name-keyed and shared across every query/tab/dashboard exactly like
+  `varValues` — persisted in the browser's `localStorage`, so it is
+  **plaintext, same exposure as `varValues`**: don't put secrets in a
+  variable's value. "Clear recent" (per field) and "Clear all recent
+  values" + a "Remember recent variable values" toggle live in the header
+  **File** menu.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

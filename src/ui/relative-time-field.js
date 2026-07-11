@@ -18,9 +18,21 @@
 // way — rather than this module attaching its own listeners — avoids two
 // independent 'keydown' listeners racing over the same Enter keystroke (see
 // combobox.js's header comment).
+//
+// #171: an optional `getRecents(text)` — a LIVE callback, not a snapshot
+// array (see recent-field.js's header comment on why) — upgrades the preset
+// list into ONE combined dropdown: presets first (group "Presets"), then a
+// "Recent" group of recorded expressions (a relative expression like `-1h`
+// is recorded as typed and re-resolves on reuse, same as picking a preset).
+// Omitting `getRecents` keeps this exactly the presets-only dropdown it
+// always was — combobox.js itself is untouched either way. (#160's curated
+// `filter:` params, when they land, opt a field out of both presets and
+// recents entirely — nothing to check yet, since no curated param exists
+// before #160.)
 
 import { h } from './dom.js';
 import { createCombobox } from './combobox.js';
+import { attachComboFooter } from './combo-footer.js';
 import { formatPreview } from '../core/relative-time.js';
 
 /** v1 preset list (#169 spec) — plain combobox option data. */
@@ -55,6 +67,8 @@ const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
  * @param {{
  *   document?: Document, name: string, type: string, value: string,
  *   baseTitle: string, wallNow: () => number,
+ *   getRecents?: (text: string) => string[], // #171: live, already type+text-filtered
+ *   onClearRecent?: () => void,
  *   onValueInput: () => void, // caller's existing oninput body (persist, validate, repaint)
  *   onCommit: () => void,     // caller's existing blur/Enter body (harden, repaint)
  * }} opts
@@ -62,7 +76,9 @@ const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
  *            onInput: Function, onKeyDown: (e: KeyboardEvent) => boolean,
  *            onBlur: Function, onCompositionStart: Function, onCompositionEnd: Function}}
  */
-export function buildRelativeTimeField({ document: doc, name, type, value, baseTitle, wallNow, onValueInput, onCommit }) {
+export function buildRelativeTimeField({
+  document: doc, name, type, value, baseTitle, wallNow, getRecents, onClearRecent, onValueInput, onCommit,
+}) {
   const d = doc || document;
   const suffix = idSafe(name);
   const listId = 'var-combo-list-' + suffix;
@@ -117,13 +133,26 @@ export function buildRelativeTimeField({ document: doc, name, type, value, baseT
     }
   }
 
+  // #171: with `getRecents`, one combined list — presets first (tagged so
+  // they render under a "Presets" group header), then a "Recent" group of
+  // recorded expressions, live-filtered by both the field's current declared
+  // type and the typed text (see recentOptions in core/recent-values.js).
+  // Without `getRecents`, this is unchanged: bare, ungrouped presets.
+  function buildOptions(text) {
+    const presets = filterPresets(text);
+    if (!getRecents) return presets;
+    const recents = getRecents(text).map((v) => ({ value: v, label: v, group: 'Recent' }));
+    return presets.map((p) => ({ ...p, group: 'Presets' })).concat(recents);
+  }
+
   const combo = createCombobox({
     input, listEl, liveEl, document: d,
-    getOptions: (text) => filterPresets(text),
-    // Picking a preset is a deliberate, complete action — simulate "typed the
-    // full expression, then committed it" rather than the debounced/lenient
-    // typing path, so it takes effect immediately (workbench: re-validates
-    // and re-enables Run right away; dashboard: bypasses the 500ms debounce).
+    getOptions: (text) => buildOptions(text),
+    // Picking a preset OR a recent is a deliberate, complete action —
+    // simulate "typed the full expression, then committed it" rather than
+    // the debounced/lenient typing path, so it takes effect immediately
+    // (workbench: re-validates and re-enables Run right away; dashboard:
+    // bypasses the 500ms debounce).
     onCommit: () => { updatePreview(true); onValueInput(); onCommit(); },
   });
 
@@ -131,22 +160,35 @@ export function buildRelativeTimeField({ document: doc, name, type, value, baseT
   // restored dashboard filter, …) — never "mid-typing" — so it's committed.
   updatePreview(true);
 
+  // See combo-footer.js's header comment for why this is a separate element
+  // rather than combobox.js growing a footer concept. Absent entirely (no
+  // DOM node) when the caller hasn't wired recents at all.
+  const footer = getRecents
+    ? attachComboFooter({
+      input, listEl, combo,
+      hasRecents: () => getRecents('').length > 0,
+      onClear: () => { if (onClearRecent) onClearRecent(); },
+    })
+    : null;
+  const syncFooter = () => { if (footer) footer.sync(); };
+
   return {
-    el: h('div', { class: 'var-combo' }, input, listEl, liveEl, previewEl),
+    el: h('div', { class: 'var-combo' }, input, listEl, liveEl, previewEl, footer ? footer.el : null),
     input,
     previewEl,
-    onFocus: () => combo.onFocus(),
-    onInput: () => { combo.onInput(); updatePreview(false); },
+    onFocus: () => { combo.onFocus(); syncFooter(); },
+    onInput: () => { combo.onInput(); updatePreview(false); syncFooter(); },
     onKeyDown: (e) => {
       const consumed = combo.onKeyDown(e);
       // Enter not consumed by the combobox (no active option) falls through
       // to the caller's own hard-commit logic (app.js/dashboard.js) — harden
       // the preview the same way blur does (#170's commit timing).
       if (!consumed && e.key === 'Enter') updatePreview(true);
+      syncFooter();
       return consumed;
     },
-    onBlur: () => { combo.onBlur(); updatePreview(true); },
+    onBlur: () => { combo.onBlur(); updatePreview(true); syncFooter(); },
     onCompositionStart: () => combo.onCompositionStart(),
-    onCompositionEnd: () => { combo.onCompositionEnd(); updatePreview(false); },
+    onCompositionEnd: () => { combo.onCompositionEnd(); updatePreview(false); syncFooter(); },
   };
 }

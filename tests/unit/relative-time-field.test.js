@@ -195,3 +195,88 @@ describe('buildRelativeTimeField — combobox delegation', () => {
     expect(preview.textContent).toContain('-15m →');
   });
 });
+
+// #171: composing the recents dropdown into this same combobox — presets
+// stay exactly as above (previous describe block) when `getRecents` is
+// omitted; these cover the combined-list behavior when it's supplied.
+describe('buildRelativeTimeField — #171 recents composition', () => {
+  it('without getRecents, no footer node exists at all', () => {
+    const { field } = build();
+    expect(field.el.querySelector('.var-combo-footer')).toBeNull();
+  });
+  it('with getRecents, the list groups presets first, then a Recent group', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    field.onFocus();
+    const groups = [...field.el.querySelectorAll('.combo-group')].map((g) => g.textContent);
+    expect(groups).toEqual(['Presets', 'Recent']);
+    const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(opts[opts.length - 1]).toBe('-3h');
+    expect(opts).toHaveLength(RELATIVE_TIME_PRESETS.length + 1);
+  });
+  it('recents are live-filtered by the typed text, same as presets', () => {
+    const getRecents = vi.fn((text) => (text === 'now' ? ['now-custom'] : []));
+    const { field } = build({ getRecents });
+    field.onFocus();
+    field.input.value = 'now';
+    field.onInput();
+    expect(getRecents).toHaveBeenCalledWith('now');
+    const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(opts).toContain('now-custom');
+  });
+  it('picking a recent commits exactly like a preset (updates value, preview, fires callbacks)', () => {
+    const { field, onValueInput, onCommit } = build({ value: '', getRecents: () => ['-3h'] });
+    field.onFocus();
+    const opts = field.el.querySelectorAll('[role="option"]');
+    const recentOpt = opts[opts.length - 1];
+    recentOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.input.value).toBe('-3h');
+    expect(onValueInput).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+  it('the footer is hidden until opened, shown when open with recents, hidden again on blur', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    const footer = field.el.querySelector('.var-combo-footer');
+    expect(footer.hidden).toBe(true);
+    field.onFocus();
+    expect(footer.hidden).toBe(false);
+    field.onBlur();
+    expect(footer.hidden).toBe(true);
+  });
+  it('the footer stays hidden when open with no recents at all', () => {
+    const { field } = build({ getRecents: () => [] });
+    field.onFocus();
+    expect(field.el.querySelector('.var-combo-footer').hidden).toBe(true);
+  });
+  it('clicking Clear calls onClearRecent and re-syncs the footer', () => {
+    let recents = ['-3h'];
+    const onClearRecent = vi.fn(() => { recents = []; });
+    const { field } = build({ getRecents: () => recents, onClearRecent });
+    field.onFocus();
+    const footer = field.el.querySelector('.var-combo-footer');
+    expect(footer.hidden).toBe(false);
+    const btn = footer.querySelector('button.var-combo-clear');
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(onClearRecent).toHaveBeenCalledTimes(1);
+    expect(footer.hidden).toBe(true);
+  });
+  it('omitting onClearRecent is tolerated (no-op on click)', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    field.onFocus();
+    const btn = field.el.querySelector('button.var-combo-clear');
+    expect(() => btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).not.toThrow();
+  });
+  it('ArrowDown/keyboard nav also re-syncs the footer', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    const footer = field.el.querySelector('.var-combo-footer');
+    field.onKeyDown({ key: 'ArrowDown', preventDefault: () => {} });
+    expect(footer.hidden).toBe(false);
+  });
+  it('composition end re-syncs the footer too', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    const footer = field.el.querySelector('.var-combo-footer');
+    field.onFocus();
+    field.onCompositionStart();
+    field.onCompositionEnd();
+    expect(footer.hidden).toBe(false);
+  });
+});

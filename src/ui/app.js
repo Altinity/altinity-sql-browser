@@ -46,6 +46,8 @@ import { openDetailPane } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
+import { buildRecentField } from './recent-field.js';
+import { recordRecent, clearRecent, clearAllRecent, recentOptions } from '../core/recent-values.js';
 import { isDateLikeType } from '../core/relative-time.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
@@ -165,6 +167,46 @@ export function createApp(env = {}) {
   app.saveVarValues = () => saveJSON(KEYS.varValues, app.state.varValues);
   // Persist the optional-block activation map (#165) alongside varValues.
   app.saveFilterActive = () => saveJSON(KEYS.filterActive, app.state.filterActive);
+  // Persist the per-variable recent-value MRU history (#171) alongside
+  // varValues — same key convention, own key.
+  app.saveVarRecent = () => saveJSON(KEYS.varRecent, app.state.varRecent);
+  app.saveVarRecentDisabled = () => saveJSON(KEYS.varRecentDisabled, app.state.varRecentDisabled);
+  // Record every successful statement's `boundParams` (#173's immutable
+  // per-statement snapshots) into the recent-value history — the single hook
+  // point every success path (run/runScript's single-statement + per-script-
+  // statement paths, and the dashboard's per-tile completion) calls. A no-op
+  // while the disable-history preference is on (existing history is left
+  // alone, only new recording stops) or when nothing was actually bound.
+  // Array-valued `rawValue` (an `Array(...)`-typed param) is skipped — v1
+  // recents are a text-value affordance, like #172's (not yet built) enum
+  // controls; #160's curated-`filter:`-param opt-out hook has nothing to
+  // check yet (no curated param exists before #160 lands).
+  app.recordBoundParams = (boundParams) => {
+    if (app.state.varRecentDisabled || !boundParams || !boundParams.length) return;
+    let map = app.state.varRecent;
+    for (const p of boundParams) {
+      if (typeof p.rawValue !== 'string') continue;
+      map = recordRecent(map, p.name, p.rawValue);
+    }
+    if (map !== app.state.varRecent) {
+      app.state.varRecent = map;
+      app.saveVarRecent();
+    }
+  };
+  // Per-field "Clear recent" (the dropdown footer) / "Clear all recent
+  // values" (the File menu) — both no-op (no re-persist) when there was
+  // nothing to clear, mirroring recordRecent's own same-reference no-op.
+  app.clearVarRecent = (name) => {
+    const next = clearRecent(app.state.varRecent, name);
+    if (next !== app.state.varRecent) {
+      app.state.varRecent = next;
+      app.saveVarRecent();
+    }
+  };
+  app.clearAllVarRecent = () => {
+    app.state.varRecent = clearAllRecent();
+    app.saveVarRecent();
+  };
   app.FileReader = env.FileReader || win.FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
@@ -696,6 +738,10 @@ export function createApp(env = {}) {
       app.state.running.value = true;
     });
 
+    // One prepared source for the whole run wave (#173) — reused for both the
+    // request's args and, on success, the recent-value recording (#171) below,
+    // so both read exactly the same boundParams snapshot.
+    const src = prepareTabSource(srcSql, waveMs);
     try {
       const out = await ch.runQuery(chCtx, runSql, {
         format: fmt,
@@ -705,7 +751,7 @@ export function createApp(env = {}) {
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
-        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(prepareTabSource(srcSql, waveMs)) },
+        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src) },
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -732,6 +778,10 @@ export function createApp(env = {}) {
       app.state.running.value = false;
       if (!tab.result.error && !tab.result.cancelled) {
         app.recordHistory(tab, opts && opts.sql);
+        // #171: this statement succeeded — record its bound params (exactly
+        // what was actually sent; an omitted-optional-block param never
+        // reached `src.statements[*].boundParams` in the first place).
+        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
         if (isSchemaMutatingSql(runSql)) app.loadSchema(); // not awaited — fire and forget
       }
     }
@@ -832,6 +882,11 @@ export function createApp(env = {}) {
         } else {
           entries.push({ sql: stmt, status: 'ok', ms });
         }
+        // #171: THIS statement succeeded — record its own boundParams. Per
+        // statement, not per script: statement 1 of a later-failing script
+        // still records; the failed statement and anything after the `break`
+        // above never reaches this line.
+        app.recordBoundParams(paramSrc.statements[i].boundParams);
         renderResults(app);
       }
     } finally {
@@ -1008,10 +1063,18 @@ export function createApp(env = {}) {
             applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
             setRunBtn(app.state.running.value, batch.sources[0]);
           };
+          // #171: live-filtered recents for this field (type + typed text),
+          // called fresh on every dropdown open/keystroke — never a snapshot
+          // — so a value recorded by a run that completes without changing
+          // the strip's {name:Type} signature is never stale. (#160's
+          // curated-param opt-out hook: nothing to check yet — no curated
+          // param exists before #160 lands.)
+          const getRecents = (text) => recentOptions(app.state.varRecent, v.name, v.type, text);
+          const onClearRecent = () => app.clearVarRecent(v.name);
           if (dateLike) {
             combo = buildRelativeTimeField({
               document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-              baseTitle, wallNow, onValueInput, onCommit: onCommitHard,
+              baseTitle, wallNow, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
             });
             input = combo.input;
             input.addEventListener('focus', () => combo.onFocus());
@@ -1025,16 +1088,21 @@ export function createApp(env = {}) {
             input.addEventListener('compositionstart', () => combo.onCompositionStart());
             input.addEventListener('compositionend', () => combo.onCompositionEnd());
           } else {
-            input = h('input', {
-              type: 'text', class: 'var-input',
-              value: app.state.varValues[v.name] || '',
-              placeholder: v.type,
-              title: baseTitle,
-              'aria-label': v.name,
-              oninput: onValueInput,
-              onblur: onCommitHard,
-              onkeydown: (e) => { if (e.key === 'Enter') onCommitHard(); },
+            combo = buildRecentField({
+              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
+              baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
             });
+            input = combo.input;
+            input.addEventListener('focus', () => combo.onFocus());
+            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+            input.addEventListener('keydown', (e) => {
+              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
+              if (e.key !== 'Enter') return;
+              onCommitHard();
+            });
+            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+            input.addEventListener('compositionstart', () => combo.onCompositionStart());
+            input.addEventListener('compositionend', () => combo.onCompositionEnd());
           }
           hardenVar(v.name, initialFields[v.name]);
           applyFieldState(input, initialFields[v.name], baseTitle, combo && combo.previewEl);

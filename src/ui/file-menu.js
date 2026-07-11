@@ -94,11 +94,37 @@ export function openFileMenu(app) {
     if (!hasFav) { flashToast('Star a query to add it to the dashboard', { document: app.document }); return; }
     app.actions.openDashboard();
   });
+  // Variable recent-value history (#171): this is the closest thing the app
+  // has to a "settings" surface today (no dedicated preferences panel exists
+  // yet — rg for one turned up nothing), so it follows the File menu's own
+  // established pattern (a labeled section + `.fm-item` rows) rather than
+  // inventing a new surface. "Remember recent variable values" toggles
+  // recording only — existing history is retained until explicitly cleared,
+  // by this action or a field's own "Clear recent" (combo-footer.js).
+  const historyToggle = h('label', { class: 'fm-item fm-toggle' },
+    h('input', {
+      type: 'checkbox', class: 'fm-checkbox',
+      checked: !app.state.varRecentDisabled,
+      onchange: (e) => {
+        app.state.varRecentDisabled = !e.target.checked;
+        app.saveVarRecentDisabled();
+      },
+    }),
+    h('span', { class: 'fm-label' }, 'Remember recent variable values'));
+  const clearAllRecentItem = item(Icon.trash(), 'Clear all recent values', null, () => {
+    close();
+    app.clearAllVarRecent();
+    flashToast('Cleared recent variable values', { document: app.document });
+  });
   const menu = h('div', { class: 'file-menu' },
     newLibraryItem,
     sep(),
     h('div', { class: 'fm-section' }, 'Dashboard'),
     dashboardItem,
+    sep(),
+    h('div', { class: 'fm-section' }, 'Variable history'),
+    historyToggle,
+    clearAllRecentItem,
     sep(),
     h('div', { class: 'fm-section' }, 'Save library'),
     item(Icon.download(), 'Save JSON', '.json', () => { close(); saveJsonAction(app); }),

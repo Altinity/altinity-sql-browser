@@ -9,6 +9,7 @@ import {
   snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
 } from '../../src/core/auth-handoff.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
+import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
@@ -750,7 +751,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
   });
 
   describe('#169 relative time', () => {
-    it('a date-like param gets the combobox; a non-date param keeps the plain input', async () => {
+    it('a date-like param gets the preset+preview combobox; a non-date param gets the #171 recents-only combobox (no preview)', async () => {
       const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime} AND r = {region:String}')];
       const app = dashApp(favorites, vi.fn(async () => chartResult()));
       app.state.varValues = { from: '-1h', region: 'us' };
@@ -758,8 +759,9 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       const fromInput = fieldInput(app.root, 'from');
       const regionInput = fieldInput(app.root, 'region');
       expect(fromInput.getAttribute('role')).toBe('combobox');
-      expect(regionInput.hasAttribute('role')).toBe(false);
+      expect(regionInput.getAttribute('role')).toBe('combobox'); // #171: every field is a combobox now
       expect(fromInput.closest('.var-field').querySelector('.var-combo-preview')).not.toBeNull();
+      expect(regionInput.closest('.var-field').querySelector('.var-combo-preview')).toBeNull();
     });
     it('picking a preset inserts the expression, persists it, and commits IMMEDIATELY — bypassing the debounce', async () => {
       vi.useFakeTimers();
@@ -865,6 +867,86 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       expect(fieldInput(app.root, 'from').value).toBe('-1h');
       expect(app.saveVarValues).not.toHaveBeenCalled(); // nothing edited yet — just restored
     });
+  });
+});
+
+// ── D3 + #171: recent-value recording + the recents dropdown ────────────────
+describe('renderDashboard — recent values (#171)', () => {
+  const paramFav = (id, sql) => ({ id, name: id, sql, favorite: true });
+  const fieldInput = (root, name) => root.querySelector('.var-field input[aria-label="' + name + '"]');
+
+  it('records the wave\'s boundParams on a successful tile completion', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
+    expect(app.recordBoundParams.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ name: 'year', rawValue: '2024' }),
+    ]);
+  });
+
+  it('never records on a failed tile', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => ({ error: 'boom' }));
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(app.recordBoundParams).not.toHaveBeenCalled();
+  });
+
+  it('an omitted-optional-block param is never in the recorded boundParams', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    await renderDashboard(app); // d blank → block inactive → not bound at all
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
+    expect(app.recordBoundParams.mock.calls[0][0]).toEqual([]);
+  });
+
+  it('a non-date field shows recorded recents on focus, newest-first, filtered as you type', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE r = {region:String}')];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    let map = emptyRecentMap();
+    map = recordRecent(map, 'region', 'us');
+    map = recordRecent(map, 'region', 'eu');
+    app.state.varRecent = map;
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'region');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect([...app.root.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(['eu', 'us']);
+    input.value = 'us';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect([...app.root.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(['us']);
+  });
+
+  it('clicking a recent inserts it; "Clear recent" calls app.clearVarRecent(name)', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE r = {region:String}')];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'region', 'us');
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'region');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const opt = app.root.querySelector('[role="option"]');
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(input.value).toBe('us');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const clearBtn = app.root.querySelector('button.var-combo-clear');
+    clearBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.clearVarRecent).toHaveBeenCalledWith('region');
+  });
+
+  it('a date-like field composes ONE dropdown: presets first, then a Recent group', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'from', '-3h'); // not a built-in preset
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'from');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const groups = [...app.root.querySelectorAll('.combo-group')].map((g) => g.textContent);
+    expect(groups).toEqual(['Presets', 'Recent']);
+    expect([...app.root.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toContain('-3h');
   });
 });
 

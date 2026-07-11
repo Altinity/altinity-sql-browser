@@ -95,9 +95,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   type-conflict diagnostics) and `prepareParameterizedBatch` (per-source
   `{statements, missing, invalid, errors, runnable}` verdicts, immutable
   `boundParams` snapshots, per-param field states) — that
-  #165/#169/#170/#171/#172/#160/#175 plug into via stage seams (#165/#169/#170
-  real from their own entries above; #171/#172/#160/#175 still identity/
-  unknown until they land). Includes a typed serializer: `Array(T)` values bind as ClickHouse
+  #165/#169/#170/#171/#172/#160/#175 plug into (#165/#169/#170 via their own
+  stage seams, real from their entries above; #171 below reads the
+  `boundParams` output directly rather than overriding a stage; #172/#160/
+  #175 still identity/unknown until they land). Includes a typed serializer: `Array(T)` values bind as ClickHouse
   array literals with correct quote/backslash escaping, big integers
   (`UInt64`/`UInt128`/`UInt256`, `Int128`/`Int256`) stay strings end-to-end
   (never through a JS `Number`), and scalar-string values remain
@@ -106,6 +107,43 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   source — on the dashboard, one bad tile never blocks its siblings. Execution
   waves share one separately-injected wall clock (`env.wallNow`), distinct
   from the `performance.now`-based duration clock.
+- **Per-variable recent-value history with an MRU dropdown** (#171). Every
+  `{name:Type}` field now remembers its **10 most recently used** values,
+  offered in a dropdown on focus (type-to-filter, click inserts, Esc/blur
+  closes — the field stays free-text). A value is recorded only when a
+  statement or dashboard tile **completes successfully**, read straight from
+  that statement's #173 `boundParams` snapshot: a failed statement records
+  nothing, statement 1 of a later-failing script still records, a param
+  confined to an inactive #165 optional block is never recorded, and an
+  empty string is never recorded even when actively bound. A relative-time
+  value (#169) records the typed *expression* (`-1h`), never the resolved
+  instant, so it keeps re-resolving on reuse. New pure
+  `src/core/recent-values.js` (100% covered): `recordRecent`/`clearRecent`/
+  `clearAllRecent` (MRU insert, exact-string dedupe/move-to-front, a 10-per-
+  name cap and a ~100-entry global-LRU total cap across all names), plus
+  `visibleRecents`/`filterRecentValues`/`recentOptions` — the render-time
+  helper that hides (never deletes) a recent #170's validator marks invalid
+  for the field's *current* declared type, so it reappears once viewed
+  through a compatible declaration. Storage is `asb:varRecent`
+  (versioned + sequence-stamped, name-keyed like `varValues`, shared/
+  persisted the same way — plaintext, same exposure). Two new UI seams
+  compose the existing accessible combobox primitive (`src/ui/combobox.js`,
+  #174 §1) rather than building a second control: `src/ui/recent-field.js`
+  (recents-only, for every non-date-like field) and an extension to
+  `src/ui/relative-time-field.js` (adds an optional `getRecents` that
+  upgrades its dropdown into ONE combined list — presets first, then a
+  "Recent" group). A separate `src/ui/combo-footer.js` renders the per-field
+  "Clear recent" affordance as its own small `position:fixed` box anchored
+  under the listbox (kept out of `combobox.js` itself, whose `listEl` is
+  fully owned by its own render pass, and out of the listbox's own
+  `role="option"` items, where a destructive action would be an ARIA
+  regression). The header **File** menu gains a "Variable history" section:
+  a "Remember recent variable values" preference (recording off, existing
+  history retained until cleared) and a "Clear all recent values" action —
+  the closest thing the app has to a settings surface today. Both the
+  workbench variables strip (app.js) and the Dashboard's global filter bar
+  (#149 D3, dashboard.js) record on their respective success paths and share
+  the same dropdown/footer wiring.
 
 ### Fixed
 - **Multi-statement SQL now binds query parameters per statement everywhere**

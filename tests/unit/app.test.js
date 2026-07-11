@@ -4,6 +4,8 @@ import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
+import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
+import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -592,12 +594,15 @@ describe('query run', () => {
     expect(app.dom.varStrip.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
     expect(app.dom.varStrip.querySelector('.var-combo-preview')).not.toBeNull();
   });
-  it('relative time (#169): a non-date type keeps the plain input (no combobox)', () => {
+  it('relative time (#169): a non-date type gets the recents-only combobox (#171), not the date-like preset+preview one', () => {
     const { app } = appForRun([]);
     app.activeTab().sql = 'SELECT {n:UInt32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
-    expect(input.hasAttribute('role')).toBe(false);
+    // Still a combobox (#171 gives every field a recents dropdown)...
+    expect(input.getAttribute('role')).toBe('combobox');
+    // ...but never the date-like field's preset live preview.
+    expect(app.dom.varStrip.querySelector('.var-combo-preview')).toBeNull();
   });
   it('relative time (#169): picking a preset inserts the expression, persists it (not the resolved value), and shows a live preview', () => {
     vi.stubGlobal('localStorage', memStore());
@@ -1467,6 +1472,224 @@ describe('query run', () => {
     await app.actions.setResultRowLimit(1000);
     expect(app.state.resultRowLimit).toBe(1000);
     expect(runUrl(e, /SELECT 1/)).toContain('max_result_rows=1000'); // re-ran with the new cap
+  });
+});
+
+describe('recent-value history (#171)', () => {
+  function appForRun(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+
+  it('a successful single-statement run records its boundParams (rawValue, not the resolved value)', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.state.varValues = { from: '-1h' };
+    await app.actions.run();
+    expect(app.state.varRecent.byName.from.map((e) => e.value)).toEqual(['-1h']); // the expression, never the epoch timestamp
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecent')).byName.from[0].value).toBe('-1h');
+  });
+
+  it('a failed statement records nothing', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[() => true, resp({ ok: false, status: 500, text: 'DB::Exception: boom' })]]);
+    app.activeTab().sql = 'SELECT {id:String}';
+    app.state.varValues = { id: 'nope' };
+    await app.actions.run();
+    expect(app.state.varRecent.byName.id).toBeUndefined();
+  });
+
+  it('script (#173): statement 1 of a later-failing script records; the failing statement (and anything after it) does not', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([
+      [(u, sql) => /SELECT \{a:String\}/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'a', type: 'String' }], data: [['x']] }) })],
+      [(u, sql) => /SELECT \{b:String\}/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
+    ]);
+    app.activeTab().sql = 'SELECT {a:String}; SELECT {b:String}; SELECT {c:String}';
+    app.state.varValues = { a: 'va', b: 'vb', c: 'vc' };
+    await app.actions.run(); // >1 statement → runScript, stops after statement 2 fails
+    expect(app.state.varRecent.byName.a.map((e) => e.value)).toEqual(['va']);
+    expect(app.state.varRecent.byName.b).toBeUndefined();
+    expect(app.state.varRecent.byName.c).toBeUndefined(); // never even attempted
+  });
+
+  it('a param confined to an inactive optional block is never recorded, even with a non-empty stored value (#165)', async () => {
+    vi.stubGlobal('localStorage', memStore({
+      'asb:varValues': JSON.stringify({ d: 'stale' }),
+      'asb:filterActive': JSON.stringify({ d: false }),
+    }));
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    await app.actions.run();
+    expect(app.state.varRecent.byName.d).toBeUndefined();
+  });
+
+  it('an empty string is never recorded, even when actively bound (#165 allows a real empty-string bind)', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.state.varValues = { d: '' };
+    app.state.filterActive = { d: true }; // explicitly active despite the blank value
+    await app.actions.run();
+    expect(app.state.varRecent.byName.d).toBeUndefined();
+  });
+
+  it('re-running a known value moves it to the front, no duplicate; caps and MRU order follow core/recent-values.js', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.state.varValues = { tenant: 'acme' };
+    await app.actions.run();
+    app.state.varValues = { tenant: 'other' };
+    await app.actions.run();
+    app.state.varValues = { tenant: 'acme' }; // re-use → move-to-front, no duplicate
+    await app.actions.run();
+    expect(app.state.varRecent.byName.tenant.map((e) => e.value)).toEqual(['acme', 'other']);
+  });
+
+  it('the disable-history preference stops new recording; existing history is retained', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {id:String}';
+    app.state.varValues = { id: 'first' };
+    await app.actions.run();
+    app.state.varRecentDisabled = true;
+    app.state.varValues = { id: 'second' };
+    await app.actions.run();
+    expect(app.state.varRecent.byName.id.map((e) => e.value)).toEqual(['first']); // not recorded, nothing lost
+  });
+
+  it('recorded recents persist across reload (state layer round-trip, shared like varValues)', async () => {
+    const store = memStore();
+    vi.stubGlobal('localStorage', store);
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.state.varValues = { tenant: 'acme' };
+    await app.actions.run();
+    const { app: app2 } = appForRun([]); // fresh app, same localStorage — simulates a reload
+    expect(app2.state.varRecent.byName.tenant.map((e) => e.value)).toEqual(['acme']);
+  });
+
+  it('the var-strip recents dropdown lists newest-first, filters as you type, click inserts and leaves the field editable', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    // Type each value into the real field (not a direct state write) — the
+    // var-strip's own <input> DOM node is built once per {name:Type}
+    // signature and only reflects state.varValues through its own typing
+    // path, exactly like a real user run.
+    input.value = 'acme';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await app.actions.run();
+    input.value = 'other';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await app.actions.run();
+    // Reopen on a blank field (a fresh look at "everything recorded so far",
+    // not filtered by whatever text happens to already be in the box).
+    input.value = '';
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect([...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(['other', 'acme']);
+    input.value = 'ac';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect([...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(['acme']);
+    const optAcme = app.dom.varStrip.querySelector('[role="option"]');
+    optAcme.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(input.value).toBe('acme');
+    expect(input.readOnly).toBe(false); // field stays editable — never becomes select-only
+  });
+
+  it('"Clear recent" (the dropdown footer) empties just that field\'s history', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.state.varValues = { tenant: 'acme' };
+    await app.actions.run();
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const clearBtn = app.dom.varStrip.querySelector('button.var-combo-clear');
+    clearBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.state.varRecent.byName.tenant).toBeUndefined();
+  });
+
+  it('a date-like field composes ONE dropdown: presets first, then a Recent group of recorded expressions', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = '-3h'; // not one of RELATIVE_TIME_PRESETS
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await app.actions.run();
+    // Reopen on a blank field so the group check isn't itself filtered by
+    // whatever text happens to already be in the box.
+    input.value = '';
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    const groups = [...app.dom.varStrip.querySelectorAll('.combo-group')].map((g) => g.textContent);
+    expect(groups).toEqual(['Presets', 'Recent']);
+    expect([...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toContain('-3h');
+  });
+
+  it('app.clearVarRecent clears one name and is a no-op (no re-persist) for a name with no history', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([]);
+    app.state.varRecent = { version: 1, nextSeq: 2, byName: { a: [{ value: '1', seq: 1 }] } };
+    app.saveVarRecent = vi.fn(app.saveVarRecent);
+    app.clearVarRecent('nope'); // no history for this name → no-op
+    expect(app.state.varRecent.byName.a).toBeDefined();
+    expect(app.saveVarRecent).not.toHaveBeenCalled();
+    app.clearVarRecent('a');
+    expect(app.state.varRecent.byName.a).toBeUndefined();
+    expect(app.saveVarRecent).toHaveBeenCalledTimes(1);
+  });
+
+  it('app.clearAllVarRecent resets every name\'s history and persists', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([]);
+    app.state.varRecent = { version: 1, nextSeq: 3, byName: { a: [{ value: '1', seq: 1 }], b: [{ value: '2', seq: 2 }] } };
+    app.clearAllVarRecent();
+    expect(app.state.varRecent).toEqual({ version: 1, nextSeq: 1, byName: {} });
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecent'))).toEqual({ version: 1, nextSeq: 1, byName: {} });
+  });
+
+  it('the File menu\'s "Clear all recent values" + preference toggle drive the same app seams', () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = appForRun([]);
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'a', '1');
+    for (const node of libraryControls(app)) document.body.appendChild(node);
+    openFileMenu(app);
+    const checkbox = document.querySelector('.fm-checkbox');
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.state.varRecentDisabled).toBe(true);
+    expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecentDisabled'))).toBe(true);
+    const clearAll = [...document.querySelectorAll('.fm-item')].find((b) => /Clear all recent values/.test(b.textContent));
+    clearAll.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.varRecent.byName.a).toBeUndefined();
+    document.body.replaceChildren();
   });
 });
 

@@ -48,6 +48,33 @@ describe('open as dashboard', () => {
   });
 });
 
+describe('variable history (#171)', () => {
+  it('the toggle reflects the current preference and flips it on change', () => {
+    const app = mount();
+    app.state.varRecentDisabled = false;
+    openFileMenu(app);
+    const checkbox = document.querySelector('.fm-checkbox');
+    expect(checkbox.checked).toBe(true); // recording ON ⇒ box checked
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.state.varRecentDisabled).toBe(true);
+    expect(app.saveVarRecentDisabled).toHaveBeenCalled();
+  });
+  it('starts unchecked when the preference is already disabled', () => {
+    const app = mount();
+    app.state.varRecentDisabled = true;
+    openFileMenu(app);
+    expect(document.querySelector('.fm-checkbox').checked).toBe(false);
+  });
+  it('"Clear all recent values" calls app.clearAllVarRecent and toasts', () => {
+    const app = mount();
+    openFileMenu(app);
+    click(item(/Clear all recent values/));
+    expect(app.clearAllVarRecent).toHaveBeenCalled();
+    expect(toast()).toContain('Cleared recent variable values');
+  });
+});
+
 describe('library title', () => {
   it('renders the name + dirty dot; inline rename commits on Enter and persists', () => {
     const app = mount();
@@ -109,10 +136,12 @@ describe('file menu', () => {
       { id: 's2', name: 'B', sql: '2', favorite: false },
     ];
     openFileMenu(app);
-    expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual(
-      ['New Library', 'Open as dashboard', 'Save JSON', 'Open…', 'Append…', 'Download Markdown', 'Download SQL']);
+    expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
+      'New Library', 'Open as dashboard', 'Remember recent variable values', 'Clear all recent values',
+      'Save JSON', 'Open…', 'Append…', 'Download Markdown', 'Download SQL',
+    ]);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Dashboard', 'Save library', 'Load from file', 'Share / publish']);
+      ['Dashboard', 'Variable history', 'Save library', 'Load from file', 'Share / publish']);
     expect(document.querySelector('.fm-count').textContent).toBe('2 queries in Library');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);

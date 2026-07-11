@@ -45,6 +45,8 @@ describe('createState', () => {
     expect(s.dashCols).toBe(3);
     expect(s.varValues).toEqual({});
     expect(s.filterActive).toEqual({}); // #165: own key, defaults empty
+    expect(s.varRecent).toEqual({ version: 1, nextSeq: 1, byName: {} }); // #171: own key, defaults empty
+    expect(s.varRecentDisabled).toBe(false);
   });
   it('reads + clamps persisted prefs', () => {
     const s = createState(reader({
@@ -61,6 +63,8 @@ describe('createState', () => {
       [KEYS.dashCols]: '2',
       [KEYS.varValues]: { d: 'stale' },
       [KEYS.filterActive]: { d: false },
+      [KEYS.varRecent]: { version: 1, nextSeq: 3, byName: { d: [{ value: 'x', seq: 2 }] } },
+      [KEYS.varRecentDisabled]: true,
     }));
     expect(s.theme).toBe('light');
     expect(s.libraryName.value).toBe('My team queries');
@@ -75,6 +79,8 @@ describe('createState', () => {
     expect(s.history).toHaveLength(1);
     expect(s.varValues).toEqual({ d: 'stale' });
     expect(s.filterActive).toEqual({ d: false }); // restored alongside varValues (#165)
+    expect(s.varRecent).toEqual({ version: 1, nextSeq: 3, byName: { d: [{ value: 'x', seq: 2 }] } });
+    expect(s.varRecentDisabled).toBe(true);
   });
   it('defaults the reader to storage helpers', () => {
     vi.stubGlobal('localStorage', memStore({ [KEYS.theme]: 'light' }));

@@ -358,6 +358,10 @@ body {
   margin-top: 4px; padding: 8px 12px; border-top: 1px solid var(--border-faint);
   font-size: 10.5px; color: var(--fg-faint); font-family: var(--mono);
 }
+/* Variable history (#171): a `.fm-item`-styled <label> so the whole row
+   toggles the checkbox, matching the rest of the File menu's row rhythm. */
+.fm-toggle { cursor: pointer; }
+.fm-checkbox { accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
 /* Replace / New confirm dialog */
 .fm-dialog-backdrop {
   position: fixed; inset: 0; z-index: 130; background: rgba(0,0,0,.5);
@@ -1178,6 +1182,24 @@ body.detached-tab .graph-overlay-panel {
   padding: 2px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
 }
 .var-combo-preview.is-error { color: var(--error-fg); }
+/* "Clear recent" dropdown footer (#171, combo-footer.js) — a separate
+   position:fixed box anchored just under `.var-combo-list` (see that
+   module's header comment for why it's not rendered as an option INSIDE the
+   listbox). The visible seam between the two boxes' own shadows is a known,
+   accepted v1 limitation, same spirit as combobox.js's own reposition-on-
+   scroll note. */
+.var-combo-footer {
+  position: fixed; z-index: 70; padding: 4px;
+  background: var(--bg-panel, var(--bg-editor)); border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 8px 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4);
+  font-size: 12px; font-family: var(--mono);
+}
+.var-combo-footer[hidden] { display: none; }
+.var-combo-clear {
+  width: 100%; text-align: left; padding: 5px 8px; border: none; background: transparent;
+  color: var(--fg-mute); font-family: inherit; font-size: 11px; border-radius: 5px; cursor: pointer;
+}
+.var-combo-clear:hover { background: var(--bg-hover); color: var(--fg); }
 /* Visually-hidden live region (#169's option-count/"No matches" announcement) —
    present for assistive tech only, never visible or reflowed. */
 .sr-only {
