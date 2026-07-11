@@ -105,8 +105,43 @@ describe('paramComparisonColumns (#172 v2 heuristic)', () => {
     expect(paramComparisonColumns(sql)).toEqual({});
   });
 
-  it('the same param compared to the same column NAME but a different qualifier is also a conflict', () => {
+  it('the same column NAME under different qualifiers is NOT a syntactic conflict — every distinct ref is returned for resolved-identity comparison (review F3)', () => {
+    // Two JOIN sides: both refs come back; from-scope.js's resolution (which
+    // resolves x → a and y → b, different tables) is what yields "no match".
     const sql = 'SELECT * FROM a x JOIN b y ON 1=1 WHERE x.status = {p:String} OR y.status = {p:String}';
+    expect(paramComparisonColumns(sql)).toEqual({
+      p: {
+        qualifier: 'x', column: 'status', pos: posOf(sql, 'p'),
+        refs: [
+          { qualifier: 'x', column: 'status', pos: sql.indexOf('{p:') },
+          { qualifier: 'y', column: 'status', pos: sql.lastIndexOf('{p:') },
+        ],
+      },
+    });
+  });
+
+  it('alias-qualified + unqualified refs to the same column both come back (single-ref shape preserved when they agree)', () => {
+    const sql = 'SELECT * FROM events e WHERE e.status = {p:String} OR status = {p:String}';
+    const out = paramComparisonColumns(sql);
+    expect(out.p.refs).toEqual([
+      { qualifier: 'e', column: 'status', pos: sql.indexOf('{p:') },
+      { qualifier: null, column: 'status', pos: sql.lastIndexOf('{p:') },
+    ]);
+    // The top-level fields mirror the FIRST reference (back-compat shape).
+    expect(out.p.qualifier).toBe('e');
+    expect(out.p.column).toBe('status');
+    expect(out.p.pos).toBe(sql.indexOf('{p:'));
+  });
+
+  it('repeated identical qualifier spellings dedupe — refs stays a single entry, so no `refs` field at all', () => {
+    const sql = 'SELECT * FROM t WHERE e.status = {p:String} OR e.status = {p:String}';
+    expect(paramComparisonColumns(sql)).toEqual({
+      p: { qualifier: 'e', column: 'status', pos: posOf(sql, 'p') },
+    });
+  });
+
+  it('a column-NAME conflict still wins over any accumulated qualifier variants', () => {
+    const sql = 'SELECT * FROM t WHERE e.status = {p:String} OR status = {p:String} OR other = {p:String}';
     expect(paramComparisonColumns(sql)).toEqual({});
   });
 

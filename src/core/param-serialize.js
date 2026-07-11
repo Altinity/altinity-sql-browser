@@ -21,9 +21,13 @@
 // this module never throws on data.
 
 import { parseParamType, typeLexKind } from './param-type.js';
+// Element-token grammars are the VALIDATOR's live-verified scalar grammars
+// (review F7) — one source of truth, so the serializer can never accept a
+// token (`007`, or reject `inf`) the validated scalar path decides otherwise
+// on. Range stays unchecked here (the server wraps out-of-range ints; only
+// the scalar validator deliberately exceeds server strictness on that).
+import { INT_TOKEN, isValidFloatToken } from './param-validate.js';
 
-const INT_TOKEN = /^-?\d+$/;
-const FLOAT_TOKEN = /^-?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/;
 const BOOL_TOKEN = /^(true|false|1|0)$/;
 
 const quote = (s) => "'" + s.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
@@ -44,11 +48,13 @@ function serializeElement(el, elemType, name) {
   if (kind === 'int') {
     // Big integers (UInt64+, Int128+) arrive as strings and are emitted
     // verbatim — validated as an integer token, never parsed into a Number.
+    // The signed grammar serves UInt element types too: element tokens are a
+    // lexical check only (no sign/range semantics — the server owns those).
     if (!INT_TOKEN.test(token)) return { error: `{${name}}: "${el}" is not a valid ${elemType.base} element` };
     return { value: token };
   }
   if (kind === 'float') {
-    if (!FLOAT_TOKEN.test(token)) return { error: `{${name}}: "${el}" is not a valid ${elemType.base} element` };
+    if (!isValidFloatToken(token)) return { error: `{${name}}: "${el}" is not a valid ${elemType.base} element` };
     return { value: token };
   }
   return { value: quote(token) };

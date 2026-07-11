@@ -28,11 +28,11 @@
 
 import { splitStatements, isRowReturning } from './sql-split.js';
 import { scanParamDeclarations } from './param-scan.js';
-import { parseParamType, conflictingTypes } from './param-type.js';
+import { parseParamType, conflictingTypes, enumValues } from './param-type.js';
 import { serializeParamValue } from './param-serialize.js';
 import { materializeOptionalBlocks, countOptionalBlocks, ALL_ACTIVE } from './optional-blocks.js';
 import { validateParamValue as validateTypedValue } from './param-validate.js';
-import { resolveRelativeValue as resolveRelativeExpr } from './relative-time.js';
+import { resolveRelativeValue as resolveRelativeExpr, isDateLikeType } from './relative-time.js';
 
 export const BIND_POLICIES = ['row-returning', 'all'];
 
@@ -109,6 +109,13 @@ const normVerdict = (v) => (typeof v === 'string' ? { state: v } : v);
  * @param {{analysisView?: Function}} [stages]
  */
 export function analyzeParameterizedSources(sources, stages = {}) {
+  // The analysis-materialization stage defaults to this module's own
+  // `analysisView`, symmetric with `prepareParameterizedBatch`'s
+  // `executionView` default. (The direct `materializeOptionalBlocks` call
+  // below still runs regardless — it is the *error* source for a malformed
+  // block; for the default stage its `.sql` and `aView(sql)` are the same
+  // bytes, one extra linear scan.)
+  const aView = stages.analysisView || analysisView;
   const fields = {};
   const fieldFor = (name) => fields[name] || (fields[name] = {
     declarations: [],
@@ -139,7 +146,7 @@ export function analyzeParameterizedSources(sources, stages = {}) {
       if (bind) {
         const mat = materializeOptionalBlocks(sql, ALL_ACTIVE);
         for (const e of mat.errors) errors.push(e);
-        scanSql = stages.analysisView ? stages.analysisView(sql) : mat.sql;
+        scanSql = aView(sql);
         // A param the raw scan sees sits outside every block (blocks are
         // comments to it) → required in this source (rule 8); one visible only
         // in the analysis view is confined to blocks → optional here (rule 9).
@@ -406,16 +413,48 @@ export function mergedSourceSql(source, fallback = '') {
  * declaration (a param confined to DDL — e.g. a parameterized view — is never
  * substituted, so it gets no input), in first-appearance order. `type` is the
  * first bound declaration's; `optional` is true when no source requires the
- * param (it appears only inside optional blocks wherever it binds). Pure.
+ * param (it appears only inside optional blocks wherever it binds). A field
+ * whose declarations disagree on the type (#173 acceptance: the `type-conflict`
+ * diagnostic) additionally carries `conflict` — the distinct normalized types,
+ * in first-seen order — so both rendering surfaces can degrade the control and
+ * surface the disagreement (see `fieldControlKind`). Pure.
  * @param {ReturnType<typeof analyzeParameterizedSources>} analysis
- * @returns {{name: string, type: string, optional: boolean}[]}
+ * @returns {{name: string, type: string, optional: boolean, conflict?: string[]}[]}
  */
 export function fieldControls(analysis) {
   const out = [];
   for (const [name, f] of Object.entries(analysis.fields)) {
     const bound = f.declarations.find((d) => d.bound);
     if (!bound) continue;
-    out.push({ name, type: bound.type, optional: !f.requiredAnywhere });
+    out.push({
+      name,
+      type: bound.type,
+      optional: !f.requiredAnywhere,
+      ...(f.conflict ? { conflict: f.conflict.types } : {}),
+    });
   }
   return out;
+}
+
+/**
+ * Which control a `fieldControls` entry renders — the enum > date-like >
+ * plain-text priority the workbench var-strip and the dashboard filter bar
+ * previously each duplicated. `inferredEnumOptions` is the workbench's
+ * optional #172 v2 tier (a schema-cache-inferred member list for a
+ * String-typed param); the declared type's own Enum members always win over
+ * it. A `conflict`ed field (#173 acceptance) always gets the plain text
+ * control: with disagreeing declarations there is no single authoritative
+ * type to specialize the control on — the value still binds per-statement by
+ * each statement's own local declaration, but the UI must not pretend one
+ * declaration's enum members / date presets speak for all of them. Pure.
+ * @param {{type: string, conflict?: string[]}} field a `fieldControls` entry
+ * @param {string[]|null} [inferredEnumOptions]
+ * @returns {{kind: 'enum'|'date'|'text', enumOptions: string[]|null}}
+ */
+export function fieldControlKind(field, inferredEnumOptions = null) {
+  if (field.conflict) return { kind: 'text', enumOptions: null };
+  const enumOptions = enumValues(field.type) || inferredEnumOptions;
+  if (enumOptions) return { kind: 'enum', enumOptions };
+  if (isDateLikeType(field.type)) return { kind: 'date', enumOptions: null };
+  return { kind: 'text', enumOptions: null };
 }

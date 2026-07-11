@@ -50,6 +50,13 @@ const INT_UINT = /^(U?)Int(8|16|32|64|128|256)$/;
 const INT_FULL = /^-?(0|[1-9]\d*)$/;
 const UINT_FULL = /^(0|[1-9]\d*)$/;
 
+/** The live-verified signed-integer token grammar (incl. the `-0` allowance,
+ *  excl. leading zeros) — exported for `param-serialize.js`'s array-element
+ *  tokens, so the serializer and this validator never diverge on what an
+ *  integer looks like (review F7: the serializer used to accept `007`, which
+ *  this grammar — and the server — rejects). */
+export const INT_TOKEN = INT_FULL;
+
 function intBounds(signed, bits) {
   const width = BigInt(bits);
   const max = signed ? (2n ** (width - 1n)) - 1n : (2n ** width) - 1n;
@@ -116,6 +123,12 @@ const FLOAT_FULL = /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|[eE][+-]?\d+)$
 // '1e-', 'e', 'e+'). These are all REJECTED as final values (`1e` above) but
 // are genuine mid-typing states — neutral until they harden.
 const FLOAT_INCOMPLETE = /^[+-]?(?:\.|(?:\d+\.?\d*|\.\d+)?[eE][+-]?)?$/;
+
+/** The live-verified Float accept set as one predicate — mantissa/exponent
+ *  forms plus `inf`/`infinity`/`nan` (case-insensitive, optionally signed) —
+ *  exported for `param-serialize.js`'s array-element tokens (review F7), the
+ *  same single-source-of-truth arrangement as `INT_TOKEN` above. */
+export const isValidFloatToken = (s) => FLOAT_LITERAL.test(s) || FLOAT_FULL.test(s);
 
 // A letters-only prefix of 'infinity' or 'nan' (optionally signed) — 'i',
 // 'in', 'n', 'na', any case. Requires at least one letter so it never

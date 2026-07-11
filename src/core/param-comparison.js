@@ -3,13 +3,15 @@
 // Conservative by design — only a bare `col = {p}` / `{p} = col` equality
 // counts (qualified/aliased forms included, e.g. `t.col` / `alias.col`); an
 // expression around the column (`lower(col) = {p}`), `IN`/`BETWEEN`, or a
-// param compared to two DIFFERENT columns anywhere in the SQL all yield no
-// match. This module only finds the SYNTACTIC reference (a raw qualifier +
-// column name, plus the param occurrence's own char offset so a caller can
-// run its own per-statement FROM-scope resolution); it does not touch the
-// schema cache or from-scope.js itself — see `from-scope.js`'s
-// `resolveComparisonColumnType`, the next (also pure) step that turns this
-// into an actual cached column type.
+// param compared to two DIFFERENTLY-NAMED columns anywhere in the SQL all
+// yield no match. Same-named references that differ only in qualifier text
+// (`e.status` vs bare `status`) are returned together for the resolution step
+// to compare by resolved identity — see `paramComparisonColumns`'s doc. This
+// module only finds the SYNTACTIC references (raw qualifier + column name,
+// plus each param occurrence's own char offset so a caller can run its own
+// per-statement FROM-scope resolution); it does not touch the schema cache or
+// from-scope.js itself — see `from-scope.js`'s `resolveComparisonColumnType`,
+// the next (also pure) step that turns this into an actual cached column type.
 //
 // Bidirectional `=` (both `col = {p}` and `{p} = col`) is supported — the
 // issue's spec writes the `col = {p}` shape to describe the *kind* of
@@ -104,9 +106,21 @@ function parseColumnRefBackward(sig, idx) {
  * own per-statement FROM-scope resolution) — or absent from the returned
  * object when there's no confident single match: no direct-equality
  * occurrence at all, an expression/IN/BETWEEN around the column, or two
- * occurrences of the same param name resolving to different columns. Pure.
+ * occurrences of the same param name compared to different column NAMES.
+ *
+ * Occurrences that agree on the column name but differ in *qualifier text*
+ * (`e.status = {s}` and `status = {s}` in the same query) are NOT a conflict
+ * here — raw qualifier spelling is not column identity. The entry then also
+ * carries `refs`: every distinct `{qualifier, column, pos}` reference, so the
+ * resolution step (`from-scope.js`'s `resolveComparisonColumnType`) can decide
+ * on RESOLVED identity — it matches only when every ref resolves to the same
+ * table (single-table alias + bare form ⇒ match; two JOIN sides ⇒ no match).
+ * The top-level `qualifier`/`column`/`pos` stay the first reference's, and
+ * `refs` is omitted for the single-reference common case, so consumers of the
+ * simple shape are unchanged. Pure.
  * @param {string} sql
- * @returns {Object<string, {qualifier: string|null, column: string, pos: number}>}
+ * @returns {Object<string, {qualifier: string|null, column: string, pos: number,
+ *                           refs?: {qualifier: string|null, column: string, pos: number}[]}>}
  */
 export function paramComparisonColumns(sql) {
   const text = String(sql || '');
@@ -127,14 +141,21 @@ export function paramComparisonColumns(sql) {
   }
   const out = {};
   for (const [name, v] of Object.entries(found)) {
-    if (v !== 'CONFLICT') out[name] = v;
+    if (v === 'CONFLICT') continue;
+    out[name] = v.length === 1 ? v[0] : { ...v[0], refs: v };
   }
   return out;
 }
 
+// Accumulate the distinct references for one param name, or mark it CONFLICT.
+// Column-NAME disagreement is a conflict outright (two differently-named
+// columns are genuinely different columns, whatever they resolve to);
+// qualifier-text disagreement over the same column name is kept as a second
+// ref for the resolution step to adjudicate (see paramComparisonColumns's doc).
 function record(found, name, ref) {
-  if (!(name in found)) { found[name] = ref; return; }
   const cur = found[name];
   if (cur === 'CONFLICT') return;
-  if (cur.qualifier !== ref.qualifier || cur.column !== ref.column) found[name] = 'CONFLICT';
+  if (!cur) { found[name] = [ref]; return; }
+  if (cur[0].column !== ref.column) { found[name] = 'CONFLICT'; return; }
+  if (!cur.some((r) => r.qualifier === ref.qualifier)) cur.push(ref);
 }

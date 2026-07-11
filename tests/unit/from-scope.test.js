@@ -266,4 +266,45 @@ describe('resolveComparisonColumnType', () => {
     ];
     expect(resolveComparisonColumnType(sql, sql.length, { qualifier: null, column: 'status' }, schema)).toBe(ENUM_STATUS);
   });
+
+  // Review F3: multi-ref refs (same column name, different qualifier text —
+  // param-comparison.js now defers those instead of calling CONFLICT on raw
+  // qualifier inequality) match only when every ref resolves to the SAME table.
+  describe('multi-ref (refs) resolved-identity comparison (review F3)', () => {
+    const refsFor = (sql, quals) => ({
+      qualifier: quals[0], column: 'status', pos: sql.indexOf('{s:'),
+      refs: quals.map((q, i) => ({
+        qualifier: q, column: 'status',
+        pos: i === 0 ? sql.indexOf('{s:') : sql.lastIndexOf('{s:'),
+      })),
+    });
+
+    it('alias-qualified + unqualified refs to the same single-table column match', () => {
+      const sql = 'SELECT * FROM events e WHERE e.status = {s:String} OR status = {s:String}';
+      const schema = schemaWith([{ name: 'status', type: ENUM_STATUS }]);
+      expect(resolveComparisonColumnType(sql, sql.indexOf('{s:'), refsFor(sql, ['e', null]), schema)).toBe(ENUM_STATUS);
+    });
+
+    it('refs resolving to the two sides of a JOIN (genuinely different tables) → null', () => {
+      const sql = 'SELECT * FROM events x JOIN other y ON 1=1 WHERE x.status = {s:String} OR y.status = {s:String}';
+      const schema = [
+        { db: 'app', tables: [
+          { name: 'events', columns: [{ name: 'status', type: ENUM_STATUS }] },
+          { name: 'other', columns: [{ name: 'status', type: ENUM_STATUS }] },
+        ] },
+      ];
+      expect(resolveComparisonColumnType(sql, sql.indexOf('{s:'), refsFor(sql, ['x', 'y']), schema)).toBeNull();
+    });
+
+    it('one unresolvable ref (ambiguous unqualified in a JOIN) nulls the whole match — conservative', () => {
+      const sql = 'SELECT * FROM events e JOIN other o ON 1=1 WHERE e.status = {s:String} OR status = {s:String}';
+      const schema = [
+        { db: 'app', tables: [
+          { name: 'events', columns: [{ name: 'status', type: ENUM_STATUS }] },
+          { name: 'other', columns: [] },
+        ] },
+      ];
+      expect(resolveComparisonColumnType(sql, sql.indexOf('{s:'), refsFor(sql, ['e', null]), schema)).toBeNull();
+    });
+  });
 });

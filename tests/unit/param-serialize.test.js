@@ -76,6 +76,26 @@ describe('serializeParamValue — Array(T) literals', () => {
     expect(serializeParamValue(['1.2.3'], 'Array(Float64)').ok).toBe(false);
   });
 
+  // Review F7: element tokens follow the VALIDATOR's live-verified scalar
+  // grammar (param-validate.js), not a third private copy.
+  it('rejects a leading-zero integer element (007) with a clear error — the live-verified grammar the scalar path already enforces', () => {
+    const r = serializeParamValue(['007'], 'Array(UInt64)', 'ids');
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('007');
+    expect(r.error).toContain('UInt64');
+    expect(serializeParamValue(['00'], 'Array(Int32)').ok).toBe(false);
+    // '0' and '-0' stay accepted (the validator's explicit allowance).
+    expect(serializeParamValue(['0', '-0'], 'Array(Int32)')).toEqual({ ok: true, value: '[0,-0]' });
+  });
+  it('accepts inf/nan Float elements case-insensitively, and the validator-verified 5. / +5 / e5 forms', () => {
+    expect(serializeParamValue(['inf', '-Infinity', 'NaN'], 'Array(Float64)'))
+      .toEqual({ ok: true, value: '[inf,-Infinity,NaN]' });
+    expect(serializeParamValue(['5.', '+5', 'e5'], 'Array(Float64)'))
+      .toEqual({ ok: true, value: '[5.,+5,e5]' });
+    // A bare exponent MARKER (no digits) is still rejected, same as the scalar path.
+    expect(serializeParamValue(['1e'], 'Array(Float64)').ok).toBe(false);
+  });
+
   it('Array(Bool): booleans and true/false/1/0 tokens', () => {
     expect(serializeParamValue([true, false], 'Array(Bool)')).toEqual({ ok: true, value: '[true,false]' });
     expect(serializeParamValue(['true', '0'], 'Array(Bool)')).toEqual({ ok: true, value: '[true,0]' });
