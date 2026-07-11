@@ -21,6 +21,8 @@ import {
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
 import { applyFieldState } from './var-field.js';
+import { buildRelativeTimeField } from './relative-time-field.js';
+import { isDateLikeType } from '../core/relative-time.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -224,37 +226,71 @@ function buildFilterBar(app, params, onCommit, getField) {
       timer = null;
       onCommit(p.name);
     };
-    const input = h('input', {
-      type: 'text', class: 'var-input',
-      value: app.state.varValues[p.name] || '',
-      placeholder: p.type,
-      title: baseTitle,
-      'aria-label': p.name,
-      oninput: (e) => {
-        app.state.varValues[p.name] = e.target.value;
-        // Text controls sync activation with the value (#165): an activation
-        // flip re-runs affected tiles exactly like a value change (same
-        // debounce + generation guard downstream).
-        app.state.filterActive[p.name] = e.target.value !== '';
-        app.saveVarValues();
-        app.saveFilterActive();
-        applyFieldState(input, getField(p.name, 'input'), baseTitle);
-        clearTimeout(timer);
-        timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
-      },
-      onkeydown: (e) => {
+    // #169: a date-like declared type upgrades the plain text input to the
+    // preset combobox + live preview, exactly like the workbench var-strip
+    // (renderVarStrip in app.js) — see relative-time-field.js. The field
+    // stays free-text; D3's debounce/Enter/blur commit semantics are
+    // unchanged either way.
+    const dateLike = isDateLikeType(p.type);
+    let combo = null;
+    let input;
+    const onValueInput = () => {
+      app.state.varValues[p.name] = input.value;
+      // Text controls sync activation with the value (#165): an activation
+      // flip re-runs affected tiles exactly like a value change (same
+      // debounce + generation guard downstream).
+      app.state.filterActive[p.name] = input.value !== '';
+      app.saveVarValues();
+      app.saveFilterActive();
+      applyFieldState(input, getField(p.name, 'input'), baseTitle, combo && combo.previewEl);
+      clearTimeout(timer);
+      timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
+    };
+    const onCommitHard = () => {
+      applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
+      commitNow();
+    };
+    if (dateLike) {
+      combo = buildRelativeTimeField({
+        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
+        baseTitle, wallNow: app.wallNow,
+        onValueInput,
+        // A preset pick is a deliberate, complete action (like Enter) — run
+        // immediately, bypassing the debounce `onValueInput` just armed,
+        // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
+        onCommit: () => {
+          applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
+          clearTimeout(timer);
+          timer = null;
+          onCommit(p.name);
+        },
+      });
+      input = combo.input;
+      input.addEventListener('focus', () => combo.onFocus());
+      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+      input.addEventListener('keydown', (e) => {
+        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
         if (e.key !== 'Enter') return;
-        applyFieldState(input, getField(p.name, 'execute'), baseTitle);
-        commitNow();
-      },
-      onblur: () => {
-        applyFieldState(input, getField(p.name, 'execute'), baseTitle);
-        commitNow();
-      },
-    });
-    applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+        onCommitHard();
+      });
+      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+      input.addEventListener('compositionstart', () => combo.onCompositionStart());
+      input.addEventListener('compositionend', () => combo.onCompositionEnd());
+    } else {
+      input = h('input', {
+        type: 'text', class: 'var-input',
+        value: app.state.varValues[p.name] || '',
+        placeholder: p.type,
+        title: baseTitle,
+        'aria-label': p.name,
+        oninput: onValueInput,
+        onkeydown: (e) => { if (e.key === 'Enter') onCommitHard(); },
+        onblur: onCommitHard,
+      });
+    }
+    applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
-      h('span', { class: 'var-name' }, p.name), input);
+      h('span', { class: 'var-name' }, p.name), combo ? combo.el : input);
   }));
 }
 

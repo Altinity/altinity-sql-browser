@@ -748,6 +748,124 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     await renderDashboard(app);
     expect(runTile).toHaveBeenCalledWith(sql, { param_year: '2024' });
   });
+
+  describe('#169 relative time', () => {
+    it('a date-like param gets the combobox; a non-date param keeps the plain input', async () => {
+      const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime} AND r = {region:String}')];
+      const app = dashApp(favorites, vi.fn(async () => chartResult()));
+      app.state.varValues = { from: '-1h', region: 'us' };
+      await renderDashboard(app);
+      const fromInput = fieldInput(app.root, 'from');
+      const regionInput = fieldInput(app.root, 'region');
+      expect(fromInput.getAttribute('role')).toBe('combobox');
+      expect(regionInput.hasAttribute('role')).toBe(false);
+      expect(fromInput.closest('.var-field').querySelector('.var-combo-preview')).not.toBeNull();
+    });
+    it('picking a preset inserts the expression, persists it, and commits IMMEDIATELY — bypassing the debounce', async () => {
+      vi.useFakeTimers();
+      try {
+        const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+        const runTile = vi.fn(async () => chartResult());
+        const app = dashApp(favorites, runTile);
+        app.state.varValues = { from: 'now' };
+        await renderDashboard(app);
+        expect(runTile).toHaveBeenCalledTimes(1);
+        const input = fieldInput(app.root, 'from');
+        input.dispatchEvent(new Event('focus', { bubbles: true }));
+        // The field already holds 'now' (the current value), so opening on
+        // focus filters to presets matching it — the first match is 'now/d'.
+        const opt = app.root.querySelector('[role="option"]');
+        opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        expect(input.value).toBe('now/d');
+        expect(app.state.varValues.from).toBe('now/d');
+        await vi.advanceTimersByTimeAsync(0); // let the immediate commit's microtasks settle — no 500ms wait needed
+        expect(runTile).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('an invalid (near-miss) expression shows the tile placeholder and never calls runTile', async () => {
+      const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+      const runTile = vi.fn(async () => chartResult());
+      const app = dashApp(favorites, runTile);
+      app.state.varValues = { from: 'now' };
+      await renderDashboard(app);
+      expect(runTile).toHaveBeenCalledTimes(1);
+      const input = fieldInput(app.root, 'from');
+      setInput(input, 'now/q');
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+      await flush();
+      expect(runTile).toHaveBeenCalledTimes(1); // no new run — the invalid value never bound
+      expect(app.root.querySelector('.dash-tile-unfilled')).not.toBeNull();
+      expect(input.classList.contains('is-invalid')).toBe(true);
+    });
+    it('Enter with the list closed hardens/gates via the same keydown path as a plain filter field', async () => {
+      const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+      const runTile = vi.fn(async () => chartResult());
+      const app = dashApp(favorites, runTile);
+      app.state.varValues = { from: 'now' };
+      await renderDashboard(app);
+      const input = fieldInput(app.root, 'from');
+      setInput(input, 'now/q');
+      pressEnter(input);
+      await flush();
+      expect(input.classList.contains('is-invalid')).toBe(true);
+      expect(runTile).toHaveBeenCalledTimes(1); // never re-ran with the invalid value
+    });
+    it('Enter with an active preset option commits it via keydown instead of hardening the prior text', async () => {
+      vi.useFakeTimers();
+      try {
+        const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+        const runTile = vi.fn(async () => chartResult());
+        const app = dashApp(favorites, runTile);
+        app.state.varValues = { from: 'now' };
+        await renderDashboard(app);
+        const input = fieldInput(app.root, 'from');
+        // app.root isn't attached to `document` in this test harness, so a
+        // real input.focus() can't land — dispatch the synthetic event
+        // combo's own 'focus' listener reacts to, same as this file's other
+        // combobox tests.
+        input.dispatchEvent(new Event('focus', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        expect(input.value).toBe('now/d'); // filtered to 'now'-matching presets; first match
+        expect(input.getAttribute('aria-expanded')).toBe('false');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(runTile).toHaveBeenCalledTimes(2); // committed immediately, bypassing the debounce
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('a Refresh resolves one wallNow across every tile; a later Refresh with an advanced clock moves the window', async () => {
+      const favorites = [
+        paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}'),
+        paramFav('2', 'SELECT * FROM u WHERE d >= {from:DateTime}'),
+      ];
+      const runTile = vi.fn(async () => chartResult());
+      const app = makeApp({ runTile, wallNow: vi.fn(() => 1751200000000) });
+      app.state.savedQueries = favorites;
+      app.state.varValues = { from: '-1h' };
+      await renderDashboard(app);
+      const expected1 = String(Math.round((1751200000000 - 3600000) / 1000));
+      expect(runTile.mock.calls[0][1]).toEqual({ param_from: expected1 });
+      expect(runTile.mock.calls[1][1]).toEqual({ param_from: expected1 }); // same instant, both tiles
+      app.wallNow = () => 1751200000000 + 3600000; // advance the clock, then Refresh
+      const refreshBtn = app.root.querySelector('.dash-btn');
+      refreshBtn.click();
+      await flush();
+      const expected2 = String(Math.round(1751200000000 / 1000));
+      expect(runTile.mock.calls[2][1]).toEqual({ param_from: expected2 });
+      expect(runTile.mock.calls[3][1]).toEqual({ param_from: expected2 });
+    });
+    it('the stored expression persists and restores — not the resolved value', async () => {
+      const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
+      const app = dashApp(favorites, vi.fn(async () => chartResult()));
+      app.state.varValues = { from: '-1h' };
+      await renderDashboard(app);
+      expect(fieldInput(app.root, 'from').value).toBe('-1h');
+      expect(app.saveVarValues).not.toHaveBeenCalled(); // nothing edited yet — just restored
+    });
+  });
 });
 
 // ── app.js: runTile + auth handoff wiring ────────────────────────────────────

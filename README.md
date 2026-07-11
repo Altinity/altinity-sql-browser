@@ -117,6 +117,56 @@ zero third-party requests. On top of it:
   server-side `formatQuery()` would strip the markers, **Format skips a
   statement containing optional blocks** (with a notice) and formats the rest
   of the script normally.
+- **Relative time expressions** — a variable declared with a date/time type
+  (`Date`, `Date32`, `DateTime`, `DateTime64(N)`, any `Nullable(…)` of those)
+  accepts a relative expression instead of an absolute value — `-1h`,
+  `now-7d`, `now/d` — so a "last hour of logs" or "yesterday's traffic" query
+  keeps a **moving window**: the stored value is the expression, and it
+  re-resolves against "now" every time it runs (workbench Run, Dashboard
+  load/Refresh, a filter-change wave) rather than freezing at the moment it
+  was typed. Grammar (Grafana's, adopted verbatim — case-sensitive units):
+
+  ```text
+  expr := 'now' [sign amount unit] [rounding]
+        | sign amount unit [rounding]        -- shorthand: '-1h' ≡ 'now-1h'
+  sign := '-' | '+'
+  unit := s | m | h | d | w | M | y          -- m = minute, M = month
+  rounding := '/' unit                        -- always snaps DOWN, after the offset
+  ```
+
+  | Input | Meaning |
+  |---|---|
+  | `now` | current instant |
+  | `-1h` | one hour ago (`now-1h`) |
+  | `-30s`, `-15m`, `-1d`, `-1w`, `-1M`, `-1y` | an offset in each unit |
+  | `now/d` | start of today |
+  | `-1d/d` | start of yesterday |
+  | `now/w` | start of this week (ISO-8601 — Monday) |
+  | `now/M` | start of this month |
+  | `now-1h/h` | start of the hour, one hour ago (offset first, then round) |
+
+  `s`/`m`/`h` offsets are **fixed durations** (exact elapsed time); `d`/`w`/`M`/`y`
+  offsets and all `/u` rounding are **calendar arithmetic in your local
+  timezone** — `-1d` means "the same wall-clock time yesterday" even across a
+  23/25-hour DST transition day, and month/year offsets clamp to the target
+  month's last day (`Mar 31` `-1M` → `Feb 28`/`29`). An absolute value keeps
+  working unchanged; a string that merely *looks* relative (starts `now…`, or
+  a sign followed by digits) but doesn't fully parse is rejected inline,
+  never sent. Values still travel as native `param_<name>` arguments — never
+  interpolated — formatted per the declared type: `Date`/`Date32` as a local
+  calendar date, `DateTime` as integer epoch seconds, `DateTime64(N)` as epoch
+  seconds with an `N`-digit fraction.
+
+  The field gets a **preset dropdown** on focus (type-to-filter; click
+  inserts the expression — the field stays free-text, so an absolute
+  timestamp still works) and a **live preview** of the resolved instant next
+  to it, e.g. `-1h → 2026-07-11 09:23:45 (your time)`. That preview always
+  renders in **your browser's timezone** and says so — a `DateTime('Europe/
+  Madrid')` column *displays* its stored value in its own zone, but the bound
+  instant is identical either way (transport is epoch seconds); only the
+  wall-clock rendering differs. The trade-off this implies: "now" is the
+  **client's** clock, which can skew from the server's `now()` — the same
+  trade-off Grafana makes, accepted rather than compensated for.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**

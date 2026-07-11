@@ -32,12 +32,13 @@ import { parseParamType, conflictingTypes } from './param-type.js';
 import { serializeParamValue } from './param-serialize.js';
 import { materializeOptionalBlocks, countOptionalBlocks, ALL_ACTIVE } from './optional-blocks.js';
 import { validateParamValue as validateTypedValue } from './param-validate.js';
+import { resolveRelativeValue as resolveRelativeExpr } from './relative-time.js';
 
 export const BIND_POLICIES = ['row-returning', 'all'];
 
 // ── Stage seams ──────────────────────────────────────────────────────────────
-// The two #165 materialization stages below are real (optional-blocks.js); the
-// #169/#170 stages are still identity/unknown passes replaced when those land.
+// The two #165 materialization stages, #169's resolver, and #170's validator
+// are all real now (optional-blocks.js / relative-time.js / param-validate.js).
 // The optional `stages` argument overrides any of them per call — which is also
 // how tests exercise the downstream classification today.
 
@@ -55,9 +56,21 @@ export function executionView(sql, active) {
 }
 
 /** #169's relative-value resolver (`-1h` → epoch seconds), on the wave's wall
- *  clock. Identity until #169 lands. Pure. */
-export function resolveRelativeValue(rawValue, type, wallNowMs) { // eslint-disable-line no-unused-vars
-  return rawValue;
+ *  clock: delegates to `relative-time.js`, which is a no-op for non-date-like
+ *  declared types and for values that don't match the relative grammar at all
+ *  (rule 6 — an absolute value passes through verbatim). A value that *looks*
+ *  relative but fails to parse (a near miss) becomes the `{error}` sentinel
+ *  `prepareParameterizedBatch` below recognizes and classifies per
+ *  `validationMode` — `incomplete` (neutral, non-blocking) under 'input',
+ *  hardened to `invalid` under 'execute' — the same timing model #170 uses
+ *  for its own incomplete verdicts. The stage contract stays "return the
+ *  resolved value" for the success case, so
+ *  a caller-supplied override (see the `stages` param) can still return a
+ *  plain value unchanged, exactly like the identity pass this replaced. Pure.
+ */
+export function resolveRelativeValue(rawValue, type, wallNowMs) {
+  const r = resolveRelativeExpr(rawValue, type, wallNowMs);
+  return r.ok ? r.value : { error: r.error };
 }
 
 /** #170's per-type validator: adapts `param-validate.js`'s `{status,
@@ -258,7 +271,31 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
         // reaches block-confined params (text controls keep blank ⇒ inactive,
         // and required occurrences gated above).
         const rawValue = emptyValue(stored) ? '' : stored;
-        const resolvedValue = resolve(rawValue, type, wallNowMs);
+        const resolved = resolve(rawValue, type, wallNowMs);
+        // #169: a near-miss relative expression (starts like one, fails to
+        // parse) comes back as the `{error}` sentinel rather than a value to
+        // validate. Review finding #2: this follows #170's exact incomplete→
+        // invalid timing model, not an unconditional gate — under 'input'
+        // mode (still typing: `-1`, `now-`, `now-1`, `now/` are all ordinary
+        // keystrokes on the way to a valid expression) it's `incomplete`,
+        // display-only and non-blocking, same as the type-validator's own
+        // incomplete verdict below; only 'execute' mode (blur/Enter/run — see
+        // #170's harden-on-commit path) hardens it to `invalid`, with the
+        // resolver's own structured reason, the same way a serialization
+        // failure gates below. `Array.isArray` guard: an Array(...)-typed
+        // rawValue is itself an object and must not be mistaken for the
+        // sentinel (relative-time only ever touches scalar date-like types,
+        // so an array always comes back unchanged).
+        if (resolved !== null && typeof resolved === 'object' && !Array.isArray(resolved) && 'error' in resolved) {
+          if (validationMode === 'execute') {
+            if (!invalid.includes(p.name)) invalid.push(p.name);
+            note(p.name, 'invalid', resolved.error);
+          } else {
+            note(p.name, 'incomplete');
+          }
+          continue;
+        }
+        const resolvedValue = resolved;
         const verdict = normVerdict(validate(resolvedValue, type, validationMode));
         const hardInvalid = verdict.state === 'invalid'
           || (verdict.state === 'incomplete' && validationMode === 'execute');

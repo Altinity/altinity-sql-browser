@@ -45,6 +45,8 @@ import { openSchemaView } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
+import { buildRelativeTimeField } from './relative-time-field.js';
+import { isDateLikeType } from '../core/relative-time.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
@@ -972,47 +974,72 @@ export function createApp(env = {}) {
         const initialFields = prepareTabBatch(tab.sql, wallNow(), 'execute').fields;
         strip.replaceChildren(...vars.map((v) => {
           const baseTitle = v.name + ': ' + v.type + (v.optional ? ' — optional: blank leaves its filter block out' : '');
-          const input = h('input', {
-            type: 'text', class: 'var-input',
-            value: app.state.varValues[v.name] || '',
-            placeholder: v.type,
-            title: baseTitle,
-            'aria-label': v.name,
-            oninput: (e) => {
-              app.state.varValues[v.name] = e.target.value;
-              // Text controls sync activation with the value (#165).
-              app.state.filterActive[v.name] = e.target.value !== '';
-              app.saveVarValues();
-              app.saveFilterActive();
-              // Editing the value un-hardens it (#170 review): back to
-              // neutral, lenient behavior until it's committed again.
-              app.hardenedVars.delete(v.name);
-              // 'input' mode (#170): a plausible prefix stays neutral while
-              // the field is focused — only a value that's already certainly
-              // wrong shows the inline error here.
-              const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
-              applyFieldState(input, batch.fields[v.name], baseTitle);
-              setRunBtn(app.state.running.value, batch.sources[0]);
-            },
-            onblur: () => {
-              // Hardens 'incomplete' → 'invalid' on commit (#170).
-              const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
-              hardenVar(v.name, batch.fields[v.name]);
-              applyFieldState(input, batch.fields[v.name], baseTitle);
-              setRunBtn(app.state.running.value, batch.sources[0]);
-            },
-            onkeydown: (e) => {
+          // #169: a date-like declared type upgrades the plain text input to
+          // the preset combobox + live preview (relative-time-field.js) — the
+          // field stays free-text (absolute values keep working); every other
+          // type keeps today's bare `<input>` untouched. Persistence/#170
+          // validation stays exactly the shared logic below either way — the
+          // combobox only adds its own focus/keydown-nav/composition hooks,
+          // called first from the same handlers (see relative-time-field.js's
+          // header comment on why this beats two independent listeners).
+          const dateLike = isDateLikeType(v.type);
+          let combo = null;
+          let input;
+          const onValueInput = () => {
+            app.state.varValues[v.name] = input.value;
+            // Text controls sync activation with the value (#165).
+            app.state.filterActive[v.name] = input.value !== '';
+            app.saveVarValues();
+            app.saveFilterActive();
+            // Editing the value un-hardens it (#170 review): back to
+            // neutral, lenient behavior until it's committed again.
+            app.hardenedVars.delete(v.name);
+            // 'input' mode (#170): a plausible prefix stays neutral while
+            // the field is focused — only a value that's already certainly
+            // wrong shows the inline error here.
+            const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
+            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
+            setRunBtn(app.state.running.value, batch.sources[0]);
+          };
+          const onCommitHard = () => {
+            // Hardens 'incomplete' → 'invalid' on commit (#170).
+            const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+            hardenVar(v.name, batch.fields[v.name]);
+            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
+            setRunBtn(app.state.running.value, batch.sources[0]);
+          };
+          if (dateLike) {
+            combo = buildRelativeTimeField({
+              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
+              baseTitle, wallNow, onValueInput, onCommit: onCommitHard,
+            });
+            input = combo.input;
+            input.addEventListener('focus', () => combo.onFocus());
+            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
+            input.addEventListener('keydown', (e) => {
+              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
               if (e.key !== 'Enter') return;
-              const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
-              hardenVar(v.name, batch.fields[v.name]);
-              applyFieldState(input, batch.fields[v.name], baseTitle);
-              setRunBtn(app.state.running.value, batch.sources[0]);
-            },
-          });
+              onCommitHard();
+            });
+            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
+            input.addEventListener('compositionstart', () => combo.onCompositionStart());
+            input.addEventListener('compositionend', () => combo.onCompositionEnd());
+          } else {
+            input = h('input', {
+              type: 'text', class: 'var-input',
+              value: app.state.varValues[v.name] || '',
+              placeholder: v.type,
+              title: baseTitle,
+              'aria-label': v.name,
+              oninput: onValueInput,
+              onblur: onCommitHard,
+              onkeydown: (e) => { if (e.key === 'Enter') onCommitHard(); },
+            });
+          }
           hardenVar(v.name, initialFields[v.name]);
-          applyFieldState(input, initialFields[v.name], baseTitle);
+          applyFieldState(input, initialFields[v.name], baseTitle, combo && combo.previewEl);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
-            h('span', { class: 'var-name' }, v.name), input);
+            h('span', { class: 'var-name' }, v.name), combo ? combo.el : input);
         }));
       }
     }

@@ -1145,6 +1145,45 @@ body.detached-tab .graph-overlay-panel {
   border-color: var(--error-bd);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--error-fg) 22%, transparent);
 }
+/* Relative-time preset combobox (#169): the accessible dropdown-on-focus +
+   type-to-filter control for date-like {name:Type} variables (#174 §1) —
+   shared by the workbench var-strip and the Dashboard filter bar
+   (relative-time-field.js on top of combobox.js's generic primitive). The
+   listbox is `position: fixed` (combobox.js positions it via fixedAnchor/
+   zoomScale at open time) so it escapes the horizontally-scrolling strip's
+   own overflow clipping — the same trick the File/user menus use. */
+.var-combo { position: relative; display: inline-flex; flex-direction: column; }
+.var-combo-list {
+  position: fixed; z-index: 70; max-height: 260px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none;
+  background: var(--bg-panel, var(--bg-editor)); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4);
+  font-size: 12px; font-family: var(--mono);
+}
+.var-combo-list[hidden] { display: none; }
+.combo-group {
+  padding: 4px 8px 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-faint);
+}
+.combo-option {
+  padding: 6px 8px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+  color: var(--fg);
+}
+.combo-option.is-active { background: var(--bg-hover); }
+/* Live resolved-value preview (#169): pure local computation on keystroke —
+   labeled "(your time)" since it renders in the browser's own timezone,
+   which may differ from a `DateTime('tz')` column's display zone (README). */
+.var-combo-preview {
+  font-size: 10.5px; font-family: var(--mono); color: var(--fg-mute);
+  padding: 2px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+}
+.var-combo-preview.is-error { color: var(--error-fg); }
+/* Visually-hidden live region (#169's option-count/"No matches" announcement) —
+   present for assistive tech only, never visible or reflowed. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
 .run-btn {
   height: 26px;
   padding: 0 12px 0 10px;
