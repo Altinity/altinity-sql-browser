@@ -106,11 +106,14 @@ zero third-party requests. On top of it:
   any tool that doesn't know the convention (an external client, server-side
   `formatQuery()`, a code review) each block is an ordinary comment, so the raw
   template parses and runs anywhere — with all filters inactive, which is
-  exactly the intended default. Limitations: blocks don't nest, must contain at
-  least one parameter, can't hold a `;` or a whole statement, and their content
-  can never contain `*/` in any form (not even inside a string literal —
-  ClickHouse's comment lexer would end the comment there); non-row-returning
-  statements (DDL, parameterized views) are never materialized. Because
+  exactly the intended default. Limitations (each rejected with a clear error,
+  never silently mangled): blocks don't nest, must contain at least one
+  parameter, and can't hold a `;` or a whole statement; block content can never
+  contain `*/` in any form — not even inside a string literal, where
+  ClickHouse's comment lexer would still end the comment early (an in-string
+  `*/` or `]*/` is reported as "content ends inside a string literal").
+  Non-row-returning statements (DDL, parameterized views) are never
+  materialized. Because
   server-side `formatQuery()` would strip the markers, **Format skips a
   statement containing optional blocks** (with a notice) and formats the rest
   of the script normally.

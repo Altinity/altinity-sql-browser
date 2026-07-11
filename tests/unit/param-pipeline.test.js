@@ -343,6 +343,41 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
     expect(noValue.sources[0].statements[0].boundParams[0]).toMatchObject({ rawValue: '', serializedValue: '' });
   });
 
+  it('#165 review finding 2: activation never bypasses requiredness — required + blank + active still gates', () => {
+    // The reviewer's exact repro: d is required (outside any block); a blank
+    // value must gate as missing no matter what the shared active map says.
+    const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t WHERE d = {d:String}')]);
+    const p = prepareParameterizedBatch(a, { values: { d: '' }, active: { d: true } });
+    expect(p.sources[0].missing).toEqual(['d']);
+    expect(p.sources[0].runnable).toBe(false);
+    expect(p.sources[0].statements[0].args).toEqual({}); // never binds a silent ''
+    expect(p.fields.d.state).toBe('missing');
+  });
+
+  it('#165 cross-source: active+blank gates the source where d is required; the block-confined source binds the empty string', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SELECT * FROM t WHERE d = {d:String}'),
+      src('B', 'SELECT * FROM u WHERE 1 /*[ AND d = {d:String} ]*/'),
+    ]);
+    const p = prepareParameterizedBatch(a, { values: { d: '' }, active: { d: true } });
+    expect(p.sources[0]).toMatchObject({ missing: ['d'], runnable: false }); // required occurrence gates
+    // B's occurrence is block-confined: active ⇒ block retained, '' binds there.
+    expect(p.sources[1].statements[0].sql).toBe('SELECT * FROM u WHERE 1  AND d = {d:String} ');
+    expect(p.sources[1].statements[0].args).toEqual({ param_d: '' });
+    expect(p.sources[1].runnable).toBe(true);
+    expect(p.fields.d.state).toBe('missing'); // the gated source wins the field state
+  });
+
+  it('#165: required-and-block-confined in the SAME statement — blank + active gates (required wins)', () => {
+    const a = analyzeParameterizedSources([
+      src('A', 'SELECT {d:String} FROM t /*[ WHERE x = {d:String} ]*/'),
+    ]);
+    const p = prepareParameterizedBatch(a, { values: {}, active: { d: true } });
+    expect(p.sources[0].missing).toEqual(['d']);
+    expect(p.sources[0].runnable).toBe(false);
+    expect(p.fields.d.state).toBe('missing');
+  });
+
   it('#165: a required (outside-block) param stays required — blank still gates', () => {
     const a = analyzeParameterizedSources([
       src('A', 'SELECT * FROM t WHERE tenant = {tenant:UInt64} /*[ AND d = {d:String} ]*/'),

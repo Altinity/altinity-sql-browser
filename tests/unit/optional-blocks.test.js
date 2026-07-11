@@ -67,6 +67,31 @@ describe('materializeOptionalBlocks — inclusion/removal', () => {
     expect(materializeOptionalBlocks(s, {}).blocks[0].params).toEqual(['from', 'to']);
   });
 
+  it('adjacent blocks with no separator between the markers scan as two blocks', () => {
+    const s = 'WHERE 1 /*[ AND a={a:UInt8} ]*//*[ AND b={b:UInt8} ]*/';
+    const r = materializeOptionalBlocks(s, { a: true });
+    expect(r.errors).toEqual([]);
+    expect(r.blocks.map((b) => b.params)).toEqual([['a'], ['b']]);
+    expect(r.sql).toBe('WHERE 1  AND a={a:UInt8} ');
+    expect(materializeOptionalBlocks(s, { a: true, b: true }).sql)
+      .toBe('WHERE 1  AND a={a:UInt8}  AND b={b:UInt8} ');
+  });
+
+  it('CRLF line endings are preserved byte-identically around blocks', () => {
+    const s = 'WHERE 1\r\n/*[ AND d = {d:String} ]*/\r\nORDER BY 1';
+    expect(materializeOptionalBlocks(s, {}).sql).toBe('WHERE 1\r\n\r\nORDER BY 1');
+    expect(materializeOptionalBlocks(s, { d: true }).sql)
+      .toBe('WHERE 1\r\n AND d = {d:String} \r\nORDER BY 1');
+  });
+
+  it('markers hugging the content with no spaces still scan', () => {
+    const r = materializeOptionalBlocks('SELECT 1 /*[AND d = {d:String}]*/', { d: true });
+    expect(r.errors).toEqual([]);
+    expect(r.blocks[0].params).toEqual(['d']);
+    expect(r.sql).toBe('SELECT 1 AND d = {d:String}');
+    expect(materializeOptionalBlocks('SELECT {y:UInt8} /*[{d:String}]*/', {}).optionalParams).toEqual(['d']);
+  });
+
   it('ALL_ACTIVE retains every block (the analysis view)', () => {
     const s = 'WHERE 1 /*[ AND a = {a:String} ]*/ /*[ AND b = {b:String} ]*/';
     const r = materializeOptionalBlocks(s, ALL_ACTIVE);
@@ -136,8 +161,38 @@ describe('materializeOptionalBlocks — validation errors (rules 3–6)', () => 
     expect(r.optionalParams).toEqual([]);
   });
 
-  it('a */ inside block content (even in a string literal) ends the comment early — rejected', () => {
-    expect(errOf("SELECT 1 /*[ AND s = '*/' ]*/")[0]).toContain('content cannot contain "*/"');
+  it('a bare */ inside block content ends the comment early — rejected', () => {
+    expect(errOf('SELECT 1 /*[ AND {a:UInt8} > 1 */ 2 ]*/')[0]).toContain('content cannot contain "*/"');
+  });
+
+  it('a */ inside a string literal in block content is rejected with the in-string message', () => {
+    expect(errOf("SELECT 1 /*[ AND s = '*/' ]*/")[0]).toContain('ends inside a string literal');
+  });
+
+  it('review finding 1: an in-string ]*/ never truncates silently — rejected, sql verbatim', () => {
+    // The comment lexer ends the block at the in-string ]*/ — the truncated
+    // candidate still ends with ]*/ and would otherwise validate and mangle
+    // the SQL. The reviewer's exact repro:
+    const s = "WHERE 1 /*[ AND a={a:String} AND s = 'ends with ]*/ tail' ]*/";
+    const r = materializeOptionalBlocks(s, { a: true });
+    expect(r.errors).toEqual([
+      'optional block: content ends inside a string literal — a "*/" inside a string still ends the SQL comment; remove it',
+    ]);
+    expect(r.sql).toBe(s); // returned verbatim — never the corrupted materialization
+    expect(r.blocks).toEqual([]);
+  });
+
+  it('in-string detection honours backslash and doubled-quote escapes', () => {
+    // \' keeps the literal open across the would-be terminator…
+    expect(errOf("SELECT 1 /*[ AND s = 'a\\'b ]*/")[0]).toContain('ends inside a string literal');
+    // …and so does a doubled '' escape.
+    expect(errOf("SELECT 1 /*[ AND s = 'a''b ]*/")[0]).toContain('ends inside a string literal');
+  });
+
+  it('a string literal that closes exactly at the content end is fine', () => {
+    const r = materializeOptionalBlocks("SELECT 1 /*[ AND {a:UInt8} = 'x']*/", { a: true });
+    expect(r.errors).toEqual([]);
+    expect(r.sql).toBe("SELECT 1  AND {a:UInt8} = 'x'");
   });
 
   it('nested /*[ is rejected', () => {
@@ -166,6 +221,7 @@ describe('materializeOptionalBlocks — validation errors (rules 3–6)', () => 
   it('a parameterless block is rejected (a param inside a line comment does not count)', () => {
     expect(errOf('SELECT 1 /*[ AND 1 = 1 ]*/')[0]).toContain('at least one {name:Type} parameter');
     expect(errOf('SELECT 1 /*[ -- {a:UInt8}\n]*/')[0]).toContain('at least one {name:Type} parameter');
+    expect(errOf('SELECT 1 /*[]*/')[0]).toContain('at least one {name:Type} parameter'); // empty content
   });
 
   it('a block wrapping the whole statement is rejected', () => {

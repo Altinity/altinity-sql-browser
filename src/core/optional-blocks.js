@@ -50,6 +50,36 @@ export function hasOptionalBlocks(sql) {
   return countOptionalBlocks(sql) > 0;
 }
 
+// True when `text`'s final lexical span is a string / quoted-identifier
+// literal that never closes — i.e. the text ends mid-string. This is how a
+// `*`+`/` *inside a string literal* in block content manifests: ClickHouse's
+// comment lexer knows nothing about string quoting, so the comment ends at the
+// in-string sequence and the candidate's content is cut off mid-literal. The
+// sneakiest form is a string containing the three characters `]`+`*`+`/` — the
+// truncated candidate still *looks* well-formed (it ends with the close
+// marker), so only the content's own lexical shape reveals the damage.
+function endsInOpenString(text) {
+  let last = null;
+  for (const s of scanSpans(text)) last = s;
+  if (!last || last.kind !== 'string') return false;
+  // Replay the scanner's own string rules (`\` escape, doubled-quote escape)
+  // to decide whether the final literal actually closed at the text's end.
+  const quote = text[last.start];
+  let j = last.start + 1;
+  while (j < last.end) {
+    const c = text[j];
+    if (c === '\\') { j += 2; continue; }
+    if (c === quote) {
+      if (text[j + 1] === quote) { j += 2; continue; }
+      return false; // the literal closed (exactly at the end of the text)
+    }
+    j += 1;
+  }
+  return true;
+}
+
+const OPEN_STRING_ERROR = 'optional block: content ends inside a string literal — a "*/" inside a string still ends the SQL comment; remove it';
+
 // Scan one statement's optional blocks, validating rules 1/3/4/5/6. Each valid
 // block is `{start, end, content, params}` (offsets of the whole marker-to-
 // marker span in `text`; params unique, in appearance order). Invalid
@@ -63,13 +93,23 @@ function scanBlocks(text) {
     if (!t.endsWith(CLOSE)) {
       // The comment either ran to EOF (unbalanced — rule 5) or was ended early
       // by a stray `*`+`/` in the content (rule 3: not allowed in any form —
-      // ClickHouse's comment lexer knows nothing about string quoting here).
-      errors.push(t.endsWith('*/')
-        ? 'optional block: content cannot contain "*/" — the SQL comment ends there (close the block with "]*/")'
-        : 'optional block: unbalanced "/*[" — missing its closing "]*/"');
+      // ClickHouse's comment lexer knows nothing about string quoting here, so
+      // an in-string occurrence gets its own message).
+      errors.push(!t.endsWith('*/')
+        ? 'optional block: unbalanced "/*[" — missing its closing "]*/"'
+        : endsInOpenString(t.slice(OPEN.length, -2))
+          ? OPEN_STRING_ERROR
+          : 'optional block: content cannot contain "*/" — the SQL comment ends there (close the block with "]*/")');
       continue;
     }
     const content = t.slice(OPEN.length, -CLOSE.length);
+    if (endsInOpenString(content)) {
+      // A string literal containing `]*/` ended the comment early, yet the
+      // truncated candidate still ends with `]*/` — reject instead of
+      // materializing silently-mangled SQL.
+      errors.push(OPEN_STRING_ERROR);
+      continue;
+    }
     if (content.includes('/*')) {
       // Nested blocks are unsupported (rule 3), and an ordinary block comment
       // cannot live inside a block — its closing `*`+`/` would end the outer

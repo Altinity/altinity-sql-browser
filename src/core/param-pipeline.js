@@ -179,8 +179,11 @@ const VERDICT_RANK = { ok: 1, incomplete: 2, invalid: 3 };
  *   ever blocks a sibling source.
  * - `active` (#165) is the optional-block activation map (see
  *   `effectiveFilterActive` in state.js): inactive blocks drop out of the
- *   execution view, so their params are never bound; an *active* param whose
- *   stored value is empty binds a real empty string instead of gating.
+ *   execution view, so their params are never bound; an *active,
+ *   block-confined* param whose stored value is empty binds a real empty
+ *   string instead of gating. Activation never bypasses requiredness — a
+ *   param with an occurrence outside every block in a statement gates as
+ *   missing there on a blank value, whatever the active map says.
  * - Field states: `missing` (empty but required somewhere in this batch's
  *   execution views) | `inactive` (does not participate in any bound execution
  *   statement) | `incomplete` (display-only; hardens to `invalid` under
@@ -220,6 +223,9 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
       const sql = eView(st.sql, active);
       // Re-scan the *execution* view: a param whose only occurrences sat in a
       // dropped inactive block (#165) is not bound — and not required — here.
+      // The raw statement scan (blocks are comments to it) is this statement's
+      // required set — same derivation as phase 1's requiredIn.
+      const requiredHere = new Set(scanParamDeclarations(st.sql).map((p) => p.name));
       const args = {};
       const boundParams = [];
       const seen = new Set();
@@ -231,14 +237,18 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
         boundAnywhere.add(p.name);
         const type = parseParamType(p.type);
         const stored = values[p.name];
-        if (emptyValue(stored) && !active[p.name]) {
+        if (emptyValue(stored) && (requiredHere.has(p.name) || !active[p.name])) {
+          // A required occurrence (outside every block in THIS statement)
+          // always gates as missing on a blank value — the shared activation
+          // map never bypasses requiredness (#165 review finding 2).
           if (!missing.includes(p.name)) missing.push(p.name);
           missingAnywhere.add(p.name);
           continue;
         }
         // An explicitly-activated empty value binds as a real empty string
-        // (#165) — distinct from inactive/missing; text controls keep blank ⇒
-        // inactive, so an empty required param still gates as missing above.
+        // (#165) — distinct from inactive/missing; this bypass only ever
+        // reaches block-confined params (text controls keep blank ⇒ inactive,
+        // and required occurrences gated above).
         const rawValue = emptyValue(stored) ? '' : stored;
         const resolvedValue = resolve(rawValue, type, wallNowMs);
         const verdict = normVerdict(validate(resolvedValue, type, validationMode));
@@ -285,8 +295,12 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
 
   const fields = {};
   for (const name of Object.keys(analysis.fields)) {
-    if (emptyValue(values[name]) && !active[name]) {
-      fields[name] = { state: missingAnywhere.has(name) ? 'missing' : 'inactive' };
+    // A blank value that gated anywhere is `missing` regardless of the active
+    // map — a required occurrence is never bypassed by activation (#165).
+    if (emptyValue(values[name]) && missingAnywhere.has(name)) {
+      fields[name] = { state: 'missing' };
+    } else if (emptyValue(values[name]) && !active[name]) {
+      fields[name] = { state: 'inactive' };
     } else if (!boundAnywhere.has(name)) {
       fields[name] = { state: 'inactive' };
     } else {
