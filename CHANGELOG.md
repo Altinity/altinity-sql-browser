@@ -192,6 +192,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   wrapper over it) so v2 can locate each param occurrence's FROM scope.
 
 ### Fixed
+- **Phase 7 whole-branch review fixes** (#173/#165/#169/#170/#171/#172).
+  Type-conflicted `{name}` declarations now *surface*: the field carries
+  `conflict` through `fieldControls`, degrades to a plain text input on both
+  the workbench var-strip and the dashboard filter bar (never a one-sided enum
+  or date control), and shows an amber `.is-conflict` warning whose tooltip
+  lists the disagreeing declarations. The #172 v2 schema-cache scan runs on the
+  analysis materialization, so a `col = {p}` comparison inside a `/*[ … ]*/`
+  optional block gets its dropdown too; and comparison-column conflicts are
+  decided on *resolved* identity, not raw qualifier text (`e.status` +
+  `status` in a single-table query now match; JOIN sides still don't).
+  "Clear recent" now also empties the open dropdown list; a recent that
+  duplicates a rendered enum member/preset is no longer listed twice; every
+  execution path (run / script / both exports) captures its prepared args at
+  wave start, so a value edited during a token-refresh await can no longer
+  desync from the gate; the array-element serializer now shares the
+  validator's live-verified Int/Float token grammar (rejects `007`, accepts
+  `inf`/`nan`); and the var strip no longer analyzes the same SQL twice per
+  editor keystroke.
 - **Multi-statement SQL now binds query parameters per statement everywhere**
   (#155, absorbed by #173). `paramArgs` gated on the leading keyword of the
   whole text, so a favorite like `SET x = 1; SELECT {year:UInt16}` never

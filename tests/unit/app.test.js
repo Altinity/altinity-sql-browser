@@ -1474,6 +1474,18 @@ describe('query run', () => {
     expect(runUrl(e, /SELECT 1/)).toContain('max_result_rows=1000'); // re-ran with the new cap
   });
 
+  it('run(): the args snapshot is captured at wave start — a var edit during the auth awaits does not change the sent params (review F6)', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    app.activeTab().sql = 'SELECT {id:String}';
+    app.state.varValues = { id: 'first' };
+    const p = app.actions.run(); // runs synchronously through the gate + capture, suspends at ensureConfig/getToken
+    app.state.varValues.id = 'second'; // the mid-await edit — must apply to the NEXT run only
+    await p;
+    const urls = app.chCtx.fetch.mock.calls.map(([url]) => url);
+    expect(urls.some((u) => /param_id=first/.test(u))).toBe(true); // the gate-time snapshot was sent
+    expect(urls.some((u) => /param_id=second/.test(u))).toBe(false);
+  });
+
   describe('enum variables (#172)', () => {
     const ENUM_TYPE = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";
     it('v1: a declared Enum8 variable renders a dropdown of its members', () => {
@@ -1617,6 +1629,40 @@ describe('query run', () => {
       rebuilt[0].dispatchEvent(new Event('focus', { bubbles: true }));
       const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
       expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v2: a comparison inside a /*[ ]*/ optional block still matches — the scan runs on the analysis materialization, not the raw SQL (review F2)', () => {
+      const { app } = appForRun([]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'status', type: ENUM_TYPE }] }] }];
+      // In the RAW text this whole comparison is one opaque comment span.
+      app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND status = {s:String} ]*/';
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v2: alias-qualified + unqualified refs to the same single-table column still get the dropdown (review F3: resolved identity, not qualifier text)', () => {
+      const { app } = appForRun([]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: [{ name: 'status', type: ENUM_TYPE }] }] }];
+      app.activeTab().sql = 'SELECT * FROM events e WHERE e.status = {s:String} OR status = {s:String}';
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('a type-conflicted variable renders a plain input with a visible warning — the enum control is disabled (#173 acceptance, review F1)', () => {
+      const { app } = appForRun([]);
+      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}; SELECT {status:String}`;
+      app.renderVarStrip();
+      const input = app.dom.varStrip.querySelector('.var-input');
+      expect(input.classList.contains('is-conflict')).toBe(true); // visible warning, distinct from is-invalid
+      expect(input.classList.contains('is-invalid')).toBe(false);
+      expect(input.title).toContain('Conflicting type declarations');
+      expect(input.title).toContain('String');
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      // No member dropdown: the field degraded to the plain (recents-only) control.
+      expect(app.dom.varStrip.querySelectorAll('[role="option"]')).toHaveLength(0);
     });
     it('v2: moving focus BETWEEN strip fields keeps the deferred rebuild pending — it only applies once focus leaves the strip', async () => {
       const { app } = appForRun([

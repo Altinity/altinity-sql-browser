@@ -54,6 +54,9 @@ html { zoom: var(--zoom); }
   --error-bg: rgba(239, 68, 68, .08);
   --error-bd: rgba(239, 68, 68, .25);
   --error-fg: #f87171;
+  --warn-bg: rgba(217, 119, 6, .08);
+  --warn-bd: rgba(217, 119, 6, .35);
+  --warn-fg: #fbbf24;
 }
 
 [data-theme='light'] {
@@ -80,6 +83,9 @@ html { zoom: var(--zoom); }
   --error-bg: #FEF2F2;
   --error-bd: #FCA5A5;
   --error-fg: #B91C1C;
+  --warn-bg: #FFFBEB;
+  --warn-bd: #FCD34D;
+  --warn-fg: #B45309;
 }
 
 body {
@@ -1140,6 +1146,21 @@ body.detached-tab .graph-overlay-panel {
    mid-typing prefix) stays visually neutral until it hardens on blur/Enter/
    execute. The reason string ("Expected UInt8 from 0 to 255") replaces the
    field's normal title, shown via the native tooltip on hover/focus. */
+/* Conflicting-declaration affordance (#173 acceptance): the same {name} is
+   declared with disagreeing types across statements/tiles. Distinct from
+   is-invalid — the VALUE isn't wrong, the declarations disagree — so it warns
+   (amber) instead of erroring (red); the field's title lists the conflicting
+   declarations, and both the workbench var-strip and the Dashboard filter bar
+   degrade the control to a plain text input (fieldControlKind). is-invalid,
+   when both apply, wins (declared later in this sheet). */
+.var-input.is-conflict {
+  border-color: var(--warn-bd);
+  background: var(--warn-bg);
+}
+.var-input.is-conflict:focus {
+  border-color: var(--warn-bd);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--warn-fg) 22%, transparent);
+}
 .var-input.is-invalid {
   border-color: var(--error-bd);
   background: var(--error-bg);

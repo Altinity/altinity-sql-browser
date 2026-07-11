@@ -449,6 +449,38 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     expect(filters.querySelectorAll('.var-field').length).toBe(0);
   });
 
+  it('a param declared with conflicting types across two favorites renders a plain input with a visible warning (#173 acceptance, review F1)', async () => {
+    const favorites = [
+      paramFav('1', 'SELECT * FROM t WHERE i = {id:UInt64}'),
+      paramFav('2', 'SELECT * FROM u WHERE i = {id:String}'),
+    ];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    app.state.varValues = { id: '7' };
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 'id');
+    expect(input.classList.contains('is-conflict')).toBe(true); // visible warning, distinct from is-invalid
+    expect(input.title).toContain('Conflicting type declarations: UInt64 vs String');
+  });
+
+  it('a conflicted Enum-declared filter degrades to a plain input — the member dropdown is disabled (review F1)', async () => {
+    const favorites = [
+      paramFav('1', "SELECT * FROM t WHERE s = {s:Enum8('a' = 1, 'b' = 2)}"),
+      paramFav('2', 'SELECT * FROM u WHERE s = {s:String}'),
+    ];
+    const app = dashApp(favorites, vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    const input = fieldInput(app.root, 's');
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect(app.root.querySelectorAll('[role="option"]')).toHaveLength(0); // no member dropdown
+    expect(input.classList.contains('is-conflict')).toBe(true);
+    // A non-conflicted enum filter keeps its dropdown (control degradation is per-field).
+    const app2 = dashApp([paramFav('1', "SELECT * FROM t WHERE s = {s:Enum8('a' = 1, 'b' = 2)}")], vi.fn(async () => chartResult()));
+    await renderDashboard(app2);
+    const input2 = fieldInput(app2.root, 's');
+    input2.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect([...app2.root.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toEqual(['a', 'b']);
+  });
+
   it('renders one field per param detected across favorites, first-appearance order', async () => {
     const favorites = [
       paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}'),
