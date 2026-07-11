@@ -206,18 +206,19 @@ function validateEnum(type, value) {
   // unrecognized type gets.
   if (!members || !members.length) return { status: 'unknown' };
   if (members.some((m) => m.name === value)) return { status: 'valid' };
-  if (ENUM_CODE_FORMAT.test(value)) {
-    const n = Number(value);
-    return members.some((m) => m.code === n)
-      ? { status: 'valid' }
-      : { status: 'invalid', reason: enumReason(members) };
+  if (ENUM_CODE_FORMAT.test(value) && members.some((m) => m.code === Number(value))) {
+    return { status: 'valid' };
   }
-  // A value that's still a proper prefix of some member's name (or a lone
-  // '-', the one ambiguous prefix of a negative code) is neutral while
-  // typing — the same "don't show red on the very first keystroke" timing
-  // #170 already uses for Int/UInt's lone sign and Float/UUID's mid-typing
-  // prefixes above.
-  if (value === '-' || members.some((m) => m.name !== value && m.name.startsWith(value))) {
+  // Neutral mid-typing prefixes (#170's timing model — "don't show red on the
+  // very first keystroke", hardening to invalid on blur/Enter/execute): a
+  // strict prefix of some member's NAME, a lone '-' (could still grow into a
+  // negative code), or digits that are a strict prefix of some declared
+  // code's string form ('1' on the way to code 12 — mirrors the name-prefix
+  // rule; a full number no code can extend, like '3' against codes {1, 2},
+  // stays immediately invalid, matching the live-verified server rejection).
+  const codePrefix = ENUM_CODE_FORMAT.test(value)
+    && members.some((m) => { const s = String(m.code); return s !== value && s.startsWith(value); });
+  if (value === '-' || codePrefix || members.some((m) => m.name !== value && m.name.startsWith(value))) {
     return { status: 'incomplete' };
   }
   return { status: 'invalid', reason: enumReason(members) };

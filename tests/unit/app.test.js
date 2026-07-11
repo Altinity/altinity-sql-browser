@@ -1588,6 +1588,56 @@ describe('query run', () => {
       input.dispatchEvent(new Event('focus', { bubbles: true }));
       expect(app.dom.varStrip.querySelectorAll('[role="option"]')).toHaveLength(0);
     });
+    it('v2: a background column load never steals focus mid-typing — the strip rebuild defers until blur, then applies', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.renderVarStrip();
+      const region = app.dom.varStrip.querySelectorAll('.var-input')[1];
+      region.focus(); // real focus: sets document.activeElement AND fires the field's focus listener (dropdown opens)
+      region.value = 'us-';
+      region.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(region.getAttribute('aria-expanded')).toBe('true'); // recents dropdown open (empty is fine — it's open state that matters)
+      // The background idle-tick column load completes while the user is
+      // mid-typing in the UNRELATED region field: the {s} upgrade must NOT
+      // rebuild the strip out from under them.
+      await app.actions.loadColumns('d', 'events');
+      expect(document.activeElement).toBe(region);                              // focus survived
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).toBe(region);  // same node — no rebuild
+      expect(region.value).toBe('us-');                                         // typed text survived
+      expect(region.getAttribute('aria-expanded')).toBe('true');                // open dropdown survived
+      // On blur (focus leaves the strip) the deferred upgrade applies: the
+      // strip rebuilds and {s} now offers the schema-cache-inferred dropdown.
+      region.blur();
+      const rebuilt = app.dom.varStrip.querySelectorAll('.var-input');
+      expect(rebuilt[1]).not.toBe(region); // strip was rebuilt after blur
+      expect(rebuilt[1].value).toBe('us-'); // the typed value carried through varValues
+      rebuilt[0].dispatchEvent(new Event('focus', { bubbles: true }));
+      const opts = [...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+      expect(opts).toEqual(['active', 'deleted', 'banned']);
+    });
+    it('v2: moving focus BETWEEN strip fields keeps the deferred rebuild pending — it only applies once focus leaves the strip', async () => {
+      const { app } = appForRun([
+        [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
+      ]);
+      app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
+      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.renderVarStrip();
+      const inputs = app.dom.varStrip.querySelectorAll('.var-input');
+      const sInput = inputs[0];
+      const region = inputs[1];
+      region.focus();
+      await app.actions.loadColumns('d', 'events'); // deferred: focus is inside the strip
+      // Tabbing from region to the s field: the focusout's relatedTarget is
+      // still inside the strip, so the deferral holds — no rebuild yet.
+      region.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: sInput }));
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).toBe(region);
+      // Focus finally leaves the strip → the deferred upgrade applies.
+      region.blur();
+      expect(app.dom.varStrip.querySelectorAll('.var-input')[1]).not.toBe(region);
+    });
   });
 });
 

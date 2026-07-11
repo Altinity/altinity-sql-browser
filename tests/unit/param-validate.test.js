@@ -195,4 +195,31 @@ describe('validateParamValue: Enum8/Enum16 (#172 v1, declared-type membership)',
   it('an Enum type with no parseable members degrades to unknown passthrough', () => {
     unknown('Enum8', 'anything');
   });
+  // Implicit (auto-numbered) members are real members — a mixed declaration
+  // must accept them by name AND by their auto-assigned code, never falsely
+  // reject a value the server accepts.
+  it('an implicit member in a mixed declaration validates by name and by its auto-numbered code', () => {
+    valid("Enum8('a' = 1, 'b')", 'b');   // the reported false-reject case
+    valid("Enum8('a' = 1, 'b')", '2');   // b's auto-assigned code
+    invalid("Enum8('a' = 1, 'b')", '3'); // beyond the auto-numbered range — live-verified server rejection
+  });
+  it('a fully-implicit declaration enforces membership (blocking), not silent unknown', () => {
+    valid("Enum8('hello', 'world')", 'world');
+    valid("Enum8('hello', 'world')", '1');
+    invalid("Enum8('hello', 'world')", 'nope', "Expected one of: 'hello', 'world'");
+  });
+  // MINOR-3: digits that are a strict prefix of some declared code's string
+  // form are neutral while typing ('1' on the way to code 12), mirroring the
+  // member-name prefix rule; a full number no code can extend stays invalid.
+  it('a strict numeric prefix of a declared code is incomplete, not a flash of invalid', () => {
+    const CODES = "Enum8('x' = 2, 'y' = 12)";
+    incomplete(CODES, '1'); // could still become 12
+    valid(CODES, '12');
+    invalid(CODES, '13');   // no declared code extends it
+    invalid(CODES, '3');    // not a code, not a prefix of '2' or '12'
+  });
+  it('a negative numeric prefix of a negative code is incomplete too', () => {
+    incomplete("Enum8('n' = -12)", '-1'); // could still become -12
+    invalid("Enum8('n' = -12)", '-13');
+  });
 });

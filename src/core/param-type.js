@@ -133,9 +133,11 @@ function unescapeEnumMember(quoted) {
  * `param-scan.js`'s brace matching) to find each quoted member name, so
  * escaped quotes (`'a''b'`), braces (`'}'`), backslash escapes, spacing
  * variants, and unicode member names all parse exactly like ClickHouse's own
- * string literal grammar. A member with no explicit `= <code>` is dropped —
- * ClickHouse's Enum syntax always assigns one explicitly, so anything else is
- * unparsed rather than guessed at. Pure.
+ * string literal grammar. ClickHouse allows OMITTING the `= <code>`
+ * assignment — `Enum8('hello', 'world')` auto-numbers from 1, and an implicit
+ * member after an explicit code continues from it (`Enum8('One' = 1, 'Two',
+ * 'Three')` → Two=2, Three=3; `Enum8('a' = -2, 'b')` → b=-1) — matched here
+ * with the same previous-code+1 rule. Pure.
  * @param {string|ReturnType<typeof parseParamType>} type
  * @returns {{name: string, code: number}[]|null}
  */
@@ -145,26 +147,36 @@ export function enumMembers(type) {
   const text = t.inner || '';
   const spans = [...scanSpans(text)];
   const members = [];
+  // ClickHouse's auto-numbering counter: the first implicit member is 1, each
+  // later implicit member is the previous member's code + 1 (explicit codes
+  // reset the counter, including negative ones).
+  let nextCode = 1;
   for (let i = 0; i < spans.length; i++) {
     const sp = spans[i];
     if (sp.kind !== 'string') continue;
     const name = unescapeEnumMember(text.slice(sp.start, sp.end));
     const next = spans[i + 1];
     const m = next && next.kind === 'code' ? ENUM_CODE_RE.exec(text.slice(next.start, next.end)) : null;
-    if (m) members.push({ name, code: Number(m[1]) });
+    const code = m ? Number(m[1]) : nextCode;
+    members.push({ name, code });
+    nextCode = code + 1;
   }
   return members;
 }
 
 /**
  * The member NAMES of an `Enum8`/`Enum16` declared type, in declaration
- * order, or `null` for any other type (`Nullable(...)` unwrapped) — the
- * dropdown-option list #172 v1 (declared type) and v2 (schema-cache
- * inference) both render. Pure.
+ * order — the dropdown-option list #172 v1 (declared type) and v2
+ * (schema-cache inference) both render — or `null` for any other type
+ * (`Nullable(...)` unwrapped) AND for an enum whose member list yields
+ * nothing (a bare `Enum8`, an empty/unparseable list): null, never `[]`, so
+ * every truthiness-checking consumer (the field builders in app.js /
+ * dashboard.js) falls back to the plain input instead of rendering an empty
+ * dropdown. Pure.
  * @param {string|ReturnType<typeof parseParamType>} type
  * @returns {string[]|null}
  */
 export function enumValues(type) {
   const members = enumMembers(type);
-  return members ? members.map((m) => m.name) : null;
+  return members && members.length ? members.map((m) => m.name) : null;
 }

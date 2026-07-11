@@ -170,18 +170,48 @@ describe('enumMembers / enumValues', () => {
     expect(enumValues(parseParamType("Enum8('a' = 1)"))).toEqual(['a']);
   });
 
-  it('a member with no explicit = code is dropped, not guessed at', () => {
-    expect(enumMembers("Enum8('a' = 1, 'no_code', 'b' = 2)")).toEqual([
-      { name: 'a', code: 1 },
-      { name: 'b', code: 2 },
+  // ClickHouse's documented Enum syntax allows OMITTING codes: implicit
+  // members auto-number — the first from 1, each later one from the previous
+  // member's code + 1 (explicit codes reset the counter).
+  it('fully-implicit members auto-number from 1', () => {
+    expect(enumMembers("Enum8('hello', 'world')")).toEqual([
+      { name: 'hello', code: 1 },
+      { name: 'world', code: 2 },
+    ]);
+    expect(enumValues("Enum8('hello', 'world')")).toEqual(['hello', 'world']);
+  });
+
+  it("mixed explicit-then-implicit continues from the previous code (ClickHouse docs' own example)", () => {
+    expect(enumMembers("Enum8('One' = 1, 'Two', 'Three')")).toEqual([
+      { name: 'One', code: 1 },
+      { name: 'Two', code: 2 },
+      { name: 'Three', code: 3 },
     ]);
   });
 
-  it('a bare Enum8 with no parenthesized member list yields an empty array, not null', () => {
-    expect(enumMembers('Enum8')).toEqual([]);
+  it('an implicit member after a negative code continues upward from it', () => {
+    expect(enumMembers("Enum8('a' = -2, 'b')")).toEqual([
+      { name: 'a', code: -2 },
+      { name: 'b', code: -1 },
+    ]);
   });
 
-  it('a single member with nothing trailing it (no code, no next span at all) is dropped', () => {
-    expect(enumMembers("Enum8('lonely')")).toEqual([]);
+  it('a later explicit code resets the auto-numbering counter', () => {
+    expect(enumMembers("Enum8('a', 'b' = 10, 'c')")).toEqual([
+      { name: 'a', code: 1 },
+      { name: 'b', code: 10 },
+      { name: 'c', code: 11 },
+    ]);
+  });
+
+  it('a single implicit member (no code, no next span at all) gets code 1', () => {
+    expect(enumMembers("Enum8('lonely')")).toEqual([{ name: 'lonely', code: 1 }]);
+    expect(enumValues("Enum8('lonely')")).toEqual(['lonely']);
+  });
+
+  it('a bare Enum8 with no member list: enumMembers [] but enumValues null — never an empty dropdown', () => {
+    expect(enumMembers('Enum8')).toEqual([]);
+    expect(enumValues('Enum8')).toBeNull();
+    expect(enumValues('Enum8()')).toBeNull();
   });
 });

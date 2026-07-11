@@ -151,12 +151,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   declaration by new pure `enumMembers`/`enumValues` (`src/core/param-type.js`,
   100% covered — reuses the shared string-span scanner so escaped quotes
   (`'a''b'`), braces (`'}'`), spacing variants, negative codes, and unicode
-  member names all parse exactly like ClickHouse's own literal grammar).
+  member names all parse exactly like ClickHouse's own literal grammar, and
+  implicit auto-numbered members — `Enum8('hello', 'world')`,
+  `Enum8('One' = 1, 'Two', 'Three')` — get their real codes with ClickHouse's
+  previous-code+1 rule).
   Membership is enforced (#170's invalid affordance, blocking) via a new
   `param-validate.js` branch: a LIVE-VERIFIED server fact (ClickHouse 26.3.13)
   is that a bare numeric code string (`1`) is ALSO accepted for a declared
   Enum param, binding as the member with that code — so validation accepts
-  member names AND matching numeric codes, rejecting everything else with a
+  member names AND matching numeric codes (a strict digit prefix of a declared
+  code, like `1` on the way to code `12`, stays neutral while typing, same as
+  a member-name prefix), rejecting everything else with a
   reason that lists (and, past 8, samples + counts) the allowed values. Works
   in both the workbench variables strip and the Dashboard filter bar, since
   the declaration travels with the tile SQL. **v2 (schema-cache inference,
@@ -172,7 +177,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `src/core/from-scope.js` resolves it against the statement's FROM scope and
   the loaded schema (exactly one confident match required — ambiguous or
   not-yet-loaded degrades silently to a plain input, upgrading automatically
-  once the column lands on the existing idle-tick loader). **Third consumer of
+  once the column lands on the existing idle-tick loader; a background load
+  that completes while the user is focused inside the variables strip DEFERS
+  the strip rebuild until that field blurs, so it never steals focus, wipes
+  in-progress text, or closes an open dropdown mid-typing). **Third consumer of
   the shared combobox** (`src/ui/combobox.js`, #174 §1) via new
   `src/ui/enum-field.js`: enum values render under a "Values" header once
   recents (#171) are also wired (paired labeling, exactly relative-time-

@@ -1057,6 +1057,34 @@ export function createApp(env = {}) {
       return v.name + ':' + v.type + (v.optional ? '?' : '') + (opts ? ':enum' + opts.length : '');
     }).join(',');
     if (sig !== app.dom.varStripSig) {
+      // A signature change while the user is focused INSIDE the strip would
+      // replaceChildren() every field out from under them — a background
+      // column load (loadColumns → renderVarStrip, the #172 v2 upgrade path)
+      // completing mid-typing would steal focus, wipe the in-progress text
+      // repaint, and destroy any open dropdown. Defer the rebuild until focus
+      // leaves the strip: the upgrade only matters on the NEXT interaction
+      // anyway. (Typing in the SQL editor also lands here on every keystroke,
+      // but then focus is in the editor, not the strip — no deferral.)
+      const active = doc.activeElement;
+      if (active && strip.contains(active)) {
+        app.dom.varStripRerenderPending = true;
+        if (!app.dom.varStripDeferHooked) {
+          app.dom.varStripDeferHooked = true;
+          // One listener for the strip's lifetime (the strip node itself is
+          // never replaced, only its children). `focusout` bubbles; when
+          // focus merely moves BETWEEN fields of the strip, relatedTarget is
+          // still inside it and the deferral holds.
+          strip.addEventListener('focusout', (e) => {
+            if (!app.dom.varStripRerenderPending) return;
+            if (e.relatedTarget && strip.contains(e.relatedTarget)) return;
+            app.dom.varStripRerenderPending = false;
+            renderVarStrip();
+          });
+        }
+        setRunBtn(app.state.running.value);
+        return;
+      }
+      app.dom.varStripRerenderPending = false;
       app.dom.varStripSig = sig;
       if (!vars.length) {
         strip.replaceChildren();
