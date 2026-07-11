@@ -11,7 +11,8 @@ import {
   MOBILE_BREAKPOINT_PX,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
-import { readStatementParams, paramArgs, unfilledParams, missingValues } from '../core/query-params.js';
+import { readStatementParams, missingValues } from '../core/query-params.js';
+import { analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs } from '../core/param-pipeline.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
@@ -484,6 +485,13 @@ export function createApp(env = {}) {
 
   // --- query run ---------------------------------------------------------
   const now = () => (env.now || (() => win.performance.now()))();
+  // The *wall* clock for the parameter pipeline (#173) — epoch ms, injected
+  // separately from `now` above: performance.now() measures durations and is
+  // wrong for epoch-relative values (#169's `now-1h`). Callers resolve one
+  // wallNow() per execution wave and thread it through every prepare of that
+  // wave; debounce/coalescing also live in the callers, never in the pipeline.
+  const wallNow = () => (env.wallNow || (() => Date.now()))();
+  app.wallNow = wallNow;
   // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
   // fallback (non-secure context, where randomUUID is undefined) must still be
   // unique across tabs sharing one time origin — so mix in Math.random, not just
@@ -537,15 +545,36 @@ export function createApp(env = {}) {
   function sessionParamsFor(tab, sqls) {
     return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
+  // Analyze + prepare `sql` as the workbench's single parameterized source
+  // (#173): one call per SQL string per wave, drawing values from the shared
+  // varValues. Returns the prepared source ({statements, missing, invalid,
+  // errors, runnable}); args for a request come from its statements (or
+  // mergedSourceArgs when the SQL ships as one request).
+  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
+    const analysis = analyzeParameterizedSources([
+      { id: 'tab', label: 'editor tab', kind: 'tab', sql, bindPolicy: 'row-returning' },
+    ]);
+    return prepareParameterizedBatch(analysis, {
+      values: app.state.varValues, active: {}, wallNowMs, validationMode,
+    }).sources[0];
+  }
   // Block execution while any {name:Type} variable in the active tab is unfilled
-  // (#134), toasting which. Gating on the whole tab.sql — the exact set the
-  // variable strip shows — keeps every execution path consistent: the Run button
-  // (setRunBtn), the Run/⌘↵ path, Explain, and Export all agree.
-  function varGateBlocked() {
+  // or invalid, or while its value can't serialize (e.g. an array value against
+  // a scalar declaration) — toasting why (#134/#173). Gating on the whole
+  // tab.sql — the exact set the variable strip shows — keeps every execution
+  // path consistent: the Run button (setRunBtn), the Run/⌘↵ path, Explain, and
+  // Export all agree. `wallNowMs` is the caller's wave clock.
+  function varGateBlocked(wallNowMs = wallNow()) {
     const tab = app.activeTab();
-    const missing = tab ? unfilledParams(tab.sql, app.state.varValues) : [];
-    if (missing.length) {
-      flashToast('Enter a value for: ' + missing.join(', '), { document: doc });
+    const src = tab ? prepareTabSource(tab.sql, wallNowMs) : null;
+    if (!src) return false;
+    const blockers = src.missing.concat(src.invalid);
+    if (blockers.length) {
+      flashToast('Enter a value for: ' + blockers.join(', '), { document: doc });
+      return true;
+    }
+    if (src.errors.length) {
+      flashToast(src.errors[0], { document: doc });
       return true;
     }
     return false;
@@ -559,7 +588,8 @@ export function createApp(env = {}) {
     // trailing `;`, history).
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sql;
     if (!srcSql.trim()) return;
-    if (varGateBlocked()) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
+    const waveMs = wallNow(); // one wall clock for this run wave: gate + args see the same instant
+    if (varGateBlocked(waveMs)) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
@@ -629,10 +659,10 @@ export function createApp(env = {}) {
         resultRowLimit: rowLimit,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
-        // Native ClickHouse query parameters (#134): pass entered values as
-        // param_<name> so the server substitutes them (only for row-returning
-        // SQL — paramArgs no-ops on a CREATE VIEW / DDL, leaving it verbatim).
-        params: { ...sessionParamsFor(tab, [srcSql]), ...paramArgs(srcSql, app.state.varValues) },
+        // Native ClickHouse query parameters (#134/#173): pass prepared values
+        // as param_<name> so the server substitutes them (only row-returning
+        // statements bind — a CREATE VIEW / DDL source stays verbatim).
+        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(prepareTabSource(srcSql, waveMs)) },
         onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
@@ -686,7 +716,11 @@ export function createApp(env = {}) {
   // exact text that was split (the selection or the whole editor).
   async function runScript(statements, originalInput) {
     if (app.state.running.value) return;
-    if (varGateBlocked()) return; // block a script run with unfilled variables
+    const waveMs = wallNow(); // one wall clock for the whole script wave
+    if (varGateBlocked(waveMs)) return; // block a script run with unfilled variables
+    // One prepared batch for the whole script (#173): `statements` came from
+    // splitStatements(originalInput), so the batch's statements align by index.
+    const paramSrc = prepareTabSource(originalInput, waveMs);
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
@@ -713,10 +747,10 @@ export function createApp(env = {}) {
         const opts = {
           format: rowReturning ? 'JSONCompact' : 'TSV',
           signal: app.state.abortController.signal,
-          // paramArgs is per-statement and self-gates on isRowReturning, so a
-          // DDL / CREATE VIEW statement in the script is sent with its
-          // {name:Type} placeholders intact (#134).
-          params: { ...sp, ...paramArgs(stmt, app.state.varValues), ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
+          // Per-statement prepared args (#134/#173): the pipeline binds only
+          // row-returning statements, so a DDL / CREATE VIEW statement in the
+          // script is sent with its {name:Type} placeholders intact.
+          params: { ...sp, ...paramSrc.statements[i].args, ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
         };
         const s0 = now(); // this statement's own wall-clock (grid Time column)
         // Fresh query_id per attempt, published before the request so Cancel
@@ -811,7 +845,7 @@ export function createApp(env = {}) {
     // that already has the missing set (renderVarStrip) passes it to avoid
     // re-lexing; otherwise we compute it here.
     const tab = app.activeTab();
-    if (missing == null) missing = running || !tab ? [] : unfilledParams(tab.sql, app.state.varValues);
+    if (missing == null) missing = running || !tab ? [] : prepareTabSource(tab.sql, wallNow(), 'input').missing;
     app.dom.runBtn.disabled = running || missing.length > 0;
     app.dom.runBtn.title = missing.length
       ? 'Enter a value for: ' + missing.join(', ')
@@ -1212,16 +1246,17 @@ export function createApp(env = {}) {
   // no sense). Mirrors runEntry's split/branch.
   function exportEntry() {
     if (app.state.exporting.value) return;
-    if (varGateBlocked()) return; // don't export with unfilled variables (#134)
+    const waveMs = wallNow(); // one wall clock for this export wave (gate + args)
+    if (varGateBlocked(waveMs)) return; // don't export with unfilled variables (#134)
     const sel = app.editor.getSelection().text;
     const input = sel.trim() !== '' ? sel : app.activeTab().sql;
     const statements = splitStatements(input);
     if (!statements.length) { flashToast('Nothing to export', { document: doc }); return; }
-    if (statements.length === 1) return exportDirect(statements[0]);
-    return exportScriptEntry(statements);
+    if (statements.length === 1) return exportDirect(statements[0], waveMs);
+    return exportScriptEntry(statements, input, waveMs);
   }
 
-  async function exportDirect(sqlInput) {
+  async function exportDirect(sqlInput, waveMs) {
     if (app.state.exporting.value) return;
     if (!app.canExport()) return; // aria-disabled button; defensive guard
     const tab = app.activeTab();
@@ -1260,8 +1295,8 @@ export function createApp(env = {}) {
       try {
         const resp = await ch.exportQuery(chCtx, sql, {
           queryId: exportQueryId, signal: exportAbort.signal, format,
-          // Native query-parameter substitution (#134), same as run().
-          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs(sql, app.state.varValues) },
+          // Native query-parameter substitution (#134/#173), same as run().
+          params: { ...sessionParamsFor(tab, [sql]), ...mergedSourceArgs(prepareTabSource(sql, waveMs)) },
         });
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
         const err = await streamToFile(resp, handle, {
@@ -1357,7 +1392,7 @@ export function createApp(env = {}) {
   // Directory picker first (transient-activation rule, same as exportDirect's
   // save-file picker), and skip the prompt entirely when there's nothing to
   // export — no point asking for a folder a script will never write into.
-  async function exportScriptEntry(statements) {
+  async function exportScriptEntry(statements, originalInput, waveMs) {
     if (!app.canExportScript()) {
       flashToast('Script export requires Chrome/Edge directory access over HTTPS', { document: doc });
       return;
@@ -1382,7 +1417,7 @@ export function createApp(env = {}) {
       }
       await ensureConfig();
       if (!(await getToken())) { chCtx.onSignedOut(); return; }
-      await exportScript(statements, dir);
+      await exportScript(statements, dir, originalInput, waveMs);
     } finally {
       // No-op if exportScript already reset it — covers every early-return
       // path above that never reaches exportScript's own finally.
@@ -1400,10 +1435,13 @@ export function createApp(env = {}) {
   // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
   // can't self-collide, and a partially-written file shouldn't be silently
   // re-attempted).
-  async function exportScript(statements, dir) {
+  async function exportScript(statements, dir, originalInput, waveMs) {
     const tab = app.activeTab();
     const t0 = now();
     const sp = sessionParamsFor(tab, statements);
+    // One prepared batch for the whole export wave (#173); `statements` came
+    // from splitStatements(originalInput), so the batch aligns by index.
+    const paramSrc = prepareTabSource(originalInput, waveMs);
     const entries = statements.map((sql, i) => ({
       i, sql, type: isRowReturning(sql) ? 'rows' : 'effect',
       status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,
@@ -1422,10 +1460,10 @@ export function createApp(env = {}) {
       for (const e of entries) {
         if (exportScriptCancelled) { e.status = 'skipped'; continue; }
         const { sql, format } = prepareExportSql(e.sql);
-        // Per-statement query-parameter args (#134): paramArgs self-gates on
-        // isRowReturning, so an effect/DDL statement (incl. CREATE VIEW) is sent
-        // with its {name:Type} placeholders intact.
-        const params = { ...sp, ...paramArgs(e.sql, app.state.varValues) };
+        // Per-statement prepared args (#134/#173): the pipeline binds only
+        // row-returning statements, so an effect/DDL statement (incl. CREATE
+        // VIEW) is sent with its {name:Type} placeholders intact.
+        const params = { ...sp, ...paramSrc.statements[e.i].args };
         exportScriptQueryId = 'export-' + uid('');
         exportScriptAbort = new AbortController();
         const signal = exportScriptAbort.signal;
@@ -1647,13 +1685,14 @@ export function createApp(env = {}) {
 
   // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
   // server-side by queryDashboardTile), FORMAT JSON, transformed to the
-  // array-row shape renderChart wants. Substitutes the shared `state.varValues`
-  // as `param_<name>` args (#149 D3), mirroring the workbench's run() — a
-  // no-op when the tile's SQL has no `{name:Type}` placeholder. Returns
+  // array-row shape renderChart wants. `params` are the tile's prepared
+  // `param_<name>` args from the dashboard's per-wave batch (#149 D3/#173);
+  // when omitted (a standalone call) they are prepared here from the shared
+  // `state.varValues`, mirroring the workbench's run(). Returns
   // { columns, rows, meta } on success or { error } on failure. The token is
   // resolved up front by ensureFreshToken (above), so this does not itself
   // drive sign-out.
-  async function runTile(sql) {
+  async function runTile(sql, params) {
     try {
       // ensureConfig + getToken are inside the try: getToken→refresh can THROW on
       // a network/IdP failure, and a tile must degrade to { error } rather than
@@ -1662,8 +1701,8 @@ export function createApp(env = {}) {
       // cheap and keeps runTile usable on its own.
       await ensureConfig();
       if (!(await getToken())) return { error: 'Not signed in' };
-      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), undefined,
-        paramArgs(sql, app.state.varValues));
+      const args = params || mergedSourceArgs(prepareTabSource(sql, wallNow()));
+      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), undefined, args);
       return parseJsonResult(json);
     } catch (e) {
       return { error: String((e && e.message) || e) };

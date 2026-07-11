@@ -55,6 +55,7 @@ export function makeApp(over = {}) {
     updateSaveBtn: vi.fn(),
     elapsedMs: () => 0,
     now: () => 0,
+    wallNow: () => 0, // the #173 wave wall clock (epoch ms; fixed in tests)
     showLogin: vi.fn(),
     signOut: vi.fn(),
     loadVersion: vi.fn(),

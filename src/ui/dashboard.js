@@ -15,7 +15,7 @@ import { renderChart } from './results.js';
 import { schemaKey } from '../core/chart-data.js';
 import { classifyTile, dashboardParams } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
-import { readStatementParams, unfilledParams } from '../core/query-params.js';
+import { analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs } from '../core/param-pipeline.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -160,22 +160,30 @@ function applyTileResult(app, q, slot, r) {
   slot.foot.replaceChildren(...tileFooter(r.meta));
 }
 
-// Run (or re-run) one favorite's tile into its slot: gate on unfilled
-// `{name:Type}` values first (never calling app.runTile while any are empty),
-// otherwise fetch and classify. `onSettled()` fires after every transition
-// (unfilled or fetched) so the caller can recompute the live "N not shown"
-// count. The generation bump happens before the gate check so a superseded
-// in-flight fetch is discarded even if the newer edit resolves to "unfilled".
-async function runSlotTile(app, q, slot, onSettled) {
+// Run (or re-run) one favorite's tile into its slot, gated by its prepared
+// source from the wave's batch (#173): unfilled `{name:Type}` values show the
+// placeholder (never calling app.runTile), a per-source error (e.g. a value
+// that can't serialize for this tile's declaration) shows an error card —
+// blocking only this tile, never its siblings — otherwise fetch with the
+// batch's prepared args and classify. `onSettled()` fires after every
+// transition (unfilled, errored or fetched) so the caller can recompute the
+// live "N not shown" count. The generation bump happens before the gate check
+// so a superseded in-flight fetch is discarded even if the newer edit resolves
+// to "unfilled".
+async function runSlotTile(app, q, slot, onSettled, src) {
   const myGen = ++slot.gen;
-  const missing = unfilledParams(q.sql, app.state.varValues);
-  if (missing.length) {
-    setSlotUnfilled(slot, missing);
+  if (src.missing.length) {
+    setSlotUnfilled(slot, src.missing);
+    onSettled();
+    return;
+  }
+  if (src.errors.length) {
+    applyTileResult(app, q, slot, { error: src.errors[0] });
     onSettled();
     return;
   }
   setSlotLoading(slot);
-  const r = await app.runTile(q.sql);
+  const r = await app.runTile(q.sql, mergedSourceArgs(src));
   if (slot.gen !== myGen) return; // a newer edit started after this fetch; discard
   applyTileResult(app, q, slot, r);
   onSettled();
@@ -222,6 +230,18 @@ export function renderDashboard(app) {
   app.dom = {};
 
   const favorites = state.savedQueries.filter((q) => q.favorite);
+
+  // The favorites snapshot is fixed for this render, so the parameter analysis
+  // (#173 phase 1 — structure only) runs once; each wave (runAll / a filter's
+  // runAffected) prepares it against the current varValues with one wall-clock
+  // read, and every tile gate + fetch of that wave reads the same batch.
+  const tileId = (i) => 'tile:' + i;
+  const analysis = analyzeParameterizedSources(favorites.map((q, i) => ({
+    id: tileId(i), label: q.name, kind: 'tile', sql: q.sql, bindPolicy: 'row-returning',
+  })));
+  const prepareWave = () => prepareParameterizedBatch(analysis, {
+    values: app.state.varValues, active: {}, wallNowMs: app.wallNow(), validationMode: 'execute',
+  }).sources;
 
   const favChip = h('span', { class: 'dash-chip dash-fav' },
     Icon.star(true),
@@ -318,14 +338,17 @@ export function renderDashboard(app) {
   };
 
   // Re-run only the favorites whose SQL references `name` (a filter field's
-  // debounced/committed edit, #149 D3) — not the whole grid. A no-op before
+  // debounced/committed edit, #149 D3) — not the whole grid. Affected-source
+  // detection comes from the analysis (#173), so it will keep seeing params
+  // inside currently-inactive optional blocks once #165 lands. A no-op before
   // the first successful run (slots not built yet).
   function runAffected(name) {
     if (!slots.length) return;
-    const targets = favorites
-      .map((q, i) => [q, i])
-      .filter(([q]) => readStatementParams(q.sql).some((p) => p.name === name));
-    return Promise.all(targets.map(([q, i]) => runSlotTile(app, q, slots[i], updateSkipNote)));
+    const f = analysis.fields[name]; // the filter bar only renders analyzed params
+    const affected = new Set(f.requiredIn.concat(f.optionalIn));
+    const wave = prepareWave();
+    const targets = favorites.map((q, i) => i).filter((i) => affected.has(tileId(i)));
+    return Promise.all(targets.map((i) => runSlotTile(app, favorites[i], slots[i], updateSkipNote, wave[i])));
   }
 
   const runAll = async () => {
@@ -343,11 +366,13 @@ export function renderDashboard(app) {
     // tiles beyond TILE_CONCURRENCY's window showing stale content (or, on
     // first load, an empty card) until the pool gets around to them.
     slots.forEach((s) => setSlotLoading(s));
+    // One prepared batch (and one wall-clock read) for the whole refresh wave.
+    const wave = prepareWave();
     // try/finally so the button always re-enables and the timestamp always
     // updates — even if a tile render unexpectedly throws (runSlotTile itself
     // is total, so this is belt-and-suspenders against the pool rejecting).
     try {
-      await runPool(favorites, TILE_CONCURRENCY, (q, i) => runSlotTile(app, q, slots[i], updateSkipNote));
+      await runPool(favorites, TILE_CONCURRENCY, (q, i) => runSlotTile(app, q, slots[i], updateSkipNote, wave[i]));
     } finally {
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       refreshBtn.disabled = false;
