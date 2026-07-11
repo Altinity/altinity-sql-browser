@@ -10,6 +10,7 @@
 import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import { sqlString } from '../core/format.js';
+import { DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP } from '../core/dashboard.js';
 
 /** Build a ClickHouse HTTP URL with query-string options. Pure. */
 export function chUrl(origin, opts = {}) {
@@ -98,9 +99,23 @@ export async function queryJson(ctx, sql, signal, extra, params) {
  * query-level `SETTINGS`. `params` (optional, #149 D3) forwards `param_<name>`
  * args for the dashboard's global filter bar. Returns parsed JSON; throws CH's
  * reason on error.
+ *
+ * Result caps (#149 D9) are *best-effort* server hints: `max_result_rows` is
+ * `DASH_TILE_ROW_CAP + 1` — the `+1` is the truncation sentinel the client
+ * trim (`parseJsonResult(json, cap)`) detects — with `result_overflow_mode:
+ * 'break'` so an oversized result returns a truncated prefix (overshooting at
+ * block boundaries) instead of erroring, and `max_result_bytes` guards wide
+ * rows. Because level 2 still permits query-level `SETTINGS`, a favorite with
+ * `SETTINGS max_result_rows = 0` can override these URL settings — the
+ * client-side trim in `parseJsonResult` is the guaranteed bound.
  */
 export function queryDashboardTile(ctx, sql, signal, params) {
-  return queryJson(ctx, sql, signal, { readonly: 2 }, params);
+  return queryJson(ctx, sql, signal, {
+    readonly: 2,
+    max_result_rows: DASH_TILE_ROW_CAP + 1,
+    max_result_bytes: DASH_TILE_BYTE_CAP,
+    result_overflow_mode: 'break',
+  }, params);
 }
 
 /**

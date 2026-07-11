@@ -2,12 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase, dashboardTileSql, parseJsonResult, classifyTile,
-  normalizeDashLayout, normalizeDashCols, dashboardParams,
+  normalizeDashLayout, normalizeDashCols, dashboardParams, DASH_TILE_ROW_CAP,
 } from '../../src/core/dashboard.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
   snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
 } from '../../src/core/auth-handoff.js';
+import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
@@ -57,6 +58,7 @@ describe('dashboardTileSql', () => {
 });
 
 describe('parseJsonResult', () => {
+  const nData = (n) => Array.from({ length: n }, (_, i) => ({ n: i }));
   it('transforms a full FORMAT JSON response into columns + array rows + meta', () => {
     const out = parseJsonResult({
       meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }],
@@ -66,27 +68,107 @@ describe('parseJsonResult', () => {
     });
     expect(out.columns.map((c) => c.name)).toEqual(['k', 'v']);
     expect(out.rows).toEqual([['a', 1], ['b', 2]]);
-    expect(out.meta).toEqual({ rows: 2, ms: 12, bytes: 2048 });
+    expect(out.meta).toEqual({ rows: 2, ms: 12, bytes: 2048, truncated: false });
   });
   it('is defensive about a bare response (no meta/data/statistics/rows)', () => {
     const out = parseJsonResult({});
     expect(out.columns).toEqual([]);
     expect(out.rows).toEqual([]);
-    expect(out.meta).toEqual({ rows: 0, ms: null, bytes: null });
+    expect(out.meta).toEqual({ rows: 0, ms: null, bytes: null, truncated: false });
+  });
+  it('exactly cap rows → kept whole, not truncated (#149 D9)', () => {
+    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(3) }, 3);
+    expect(out.rows).toEqual([[0], [1], [2]]);
+    expect(out.meta.rows).toBe(3);
+    expect(out.meta.truncated).toBe(false);
+  });
+  it('cap+1 rows → sliced to cap, truncated, and meta.rows is rows SHOWN (json.rows ignored)', () => {
+    const out = parseJsonResult(
+      // json.rows is a block-boundary overshoot count under result_overflow_mode
+      // 'break' — neither the full nor the displayed count, so never surfaced.
+      { meta: [{ name: 'n', type: 'UInt64' }], data: nData(4), rows: 9999 },
+      3,
+    );
+    expect(out.rows).toEqual([[0], [1], [2]]);
+    expect(out.meta.rows).toBe(3);
+    expect(out.meta.truncated).toBe(true);
+  });
+  it('an uncapped call reports rows shown with truncated false, even when json.rows disagrees', () => {
+    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(2), rows: 9999 });
+    expect(out.rows).toEqual([[0], [1]]);
+    expect(out.meta.rows).toBe(2);
+    expect(out.meta.truncated).toBe(false);
+  });
+});
+
+describe('DASH_TILE_ROW_CAP', () => {
+  // The invariant the constant's docstring states, enforced: a fetch cap below
+  // any chart display cap would silently truncate dashboard charts relative to
+  // the workbench. Bumping CHART_ROW_CAPS must be a deliberate two-file edit.
+  it('covers every chart display cap (no silent chart starvation)', () => {
+    expect(DASH_TILE_ROW_CAP).toBeGreaterThanOrEqual(Math.max(...Object.values(CHART_ROW_CAPS)));
   });
 });
 
 describe('classifyTile', () => {
   const cols = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
-  it('skips an empty result', () => {
+  const strCols = [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }];
+  const logCols = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'level', type: 'String' },
+    { name: 'message', type: 'String' },
+  ];
+  const logRows = [['2026-01-01 00:00:00', 'Error', 'boom'], ['2026-01-01 00:00:01', 'Info', 'ok']];
+  it("skips an empty result — even over an explicit view:'table'", () => {
     expect(classifyTile(cols, [], undefined)).toEqual({ kind: 'skip', reason: 'empty' });
+    expect(classifyTile(cols, [], undefined, 'table')).toEqual({ kind: 'skip', reason: 'empty' });
   });
-  it('skips a single-row result (a KPI — rendered in D2)', () => {
+  it("skips a single-row result (a KPI — rendered in D5) — even over view:'table'", () => {
     expect(classifyTile(cols, [['a', 1]], undefined)).toEqual({ kind: 'skip', reason: 'kpi' });
+    expect(classifyTile(cols, [['a', 1]], undefined, 'table')).toEqual({ kind: 'skip', reason: 'kpi' });
   });
-  it('skips a multi-row result with nothing chartable', () => {
-    const strCols = [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }];
-    expect(classifyTile(strCols, [['x', 'y'], ['z', 'w']], undefined)).toEqual({ kind: 'skip', reason: 'nonChartable' });
+  it("a saved view:'table' forces a plain grid tile on a chartable result (#149 D9)", () => {
+    expect(classifyTile(cols, [['a', 1], ['b', 2]], undefined, 'table')).toEqual({ kind: 'table', mode: 'grid' });
+  });
+  it("a saved view:'table' also means plain grid on a log-shaped result (no heuristic override)", () => {
+    expect(classifyTile(logCols, logRows, undefined, 'table')).toEqual({ kind: 'table', mode: 'grid' });
+  });
+  it('a garbage saved view value is treated as unset (the result still charts)', () => {
+    const out = classifyTile(cols, [['a', 1], ['b', 2]], undefined, 'sideways');
+    expect(out.kind).toBe('chart');
+  });
+  it('a multi-row result with nothing chartable falls back to a grid table tile (#149 D9)', () => {
+    expect(classifyTile(strCols, [['x', 'y'], ['z', 'w']], undefined))
+      .toEqual({ kind: 'table', mode: 'grid' });
+  });
+  it('a log-shaped non-chartable fallback becomes a logs tile carrying the detected shape', () => {
+    expect(classifyTile(logCols, logRows, undefined))
+      .toEqual({ kind: 'table', mode: 'logs', shape: { time: 0, msg: 2, level: 1, extras: [] } });
+  });
+  it('a log-shaped fallback without a level column still qualifies (shape.level null)', () => {
+    const noLevel = [logCols[0], logCols[2]];
+    expect(classifyTile(noLevel, [['2026-01-01 00:00:00', 'boom'], ['2026-01-01 00:00:01', 'ok']], undefined))
+      .toEqual({ kind: 'table', mode: 'logs', shape: { time: 0, msg: 1, level: null, extras: [] } });
+  });
+  // The heuristic ranking: log shape outranks autoChart, but never an explicit
+  // saved chart cfg. A `SELECT *` over system.text_log carries numeric columns
+  // (thread_id) that would otherwise auto-chart into a meaningless line.
+  const logColsNumeric = [...logCols, { name: 'thread_id', type: 'UInt64' }];
+  const logRowsNumeric = logRows.map((r, i) => [...r, 100 + i]);
+  it('log shape wins over autoChart: a log-shaped result with a numeric column is a logs tile, not a thread_id chart', () => {
+    expect(classifyTile(logColsNumeric, logRowsNumeric, undefined))
+      .toEqual({ kind: 'table', mode: 'logs', shape: { time: 0, msg: 2, level: 1, extras: [3] } });
+  });
+  it('a valid saved chart cfg still wins over the logs heuristic (explicit intent)', () => {
+    const saved = { cfg: { type: 'line', x: 0, y: [3], series: null } };
+    const out = classifyTile(logColsNumeric, logRowsNumeric, saved);
+    expect(out.kind).toBe('chart');
+    expect(out.cfg).toEqual({ type: 'line', x: 0, y: [3], series: null });
+  });
+  it('an invalid saved chart cfg on a log-shaped result falls through to logs, not autoChart', () => {
+    const saved = { cfg: { type: 'bar', x: 99, y: [3], series: null } };
+    const out = classifyTile(logColsNumeric, logRowsNumeric, saved);
+    expect(out).toEqual({ kind: 'table', mode: 'logs', shape: { time: 0, msg: 2, level: 1, extras: [3] } });
   });
   it('charts a multi-row result via autoChart when there is no saved config', () => {
     const out = classifyTile(cols, [['a', 1], ['b', 2]], undefined);
@@ -616,6 +698,165 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
   });
 });
 
+// ── D9: table & logs tiles ───────────────────────────────────────────────────
+describe('renderDashboard — table & logs tiles (#149 D9)', () => {
+  const tableResult = (meta = { rows: 2, ms: 5, bytes: 100, truncated: false }) => ({
+    columns: [{ name: 'a', type: 'String' }, { name: 'b', type: 'String' }],
+    rows: [['x', 'y2'], ['z', 'y1']], meta,
+  });
+  const logsResult = () => ({
+    columns: [
+      { name: 'event_time', type: 'DateTime' },
+      { name: 'level', type: 'String' },
+      { name: 'message', type: 'String' },
+    ],
+    rows: [['2026-01-01 00:00:00', 'Error', 'boom'], ['2026-01-01 00:00:01', 'Info', 'ok']],
+    meta: { rows: 2, ms: 5, bytes: 100, truncated: false },
+  });
+  const emptyResult = () => ({
+    columns: [{ name: 'a', type: 'String' }], rows: [],
+    meta: { rows: 0, ms: 1, bytes: 10, truncated: false },
+  });
+  const oneFav = (runTile, over = {}) =>
+    dashApp([{ id: '1', name: 'T', sql: 't', favorite: true, ...over }], runTile);
+  const firstCell = (root) => root.querySelector('.res-table tbody tr .cell');
+  const truncNote = 'first ' + DASH_TILE_ROW_CAP.toLocaleString()
+    + ' rows fetched — sorting/charts cover this prefix only';
+
+  it('renders a non-chartable favorite as a grid table tile (not skipped), with footer stats', async () => {
+    const app = oneFav(vi.fn(async () => tableResult()));
+    await renderDashboard(app);
+    const tile = app.root.querySelector('.dash-tile');
+    expect(tile.style.display).not.toBe('none');
+    expect(tile.querySelector('.res-table-wrap')).not.toBeNull();
+    expect(tile.querySelector('canvas')).toBeNull();
+    expect(app.root.querySelector('.dash-skip').style.display).toBe('none'); // a table tile is not a skip
+    expect(app.root.querySelector('.dash-tile-foot').textContent).toContain('2 rows');
+  });
+
+  it("a saved view:'table' renders a plain grid even for a chartable favorite (q.view reaches classifyTile)", async () => {
+    const app = oneFav(vi.fn(async () => chartResult()), { view: 'table' });
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile .res-table-wrap')).not.toBeNull();
+    expect(app.root.querySelector('.dash-tile canvas')).toBeNull();
+  });
+
+  it('a header click sorts locally — no re-query — and a cell click is a harmless no-op', async () => {
+    const runTile = vi.fn(async () => tableResult());
+    const app = oneFav(runTile);
+    await renderDashboard(app);
+    expect(firstCell(app.root).textContent).toBe('x'); // query order (unsorted)
+    const thB = app.root.querySelectorAll('.res-table th')[2]; // [0] is '#'
+    thB.dispatchEvent(new Event('click', { bubbles: true }));
+    expect(firstCell(app.root).textContent).toBe('z'); // ascending by b: y1 first
+    expect(app.root.querySelector('.res-table .h-sort')).not.toBeNull();
+    app.root.querySelectorAll('.res-table th')[2]
+      .dispatchEvent(new Event('click', { bubbles: true })); // re-rendered th → desc
+    expect(firstCell(app.root).textContent).toBe('x');
+    expect(() => firstCell(app.root).dispatchEvent(new Event('click', { bubbles: true }))).not.toThrow();
+    expect(runTile).toHaveBeenCalledTimes(1); // sort + cell clicks never re-ran the query
+  });
+
+  it('sort and column widths survive a Refresh with the same schema (slot grid state reused)', async () => {
+    const runTile = vi.fn(async () => tableResult());
+    const app = oneFav(runTile);
+    await renderDashboard(app);
+    app.root.querySelectorAll('.res-table th')[2].dispatchEvent(new Event('click', { bubbles: true }));
+    // Drag a column edge: freezes the layout into the slot's widths object.
+    const handle = app.root.querySelector('.res-table th .col-resize-h');
+    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mouseup', {}));
+    expect(app.root.querySelector('.res-table').classList.contains('fixed')).toBe(true);
+    await app.root.querySelector('.dash-btn').onclick();
+    expect(firstCell(app.root).textContent).toBe('z'); // sort kept across the re-run
+    expect(app.root.querySelector('.res-table .h-sort')).not.toBeNull();
+    expect(app.root.querySelector('.res-table').classList.contains('fixed')).toBe(true); // widths kept
+  });
+
+  it('grid state resets when the result schema changes', async () => {
+    const runTile = vi.fn(async () => tableResult());
+    const app = oneFav(runTile);
+    await renderDashboard(app);
+    app.root.querySelectorAll('.res-table th')[2].dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.root.querySelector('.res-table .h-sort')).not.toBeNull();
+    runTile.mockImplementation(async () => ({
+      columns: [{ name: 'c', type: 'String' }, { name: 'd', type: 'String' }],
+      rows: [['m', 'n'], ['o', 'p']], meta: { rows: 2, ms: 1, bytes: 10, truncated: false },
+    }));
+    await app.root.querySelector('.dash-btn').onclick();
+    expect(app.root.querySelector('.res-table .h-sort')).toBeNull(); // fresh sort state
+    expect(app.root.querySelector('.res-table').classList.contains('fixed')).toBe(false); // fresh widths
+  });
+
+  it('a log-shaped favorite renders the logs view with per-level row classes', async () => {
+    const app = oneFav(vi.fn(async () => logsResult()));
+    await renderDashboard(app);
+    const logs = app.root.querySelector('.dash-tile .dash-logs');
+    expect(logs).not.toBeNull();
+    expect(app.root.querySelector('.res-table-wrap')).toBeNull(); // logs mode, not the grid
+    expect(logs.querySelectorAll('.log-row')).toHaveLength(2);
+    expect(logs.querySelector('.log-row.log-error .log-msg').textContent).toBe('boom');
+  });
+
+  it('a logs favorite with no level column renders rows without a level span', async () => {
+    const app = oneFav(vi.fn(async () => ({
+      columns: [{ name: 'ts', type: 'DateTime64(3)' }, { name: 'message', type: 'String' }],
+      rows: [['2026-01-01 00:00:00.123', 'hello'], ['2026-01-01 00:00:01.456', 'world']],
+      meta: { rows: 2, ms: 1, bytes: 10, truncated: false },
+    })));
+    await renderDashboard(app);
+    expect(app.root.querySelectorAll('.dash-logs .log-row')).toHaveLength(2);
+    expect(app.root.querySelector('.dash-logs .log-level')).toBeNull();
+  });
+
+  it('the fetch-truncation footer note appears in both the chart and table branches', async () => {
+    const truncated = { rows: 2, ms: 5, bytes: 100, truncated: true };
+    const runTile = vi.fn(async (sql) => (sql === 'chart' ? chartResult(truncated) : tableResult(truncated)));
+    const app = dashApp([
+      { id: '1', name: 'C', sql: 'chart', favorite: true },
+      { id: '2', name: 'T', sql: 'table', favorite: true },
+    ], runTile);
+    await renderDashboard(app);
+    const feet = [...app.root.querySelectorAll('.dash-tile-foot')];
+    expect(feet).toHaveLength(2);
+    feet.forEach((f) => expect(f.textContent).toContain(truncNote));
+  });
+
+  it('an untruncated table tile has no fetch note', async () => {
+    const app = oneFav(vi.fn(async () => tableResult()));
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile-foot').textContent).not.toContain('fetched');
+  });
+
+  it('the skip note counts only empty and single-row (KPI) favorites', async () => {
+    const runTile = vi.fn(async (sql) =>
+      (sql === 'kpi' ? kpiResult() : sql === 'empty' ? emptyResult() : tableResult()));
+    const app = dashApp([
+      { id: '1', name: 'K', sql: 'kpi', favorite: true },
+      { id: '2', name: 'E', sql: 'empty', favorite: true },
+      { id: '3', name: 'T', sql: 'table', favorite: true },
+    ], runTile);
+    await renderDashboard(app);
+    const note = app.root.querySelector('.dash-skip');
+    expect(note.style.display).toBe('');
+    expect(note.textContent).toBe('2 not shown'); // the table tile is shown, not counted
+    expect(note.title).toContain('empty or single-row (KPI)');
+    const tiles = [...app.root.querySelectorAll('.dash-tile')];
+    expect(tiles.filter((t) => t.style.display !== 'none')).toHaveLength(1);
+  });
+
+  it('a tile that flips table → skip on Refresh clears its old grid DOM', async () => {
+    const runTile = vi.fn(async () => tableResult());
+    const app = oneFav(runTile);
+    await renderDashboard(app);
+    expect(app.root.querySelector('.res-table-wrap')).not.toBeNull();
+    runTile.mockImplementation(async () => kpiResult()); // next refresh becomes a skip (KPI)
+    await app.root.querySelector('.dash-btn').onclick();
+    expect(app.root.querySelector('.dash-tile').style.display).toBe('none');
+    expect(app.root.querySelector('.res-table-wrap')).toBeNull(); // stale grid DOM cleared, not just hidden
+  });
+});
+
 // ── app.js: runTile + auth handoff wiring ────────────────────────────────────
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -686,6 +927,20 @@ describe('app.runTile', () => {
   it('errors (without driving sign-out) when there is no token', async () => {
     const app = createApp(appEnv({ sessionStorage: memSession({}) }));
     expect(await app.runTile('SELECT 1')).toEqual({ error: 'Not signed in' });
+  });
+  it('trims an over-cap result to DASH_TILE_ROW_CAP and flags meta.truncated (#149 D9)', async () => {
+    // Server sentinel (max_result_rows = cap + 1, overflow 'break') delivered
+    // one row past the cap — the client trim is the guaranteed bound.
+    const data = Array.from({ length: DASH_TILE_ROW_CAP + 1 }, (_, i) => ({ n: i }));
+    const app = createApp(appEnv({
+      fetch: makeFetch([[(u, sql) => /SELECT n/.test(sql || ''),
+        resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data, rows: data.length } })]]),
+    }));
+    const r = await app.runTile('SELECT n FROM big');
+    expect(r.rows).toHaveLength(DASH_TILE_ROW_CAP);
+    expect(r.rows[DASH_TILE_ROW_CAP - 1]).toEqual([DASH_TILE_ROW_CAP - 1]);
+    expect(r.meta.rows).toBe(DASH_TILE_ROW_CAP);
+    expect(r.meta.truncated).toBe(true);
   });
 });
 

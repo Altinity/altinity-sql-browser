@@ -54,6 +54,12 @@ html { zoom: var(--zoom); }
   --error-bg: rgba(239, 68, 68, .08);
   --error-bd: rgba(239, 68, 68, .25);
   --error-fg: #f87171;
+  --log-fatal: #EF4444;
+  --log-error: #F87171;
+  --log-warn: #FBBF24;
+  --log-info: #4ADE80;
+  --log-debug: #60A5FA;
+  --log-trace: #94A3B8;
 }
 
 [data-theme='light'] {
@@ -80,6 +86,12 @@ html { zoom: var(--zoom); }
   --error-bg: #FEF2F2;
   --error-bd: #FCA5A5;
   --error-fg: #B91C1C;
+  --log-fatal: #B91C1C;
+  --log-error: #DC2626;
+  --log-warn: #B45309;
+  --log-info: #15803D;
+  --log-debug: #1D4ED8;
+  --log-trace: #64748B;
 }
 
 body {
@@ -1836,6 +1848,37 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; }
 .dash-tile-body > .chart-view { flex: 1; min-width: 0; }
+/* Table/logs tiles (#149 D9): explicit flex constraints so content scrolls
+   inside the tile instead of clipping; the workbench grid's height:100% is
+   overridden back to auto (flex sizes it here). */
+.dash-tile-body > .res-table-wrap,
+.dash-tile-body > .dash-logs { flex: 1; min-width: 0; min-height: 0; }
+.dash-tile-body > .res-table-wrap { height: auto; }
+/* Logs view (#149 D9): a compact, scroll-only reading surface — level colors
+   via the --log-* theme vars, monospace, wrapped messages. */
+.dash-logs {
+  overflow: auto; font-family: var(--mono); font-size: 11px; line-height: 1.5;
+}
+.log-row {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 2px 8px 2px 6px; border-left: 3px solid transparent;
+}
+.log-row.log-fatal { border-left-color: var(--log-fatal); }
+.log-row.log-fatal .log-level { color: var(--log-fatal); }
+.log-row.log-error { border-left-color: var(--log-error); }
+.log-row.log-error .log-level { color: var(--log-error); }
+.log-row.log-warn { border-left-color: var(--log-warn); }
+.log-row.log-warn .log-level { color: var(--log-warn); }
+.log-row.log-info { border-left-color: var(--log-info); }
+.log-row.log-info .log-level { color: var(--log-info); }
+.log-row.log-debug { border-left-color: var(--log-debug); }
+.log-row.log-debug .log-level { color: var(--log-debug); }
+.log-row.log-trace { border-left-color: var(--log-trace); }
+.log-row.log-trace .log-level { color: var(--log-trace); }
+.log-time { white-space: nowrap; color: var(--fg-faint); }
+.log-level { text-transform: uppercase; font-weight: 600; flex-shrink: 0; }
+.log-msg { white-space: pre-wrap; word-break: break-word; color: var(--fg); }
+.log-extras { color: var(--fg-faint); }
 /* The chart draws on the tile's own background (--bg-side), not the darker
    results-table bg the workbench chart view uses; this both matches the design
    and lets the faint value-axis gridlines recede instead of standing out on a

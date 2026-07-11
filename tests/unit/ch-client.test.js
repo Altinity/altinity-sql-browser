@@ -65,6 +65,15 @@ describe('queryDashboardTile', () => {
     expect(url).toContain('default_format=JSON');
     expect(url).toContain('readonly=2');
   });
+  it('requests the best-effort result caps (#149 D9): row cap + sentinel, byte cap, break overflow', async () => {
+    const ctx = ctxWith(async () => jsonResp({ meta: [], data: [] }));
+    await queryDashboardTile(ctx, 'SELECT 1\nFORMAT JSON');
+    const url = ctx.fetch.mock.calls[0][0];
+    expect(url).toContain('max_result_rows=5001'); // DASH_TILE_ROW_CAP + 1 — the client-trim truncation sentinel
+    expect(url).toContain('max_result_bytes=50000000');
+    expect(url).toContain('result_overflow_mode=break');
+    expect(url).toContain('readonly=2');
+  });
   it('throws CH reason on a non-ok response', async () => {
     const ctx = ctxWith(async () => textResp('Code: 164. DB::Exception: Cannot execute query in readonly mode', false, 500));
     await expect(queryDashboardTile(ctx, 'DROP TABLE t')).rejects.toThrow(/readonly mode/);

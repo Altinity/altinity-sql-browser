@@ -26,7 +26,7 @@ import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
-import { configBase, dashboardTileSql, parseJsonResult } from '../core/dashboard.js';
+import { configBase, dashboardTileSql, parseJsonResult, DASH_TILE_ROW_CAP } from '../core/dashboard.js';
 import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
@@ -1664,7 +1664,9 @@ export function createApp(env = {}) {
       if (!(await getToken())) return { error: 'Not signed in' };
       const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(sql), undefined,
         paramArgs(sql, app.state.varValues));
-      return parseJsonResult(json);
+      // DASH_TILE_ROW_CAP is the guaranteed client-side row bound (#149 D9):
+      // the server-side caps in queryDashboardTile are best-effort only.
+      return parseJsonResult(json, DASH_TILE_ROW_CAP);
     } catch (e) {
       return { error: String((e && e.message) || e) };
     }

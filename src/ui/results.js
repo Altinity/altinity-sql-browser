@@ -599,6 +599,17 @@ export function renderJson(r) {
 }
 
 /**
+ * In-body "+N more rows truncated for display" footer, shared by every capped
+ * row view (renderGrid here, the dashboard's renderLogs) so the wording and
+ * styling can't drift between adjacent surfaces.
+ */
+export function truncationFooter(hidden) {
+  return h('div', {
+    style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
+  }, '… + ' + hidden + ' more rows truncated for display.');
+}
+
+/**
  * Shared sortable + resizable data grid (the one table view, reused by the main
  * results table and the script-row side pane). Caller supplies the data plus the
  * state seams so the same DOM/interaction code drives both:
@@ -658,11 +669,7 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   });
   table.appendChild(tbody);
   wrap.appendChild(table);
-  if (rows.length > cap) {
-    wrap.appendChild(h('div', {
-      style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
-    }, '… + ' + (rows.length - cap) + ' more rows truncated for display.'));
-  }
+  if (rows.length > cap) wrap.appendChild(truncationFooter(rows.length - cap));
   return wrap;
 }
 

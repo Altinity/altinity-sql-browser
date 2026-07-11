@@ -9,6 +9,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard: table tiles + logs view** (#149 phase D9, #164). Favorites that
+  aren't chart-shaped now render instead of being skipped: a favorite saved
+  with `view:'table'` renders as a plain sortable/resizable grid tile (even
+  when chartable), and multi-row results without an explicit config render as
+  a logs tile when log-shaped (a `DateTime`-ish column + a `String` column
+  named `message`/`msg`/`body`/`log`/`line`, optional level column for colors;
+  covers `system.text_log` and OTel log tables even when numeric columns like
+  `thread_id` would auto-chart — the log-shape signal outranks the autoChart
+  heuristic, while an explicitly saved chart config still wins), otherwise as
+  a chart via `autoChart` when possible, else a plain grid. The logs view is
+  compact: level colors, monospace, wrapped messages, `key=value` extras.
+  Grid sort and column widths persist across Refresh and filter re-runs while
+  the result schema is unchanged. Only empty and single-row (future KPI)
+  results still count toward the header's "N not shown" note.
+- **Dashboard: result caps for every tile** (#164). Tile queries previously
+  fetched uncapped; they now request `max_result_rows`/`max_result_bytes` with
+  `result_overflow_mode=break` as a best-effort server cap (overridable by a
+  query-level `SETTINGS` under `readonly=2` — a server-side settings profile
+  is the deployment-level boundary) and are always trimmed client-side to
+  5,000 rows (preserving the chart view's existing 5,000-point line/area cap).
+  Grid/logs tiles display the first 1,000 rows with a "+N more rows truncated
+  for display" footer; a truncated fetch adds an honest "first 5,000 rows
+  fetched — sorting/charts cover this prefix only" note to the tile footer.
+
 ### Fixed
 - **Schema panel: a broken table in one data-lake-catalog database no longer
   hides every catalog database's tables** (#162). `loadSchema` queried

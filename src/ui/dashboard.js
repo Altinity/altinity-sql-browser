@@ -1,19 +1,24 @@
-// The standalone read-only Dashboard page (#149 D1–D3). Render module over the
-// `app` controller: it builds a header + a grid of chart tiles, one per
+// The standalone read-only Dashboard page (#149 D1–D3, D9). Render module over
+// the `app` controller: it builds a header + a grid of tiles, one per
 // favorited Library query (a snapshot taken when the tab opens — Refresh re-runs
 // the data, it does not re-scan the Library). Each tile runs its SQL read-only
-// via `app.runTile` and draws through the shared `renderChart` seam; single-row
-// (KPI) and non-chartable favorites are skipped, counted in a header note. A
-// global filter bar (D3, below) drives the same `{name:Type}` mechanism the SQL
-// Browser workbench uses, fanning it out across every favorite instead of one
-// query at a time. KPI tiles, per-tile overrides, and export arrive in later
-// phases (D5–D8).
+// via `app.runTile` and draws through the shared `renderChart` seam — or, for
+// a saved `view:'table'` and for non-chartable results, as a table tile (#149
+// D9: a sortable grid, with log-shaped fallback results getting the compact
+// logs view). Only empty and single-row (KPI) favorites are skipped, counted
+// in a header note. A global filter bar (D3, below) drives the same
+// `{name:Type}` mechanism the SQL Browser workbench uses, fanning it out
+// across every favorite instead of one query at a time. KPI tiles, per-tile
+// overrides, and export arrive in later phases (D5–D8).
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { renderChart } from './results.js';
+import { renderChart, renderGrid } from './results.js';
+import { renderLogs } from './logs.js';
 import { schemaKey } from '../core/chart-data.js';
-import { classifyTile, dashboardParams } from '../core/dashboard.js';
+import {
+  classifyTile, dashboardParams, DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP,
+} from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
 import { readStatementParams, unfilledParams } from '../core/query-params.js';
 
@@ -49,11 +54,20 @@ function buildSeg(cls, options, getActive, onPick) {
   return { el, sync };
 }
 
-/** Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't return. */
+/**
+ * Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't
+ * return. A fetch-truncated result (#149 D9: the client trimmed it to
+ * DASH_TILE_ROW_CAP) gets an honest note — client-side sort and chart
+ * aggregation only cover that fetched prefix, not the full underlying result.
+ */
 function tileFooter(meta) {
   const parts = [h('span', null, formatRows(meta.rows) + ' rows')];
   if (meta.ms != null) parts.push(h('span', null, meta.ms + ' ms'));
   if (meta.bytes != null) parts.push(h('span', null, formatBytes(meta.bytes) + ' scanned'));
+  if (meta.truncated) {
+    parts.push(h('span', null,
+      'first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched — sorting/charts cover this prefix only'));
+  }
   return parts;
 }
 
@@ -85,7 +99,8 @@ async function runPool(items, limit, worker) {
 // per-tile monotonically increasing generation counter guarding against
 // out-of-order responses (edit A, then B, before A's request returns — B's
 // response must win); `destroy` tears down the slot's live Chart.js instance
-// (if any) before it's replaced.
+// (if any) before it's replaced; `grid` is the slot-persistent table-tile
+// state (#149 D9 — sort + column widths, keyed by result schema).
 function buildTileSlot(q) {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
@@ -95,7 +110,7 @@ function buildTileSlot(q) {
     h('span', { class: 'dash-tile-name', title: q.name }, q.name));
   if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
   const card = h('div', { class: 'dash-tile' }, head, body, foot);
-  return { card, body, foot, gen: 0, status: null, destroy: null };
+  return { card, body, foot, gen: 0, status: null, destroy: null, grid: null };
 }
 
 function destroySlotChart(slot) {
@@ -131,7 +146,7 @@ function applyTileResult(app, q, slot, r) {
     slot.foot.replaceChildren();
     return;
   }
-  const cls = classifyTile(r.columns, r.rows, q.chart);
+  const cls = classifyTile(r.columns, r.rows, q.chart, q.view);
   if (cls.kind === 'skip') {
     slot.status = 'skip';
     slot.card.style.display = 'none';
@@ -140,6 +155,31 @@ function applyTileResult(app, q, slot, r) {
     // later refresh/filter change doesn't leave a dead canvas hidden in the DOM.
     slot.body.replaceChildren();
     slot.foot.replaceChildren();
+    return;
+  }
+  if (cls.kind === 'table') {
+    // #149 D9: a saved `view:'table'` or a non-chartable result renders as a
+    // table tile — the compact logs view for log-shaped fallbacks, otherwise
+    // the shared sortable grid. `slot.destroy` stays null (nothing live to
+    // tear down; destroySlotChart above handled a prior chart → table flip).
+    slot.status = 'table';
+    slot.card.style.display = '';
+    if (cls.mode === 'logs') {
+      slot.body.replaceChildren(renderLogs({ columns: r.columns, rows: r.rows, shape: cls.shape, cap: DASH_TABLE_DISPLAY_CAP }));
+    } else {
+      // Grid state persists across refreshes/filter edits on the stable slot,
+      // keyed by result schema — a schema change resets it, a re-run keeps it.
+      const key = schemaKey(r.columns);
+      if (!slot.grid || slot.grid.key !== key) slot.grid = { key, sort: { col: null, dir: 'asc' }, widths: {} };
+      const g = slot.grid;
+      const paint = () => slot.body.replaceChildren(renderGrid({
+        columns: r.columns, rows: r.rows, sort: g.sort,
+        onSort: (c, d) => { g.sort.col = c; g.sort.dir = d; paint(); }, // local re-render, NO re-query
+        widths: g.widths, onCell: () => {}, cap: DASH_TABLE_DISPLAY_CAP,
+      }));
+      paint();
+    }
+    slot.foot.replaceChildren(...tileFooter(r.meta));
     return;
   }
   slot.status = 'chart';
@@ -311,7 +351,7 @@ export function renderDashboard(app) {
     if (skipped) {
       skipNote.style.display = '';
       skipNote.textContent = skipped + ' not shown';
-      skipNote.title = skipped + ' single-row (KPI) or non-chartable favorite(s) — coming in a later phase.';
+      skipNote.title = skipped + ' empty or single-row (KPI) favorite(s) — KPI tiles arrive in a later phase.';
     } else {
       skipNote.style.display = 'none';
     }
