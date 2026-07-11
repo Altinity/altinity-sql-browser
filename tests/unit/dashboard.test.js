@@ -584,6 +584,31 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     expect(app.root.querySelector('.dash-tile-unfilled')).toBeNull();
   });
 
+  it('per-source gating (#173): a value that cannot serialize errors only its own tile', async () => {
+    const favorites = [
+      paramFav('1', 'SELECT * FROM t WHERE db = {db:String}'),
+      { id: '2', name: 'Good', sql: 'SELECT k, v FROM good', favorite: true },
+    ];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { db: ['not', 'scalar'] }; // array value, scalar declaration → structural
+    await renderDashboard(app);
+    // the broken tile never fetched, the sibling did — one bad source blocks nothing else
+    expect(runTile).toHaveBeenCalledTimes(1);
+    expect(runTile.mock.calls[0][0]).toBe('SELECT k, v FROM good');
+    expect(app.root.querySelector('.dash-tile-error').textContent).toContain('array value');
+    expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
+  });
+
+  it('tiles fetch with the wave\'s prepared args (#173), not by re-deriving per tile', async () => {
+    const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp(favorites, runTile);
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledWith('SELECT * FROM t WHERE y = {year:UInt16}', { param_year: '2024' });
+  });
+
   it('discards a stale response when a newer edit\'s response arrives first (last edit wins)', async () => {
     const favorites = [paramFav('1', 'SELECT * FROM t WHERE y = {year:UInt16}')];
     const resolvers = [];
@@ -682,6 +707,27 @@ describe('app.runTile', () => {
     await app.runTile('SELECT {year:UInt16} AS n');
     const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
     expect(queryCall[0]).toContain('param_year=2024');
+  });
+  it('prepares per-statement, so a multi-statement favorite still binds its params (#155)', async () => {
+    // paramArgs over the whole blob saw the leading SET and skipped substitution
+    // entirely; the pipeline splits first, so param_year rides along.
+    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
+      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
+    const app = createApp(appEnv({ fetch }));
+    app.state.varValues.year = '2024';
+    await app.runTile('SET x = 1; SELECT {year:UInt16} AS n');
+    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
+    expect(queryCall[0]).toContain('param_year=2024');
+  });
+  it('explicit prepared args win over self-preparation (the dashboard wave passes them)', async () => {
+    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
+      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
+    const app = createApp(appEnv({ fetch }));
+    app.state.varValues.year = '1999'; // must NOT be read — the caller's batch is authoritative
+    await app.runTile('SELECT {year:UInt16} AS n', { param_year: '2024' });
+    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
+    expect(queryCall[0]).toContain('param_year=2024');
+    expect(queryCall[0]).not.toContain('param_year=1999');
   });
   it('errors (without driving sign-out) when there is no token', async () => {
     const app = createApp(appEnv({ sessionStorage: memSession({}) }));

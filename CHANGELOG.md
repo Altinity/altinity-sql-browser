@@ -9,7 +9,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Shared parameter pipeline (Phase 7.0)** (#173). A pure, two-phase,
+  multi-source parameter pipeline — `analyzeParameterizedSources` (per-field
+  declarations across all occurrences, per-source requiredness, cross-source
+  type-conflict diagnostics) and `prepareParameterizedBatch` (per-source
+  `{statements, missing, invalid, errors, runnable}` verdicts, immutable
+  `boundParams` snapshots, per-param field states) — that
+  #165/#169/#170/#171/#172/#160/#175 plug into via identity/unknown stage
+  seams. Includes a typed serializer: `Array(T)` values bind as ClickHouse
+  array literals with correct quote/backslash escaping, big integers
+  (`UInt64`/`UInt128`/`UInt256`, `Int128`/`Int256`) stay strings end-to-end
+  (never through a JS `Number`), and scalar-string values remain
+  byte-identical to before. Serialization is per-statement by the local
+  declaration; a structurally incompatible stored value blocks only its own
+  source — on the dashboard, one bad tile never blocks its siblings. Execution
+  waves share one separately-injected wall clock (`env.wallNow`), distinct
+  from the `performance.now`-based duration clock.
+
 ### Fixed
+- **Multi-statement SQL now binds query parameters per statement everywhere**
+  (#155, absorbed by #173). `paramArgs` gated on the leading keyword of the
+  whole text, so a favorite like `SET x = 1; SELECT {year:UInt16}` never
+  received `param_year`; every gate/exec call site in the workbench and the
+  dashboard now consumes the pipeline's per-statement batch instead.
 - **Schema panel: a broken table in one data-lake-catalog database no longer
   hides every catalog database's tables** (#162). `loadSchema` queried
   `system.tables` across every database in one shot; once ClickHouse resolves

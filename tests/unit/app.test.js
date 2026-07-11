@@ -627,6 +627,33 @@ describe('query run', () => {
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
     expect(document.body.querySelector('.share-toast').textContent).toContain('a');
   });
+  it('query variables (#173): an Array(T) value binds as a ClickHouse array literal', async () => {
+    const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {xs:Array(String)}';
+    app.state.varValues = { xs: ['a', "b'c"] };
+    await app.actions.run();
+    const [url] = app.chCtx.fetch.mock.calls[0];
+    expect(decodeURIComponent(url)).toContain("param_xs=['a','b\\'c']");
+  });
+  it('query variables (#173): a value that cannot serialize for the declaration blocks the run and toasts', async () => {
+    const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
+    await new Promise((r) => setTimeout(r));
+    app.chCtx.fetch.mockClear();
+    app.activeTab().sql = 'SELECT {db:String}';
+    app.state.varValues = { db: ['not', 'scalar'] }; // array value, scalar declaration → structural
+    await app.actions.run();
+    expect(app.chCtx.fetch.mock.calls.length).toBe(0);
+    expect(document.body.querySelector('.share-toast').textContent).toContain('array value');
+  });
+  it('the wall clock (#173) is its own injected seam, distinct from the duration clock', () => {
+    const app = createApp(env({ wallNow: () => 777 })); // injected → tests can pin the wave clock
+    expect(app.wallNow()).toBe(777);
+    const app2 = createApp(env()); // default → Date.now (epoch ms), while env.now stays 0
+    expect(app2.wallNow()).toBeGreaterThan(1e12);
+    expect(app2.now()).toBe(0);
+  });
   it('tickElapsed updates the live ms readout, and no-ops without the element', () => {
     const { app } = appForRun([]);
     app.state.runT0 = 0;
