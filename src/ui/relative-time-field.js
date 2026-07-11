@@ -31,7 +31,7 @@
 // before #160.)
 
 import { h } from './dom.js';
-import { createCombobox } from './combobox.js';
+import { createCombobox, idSafe } from './combobox.js';
 import { attachComboFooter } from './combo-footer.js';
 import { formatPreview } from '../core/relative-time.js';
 
@@ -57,11 +57,6 @@ export function filterPresets(text) {
   if (!q) return RELATIVE_TIME_PRESETS;
   return RELATIVE_TIME_PRESETS.filter((p) => p.value.toLowerCase().includes(q) || p.label.toLowerCase().includes(q));
 }
-
-// A name-derived, HTML-id-safe suffix: variable names are scanner-restricted
-// to identifier-shaped tokens in practice, but sanitize defensively so a
-// stray character never produces an invalid id.
-const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
 
 /**
  * @param {{
@@ -141,7 +136,11 @@ export function buildRelativeTimeField({
   function buildOptions(text) {
     const presets = filterPresets(text);
     if (!getRecents) return presets;
-    const recents = getRecents(text).map((v) => ({ value: v, label: v, group: 'Recent' }));
+    // Review F5: a recorded expression that IS a rendered preset (`-1h` after
+    // one run) must not appear twice — the preset row already offers it.
+    const shown = new Set(presets.map((p) => p.value));
+    const recents = getRecents(text).filter((v) => !shown.has(v))
+      .map((v) => ({ value: v, label: v, group: 'Recent' }));
     return presets.map((p) => ({ ...p, group: 'Presets' })).concat(recents);
   }
 
@@ -167,7 +166,10 @@ export function buildRelativeTimeField({
     ? attachComboFooter({
       input, listEl, combo,
       hasRecents: () => getRecents('').length > 0,
-      onClear: () => { if (onClearRecent) onClearRecent(); },
+      // Review F4: after clearing, rebuild the OPEN list too — the footer
+      // hides itself, but the already-rendered Recent options would otherwise
+      // stay visible (and clickable) until the next keystroke.
+      onClear: () => { if (onClearRecent) onClearRecent(); combo.refresh(); },
     })
     : null;
   const syncFooter = () => { if (footer) footer.sync(); };

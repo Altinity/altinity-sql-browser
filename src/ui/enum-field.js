@@ -30,7 +30,7 @@
 // unreachable by typing.
 
 import { h } from './dom.js';
-import { createCombobox } from './combobox.js';
+import { createCombobox, idSafe } from './combobox.js';
 import { attachComboFooter } from './combo-footer.js';
 
 /** The most dropdown rows rendered for one keystroke's matches — large
@@ -55,8 +55,6 @@ export function filterEnumValues(values, text) {
     truncated: matches.length > ENUM_DROPDOWN_CAP,
   };
 }
-
-const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
 
 /**
  * @param {{
@@ -98,7 +96,12 @@ export function buildEnumField({
     // SECOND group (Recent) exists does the primary group get its own
     // "Values" header too — both groups labeled, or neither.
     if (!getRecents) return enumOpts;
-    const recents = getRecents(text).map((v) => ({ value: v, label: v, group: 'Recent' }));
+    // Review F5: a recorded value that IS a rendered member must not appear
+    // twice (once under Values, again under Recent) — the member row already
+    // says everything the recent would.
+    const shown = new Set(options);
+    const recents = getRecents(text).filter((v) => !shown.has(v))
+      .map((v) => ({ value: v, label: v, group: 'Recent' }));
     return enumOpts.map((o) => ({ ...o, group: 'Values' })).concat(recents);
   }
 
@@ -115,7 +118,10 @@ export function buildEnumField({
     ? attachComboFooter({
       input, listEl, combo,
       hasRecents: () => getRecents('').length > 0,
-      onClear: () => { if (onClearRecent) onClearRecent(); },
+      // Review F4: after clearing, rebuild the OPEN list too — the footer
+      // hides itself, but the already-rendered Recent options would otherwise
+      // stay visible (and clickable) until the next keystroke.
+      onClear: () => { if (onClearRecent) onClearRecent(); combo.refresh(); },
     })
     : null;
   const syncFooter = () => { if (footer) footer.sync(); };

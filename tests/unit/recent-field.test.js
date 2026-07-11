@@ -132,4 +132,16 @@ describe('buildRecentField — Clear recent footer', () => {
     const btn = field.el.querySelector('button.var-combo-clear');
     expect(() => btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).not.toThrow();
   });
+  it('Clear also empties the OPEN listbox and updates the aria-live count (review F4: no stale, clickable options)', () => {
+    let recents = ['c', 'b', 'a'];
+    const onClearRecent = vi.fn(() => { recents = []; });
+    const { field } = build({ getRecents: () => recents, onClearRecent });
+    field.onFocus();
+    expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(3);
+    const btn = field.el.querySelector('button.var-combo-clear');
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(0); // gone from the visible list too
+    expect(field.el.querySelector('[aria-live="polite"]').textContent).toBe('No matches');
+    expect(field.input.getAttribute('aria-expanded')).toBe('true'); // list stayed open, just empty
+  });
 });

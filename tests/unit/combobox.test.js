@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createCombobox } from '../../src/ui/combobox.js';
+import { createCombobox, idSafe, wireComboInput } from '../../src/ui/combobox.js';
 
 function makeParts(inputProps = {}) {
   const input = document.createElement('input');
@@ -274,5 +274,98 @@ describe('createCombobox — close()', () => {
     combo.onFocus();
     combo.close();
     expect(combo.isOpen()).toBe(false);
+  });
+});
+
+// Review F4: `refresh` is exposed so a caller whose option source changed
+// underneath an OPEN list without a keystroke (e.g. combo-footer's "Clear
+// recent") can rebuild the visible options + aria-live count in place.
+describe('createCombobox — refresh()', () => {
+  it('re-pulls getOptions for the current text and re-renders the open list + live count', () => {
+    let options = PRESETS;
+    const { input, listEl, liveEl } = makeParts();
+    const combo = createCombobox({ input, listEl, liveEl, getOptions: () => options, onCommit: vi.fn() });
+    combo.onFocus();
+    expect(listEl.querySelectorAll('[role="option"]')).toHaveLength(3);
+    options = []; // the source changed with no keystroke (a Clear action)
+    combo.refresh();
+    expect(combo.isOpen()).toBe(true); // still open — only the contents rebuilt
+    expect(listEl.querySelectorAll('[role="option"]')).toHaveLength(0);
+    expect(liveEl.textContent).toBe('No matches');
+  });
+  it('resets the active option (a cleared list must not keep a stale aria-activedescendant)', () => {
+    const { input, combo } = build();
+    combo.onFocus();
+    combo.onKeyDown(key('ArrowDown'));
+    expect(input.hasAttribute('aria-activedescendant')).toBe(true);
+    combo.refresh();
+    expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+  });
+});
+
+describe('idSafe (shared id-suffix sanitizer — review F8)', () => {
+  it('passes identifier-shaped names through and replaces anything else', () => {
+    expect(idSafe('from_date')).toBe('from_date');
+    expect(idSafe('a-b')).toBe('a-b');
+    expect(idSafe('weird name!')).toBe('weird_name_');
+    expect(idSafe(7)).toBe('7');
+  });
+});
+
+// Review F8: the one listener block the workbench var-strip and the dashboard
+// filter bar previously copy-pasted six times.
+describe('wireComboInput (shared field-event wiring — review F8)', () => {
+  function wiredField() {
+    const { input, listEl, liveEl } = makeParts();
+    document.body.append(input);
+    const combo = createCombobox({ input, listEl, liveEl, getOptions: () => PRESETS, onCommit: vi.fn() });
+    // A minimal field controller in the exact shape the build*Field modules
+    // return — spies wrap the combobox hooks so delegation order is visible.
+    const field = {
+      input,
+      onFocus: vi.fn(() => combo.onFocus()),
+      onInput: vi.fn(() => combo.onInput()),
+      onKeyDown: vi.fn((e) => combo.onKeyDown(e)),
+      onBlur: vi.fn(() => combo.onBlur()),
+      onCompositionStart: vi.fn(() => combo.onCompositionStart()),
+      onCompositionEnd: vi.fn(() => combo.onCompositionEnd()),
+    };
+    const onValueInput = vi.fn();
+    const onCommit = vi.fn();
+    wireComboInput(field, { onValueInput, onCommit });
+    return { input, combo, field, onValueInput, onCommit };
+  }
+  it('focus opens via the field hook; input delegates then persists', () => {
+    const { input, combo, field, onValueInput } = wiredField();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    expect(field.onFocus).toHaveBeenCalledTimes(1);
+    expect(combo.isOpen()).toBe(true);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(field.onInput).toHaveBeenCalledTimes(1);
+    expect(onValueInput).toHaveBeenCalledTimes(1);
+  });
+  it('a keydown the combobox consumes (ArrowDown) never reaches the caller commit; a consumed Enter neither', () => {
+    const { input, onCommit } = wiredField();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); // commits the active option
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+  it('an unconsumed Enter falls through to the caller commit; other keys never do', () => {
+    const { input, onCommit } = wiredField();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); // closed list, no active option
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true }));
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+  it('blur delegates then hard-commits; composition start/end delegate', () => {
+    const { input, field, onCommit } = wiredField();
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    expect(field.onBlur).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    input.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+    input.dispatchEvent(new Event('compositionend', { bubbles: true }));
+    expect(field.onCompositionStart).toHaveBeenCalledTimes(1);
+    expect(field.onCompositionEnd).toHaveBeenCalledTimes(1);
   });
 });

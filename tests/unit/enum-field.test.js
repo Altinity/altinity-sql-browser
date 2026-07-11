@@ -232,4 +232,22 @@ describe('buildEnumField — #171 recents composition', () => {
     field.onCompositionEnd();
     expect(footer.hidden).toBe(false);
   });
+  it('a recent that duplicates a rendered member appears only under Values (review F5)', () => {
+    const { field } = build({ getRecents: () => ['active', 'legacy-status'] });
+    field.onFocus();
+    const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(opts).toEqual([...VALUES, 'legacy-status']); // 'active' listed once, as a member
+  });
+  it('Clear removes the recents from the OPEN list too, keeping the members (review F4)', () => {
+    let recents = ['legacy-status', 'other-old'];
+    const onClearRecent = vi.fn(() => { recents = []; });
+    const { field } = build({ getRecents: () => recents, onClearRecent });
+    field.onFocus();
+    expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(VALUES.length + 2);
+    const btn = field.el.querySelector('button.var-combo-clear');
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(opts).toEqual(VALUES); // recents gone from the visible list; members intact
+    expect(field.el.querySelector('[aria-live="polite"]').textContent).toBe('3 options');
+  });
 });

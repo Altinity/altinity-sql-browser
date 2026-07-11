@@ -265,6 +265,25 @@ describe('buildRelativeTimeField — #171 recents composition', () => {
     const btn = field.el.querySelector('button.var-combo-clear');
     expect(() => btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).not.toThrow();
   });
+  it('a recorded expression that IS a preset appears only under Presets (review F5)', () => {
+    const { field } = build({ getRecents: () => ['-1h', '-3h'] });
+    field.onFocus();
+    const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
+    expect(opts.filter((t) => t.startsWith('-1h'))).toHaveLength(1); // the preset row only
+    expect(opts[opts.length - 1]).toBe('-3h'); // the genuinely-new recent still shows
+    expect(opts).toHaveLength(RELATIVE_TIME_PRESETS.length + 1);
+  });
+  it('Clear removes the recents from the OPEN list too, keeping the presets (review F4)', () => {
+    let recents = ['-3h', '-9h'];
+    const onClearRecent = vi.fn(() => { recents = []; });
+    const { field } = build({ getRecents: () => recents, onClearRecent });
+    field.onFocus();
+    expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(RELATIVE_TIME_PRESETS.length + 2);
+    const btn = field.el.querySelector('button.var-combo-clear');
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(RELATIVE_TIME_PRESETS.length);
+    expect([...field.el.querySelectorAll('.combo-group')].map((g) => g.textContent)).toEqual(['Presets']);
+  });
   it('ArrowDown/keyboard nav also re-syncs the footer', () => {
     const { field } = build({ getRecents: () => ['-3h'] });
     const footer = field.el.querySelector('.var-combo-footer');
