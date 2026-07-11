@@ -242,12 +242,12 @@ function buildFilterBar(app, params, onCommit, getField) {
       app.state.filterActive[p.name] = input.value !== '';
       app.saveVarValues();
       app.saveFilterActive();
-      applyFieldState(input, getField(p.name, 'input'), baseTitle);
+      applyFieldState(input, getField(p.name, 'input'), baseTitle, combo && combo.previewEl);
       clearTimeout(timer);
       timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
     };
     const onCommitHard = () => {
-      applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+      applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
       commitNow();
     };
     if (dateLike) {
@@ -259,7 +259,7 @@ function buildFilterBar(app, params, onCommit, getField) {
         // immediately, bypassing the debounce `onValueInput` just armed,
         // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
         onCommit: () => {
-          applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+          applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
           clearTimeout(timer);
           timer = null;
           onCommit(p.name);
@@ -288,7 +288,7 @@ function buildFilterBar(app, params, onCommit, getField) {
         onblur: onCommitHard,
       });
     }
-    applyFieldState(input, getField(p.name, 'execute'), baseTitle);
+    applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), combo ? combo.el : input);
   }));

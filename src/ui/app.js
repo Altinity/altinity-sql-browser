@@ -998,14 +998,14 @@ export function createApp(env = {}) {
             // the field is focused — only a value that's already certainly
             // wrong shows the inline error here.
             const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
-            applyFieldState(input, batch.fields[v.name], baseTitle);
+            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
             setRunBtn(app.state.running.value, batch.sources[0]);
           };
           const onCommitHard = () => {
             // Hardens 'incomplete' → 'invalid' on commit (#170).
             const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
             hardenVar(v.name, batch.fields[v.name]);
-            applyFieldState(input, batch.fields[v.name], baseTitle);
+            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
             setRunBtn(app.state.running.value, batch.sources[0]);
           };
           if (dateLike) {
@@ -1037,7 +1037,7 @@ export function createApp(env = {}) {
             });
           }
           hardenVar(v.name, initialFields[v.name]);
-          applyFieldState(input, initialFields[v.name], baseTitle);
+          applyFieldState(input, initialFields[v.name], baseTitle, combo && combo.previewEl);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
             h('span', { class: 'var-name' }, v.name), combo ? combo.el : input);
         }));

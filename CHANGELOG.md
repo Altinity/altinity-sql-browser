@@ -70,16 +70,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   calendar date / integer epoch seconds / epoch seconds with an `N`-digit
   fraction — live-verified against ClickHouse 26.3.13's `param_*` path). A
   near-miss expression (starts `now…` or sign+digits but fails to parse)
-  gates via #170's existing invalid-field machinery — no second affordance.
+  gates via #170's existing invalid-field machinery, following its exact
+  incomplete→invalid timing: neutral and non-blocking while still being
+  typed (`now-`, `-1`, ordinary keystrokes toward a valid expression), and
+  hardened to the visible inline error only on blur/Enter/execute — no
+  second affordance, no separate timing model (review fix, post-merge).
   Plugs into #173's pipeline as the real `resolveRelativeValue` stage
   (previously identity). The UI is the first consumer of a new accessible
   type-to-filter combobox primitive (`src/ui/combobox.js`, #174 §1 — full
   keyboard map, ARIA `combobox`/`listbox`/`option` roles, IME-composition
-  safety, mousedown-before-blur commit) composed in
-  `src/ui/relative-time-field.js` with a live resolved-value preview labeled
-  in the browser's own timezone; both the workbench var-strip and the
-  Dashboard's global filter bar (#149 D3) upgrade their date-like fields to
-  it, unchanged for every other type.
+  safety, mousedown-before-blur commit, `aria-describedby` wired to the
+  preview/error element) composed in `src/ui/relative-time-field.js` with a
+  live preview of the resolved instant as a human-readable local calendar
+  string (`-1h → 2026-07-11 09:23:45 (your time)`) — never the wire value
+  actually sent, which stays epoch seconds/date per the declared type; both
+  the workbench var-strip and the Dashboard's global filter bar (#149 D3)
+  upgrade their date-like fields to it, unchanged for every other type.
+  Resolved instants are FLOORED to the whole second for every date/time type
+  (never rounded), so `DateTime` and `DateTime64(0)` agree on the same
+  instant and a resolved `now` never lands a second in the future.
 - **Shared parameter pipeline (Phase 7.0)** (#173). A pure, two-phase,
   multi-source parameter pipeline — `analyzeParameterizedSources` (per-field
   declarations across all occurrences, per-source requiredness, cross-source

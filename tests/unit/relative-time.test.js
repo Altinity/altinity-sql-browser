@@ -27,6 +27,7 @@ import {
   parseRelativeExpr,
   resolveInstant,
   resolveRelativeValue,
+  formatPreview,
   isDateLikeType,
   resolveVarValues,
 } from '../../src/core/relative-time.js';
@@ -196,12 +197,12 @@ describe('resolveRelativeValue — per-type formatting', () => {
   });
   it('DateTime → integer epoch seconds (no fraction)', () => {
     const r = resolveRelativeValue('now', 'DateTime', now);
-    expect(r).toEqual({ ok: true, value: String(Math.round(now / 1000)), matched: true });
+    expect(r).toEqual({ ok: true, value: String(Math.floor(now / 1000)), matched: true });
     expect(r.value).not.toContain('.');
   });
   it("DateTime('tz') formats the same as plain DateTime (epoch seconds)", () => {
     const r = resolveRelativeValue('now', "DateTime('Europe/Madrid')", now);
-    expect(r.value).toBe(String(Math.round(now / 1000)));
+    expect(r.value).toBe(String(Math.floor(now / 1000)));
   });
   it('DateTime64(3) → epoch seconds with exactly 3 fraction digits', () => {
     const withMs = ms(2026, 6, 11, 9, 23, 45, 123);
@@ -219,19 +220,34 @@ describe('resolveRelativeValue — per-type formatting', () => {
   });
   it('DateTime64(0) behaves like DateTime: no fraction', () => {
     const r = resolveRelativeValue('now', 'DateTime64(0)', now);
-    expect(r.value).toBe(String(Math.round(now / 1000)));
+    expect(r.value).toBe(String(Math.floor(now / 1000)));
     expect(r.value).not.toContain('.');
   });
   it('DateTime64 with no inner precision (malformed/opaque) defaults to no fraction', () => {
     const r = resolveRelativeValue('now', 'DateTime64', now);
-    expect(r.value).toBe(String(Math.round(now / 1000)));
+    expect(r.value).toBe(String(Math.floor(now / 1000)));
   });
   it('Nullable(DateTime) unwraps and formats as DateTime', () => {
     const r = resolveRelativeValue('now', 'Nullable(DateTime)', now);
-    expect(r.value).toBe(String(Math.round(now / 1000)));
+    expect(r.value).toBe(String(Math.floor(now / 1000)));
   });
   it('Nullable(Date) unwraps and formats as Date', () => {
     expect(resolveRelativeValue('now', 'Nullable(Date)', now).value).toBe('2026-07-11');
+  });
+  // Review finding #3: DateTime used to round, DateTime64(0) always floored —
+  // the same instant could disagree by a whole second (and DateTime could
+  // land a second in the future). Both now FLOOR unconditionally.
+  it('a sub-second remainder ≥500ms: DateTime and DateTime64(0) agree (both floor, never round up)', () => {
+    const withRemainder = ms(2026, 6, 11, 9, 23, 45, 600); // .600s remainder
+    const dt = resolveRelativeValue('now', 'DateTime', withRemainder);
+    const dt64_0 = resolveRelativeValue('now', 'DateTime64(0)', withRemainder);
+    const floored = String(Math.floor(withRemainder / 1000));
+    expect(dt.value).toBe(floored);
+    expect(dt64_0.value).toBe(floored);
+    expect(dt.value).toBe(dt64_0.value);
+    // Rounding would have produced floored+1 (a second in the future) — guard
+    // against a regression back to Math.round.
+    expect(dt.value).not.toBe(String(Math.floor(withRemainder / 1000) + 1));
   });
 });
 
@@ -258,7 +274,7 @@ describe('resolveVarValues — batch helper', () => {
     const params = [{ name: 'from', type: 'DateTime' }, { name: 'day', type: 'Date' }, { name: 'q', type: 'String' }];
     const values = { from: '-1h', day: 'now', q: 'x' };
     const out = resolveVarValues(params, values, now);
-    expect(out.from).toEqual({ ok: true, value: String(Math.round((now - 3600000) / 1000)), matched: true });
+    expect(out.from).toEqual({ ok: true, value: String(Math.floor((now - 3600000) / 1000)), matched: true });
     expect(out.day).toEqual({ ok: true, value: '2026-07-11', matched: true });
     expect(out.q).toEqual({ ok: true, value: 'x', matched: false });
   });
@@ -275,5 +291,53 @@ describe('resolveVarValues — batch helper', () => {
   it('a missing `values` map (undefined) is tolerated, same as an empty one', () => {
     const out = resolveVarValues([{ name: 'from', type: 'DateTime' }], undefined, 123);
     expect(out.from).toEqual({ ok: true, value: undefined, matched: false });
+  });
+});
+
+// Review finding #1: the live preview must render the RESOLVED INSTANT as a
+// human-readable local calendar string, never the wire value (epoch seconds
+// for DateTime/DateTime64) `resolveRelativeValue` produces for transport.
+describe('formatPreview — human-readable local-instant preview (review finding #1)', () => {
+  const now = ms(2026, 6, 11, 9, 23, 45, 0); // 2026-07-11 09:23:45 local
+
+  it('non-date types pass through untouched, unmatched', () => {
+    expect(formatPreview('-1h', 'String', now)).toEqual({ ok: true, display: '-1h', matched: false });
+  });
+  it('an absolute (non-relative) value for a date-like type passes through verbatim, unmatched', () => {
+    expect(formatPreview('2026-07-11 09:00:00', 'DateTime', now))
+      .toEqual({ ok: true, display: '2026-07-11 09:00:00', matched: false });
+  });
+  it('a near-miss expression is rejected with a structured error, exactly like resolveRelativeValue', () => {
+    const r = formatPreview('now/q', 'DateTime', now);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Not a valid relative time expression/);
+  });
+  it('Date/Date32 → local calendar date YYYY-MM-DD (no time-of-day)', () => {
+    expect(formatPreview('now', 'Date', now)).toEqual({ ok: true, display: '2026-07-11', matched: true });
+    expect(formatPreview('-1d', 'Date32', now).display).toBe('2026-07-10');
+  });
+  it('DateTime → local calendar datetime, no fraction', () => {
+    expect(formatPreview('now', 'DateTime', now)).toEqual({ ok: true, display: '2026-07-11 09:23:45', matched: true });
+  });
+  it('DateTime64(0) → same as DateTime, no fraction', () => {
+    expect(formatPreview('now', 'DateTime64(0)', now).display).toBe('2026-07-11 09:23:45');
+  });
+  it('DateTime64(N) with a non-zero sub-second remainder appends the fraction', () => {
+    const withMs = ms(2026, 6, 11, 9, 23, 45, 123);
+    expect(formatPreview('now', 'DateTime64(3)', withMs).display).toBe('2026-07-11 09:23:45.123');
+    expect(formatPreview('now', 'DateTime64(6)', withMs).display).toBe('2026-07-11 09:23:45.123000');
+  });
+  it('DateTime64(N) with a whole-second (zero remainder) instant shows no fraction (kept simple/readable)', () => {
+    expect(formatPreview('now', 'DateTime64(3)', now).display).toBe('2026-07-11 09:23:45');
+  });
+  it('a sub-second remainder floors the whole-second part (never rounds up, finding #3 applies here too)', () => {
+    const withRemainder = ms(2026, 6, 11, 9, 23, 45, 600);
+    expect(formatPreview('now', 'DateTime', withRemainder).display).toBe('2026-07-11 09:23:45');
+  });
+  it('DateTime64 with no inner precision (malformed/opaque) defaults to no fraction', () => {
+    expect(formatPreview('now', 'DateTime64', now).display).toBe('2026-07-11 09:23:45');
+  });
+  it('Nullable(DateTime) unwraps and formats as DateTime', () => {
+    expect(formatPreview('now', 'Nullable(DateTime)', now).display).toBe('2026-07-11 09:23:45');
   });
 });

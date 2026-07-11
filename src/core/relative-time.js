@@ -142,9 +142,14 @@ function formatDate(epochMs) {
 }
 
 // Integer epoch seconds only (fractional is rejected by the param path for
-// plain DateTime — live-verified against ClickHouse 26.3.13).
+// plain DateTime — live-verified against ClickHouse 26.3.13). FLOORED, never
+// rounded (review finding #3): `Math.round` could push a resolved instant a
+// second into the future, and disagreed with `formatDateTime64`'s floor for
+// DateTime64(0) on the very same instant whenever the sub-second remainder
+// was ≥500ms — floor keeps both representations of one instant in agreement
+// and never reports a time later than the instant actually is.
 function formatDateTimeSeconds(epochMs) {
-  return String(Math.round(epochMs / 1000));
+  return String(Math.floor(epochMs / 1000));
 }
 
 // Epoch seconds with exactly `n` fraction digits: the first 3 come from the
@@ -185,6 +190,35 @@ function formatByType(epochMs, t) {
   return formatDateTimeSeconds(epochMs); // 'DateTime' (with or without a tz arg)
 }
 
+// ── Human-readable preview formatting (review finding #1) ────────────────
+//
+// The live preview shown next to the field must read as a calendar instant
+// ("2026-07-11 09:23:45"), never the wire value ("1783772625") the field
+// actually transports — those diverge for every date-like type except
+// `Date`/`Date32`. This is presentation only: `formatByType` above still owns
+// what gets sent. Local time (the browser's zone), floored to the whole
+// second (finding #3 — never rounds into the future), with a fractional
+// suffix only for `DateTime64(N>0)` and only when the remainder is non-zero
+// — a preview showing ".000" on every value would be more noise than signal.
+function formatPreviewInstant(epochMs, t) {
+  if (t.base === 'Date' || t.base === 'Date32') return formatDate(epochMs);
+  const d = new Date(Math.floor(epochMs / 1000) * 1000);
+  const base = `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)} `
+    + `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
+  if (t.base === 'DateTime64') {
+    const n = t.inner ? parseInt(t.inner, 10) || 0 : 0;
+    if (n > 0) {
+      const wholeSec = Math.floor(epochMs / 1000);
+      const msRemainder = epochMs - wholeSec * 1000;
+      if (msRemainder !== 0) {
+        const frac = (pad(msRemainder, 3) + '0'.repeat(Math.max(0, n - 3))).slice(0, n);
+        return `${base}.${frac}`;
+      }
+    }
+  }
+  return base;
+}
+
 /**
  * Resolve a variable's entered text against its declared type and a pinned
  * wall clock: `-1h` → a formatted literal ready for `param_<name>`. Pure, no
@@ -205,6 +239,28 @@ export function resolveRelativeValue(expr, type, nowMs) {
   if (parsed.error) return { ok: false, error: parsed.error };
   const instant = resolveInstant(parsed, nowMs);
   return { ok: true, value: formatByType(instant, t), matched: true };
+}
+
+/**
+ * The live-preview seam (review finding #1): resolve `expr` exactly like
+ * `resolveRelativeValue`, but format the resolved instant as a **human-
+ * readable local calendar string** (`YYYY-MM-DD HH:MM:SS`, `YYYY-MM-DD` for
+ * `Date`/`Date32`) instead of the wire value — the wire value (epoch seconds
+ * for `DateTime`/`DateTime64`) is what actually gets sent; this is display
+ * only. Pure.
+ * @param {string} expr
+ * @param {string|import('./param-type.js').ParsedParamType} type
+ * @param {number} nowMs
+ * @returns {{ok: true, display: string, matched: boolean}|{ok: false, error: string}}
+ */
+export function formatPreview(expr, type, nowMs) {
+  const t = parsedType(type);
+  if (!isDateLikeType(t)) return { ok: true, display: expr, matched: false };
+  const parsed = parseRelativeExpr(expr);
+  if (parsed == null) return { ok: true, display: expr, matched: false };
+  if (parsed.error) return { ok: false, error: parsed.error };
+  const instant = resolveInstant(parsed, nowMs);
+  return { ok: true, display: formatPreviewInstant(instant, t), matched: true };
 }
 
 /**

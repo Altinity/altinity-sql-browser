@@ -627,6 +627,31 @@ describe('query run', () => {
     expect(input.classList.contains('is-invalid')).toBe(true);
     expect(input.title).toMatch(/Not a valid relative time expression/);
   });
+  it("relative time (#169 review finding #2): typing a near-miss stays neutral (incomplete) — Run stays enabled until blur hardens it", () => {
+    const { app } = appForRun([]);
+    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.renderVarStrip();
+    const input = app.dom.varStrip.querySelector('.var-input');
+    input.value = 'now/q';
+    input.dispatchEvent(new Event('input', { bubbles: true })); // still typing — 'input' mode
+    expect(app.dom.runBtn.disabled).toBe(false);
+    expect(input.classList.contains('is-invalid')).toBe(false);
+    expect(app.hardenedVars.has('from')).toBe(false);
+    input.dispatchEvent(new Event('blur', { bubbles: true })); // commits — 'execute' mode hardens it
+    expect(app.dom.runBtn.disabled).toBe(true);
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(app.hardenedVars.has('from')).toBe(true);
+    // The hardened state (#170's app.hardenedVars mechanism) persists across
+    // an unrelated re-render — the same mechanism the type-validator's own
+    // incomplete→invalid hardening already relies on, now also reached via
+    // the relative-time near-miss path (review finding #2's whole point: it
+    // routes through the exact same states, not a bespoke gate).
+    app.dom.varStripSig = null; // force renderVarStrip to rebuild the strip
+    app.renderVarStrip();
+    expect(app.dom.runBtn.disabled).toBe(true);
+    const rebuiltInput = app.dom.varStrip.querySelector('.var-input');
+    expect(rebuiltInput.classList.contains('is-invalid')).toBe(true);
+  });
   it('relative time (#169): Enter with the preset list closed hardens/gates via the same keydown path as a plain field', () => {
     const { app } = appForRun([]);
     app.activeTab().sql = 'SELECT {from:DateTime}';

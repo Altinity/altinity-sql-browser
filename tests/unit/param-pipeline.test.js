@@ -94,13 +94,28 @@ describe('#169 end-to-end: the real relative-time resolver wired as the pipeline
     expect(snap.resolvedValue).toBe(expected);
     expect(snap.serializedValue).toBe(expected);
   });
-  it('a near-miss relative expression gates its source invalid with a structured reason, never sent', () => {
+  it("a near-miss relative expression ('input' mode) is display-only incomplete, never gates — #170's exact timing model (review finding #2)", () => {
     const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}')]);
     const p = prepareParameterizedBatch(a, { values: { from: 'now/q' }, wallNowMs: 123, validationMode: 'input' });
+    expect(p.sources[0]).toMatchObject({ invalid: [], runnable: true });
+    expect(p.fields.from).toEqual({ state: 'incomplete' });
+    expect(p.sources[0].statements[0].args).toEqual({});
+  });
+  it("the same near-miss hardens to invalid with the structured reason under 'execute' mode (blur/Enter/run)", () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}')]);
+    const p = prepareParameterizedBatch(a, { values: { from: 'now/q' }, wallNowMs: 123, validationMode: 'execute' });
     expect(p.sources[0]).toMatchObject({ invalid: ['from'], runnable: false });
     expect(p.fields.from.state).toBe('invalid');
     expect(p.fields.from.reason).toMatch(/Not a valid relative time expression/);
     expect(p.sources[0].statements[0].args).toEqual({});
+  });
+  it("ordinary keystrokes toward a valid expression ('-1', 'now-', 'now-1', 'now/') never gate in 'input' mode", () => {
+    const a = analyzeParameterizedSources([src('A', 'SELECT {from:DateTime}')]);
+    for (const prefix of ['-1', 'now-', 'now-1', 'now/']) {
+      const p = prepareParameterizedBatch(a, { values: { from: prefix }, wallNowMs: 123, validationMode: 'input' });
+      expect(p.fields.from.state).toBe('incomplete');
+      expect(p.sources[0].runnable).toBe(true);
+    }
   });
   it('an absolute value for a date-like type keeps working unchanged', () => {
     const a = analyzeParameterizedSources([src('A', 'SELECT {d:Date}')]);

@@ -60,8 +60,11 @@ export function executionView(sql, active) {
  *  declared types and for values that don't match the relative grammar at all
  *  (rule 6 — an absolute value passes through verbatim). A value that *looks*
  *  relative but fails to parse (a near miss) becomes the `{error}` sentinel
- *  `prepareParameterizedBatch` below recognizes and gates as invalid — the
- *  stage contract stays "return the resolved value" for the success case, so
+ *  `prepareParameterizedBatch` below recognizes and classifies per
+ *  `validationMode` — `incomplete` (neutral, non-blocking) under 'input',
+ *  hardened to `invalid` under 'execute' — the same timing model #170 uses
+ *  for its own incomplete verdicts. The stage contract stays "return the
+ *  resolved value" for the success case, so
  *  a caller-supplied override (see the `stages` param) can still return a
  *  plain value unchanged, exactly like the identity pass this replaced. Pure.
  */
@@ -271,14 +274,25 @@ export function prepareParameterizedBatch(analysis, opts = {}) {
         const resolved = resolve(rawValue, type, wallNowMs);
         // #169: a near-miss relative expression (starts like one, fails to
         // parse) comes back as the `{error}` sentinel rather than a value to
-        // validate — gate it as invalid immediately, with its own reason, the
-        // same way a serialization failure gates below. `Array.isArray` guard:
-        // an Array(...)-typed rawValue is itself an object and must not be
-        // mistaken for the sentinel (relative-time only ever touches scalar
-        // date-like types, so an array always comes back unchanged).
+        // validate. Review finding #2: this follows #170's exact incomplete→
+        // invalid timing model, not an unconditional gate — under 'input'
+        // mode (still typing: `-1`, `now-`, `now-1`, `now/` are all ordinary
+        // keystrokes on the way to a valid expression) it's `incomplete`,
+        // display-only and non-blocking, same as the type-validator's own
+        // incomplete verdict below; only 'execute' mode (blur/Enter/run — see
+        // #170's harden-on-commit path) hardens it to `invalid`, with the
+        // resolver's own structured reason, the same way a serialization
+        // failure gates below. `Array.isArray` guard: an Array(...)-typed
+        // rawValue is itself an object and must not be mistaken for the
+        // sentinel (relative-time only ever touches scalar date-like types,
+        // so an array always comes back unchanged).
         if (resolved !== null && typeof resolved === 'object' && !Array.isArray(resolved) && 'error' in resolved) {
-          if (!invalid.includes(p.name)) invalid.push(p.name);
-          note(p.name, 'invalid', resolved.error);
+          if (validationMode === 'execute') {
+            if (!invalid.includes(p.name)) invalid.push(p.name);
+            note(p.name, 'invalid', resolved.error);
+          } else {
+            note(p.name, 'incomplete');
+          }
           continue;
         }
         const resolvedValue = resolved;

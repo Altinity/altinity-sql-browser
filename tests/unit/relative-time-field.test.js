@@ -69,11 +69,14 @@ describe('buildRelativeTimeField — live preview', () => {
     const preview = field.el.querySelector('.var-combo-preview');
     expect(preview.textContent).toBe('');
   });
-  it('a matched relative expression shows "expr → resolved (your time)"', () => {
+  // Review finding #1: the preview must read as a human-readable local
+  // calendar instant ("2026-07-11 08:23:45"), never the wire value the field
+  // actually transports (epoch seconds for DateTime/DateTime64).
+  it('a matched relative expression shows "expr → resolved calendar instant (your time)"', () => {
     const { field } = build({ value: '-1h' });
     const preview = field.el.querySelector('.var-combo-preview');
-    const expected = String(Math.round((NOW - 3600000) / 1000));
-    expect(preview.textContent).toBe(`-1h → ${expected} (your time)`);
+    expect(preview.textContent).toBe('-1h → 2026-07-11 08:23:45 (your time)');
+    expect(preview.textContent).not.toMatch(/\d{9,}/); // never the raw epoch-seconds wire value
     expect(preview.classList.contains('is-error')).toBe(false);
   });
   it('an absolute (unmatched) value shows no preview', () => {
@@ -81,7 +84,7 @@ describe('buildRelativeTimeField — live preview', () => {
     const preview = field.el.querySelector('.var-combo-preview');
     expect(preview.textContent).toBe('');
   });
-  it('a near-miss expression shows the structured error and an error class', () => {
+  it('a near-miss expression already stored (committed on initial paint) shows the structured error and an error class', () => {
     const { field } = build({ value: 'now/q' });
     const preview = field.el.querySelector('.var-combo-preview');
     expect(preview.textContent).toMatch(/Not a valid relative time expression/);
@@ -92,7 +95,7 @@ describe('buildRelativeTimeField — live preview', () => {
     const preview = field.el.querySelector('.var-combo-preview');
     field.input.value = 'now';
     field.onInput();
-    expect(preview.textContent).toBe(`now → ${Math.round(NOW / 1000)} (your time)`);
+    expect(preview.textContent).toBe('now → 2026-07-11 09:23:45 (your time)');
   });
   it('correcting an error value back to valid clears the error class', () => {
     const { field } = build({ value: 'now/q' });
@@ -101,6 +104,52 @@ describe('buildRelativeTimeField — live preview', () => {
     field.input.value = 'now';
     field.onInput();
     expect(preview.classList.contains('is-error')).toBe(false);
+  });
+
+  // Review finding #2: a near-miss (starts like `now`/±digit, doesn't fully
+  // parse — an ordinary keystroke on the way to a valid expression) must stay
+  // NEUTRAL while the field is still being typed into, exactly like #170's
+  // incomplete→invalid timing model for the pipeline's own validation — only
+  // hardening into a visible error once the value is committed (blur/Enter/
+  // preset pick).
+  it('typing a near-miss prefix (onInput) never shows an error — neutral, not blocking', () => {
+    const { field } = build({ value: '' });
+    const preview = field.el.querySelector('.var-combo-preview');
+    for (const prefix of ['-1', 'now-', 'now-1', 'now/']) {
+      field.input.value = prefix;
+      field.onInput();
+      expect(preview.classList.contains('is-error')).toBe(false);
+      expect(preview.textContent).toBe('');
+    }
+  });
+  it('blurring a near-miss value hardens the preview into a visible error', () => {
+    const { field } = build({ value: '' });
+    const preview = field.el.querySelector('.var-combo-preview');
+    field.input.value = '-5x';
+    field.onInput();
+    expect(preview.classList.contains('is-error')).toBe(false); // still neutral while typing
+    field.onBlur();
+    expect(preview.classList.contains('is-error')).toBe(true);
+    expect(preview.textContent).toMatch(/Not a valid relative time expression/);
+  });
+  it('composing (IME) a near-miss stays neutral; only compositionEnd finalizes it (still typing, not committed)', () => {
+    const { field } = build({ value: '' });
+    const preview = field.el.querySelector('.var-combo-preview');
+    field.onCompositionStart();
+    field.input.value = 'now-1x';
+    field.onCompositionEnd();
+    expect(preview.classList.contains('is-error')).toBe(false);
+    expect(preview.textContent).toBe('');
+  });
+  it('an Enter that the combobox does not consume (no active option) hardens the preview, like blur', () => {
+    const { field } = build({ value: '' });
+    const preview = field.el.querySelector('.var-combo-preview');
+    field.input.value = '-5x';
+    field.onInput();
+    const e = { key: 'Enter', preventDefault: () => {} };
+    const consumed = field.onKeyDown(e);
+    expect(consumed).toBe(false);
+    expect(preview.classList.contains('is-error')).toBe(true);
   });
 });
 
@@ -132,7 +181,7 @@ describe('buildRelativeTimeField — combobox delegation', () => {
     field.onInput(); // suppressed while composing — no filtering
     expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(RELATIVE_TIME_PRESETS.length);
     field.onCompositionEnd();
-    expect(preview.textContent).toBe(`now → ${Math.round(NOW / 1000)} (your time)`);
+    expect(preview.textContent).toBe('now → 2026-07-11 09:23:45 (your time)');
   });
   it('picking a preset (option mousedown) inserts the expression, updates preview, and fires onValueInput then onCommit', () => {
     const { field, onValueInput, onCommit } = build({ value: '' });

@@ -21,7 +21,7 @@
 
 import { h } from './dom.js';
 import { createCombobox } from './combobox.js';
-import { resolveVarValues } from '../core/relative-time.js';
+import { formatPreview } from '../core/relative-time.js';
 
 /** v1 preset list (#169 spec) — plain combobox option data. */
 export const RELATIVE_TIME_PRESETS = [
@@ -67,6 +67,7 @@ export function buildRelativeTimeField({ document: doc, name, type, value, baseT
   const suffix = idSafe(name);
   const listId = 'var-combo-list-' + suffix;
   const liveId = 'var-combo-live-' + suffix;
+  const previewId = 'var-combo-preview-' + suffix;
 
   const input = h('input', {
     type: 'text', class: 'var-input', value: value || '', placeholder: type,
@@ -75,24 +76,40 @@ export function buildRelativeTimeField({ document: doc, name, type, value, baseT
   });
   const listEl = h('ul', { class: 'var-combo-list', id: listId, role: 'listbox', hidden: true });
   const liveEl = h('div', { class: 'sr-only', id: liveId, 'aria-live': 'polite' });
-  const previewEl = h('div', { class: 'var-combo-preview' });
+  // Review finding #4: this is the "real element" `applyFieldState` (var-
+  // field.js) points `aria-describedby` at — a stable id, shared by both the
+  // workbench var-strip and the dashboard filter bar (both build fields
+  // through this one module).
+  const previewEl = h('div', { class: 'var-combo-preview', id: previewId });
 
-  function updatePreview() {
+  // Review finding #2: a near-miss expression (`{error}` from the resolver —
+  // starts like `now`/±digit, doesn't fully parse) is neutral while the field
+  // is still being typed into (`committed: false`) — the same timing model
+  // #170 uses for the pipeline's own incomplete→invalid hardening — and only
+  // becomes a visible error once the value is committed (blur, Enter, or a
+  // preset pick), matching what `applyFieldState`'s 'execute'-mode repaint
+  // does to the input's own is-invalid/aria-invalid state a moment later.
+  function updatePreview(committed) {
     if (input.value.trim() === '') {
       previewEl.textContent = '';
       previewEl.classList.remove('is-error');
       return;
     }
-    // The one-field UI preview is the batch helper's degenerate case (a
-    // single-name/value pair) — it's the entry point the spec calls "the UI
-    // layers call", kept as one call so a future multi-field preview (e.g. a
-    // paired from/to range) needs no new plumbing.
-    const r = resolveVarValues([{ name, type }], { [name]: input.value }, wallNow())[name];
+    // Review finding #1: render the RESOLVED INSTANT as a human-readable local
+    // calendar string (`formatPreview`), never the wire value the pipeline
+    // actually sends (epoch seconds for DateTime/DateTime64) — presentation
+    // only, the bound value is unaffected.
+    const r = formatPreview(input.value, type, wallNow());
     if (!r.ok) {
-      previewEl.textContent = r.error;
-      previewEl.classList.add('is-error');
+      if (committed) {
+        previewEl.textContent = r.error;
+        previewEl.classList.add('is-error');
+      } else {
+        previewEl.textContent = '';
+        previewEl.classList.remove('is-error');
+      }
     } else if (r.matched) {
-      previewEl.textContent = `${input.value} → ${r.value} (your time)`;
+      previewEl.textContent = `${input.value} → ${r.display} (your time)`;
       previewEl.classList.remove('is-error');
     } else {
       previewEl.textContent = '';
@@ -107,19 +124,29 @@ export function buildRelativeTimeField({ document: doc, name, type, value, baseT
     // full expression, then committed it" rather than the debounced/lenient
     // typing path, so it takes effect immediately (workbench: re-validates
     // and re-enables Run right away; dashboard: bypasses the 500ms debounce).
-    onCommit: () => { updatePreview(); onValueInput(); onCommit(); },
+    onCommit: () => { updatePreview(true); onValueInput(); onCommit(); },
   });
 
-  updatePreview();
+  // The initial paint reflects an already-stored value (a tab switch, a
+  // restored dashboard filter, …) — never "mid-typing" — so it's committed.
+  updatePreview(true);
 
   return {
     el: h('div', { class: 'var-combo' }, input, listEl, liveEl, previewEl),
     input,
+    previewEl,
     onFocus: () => combo.onFocus(),
-    onInput: () => { combo.onInput(); updatePreview(); },
-    onKeyDown: (e) => combo.onKeyDown(e),
-    onBlur: () => combo.onBlur(),
+    onInput: () => { combo.onInput(); updatePreview(false); },
+    onKeyDown: (e) => {
+      const consumed = combo.onKeyDown(e);
+      // Enter not consumed by the combobox (no active option) falls through
+      // to the caller's own hard-commit logic (app.js/dashboard.js) — harden
+      // the preview the same way blur does (#170's commit timing).
+      if (!consumed && e.key === 'Enter') updatePreview(true);
+      return consumed;
+    },
+    onBlur: () => { combo.onBlur(); updatePreview(true); },
     onCompositionStart: () => combo.onCompositionStart(),
-    onCompositionEnd: () => { combo.onCompositionEnd(); updatePreview(); },
+    onCompositionEnd: () => { combo.onCompositionEnd(); updatePreview(false); },
   };
 }
