@@ -10,6 +10,7 @@ import {
   mergedSourceArgs,
   mergedSourceSql,
   fieldControls,
+  fieldControlKind,
 } from '../../src/core/param-pipeline.js';
 import { paramArgs } from '../../src/core/query-params.js';
 
@@ -660,5 +661,40 @@ describe('fieldControls (#165 — the variables strip / filter bar list)', () =>
       src('req', 'SELECT {d:String}'),
     ]);
     expect(fieldControls(a)).toEqual([{ name: 'd', type: 'String', optional: false }]);
+  });
+  it('a type-conflicted field carries `conflict` (the distinct normalized types) — #173 acceptance, review F1', () => {
+    // Across two statements of one source AND across two sources: both are
+    // declarations of the same name, so both shapes surface the same conflict.
+    const twoStatements = analyzeParameterizedSources([src('A', 'SELECT {id:UInt64}; SELECT {id:String}')]);
+    expect(fieldControls(twoStatements)).toEqual([
+      { name: 'id', type: 'UInt64', optional: false, conflict: ['UInt64', 'String'] },
+    ]);
+    const twoSources = analyzeParameterizedSources([
+      src('A', 'SELECT {id:UInt64}'),
+      src('B', 'SELECT {id:String}'),
+    ]);
+    expect(fieldControls(twoSources)[0].conflict).toEqual(['UInt64', 'String']);
+    // Agreeing declarations never grow the key at all.
+    const agree = analyzeParameterizedSources([src('A', 'SELECT {id:UInt64}; SELECT {id:UInt64}')]);
+    expect('conflict' in fieldControls(agree)[0]).toBe(false);
+  });
+});
+
+describe('fieldControlKind (shared control priority — review F1/F8)', () => {
+  const ENUM = "Enum8('a' = 1, 'b' = 2)";
+  it('declared Enum members win (v1), even when inferred options are also offered', () => {
+    expect(fieldControlKind({ type: ENUM }, ['x'])).toEqual({ kind: 'enum', enumOptions: ['a', 'b'] });
+  });
+  it('inferred options (v2) apply when the declared type has none', () => {
+    expect(fieldControlKind({ type: 'String' }, ['x', 'y'])).toEqual({ kind: 'enum', enumOptions: ['x', 'y'] });
+  });
+  it('date-like types get the date control; plain types the text control', () => {
+    expect(fieldControlKind({ type: 'DateTime' })).toEqual({ kind: 'date', enumOptions: null });
+    expect(fieldControlKind({ type: 'UInt8' })).toEqual({ kind: 'text', enumOptions: null });
+  });
+  it('a conflicted field ALWAYS degrades to text — enum members, inferred options, and date-likeness are all ignored (#173 acceptance)', () => {
+    expect(fieldControlKind({ type: ENUM, conflict: [ENUM, 'String'] })).toEqual({ kind: 'text', enumOptions: null });
+    expect(fieldControlKind({ type: 'String', conflict: ['String', 'UInt8'] }, ['x'])).toEqual({ kind: 'text', enumOptions: null });
+    expect(fieldControlKind({ type: 'DateTime', conflict: ['DateTime', 'String'] })).toEqual({ kind: 'text', enumOptions: null });
   });
 });

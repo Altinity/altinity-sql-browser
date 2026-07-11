@@ -12,7 +12,8 @@ import {
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
 import {
-  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, fieldControls,
+  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, analysisView,
+  fieldControls, fieldControlKind,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
@@ -48,8 +49,8 @@ import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
 import { buildEnumField } from './enum-field.js';
+import { wireComboInput } from './combobox.js';
 import { recordRecent, clearRecent, clearAllRecent, recentOptions } from '../core/recent-values.js';
-import { isDateLikeType } from '../core/relative-time.js';
 import { enumValues, parseParamType } from '../core/param-type.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import { resolveComparisonColumnType } from '../core/from-scope.js';
@@ -635,10 +636,13 @@ export function createApp(env = {}) {
   // Args for a request come from a source's statements (or mergedSourceArgs
   // when the SQL ships as one request); each statement's `sql` is its
   // execution view (#165) — byte-identical for SQL without optional blocks.
-  function prepareTabBatch(sql, wallNowMs, validationMode = 'execute') {
-    return prepareParameterizedBatch(tabAnalysis(sql), {
+  function prepareAnalyzedBatch(analysis, wallNowMs, validationMode = 'execute') {
+    return prepareParameterizedBatch(analysis, {
       values: app.state.varValues, active: activeMap(), wallNowMs, validationMode,
     });
+  }
+  function prepareTabBatch(sql, wallNowMs, validationMode = 'execute') {
+    return prepareAnalyzedBatch(tabAnalysis(sql), wallNowMs, validationMode);
   }
   function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
     return prepareTabBatch(sql, wallNowMs, validationMode).sources[0];
@@ -681,6 +685,15 @@ export function createApp(env = {}) {
     if (!srcSql.trim()) return;
     const waveMs = wallNow(); // one wall clock for this run wave: gate + args see the same instant
     if (varGateBlocked(waveMs)) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
+    // One prepared source for the whole run wave (#173), captured NOW —
+    // synchronously with the gate check above, BEFORE the auth awaits below
+    // (review F6 invariant, shared with runScript/exportDirect/exportScript):
+    // gate and args see the same varValues snapshot; a value edited while a
+    // token refresh is in flight applies to the NEXT run, and can never reach
+    // the server as a never-gate-checked binding. Reused on success for the
+    // recent-value recording (#171), so it reads exactly the boundParams that
+    // were sent.
+    const src = prepareTabSource(srcSql, waveMs);
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
     cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
@@ -750,10 +763,6 @@ export function createApp(env = {}) {
       app.state.running.value = true;
     });
 
-    // One prepared source for the whole run wave (#173) — reused for both the
-    // request's args and, on success, the recent-value recording (#171) below,
-    // so both read exactly the same boundParams snapshot.
-    const src = prepareTabSource(srcSql, waveMs);
     try {
       const out = await ch.runQuery(chCtx, runSql, {
         format: fmt,
@@ -825,6 +834,10 @@ export function createApp(env = {}) {
     if (varGateBlocked(waveMs)) return; // block a script run with unfilled variables
     // One prepared batch for the whole script (#173): `statements` came from
     // splitStatements(originalInput), so the batch's statements align by index.
+    // Captured NOW — synchronously with the gate check above, BEFORE the auth
+    // awaits (review F6 invariant, shared with run/exportDirect/exportScript):
+    // gate and args see the same varValues snapshot; edits during the auth
+    // await apply to the next run.
     const paramSrc = prepareTabSource(originalInput, waveMs);
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
@@ -962,6 +975,23 @@ export function createApp(env = {}) {
     if (field && field.state === 'invalid') app.hardenedVars.add(name);
     else app.hardenedVars.delete(name);
   }
+  // The Run button's lenient ('input'-mode) gate for an already-computed
+  // analysis. #170 review: a field that hardened to invalid (blur/Enter/
+  // execute committed a strict invalid verdict) must keep blocking Run even
+  // though this recompute is lenient — 'input' mode reads a still-incomplete
+  // prefix like '-' as merely incomplete, not invalid — so `app.hardenedVars`
+  // is folded in. Only names the batch actually declares are considered, so a
+  // hardened flag for a variable that dropped out of the tab's SQL (or
+  // belongs to a different tab) doesn't block Run forever; the
+  // `!src.invalid.includes` filter just avoids listing a name twice. Shared
+  // by setRunBtn's own fallback and renderVarStrip's tail (review F9: one
+  // analysis per strip repaint feeds both consumers).
+  function inputGate(analysis) {
+    const batch = prepareAnalyzedBatch(analysis, wallNow(), 'input');
+    const src = batch.sources[0];
+    const hardened = [...app.hardenedVars].filter((name) => name in batch.fields && !src.invalid.includes(name));
+    return { missing: src.missing, invalid: src.invalid.concat(hardened), errors: src.errors };
+  }
   function setRunBtn(running, gate) {
     if (!app.dom.runBtn) return;
     // Disabled while running, or while any detected {name:Type} query variable
@@ -972,29 +1002,13 @@ export function createApp(env = {}) {
     // runScript) enforce the same gate via varGateBlocked. A caller that
     // already has the prepared source (renderVarStrip) passes its
     // {missing, invalid, errors} to avoid re-preparing; otherwise we compute
-    // it here in 'input' mode — a merely 'incomplete' value (#170) stays
-    // display-only and doesn't grey out the button while still focused. That
-    // fallback also folds in `app.hardenedVars` (#170 review) so a value that
-    // already hardened to invalid on blur/Enter stays blocking even when this
-    // gate-less recompute is triggered by something unrelated to that field.
+    // it here via inputGate — a merely 'incomplete' value (#170) stays
+    // display-only and doesn't grey out the button while still focused.
     const tab = app.activeTab();
     if (gate == null) {
-      if (running || !tab) {
-        gate = { missing: [], invalid: [], errors: [] };
-      } else {
-        const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
-        const src = batch.sources[0];
-        // #170 review: a field that hardened to invalid (blur/Enter/execute
-        // committed a strict invalid verdict) must keep blocking Run even
-        // though this fallback recomputes in lenient 'input' mode — which
-        // reads a still-incomplete prefix like '-' as merely incomplete, not
-        // invalid. Only names this batch actually declares are considered, so
-        // a hardened flag for a variable that dropped out of the tab's SQL
-        // (or belongs to a different tab) doesn't block Run forever; the
-        // `!src.invalid.includes` filter just avoids listing a name twice.
-        const hardened = [...app.hardenedVars].filter((name) => name in batch.fields && !src.invalid.includes(name));
-        gate = { missing: src.missing, invalid: src.invalid.concat(hardened), errors: src.errors };
-      }
+      gate = running || !tab
+        ? { missing: [], invalid: [], errors: [] }
+        : inputGate(tabAnalysis(tab.sql));
     }
     const blockers = gate.missing.concat(gate.invalid);
     app.dom.runBtn.disabled = running || blockers.length > 0 || gate.errors.length > 0;
@@ -1023,16 +1037,15 @@ export function createApp(env = {}) {
   // same variables keeps the (already-correct, shared) values in place. Always
   // re-syncs the Run button's disabled/tooltip state.
   //
-  // #172: which enum member list (if any) a var's field should offer —
-  // v1 (the declared Enum8/Enum16 type, `enumValues`) wins when present, since
-  // that's authoritative and blocking (#170 validates it as a real Enum); only
-  // when a var is plain `String` does v2 kick in — the workbench's own SQL +
+  // #172 v2 (schema-cache inference — the SUGGESTION tier): the enum member
+  // list a plain `{name:String}` param's compared column implies, or null.
+  // The declared type's own Enum members (v1, authoritative and blocking —
+  // #170 validates those as a real Enum) are fieldControlKind's business;
+  // this helper only ever resolves the workbench's own SQL against the
   // already-loaded schema cache (`paramComparisonColumns` +
-  // `resolveComparisonColumnType`), never a new query, and only ever a
-  // suggestion (the declared type stays String, so #170 never blocks on it).
-  function enumOptionsFor(v, sql, comparisonColumns) {
-    const declared = enumValues(v.type);
-    if (declared) return declared;
+  // `resolveComparisonColumnType`), never a new query, and the declared type
+  // stays String, so #170 never blocks on a non-member.
+  function inferredEnumOptions(v, sql, comparisonColumns) {
     if (parseParamType(v.type).base !== 'String') return null;
     const cmp = comparisonColumns[v.name];
     if (!cmp) return null;
@@ -1043,19 +1056,38 @@ export function createApp(env = {}) {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
-    const vars = tab ? fieldControls(tabAnalysis(tab.sql)) : [];
-    // #172 v2 reads the tab's SQL directly (workbench-only — the Dashboard has
-    // no schema cache and gets v1 only, straight from fieldControls' v.type).
-    const comparisonColumns = tab ? paramComparisonColumns(tab.sql) : {};
-    // The signature folds in each var's currently-resolved enum options (both
-    // tiers) — not just name/type/optional — so a column landing on the idle-
-    // tick loader (loadColumns calls renderVarStrip on completion) upgrades a
-    // v2 field from plain input to the dropdown even though the {name:Type}
-    // set itself never changed.
-    const sig = vars.map((v) => {
-      const opts = tab ? enumOptionsFor(v, tab.sql, comparisonColumns) : null;
-      return v.name + ':' + v.type + (v.optional ? '?' : '') + (opts ? ':enum' + opts.length : '');
+    // One analysis per repaint (review F9): fieldControls, the #172 v2
+    // comparison scan, a rebuild's initial field paint, and the tail's Run-
+    // button gate all feed off this single pass instead of re-analyzing the
+    // same SQL a second time per editor keystroke.
+    const analysis = tab ? tabAnalysis(tab.sql) : null;
+    const vars = analysis ? fieldControls(analysis) : [];
+    // #172 v2 scans the tab SQL's ANALYSIS materialization (review F2): in
+    // the raw text a comparison inside a /*[ ]*/ optional block is one opaque
+    // comment span and could never match. `resolveComparisonColumnType`
+    // resolves each match's position against this same text. (Workbench-only
+    // — the Dashboard has no schema cache and gets v1 straight from the type.)
+    const scanSql = tab ? analysisView(tab.sql) : '';
+    const comparisonColumns = tab ? paramComparisonColumns(scanSql) : {};
+    // Each field's control kind + member list (shared enum > date-like > text
+    // priority; a type-conflicted field degrades to text — fieldControlKind).
+    const controls = vars.map((v) => fieldControlKind(v, inferredEnumOptions(v, scanSql, comparisonColumns)));
+    // The signature folds in each var's control kind and resolved enum
+    // options — not just name/type/optional — so a column landing on the
+    // idle-tick loader (loadColumns calls renderVarStrip on completion)
+    // upgrades a v2 field from plain input to the dropdown, and a type
+    // conflict appearing or resolving restyles the field, even though the
+    // {name:Type} set itself never changed.
+    const sig = vars.map((v, i) => {
+      const c = controls[i];
+      return v.name + ':' + v.type + (v.optional ? '?' : '') + (v.conflict ? '!' : '')
+        + ':' + c.kind + (c.enumOptions ? c.enumOptions.length : '');
     }).join(',');
+    // The Run button's gate from this SAME analysis (review F9: setRunBtn's
+    // gate-less fallback would re-analyze the identical SQL). Lazy so the
+    // running / tab-less states (whose gate setRunBtn hard-empties anyway)
+    // skip the prepare entirely.
+    const runGate = () => (analysis && !app.state.running.value ? inputGate(analysis) : undefined);
     if (sig !== app.dom.varStripSig) {
       // A signature change while the user is focused INSIDE the strip would
       // replaceChildren() every field out from under them — a background
@@ -1081,7 +1113,7 @@ export function createApp(env = {}) {
             renderVarStrip();
           });
         }
-        setRunBtn(app.state.running.value);
+        setRunBtn(app.state.running.value, runGate());
         return;
       }
       app.dom.varStripRerenderPending = false;
@@ -1094,22 +1126,27 @@ export function createApp(env = {}) {
         // The freshly-(re)built strip paints each field's already-committed
         // state ('execute' mode — no field is mid-typing right after a
         // rebuild, e.g. a tab switch restoring a previously-invalid value).
-        const initialFields = prepareTabBatch(tab.sql, wallNow(), 'execute').fields;
-        strip.replaceChildren(...vars.map((v) => {
-          const baseTitle = v.name + ': ' + v.type + (v.optional ? ' — optional: blank leaves its filter block out' : '');
-          // #169: a date-like declared type upgrades the plain text input to
-          // the preset combobox + live preview (relative-time-field.js) — the
-          // field stays free-text (absolute values keep working); every other
-          // type keeps today's bare `<input>` untouched. Persistence/#170
-          // validation stays exactly the shared logic below either way — the
-          // combobox only adds its own focus/keydown-nav/composition hooks,
-          // called first from the same handlers (see relative-time-field.js's
-          // header comment on why this beats two independent listeners).
-          const dateLike = isDateLikeType(v.type);
-          // #172: v1 (declared Enum8/Enum16) or v2 (schema-cache-inferred,
-          // String-typed only) member list, if any — takes priority over the
-          // date-like branch below (an Enum type is never date-like anyway).
-          const enumOpts = enumOptionsFor(v, tab.sql, comparisonColumns);
+        const initialFields = prepareAnalyzedBatch(analysis, wallNow(), 'execute').fields;
+        strip.replaceChildren(...vars.map((v, i) => {
+          // controls[i] (fieldControlKind above) picks the field's control:
+          // #172 enum members (v1 declared or v2 inferred) > #169 date-like
+          // preset combobox + live preview > plain text with recents (#171).
+          // The field stays free-text in every case (absolute values / non-
+          // members keep working); persistence/#170 validation stays exactly
+          // the shared logic below — the combobox only adds its own focus/
+          // keydown-nav/composition hooks, called first from the same
+          // handlers (wireComboInput; see relative-time-field.js's header
+          // comment on why this beats two independent listeners).
+          const ctl = controls[i];
+          // #173 acceptance (review F1): a type-conflicted field degrades to
+          // the plain text control (ctl.kind above) and says so visibly — a
+          // warning style distinct from is-invalid (the VALUE isn't wrong;
+          // the declarations disagree) plus a tooltip listing them.
+          const conflictNote = v.conflict
+            ? 'Conflicting type declarations: ' + v.conflict.join(' vs ') : null;
+          const baseTitle = v.name + ': ' + v.type
+            + (v.optional ? ' — optional: blank leaves its filter block out' : '')
+            + (conflictNote ? ' — ' + conflictNote : '');
           let combo = null;
           let input;
           const onValueInput = () => {
@@ -1143,63 +1180,24 @@ export function createApp(env = {}) {
           // param exists before #160 lands.)
           const getRecents = (text) => recentOptions(app.state.varRecent, v.name, v.type, text);
           const onClearRecent = () => app.clearVarRecent(v.name);
-          if (enumOpts) {
-            combo = buildEnumField({
-              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-              baseTitle, values: enumOpts, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
-            });
-            input = combo.input;
-            input.addEventListener('focus', () => combo.onFocus());
-            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-            input.addEventListener('keydown', (e) => {
-              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-              if (e.key !== 'Enter') return;
-              onCommitHard();
-            });
-            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-            input.addEventListener('compositionstart', () => combo.onCompositionStart());
-            input.addEventListener('compositionend', () => combo.onCompositionEnd());
-          } else if (dateLike) {
-            combo = buildRelativeTimeField({
-              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-              baseTitle, wallNow, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
-            });
-            input = combo.input;
-            input.addEventListener('focus', () => combo.onFocus());
-            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-            input.addEventListener('keydown', (e) => {
-              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-              if (e.key !== 'Enter') return;
-              onCommitHard();
-            });
-            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-            input.addEventListener('compositionstart', () => combo.onCompositionStart());
-            input.addEventListener('compositionend', () => combo.onCompositionEnd());
-          } else {
-            combo = buildRecentField({
-              document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
-              baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
-            });
-            input = combo.input;
-            input.addEventListener('focus', () => combo.onFocus());
-            input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-            input.addEventListener('keydown', (e) => {
-              if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-              if (e.key !== 'Enter') return;
-              onCommitHard();
-            });
-            input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-            input.addEventListener('compositionstart', () => combo.onCompositionStart());
-            input.addEventListener('compositionend', () => combo.onCompositionEnd());
-          }
+          const fieldOpts = {
+            document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
+            baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
+          };
+          if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions });
+          else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow });
+          else combo = buildRecentField(fieldOpts);
+          input = combo.input;
+          wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
+          if (conflictNote) input.classList.add('is-conflict');
           hardenVar(v.name, initialFields[v.name]);
           applyFieldState(input, initialFields[v.name], baseTitle, combo && combo.previewEl);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
-            h('span', { class: 'var-name' }, v.name), combo ? combo.el : input);
+            h('span', { class: 'var-name' }, v.name), combo.el);
         }));
       }
     }
-    setRunBtn(app.state.running.value);
+    setRunBtn(app.state.running.value, runGate());
   }
   app.renderVarStrip = renderVarStrip;
   // The Export button reflects both browser support (canExport) and whether an
@@ -1581,6 +1579,12 @@ export function createApp(env = {}) {
     const { sql, format } = prepareExportSql(execStatementSql(sqlInput));
     if (!sql) { flashToast('Nothing to export', { document: doc }); return; }
     const { ext, mime } = formatFileMeta(format);
+    // Prepared args captured NOW — synchronously with exportEntry's gate
+    // check, BEFORE the picker/auth awaits below (review F6 invariant, shared
+    // with run/runScript/exportScript): gate and args see the same varValues
+    // snapshot; edits during those awaits apply to the next export. (Session
+    // params stay live below — they don't read varValues.)
+    const paramArgs = mergedSourceArgs(prepareTabSource(sql, waveMs));
 
     // Flip the flag before the picker (not after, like the file handle) so a
     // second click while the native dialog is still open is blocked by the
@@ -1613,8 +1617,9 @@ export function createApp(env = {}) {
       try {
         const resp = await ch.exportQuery(chCtx, sql, {
           queryId: exportQueryId, signal: exportAbort.signal, format,
-          // Native query-parameter substitution (#134/#173), same as run().
-          params: { ...sessionParamsFor(tab, [sql]), ...mergedSourceArgs(prepareTabSource(sql, waveMs)) },
+          // Native query-parameter substitution (#134/#173), same as run() —
+          // paramArgs is the wave-start snapshot captured above (review F6).
+          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs },
         });
         const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
         const err = await streamToFile(resp, handle, {
@@ -1719,6 +1724,13 @@ export function createApp(env = {}) {
       flashToast('Nothing to export — script has no result-producing statements.', { document: doc });
       return;
     }
+    // One prepared batch for the whole export wave (#173), captured NOW —
+    // synchronously with exportEntry's gate check, BEFORE the directory-picker
+    // and auth awaits below (review F6 invariant, shared with run/runScript/
+    // exportDirect): gate and args see the same varValues snapshot; edits
+    // during those awaits apply to the next export. `statements` came from
+    // splitStatements(originalInput), so the batch aligns by index.
+    const paramSrc = prepareTabSource(originalInput, waveMs);
     // Flip the flag before the picker (mirrors exportDirect) so a second click
     // while the directory dialog / auth is still in flight is blocked by
     // exportEntry's guard — exportScript itself doesn't set this until after
@@ -1735,7 +1747,7 @@ export function createApp(env = {}) {
       }
       await ensureConfig();
       if (!(await getToken())) { chCtx.onSignedOut(); return; }
-      await exportScript(statements, dir, originalInput, waveMs);
+      await exportScript(statements, dir, paramSrc);
     } finally {
       // No-op if exportScript already reset it — covers every early-return
       // path above that never reaches exportScript's own finally.
@@ -1753,13 +1765,12 @@ export function createApp(env = {}) {
   // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
   // can't self-collide, and a partially-written file shouldn't be silently
   // re-attempted).
-  async function exportScript(statements, dir, originalInput, waveMs) {
+  async function exportScript(statements, dir, paramSrc) {
     const tab = app.activeTab();
     const t0 = now();
     const sp = sessionParamsFor(tab, statements);
-    // One prepared batch for the whole export wave (#173); `statements` came
-    // from splitStatements(originalInput), so the batch aligns by index.
-    const paramSrc = prepareTabSource(originalInput, waveMs);
+    // `paramSrc` is the wave's prepared batch (#173), captured by
+    // exportScriptEntry at wave start, before its awaits (review F6).
     const entries = statements.map((sql, i) => ({
       i, sql, type: isRowReturning(sql) ? 'rows' : 'effect',
       status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,

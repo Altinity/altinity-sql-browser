@@ -27,6 +27,42 @@
 
 import { fixedAnchor, zoomScale } from './dom.js';
 
+// A name-derived, HTML-id-safe suffix for a field module's listbox/live-region
+// ids: variable names are scanner-restricted to identifier-shaped tokens in
+// practice, but sanitize defensively so a stray character never produces an
+// invalid id. Shared by every combobox-based field module (review F8).
+export const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
+
+/**
+ * Standard DOM wiring for a combobox-based field controller (the object
+ * `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` return): the
+ * exact focus/input/keydown/blur/composition listener set the workbench
+ * var-strip and the dashboard filter bar previously copy-pasted per control
+ * kind (review F8). The field's own hooks run FIRST (they delegate to the
+ * combobox — see relative-time-field.js's header on why one listener beats
+ * two racing ones); a keydown the combobox consumed (nav/escape/option
+ * commit) never falls through, and only Enter reaches the caller's
+ * hard-commit. `onValueInput` is the caller's persist-on-type body;
+ * `onCommit` its blur/Enter hard-commit body.
+ * @param {{input: HTMLInputElement, onFocus: Function, onInput: Function,
+ *          onKeyDown: (e: KeyboardEvent) => boolean, onBlur: Function,
+ *          onCompositionStart: Function, onCompositionEnd: Function}} field
+ * @param {{onValueInput: () => void, onCommit: () => void}} handlers
+ */
+export function wireComboInput(field, { onValueInput, onCommit }) {
+  const input = field.input;
+  input.addEventListener('focus', () => field.onFocus());
+  input.addEventListener('input', () => { field.onInput(); onValueInput(); });
+  input.addEventListener('keydown', (e) => {
+    if (field.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
+    if (e.key !== 'Enter') return;
+    onCommit();
+  });
+  input.addEventListener('blur', () => { field.onBlur(); onCommit(); });
+  input.addEventListener('compositionstart', () => field.onCompositionStart());
+  input.addEventListener('compositionend', () => field.onCompositionEnd());
+}
+
 /**
  * @param {{
  *   input: HTMLInputElement,
@@ -144,6 +180,13 @@ export function createCombobox({ input, listEl, liveEl, document: doc, getOption
     onCompositionEnd() { composing = false; handleTextChanged(); },
     onBlur() { closeList(); },
     close: closeList,
+    /** Re-pull `getOptions` for the CURRENT input text and re-render the open
+     *  list (incl. the aria-live count) — for a caller whose option source
+     *  changed underneath an open list without a keystroke (e.g. "Clear
+     *  recent", #171 review F4: the cleared options must leave the visible
+     *  listbox too, not just the store). No-op-safe when closed (renders into
+     *  the hidden list, which the next open rebuilds anyway). */
+    refresh,
     /** @returns {boolean} true when this key was fully handled — the caller
      *  must not also run its own logic for the same keydown. */
     onKeyDown(e) {

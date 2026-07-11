@@ -14,10 +14,8 @@
 // `renderVarStrip` / dashboard.js's `buildFilterBar`.
 
 import { h } from './dom.js';
-import { createCombobox } from './combobox.js';
+import { createCombobox, idSafe } from './combobox.js';
 import { attachComboFooter } from './combo-footer.js';
-
-const idSafe = (name) => String(name).replace(/[^\w-]/g, '_');
 
 /**
  * @param {{
@@ -57,7 +55,10 @@ export function buildRecentField({ document: doc, name, type, value, baseTitle, 
   const footer = attachComboFooter({
     input, listEl, combo,
     hasRecents: () => getRecents('').length > 0,
-    onClear: () => { if (onClearRecent) onClearRecent(); },
+    // Review F4: after clearing, rebuild the OPEN list too — the footer hides
+    // itself, but the already-rendered Recent options would otherwise stay
+    // visible (and clickable) until the next keystroke.
+    onClear: () => { if (onClearRecent) onClearRecent(); combo.refresh(); },
   });
 
   return {

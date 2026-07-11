@@ -152,19 +152,33 @@ function dedupe(refs) {
  *     single-table query);
  *   - the column isn't loaded (yet) on that table, or (rare) resolves to
  *     conflicting types across more than one same-named table.
+ * When `ref` carries `refs` (several distinct qualifier spellings of the same
+ * column name — `e.status` and bare `status`), conflict is decided on
+ * RESOLVED identity, not qualifier text: every ref must resolve (each at its
+ * own `pos`, per the rules above) to the SAME table, else `null` — so an
+ * alias-qualified + unqualified pair in a single-table query matches, while
+ * the two sides of a JOIN (or anything ambiguous) never does.
  * Matches `pendingColumnLoads`'s own db-qualified-or-not lookup rule. Zero
  * network — only reads what `schema` already holds. Pure.
  * @param {string} text the workbench SQL
  * @param {number} pos the param occurrence's char offset (paramComparisonColumns's `pos`)
- * @param {{qualifier: string|null, column: string}} ref
+ * @param {{qualifier: string|null, column: string,
+ *          refs?: {qualifier: string|null, column: string, pos: number}[]}} ref
  * @param {{db: string, tables: {name: string, columns?: any}[]}[]} schema
  * @returns {string|null}
  */
 export function resolveComparisonColumnType(text, pos, ref, schema) {
-  const scope = fromScopeAt(text, pos);
-  const candidates = scope.filter((r) => ref.qualifier == null || r.alias === ref.qualifier || r.table === ref.qualifier);
-  if (candidates.length !== 1) return null;
-  const { db, table } = candidates[0];
+  const refs = ref.refs || [{ qualifier: ref.qualifier, column: ref.column, pos }];
+  let target = null; // the single {db, table} every reference must agree on
+  for (const r of refs) {
+    const scope = fromScopeAt(text, r.pos);
+    const candidates = scope.filter((s) => r.qualifier == null || s.alias === r.qualifier || s.table === r.qualifier);
+    if (candidates.length !== 1) return null;
+    const key = JSON.stringify([candidates[0].db, candidates[0].table]);
+    if (target != null && target.key !== key) return null; // refs name different tables
+    target = { key, db: candidates[0].db, table: candidates[0].table };
+  }
+  const { db, table } = target;
   let found = null;
   for (const d of schema || []) {
     if (db != null && d.db !== db) continue;

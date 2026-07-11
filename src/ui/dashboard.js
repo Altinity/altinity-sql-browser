@@ -17,6 +17,7 @@ import { classifyTile } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
+  fieldControlKind,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
@@ -24,9 +25,8 @@ import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
 import { buildEnumField } from './enum-field.js';
+import { wireComboInput } from './combobox.js';
 import { recentOptions } from '../core/recent-values.js';
-import { isDateLikeType } from '../core/relative-time.js';
-import { enumValues } from '../core/param-type.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -229,24 +229,30 @@ function buildFilterBar(app, params, onCommit, getField) {
   if (!params.length) return h('div', { class: 'dash-filters', style: { display: 'none' } });
   return h('div', { class: 'dash-filters' }, ...params.map((p) => {
     let timer = null;
-    const baseTitle = p.name + ': ' + p.type + (p.optional ? ' — optional: blank leaves its filter block out' : '');
+    // #173 acceptance (review F1): a type-conflicted param (declared with
+    // disagreeing types across favorites) degrades to the plain text control
+    // (fieldControlKind below) and says so visibly — a warning style distinct
+    // from is-invalid (the VALUE isn't wrong; the declarations disagree) plus
+    // a tooltip listing them.
+    const conflictNote = p.conflict
+      ? 'Conflicting type declarations: ' + p.conflict.join(' vs ') : null;
+    const baseTitle = p.name + ': ' + p.type
+      + (p.optional ? ' — optional: blank leaves its filter block out' : '')
+      + (conflictNote ? ' — ' + conflictNote : '');
     const commitNow = () => {
       if (timer == null) return;
       clearTimeout(timer);
       timer = null;
       onCommit(p.name);
     };
-    // #169: a date-like declared type upgrades the plain text input to the
-    // preset combobox + live preview, exactly like the workbench var-strip
-    // (renderVarStrip in app.js) — see relative-time-field.js. The field
-    // stays free-text; D3's debounce/Enter/blur commit semantics are
-    // unchanged either way.
-    const dateLike = isDateLikeType(p.type);
-    // #172 v1 only here — the declaration travels with the tile SQL, so a
-    // dashboard filter can read it directly; v2 (schema-cache inference)
-    // is workbench-only (the Dashboard has no schema cache — #160's curated
-    // `filter:` query is its no-declaration alternative).
-    const enumOpts = enumValues(p.type);
+    // The shared control-kind priority (fieldControlKind, review F8): #172
+    // enum members (v1 only here — the declaration travels with the tile SQL;
+    // v2 schema-cache inference is workbench-only, and #160's curated
+    // `filter:` query is the Dashboard's no-declaration alternative) > #169
+    // date-like preset combobox + live preview > plain text with recents.
+    // The field stays free-text in every case; D3's debounce/Enter/blur
+    // commit semantics are unchanged either way.
+    const ctl = fieldControlKind(p);
     let combo = null;
     let input;
     const onValueInput = () => {
@@ -280,59 +286,21 @@ function buildFilterBar(app, params, onCommit, getField) {
       timer = null;
       onCommit(p.name);
     };
-    if (enumOpts) {
-      combo = buildEnumField({
-        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
-        baseTitle, values: enumOpts, onValueInput, onCommit: onPick, getRecents, onClearRecent,
-      });
-      input = combo.input;
-      input.addEventListener('focus', () => combo.onFocus());
-      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-      input.addEventListener('keydown', (e) => {
-        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-        if (e.key !== 'Enter') return;
-        onCommitHard();
-      });
-      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-      input.addEventListener('compositionstart', () => combo.onCompositionStart());
-      input.addEventListener('compositionend', () => combo.onCompositionEnd());
-    } else if (dateLike) {
-      combo = buildRelativeTimeField({
-        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
-        baseTitle, wallNow: app.wallNow,
-        onValueInput, onCommit: onPick, getRecents, onClearRecent,
-      });
-      input = combo.input;
-      input.addEventListener('focus', () => combo.onFocus());
-      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-      input.addEventListener('keydown', (e) => {
-        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-        if (e.key !== 'Enter') return;
-        onCommitHard();
-      });
-      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-      input.addEventListener('compositionstart', () => combo.onCompositionStart());
-      input.addEventListener('compositionend', () => combo.onCompositionEnd());
-    } else {
-      combo = buildRecentField({
-        document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
-        baseTitle, onValueInput, onCommit: onPick, getRecents, onClearRecent,
-      });
-      input = combo.input;
-      input.addEventListener('focus', () => combo.onFocus());
-      input.addEventListener('input', () => { combo.onInput(); onValueInput(); });
-      input.addEventListener('keydown', (e) => {
-        if (combo.onKeyDown(e)) return; // the combobox consumed it (nav/escape/option commit)
-        if (e.key !== 'Enter') return;
-        onCommitHard();
-      });
-      input.addEventListener('blur', () => { combo.onBlur(); onCommitHard(); });
-      input.addEventListener('compositionstart', () => combo.onCompositionStart());
-      input.addEventListener('compositionend', () => combo.onCompositionEnd());
-    }
+    const fieldOpts = {
+      document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
+      baseTitle, onValueInput, onCommit: onPick, getRecents, onClearRecent,
+    };
+    if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions });
+    else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow: app.wallNow });
+    else combo = buildRecentField(fieldOpts);
+    input = combo.input;
+    // The shared listener block (review F8): the combobox hooks first, then
+    // D3's own persist-on-type / Enter-blur hard-commit bodies.
+    wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
+    if (conflictNote) input.classList.add('is-conflict');
     applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
-      h('span', { class: 'var-name' }, p.name), combo ? combo.el : input);
+      h('span', { class: 'var-name' }, p.name), combo.el);
   }));
 }
 
