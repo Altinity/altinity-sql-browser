@@ -2049,6 +2049,10 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: flex; align-items: center; gap: 8px; margin: auto;
   color: var(--fg-faint); font-size: 12px;
 }
+.dash-tile-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--fg-faint); font-size: 12px; font-family: var(--mono);
+}
 .dash-tile-error {
   margin: auto; padding: 12px; color: var(--error-fg); background: var(--error-bg);
   border: 1px solid var(--error-bd); border-radius: 8px; font-size: 12px;

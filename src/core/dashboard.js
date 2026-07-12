@@ -2,12 +2,10 @@
 //
 // A dashboard is "the favorited subset of the Library, rendered together" — no
 // new schema. This module holds the route helpers, the ClickHouse `FORMAT JSON`
-// → array-rows transform the chart layer expects, and the per-tile
-// classification (chart vs skip). KPI tiles (single-row) and non-chartable
-// favorites are skipped in D1 (KPIs arrive in D2); the render layer counts them
-// for the header's "N not shown" note.
+// → array-rows transform the panel layer expects, and the tile result caps.
+// (Per-tile classification moved to core/panel-cfg.js's autoPanel/resolvePanel
+// in #166 — the panel union replaced classifyTile's chart-vs-skip ladder.)
 
-import { autoChart, chartCfgValid, cloneChartCfg, normalizeChartCfg } from './chart-data.js';
 import { withTrailingFormat } from './format.js';
 
 /**
@@ -125,23 +123,3 @@ export function parseJsonResult(json, cap) {
 // `fieldControls(analysis)` in param-pipeline.js replaces the old
 // `dashboardParams(favorites)` union — the analysis view also sees params
 // confined to optional blocks, which readStatementParams never could.)
-
-/**
- * Classify a favorite's result into a dashboard tile. In D1:
- *   - 0 rows            → skip (empty)
- *   - exactly 1 row     → skip (a KPI — rendered in D2)
- *   - saved chart cfg valid for these columns → chart with that cfg
- *   - else autoChart    → chart, or skip when nothing is plottable
- * `savedChart` is the favorite's persisted `{cfg, key}` (or undefined). The
- * returned cfg is a normalized clone — never an alias of the saved entry.
- */
-export function classifyTile(columns, rows, savedChart) {
-  if (rows.length === 0) return { kind: 'skip', reason: 'empty' };
-  if (rows.length === 1) return { kind: 'skip', reason: 'kpi' };
-  const saved = savedChart && savedChart.cfg;
-  const cfg = chartCfgValid(saved, columns)
-    ? normalizeChartCfg(cloneChartCfg(saved))
-    : autoChart(columns);
-  if (!cfg) return { kind: 'skip', reason: 'nonChartable' };
-  return { kind: 'chart', cfg };
-}

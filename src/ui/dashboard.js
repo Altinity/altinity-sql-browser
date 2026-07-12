@@ -1,19 +1,24 @@
-// The standalone read-only Dashboard page (#149 D1–D3). Render module over the
-// `app` controller: it builds a header + a grid of chart tiles, one per
-// favorited Library query (a snapshot taken when the tab opens — Refresh re-runs
-// the data, it does not re-scan the Library). Each tile runs its SQL read-only
-// via `app.runTile` and draws through the shared `renderChart` seam; single-row
-// (KPI) and non-chartable favorites are skipped, counted in a header note. A
-// global filter bar (D3, below) drives the same `{name:Type}` mechanism the SQL
-// Browser workbench uses, fanning it out across every favorite instead of one
-// query at a time. KPI tiles, per-tile overrides, and export arrive in later
-// phases (D5–D8).
+// The standalone read-only Dashboard page (#149 D1–D3, #166). Render module
+// over the `app` controller: it builds a header + a grid of tiles, one per
+// favorited Library query (a snapshot taken when the tab opens — Refresh
+// re-runs the data, it does not re-scan the Library). Favorites are
+// PARTITIONED BEFORE EXECUTION (#166): a text panel renders immediately with
+// zero queries; everything else runs its SQL read-only via `app.runTile` and
+// renders through the shared panel registry (panels.js) — an explicit saved
+// `panel` wins (and never vanishes: zero-row explicit panels show an honest
+// "0 rows" state), an unconfigured result goes through the autoPanel
+// heuristic, and only unconfigured empty/single-row (future KPI) results are
+// skipped, counted in a header note. A global filter bar (D3, below) drives
+// the same `{name:Type}` mechanism the SQL Browser workbench uses, fanning it
+// out across every favorite instead of one query at a time. KPI tiles,
+// per-tile overrides, and export arrive in later phases (D5–D8).
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { renderChart } from './chart-render.js';
+import { renderResolvedPanel } from './panels.js';
 import { schemaKey } from '../core/chart-data.js';
-import { classifyTile, DASH_TILE_ROW_CAP } from '../core/dashboard.js';
+import { resolvePanel, autoPanel } from '../core/panel-cfg.js';
+import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
@@ -104,8 +109,10 @@ async function runPool(items, limit, worker) {
 // updates this same slot's contents/visibility in place instead. `gen` is a
 // per-tile monotonically increasing generation counter guarding against
 // out-of-order responses (edit A, then B, before A's request returns — B's
-// response must win); `destroy` tears down the slot's live Chart.js instance
-// (if any) before it's replaced.
+// response must win); `destroy` tears down the slot's live panel instance
+// (a chart's Chart.js object, via the registry's renderPanel contract) before
+// it's replaced; `panelState` is the slot-persistent table-tile state (#166 —
+// sort + column widths, keyed by result schema).
 function buildTileSlot(q) {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
@@ -115,11 +122,35 @@ function buildTileSlot(q) {
     h('span', { class: 'dash-tile-name', title: q.name }, q.name));
   if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
   const card = h('div', { class: 'dash-tile' }, head, body, foot);
-  return { card, body, foot, gen: 0, status: null, destroy: null };
+  return { card, body, foot, gen: 0, status: null, destroy: null, panelState: null };
 }
 
 function destroySlotChart(slot) {
   if (slot.destroy) { slot.destroy(); slot.destroy = null; }
+}
+
+/** The favorite's explicit, known-typed panel payload, or null. Unknown types
+ *  stay non-null-ish only through resolvePanel's diagnostic fallback below. */
+function explicitPanel(q) {
+  return q.panel && q.panel.cfg && typeof q.panel.cfg === 'object' ? q.panel : null;
+}
+
+/** True for a text panel — the no-query partition (#166). */
+function isTextFav(q) {
+  const p = explicitPanel(q);
+  return !!p && p.cfg.type === 'text';
+}
+
+// Render a text favorite's tile: immediately, with zero queries — the #166
+// partition runs this before any auth/SQL work.
+function renderTextSlot(app, q, slot) {
+  destroySlotChart(slot);
+  slot.status = 'panel';
+  slot.card.style.display = '';
+  const { node } = renderResolvedPanel(app, resolvePanel(q.panel, []), null,
+    { surface: 'dashboard', state: {}, rerender: () => {}, readonly: true });
+  slot.body.replaceChildren(node);
+  slot.foot.replaceChildren();
 }
 
 function setSlotLoading(slot) {
@@ -151,32 +182,53 @@ function applyTileResult(app, q, slot, r) {
     slot.foot.replaceChildren();
     return;
   }
-  const cls = classifyTile(r.columns, r.rows, q.chart);
-  if (cls.kind === 'skip') {
+  const explicit = explicitPanel(q);
+  // Unconfigured results keep the skip ladder (#166: empty, and single-row
+  // until the KPI arm lands with #154). An EXPLICIT panel never vanishes —
+  // a zero-row one renders an honest "0 rows" state instead (visible, and
+  // excluded from the header's skip tally).
+  if (!explicit && r.rows.length <= 1) {
     slot.status = 'skip';
     slot.card.style.display = 'none';
-    // Clear a previous chart's DOM (its Chart.js instance is already torn
-    // down by destroySlotChart above) so a tile that flips chart → skip on a
-    // later refresh/filter change doesn't leave a dead canvas hidden in the DOM.
+    // Clear the previous panel's DOM (its live instance is already torn down
+    // by destroySlotChart above) so a tile that flips panel → skip on a later
+    // refresh/filter change doesn't leave a dead canvas hidden in the DOM.
     slot.body.replaceChildren();
     slot.foot.replaceChildren();
     return;
   }
-  slot.status = 'chart';
+  slot.status = 'panel';
   slot.card.style.display = '';
-  // Seed an isolated per-tile config with the resolved cfg + its schema key so
-  // renderChart honours it (a schema-key mismatch would make it re-derive with
-  // autoChart, discarding a favorite's saved chart shape). controls:false — D1
-  // tiles are read-only, so renderChart omits the Type/X/Y config bar entirely
-  // (and so never re-renders); its Chart.js instance is torn down via
-  // destroySlotChart above, on the next result for this same slot.
+  if (explicit && r.rows.length === 0) {
+    slot.body.replaceChildren(h('div', { class: 'dash-tile-empty' }, '0 rows'));
+    slot.foot.replaceChildren(...tileFooter(r.meta));
+    return;
+  }
+  // The one shared resolution (#166): the saved panel wins (mismatches retain
+  // the type and re-derive roles; impossible shapes fall back with a
+  // diagnostic), an unconfigured result goes through the autoPanel ladder.
+  const resolved = explicit
+    ? resolvePanel(explicit, r.columns)
+    : { ...autoPanel(r.columns), rederived: false, fallback: false };
+  // Grid state persists across refreshes/filter edits on the stable slot,
+  // keyed by result schema — a schema change resets it, a re-run keeps it.
+  const key = schemaKey(r.columns);
+  if (!slot.panelState || slot.panelState.key !== key) slot.panelState = { key };
   const res = { columns: r.columns, rows: r.rows };
-  const chartTab = { panelKey: schemaKey(r.columns), panelCfg: cls.cfg };
-  let inst = null;
-  slot.body.replaceChildren(renderChart(app, res, {
-    tab: chartTab, setChart: (c) => { inst = c; }, running: false, controls: false, hideGrid: true,
-  }));
-  slot.destroy = () => inst.destroy();
+  const paint = () => {
+    destroySlotChart(slot);
+    const out = renderResolvedPanel(app, resolved, res, {
+      surface: 'dashboard',
+      state: slot.panelState,
+      rerender: paint, // header-click sorts re-paint locally — NO re-query
+      readonly: true,
+      cap: DASH_TABLE_DISPLAY_CAP,
+      onCell: () => {},
+    });
+    slot.destroy = out.destroy || null;
+    slot.body.replaceChildren(out.node);
+  };
+  paint();
   slot.foot.replaceChildren(...tileFooter(r.meta));
 }
 
@@ -459,18 +511,23 @@ export function renderDashboard(app) {
       slots = favorites.map((q) => buildTileSlot(q));
       slots.forEach((s) => grid.appendChild(s.card));
     }
-    // Every favorite re-runs on a full refresh (unlike a filter's targeted
-    // runAffected). Mark every slot loading up front rather than leaving
-    // tiles beyond TILE_CONCURRENCY's window showing stale content (or, on
-    // first load, an empty card) until the pool gets around to them.
-    slots.forEach((s) => setSlotLoading(s));
+    // Partition before execution (#166): text panels render right here —
+    // synchronously, before any tile query is issued — and they never join
+    // the wave below (zero queries for a text favorite).
+    slots.forEach((s, i) => { if (isTextFav(favorites[i])) renderTextSlot(app, favorites[i], s); });
+    // Every query-backed favorite re-runs on a full refresh (unlike a filter's
+    // targeted runAffected). Mark every such slot loading up front rather than
+    // leaving tiles beyond TILE_CONCURRENCY's window showing stale content (or,
+    // on first load, an empty card) until the pool gets around to them.
+    slots.forEach((s, i) => { if (!isTextFav(favorites[i])) setSlotLoading(s); });
     // One prepared batch (and one wall-clock read) for the whole refresh wave.
     const wave = prepareWave();
     // try/finally so the button always re-enables and the timestamp always
     // updates — even if a tile render unexpectedly throws (runSlotTile itself
     // is total, so this is belt-and-suspenders against the pool rejecting).
     try {
-      await runPool(favorites, TILE_CONCURRENCY, (q, i) => runSlotTile(app, q, slots[i], updateSkipNote, wave[i]));
+      await runPool(favorites, TILE_CONCURRENCY,
+        (q, i) => (isTextFav(q) ? undefined : runSlotTile(app, q, slots[i], updateSkipNote, wave[i])));
     } finally {
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       refreshBtn.disabled = false;
