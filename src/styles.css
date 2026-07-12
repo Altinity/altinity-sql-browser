@@ -675,12 +675,18 @@ body {
 .result-view-tab:hover { color: var(--fg); background: var(--bg-hover); }
 .result-view-tab.active { color: var(--fg); background: var(--bg-hover); border-color: var(--border); }
 .result-panel-select {
-  appearance: auto; border: 1px solid transparent; border-radius: 7px;
-  background: transparent; color: var(--muted); font: inherit;
-  padding: 6px 25px 6px 9px; cursor: pointer;
+  appearance: auto; height: 26px;
+  border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--fg-mute);
+  font: 11.5px/1.2 var(--ui); letter-spacing: normal;
+  padding: 0 24px 0 9px; cursor: pointer;
 }
 .result-panel-select:hover,
 .result-panel-select.active { color: var(--fg); background: var(--bg-hover); border-color: var(--border); }
+.result-panel-select:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+}
 
 /* ------------ json view ------------ */
 /* height:100% (not flex:1) — .res-body is a relatively-positioned block, not a
@@ -1173,7 +1179,7 @@ body.detached-tab .graph-overlay-panel {
    row that swipe-scrolls horizontally when it overflows (many variables, or a
    narrow/mobile workbench) — never wraps to a second line and never clips. */
 .var-strip {
-  display: flex; align-items: center; gap: 14px;
+  display: flex; align-items: flex-start; gap: 14px;
   padding: 6px 10px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
@@ -1182,20 +1188,27 @@ body.detached-tab .graph-overlay-panel {
 }
 .var-strip::-webkit-scrollbar { display: none; }
 .var-field {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 6px;
+  align-items: start;
   flex-shrink: 0;
 }
 .var-name {
+  grid-column: 1;
+  height: 24px; display: inline-flex; align-items: center;
   font-family: var(--mono); font-size: 11.5px; color: var(--fg);
   white-space: nowrap;
 }
 .var-name::after { content: ':'; color: var(--fg-mute); }
-/* Optional-variable affordance (#165): a parameter confined to optional filter
-   blocks may stay blank — blank keeps its predicates out instead of gating Run
-   or a dashboard tile. Its name is muted and suffixed with a "?" so the strip
-   reads required vs optional at a glance (the input title spells it out). */
+/* Required/optional-variable affordance (#165): a parameter confined to
+   optional filter blocks may stay blank — blank keeps its predicates out
+   instead of gating Run or a dashboard tile. Optional names are muted; a
+   required field's name is additionally marked with a leading "*" before the
+   colon (`name*:`) so the strip reads required vs optional at a glance (the
+   input title spells it out either way). */
 .var-field.is-optional .var-name { color: var(--fg-mute); }
-.var-field.is-optional .var-name::after { content: '?'; color: var(--fg-faint); }
+.var-field:not(.is-optional) .var-name::after { content: '*' ':'; }
 .var-input {
   height: 24px; width: 150px; padding: 0 8px;
   background: var(--bg-input); color: var(--fg);
@@ -1245,7 +1258,11 @@ body.detached-tab .graph-overlay-panel {
    listbox is `position: fixed` (combobox.js positions it via fixedAnchor/
    zoomScale at open time) so it escapes the horizontally-scrolling strip's
    own overflow clipping — the same trick the File/user menus use. */
-.var-combo { position: relative; display: inline-flex; flex-direction: column; }
+.var-combo {
+  grid-column: 2;
+  position: relative; display: inline-flex; flex-direction: column; align-items: flex-start;
+  gap: 1px;
+}
 .var-combo-list {
   position: fixed; z-index: 70; max-height: 260px; overflow-y: auto;
   margin: 0; padding: 4px; list-style: none;
@@ -1263,9 +1280,8 @@ body.detached-tab .graph-overlay-panel {
   color: var(--fg);
 }
 .combo-option.is-active { background: var(--bg-hover); }
-/* Live resolved-value preview (#169): pure local computation on keystroke —
-   labeled "(your time)" since it renders in the browser's own timezone,
-   which may differ from a `DateTime('tz')` column's display zone (README). */
+/* Live resolved-value preview (#169): pure local computation on keystroke.
+   It names the calculated timestamp once; the expression remains in the input. */
 .var-combo-preview {
   font-size: 10.5px; font-family: var(--mono); color: var(--fg-mute);
   padding: 2px 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
@@ -1951,7 +1967,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    workbench's var-field/var-name/var-input classes. Sits in the toolbar's
    existing flex-wrap row (no new sticky/scroll container needed); absent
    entirely (display:none, no gap) when no favorite has a param. */
-.dash-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dash-filters { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);

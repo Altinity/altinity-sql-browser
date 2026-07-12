@@ -295,10 +295,11 @@ describe('resolveVarValues — batch helper', () => {
 });
 
 // Review finding #1: the live preview must render the RESOLVED INSTANT as a
-// human-readable local calendar string, never the wire value (epoch seconds
-// for DateTime/DateTime64) `resolveRelativeValue` produces for transport.
-describe('formatPreview — human-readable local-instant preview (review finding #1)', () => {
-  const now = ms(2026, 6, 11, 9, 23, 45, 0); // 2026-07-11 09:23:45 local
+// human-readable UTC ("server time") calendar string, never the wire value
+// (epoch seconds for DateTime/DateTime64) `resolveRelativeValue` produces for
+// transport, and never converted to the viewer's local zone.
+describe('formatPreview — human-readable UTC/server-time preview (review finding #1)', () => {
+  const now = ms(2026, 6, 11, 9, 23, 45, 0); // 2026-07-11 09:23:45 local (America/New_York, EDT) = 13:23:45 UTC
 
   it('non-date types pass through untouched, unmatched', () => {
     expect(formatPreview('-1h', 'String', now)).toEqual({ ok: true, display: '-1h', matched: false });
@@ -312,32 +313,32 @@ describe('formatPreview — human-readable local-instant preview (review finding
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/Not a valid relative time expression/);
   });
-  it('Date/Date32 → local calendar date YYYY-MM-DD (no time-of-day)', () => {
+  it('Date/Date32 → UTC calendar date YYYY-MM-DD (no time-of-day)', () => {
     expect(formatPreview('now', 'Date', now)).toEqual({ ok: true, display: '2026-07-11', matched: true });
     expect(formatPreview('-1d', 'Date32', now).display).toBe('2026-07-10');
   });
-  it('DateTime → local calendar datetime, no fraction', () => {
-    expect(formatPreview('now', 'DateTime', now)).toEqual({ ok: true, display: '2026-07-11 09:23:45', matched: true });
+  it('DateTime → UTC calendar datetime, no fraction', () => {
+    expect(formatPreview('now', 'DateTime', now)).toEqual({ ok: true, display: '2026-07-11 13:23:45', matched: true });
   });
   it('DateTime64(0) → same as DateTime, no fraction', () => {
-    expect(formatPreview('now', 'DateTime64(0)', now).display).toBe('2026-07-11 09:23:45');
+    expect(formatPreview('now', 'DateTime64(0)', now).display).toBe('2026-07-11 13:23:45');
   });
   it('DateTime64(N) with a non-zero sub-second remainder appends the fraction', () => {
     const withMs = ms(2026, 6, 11, 9, 23, 45, 123);
-    expect(formatPreview('now', 'DateTime64(3)', withMs).display).toBe('2026-07-11 09:23:45.123');
-    expect(formatPreview('now', 'DateTime64(6)', withMs).display).toBe('2026-07-11 09:23:45.123000');
+    expect(formatPreview('now', 'DateTime64(3)', withMs).display).toBe('2026-07-11 13:23:45.123');
+    expect(formatPreview('now', 'DateTime64(6)', withMs).display).toBe('2026-07-11 13:23:45.123000');
   });
   it('DateTime64(N) with a whole-second (zero remainder) instant shows no fraction (kept simple/readable)', () => {
-    expect(formatPreview('now', 'DateTime64(3)', now).display).toBe('2026-07-11 09:23:45');
+    expect(formatPreview('now', 'DateTime64(3)', now).display).toBe('2026-07-11 13:23:45');
   });
   it('a sub-second remainder floors the whole-second part (never rounds up, finding #3 applies here too)', () => {
     const withRemainder = ms(2026, 6, 11, 9, 23, 45, 600);
-    expect(formatPreview('now', 'DateTime', withRemainder).display).toBe('2026-07-11 09:23:45');
+    expect(formatPreview('now', 'DateTime', withRemainder).display).toBe('2026-07-11 13:23:45');
   });
   it('DateTime64 with no inner precision (malformed/opaque) defaults to no fraction', () => {
-    expect(formatPreview('now', 'DateTime64', now).display).toBe('2026-07-11 09:23:45');
+    expect(formatPreview('now', 'DateTime64', now).display).toBe('2026-07-11 13:23:45');
   });
   it('Nullable(DateTime) unwraps and formats as DateTime', () => {
-    expect(formatPreview('now', 'Nullable(DateTime)', now).display).toBe('2026-07-11 09:23:45');
+    expect(formatPreview('now', 'Nullable(DateTime)', now).display).toBe('2026-07-11 13:23:45');
   });
 });

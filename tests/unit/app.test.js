@@ -619,7 +619,7 @@ describe('query run', () => {
     expect(app.state.varValues.from).toBe('-15m'); // …and is what's stored/persisted
     expect(JSON.parse(globalThis.localStorage.getItem('asb:varValues')).from).toBe('-15m');
     const preview = app.dom.varStrip.querySelector('.var-combo-preview');
-    expect(preview.textContent).toContain('-15m →');
+    expect(preview.textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
   it('relative time (#169): an invalid (near-miss) expression disables Run with a structured reason', () => {
     const { app } = appForRun([]);

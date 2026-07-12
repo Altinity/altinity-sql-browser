@@ -161,11 +161,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   keyboard map, ARIA `combobox`/`listbox`/`option` roles, IME-composition
   safety, mousedown-before-blur commit, `aria-describedby` wired to the
   preview/error element) composed in `src/ui/relative-time-field.js` with a
-  live preview of the resolved instant as a human-readable local calendar
-  string (`-1h → 2026-07-11 09:23:45 (your time)`) — never the wire value
-  actually sent, which stays epoch seconds/date per the declared type; both
-  the workbench var-strip and the Dashboard's global filter bar (#149 D3)
-  upgrade their date-like fields to it, unchanged for every other type.
+  live preview of the resolved instant as a human-readable UTC ("server
+  time") calendar string (`2026-07-11 13:23:45`) — never the wire value
+  actually sent (which stays epoch seconds/date per the declared type), and
+  never converted to the viewer's local zone, so the same instant reads
+  identically for every viewer; both the workbench var-strip and the
+  Dashboard's global filter bar (#149 D3) upgrade their date-like fields to
+  it, unchanged for every other type.
   Resolved instants are FLOORED to the whole second for every date/time type
   (never rounded), so `DateTime` and `DateTime64(0)` agree on the same
   instant and a resolved `now` never lands a second in the future.

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildRelativeTimeField, filterPresets, RELATIVE_TIME_PRESETS } from '../../src/ui/relative-time-field.js';
 
-const NOW = new Date(2026, 6, 11, 9, 23, 45, 0).getTime(); // 2026-07-11 09:23:45 local
+const NOW = new Date(2026, 6, 11, 9, 23, 45, 0).getTime(); // 2026-07-11 09:23:45 local (America/New_York, EDT) = 13:23:45 UTC
 
 function build(overrides = {}) {
   const onValueInput = vi.fn();
@@ -69,13 +69,14 @@ describe('buildRelativeTimeField — live preview', () => {
     const preview = field.el.querySelector('.var-combo-preview');
     expect(preview.textContent).toBe('');
   });
-  // Review finding #1: the preview must read as a human-readable local
-  // calendar instant ("2026-07-11 08:23:45"), never the wire value the field
-  // actually transports (epoch seconds for DateTime/DateTime64).
-  it('a matched relative expression shows "expr → resolved calendar instant (your time)"', () => {
+  // The preview must read as a human-readable UTC ("server time") calendar
+  // instant, never the epoch-seconds wire value and never converted to the
+  // viewer's local zone. The expression itself is already visible in the
+  // input, so the preview states only what it adds.
+  it('a matched relative expression shows its calculated timestamp', () => {
     const { field } = build({ value: '-1h' });
     const preview = field.el.querySelector('.var-combo-preview');
-    expect(preview.textContent).toBe('-1h → 2026-07-11 08:23:45 (your time)');
+    expect(preview.textContent).toBe('2026-07-11 12:23:45');
     expect(preview.textContent).not.toMatch(/\d{9,}/); // never the raw epoch-seconds wire value
     expect(preview.classList.contains('is-error')).toBe(false);
   });
@@ -95,7 +96,7 @@ describe('buildRelativeTimeField — live preview', () => {
     const preview = field.el.querySelector('.var-combo-preview');
     field.input.value = 'now';
     field.onInput();
-    expect(preview.textContent).toBe('now → 2026-07-11 09:23:45 (your time)');
+    expect(preview.textContent).toBe('2026-07-11 13:23:45');
   });
   it('correcting an error value back to valid clears the error class', () => {
     const { field } = build({ value: 'now/q' });
@@ -181,7 +182,7 @@ describe('buildRelativeTimeField — combobox delegation', () => {
     field.onInput(); // suppressed while composing — no filtering
     expect(field.el.querySelectorAll('[role="option"]')).toHaveLength(RELATIVE_TIME_PRESETS.length);
     field.onCompositionEnd();
-    expect(preview.textContent).toBe('now → 2026-07-11 09:23:45 (your time)');
+    expect(preview.textContent).toBe('2026-07-11 13:23:45');
   });
   it('picking a preset (option mousedown) inserts the expression, updates preview, and fires onValueInput then onCommit', () => {
     const { field, onValueInput, onCommit } = build({ value: '' });
@@ -192,7 +193,7 @@ describe('buildRelativeTimeField — combobox delegation', () => {
     expect(onValueInput).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledTimes(1);
     const preview = field.el.querySelector('.var-combo-preview');
-    expect(preview.textContent).toContain('-15m →');
+    expect(preview.textContent).toBe('2026-07-11 13:08:45');
   });
 });
 

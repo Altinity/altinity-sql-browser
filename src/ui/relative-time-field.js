@@ -114,10 +114,10 @@ export function buildRelativeTimeField({
       previewEl.classList.remove('is-error');
       return;
     }
-    // Review finding #1: render the RESOLVED INSTANT as a human-readable local
-    // calendar string (`formatPreview`), never the wire value the pipeline
-    // actually sends (epoch seconds for DateTime/DateTime64) — presentation
-    // only, the bound value is unaffected.
+    // Review finding #1: render the RESOLVED INSTANT as a human-readable
+    // UTC ("server time") calendar string (`formatPreview`), never the wire
+    // value the pipeline actually sends (epoch seconds for DateTime/
+    // DateTime64) — presentation only, the bound value is unaffected.
     const r = formatPreview(input.value, type, wallNow());
     if (!r.ok) {
       if (committed) {
@@ -128,7 +128,9 @@ export function buildRelativeTimeField({
         previewEl.classList.remove('is-error');
       }
     } else if (r.matched) {
-      previewEl.textContent = `${input.value} → ${r.display} (your time)`;
+      // The expression is already visible in the input. Keep only the
+      // server-time instant that will be used when the query runs.
+      previewEl.textContent = r.display;
       previewEl.classList.remove('is-error');
     } else {
       previewEl.textContent = '';

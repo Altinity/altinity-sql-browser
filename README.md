@@ -98,7 +98,8 @@ zero third-party requests. On top of it:
   Here `tenant_id` stays required, while a blank `d` simply removes the whole
   `AND d = …` predicate before the query is sent (typing a value puts it back
   and re-binds `param_d`; parameters of an omitted block are never sent). The
-  strip marks such block-only parameters optional (`name?`), and the Dashboard
+  strip marks a **required** parameter's name with a leading `*` (`name*:`) —
+  a block-only parameter stays optional (`name:`, muted) and the Dashboard
   filter bar behaves the same way — a blank optional filter runs the tile
   unfiltered instead of blocking it. Values are never interpolated into the
   SQL: the materialized query still carries `{name:Type}` placeholders and
@@ -160,13 +161,15 @@ zero third-party requests. On top of it:
   The field gets a **preset dropdown** on focus (type-to-filter; click
   inserts the expression — the field stays free-text, so an absolute
   timestamp still works) and a **live preview** of the resolved instant next
-  to it, e.g. `-1h → 2026-07-11 09:23:45 (your time)`. That preview always
-  renders in **your browser's timezone** and says so — a `DateTime('Europe/
-  Madrid')` column *displays* its stored value in its own zone, but the bound
-  instant is identical either way (transport is epoch seconds); only the
-  wall-clock rendering differs. The trade-off this implies: "now" is the
-  **client's** clock, which can skew from the server's `now()` — the same
-  trade-off Grafana makes, accepted rather than compensated for.
+  to it, e.g. `2026-07-11 13:23:45` (the expression itself is already visible
+  in the input, so the preview shows only the calculated timestamp). That
+  preview always renders in **UTC ("server time")**, never converted to the
+  viewer's local zone — the same instant then reads identically for every
+  viewer regardless of where they are, matching how a `DateTime` column with
+  no explicit timezone argument displays on the server. The trade-off this
+  implies: "now" is the **client's** clock, which can skew from the server's
+  `now()` — the same trade-off Grafana makes, accepted rather than
+  compensated for.
 - **Recent values** — every `{name:Type}` field also remembers the **10 most
   recently used** values per variable name, offered in a dropdown on focus
   (type-to-filter; click inserts, Esc/blur closes, the field stays free-text).

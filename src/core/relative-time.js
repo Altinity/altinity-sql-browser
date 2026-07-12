@@ -190,21 +190,29 @@ function formatByType(epochMs, t) {
   return formatDateTimeSeconds(epochMs); // 'DateTime' (with or without a tz arg)
 }
 
+function formatDateUTC(epochMs) {
+  const d = new Date(epochMs);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1, 2)}-${pad(d.getUTCDate(), 2)}`;
+}
+
 // ── Human-readable preview formatting (review finding #1) ────────────────
 //
 // The live preview shown next to the field must read as a calendar instant
 // ("2026-07-11 09:23:45"), never the wire value ("1783772625") the field
 // actually transports — those diverge for every date-like type except
 // `Date`/`Date32`. This is presentation only: `formatByType` above still owns
-// what gets sent. Local time (the browser's zone), floored to the whole
-// second (finding #3 — never rounds into the future), with a fractional
-// suffix only for `DateTime64(N>0)` and only when the remainder is non-zero
-// — a preview showing ".000" on every value would be more noise than signal.
+// what gets sent. Rendered in UTC ("server time"), never the viewer's local
+// zone — the same instant then reads identically for every viewer regardless
+// of where they are, and matches how a `DateTime` column with no explicit
+// timezone argument displays on the server. Floored to the whole second
+// (finding #3 — never rounds into the future), with a fractional suffix only
+// for `DateTime64(N>0)` and only when the remainder is non-zero — a preview
+// showing ".000" on every value would be more noise than signal.
 function formatPreviewInstant(epochMs, t) {
-  if (t.base === 'Date' || t.base === 'Date32') return formatDate(epochMs);
+  if (t.base === 'Date' || t.base === 'Date32') return formatDateUTC(epochMs);
   const d = new Date(Math.floor(epochMs / 1000) * 1000);
-  const base = `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)} `
-    + `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
+  const base = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1, 2)}-${pad(d.getUTCDate(), 2)} `
+    + `${pad(d.getUTCHours(), 2)}:${pad(d.getUTCMinutes(), 2)}:${pad(d.getUTCSeconds(), 2)}`;
   if (t.base === 'DateTime64') {
     const n = t.inner ? parseInt(t.inner, 10) || 0 : 0;
     if (n > 0) {
@@ -244,10 +252,11 @@ export function resolveRelativeValue(expr, type, nowMs) {
 /**
  * The live-preview seam (review finding #1): resolve `expr` exactly like
  * `resolveRelativeValue`, but format the resolved instant as a **human-
- * readable local calendar string** (`YYYY-MM-DD HH:MM:SS`, `YYYY-MM-DD` for
- * `Date`/`Date32`) instead of the wire value — the wire value (epoch seconds
- * for `DateTime`/`DateTime64`) is what actually gets sent; this is display
- * only. Pure.
+ * readable UTC ("server time") calendar string** (`YYYY-MM-DD HH:MM:SS`,
+ * `YYYY-MM-DD` for `Date`/`Date32`) instead of the wire value — the wire
+ * value (epoch seconds for `DateTime`/`DateTime64`) is what actually gets
+ * sent; this is display only, and deliberately not converted to the viewer's
+ * local zone. Pure.
  * @param {string} expr
  * @param {string|import('./param-type.js').ParsedParamType} type
  * @param {number} nowMs
