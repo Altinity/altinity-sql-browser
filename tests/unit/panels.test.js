@@ -40,6 +40,19 @@ function noMessageResult() {
   r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
   return r;
 }
+// Same rescue shape as noMessageResult, but WITH a numeric measure — autoPanel
+// derives a chart fallback (not Table) for this one (#195's reported scenario).
+function noMessageChartResult() {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'duration_ms', type: 'Int64' },
+    { name: 'operation', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', '12', 'op']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
 // Neither Time nor Message resolves by convention — findTimeColumn matches by
 // TYPE (not name), so no column here may be DateTime-shaped.
 function noTimeNoMessageResult() {
@@ -206,6 +219,57 @@ describe('Panel drawer tab', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
     expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
     expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+  });
+  it('rescue (#195): a chart fallback shows Logs as the picker type, stays read-only, and cannot write panelCfg', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    // Fallback diagnostic + a chart (not Table) preview...
+    expect(region(app).textContent).toContain('no time + message columns');
+    expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
+    expect(region(app).querySelector('.res-table')).toBeNull();
+    // ...the toolbar picker still reads Logs, the authoring type...
+    expect(region(app).querySelector('.result-panel-select').value).toBe('logs');
+    // ...the three Logs role selectors are the rescue controls...
+    const configRows = region(app).querySelectorAll('.panel-config .chart-config');
+    expect(configRows).toHaveLength(1);
+    expect([...configRows[0].querySelectorAll('select')]).toHaveLength(3);
+    // ...and the fallback chart itself exposes no X/Y/Series controls.
+    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
+    expect(labels).not.toContain('X');
+    expect(labels).not.toContain('Y');
+    expect(labels).not.toContain('Series');
+    // Rendering alone must not touch tab state.
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs' });
+    expect(app.activeTab().panelKey).toBeNull();
+    expect(app.activeTab().dirty).toBe(false);
+  });
+  it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    selectRole(app, 1, 'operation'); // Message → operation
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'operation' });
+    expect(app.activeTab().dirty).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+    expect(region(app).querySelector('.chart-view canvas')).toBeNull();
+  });
+  it('rescue (#195): an explicit Panel-picker conversion out of the chart fallback writes the new type and ends rescue', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    pickType(app, 'bar');
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'bar' });
+    expect(app.activeTab().panelKey).toBe('event_time:DateTime|duration_ms:Int64|operation:String');
+    expect(app.activeTab().dirty).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // Rescue is over: ordinary chart controls (X/Y) are now present, and the
+    // Logs rescue row (a `.panel-config` wrapper; the chart arm has no
+    // separate controls() row of its own) is gone.
+    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
+    expect(labels).toContain('X');
+    expect(labels).toContain('Y');
+    expect(region(app).querySelector('.panel-config')).toBeNull();
+    expect(region(app).querySelectorAll('.chart-config')).toHaveLength(1); // only renderChart's own bar
   });
   it('rescue (#192) does not engage for a table panel type: no false controls leak in', () => {
     const app = panelApp(noMessageResult(), { type: 'table' });

@@ -225,7 +225,16 @@ function panelContext(app, r) {
   const columns = hasGrid ? r.columns : [];
   const saved = tab.panelCfg ? { cfg: tab.panelCfg, key: tab.panelKey ?? null } : null;
   const resolved = resolvePanel(saved, columns);
-  return { tab, hasGrid, columns, saved, resolved };
+  // Rescue (#192/#195): a saved Logs panel that falls back (its Time/Message
+  // roles no longer resolve) still needs its Logs controls so the user can
+  // repair the roles, but the fallback preview (Table OR a derived chart) is
+  // a temporary stand-in — not the saved config — so it must render and be
+  // presented as read-only. Scoped strictly to saved.cfg.type === 'logs'
+  // (never a generic saved-type dispatch): unknown saved types must keep
+  // falling back safely. Shared by the picker and the view so neither can
+  // drift from the other's rescue condition.
+  const rescueLogs = hasGrid && saved?.cfg?.type === 'logs' && resolved.fallback;
+  return { tab, hasGrid, columns, saved, resolved, rescueLogs };
 }
 
 function writePanel(app, hooks, payload, activate = false) {
@@ -242,7 +251,7 @@ function writePanel(app, hooks, payload, activate = false) {
  * the panel and activates its view. This keeps Table/JSON one-click views while
  * removing the redundant fixed Panel button and the old full-width picker row. */
 export function renderPanelTypePicker(app, r, hooks) {
-  const { hasGrid, columns, saved, resolved } = panelContext(app, r);
+  const { hasGrid, columns, saved, resolved, rescueLogs } = panelContext(app, r);
   const select = h('select', {
     class: 'result-panel-select' + (app.state.resultView.value === 'panel' ? ' active' : ''),
     'aria-label': 'Panel type',
@@ -265,15 +274,15 @@ export function renderPanelTypePicker(app, r, hooks) {
     const el = h('option', { value: option.value }, option.label);
     select.appendChild(el);
   }
-  const activeType = app.state.resultView.value === 'panel' && resolved.cfg.type !== 'table'
-    ? resolved.cfg.type
-    : '';
-  select.value = activeType;
+  // The authoring type, even while rescueLogs means the preview below is a
+  // temporary fallback chart/table rather than the saved Logs config.
+  const authoringType = rescueLogs ? 'logs' : resolved.cfg.type !== 'table' ? resolved.cfg.type : '';
+  select.value = app.state.resultView.value === 'panel' ? authoringType : '';
   return select;
 }
 
 export function renderPanelView(app, r, hooks) {
-  const { tab, hasGrid, columns, saved, resolved } = panelContext(app, r);
+  const { tab, hasGrid, columns, saved, resolved, rescueLogs } = panelContext(app, r);
 
   const writeBack = (payload) => {
     writePanel(app, hooks, payload);
@@ -286,12 +295,6 @@ export function renderPanelView(app, r, hooks) {
   });
   const onChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
 
-  // Rescue path (#192): a saved Logs panel that falls back (its Time/Message
-  // roles no longer resolve) still needs its Logs controls so the user can
-  // repair the roles — the fallback arm (usually Table) has no such fields.
-  // Scoped strictly to saved.cfg.type === 'logs' (never a generic saved-type
-  // dispatch): unknown saved types must keep falling back safely.
-  const rescueLogs = hasGrid && saved?.cfg?.type === 'logs' && resolved.fallback;
   // A clone, like resolved.cfg always is — saved.cfg is the live tab.panelCfg
   // reference, and controls() must never be handed that to mutate in place.
   const [controlsArm, controlsCfg] = rescueLogs
@@ -314,10 +317,13 @@ export function renderPanelView(app, r, hooks) {
       surface: 'workbench',
       state: r ? (r.panelState = r.panelState || {}) : {},
       rerender: hooks.rerender,
-      readonly: false,
+      readonly: rescueLogs,
       cap: hasGrid ? hooks.cap : undefined,
       onCell: hooks.onCell,
-      onCfgChange,
+      // Defense in depth (#195): even a future fallback renderer that ignores
+      // `readonly` still has no write-back callback to call during rescue —
+      // the fallback preview must never be able to replace the saved Logs cfg.
+      onCfgChange: rescueLogs ? undefined : onCfgChange,
       setChart: (c) => { app.chart = c; }, // renderResults' destroy-before-rebuild slot
     });
     body.appendChild(node);

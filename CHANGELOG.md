@@ -169,6 +169,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   runs no SQL) and the next repaint renders Logs normally. Dashboard,
   detached, and other read-only surfaces are unaffected — the rescue is
   scoped to the editable workbench tab and strictly to a saved Logs type.
+- **The Logs rescue's fallback preview is now read-only, so it can no longer
+  silently overwrite the saved config** (#195). #192's rescue kept a saved
+  Logs panel's Time/Message/Level controls available while it fell back to a
+  Table *or* chart preview, but that fallback preview still rendered with its
+  own normal, writable workbench controls — a fallback chart's X/Y/Series bar
+  competed with the Logs controls above it, and editing the chart axes would
+  replace the saved `{type:'logs'}` config with a derived chart config even
+  though the chart was only ever a temporary stand-in. The rescue predicate
+  (`hasGrid && saved?.cfg?.type === 'logs' && resolved.fallback`) is now
+  computed once in `panelContext()` and shared by both the toolbar Panel
+  picker (which now shows **Logs** as the active type throughout rescue,
+  never the resolved fallback type) and `renderPanelView`, which renders the
+  fallback preview with `readonly: true` (suppressing the chart arm's config
+  bar entirely) and no `onCfgChange` callback. Repairing Time/Message/Level
+  still writes the saved Logs config as before; choosing another type from
+  the Panel picker remains the only way to explicitly convert away from Logs.
 - **Unbounded column types no longer crush width-constrained UI** (#177). A
   declared type with an arbitrarily long body — a giant `Enum16(…)`, a
   many-field `Tuple(…)`, `Nested`/`Variant`/`AggregateFunction`/`JSON(…)` —
