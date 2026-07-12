@@ -29,6 +29,9 @@ function tableResult() {
   r.columns = [{ name: 'n', type: 'UInt64' }, { name: 's', type: 'String' }];
   r.rows = [['2', 'b'], ['1', null]];
   r.progress = { rows: 2, bytes: 100, elapsed_ns: 5e6 };
+  // #185: the captured source (no params here → detached view is a snapshot
+  // with no filter row; the interactive-rerun cases build their own with params).
+  r.source = { sql: 'SELECT n, s FROM t', tabId: 't1', rowLimit: 0, title: 'My data', description: '' };
   return r;
 }
 
@@ -160,6 +163,14 @@ describe('renderTable', () => {
     const el = renderTable(app, app.activeTab().result);
     expect(el.querySelector('.h-sort')).not.toBeNull();
     expect(el.querySelector('td.num')).not.toBeNull();
+  });
+  it('a header click re-sorts and re-renders the live pane (used by the EXPLAIN estimate table)', () => {
+    const app = appWithResult(tableResult());
+    const el = renderTable(app, app.activeTab().result);
+    document.body.appendChild(el);
+    click(el.querySelectorAll('.res-table th')[1]); // column 'n' → setSort + rerender(renderResults)
+    expect(app.state.resultSort).toEqual({ col: 0, dir: 'asc' });
+    el.remove();
   });
   it('the Expand + Copy buttons in the footer are present, Copy fires its action', () => {
     const app = appWithResult(tableResult());
@@ -665,6 +676,181 @@ describe('expandDataPane', () => {
     expect(document.querySelector('.graph-overlay')).toBeNull();
     expect(instances[0].destroyed).toBe(true);
   });
+
+  // ── interactive detached view (#185) ──────────────────────────────────────
+  const tick = () => new Promise((r) => setTimeout(r));
+  // A result whose captured source declares one required `{level:String}` param.
+  const paramResult = () => {
+    const r = tableResult();
+    r.source = {
+      sql: 'SELECT n, s FROM t WHERE s = {level:String}',
+      tabId: 't1', rowLimit: 100, title: 'Filtered', description: 'warnings only',
+    };
+    return r;
+  };
+  const refreshBtn = (root) => [...root.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Refresh'));
+
+  it('renders the captured title as a heading + description, and sets the tab title', () => {
+    const win = makeWin();
+    const app = makeApp({ openWindow: () => win });
+    expandDataPane(app, paramResult());
+    const h2 = win.document.querySelector('h2.detached-title');
+    expect(h2.textContent).toBe('Filtered');
+    expect(h2.getAttribute('title')).toBe('Filtered');
+    expect(win.document.querySelector('.detached-desc').textContent).toBe('warnings only');
+    expect(win.document.title).toBe('Filtered'); // browser tab title matches
+  });
+
+  it('omits the filter row (and description) when the source has no params / empty description', () => {
+    const app = makeApp();
+    expandDataPane(app, tableResult()); // plain SELECT, description ''
+    const overlay = document.querySelector('.graph-overlay');
+    expect(overlay.querySelector('.detached-filter-row')).toBeNull();
+    expect(overlay.querySelector('.detached-desc')).toBeNull();
+    expect(overlay.querySelector('h2.detached-title').textContent).toBe('My data');
+  });
+
+  it('renders the shared filter row for a parameterized source and issues NO query on open', () => {
+    const app = makeApp();
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    const row = overlay.querySelector('.detached-filter-row');
+    expect(row).not.toBeNull();
+    expect(row.querySelector('.dash-filters[aria-label="Query filters"]')).not.toBeNull();
+    expect(row.querySelectorAll('.var-field')).toHaveLength(1);
+    expect(app.runReadInto).not.toHaveBeenCalled(); // open = snapshot, no request
+  });
+
+  it('Refresh re-runs via the shared read seam (params + no session), replaces the result, records recents', async () => {
+    const app = makeApp({
+      runReadInto: vi.fn(async (result, opts) => {
+        result.columns = [{ name: 'n', type: 'UInt64' }];
+        result.rows = [[opts.params.param_level]];
+        opts.onChunk(); // simulate a streamed chunk → progressive repaint
+        return result;
+      }),
+    });
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(app.runReadInto).toHaveBeenCalledTimes(1);
+    const opts = app.runReadInto.mock.calls[0][1];
+    expect(opts.sql).toBe('SELECT n, s FROM t WHERE s = {level:String}');
+    expect(opts.rowLimit).toBe(100);
+    expect(opts.params).toEqual({ param_level: 'Warning' }); // no session_id — plain SELECT
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
+    // the detached grid now shows the refreshed result, and global state is untouched
+    expect(overlay.querySelector('.res-table tbody td.cell').textContent).toBe('Warning');
+    expect(app.state.running.value).toBe(false);
+    // Copy now targets the refreshed result, not the expand-time snapshot
+    click([...overlay.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Copy')));
+    expect(app.actions.copySnapshot.mock.calls.at(-1)[0].rows).toEqual([['Warning']]);
+  });
+
+  it('blocks the rerun and keeps the previous result + a status when a required value is missing', async () => {
+    const app = makeApp(); // default no-op runReadInto
+    expandDataPane(app, paramResult()); // level unset → missing
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(overlay.querySelector('.detached-status').textContent).toContain('Enter a value for: level');
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // previous snapshot intact
+  });
+
+  it('discards a stale response: a newer rerun wins even if it resolves first', async () => {
+    const resolvers = [];
+    const app = makeApp({
+      runReadInto: vi.fn((result, opts) => new Promise((res) => {
+        resolvers.push(() => { result.columns = [{ name: 'n', type: 'String' }]; result.rows = [[opts.params.param_level]]; res(result); });
+      })),
+    });
+    app.state.varValues.level = 'A';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay)); // run 1 (A), pending
+    await tick();
+    app.state.varValues.level = 'B';
+    click(refreshBtn(overlay)); // run 2 (B), pending — supersedes run 1
+    await tick();
+    resolvers[1](); await tick(); // newer resolves first → current = B
+    resolvers[0](); await tick(); // older resolves late → discarded by the generation guard
+    expect(overlay.querySelector('.res-table tbody td.cell').textContent).toBe('B');
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // only the winning run recorded
+  });
+
+  it('closing the view aborts the in-flight detached request', async () => {
+    let signal;
+    const app = makeApp({ runReadInto: vi.fn((result, opts) => { signal = opts.signal; return new Promise(() => {}); }) });
+    app.state.varValues.level = 'A';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(signal.aborted).toBe(false);
+    backdropClick(overlay); // close the overlay
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('threads the originating tab session when the source depended on one', async () => {
+    const app = makeApp({ runReadInto: vi.fn(async (result) => result) });
+    app.activeTab().chSession = 'sess-abc'; // e.g. the source used a temp table / SET
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(app.runReadInto.mock.calls[0][1].params.session_id).toBe('sess-abc');
+  });
+
+  it('shows a status and does not run when the token cannot be refreshed', async () => {
+    const app = makeApp({
+      ensureFreshToken: vi.fn(async () => false),
+      runReadInto: vi.fn(async (result) => result),
+    });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(overlay.querySelector('.detached-status').textContent).toBe('Not signed in');
+    expect(refreshBtn(overlay).disabled).toBe(false); // re-enabled after the blocked attempt
+  });
+
+  it('shows a status and keeps the previous result when the rerun errors', async () => {
+    const app = makeApp({ runReadInto: vi.fn(async (result) => { result.error = 'Boom'; return result; }) });
+    app.state.varValues.level = 'X';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(overlay.querySelector('.detached-status').textContent).toBe('Boom');
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // previous result preserved
+    expect(app.recordBoundParams).not.toHaveBeenCalled(); // errors never record recents
+    expect(refreshBtn(overlay).disabled).toBe(false); // re-enabled after the error
+  });
+
+  it('re-enables Refresh when a blocked rerun supersedes an in-flight run', async () => {
+    const app = makeApp({ runReadInto: vi.fn(() => new Promise(() => {})) }); // never resolves
+    app.state.varValues.level = 'A';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay)); // run 1 → in-flight, Refresh disabled
+    await tick();
+    expect(refreshBtn(overlay).disabled).toBe(true);
+    // blank the field and commit (input arms the debounce, blur fires it): a
+    // blocked rerun supersedes (and aborts) run 1 — Refresh must re-enable.
+    const input = overlay.querySelector('.detached-filter-row .var-field input');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await tick();
+    expect(refreshBtn(overlay).disabled).toBe(false);
+    expect(overlay.querySelector('.detached-status').textContent).toContain('Enter a value for: level');
+  });
 });
 
 describe('renderJson', () => {
@@ -687,6 +873,7 @@ function chartResult() {
   ];
   r.rows = [['B6', 'E', '10', '5.5'], ['AA', 'W', '20', '6.5']];
   r.progress = { rows: 2, bytes: 100, elapsed_ns: 5e6 };
+  r.source = { sql: 'SELECT carrier, region, flights, delay FROM flights', tabId: 't1', rowLimit: 0, title: 'Flights', description: '' };
   return r;
 }
 

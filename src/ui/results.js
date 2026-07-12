@@ -13,9 +13,14 @@ import { renderGridView, resizeHandle, reapplyWidths, PLAIN_KEY, visCap } from '
 import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
 import { resolvePanel } from '../core/panel-cfg.js';
-import { RESULT_ROW_LIMIT_OPTIONS, tabPanel } from '../state.js';
+import { RESULT_ROW_LIMIT_OPTIONS, tabPanel, effectiveFilterActive } from '../state.js';
+import {
+  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
+} from '../core/param-pipeline.js';
+import { newResult } from '../core/stream.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
+import { buildFilterBar } from './filter-bar.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
@@ -87,14 +92,22 @@ export function renderResults(app) {
     inner.appendChild(renderExplainView(app, r));
   } else if (r && r.rawText != null) {
     inner.appendChild(h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText));
-  } else if (view === 'panel') {
-    inner.appendChild(renderPanelView(app, r, panelHooks(app, r)));
-  } else if (r.rows.length === 0) {
-    inner.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.')));
-  } else if (view === 'json') {
-    inner.appendChild(renderJson(r));
   } else {
-    inner.appendChild(renderTable(app, r));
+    // The Table/JSON/Panel dispatch, shared with the detached Data view (#185).
+    // The live pane's Panel view is editable (the drawer + type picker); its
+    // table/grid state is the global resultSort + the result's own colWidths.
+    inner.appendChild(renderResultView({
+      app,
+      view,
+      result: r,
+      sort: app.state.resultSort,
+      setSort: (next) => { app.state.resultSort = next; },
+      widths: r ? (r.colWidths = r.colWidths || {}) : undefined,
+      rerender: () => renderResults(app),
+      onCell: (name, type, value) => openCellDetail(app, name, type, value),
+      cap: r ? visCap(r) : undefined,
+      panel: { mode: 'edit', hooks: panelHooks(app, r) },
+    }));
   }
   body.appendChild(inner);
   region.replaceChildren(body);
@@ -476,10 +489,13 @@ function buildToolbar(app, r) {
     }
     if (!r.error) {
       // Expand is meaningful only for a real grid — not raw text output (no
-      // columns model) and not an empty result (nothing to show).
-      if (r.rawText == null && r.rows.length > 0) {
+      // columns model) and not an empty result (nothing to show) — and needs
+      // the captured `source` (#185) to open an interactive, re-runnable
+      // detached view. `source` is captured on exactly this class of result
+      // (fmt 'Table', rows > 0), so the gate stays in lockstep.
+      if (r.rawText == null && r.rows.length > 0 && r.source) {
         toolbar.appendChild(h('button', {
-          class: 'res-act', title: 'Open a snapshot of this grid in a new tab (sort, resize, copy)',
+          class: 'res-act', title: 'Open this query in a new tab — change its filters and re-run',
           onclick: () => expandDataPane(app, r),
         }, Icon.expand(), h('span', null, 'Expand')));
       }
@@ -540,104 +556,274 @@ export function renderTable(app, r) {
 }
 
 /**
- * Expand the current grid into a detached view (a real tab, else the in-app
- * overlay) — a frozen snapshot of `r`: it does not update if the user runs a
- * new query afterward (live-sync would need cross-document reactivity — a
- * BroadcastChannel/postMessage bridge — real additional scope, not built
- * speculatively here). The full Table/JSON/Chart switcher is available, same
- * as the inline results pane, but the active view/sort/column-widths/chart
- * config are all local to this snapshot — switching here never touches the
- * live tab's own view state, and the chart config is its own independent
- * holder (never `app.activeTab()`'s). Copy copies exactly what's shown (the
- * table view's rows — Chart/JSON have no separate copy target, same as the
- * main pane). No row-limit selector (there is nothing to re-fetch for a
- * frozen snapshot) and no Export (that's a separate re-run of the live query
- * to disk, in app.js's editor toolbar — unrelated to this rendered grid).
- * Exported for tests.
+ * Render the body node for the current Table/JSON/Panel view of a structured
+ * result — the ONE dispatch shared by the live results pane (renderResults) and
+ * the detached Data view (expandDataPane), so the two never drift into parallel
+ * copies (#185). Table/JSON are identical across surfaces; the Panel view
+ * differs by surface, selected via `panel.mode`:
+ *   - `'edit'`     — the workbench Panel drawer (type picker + config), via
+ *                    renderPanelView(app, r, panel.hooks);
+ *   - `'readonly'` — a render-only panel from a pre-resolved (cloned) cfg, via
+ *                    renderResolvedPanel with `readonly: true` — the detached
+ *                    surface, whose `panel.state`/`panel.setChart` own the grid
+ *                    state + chart instance.
+ * `sort`/`setSort`/`widths`/`rerender`/`onCell`/`cap` are injected so each
+ * surface supplies its own state (the live pane's global `resultSort` +
+ * `colWidths`; the detached view's local holders) and its own cell-drawer
+ * document realm via `onCell`. Panel always renders (a text panel needs no
+ * rows); Table/JSON show the "0 rows" placeholder for an empty result. Callers
+ * handle the no-result-at-all case (only the Panel view renders with a null
+ * result). Exported for tests.
+ */
+export function renderResultView({ app, view, result, sort, setSort, widths, rerender, onCell, cap, panel }) {
+  const r = result;
+  if (view === 'panel') {
+    if (panel.mode === 'readonly') {
+      const { node } = renderResolvedPanel(app, panel.resolved, r, {
+        surface: 'workbench',
+        state: panel.state,
+        rerender,
+        readonly: true, // render-only: no config bar, no editor
+        cap,
+        onCell,
+        setChart: panel.setChart,
+      });
+      return node;
+    }
+    return renderPanelView(app, r, panel.hooks);
+  }
+  if (r.rows.length === 0) {
+    return h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.'));
+  }
+  if (view === 'json') return renderJson(r);
+  return renderGridView({ columns: r.columns, rows: r.rows, sort, setSort, widths, rerender, onCell, cap });
+}
+
+/**
+ * Expand the current grid into an interactive detached view — a real browser
+ * tab, else the in-app overlay (#100/#185). Unlike the old frozen snapshot, the
+ * detached view is a self-contained, re-runnable surface bound to the result's
+ * captured `source` ({sql, tabId, rowLimit, title, description} — attached by
+ * run() on a normal row-returning result): its Table/JSON/Panel switcher, sort,
+ * column widths, and chart instance are local, but its `{name:Type}` filter row
+ * reads/writes the SAME shared `state.varValues`/`filterActive` stores as the
+ * SQL Browser and dashboards (a value entered anywhere is offered everywhere).
+ * A committed filter (or the Refresh button) re-runs ONLY this detached query —
+ * full streaming/cap/abort parity via the shared `app.runReadInto` seam, with
+ * its own AbortController + generation guard so a newer/stale response can never
+ * overwrite the current result and closing aborts in flight. The main workbench
+ * tab's result/view/sort/panel/history and global running state are untouched.
+ * The captured source SQL and originating session are used even after the
+ * editor/active tab changes. Opening issues no request (the workbench snapshot
+ * shows immediately); Copy always copies the current detached result. Exported
+ * for tests.
  */
 export function expandDataPane(app, r) {
   const mainDoc = app.document;
+  const source = r.source;
+  // Capture the originating tab's ClickHouse session AT EXPAND TIME (the active
+  // tab is the source tab now) and reuse it for the life of this view, so a
+  // source depending on session state (temp tables / SET) re-filters against
+  // the same session — never re-reading app.activeTab() at refresh time, which
+  // may have changed. A plain SELECT has no session and runs session-less.
+  const sessionId = (app.activeTab() && app.activeTab().chSession) || null;
+  // Render-only panel snapshot (#166): the source tab's panel cfg is cloned
+  // once, at expand time (tabPanel clones), and re-resolved against the current
+  // columns on every repaint — the detached view keeps no panel editor (v1
+  // scope), and later edits in the live tab never leak in.
+  const savedPanel = tabPanel(app.activeTab());
+  // Analyze the captured source ONCE — its `{name:Type}` fields drive the
+  // filter row; the SQL is fixed for the life of this view.
+  const analysis = analyzeParameterizedSources([
+    { id: 'detached', label: 'detached data', kind: 'tab', sql: source.sql, bindPolicy: 'row-returning' },
+  ]);
+  const fields = fieldControls(analysis);
+
   return openInDetachedTab(app, {
-    title: 'Data',
+    title: source.title, // browser-tab title + the primitive's bar title
     mode: 'grid',
     mount: ({ doc, bar, body, close, closeBtn }) => {
       const isTab = doc !== mainDoc;
-      if (closeBtn) bar.appendChild(closeBtn); // title bar, top-right — same slot schema/pipeline use
+      // Header: replace the primitive's plain title span with a real heading +
+      // (optional) description — plain text only, full value in the title attr,
+      // clamped by CSS. Close ✕ (overlay only) sits at the bar's trailing end.
+      bar.classList.add('detached-bar');
+      const header = h('div', { class: 'detached-head' },
+        h('h2', { class: 'detached-title', title: source.title }, source.title));
+      if (source.description) {
+        header.appendChild(h('div', { class: 'detached-desc', title: source.description }, source.description));
+      }
+      const titleSpan = bar.querySelector('.graph-overlay-title');
+      if (titleSpan) titleSpan.replaceWith(header); else bar.appendChild(header);
+      if (closeBtn) bar.appendChild(closeBtn);
+
+      // Detached-local view/render state (never the live tab's).
       const view = { current: 'table' };
-      // Render-only panel snapshot (#166): the source tab's panel cfg is
-      // resolved once, at expand time — the detached pane keeps no panel
-      // editor (v1 scope), so later edits in the live tab don't leak in.
-      const panelResolved = resolvePanel(tabPanel(app.activeTab()), r.columns);
-      const panelState = {}; // the panel grid's own sort/width holder
-      let sort = { col: null, dir: 'asc' }; // lives only for this opened snapshot
+      const panelState = {};
+      let sort = { col: null, dir: 'asc' };
       const widths = {};
       let chartInstance = null;
+      let current = r; // the current result — starts as the expand-time snapshot
+      // Concurrency: a fresh generation + AbortController per run; a stale or
+      // post-close response is discarded, never painted.
+      let gen = 0;
+      let running = false;
+      let ac = null;
+      let closed = false;
+      let statEl = null;
+      let refreshBtn = null;
+      let statusEl = null;
 
       const inner = h('div', { class: 'res-body' });
-      const paint = () => withDocument(doc, () => {
-        // Always destroy the previous chart before rebuilding — same reasoning
-        // as renderResults' own destroy-before-rebuild (a view switch or a
-        // panel-config change re-creates it; nothing may leak its canvas/observers).
+      // Render `res` (defaults to the committed `current`) into the body. A
+      // rerun paints the in-flight result progressively as it streams, then
+      // paints `current` once it commits (or reverts to `current` on failure).
+      const paint = (res = current) => withDocument(doc, () => {
+        // Destroy the previous chart before rebuilding — same reasoning as
+        // renderResults' destroy-before-rebuild (nothing may leak its canvas).
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
-        if (view.current === 'json') {
-          inner.replaceChildren(renderJson(r));
-        } else if (view.current === 'panel') {
-          const { node } = renderResolvedPanel(app, panelResolved, r, {
-            surface: 'workbench',
+        inner.replaceChildren(renderResultView({
+          app,
+          view: view.current,
+          result: res,
+          sort,
+          setSort: (next) => { sort = next; },
+          widths,
+          rerender: () => paint(res),
+          onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
+          cap: visCap(res),
+          panel: {
+            mode: 'readonly',
+            resolved: resolvePanel(savedPanel, res.columns),
             state: panelState,
-            rerender: paint,
-            readonly: true, // render-only: no config bar, no editor
-            cap: visCap(r),
-            onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
             setChart: (c) => { chartInstance = c; },
-          });
-          inner.replaceChildren(node);
-        } else {
-          inner.replaceChildren(renderGridView({
-            columns: r.columns,
-            rows: r.rows,
-            sort,
-            setSort: (next) => { sort = next; },
-            widths,
-            rerender: paint,
-            onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
-            cap: visCap(r),
-          }));
-        }
+          },
+        }));
+        if (statEl) statEl.textContent = res.rows.length + ' rows' + (res.capped ? ' (capped)' : '');
       });
 
       let tabsEl = viewSwitcherTabs(view.current, selectView);
       function selectView(id) {
+        // Switching views is local and NEVER re-runs SQL.
         view.current = id;
         const next = viewSwitcherTabs(id, selectView);
         tabsEl.replaceWith(next);
         tabsEl = next;
         paint();
       }
-      paint();
+
+      const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+
+      // Settle this run's chrome (running flag + Refresh enabled + status). A
+      // blocked or superseded-then-blocked run must reset these too, else the
+      // Refresh button (disabled by the aborted in-flight run) stays stuck.
+      const settle = (msg) => { running = false; if (refreshBtn) refreshBtn.disabled = false; setStatus(msg); };
+
+      // Re-run ONLY this detached query with the current shared filter values.
+      async function rerun() {
+        if (closed) return;
+        const myGen = ++gen;
+        if (ac) ac.abort(); // supersede any in-flight detached request
+        ac = new AbortController();
+        const { signal } = ac;
+        const batch = prepareParameterizedBatch(analysis, {
+          values: app.state.varValues,
+          active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
+          wallNowMs: app.wallNow(),
+          validationMode: 'execute',
+        });
+        const src = batch.sources[0];
+        const blockers = src.missing.concat(src.invalid);
+        // A blocked run keeps the previous result visible + shows why (#173) —
+        // and re-enables Refresh even if it just superseded an in-flight run.
+        if (blockers.length) { settle('Enter a value for: ' + blockers.join(', ')); return; }
+        if (src.errors.length) { settle(src.errors[0]); return; }
+        running = true;
+        setStatus('');
+        if (refreshBtn) refreshBtn.disabled = true;
+        if (!(await app.ensureFreshToken())) {
+          if (myGen === gen && !closed) settle('Not signed in');
+          return;
+        }
+        const result = newResult('Table', source.rowLimit);
+        await app.runReadInto(result, {
+          sql: mergedSourceSql(src, source.sql),
+          format: 'Table',
+          rowLimit: source.rowLimit,
+          // Native param_<name> bindings + the captured session (when any).
+          params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
+          signal,
+          // Progressive streaming: paint the in-flight result as rows arrive.
+          onChunk: () => { if (myGen === gen && !closed) paint(result); },
+        });
+        if (myGen !== gen || closed) return; // superseded or closed → discard silently
+        if (result.error) {
+          // A failed refresh keeps the previous result visible (revert any
+          // partial streamed rows) and reports the error in the status line.
+          settle(result.error);
+          paint(current);
+          return;
+        }
+        settle('');
+        current = result;
+        // #171: record the winning run's bound params via the shared recorder.
+        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
+        paint();
+      }
 
       const toolbar = h('div', { class: 'res-toolbar' },
         tabsEl,
-        h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()), h('span', { class: 'v' }, r.rows.length + ' rows')),
+        h('div', { class: 'stat' },
+          h('span', { class: 'ic' }, Icon.rows()),
+          (statEl = h('span', { class: 'v' }, current.rows.length + ' rows' + (current.capped ? ' (capped)' : '')))),
         h('div', { style: { flex: '1' } }),
         h('button', {
           class: 'res-act', title: 'Copy results to clipboard',
-          onclick: () => app.actions.copySnapshot(r, doc),
+          onclick: () => app.actions.copySnapshot(current, doc),
         }, Icon.copy(), h('span', null, 'Copy')));
-      body.appendChild(h('div', { class: 'results data-pane-view' }, toolbar, inner));
-      if (isTab) return null; // no JS-driven close in a real tab (browser tab-close serves that)
+
+      const pane = h('div', { class: 'results data-pane-view' }, toolbar);
+      // Filter row (#185): only when the source declares `{name:Type}` fields —
+      // omitted entirely otherwise (no empty toolbar). Committing a field or
+      // clicking Refresh re-runs only this detached query.
+      if (fields.length) {
+        const getField = (name, mode) => prepareParameterizedBatch(analysis, {
+          values: app.state.varValues,
+          active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
+          wallNowMs: app.wallNow(),
+          validationMode: mode,
+        }).fields[name];
+        // A committed field re-runs only this detached query (rerun ignores the
+        // param name buildFilterBar passes — a single source re-runs wholesale).
+        const filterBar = buildFilterBar(app, fields, rerun, getField, { document: doc, ariaLabel: 'Query filters' });
+        refreshBtn = h('button', {
+          class: 'res-act detached-refresh', title: 'Re-run this query with the current filter values',
+          onclick: () => rerun(),
+        }, Icon.play(), h('span', null, 'Refresh'));
+        statusEl = h('div', { class: 'detached-status', role: 'status' });
+        pane.appendChild(h('div', { class: 'detached-filter-row' }, filterBar, refreshBtn, statusEl));
+      }
+      pane.appendChild(inner);
+      body.appendChild(pane);
+      paint();
+
       // Esc closes an open cell-detail drawer first (its own listener, keyed
       // off isTopDrawer, handles that); a second Esc — no drawer left — closes
-      // the pane, matching the schema/pipeline overlays' Escape convention.
+      // the pane (overlay only; a real tab closes via the browser).
       const onKey = (e) => {
         if (e.key !== 'Escape' || doc.querySelector('.cd-backdrop')) return;
         e.stopPropagation();
         close();
       };
-      doc.addEventListener('keydown', onKey, true);
+      if (!isTab) doc.addEventListener('keydown', onKey, true);
+      // Teardown (overlay close, or the primitive's pagehide in a real tab):
+      // mark closed so a late response can't paint, abort any in-flight request,
+      // and destroy the live chart instance.
       return () => {
-        doc.removeEventListener('keydown', onKey, true);
+        closed = true;
+        if (ac) ac.abort();
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        if (!isTab) doc.removeEventListener('keydown', onKey, true);
       };
     },
   });

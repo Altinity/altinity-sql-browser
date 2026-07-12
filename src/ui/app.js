@@ -26,6 +26,7 @@ import { buildCardGraph } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
+import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
@@ -676,6 +677,42 @@ export function createApp(env = {}) {
     return false;
   }
 
+  // Execute one already-prepared read request into a caller-owned `result`,
+  // with NO tab/global-state side effects. This is the request+stream+normalize
+  // core that the workbench run(), the dashboard tiles, and the detached Data
+  // view (#185) all perform identically: fold streamed lines into `result` via
+  // applyStreamLine, capture a raw (explicit-FORMAT/EXPLAIN) body, and classify
+  // an abort/network/other failure onto the result — never throwing. The caller
+  // owns token freshness (resolved before this call), the AbortController /
+  // query_id, parameter preparation, session_id, and any recent-value recording.
+  // `onChunk` is the per-read repaint hook (the workbench repaints its pane; a
+  // tile/detached view repaints its own surface). Returns the mutated `result`.
+  async function runReadInto(result, { sql, format = 'Table', rowLimit = 0, params = {}, signal, queryId, onChunk } = {}) {
+    try {
+      const out = await ch.runQuery(chCtx, sql, {
+        format,
+        resultRowLimit: rowLimit,
+        queryId,
+        signal,
+        params,
+        onLine: (json) => applyStreamLine(json, result),
+        onChunk,
+      });
+      if (out.error != null) result.error = out.error;
+      else if (out.raw != null) {
+        result.rawText = out.raw;
+        result.progress.bytes = out.raw.length;
+      }
+    } catch (e) {
+      // Cancel = abort: keep whatever streamed in, flag it partial (no error).
+      if (e.name === 'AbortError') result.cancelled = true;
+      else if (e instanceof TypeError) result.error = 'Network error';
+      else result.error = String((e && e.message) || e);
+    }
+    return result;
+  }
+  app.runReadInto = runReadInto;
+
   async function run(opts) {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
@@ -766,28 +803,18 @@ export function createApp(env = {}) {
     });
 
     try {
-      const out = await ch.runQuery(chCtx, runSql, {
+      await runReadInto(tab.result, {
+        sql: runSql,
         format: fmt,
-        resultRowLimit: rowLimit,
+        rowLimit,
         queryId: app.state.runQueryId,
         signal: app.state.abortController.signal,
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src) },
-        onLine: (json) => applyStreamLine(json, tab.result),
         onChunk: () => renderResults(app),
       });
-      if (out.error != null) tab.result.error = out.error;
-      else if (out.raw != null) {
-        tab.result.rawText = out.raw;
-        tab.result.progress.bytes = out.raw.length;
-      }
-    } catch (e) {
-      // Cancel = abort: keep whatever streamed in, flag it partial (no error).
-      if (e.name === 'AbortError') tab.result.cancelled = true;
-      else if (e instanceof TypeError) tab.result.error = 'Network error';
-      else tab.result.error = String((e && e.message) || e);
     } finally {
       clearInterval(app.state.runTick);
       app.state.runTick = null;
@@ -795,6 +822,26 @@ export function createApp(env = {}) {
       app.state.runQueryId = null;
       app.state.runT0 = null;
       tab.result.progress.elapsed_ns = (now() - t0) * 1e6;
+      // #185: capture the source that produced a normal, row-returning
+      // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
+      // empty results stay ineligible), so the Data Pane's Expand can open an
+      // interactive, independently re-runnable detached view. The authored
+      // template (srcSql — optional-block markers intact) and the run-time
+      // title/description are snapshotted here, never re-derived from the
+      // editor/Library at expand time (which may have changed). This MUST run
+      // BEFORE the running flip below: that flip fires the results effect that
+      // renders the toolbar + its Expand affordance, which gates on
+      // `result.source` — set it after and the button never appears until the
+      // next paint.
+      if (!tab.result.error && !tab.result.cancelled && fmt === 'Table' && tab.result.rows.length > 0) {
+        tab.result.source = buildResultSource({
+          srcSql,
+          tabId: tab.id,
+          rowLimit,
+          tabName: tab.name,
+          savedEntry: savedForTab(app.state, tab),
+        });
+      }
       // Flip running off last: the results + Run-button effects fire here and
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)

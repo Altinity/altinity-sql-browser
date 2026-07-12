@@ -53,6 +53,9 @@ export function makeApp(over = {}) {
     saveVarRecent: vi.fn(),
     saveVarRecentDisabled: vi.fn(),
     recordBoundParams: vi.fn(),
+    // #185 detached-read seam: no-op by default (snapshot cases never call it);
+    // interactive-rerun tests override it to stream rows into the result.
+    runReadInto: vi.fn(async (result) => result),
     clearVarRecent: vi.fn(),
     clearAllVarRecent: vi.fn(),
     saveJSON: vi.fn(),

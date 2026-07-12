@@ -24,27 +24,15 @@ import {
 import { formatBytes, formatRows } from '../core/format.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
-  fieldControlKind,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
-import { applyFieldState } from './var-field.js';
-import { buildRelativeTimeField } from './relative-time-field.js';
-import { buildRecentField } from './recent-field.js';
-import { buildEnumField } from './enum-field.js';
-import { wireComboInput } from './combobox.js';
-import { recentOptions } from '../core/recent-values.js';
+import { buildFilterBar } from './filter-bar.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
 // browser's per-host pool and the cluster) on open and on every Refresh.
 const TILE_CONCURRENCY = 6;
-
-// Idle time after the last keystroke in a filter field before it triggers a
-// re-run (#149 D3) — longer than the FROM-scope column-load debounce
-// (codemirror-adapter.js) since this fires a real query, not a metadata fetch.
-// Enter/blur bypass this entirely for a fast explicit-commit path.
-const FILTER_DEBOUNCE_MS = 500;
 
 /**
  * Build a segmented control (the four-way `Full width | Report | 2 columns |
@@ -277,99 +265,6 @@ async function runSlotTile(app, q, slot, onSettled, src) {
   // reaches here at all.
   if (r.error == null) app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
   onSettled();
-}
-
-// The global filter bar (#149 D3): one field per `{name:Type}` parameter
-// referenced by any favorite — detected on the all-active analysis view
-// (#165), so a param confined to /*[ ]*/ optional blocks is listed too, marked
-// optional (blank keeps its predicates out instead of blocking the tile) —
-// sharing `app.state.varValues`/`app.state.filterActive` with the SQL Browser
-// workbench. Hidden entirely (no row, no spacing) when there are no detected
-// params — same convention as the workbench's `var-strip`. Typing debounces
-// before calling `onCommit(name)`; Enter or blur fires immediately, clearing
-// any pending debounce so a value never applies twice. `getField(name, mode)`
-// reads the field's current #170-validated state ('input' while typing —
-// neutral on a plausible prefix; 'execute' on blur/Enter — hardens it) for
-// the shared invalid-field affordance (var-field.js); `commitNow`'s no-op
-// short-circuit (nothing pending) is independent of that repaint, so blurring
-// an untouched-since-last-commit field still (re)shows the right state.
-function buildFilterBar(app, params, onCommit, getField) {
-  if (!params.length) return h('div', { class: 'dash-filters', style: { display: 'none' } });
-  return h('div', { class: 'dash-filters' }, ...params.map((p) => {
-    let timer = null;
-    // #173 acceptance (review F1): a type-conflicted param (declared with
-    // disagreeing types across favorites) degrades to the plain text control
-    // (fieldControlKind below) and says so visibly — a warning style distinct
-    // from is-invalid (the VALUE isn't wrong; the declarations disagree) plus
-    // a tooltip listing them.
-    const conflictNote = p.conflict
-      ? 'Conflicting type declarations: ' + p.conflict.join(' vs ') : null;
-    const baseTitle = p.name + ': ' + p.type
-      + (p.optional ? ' — optional: blank leaves its filter block out' : '')
-      + (conflictNote ? ' — ' + conflictNote : '');
-    const commitNow = () => {
-      if (timer == null) return;
-      clearTimeout(timer);
-      timer = null;
-      onCommit(p.name);
-    };
-    // The shared control-kind priority (fieldControlKind, review F8): #172
-    // enum members (v1 only here — the declaration travels with the tile SQL;
-    // v2 schema-cache inference is workbench-only, and #160's curated
-    // `filter:` query is the Dashboard's no-declaration alternative) > #169
-    // date-like preset combobox + live preview > plain text with recents.
-    // The field stays free-text in every case; D3's debounce/Enter/blur
-    // commit semantics are unchanged either way.
-    const ctl = fieldControlKind(p);
-    let combo = null;
-    let input;
-    const onValueInput = () => {
-      app.state.varValues[p.name] = input.value;
-      // Text controls sync activation with the value (#165): an activation
-      // flip re-runs affected tiles exactly like a value change (same
-      // debounce + generation guard downstream).
-      app.state.filterActive[p.name] = input.value !== '';
-      app.saveVarValues();
-      app.saveFilterActive();
-      applyFieldState(input, getField(p.name, 'input'), baseTitle, combo && combo.previewEl);
-      clearTimeout(timer);
-      timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
-    };
-    const onCommitHard = () => {
-      applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
-      commitNow();
-    };
-    // #171: live-filtered recents for this field (type + typed text), read
-    // fresh on every open/keystroke (never a snapshot — see recent-field.js's
-    // header comment). (#160's curated-param opt-out hook: nothing to check
-    // yet — no curated param exists before #160 lands.)
-    const getRecents = (text) => recentOptions(app.state.varRecent, p.name, p.type, text);
-    const onClearRecent = () => app.clearVarRecent(p.name);
-    // A preset/recent pick is a deliberate, complete action (like Enter) —
-    // run immediately, bypassing the debounce `onValueInput` just armed,
-    // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.
-    const onPick = () => {
-      applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
-      clearTimeout(timer);
-      timer = null;
-      onCommit(p.name);
-    };
-    const fieldOpts = {
-      document: app.document, name: p.name, type: p.type, value: app.state.varValues[p.name] || '',
-      baseTitle, onValueInput, onCommit: onPick, getRecents, onClearRecent,
-    };
-    if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions });
-    else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow: app.wallNow });
-    else combo = buildRecentField(fieldOpts);
-    input = combo.input;
-    // The shared listener block (review F8): the combobox hooks first, then
-    // D3's own persist-on-type / Enter-blur hard-commit bodies.
-    wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
-    if (conflictNote) input.classList.add('is-conflict');
-    applyFieldState(input, getField(p.name, 'execute'), baseTitle, combo && combo.previewEl);
-    return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
-      h('span', { class: 'var-name' }, p.name), combo.el);
-  }));
 }
 
 /** Render the dashboard into `app.root`. */
