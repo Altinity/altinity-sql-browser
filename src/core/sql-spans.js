@@ -1,38 +1,98 @@
-// Shared lexical span scanner for ClickHouse SQL text.
+// Canonical lexical span scanner for ClickHouse SQL text (#182). This is the
+// single authoritative core implementation of SQL lexical boundaries used by
+// *string-based application analysis* — statement splitting, parameter
+// detection, optional-block/format handling, type display, and (via the
+// structural lexer sql-lex.js layered on top) completion and FROM/JOIN scope.
 //
-// The script splitter (sql-split.js) and the query-parameter detector
-// (query-params.js) both need to know which stretches of a query are *code*
-// versus an opaque '…' / "…" / `…` string literal or a -- / # / block comment —
-// so a `;` (statement separator) or `{…}` (parameter placeholder) inside a
-// literal or comment is never mistaken for the real thing. Keeping one scanner
-// here means ClickHouse's tokenizing rules — `\` backslash and `''` doubled-quote
-// escapes, non-nesting `/* */` block comments — live in one place for those two
-// consumers rather than being copied into each.
+// It is deliberately independent of CodeMirror. Core analysis also runs on
+// inactive tabs, saved queries, partially written SQL, and raw test strings
+// that never had an EditorState, so it cannot depend on Lezer trees. CM6 owns
+// editor behavior (highlighting, bracket/quote guards, hover); this scanner
+// owns application logic. The two are allowed to differ in the documented
+// approximation areas (see codemirror-adapter.js).
 //
-// This yields coarse *spans* (code / string / comment), not fine tokens. The
-// editor highlighter (sql-highlight.js `tokenize`) is a separate, finer lexer
-// that also classifies keywords / numbers / operators and produces a per-char
-// literal mask (`maskLiterals`) — query-params.js deliberately does NOT reuse
-// that mask, because it conflates strings with comments (splitStatements needs
-// them apart: a comment is not runnable text, a literal is) and its escape rules
-// differ. Don't fold these together without preserving the code-vs-comment-vs-
-// string distinction. (The remaining lexer duplication with the highlighter is
-// tracked separately in #141.)
+// Verified against ClickHouse 26.3.13 and the upstream lexer:
+//   - `--` opens a line comment (no following-char restriction);
+//   - `//` opens a line comment (no restriction, including glued `6//2`; longer
+//     runs like `////` are the same form — there is no `//` operator);
+//   - `#` opens a line comment ONLY when the next char is ASCII space (0x20) or
+//     `!`; `#x`, a bare `#` at EOF, `#\t`, and `##x` are NOT comments;
+//   - a line comment runs to (not including) the next `\n`; a preceding `\r`
+//     (CRLF) stays part of the comment, matching the server;
+//   - `/* */` block comments NEST — the scanner tracks depth and is quote-blind;
+//   - single-quoted strings and quoted identifiers honor `\` backslash escapes
+//     and doubled-delimiter escapes (`''`, `` `` ``, `""`);
+//   - both backtick and double-quoted identifiers are `quoted-ident` (double
+//     quote is an identifier delimiter in ClickHouse, not a string);
+//   - `$$…$$` / `$tag$…$tag$` heredocs are opaque string literals whose tag is
+//     `[A-Za-z0-9_]*` (empty and digit-leading tags valid); the closer must
+//     match the opener exactly, and quotes/comments/braces/semicolons inside the
+//     body are inert. A heredoc opens only when its `$` starts a token, so
+//     `foo$tag$x$tag$` is one bare-word run, not an embedded heredoc.
+//
+// Intentional client-side recovery policy for PARTIAL input: an unterminated
+// single-quoted string, quoted identifier, block comment, or a valid heredoc
+// opener with no matching closer runs to EOF with `closed: false`. This is a
+// deliberate difference from the server, which for an unterminated heredoc
+// opener may fall back to ordinary dollar/bare-word tokenization — e.g. the
+// client treats `$foo$bar` as an open heredoc while the server may lex it as a
+// bare identifier. The trade-off keeps live editor input safe to analyze.
+
+// A heredoc/identifier tag character: ASCII word char (no punctuation tags —
+// pre-25.8 punctuation/whitespace tags are intentionally unsupported).
+const isWordChar = (c) =>
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '_';
+
+// From a `$` at `i`, the end offset (exclusive) of a valid `$[A-Za-z0-9_]*$`
+// heredoc opener, or -1 when the tag is non-word / there is no second `$`. A
+// non-word tag falls through to code and must not consume to EOF (rule 8).
+function heredocOpenerEnd(s, i, n) {
+  let j = i + 1;
+  while (j < n && isWordChar(s[j])) j += 1;
+  return s[j] === '$' ? j + 1 : -1;
+}
+
+// Scan a `'…'` string or `` `…` `` / `"…"` quoted identifier from its opening
+// delimiter at `i`. `\` consumes the next char; a doubled delimiter consumes
+// both; otherwise the delimiter closes the span. Returns `{end, closed}` — an
+// unterminated run reaches EOF with `closed: false` (a trailing `\` that would
+// overshoot is clamped to EOF).
+function scanDelimited(s, i, n, quote) {
+  let j = i + 1;
+  let closed = false;
+  while (j < n) {
+    const d = s[j];
+    if (d === '\\') { j += 2; continue; }
+    if (d === quote) {
+      if (s[j + 1] === quote) { j += 2; continue; }
+      j += 1;
+      closed = true;
+      break;
+    }
+    j += 1;
+  }
+  return { end: Math.min(j, n), closed };
+}
 
 /**
- * Scan `text` into consecutive lexical spans, in order, covering every
- * character exactly once. Each span is `{ kind, start, end }` where `kind` is:
- *   - `'string'`  — a `'…'` / `"…"` / `` `…` `` literal (quotes included);
- *                   `\` escapes the next char and a doubled quote (`''`) is an
- *                   escaped quote, not a terminator; an unterminated literal
- *                   runs to EOF.
- *   - `'comment'` — a `--` / `#` line comment (to end of line, excluding the
- *                   newline) or a `/* *​/` block comment (non-nesting, matching
- *                   ClickHouse; an unterminated one runs to EOF).
- *   - `'code'`    — everything else (runnable SQL).
- * `text.slice(start, end)` is the span's source. Pure generator.
+ * Scan `text` into consecutive, non-overlapping lexical spans, in order,
+ * covering every source character exactly once. Each span is
+ * `{ kind, start, end, closed }` where `text.slice(start, end)` is its source:
+ *   - `'code'`        — everything not consumed by an opaque form; `closed` is
+ *                       always `true`.
+ *   - `'string'`      — a single-quoted string or a `$tag$…$tag$` heredoc
+ *                       (delimiters retained). `closed` reports whether the
+ *                       required closer was found.
+ *   - `'quoted-ident'`— a `` `…` `` / `"…"` quoted identifier (delimiter
+ *                       retained; backslash + doubled-delimiter escapes honored).
+ *                       `closed` reports whether the closer was found.
+ *   - `'comment'`     — a `--` / restricted `#` / `//` line comment, or a nested
+ *                       `/* *​/` block comment. Line comments are always
+ *                       `closed: true`; a block comment's `closed` reports
+ *                       whether nesting returned to depth zero.
+ * No zero-length spans are emitted. Pure generator.
  * @param {string} text
- * @returns {Generator<{kind: 'code'|'string'|'comment', start: number, end: number}>}
+ * @returns {Generator<{kind: 'code'|'string'|'quoted-ident'|'comment', start: number, end: number, closed: boolean}>}
  */
 export function* scanSpans(text) {
   const s = String(text || '');
@@ -42,41 +102,67 @@ export function* scanSpans(text) {
   while (i < n) {
     const c = s[i];
     const c2 = s[i + 1];
-    const isLineComment = (c === '-' && c2 === '-') || c === '#';
-    const isBlockComment = c === '/' && c2 === '*';
-    const isQuote = c === "'" || c === '"' || c === '`';
-    if (!isLineComment && !isBlockComment && !isQuote) { i += 1; continue; }
-    // An opener ends the code run that preceded it (if any).
-    if (i > codeStart) yield { kind: 'code', start: codeStart, end: i };
-    if (isLineComment) {
+    // Classify a potential opener at `i`. `open` is one of the opaque forms, or
+    // null when `c` is ordinary code.
+    let open = null;
+    if (c === '-' && c2 === '-') open = 'line';
+    else if (c === '/' && c2 === '/') open = 'line';
+    else if (c === '/' && c2 === '*') open = 'block';
+    else if (c === '#' && (c2 === ' ' || c2 === '!')) open = 'line';
+    else if (c === "'") open = 'string';
+    else if (c === '"' || c === '`') open = 'quoted-ident';
+    else if (
+      c === '$' &&
+      // A heredoc opens only when its `$` starts a token: at the start of the
+      // current code run, or after a non-bare-word, non-`$` char (rule 6). An
+      // intervening opaque span/comment resets codeStart, so `'x'$t$…$t$` opens.
+      !(i > codeStart && (isWordChar(s[i - 1]) || s[i - 1] === '$'))
+    ) {
+      open = 'heredoc';
+    }
+    if (open === null) { i += 1; continue; }
+
+    let end;
+    let closed = true;
+    let kind;
+    if (open === 'heredoc') {
+      const oe = heredocOpenerEnd(s, i, n);
+      if (oe < 0) { i += 1; continue; } // non-word tag → ordinary code
+      const opener = s.slice(i, oe);
+      const close = s.indexOf(opener, oe);
+      end = close < 0 ? n : close + opener.length;
+      closed = close >= 0;
+      kind = 'string';
+    } else if (open === 'line') {
       let j = i + 1;
-      while (j < n && s[j] !== '\n') j++;
-      yield { kind: 'comment', start: i, end: j };
-      i = j;
-    } else if (isBlockComment) {
+      while (j < n && s[j] !== '\n') j += 1;
+      end = j;
+      kind = 'comment';
+    } else if (open === 'block') {
       let j = i + 2;
-      while (j < n && !(s[j] === '*' && s[j + 1] === '/')) j++;
-      j = Math.min(n, j + 2); // include the closing */ (or run to EOF if unterminated)
-      yield { kind: 'comment', start: i, end: j };
-      i = j;
-    } else {
-      const quote = c;
-      let j = i + 1;
-      while (j < n) {
-        const d = s[j];
-        if (d === '\\') { j += 2; continue; }
-        if (d === quote) {
-          if (s[j + 1] === quote) { j += 2; continue; }
-          j += 1;
-          break;
-        }
+      let depth = 1;
+      while (j < n && depth > 0) {
+        if (s[j] === '/' && s[j + 1] === '*') { depth += 1; j += 2; continue; }
+        if (s[j] === '*' && s[j + 1] === '/') { depth -= 1; j += 2; continue; }
         j += 1;
       }
-      j = Math.min(j, n); // a trailing `\` could overshoot past EOF
-      yield { kind: 'string', start: i, end: j };
-      i = j;
+      end = Math.min(j, n);
+      closed = depth === 0;
+      kind = 'comment';
+    } else {
+      // 'string' (single quote) and 'quoted-ident' share the delimiter scan.
+      const r = scanDelimited(s, i, n, c);
+      end = r.end;
+      closed = r.closed;
+      kind = open === 'string' ? 'string' : 'quoted-ident';
     }
+
+    // The opener ends the code run that preceded it (if any), then the opaque
+    // span is emitted and the next code run starts after it.
+    if (i > codeStart) yield { kind: 'code', start: codeStart, end: i, closed: true };
+    yield { kind, start: i, end, closed };
+    i = end;
     codeStart = i;
   }
-  if (n > codeStart) yield { kind: 'code', start: codeStart, end: n };
+  if (n > codeStart) yield { kind: 'code', start: codeStart, end: n, closed: true };
 }

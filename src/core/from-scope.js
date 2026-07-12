@@ -5,84 +5,78 @@
 // unqualified column suggestions to the statement's FROM/JOIN tables, and (3)
 // drive the debounced lazy-load of those tables' columns.
 //
-// It reuses the shared SQL tokenizer (sql-highlight.js `tokenize`) so a `FROM`
-// inside a string/comment, or a `;` inside a literal, never fools the parse:
-// the tokenizer already classifies strings/comments/backtick-idents, and a
-// top-level `;` is always a bare `op` token.
+// It reuses the shared structural lexer (sql-lex.js `lexSql`) so a `FROM` inside
+// a string/comment, or a `;` inside a literal, never fools the parse: the lexer
+// classifies strings/heredocs/comments/quoted-idents as opaque tokens, and a
+// top-level `;` is always a bare `punct` token with direct source offsets.
 //
 // Non-goals (v1, per the issue): CTE / subquery-derived column scopes,
 // `USING`/correlated-subquery resolution, `SELECT *` expansion, table functions
 // (`FROM numbers(…)`). Those are skipped, not resolved — only real base tables
 // named in FROM/JOIN are returned.
 
-import { tokenize } from './sql-highlight.js';
-import { unquoteIdent } from './format.js';
+import { lexSql, isWord, unquoteIdent, tokenText } from './sql-lex.js';
+import { SQL_KEYWORDS } from './sql-reference.js';
 
 // Bare words that must never be read as a table alias but aren't in
-// SQL_KEYWORDS (so the tokenizer types them as `ident`, not `keyword`).
-// SQL_KEYWORDS members are already `keyword`-typed and rejected for free.
+// SQL_KEYWORDS.
 const NON_ALIAS = new Set(['USING', 'WINDOW', 'QUALIFY']);
+// Implicit-alias stop set: the uppercased fallback SQL keyword set unioned with
+// NON_ALIAS. The old tokenizer prevented keywords from becoming implicit aliases
+// by typing them `keyword`; now every bare token is `word`, so this preserves
+// that behavior explicitly (#182). Only consulted for an *implicit* alias — an
+// explicit `AS x` accepts any word or quoted identifier (server grammar).
+const ALIAS_STOP = new Set([...SQL_KEYWORDS, ...NON_ALIAS]);
 
-// Tokenize `text` (or reuse a caller's `tokenize` output) and annotate each
-// token with its end offset — `tokenize` covers every character exactly once,
-// so a running length is enough to map a token to the caret. Only `end` is
-// needed (statement selection); the start is never read.
-function withOffsets(text, toks) {
-  const out = [];
-  let off = 0;
-  for (const [type, t] of toks || tokenize(text)) {
-    off += t.length;
-    out.push({ type, text: t, end: off });
-  }
-  return out;
-}
-
-// The tokens of the statement containing `pos`, split on top-level `;` (a bare
-// `op` `;` token — literals/comments are their own token types, so their `;`
-// never reaches here). `pos` picks the first statement whose text extends to or
-// past it; a `pos` sitting in the gap left by a `;` falls to the next statement.
-function statementTokensAt(toks, pos) {
-  const groups = [];
+// The tokens of the statement containing `pos`, selected by semicolon offsets
+// (`;` is a bare `punct` token — literals/comments are opaque, so their `;`
+// never reaches here). Whitespace before a `;` (and the caret exactly at the
+// `;` start) belongs to the preceding statement; the caret at the `;` end
+// offset (and whitespace after it) belongs to the following statement; a caret
+// beyond the final token stays in the final statement (#182).
+function statementTokensAt(s, toks, pos) {
   let cur = [];
   for (const t of toks) {
-    if (t.type === 'op' && t.text === ';') { groups.push(cur); cur = []; continue; }
+    if (t.kind === 'punct' && s[t.start] === ';') {
+      if (pos <= t.start) return cur; // caret is before/at this `;`
+      cur = []; // caret is past this `;` — start the next statement
+      continue;
+    }
     cur.push(t);
   }
-  groups.push(cur);
-  for (const g of groups) {
-    if (g.length && g[g.length - 1].end >= pos) return g;
-  }
-  return groups[groups.length - 1];
+  return cur; // caret is in the final statement (beyond the last `;`)
 }
 
-const isDot = (t) => t && t.type === 'op' && t.text === '.';
-const isComma = (t) => t && t.type === 'op' && t.text === ',';
-const isOpenParen = (t) => t && t.type === 'op' && t.text === '(';
-const isIdent = (t) => t && t.type === 'ident';
-const isKeyword = (t, kw) => t && t.type === 'keyword' && t.text.toUpperCase() === kw;
+const isDot = (s, t) => !!t && t.kind === 'punct' && s[t.start] === '.';
+const isComma = (s, t) => !!t && t.kind === 'punct' && s[t.start] === ',';
+const isOpenParen = (s, t) => !!t && t.kind === 'punct' && s[t.start] === '(';
+const isIdent = (t) => !!t && (t.kind === 'word' || t.kind === 'quoted-ident');
+// A bare `word` in the fallback keyword/NON_ALIAS set is a clause keyword, not
+// an implicit alias. A `quoted-ident` is always a valid alias (backtick-quoted).
+const isAliasStop = (s, t) => t.kind === 'word' && ALIAS_STOP.has(tokenText(s, t).toUpperCase());
 
 // Parse a single table reference starting at `i` in the significant-token list,
 // pushing `{db, table, alias}` to `refs` when it names a real base table.
 // Returns the index just past what it consumed. Bails (adds nothing) on a `(`
 // (subquery / table function) — those are non-goals.
-function parseTableRef(sig, i, refs) {
+function parseTableRef(s, sig, i, refs) {
   const t = sig[i];
   if (!isIdent(t)) return i;
   let db = null;
-  let table = unquoteIdent(t.text);
+  let table = unquoteIdent(s, t);
   let j = i + 1;
-  if (isDot(sig[j]) && isIdent(sig[j + 1])) {
+  if (isDot(s, sig[j]) && isIdent(sig[j + 1])) {
     db = table;
-    table = unquoteIdent(sig[j + 1].text);
+    table = unquoteIdent(s, sig[j + 1]);
     j += 2;
   }
-  if (isOpenParen(sig[j])) return j; // table function / subquery alias form — skip
+  if (isOpenParen(s, sig[j])) return j; // table function / subquery alias form — skip
   let alias = null;
-  if (isKeyword(sig[j], 'AS') && isIdent(sig[j + 1])) {
-    alias = unquoteIdent(sig[j + 1].text);
+  if (isWord(s, sig[j], 'AS') && isIdent(sig[j + 1])) {
+    alias = unquoteIdent(s, sig[j + 1]);
     j += 2;
-  } else if (isIdent(sig[j]) && !NON_ALIAS.has(sig[j].text.toUpperCase())) {
-    alias = unquoteIdent(sig[j].text);
+  } else if (isIdent(sig[j]) && !isAliasStop(s, sig[j])) {
+    alias = unquoteIdent(s, sig[j]);
     j += 1;
   }
   refs.push({ db, table, alias });
@@ -90,9 +84,9 @@ function parseTableRef(sig, i, refs) {
 }
 
 // Parse a comma-separated list of table refs (the FROM list) starting at `i`.
-function parseFromList(sig, i, refs) {
-  let j = parseTableRef(sig, i, refs);
-  while (isComma(sig[j])) j = parseTableRef(sig, j + 1, refs);
+function parseFromList(s, sig, i, refs) {
+  let j = parseTableRef(s, sig, i, refs);
+  while (isComma(s, sig[j])) j = parseTableRef(s, sig, j + 1, refs);
   return j;
 }
 
@@ -105,23 +99,23 @@ function parseFromList(sig, i, refs) {
  * still adds its base table `b` — a v1 over-approximation (it over-includes,
  * never wrong-suppresses), since subquery-derived scoping is a non-goal.
  * Returns `[]` when the statement has no FROM. `toks` optionally supplies a
- * pre-computed `tokenize(text)` so the completion path lexes once. Pure.
+ * pre-computed `lexSql(text)` so the completion path lexes once. Pure.
  */
 export function fromScopeAt(text, pos, toks) {
   const s = String(text || '');
   const p = Math.max(0, Math.min(pos | 0, s.length));
-  const stmt = statementTokensAt(withOffsets(s, toks), p);
-  const sig = stmt.filter((t) => t.type !== 'ws' && t.type !== 'comment');
+  const stmt = statementTokensAt(s, toks || lexSql(s), p);
+  // Comments and opaque strings/heredocs can't supply FROM/JOIN or punctuation;
+  // quoted identifiers stay (a table/alias can be backtick-quoted).
+  const sig = stmt.filter((t) => t.kind !== 'comment' && t.kind !== 'string');
   const refs = [];
   for (let i = 0; i < sig.length; i++) {
     const t = sig[i];
-    if (t.type !== 'keyword') continue;
-    const kw = t.text.toUpperCase();
-    if (kw === 'FROM') {
-      i = parseFromList(sig, i + 1, refs) - 1;
-    } else if (kw === 'JOIN' && !isKeyword(sig[i - 1], 'ARRAY')) {
+    if (isWord(s, t, 'FROM')) {
+      i = parseFromList(s, sig, i + 1, refs) - 1;
+    } else if (isWord(s, t, 'JOIN') && !isWord(s, sig[i - 1], 'ARRAY')) {
       // `ARRAY JOIN arr` unnests an array column, not a table — don't scope it.
-      i = parseTableRef(sig, i + 1, refs) - 1;
+      i = parseTableRef(s, sig, i + 1, refs) - 1;
     }
   }
   return dedupe(refs);

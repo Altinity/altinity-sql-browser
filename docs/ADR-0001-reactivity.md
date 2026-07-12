@@ -198,9 +198,12 @@ tab/effect wiring, the app-level `onDocChange` subscriber owns the
 measurement inside the port. Per-tab `EditorState`s give per-tab undo — a
 capability the shared-textarea design structurally lacked — and the adapter is
 unit-tested against the real CM6 under happy-dom (the coverage gate holds
-without a fake-editor seam). The tokenizer stays in `core/sql-highlight.js` for
-completion context; the CM6 dialect gets the same server keyword/function sets
-via a `Compartment` reconfigure. Nothing about the state model changed — this
+without a fake-editor seam). String-based application analysis (completion
+context, FROM/JOIN scope, statement splitting, parameter inference) runs on the
+shared core scanner `core/sql-spans.js` and the structural lexer
+`core/sql-lex.js` (#182, which retired the old highlighter tokenizer
+`core/sql-highlight.js`); CM6 owns editor highlighting and gets the same server
+keyword/function sets via a `Compartment` reconfigure. Nothing about the state model changed — this
 addendum records that the editor island now has its intended long-term
 implementation, and that #84 (schema-aware autocomplete) plugs into the CM6
 completion source rather than growing new overlay machinery.

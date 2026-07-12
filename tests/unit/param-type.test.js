@@ -155,6 +155,18 @@ describe('enumMembers / enumValues', () => {
     expect(enumValues("Enum8('日本語' = 1, 'ok' = 2)")).toEqual(['日本語', 'ok']);
   });
 
+  it('decodes $$…$$ / $tag$…$tag$ heredoc member names verbatim, brackets/commas and all (#182)', () => {
+    expect(enumValues('Enum8($$foo$$ = 1)')).toEqual(['foo']);
+    expect(enumMembers("Enum8($tag$a,b)$tag$ = 1)")).toEqual([{ name: 'a,b)', code: 1 }]);
+    expect(enumValues("Enum8($$a$$ = 1, 'b' = 2)")).toEqual(['a', 'b']); // heredoc + single-quote mix
+  });
+
+  it('rejects quoted-identifier members and unterminated literals (#182)', () => {
+    expect(enumValues('Enum8("foo" = 1)')).toBeNull(); // double-quote is an identifier, not a member
+    expect(enumMembers('Enum8("foo" = 1)')).toEqual([]);
+    expect(enumValues("Enum8('foo)")).toBeNull(); // unterminated single-quote → no member
+  });
+
   it('unwraps Nullable(Enum8(...))', () => {
     expect(enumValues("Nullable(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
   });

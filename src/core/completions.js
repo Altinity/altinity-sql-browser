@@ -4,10 +4,11 @@
 // from ClickHouse system tables (see net/ch-client.js loadReferenceData) and
 // assembled here into the in-memory shape the editor reads on the keystroke
 // path — never a query per keystroke. `assembleReferenceData` falls back to the
-// built-in tokenizer sets when the server didn't supply them.
+// built-in reference sets (sql-reference.js) when the server didn't supply them.
 
-import { SQL_KEYWORDS, SQL_FUNCS, tokenize } from './sql-highlight.js';
-import { quoteIdent, unquoteIdent } from './format.js';
+import { SQL_KEYWORDS, SQL_FUNCS } from './sql-reference.js';
+import { lexSql, tokenText, unquoteIdent } from './sql-lex.js';
+import { quoteIdent } from './format.js';
 import { compactType, INLINE_TYPE_MAX } from './type-display.js';
 
 const BUILTIN_KEYWORDS = [...SQL_KEYWORDS];
@@ -117,17 +118,18 @@ export function buildCompletions(ref, schema) {
  * `table.` → that table's columns), and whether it sits inside a FORMAT clause
  * (`afterFormat` — the preceding token is FORMAT → complete output-format names).
  * Returns {word, from, to, qualified, parent, afterFormat}. `toks` optionally
- * supplies a pre-computed `tokenize(value)` so the completion path (which also
+ * supplies a pre-computed `lexSql(value)` so the completion path (which also
  * runs from-scope) lexes the caret prefix once, not twice.
  */
 export function completionContext(value, pos, toks) {
+  const list = toks || lexSql(value);
   // The word being typed is either inside an OPEN backtick-quoted identifier (a
-  // `non-bare-name… still being typed) or a bare [A-Za-z0-9_] run. We use the SQL
-  // tokenizer to find an open backtick so a backtick inside a string/comment (or
-  // an escaped `\`` in a closed name) can't fool us. `from` is where an accepted
-  // candidate replaces to — the opening backtick in the quoted case, so accepting
-  // never doubles the backtick.
-  const open = openBacktickStart(value, pos, toks);
+  // `non-bare-name… still being typed) or a bare [A-Za-z0-9_] run. We use the
+  // structural lexer to find an open backtick so a backtick inside a string/
+  // comment (or an escaped `\`` in a closed name) can't fool us. `from` is where
+  // an accepted candidate replaces to — the opening backtick in the quoted case,
+  // so accepting never doubles the backtick.
+  const open = openBacktickStart(value, pos, list);
   let from;
   let word;
   if (open >= 0) {
@@ -145,48 +147,42 @@ export function completionContext(value, pos, toks) {
   let pf = b;
   while (pf > 0 && /[A-Za-z0-9_]/.test(value[pf - 1])) pf--;
   const afterFormat = value.slice(pf, b).toUpperCase() === 'FORMAT';
-  // Qualified? An identifier (bare OR backtick-quoted) then a dot immediately
-  // before the word. parent is the unquoted table name, matched against item.parent.
-  let qualified = false;
-  let parent = null;
-  if (value[from - 1] === '.') {
-    // Only qualified when a real identifier precedes the dot. A bare '.' after a
-    // non-identifier (`.col`, `).c`, `count().c`) yields '' → normal completion.
-    const name = identBefore(value, from - 1);
-    if (name) { qualified = true; parent = name; }
-  }
-  return { word, from, to: pos, qualified, parent, afterFormat };
+  // Qualified? An identifier (bare OR quoted) then a dot immediately before the
+  // word, by exact token adjacency (`t.col` yes; `t .col`, `t. col`,
+  // `count().col` no). parent is the unquoted table name (matched to item.parent).
+  const parent = qualifierBefore(value, from, list);
+  return { word, from, to: pos, qualified: parent != null, parent, afterFormat };
 }
 
 // The start index of an OPEN (still-being-typed) backtick-quoted identifier that
-// contains the caret, or -1. Uses the tokenizer so a backtick inside a string or
-// comment isn't mistaken for an identifier quote, and an escaped `\`` inside a
-// closed name doesn't desync a naive parity count.
+// contains the caret, or -1 — caret-relative (#182). A `quoted-ident` token can
+// be closed in the full line yet open relative to a caret before its closer:
+//   1. closed token, caret before the closing `` ` ``  → open;
+//   2. closed token, caret immediately after the closer → closed;
+//   3. `closed: false`, caret within/at the token end   → open.
+// Uses lexSql tokens so a backtick inside a string/comment isn't mistaken for an
+// identifier quote, and escaped/doubled backticks never desync detection.
 function openBacktickStart(value, pos, toks) {
-  let off = 0;
-  for (const [type, text] of toks || tokenize(value)) {
-    const end = off + text.length;
-    if (off < pos && pos <= end && type === 'ident' && text[0] === '`') {
-      // open = the caret is inside the run before any closing backtick (an
-      // unterminated `name… token, or the caret sits before its trailing `).
-      const closedAtEnd = pos === end && text.length > 1 && text[text.length - 1] === '`';
-      if (!closedAtEnd) return off;
-    }
-    off = end;
+  for (const t of toks || lexSql(value)) {
+    if (t.kind !== 'quoted-ident' || value[t.start] !== '`') continue;
+    if (pos <= t.start || pos > t.end) continue; // caret not inside this token
+    if (!t.closed || pos <= t.end - 1) return t.start; // open (cases 1 & 3)
   }
   return -1;
 }
 
-// The identifier ending at index `end` (exclusive): a backtick-quoted run
-// (returned unquoted/unescaped) or a bare [A-Za-z0-9_] run. '' if neither.
-function identBefore(value, end) {
-  if (value[end - 1] === '`') {
-    const open = value.lastIndexOf('`', end - 2);
-    if (open >= 0) return unquoteIdent(value.slice(open, end));
-  }
-  let p = end;
-  while (p > 0 && /[A-Za-z0-9_]/.test(value[p - 1])) p--;
-  return value.slice(p, end);
+// The unquoted parent identifier qualifying the word at `from`, or null. Exact
+// source adjacency (#182): a `.` token must end exactly at `from`, and an
+// identifier token (bare `word` or `quoted-ident`) must end exactly at that dot
+// token's start. A quoted parent is decoded via unquoteIdent; a bare parent is
+// its verbatim source text.
+function qualifierBefore(value, from, toks) {
+  const list = toks || lexSql(value);
+  const dot = list.find((t) => t.kind === 'punct' && value[t.start] === '.' && t.end === from);
+  if (!dot) return null;
+  const id = list.find((t) => (t.kind === 'word' || t.kind === 'quoted-ident') && t.end === dot.start);
+  if (!id) return null;
+  return id.kind === 'quoted-ident' ? unquoteIdent(value, id) : tokenText(value, id);
 }
 
 /**

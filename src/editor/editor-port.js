@@ -30,7 +30,7 @@
  * @property {(text: string) => void} replaceDocument   replace the whole document (undo-preserving; equal-value no-op)
  * @property {(pos: number) => void} revealOffset       move the caret to `pos` and scroll its line into view
  * @property {() => void} syncFromState             re-read the active tab into the view (tab switch / bootstrap)
- * @property {() => void} refreshReference          server keyword/function sets changed → re-tokenize + re-highlight
+ * @property {() => void} refreshReference          server keyword/function sets changed → re-highlight
  * @property {(cb: (value: string) => void) => (() => void)} onDocChange
  */
 

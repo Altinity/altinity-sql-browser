@@ -42,6 +42,27 @@ describe('fromScopeAt — table references', () => {
   it('a FINAL modifier is not read as an alias', () => {
     expect(scope('SELECT * FROM t FINAL')).toEqual([{ db: null, table: 't', alias: null }]);
   });
+  it('none of the clause keywords after a table become an implicit alias (#182)', () => {
+    // The seven required alias-stop cases: the second word is a clause keyword,
+    // not an alias (preserved explicitly via the fallback keyword ∪ NON_ALIAS set).
+    for (const tail of ['WHERE x', 'PREWHERE x', 'FINAL', 'SETTINGS max_threads=1', 'FORMAT JSON']) {
+      expect(scope(`SELECT * FROM t ${tail}`)).toEqual([{ db: null, table: 't', alias: null }]);
+    }
+    expect(scope('SELECT * FROM t LEFT JOIN u ON t.id = u.id')).toEqual([
+      { db: null, table: 't', alias: null },
+      { db: null, table: 'u', alias: null },
+    ]);
+    expect(scope('SELECT * FROM t ARRAY JOIN arr')).toEqual([{ db: null, table: 't', alias: null }]);
+  });
+  it('an explicit AS alias accepts a word that would otherwise be a stop keyword (#182)', () => {
+    // Explicit AS binds any word — only implicit aliases consult the stop set.
+    expect(scope('SELECT 1 FROM t AS final')).toEqual([{ db: null, table: 't', alias: 'final' }]);
+  });
+  it('escaped/doubled quoted db/table/alias names decode for both delimiters (#182)', () => {
+    expect(scope('SELECT 1 FROM `a``b`')).toEqual([{ db: null, table: 'a`b', alias: null }]);
+    expect(scope('SELECT 1 FROM `a\\`b` c')).toEqual([{ db: null, table: 'a`b', alias: 'c' }]);
+    expect(scope('SELECT 1 FROM "a""b"')).toEqual([{ db: null, table: 'a"b', alias: null }]);
+  });
   it('backtick-quoted db/table/alias are unquoted', () => {
     expect(scope('SELECT * FROM `my db`.`my tbl` `al`')).toEqual([
       { db: 'my db', table: 'my tbl', alias: 'al' },
@@ -77,6 +98,19 @@ describe('fromScopeAt — strings/comments never fool the parse', () => {
       { db: null, table: 'real', alias: null },
     ]);
   });
+  it('a FROM inside // and valid # comments is ignored (#182)', () => {
+    expect(scope('SELECT * FROM real // FROM fake\nWHERE x')).toEqual([
+      { db: null, table: 'real', alias: null },
+    ]);
+    expect(scope('SELECT * FROM real # FROM fake\nWHERE x')).toEqual([
+      { db: null, table: 'real', alias: null },
+    ]);
+  });
+  it('a FROM / ; inside a heredoc is inert (#182)', () => {
+    expect(scope('SELECT * FROM real WHERE x = $$ FROM fake; DROP $$')).toEqual([
+      { db: null, table: 'real', alias: null },
+    ]);
+  });
   it('a FROM inside a block comment is ignored', () => {
     expect(scope('SELECT * /* FROM fake */ FROM real')).toEqual([
       { db: null, table: 'real', alias: null },
@@ -94,6 +128,15 @@ describe('fromScopeAt — statement selection', () => {
   });
   it('caret in the second statement scopes to its FROM', () => {
     expect(fromScopeAt(two, two.length)).toEqual([{ db: null, table: 'b', alias: null }]);
+  });
+  it('selects by semicolon offset, not last-token end (#182)', () => {
+    // two = 'SELECT * FROM a;\nSELECT * FROM b' — the `;` is at index 15.
+    const semi = two.indexOf(';');
+    expect(fromScopeAt(two, semi)).toEqual([{ db: null, table: 'a', alias: null }]);     // at `;` start → preceding
+    expect(fromScopeAt(two, semi + 1)).toEqual([{ db: null, table: 'b', alias: null }]); // at `;` end → following
+    expect(fromScopeAt(two, semi + 2)).toEqual([{ db: null, table: 'b', alias: null }]); // whitespace after `;` → following
+    const spaced = 'SELECT * FROM a ;SELECT * FROM b';
+    expect(fromScopeAt(spaced, spaced.indexOf(' ;'))).toEqual([{ db: null, table: 'a', alias: null }]); // ws before `;` → preceding
   });
   it('a ; inside a string does not split statements', () => {
     expect(scope("SELECT ';' FROM t")).toEqual([{ db: null, table: 't', alias: null }]);

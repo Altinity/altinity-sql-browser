@@ -2,10 +2,10 @@
 // one statement per request, so to run a `;`-separated script (DDL / INSERT /
 // SELECT) we split it here and POST each statement in turn (the same model as
 // `clickhouse-client --multiquery`). Splitting is purely lexical: it skips `;`
-// inside '…' / "…" / `…` literals (honoring both `\'` backslash and `''` doubled
-// escapes) and inside -- / # line comments and /* */ block comments. The literal
-// /comment lexing lives in the shared scanner (sql-spans.js), used by both this
-// splitter and query-params.js so the tokenizing rules can't diverge.
+// inside '…' strings and heredocs, "…" / `…` quoted identifiers, and
+// -- / # / // line comments and nested /* */ block comments — all classified by
+// the shared scanner (sql-spans.js, #182), used by every string-based analyzer
+// so the lexical rules can't diverge.
 //
 // Known limitation: `INSERT … FORMAT CSV\n<inline data>` whose inline data
 // contains a `;` will mis-split — the splitter has no way to know where the
@@ -29,9 +29,11 @@ export function splitStatements(sql) {
   for (const span of scanSpans(text)) {
     const chunk = text.slice(span.start, span.end);
     // Comments and literals are copied verbatim (a `;` inside them is not a
-    // separator). A literal is runnable text (sets hasCode); a comment is not.
+    // separator). A string/heredoc or a quoted identifier is runnable text
+    // (sets hasCode); a comment is not. Treating quoted-ident like string keeps
+    // ``SELECT `a;b` `` one statement (#182).
     if (span.kind === 'comment') { buf += chunk; continue; }
-    if (span.kind === 'string') { buf += chunk; hasCode = true; continue; }
+    if (span.kind === 'string' || span.kind === 'quoted-ident') { buf += chunk; hasCode = true; continue; }
     // Code: split on top-level `;`; other non-whitespace marks the fragment
     // as runnable so a comment-only fragment is dropped.
     for (let k = 0; k < chunk.length; k++) {
@@ -53,21 +55,31 @@ const ROW_RETURNING = new Set([
 ]);
 
 /** The first SQL keyword of `stmt`, uppercased, after skipping leading
- *  whitespace, -- / # / block comments, and `(` (so a parenthesized
- *  `(SELECT …) UNION …` is still recognized as row-returning). '' when none. Pure. */
+ *  whitespace, closed -- / # / // / nested-block comments, and `(` (so a
+ *  parenthesized `(SELECT …) UNION …` is still recognized as row-returning),
+ *  using the shared scanner (#182). Comments may sit among the leading
+ *  parentheses. Returns '' when the first real code construct is not an ASCII
+ *  word — so `#x\nCREATE …` (`#x` is *not* a comment) yields '', never CREATE.
+ *  Also the shared first-code-word helper behind `format.js::isSchemaMutatingSql`.
+ *  Pure. */
 export function leadingKeyword(stmt) {
-  let s = String(stmt || '');
-  for (;;) {
-    const before = s;
-    s = s.replace(/^\s+/, '')
-      .replace(/^--[^\n]*/, '')
-      .replace(/^#[^\n]*/, '')
-      .replace(/^\/\*[\s\S]*?\*\//, '')
-      .replace(/^\(+/, '');
-    if (s === before) break;
+  const s = String(stmt || '');
+  for (const span of scanSpans(s)) {
+    if (span.kind === 'comment') {
+      if (span.closed) continue; // skip a closed leading comment of any form
+      return ''; // an unterminated comment leads no runnable code
+    }
+    if (span.kind !== 'code') return ''; // a leading string/quoted-ident is not a keyword
+    // Code span: skip leading whitespace and `(`, then read the first ASCII word.
+    let k = span.start;
+    while (k < span.end && (/\s/.test(s[k]) || s[k] === '(')) k += 1;
+    if (k >= span.end) continue; // this code span was only whitespace/parens
+    if (!/[A-Za-z]/.test(s[k])) return ''; // first real construct isn't a word
+    let e = k;
+    while (e < span.end && /[A-Za-z]/.test(s[e])) e += 1;
+    return s.slice(k, e).toUpperCase();
   }
-  const m = /^([A-Za-z]+)/.exec(s);
-  return m ? m[1].toUpperCase() : '';
+  return '';
 }
 
 /** True when `stmt` is a row-returning statement (SELECT/WITH/SHOW/…). Pure. */

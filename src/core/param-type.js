@@ -125,15 +125,32 @@ function unescapeEnumMember(quoted) {
   return out;
 }
 
+// Decode one Enum member NAME from a closed `string`-kind span (#182): a
+// single-quoted literal uses ClickHouse's backslash/doubled-quote rules
+// (unescapeEnumMember); a `$tag$…$tag$` heredoc is opaque — strip the exact
+// opener and (equal-length) closer and return the body verbatim, with no
+// unescaping. An unterminated span (`closed: false`) is not a member → null.
+// `quoted-ident` spans never reach here, so `Enum8("x" = 1)` yields no member.
+function decodeEnumMemberSpan(raw, closed) {
+  if (!closed) return null;
+  if (raw[0] === "'") return unescapeEnumMember(raw);
+  const openLen = raw.indexOf('$', 1) + 1; // past the opener's closing `$`
+  return raw.slice(openLen, raw.length - openLen);
+}
+
 /**
  * Parse an `Enum8`/`Enum16` declared type's members into `{name, code}`
  * pairs (in declaration order), or `null` when `type`'s base isn't
  * `Enum8`/`Enum16` (`Nullable(...)` already unwrapped by `parseParamType`).
  * Reuses the shared string-span scanner (`sql-spans.js`, also behind
- * `param-scan.js`'s brace matching) to find each quoted member name, so
- * escaped quotes (`'a''b'`), braces (`'}'`), backslash escapes, spacing
- * variants, and unicode member names all parse exactly like ClickHouse's own
- * string literal grammar. ClickHouse allows OMITTING the `= <code>`
+ * `param-scan.js`'s brace matching) to find each member name, so escaped
+ * quotes (`'a''b'`), braces (`'}'`), backslash escapes, spacing variants, and
+ * unicode names all parse exactly like ClickHouse's own string literal grammar.
+ * Member names may be single-quoted strings or `$tag$…$tag$` heredocs (whose
+ * body — commas, brackets and all — is opaque and taken verbatim); double-
+ * quoted / backtick forms are quoted identifiers, not Enum members, and an
+ * unterminated literal produces no member (#182). ClickHouse allows OMITTING
+ * the `= <code>`
  * assignment — `Enum8('hello', 'world')` auto-numbers from 1, and an implicit
  * member after an explicit code continues from it (`Enum8('One' = 1, 'Two',
  * 'Three')` → Two=2, Three=3; `Enum8('a' = -2, 'b')` → b=-1) — matched here
@@ -153,8 +170,9 @@ export function enumMembers(type) {
   let nextCode = 1;
   for (let i = 0; i < spans.length; i++) {
     const sp = spans[i];
-    if (sp.kind !== 'string') continue;
-    const name = unescapeEnumMember(text.slice(sp.start, sp.end));
+    if (sp.kind !== 'string') continue; // quoted-ident / comment / code aren't members
+    const name = decodeEnumMemberSpan(text.slice(sp.start, sp.end), sp.closed);
+    if (name == null) continue; // an unterminated literal is not a member
     const next = spans[i + 1];
     const m = next && next.kind === 'code' ? ENUM_CODE_RE.exec(text.slice(next.start, next.end)) : null;
     const code = m ? Number(m[1]) : nextCode;

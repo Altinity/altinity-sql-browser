@@ -50,34 +50,25 @@ export function hasOptionalBlocks(sql) {
   return countOptionalBlocks(sql) > 0;
 }
 
-// True when `text`'s final lexical span is a string / quoted-identifier
-// literal that never closes — i.e. the text ends mid-string. This is how a
-// `*`+`/` *inside a string literal* in block content manifests: ClickHouse's
-// comment lexer knows nothing about string quoting, so the comment ends at the
-// in-string sequence and the candidate's content is cut off mid-literal. The
-// sneakiest form is a string containing the three characters `]`+`*`+`/` — the
-// truncated candidate still *looks* well-formed (it ends with the close
-// marker), so only the content's own lexical shape reveals the damage.
-function endsInOpenString(text) {
+// True when `text`'s final lexical span is a string, heredoc, or quoted
+// identifier that never closes — i.e. the text ends mid-literal. This is how a
+// `*`+`/` *inside a quoted form* in block content manifests: ClickHouse's
+// comment lexer knows nothing about string/identifier quoting, so the comment
+// ends at the in-literal sequence and the candidate's content is cut off
+// mid-literal. The sneakiest form is a literal containing the three characters
+// `]`+`*`+`/` — the truncated candidate still *looks* well-formed (it ends with
+// the close marker), so only the content's own lexical shape reveals the
+// damage. The scanner's `closed` flag reports this directly now (#182), so no
+// escape logic needs to be replayed here.
+function endsUnterminated(text) {
   let last = null;
   for (const s of scanSpans(text)) last = s;
-  if (!last || last.kind !== 'string') return false;
-  // Replay the scanner's own string rules (`\` escape, doubled-quote escape)
-  // to decide whether the final literal actually closed at the text's end.
-  const quote = text[last.start];
-  let j = last.start + 1;
-  while (j < last.end) {
-    const c = text[j];
-    if (c === '\\') { j += 2; continue; }
-    if (c === quote) {
-      if (text[j + 1] === quote) { j += 2; continue; }
-      return false; // the literal closed (exactly at the end of the text)
-    }
-    j += 1;
-  }
-  return true;
+  return !!last && (last.kind === 'string' || last.kind === 'quoted-ident') && !last.closed;
 }
 
+// One message for every unterminated quoted form (single-quoted string,
+// heredoc, or quoted identifier). Kept worded around "string literal" — the
+// overwhelmingly common case — while covering the others (#182).
 const OPEN_STRING_ERROR = 'optional block: content ends inside a string literal — a "*/" inside a string still ends the SQL comment; remove it';
 
 // Scan one statement's optional blocks, validating rules 1/3/4/5/6. Each valid
@@ -97,13 +88,13 @@ function scanBlocks(text) {
       // an in-string occurrence gets its own message).
       errors.push(!t.endsWith('*/')
         ? 'optional block: unbalanced "/*[" — missing its closing "]*/"'
-        : endsInOpenString(t.slice(OPEN.length, -2))
+        : endsUnterminated(t.slice(OPEN.length, -2))
           ? OPEN_STRING_ERROR
           : 'optional block: content cannot contain "*/" — the SQL comment ends there (close the block with "]*/")');
       continue;
     }
     const content = t.slice(OPEN.length, -CLOSE.length);
-    if (endsInOpenString(content)) {
+    if (endsUnterminated(content)) {
       // A string literal containing `]*/` ended the comment early, yet the
       // truncated candidate still ends with `]*/` — reject instead of
       // materializing silently-mangled SQL.
@@ -191,7 +182,9 @@ export function materializeOptionalBlocks(stmt, active = {}) {
     rest += text.slice(pos);
     let hasCode = false;
     for (const s of scanSpans(rest)) {
-      if (s.kind === 'string' || (s.kind === 'code' && /\S/.test(rest.slice(s.start, s.end)))) { hasCode = true; break; }
+      // A string/heredoc or a quoted identifier is runnable content too (#182),
+      // so a block wrapping only ``FROM `t` `` still isn't the whole statement.
+      if (s.kind === 'string' || s.kind === 'quoted-ident' || (s.kind === 'code' && /\S/.test(rest.slice(s.start, s.end)))) { hasCode = true; break; }
     }
     if (!hasCode) return failed(['optional block: a block cannot wrap a whole statement']);
   }

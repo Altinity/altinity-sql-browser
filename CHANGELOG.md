@@ -49,6 +49,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   are preserved, never silently stripped.
 
 ### Changed
+- **One authoritative ClickHouse lexical scanner + structural lexer replaces the
+  legacy highlighter tokenizer** (#182, supersedes #141). All string-based SQL
+  analysis — statement splitting, parameter detection, optional-block/format
+  handling, type display, completion, FROM/JOIN scope, and parameter-comparison
+  inference — now runs on the shared `core/sql-spans.js` scanner (`{kind, start,
+  end, closed}` spans, authoritative) and the new offset-bearing `core/sql-lex.js`
+  structural lexer. The old `[type, text]` tokenizer in `core/sql-highlight.js`
+  (and the private comment/quote skippers duplicated across `format.js`,
+  `type-display.js`, and `optional-blocks.js`) are removed; its fallback keyword/
+  function sets move to `core/sql-reference.js`. CodeMirror 6 keeps sole ownership
+  of editor parsing/highlighting and gains the `hashComments` / `slashComments` /
+  `doubleDollarQuotedStrings` dialect flags. Lexical fixes that follow from the
+  unified scanner: `//` comments, restricted `#` (comment only before space/`!`),
+  nested block comments, `$tag$` heredoc opacity (incl. heredoc Enum members),
+  quoted-identifier escapes, and correct trailing-`FORMAT` / DDL schema-refresh
+  classification after every supported comment form. No runtime dependency added.
 - **A panel-config edit now dirties the tab like a SQL edit, and an untouched
   auto-derived config is no longer frozen into the entry on Save** (#166).
   Previously the Chart tab silently persisted whatever autoChart last derived;

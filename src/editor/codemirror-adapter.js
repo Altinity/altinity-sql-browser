@@ -25,7 +25,7 @@ import { tags } from '@lezer/highlight';
 import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions, wordAt } from '../core/completions.js';
 import { fromScopeAt, pendingColumnLoads } from '../core/from-scope.js';
-import { tokenize } from '../core/sql-highlight.js';
+import { lexSql } from '../core/sql-lex.js';
 import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
@@ -79,6 +79,16 @@ export function langExtensionFor(app) {
     builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
     backslashEscapes: true,
     identifierQuotes: '`"',
+    // ClickHouse comment/heredoc forms (#182). These are editor approximations
+    // of the authoritative core scanner (sql-spans.js): `hashComments` treats
+    // every `#` as a comment (it can't express the space-or-`!` follow set), and
+    // CM6's quoted-identifier escaping differs — but these affect only CM6-owned
+    // editor behavior (highlighting, tree-based bracket/quote guards, hover),
+    // never core completion/split/param analysis. `doubleQuotedStrings` stays
+    // default-false: `"` is an identifier delimiter in ClickHouse.
+    hashComments: true,
+    slashComments: true,
+    doubleDollarQuotedStrings: true,
   });
   return [
     sql({ dialect }),
@@ -142,7 +152,7 @@ export function completionSourceFor(app) {
     const doc = ctx.state.sliceDoc(0, ctx.state.doc.lineAt(ctx.pos).to);
     // Lex the caret prefix once and share it: both completionContext (open-
     // backtick detection) and fromScopeAt need the same token stream.
-    const toks = tokenize(doc);
+    const toks = lexSql(doc);
     const c = completionContext(doc, ctx.pos, toks);
     if (!c.qualified && c.word.length < 1 && !ctx.explicit) return null;
     // FROM-aware ranking (#84): resolve `e.` → events, and scope unqualified

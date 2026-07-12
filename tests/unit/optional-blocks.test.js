@@ -189,6 +189,19 @@ describe('materializeOptionalBlocks — validation errors (rules 3–6)', () => 
     expect(errOf("SELECT 1 /*[ AND s = 'a''b ]*/")[0]).toContain('ends inside a string literal');
   });
 
+  it('detects an unterminated backtick identifier or heredoc via the closed flag (#182)', () => {
+    // A `*/` inside a backtick identifier or heredoc still ends the SQL comment;
+    // the truncated content ends mid-literal, caught through the scanner's closed flag.
+    expect(errOf('SELECT 1 /*[ AND x = `col ]*/')[0]).toContain('ends inside a string literal');
+    expect(errOf('SELECT 1 /*[ AND x = $$ ]*/')[0]).toContain('ends inside a string literal');
+  });
+
+  it('a block wrapping only a quoted identifier is not the whole statement (#182)', () => {
+    const r = materializeOptionalBlocks('`t` /*[ AND d = {d:String} ]*/', {});
+    expect(r.errors).toEqual([]);
+    expect(r.sql).toBe('`t` ');
+  });
+
   it('a string literal that closes exactly at the content end is fine', () => {
     const r = materializeOptionalBlocks("SELECT 1 /*[ AND {a:UInt8} = 'x']*/", { a: true });
     expect(r.errors).toEqual([]);
