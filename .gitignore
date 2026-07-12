@@ -20,6 +20,14 @@
 # Project wiki — a separate GitHub repo.wiki.git checkout, not part of this repo
 /.wiki/
 
+# impeccable design skill — vendored dev tool + its local state; kept local, not in the repo
+/.claude/skills/impeccable/
+/.impeccable/
+# Codex agent-skills mirror: ignore the vendored content, keep only the ship/ship-phase symlinks
+/.agents/skills/*
+!/.agents/skills/ship
+!/.agents/skills/ship-phase
+
 # OS / editor
 .DS_Store
 *.log
