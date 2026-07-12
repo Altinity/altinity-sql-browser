@@ -185,6 +185,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   bar entirely) and no `onCfgChange` callback. Repairing Time/Message/Level
   still writes the saved Logs config as before; choosing another type from
   the Panel picker remains the only way to explicitly convert away from Logs.
+- **Logs role selectors now name a stale saved column instead of silently
+  showing `(auto)`** (#196). When a saved Logs role (`time`/`msg`/`level`)
+  pointed at a column name no longer present in the current result, its
+  `<select>` had no matching `<option>`, so the browser fell back to
+  displaying `(auto)` — visually indistinguishable from a role that was never
+  explicitly configured, so editing a different role could silently persist
+  the stale name unnoticed. `logsRoleSelect` (`src/ui/panels.js`) now derives
+  a `logsRoleState` per role: a non-empty saved name that doesn't match any
+  current column (case-insensitively, mirroring `resolveLogsShape`'s
+  matching policy) renders as a selected, disabled `"<name> (missing)"`
+  option with `aria-invalid`/`title` on the still-enabled `<select>`, so the
+  user can pick a current column or `(auto)` to repair it, or leave it stored
+  for later. Applies to all three roles (Level is optional, so a stale Level
+  can be marked missing even while Logs renders normally). Rendering never
+  mutates or canonicalizes `tab.panelCfg`. (Also fixed in passing: setting a
+  detached `<option>`'s `.selected` before `appendChild` is not reliably
+  honored under happy-dom — `panelSelect` now sets `sel.value` once after
+  every option is attached.)
 - **Unbounded column types no longer crush width-constrained UI** (#177). A
   declared type with an arbitrarily long body — a giant `Enum16(…)`, a
   many-field `Tuple(…)`, `Nested`/`Variant`/`AggregateFunction`/`JSON(…)` —

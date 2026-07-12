@@ -66,14 +66,22 @@ export function renderMarkdown(blocks) {
 
 // ── Per-arm helpers ──────────────────────────────────────────────────────────
 
-/** A labelled <select>, same look as the chart config bar's fields. */
-function panelSelect(label, value, options, onPick) {
-  const sel = h('select', { class: 'chart-select', onchange: (e) => onPick(e.target.value) });
+/** A labelled <select>, same look as the chart config bar's fields.
+ * `selectMeta.invalid`/`.title` expose an accessible invalid state (#196) —
+ * the select itself stays enabled; only individual options may be disabled. */
+function panelSelect(label, value, options, onPick, selectMeta = {}) {
+  const attrs = { class: 'chart-select', onchange: (e) => onPick(e.target.value) };
+  if (selectMeta.invalid) attrs['aria-invalid'] = 'true';
+  if (selectMeta.title) attrs.title = selectMeta.title;
+  const sel = h('select', attrs);
   for (const o of options) {
     const opt = h('option', { value: o.value }, o.label);
-    if (o.value === value) opt.selected = true;
+    if (o.disabled) opt.disabled = true;
     sel.appendChild(opt);
   }
+  // Set after every option is in the DOM tree — a detached option's `selected`
+  // is not reliably honored by all engines once appended (happy-dom included).
+  sel.value = value;
   return h('label', { class: 'chart-field' }, h('span', { class: 'chart-field-label' }, label), sel);
 }
 
@@ -81,15 +89,39 @@ function panelEmpty(msg) {
   return h('div', { class: 'chart-empty' }, h('div', { class: 'chip' }, Icon.chart()), h('div', null, msg));
 }
 
-// One column-name role picker for the logs arm: '' = auto (convention).
+// A saved Logs role's UI state, matched case-insensitively against the
+// current result's columns — must mirror resolveLogsShape's matching policy
+// (first match wins) so the selector never disagrees with panel resolution
+// (#196). `columns` is null pre-Run (no current result to compare against
+// yet); treat that as "not yet known to be stale" rather than missing.
+function logsRoleState(value, columns) {
+  const raw = value == null ? '' : String(value);
+  if (raw === '') return { raw: '', selected: '', stale: false };
+  if (!columns) return { raw, selected: raw, stale: false };
+  const match = columns.find((c) => String(c.name).toLowerCase() === raw.toLowerCase());
+  if (match) return { raw, selected: String(match.name), stale: false };
+  return { raw, selected: raw, stale: true };
+}
+
+// One column-name role picker for the logs arm: '' = auto (convention). A
+// non-empty saved name absent from the current result renders as a selected,
+// disabled "<name> (missing)" option instead of silently falling back to
+// `(auto)` (#196) — the select stays enabled so the user can repair it.
 function logsRoleSelect(label, cfgName, { result, cfg, onChange }) {
-  const options = [{ value: '', label: '(auto)' },
-    ...(result ? result.columns.map((c) => ({ value: c.name, label: c.name })) : [])];
-  return panelSelect(label, cfg[cfgName] || '', options, (v) => {
+  const state = logsRoleState(cfg[cfgName], result ? result.columns : null);
+  const options = [
+    { value: '', label: '(auto)' },
+    ...(state.stale ? [{ value: state.raw, label: `${state.raw} (missing)`, disabled: true }] : []),
+    ...(result ? result.columns.map((c) => ({ value: c.name, label: c.name })) : []),
+  ];
+  const meta = state.stale
+    ? { invalid: true, title: `Saved column "${state.raw}" is not present in this result` }
+    : {};
+  return panelSelect(label, state.selected, options, (v) => {
     const next = { ...cfg };
     if (v) next[cfgName] = v; else delete next[cfgName];
     onChange(next);
-  });
+  }, meta);
 }
 
 // ── The registry ─────────────────────────────────────────────────────────────
