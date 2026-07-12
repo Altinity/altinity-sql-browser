@@ -10,7 +10,7 @@ import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
 import { activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
-import { IDENT_MIME, SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
+import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
 import { makeApp as baseApp } from '../helpers/fake-app.js';
 
 // The CM6 adapter runs against the REAL CodeMirror under happy-dom — no fake
@@ -565,6 +565,39 @@ describe('handleDrop', () => {
     view.posAtCoords = () => null;
     expect(handleDrop(app, view, evt({ [IDENT_MIME]: 'X' }))).toBe(true);
     expect(view.state.doc.toString()).toBe('aXb');
+  });
+
+  it('inserts a column type at the pointer position, focuses the editor, and consumes the event once', () => {
+    const { view, app, changes } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: '{operation:}' }, selection: { anchor: 0 } });
+    view.posAtCoords = () => 11; // between the ':' and the closing '}'
+    const e = evt({ [COLUMN_TYPE_MIME]: "Enum16('Close' = -11, 'Error' = -1)" });
+    expect(handleDrop(app, view, e)).toBe(true);
+    expect(e.preventDefault).toHaveBeenCalledTimes(1);
+    expect(view.state.doc.toString()).toBe("{operation:Enum16('Close' = -11, 'Error' = -1)}");
+    expect(view.state.selection.main.head).toBe(11 + "Enum16('Close' = -11, 'Error' = -1)".length); // caret at the end of the inserted type
+    expect(changes.at(-1)).toBe("{operation:Enum16('Close' = -11, 'Error' = -1)}"); // a real edit — it emits
+  });
+
+  it('falls back to the caret when a type-drop coordinate maps to no position', () => {
+    const { view, app } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'ab' }, selection: { anchor: 1 } });
+    view.posAtCoords = () => null;
+    expect(handleDrop(app, view, evt({ [COLUMN_TYPE_MIME]: 'UInt64' }))).toBe(true);
+    expect(view.state.doc.toString()).toBe('aUInt64b');
+  });
+
+  it('ignores an empty column-type payload', () => {
+    const { view, app } = mounted();
+    expect(handleDrop(app, view, evt({ [COLUMN_TYPE_MIME]: '' }))).toBe(false);
+  });
+
+  it('identifier precedence wins when both IDENT_MIME and COLUMN_TYPE_MIME are present', () => {
+    const { view, app } = mounted();
+    view.posAtCoords = () => 0;
+    const e = evt({ [IDENT_MIME]: 'col1', [COLUMN_TYPE_MIME]: 'UInt64' });
+    expect(handleDrop(app, view, e)).toBe(true);
+    expect(view.state.doc.toString()).toBe('col1');
   });
 
   it('drops a saved query as a subquery at the pointer position', () => {

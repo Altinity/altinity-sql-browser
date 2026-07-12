@@ -1112,6 +1112,29 @@ body.detached-tab .graph-overlay-panel {
 }
 .tree-row .meta.loading { font-style: italic; opacity: .6; }
 
+/* Column name/type independent drag targets (#186). Only these two child
+   spans are drag sources on a column row — the row-level `:active grabbing`
+   above no longer applies to columns (overridden just below, scoped to `.mono`
+   so the non-interactive "loading columns…" placeholder row, which is
+   `.tree-row.small` without `.mono`, keeps its plain pointer cursor too), so
+   the icon and empty row space never imply draggability. `box-shadow` (not
+   `background`) keeps the affordance from reading as `.match`/hover row
+   highlighting. */
+.tree-row.small.mono:active { cursor: pointer; }
+.schema-col-name-drag,
+.schema-col-type-drag {
+  cursor: grab;
+  border-radius: 3px;
+}
+.schema-col-name-drag:hover,
+.schema-col-type-drag:hover {
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.schema-col-name-drag:active,
+.schema-col-type-drag:active {
+  cursor: grabbing;
+}
+
 /* ------------ query tabs ------------ */
 .qtabs {
   display: flex; align-items: stretch;

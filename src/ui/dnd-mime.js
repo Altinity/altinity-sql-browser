@@ -15,3 +15,9 @@ export const SUBQUERY_MIME = 'application/x-asb-subquery';
 // Dragging a database/table from the schema tree onto the results pane →
 // render its lineage graph. Payload is JSON `{kind, db, table?}`.
 export const SCHEMA_GRAPH_MIME = 'application/x-asb-schema-graph';
+
+// Dragging a column's type meta (not its name) onto the editor — the full
+// schema-provided ClickHouse type, never the compacted display text (#186).
+// Kept separate from IDENT_MIME: IDENT_MIME is scoped to identifiers, and a
+// type expression is not one.
+export const COLUMN_TYPE_MIME = 'application/x-asb-column-type';
