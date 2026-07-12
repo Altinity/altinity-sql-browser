@@ -400,6 +400,37 @@ describe('query run', () => {
     // a plain SELECT needs no session, so none is opened (avoids the session race)
     expect(app.chCtx.fetch.mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
   });
+  it('captures result.source for a normal row-returning result (#185)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
+    ]);
+    const tab = app.activeTab();
+    tab.sql = 'SELECT 1';
+    tab.name = 'My query';
+    await app.actions.run();
+    // the authored template + run-time identity, snapshotted for a detached rerun
+    expect(tab.result.source).toEqual({
+      sql: 'SELECT 1', tabId: tab.id, rowLimit: app.state.resultRowLimit, title: 'My query', description: '',
+    });
+  });
+  it('does not capture result.source for an empty (0-row) result (#185)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n']) })],
+    ]);
+    app.activeTab().sql = 'SELECT 1';
+    await app.actions.run();
+    expect(app.activeTab().result.rows.length).toBe(0);
+    expect(app.activeTab().result.source).toBeUndefined();
+  });
+  it('does not capture result.source for a raw FORMAT result (#185)', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /FORMAT CSV/.test(sql), resp({ text: 'a\n1\n' })],
+    ]);
+    app.activeTab().sql = 'SELECT 1 FORMAT CSV';
+    await app.actions.run();
+    expect(app.activeTab().result.rawText).toBe('a\n1\n');
+    expect(app.activeTab().result.source).toBeUndefined();
+  });
   it('opens a ClickHouse session only for SQL that needs one (SET / TEMPORARY), and it sticks to the tab', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]]);
     app.activeTab().sql = 'SET max_threads = 1';

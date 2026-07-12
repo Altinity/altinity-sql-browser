@@ -10,6 +10,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **The detached Data view is now interactive: Panel switcher + query filters**
+  (#185). The Data pane's **Expand** used to open a frozen snapshot; it now
+  opens a self-contained, re-runnable full-screen surface (real browser tab, or
+  the in-app overlay fallback) bound to the result's captured `source`
+  (`{sql, tabId, rowLimit, title, description}`, attached by `run()` on a normal
+  row-returning result). The detached header shows that captured query title (a
+  real heading; it also sets the browser-tab title) with the saved description
+  clamped below it; a `{name:Type}` source gets a **filter row** built from the
+  same shared control the SQL Browser and dashboards use (extracted to
+  `src/ui/filter-bar.js`), and its Table | JSON | Panel switcher, sort, and
+  column widths are local. Committing a filter or clicking **Refresh** re-runs
+  **only** the detached query with full workbench parity — streaming, the
+  server-side row cap, and real request abort — through one shared execution
+  seam (`app.runReadInto`) that writes no tab/global state; a per-view
+  generation guard + AbortController mean a stale or post-close response can
+  never overwrite the current result. Filters read/write the same shared
+  `varValues`/`filterActive`/`varRecent` stores (a value entered anywhere is
+  offered everywhere; successful runs record recents via the shared recorder),
+  the originating tab's ClickHouse session is reused when the source needed one,
+  and the main workbench result/view/sort/panel/history and global running state
+  are untouched. Copy always copies the current detached result. The
+  Table/JSON/Panel dispatch is now one shared `renderResultView` used by both
+  the live pane and the detached view (no parallel copies). No new runtime
+  dependency. (Dashboard tiles keep their existing execution path for now; a
+  follow-up migrates them onto the shared streaming seam.)
 - **Schema column name and type are now independent drag targets** (#186).
   Dragging a column's name still inserts the SQL-safe quoted identifier;
   dragging its type meta now inserts the complete schema-provided ClickHouse
