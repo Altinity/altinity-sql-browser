@@ -31,6 +31,7 @@ import { assembleReferenceData, buildCompletions } from '../core/completions.js'
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
 import { configBase, dashboardTileSql, parseJsonResult, DASH_TILE_ROW_CAP } from '../core/dashboard.js';
+import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
@@ -1501,8 +1502,11 @@ export function createApp(env = {}) {
   function share() {
     const tab = app.activeTab();
     const sql = (tab.sql || '').trim();
-    if (!sql) return;
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, tabPanel(tab));
+    const panel = tabPanel(tab);
+    // The gate matches the decode side (main.js): sql OR panel — a text panel
+    // legitimately has no SQL, and a sql-only check would make it unshareable.
+    if (!sql && !isQuerylessPanel(panel)) return;
+    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, panel);
     win.history && win.history.replaceState && win.history.replaceState(null, '', url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
@@ -1891,12 +1895,17 @@ export function createApp(env = {}) {
   }
 
   // The toolbar Save button reads "Saved" (accent) when the active tab is linked
-  // to a saved entry and its SQL is unchanged; "Save" otherwise (incl. dirty).
+  // to a saved entry and its SQL AND panel config are unchanged; "Save"
+  // otherwise (incl. dirty) — a panel edit re-arms the button exactly like a
+  // SQL edit (#166 dirty pin), else the stale "Saved" label would tell the
+  // user their panel change needs no re-save.
   app.updateSaveBtn = () => {
     if (!app.dom.saveBtn) return;
     const tab = app.activeTab();
     const entry = savedForTab(app.state, tab);
-    const clean = !!entry && entry.sql.trim() === String(tab.sql || '').trim();
+    const panelClean = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
+    const clean = !!entry && entry.sql.trim() === String(tab.sql || '').trim()
+      && panelClean(entry.panel, tabPanel(tab));
     app.dom.saveBtn.classList.toggle('saved', clean);
     app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
     app.dom.saveBtn.title = clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
@@ -1941,7 +1950,12 @@ export function createApp(env = {}) {
   // place) + relink the tab; Esc / click-outside cancels.
   function openSavePopover() {
     const tab = app.activeTab();
-    if (!String(tab.sql || '').trim()) { flashToast('Nothing to save', { document: doc }); return; }
+    // A queryless panel (text, #166) is authored entirely in its cfg, so it
+    // saves with empty SQL — the same per-type relaxation saveQuery applies.
+    if (!String(tab.sql || '').trim() && !isQuerylessPanel(tabPanel(tab))) {
+      flashToast('Nothing to save', { document: doc });
+      return;
+    }
     if (app.dom.savePopover) return;
     const entry = savedForTab(app.state, tab);
     const prefill = entry ? entry.name : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));

@@ -11,6 +11,7 @@ import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory, SAVED_VIEWS,
 } from '../state.js';
 import { isAutoRunnable } from '../core/sql-split.js';
+import { isQuerylessPanel } from '../core/panel-cfg.js';
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
 // query wrapped as a `( … )` subquery (see the editor's drop handler).
@@ -118,6 +119,9 @@ function renderSaved(app, list) {
       app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.panel);
       if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view });
       else if (SAVED_VIEWS.has(q.view)) app.state.resultView.value = q.view;
+      // A queryless panel without a remembered view (hand-authored/imported
+      // file) still needs the Panel drawer open, or clicking it shows nothing.
+      else if (isQuerylessPanel(q.panel)) app.state.resultView.value = 'panel';
     };
     const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: open },
       h('div', { class: 'top' },

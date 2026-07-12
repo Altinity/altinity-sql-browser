@@ -117,12 +117,13 @@ describe('renderResults states', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.querySelector('.json-view').textContent).toContain('"n": "2"');
   });
-  it('panel view (the Panel drawer tab, #166) renders the type picker + auto preview', () => {
+  it('panel view renders its picker in the toolbar + auto preview', () => {
     const app = appWithResult(tableResult(), { resultView: 'panel' });
     renderResults(app);
     const region = app.dom.resultsRegion;
     expect(region.querySelector('.panel-view')).not.toBeNull();
-    expect(region.querySelector('.panel-config select')).not.toBeNull(); // the type picker
+    expect(region.querySelector('.result-panel-select')).not.toBeNull();
+    expect(region.querySelector('.panel-config')).toBeNull(); // no redundant full-width picker row
     expect(region.querySelector('.chart-view canvas')).not.toBeNull();   // autoPanel picked a chart
     expect(app.activeTab().panelCfg).toBeNull(); // preview never writes the tab cfg (#166 dirty pin)
   });

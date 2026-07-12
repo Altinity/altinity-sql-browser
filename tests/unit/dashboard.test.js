@@ -556,6 +556,26 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.dash-skip').style.display).toBe('none'); // text is shown, not skipped
   });
 
+  it('ignores attached text-panel SQL during filter analysis and targeted reruns', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([
+      { id: '1', name: 'Note', sql: 'SELECT {region:String}', favorite: true,
+        panel: { cfg: { type: 'text', content: 'static' } } },
+      { id: '2', name: 'Chart', sql: 'SELECT {year:UInt16}', favorite: true },
+    ], runTile);
+    app.state.varValues = { year: '2024', region: 'us' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    expect(app.root.querySelector('.dash-filters').textContent).not.toContain('region');
+    const year = [...app.root.querySelectorAll('.var-field')]
+      .find((el) => el.textContent.includes('year')).querySelector('input');
+    year.value = '2025';
+    year.dispatchEvent(new Event('input', { bubbles: true }));
+    year.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    expect(runTile.mock.calls.every((call) => !String(call[0]).includes('region'))).toBe(true);
+  });
+
   it('explicit zero-row panels stay visible with a "0 rows" state; unconfigured empties skip', async () => {
     const runTile = vi.fn(async () => emptyResult());
     const app = dashApp([

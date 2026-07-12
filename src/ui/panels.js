@@ -27,7 +27,7 @@ import { parseMarkdown } from '../core/markdown-lite.js';
 import {
   resolvePanel, resolveLogsShape, switchPanelType, isChartFamily, CHART_FAMILY,
 } from '../core/panel-cfg.js';
-import { CHART_TYPES } from '../core/chart-data.js';
+import { CHART_TYPES, schemaKey } from '../core/chart-data.js';
 
 // ── Markdown AST → DOM ───────────────────────────────────────────────────────
 
@@ -159,6 +159,7 @@ const PANEL_TYPES = {
       // onChange per input; the preview below re-renders from the new cfg.
       const ta = h('textarea', {
         class: 'panel-text-input',
+        'aria-label': 'Markdown content',
         placeholder: '# Markdown\n\nHeadings, **bold**, *italic*, lists, [links](https://…), `code`.',
         oninput: (e) => onChange({ ...cfg, content: e.target.value }),
       });
@@ -174,10 +175,12 @@ const PANEL_TYPES = {
 for (const t of CHART_FAMILY) PANEL_TYPES[t] = chartArm;
 export { PANEL_TYPES };
 
-/** Type-picker options: the chart family first (Bar…Pie), then the others. */
+/** Workbench-selectable panel types. `table` remains an internal registry arm
+ * for dashboards, auto fallback, and migrated entries; the ordinary Table
+ * result view is its workbench surface, so offering it here would duplicate
+ * the adjacent Table button. */
 export const PANEL_PICKER_OPTIONS = [
   ...CHART_TYPES,
-  { value: 'table', label: 'Table' },
   { value: 'logs', label: 'Logs' },
   { value: 'text', label: 'Text' },
 ];
@@ -216,34 +219,76 @@ export function renderResolvedPanel(app, resolved, result, opts) {
  * (cell drawer + tab-dirty wiring live there; importing them here would
  * recreate the results-import cycle).
  */
-export function renderPanelView(app, r, hooks) {
+function panelContext(app, r) {
   const tab = app.activeTab();
   const hasGrid = !!(r && !r.error && r.rawText == null && r.rows);
   const columns = hasGrid ? r.columns : [];
   const saved = tab.panelCfg ? { cfg: tab.panelCfg, key: tab.panelKey ?? null } : null;
   const resolved = resolvePanel(saved, columns);
+  return { tab, hasGrid, columns, saved, resolved };
+}
+
+function writePanel(app, hooks, payload, activate = false) {
+  const tab = app.activeTab();
+  tab.panelCfg = payload.cfg;
+  tab.panelKey = payload.key ?? null;
+  if (activate) app.state.resultView.value = 'panel';
+  hooks.markDirty();
+  hooks.rerender();
+}
+
+/** Compact panel-type selector for the main results toolbar. When Table/JSON
+ * is active it shows a neutral `Panel…` prompt; choosing a type both configures
+ * the panel and activates its view. This keeps Table/JSON one-click views while
+ * removing the redundant fixed Panel button and the old full-width picker row. */
+export function renderPanelTypePicker(app, r, hooks) {
+  const { hasGrid, columns, saved, resolved } = panelContext(app, r);
+  const select = h('select', {
+    class: 'result-panel-select' + (app.state.resultView.value === 'panel' ? ' active' : ''),
+    'aria-label': 'Panel type',
+    title: 'Choose a panel visualization',
+    onchange: (e) => {
+      const type = e.target.value;
+      if (!type) return;
+      const base = saved && !resolved.rederived
+        ? saved
+        : { cfg: resolved.cfg, key: hasGrid && isChartFamily(resolved.cfg.type) ? schemaKey(columns) : null };
+      const next = switchPanelType(base, type, columns);
+      if (hasGrid && isChartFamily(next.cfg.type)) next.key = schemaKey(columns);
+      writePanel(app, hooks, next, true);
+    },
+  });
+  const prompt = h('option', { value: '' }, 'Panel…');
+  prompt.disabled = true;
+  select.appendChild(prompt);
+  for (const option of PANEL_PICKER_OPTIONS) {
+    const el = h('option', { value: option.value }, option.label);
+    select.appendChild(el);
+  }
+  const activeType = app.state.resultView.value === 'panel' && resolved.cfg.type !== 'table'
+    ? resolved.cfg.type
+    : '';
+  select.value = activeType;
+  return select;
+}
+
+export function renderPanelView(app, r, hooks) {
+  const { tab, hasGrid, columns, saved, resolved } = panelContext(app, r);
 
   const writeBack = (payload) => {
-    tab.panelCfg = payload.cfg;
-    tab.panelKey = payload.key ?? null;
-    hooks.markDirty();
-    hooks.rerender();
+    writePanel(app, hooks, payload);
   };
   // The chart bar mutates the resolved clone in place (its handlers predate
   // the registry); adopting it via onCfgChange is the explicit write-back.
-  const onCfgChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
-  const onChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
-
-  const picker = panelSelect('Panel', resolved.cfg.type, PANEL_PICKER_OPTIONS, (type) => {
-    // switchPanelType starts from the user's own cfg when there is one (so a
-    // round-trip through table restores the stashed chart roles), else from
-    // the resolved (auto) cfg so the picker "adopts" what the preview shows.
-    writeBack(switchPanelType(saved || { cfg: resolved.cfg, key: null }, type, columns));
+  const onCfgChange = (cfg) => writeBack({
+    cfg,
+    key: isChartFamily(cfg.type) && hasGrid ? schemaKey(columns) : null,
   });
+  const onChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
 
   const arm = PANEL_TYPES[resolved.cfg.type];
   const controlsNode = arm.controls({ app, result: hasGrid ? r : null, cfg: resolved.cfg, onChange });
-  const bar = h('div', { class: 'panel-config' }, picker, controlsNode);
+  const bar = controlsNode ? h('div', { class: 'panel-config' }, controlsNode) : null;
 
   const body = h('div', { class: 'panel-body' });
   const isText = resolved.cfg.type === 'text';

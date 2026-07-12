@@ -11,7 +11,10 @@ const valid = jwt({ email: 'me@x.com', exp: Math.floor(Date.now() / 1000) + 3600
 function fakeApp(over = {}) {
   return {
     token: null,
-    state: { tabs: signal([{ id: 't1', sql: '', name: 'Untitled' }]) },
+    state: {
+      tabs: signal([{ id: 't1', sql: '', name: 'Untitled' }]),
+      resultView: signal('table'),
+    },
     loadConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' })),
     ensureConfig: vi.fn(async () => ({})),
     setTokens: vi.fn(function (id) { this.token = id; }),
@@ -169,6 +172,7 @@ describe('bootstrap', () => {
     expect(app.state.tabs.value[0].name).toBe('Shared query');
     expect(app.state.tabs.value[0].sql).toBe('');
     expect(app.state.tabs.value[0].panelCfg).toEqual(panel.cfg);
+    expect(app.state.resultView.value).toBe('panel');
     expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: '', panel }); // stash survives login too
   });
 

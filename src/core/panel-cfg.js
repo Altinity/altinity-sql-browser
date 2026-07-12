@@ -35,6 +35,17 @@ export function isKnownPanelType(type) {
   return KNOWN_TYPES.has(type);
 }
 
+// Panel types that need no query result at all — the one per-arm capability
+// every layer keys the "no SQL required / no query issued" behavior on (save
+// guard, share gate, dashboard partition, drawer preview). The filter arm
+// (#160) and setup arm (#175) will join this set when they land.
+const QUERYLESS_TYPES = new Set(['text']);
+
+/** True when a panel payload's type renders without a query result (#166). */
+export function isQuerylessPanel(panel) {
+  return !!(panel && panel.cfg && QUERYLESS_TYPES.has(panel.cfg.type));
+}
+
 // Deep-clone a JSON-shaped value (cfgs live in localStorage/share links, so
 // they are JSON by construction). Preserves unknown fields at every level —
 // the ignore-and-preserve guarantee.
@@ -202,14 +213,11 @@ export function resolvePanel(saved, columns) {
   if (!savedCfg) return { ...autoPanel(columns), rederived: false, fallback: false };
   const cfg = normalizePanelCfg(clonePanelCfg(savedCfg));
   if (isChartFamily(cfg.type)) {
-    // The key gate mirrors the workbench's chartCfgFor: a matching schema key
-    // means the indices still mean what the user configured; a mismatched or
-    // absent key with still-valid indices also renders (indices in range are
-    // the best available signal), and only an invalid cfg re-derives.
-    if (chartCfgValid(cfg, columns)) {
-      const rederived = saved.key != null && saved.key !== schemaKey(columns);
-      return { cfg, rederived, fallback: false };
-    }
+    // An explicit key mismatch means the column positions no longer carry the
+    // saved roles, even if every old index remains in range (columns may have
+    // reordered). Retain the requested chart type but derive fresh axes.
+    const keyMismatch = saved.key != null && saved.key !== schemaKey(columns);
+    if (chartCfgValid(cfg, columns) && !keyMismatch) return { cfg, rederived: false, fallback: false };
     const red = rederiveChart(cfg.type, columns);
     if (red) return { cfg: { ...cfg, ...red, type: cfg.type }, rederived: true, fallback: false };
     return fallbackTo('Saved ' + cfg.type + ' chart has nothing to plot in this result.');

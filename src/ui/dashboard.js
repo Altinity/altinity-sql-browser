@@ -380,7 +380,7 @@ export function renderDashboard(app) {
   // read, and every tile gate + fetch of that wave reads the same batch.
   const tileId = (i) => 'tile:' + i;
   const analysis = analyzeParameterizedSources(favorites.map((q, i) => ({
-    id: tileId(i), label: q.name, kind: 'tile', sql: q.sql, bindPolicy: 'row-returning',
+    id: tileId(i), label: q.name, kind: 'tile', sql: isTextFav(q) ? '' : q.sql, bindPolicy: 'row-returning',
   })));
   const prepareBatch = (validationMode = 'execute') => prepareParameterizedBatch(analysis, {
     values: app.state.varValues,
@@ -480,7 +480,7 @@ export function renderDashboard(app) {
     if (skipped) {
       skipNote.style.display = '';
       skipNote.textContent = skipped + ' not shown';
-      skipNote.title = skipped + ' single-row (KPI) or non-chartable favorite(s) — coming in a later phase.';
+      skipNote.title = skipped + ' empty or single-row (KPI) favorite(s) — KPI panels arrive in a later phase.';
     } else {
       skipNote.style.display = 'none';
     }
@@ -497,7 +497,8 @@ export function renderDashboard(app) {
     const f = analysis.fields[name]; // the filter bar only renders analyzed params
     const affected = new Set(f.requiredIn.concat(f.optionalIn));
     const wave = prepareWave();
-    const targets = favorites.map((q, i) => i).filter((i) => affected.has(tileId(i)));
+    const targets = favorites.map((q, i) => i)
+      .filter((i) => !isTextFav(favorites[i]) && affected.has(tileId(i)));
     return Promise.all(targets.map((i) => runSlotTile(app, favorites[i], slots[i], updateSkipNote, wave[i])));
   }
 

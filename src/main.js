@@ -83,6 +83,9 @@ export async function bootstrap(app, env) {
       if (shared.panel && shared.panel.cfg) {
         t0.panelCfg = clonePanelCfg(shared.panel.cfg);
         t0.panelKey = shared.panel.key ?? null;
+        // A panel-only link (no SQL to run) must open the Panel drawer, or
+        // the recipient lands on an empty Table view and sees nothing.
+        if (!shared.sql) app.state.resultView.value = 'panel';
       }
       hist.replaceState(null, '', loc.pathname + loc.search);
     }

@@ -8,7 +8,7 @@ import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
-import { renderPanelView, renderResolvedPanel } from './panels.js';
+import { renderPanelView, renderPanelTypePicker, renderResolvedPanel } from './panels.js';
 import { renderGridView, resizeHandle, reapplyWidths, PLAIN_KEY, visCap } from './grid-render.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
@@ -33,6 +33,13 @@ export function renderResults(app) {
   if (app.chart) { app.chart.destroy(); app.chart = null; }
   const tab = app.activeTab();
   const r = tab.result;
+  // `table` remains a valid persisted/dashboard panel arm, but it has no
+  // separate workbench choice: use the ordinary Table view instead of showing
+  // two Tables or a Panel selector with an unavailable value. Normalize before
+  // building the toolbar so its active state is correct on the first paint.
+  if (app.state.resultView.value === 'panel' && tab.panelCfg && tab.panelCfg.type === 'table') {
+    app.state.resultView.value = 'table';
+  }
   const body = h('div', { class: 'results' });
   body.appendChild(buildToolbar(app, r));
 
@@ -92,7 +99,6 @@ export function renderResults(app) {
   body.appendChild(inner);
   region.replaceChildren(body);
 }
-
 // The Panel drawer tab's caller seams (#166): the repaint scope, the cell
 // drawer, the tab-dirty wiring (a panel-cfg edit dirties exactly like a SQL
 // edit — same signal writes as app.editor.onDocChange), and the display cap.
@@ -416,7 +422,8 @@ function buildToolbar(app, r) {
       h('button', { class: 'result-view-tab active' },
         r.rawFormat === 'JSON' ? Icon.json() : Icon.table2(), h('span', null, r.rawFormat)));
   } else {
-    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id; });
+    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id; }, false);
+    tabs.appendChild(renderPanelTypePicker(app, r, panelHooks(app, r)));
   }
   toolbar.appendChild(tabs);
   // Row-cap selector after the view tabs, for normal result queries only —
@@ -486,19 +493,20 @@ function buildToolbar(app, r) {
 }
 
 /**
- * The Table/JSON/Panel tabs — shared by the main results toolbar and the
- * detached Data Pane, each with its own view-state slot. `current` is the
+ * The Table/JSON tabs, plus the legacy/read-only Panel button when requested
+ * by the detached Data Pane. `current` is the
  * active view id; `onSelect(id)` switches it. Icons are built fresh on every
  * call (never cached/shared across the two consumers' documents — an Icon
  * element inserted into a second document would just move out of the first).
  */
-function viewSwitcherTabs(current, onSelect) {
+function viewSwitcherTabs(current, onSelect, includePanel = true) {
   const tabs = h('div', { class: 'result-view-tabs' });
-  for (const v of [
+  const views = [
     { id: 'table', label: 'Table', icon: Icon.table2() },
     { id: 'json', label: 'JSON', icon: Icon.json() },
-    { id: 'panel', label: 'Panel', icon: Icon.chart() },
-  ]) {
+  ];
+  if (includePanel) views.push({ id: 'panel', label: 'Panel', icon: Icon.chart() });
+  for (const v of views) {
     tabs.appendChild(h('button', {
       class: 'result-view-tab' + (current === v.id ? ' active' : ''),
       onclick: () => onSelect(v.id),
@@ -755,4 +763,3 @@ export function openCellDetail(app, name, type, value, targetDoc) {
     return backdrop;
   });
 }
-

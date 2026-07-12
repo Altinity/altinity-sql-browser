@@ -41,7 +41,7 @@ function panelApp(result, panelCfg = null, over = {}) {
 }
 const region = (app) => app.dom.resultsRegion;
 const pickType = (app, type) => {
-  const sel = region(app).querySelector('.panel-config select');
+  const sel = region(app).querySelector('.result-panel-select');
   sel.value = type;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 };
@@ -72,12 +72,15 @@ describe('renderMarkdown', () => {
 
 // ── the Panel drawer tab (through renderResults) ─────────────────────────────
 describe('Panel drawer tab', () => {
-  it('renders the type picker (all v1 types) + an auto chart preview; never writes tab.panelCfg', () => {
+  it('renders the panel picker in the toolbar without Table + an auto chart preview', () => {
     const app = panelApp(chartResult());
     renderResults(app);
-    const sel = region(app).querySelector('.panel-config select');
-    expect([...sel.options].map((o) => o.value)).toEqual(PANEL_PICKER_OPTIONS.map((o) => o.value));
+    const sel = region(app).querySelector('.result-panel-select');
+    expect([...sel.options].map((o) => o.value)).toEqual(['', ...PANEL_PICKER_OPTIONS.map((o) => o.value)]);
+    expect([...sel.options].map((o) => o.value)).not.toContain('table');
     expect(sel.value).toBe('hbar'); // autoPanel's pick for a categorical result
+    expect(region(app).querySelectorAll('.result-view-tab')).toHaveLength(2); // Table + JSON; no fixed Panel button
+    expect(region(app).querySelector('.panel-config')).toBeNull(); // no separate picker row
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
     expect(app.activeTab().panelCfg).toBeNull(); // #166 dirty pin: derived cfg never persisted
     expect(app.activeTab().dirty).toBe(false);
@@ -85,19 +88,20 @@ describe('Panel drawer tab', () => {
   it('picking a type writes tab.panelCfg + marks the tab dirty (like a SQL edit); no SQL runs', () => {
     const app = panelApp(chartResult());
     renderResults(app);
-    pickType(app, 'table');
-    expect(app.activeTab().panelCfg).toEqual({ type: 'table', chart: expect.any(Object) });
+    pickType(app, 'pie');
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie' });
     expect(app.activeTab().dirty).toBe(true);
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
-    expect(region(app).querySelector('.res-table')).not.toBeNull(); // preview switched to the grid
+    expect(region(app).querySelector('.chart-view')).not.toBeNull();
   });
-  it('a table→chart round-trip restores the stashed chart roles', () => {
+  it('the toolbar selector activates Panel view from the ordinary Table view', () => {
     const app = panelApp(chartResult());
+    app.state.resultView.value = 'table';
     renderResults(app);
-    pickType(app, 'table');
     pickType(app, 'pie');
+    expect(app.state.resultView.value).toBe('panel');
     expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie', x: 0, y: [1] });
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
   });
@@ -112,7 +116,14 @@ describe('Panel drawer tab', () => {
     xSel.value = '1';
     xSel.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.activeTab().panelCfg.x).toBe(1);
+    expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
     expect(app.activeTab().dirty).toBe(true);
+  });
+  it('adopting an auto-derived chart records the current schema key', () => {
+    const app = panelApp(chartResult());
+    renderResults(app);
+    pickType(app, 'hbar');
+    expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
   });
   it('logs: role selects override by name; a bad shape shows the pick-columns hint', () => {
     const app = panelApp(logsResult(), { type: 'logs' });
@@ -148,22 +159,23 @@ describe('Panel drawer tab', () => {
     // streamed rows exist but the run is live → the panel hint, not a half chart
     expect(region(running).textContent).toContain('renders when the query completes');
   });
-  it('an explicit zero-row table panel stays visible (headers, no skip)', () => {
+  it('an explicit table panel uses the ordinary Table workbench view', () => {
     const r = chartResult();
     r.rows = [];
     const app = panelApp(r, { type: 'table' });
     renderResults(app);
-    expect(region(app).querySelector('.res-table thead')).not.toBeNull();
-    expect(region(app).textContent).not.toContain('Query returned 0 rows');
+    expect(app.state.resultView.value).toBe('table');
+    expect(region(app).querySelector('.result-view-tab.active').textContent).toBe('Table');
+    expect(region(app).textContent).toContain('Query returned 0 rows');
   });
-  it('the table panel sorts locally via its own panelState (not the global result sort)', () => {
+  it('a migrated table panel uses the ordinary table sort state', () => {
     const app = panelApp(chartResult(), { type: 'table' });
     renderResults(app);
     const th = region(app).querySelectorAll('.res-table th')[1]; // first data column
     th.dispatchEvent(new Event('click', { bubbles: true }));
     const firstCell = region(app).querySelector('.res-table tbody tr .cell');
     expect(firstCell.textContent).toBe('AA'); // sorted asc by carrier
-    expect(app.state.resultSort).toEqual({ col: null, dir: 'asc' }); // global sort untouched
+    expect(app.state.resultSort).toEqual({ col: 0, dir: 'asc' });
   });
 });
 

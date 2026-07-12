@@ -674,6 +674,13 @@ body {
 }
 .result-view-tab:hover { color: var(--fg); background: var(--bg-hover); }
 .result-view-tab.active { color: var(--fg); background: var(--bg-hover); border-color: var(--border); }
+.result-panel-select {
+  appearance: auto; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--muted); font: inherit;
+  padding: 6px 25px 6px 9px; cursor: pointer;
+}
+.result-panel-select:hover,
+.result-panel-select.active { color: var(--fg); background: var(--bg-hover); border-color: var(--border); }
 
 /* ------------ json view ------------ */
 /* height:100% (not flex:1) — .res-body is a relatively-positioned block, not a

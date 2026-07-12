@@ -216,6 +216,20 @@ describe('mergeSaved', () => {
     expect(c.chart).toEqual({ cfg: CHART.cfg, key: 'k' });
     expect(c.view).toBe('panel'); // legacy 'chart' view mapped
   });
+  it('treats panel config as content and updates same-id text/chart edits even when name+sql are unchanged', () => {
+    const existing = [{
+      id: 'note', name: 'Note', sql: '', favorite: true,
+      panel: { cfg: { type: 'text', content: 'old' } }, view: 'panel',
+    }];
+    const changed = [{
+      id: 'note', name: 'Note', sql: '', favorite: true,
+      panel: { cfg: { type: 'text', content: 'new' } }, view: 'panel',
+    }];
+    const r = mergeSaved(existing, changed, () => 'unused');
+    expect(r).toMatchObject({ updated: 1, skipped: 0, added: 0 });
+    expect(r.merged[0].panel.cfg.content).toBe('new');
+    expect(existing[0].panel.cfg.content).toBe('old');
+  });
   it('carries description on add, replaces it by id, and drops it when an update omits it', () => {
     const existing = [
       { id: 's1', name: 'A', sql: '1', favorite: false, description: 'old' },

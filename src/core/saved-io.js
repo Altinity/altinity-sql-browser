@@ -145,21 +145,27 @@ export function parseImportDoc(text) {
 
 /**
  * Merge `incoming` saved queries into `existing` (not mutated). Skips exact
- * name+sql duplicates; updates an entry matched by id when its content differs;
+ * content duplicates; updates an entry matched by id when its content differs;
  * otherwise adds a new entry (reusing a unique incoming id, else `genId()`).
  * Returns { merged, added, updated, skipped }.
  */
 export function mergeSaved(existing, incoming, genId) {
   const merged = existing.map((q) => ({ ...q }));
-  const contentKey = (q) => q.name + '\0' + q.sql;
+  // Panel config is first-class content (#166), especially for SQL-less text
+  // panels. Exclude `chart`: it is only a derived rollback mirror of `panel`.
+  const contentKey = (q) => JSON.stringify([
+    q.name, q.sql, !!q.favorite, q.description || null, cleanPanel(q.panel) || null,
+    cleanView(q.view) || null,
+  ]);
   const seen = new Set(merged.map(contentKey));
   let added = 0, updated = 0, skipped = 0;
 
   for (const rawInc of incoming) {
     const inc = upgradeSavedEntry(rawInc);
-    if (seen.has(contentKey(inc))) { skipped++; continue; }
     const byId = inc.id ? merged.find((q) => q.id === inc.id) : null;
     if (byId) {
+      if (contentKey(byId) === contentKey(inc)) { skipped++; continue; }
+      seen.delete(contentKey(byId));
       byId.name = inc.name;
       byId.sql = inc.sql;
       byId.favorite = !!inc.favorite;
@@ -174,6 +180,7 @@ export function mergeSaved(existing, incoming, genId) {
       updated++;
       continue;
     }
+    if (seen.has(contentKey(inc))) { skipped++; continue; }
     const entry = withChartMirror({
       id: inc.id || genId(), name: inc.name, sql: inc.sql, favorite: !!inc.favorite,
       ...(inc.description ? { description: inc.description } : {}),

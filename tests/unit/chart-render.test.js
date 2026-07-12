@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderChart, installChartZoomFix } from '../../src/ui/chart-render.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
-import { schemaKey, chartRowCap } from '../../src/core/chart-data.js';
+import { autoChart, chartCfgValid, schemaKey, chartRowCap } from '../../src/core/chart-data.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 
@@ -51,7 +51,17 @@ function paintChart(app) {
   const region = app.dom.resultsRegion;
   const paint = () => {
     if (app.chart) { app.chart.destroy(); app.chart = null; }
-    region.replaceChildren(renderChart(app, app.activeTab().result, { rerender: paint }));
+    const tab = app.activeTab();
+    const key = schemaKey(tab.result.columns);
+    if (tab.panelKey !== key || !chartCfgValid(tab.panelCfg, tab.result.columns)) {
+      tab.panelCfg = autoChart(tab.result.columns);
+      tab.panelKey = key;
+    }
+    region.replaceChildren(renderChart(app, tab.result, {
+      cfg: tab.panelCfg,
+      rerender: paint,
+      onCfgChange: (cfg) => { tab.panelCfg = cfg; paint(); },
+    }));
   };
   paint();
 }
@@ -64,9 +74,10 @@ describe('renderChart', () => {
     const app = appWithResult(r, { resultView: 'chart' });
     expect(renderChart(app, r).textContent).toContain('aren’t chartable');
   });
-  it('shows a "renders when complete" hint while the query is still running', () => {
+  it('renders a caller-resolved cfg independently of run state (the panel caller owns the run gate)', () => {
     const app = appWithResult(tableResult(), { resultView: 'chart', running: true });
-    expect(renderChart(app, app.activeTab().result).textContent).toContain('renders when the query completes');
+    const cfg = autoChart(app.activeTab().result.columns);
+    expect(renderChart(app, app.activeTab().result, { cfg, controls: false }).querySelector('canvas')).not.toBeNull();
   });
   it('builds a config bar and instantiates Chart.js on a canvas (categorical → hbar default)', () => {
     const app = appWithResult(tableResult(), { resultView: 'chart' });
@@ -119,6 +130,15 @@ describe('renderChart', () => {
     expect(app.activeTab().panelCfg.x).toBe(1);
     change(fieldSel(app.dom.resultsRegion, 'Y'), '3');
     expect(app.activeTab().panelCfg.y).toEqual([3]);
+  });
+  it('uses the direct rerender seam when no onCfgChange owner is supplied', () => {
+    const app = appWithResult(chartResult());
+    const rerender = vi.fn();
+    const cfg = autoChart(app.activeTab().result.columns);
+    const el = renderChart(app, app.activeTab().result, { cfg, rerender });
+    change(fieldSel(el, 'X'), '1');
+    expect(cfg.x).toBe(1);
+    expect(rerender).toHaveBeenCalledTimes(1);
   });
   it('"All measures" toggles between single and multi-series', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
@@ -189,19 +209,11 @@ describe('renderChart', () => {
     paintChart(app);
     expect(app.activeTab().panelCfg).not.toBe(cfg);
   });
-  it('does not re-derive (clobber) a restored config while the query is still running', () => {
-    // running + rows already streamed: the run-state guard must fire BEFORE
-    // chartCfgFor, so a still-settling result can't stamp a new key / autoChart
-    // over the restored saved/shared config.
+  it('does not mutate a caller-owned restored config while rendering', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart', running: true });
-    const tab = app.activeTab();
     const restored = { type: 'pie', x: 0, y: [2], series: null };
-    tab.panelCfg = restored;
-    tab.panelKey = 'STALE_KEY'; // deliberately != schemaKey(result.columns)
-    paintChart(app);
-    expect(app.dom.resultsRegion.textContent).toContain('renders when the query completes');
-    expect(tab.panelCfg).toBe(restored); // untouched — chartCfgFor never ran
-    expect(tab.panelKey).toBe('STALE_KEY');
+    renderChart(app, app.activeTab().result, { cfg: restored, controls: false });
+    expect(restored).toEqual({ type: 'pie', x: 0, y: [2], series: null });
   });
   it('normalizes a restored, self-contradictory pie config (multi-measure + series) on render', () => {
     const r = chartResult();

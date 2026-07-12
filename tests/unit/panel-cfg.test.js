@@ -199,11 +199,14 @@ describe('resolvePanel', () => {
     out.cfg.y.push(9);
     expect(saved.cfg.y).toEqual([1]); // saved entry untouched
   });
-  it('a valid chart cfg with a stale key still renders but is flagged rederived (hint)', () => {
-    const saved = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'STALE' };
-    const out = resolvePanel(saved, chartCols);
+  it('a valid chart cfg with a stale key retains its type but re-derives roles', () => {
+    const cols = [...chartCols, { name: 'delay', type: 'Float64' }];
+    const saved = { cfg: { type: 'bar', x: 0, y: [2], series: null }, key: 'STALE' };
+    const out = resolvePanel(saved, cols);
     expect(out.rederived).toBe(true);
     expect(out.cfg.type).toBe('bar');
+    expect(out.cfg).toMatchObject({ x: 0, y: [1] });
+    expect(out.cfg.y).not.toEqual(saved.cfg.y);
   });
   it('an invalid chart cfg retains the explicit type and re-derives axes (unknown fields kept)', () => {
     const saved = { cfg: { type: 'pie', x: 99, y: [42], series: null, futureField: 'kept' } };

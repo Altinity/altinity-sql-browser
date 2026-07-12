@@ -9,7 +9,53 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Panels: one visualization system for the workbench drawer and the
+  dashboard** (#166, absorbing #164's D9 slice; supersedes unmerged PR #168).
+  The saved-query visualization config is promoted from "a chart, plus special
+  cases" to a first-class panel union — `panel.cfg.type ∈ bar | hbar | line |
+  area | pie | table | logs | text` — designed in the results pane's new
+  **Panel** tab (a Type picker + per-type config) and rendered identically as
+  dashboard tiles by one registry (`src/ui/panels.js`), so drawer preview ≡
+  tile by construction. Previews never execute SQL: they render from the tab's
+  last explicit Run (the text panel needs no result at all — its Markdown
+  lives in `panel.cfg.content`, rendered by an in-house safe subset parsed to
+  an AST and built as DOM, raw HTML inert, http(s) links only, no new runtime
+  dependency). The `logs` panel names its `{time, msg, level}` columns (with
+  convention-based auto-detection covering `system.text_log` and OTel tables);
+  `table` is the explicit plain-grid choice; text panels save with empty SQL,
+  export their content to Markdown, and are skipped by the `.sql` script
+  export. The **dashboard now partitions favorites before execution** — a
+  text favorite renders immediately with zero queries — and nothing multi-row
+  is skipped anymore: unconfigured results go log-shape → chartable → table
+  (the log-shape signal outranks autoChart), explicit panels never vanish
+  (zero-row explicit panels show an honest "0 rows" state), and grid tiles
+  keep sort/column-width state across refreshes while the schema is unchanged.
+  Tile fetches now carry best-effort server caps (`max_result_rows` sentinel +
+  `max_result_bytes`, overflow `break`) with a guaranteed 5,000-row client
+  trim and an honest "first 5,000 rows fetched" footer note (#164).
+- **Library format: the `panel` field** (#166). `library.json` gains an
+  optional `panel: {cfg, key?}` with `version` staying 1 (additive; older
+  builds drop the unknown field). One pure `upgradeSavedEntry()` runs at
+  every ingress — localStorage startup, JSON import, Replace/Append/merge,
+  tab restore, share-link decode (including the OAuth round-trip stash) — so
+  a user upgrading in place sees no visual change; `view:'table'` entries
+  with a latent chart migrate losslessly (the chart roles ride in a nested
+  stash and prefill a switch back to a chart type). **Rollback safety:**
+  saves, exports and share links dual-write a legacy `chart` mirror for
+  chart-family panels for one release (derived via one seam, so mirror and
+  panel cannot drift; removing it next minor requires the upgrader to strip
+  `chart` when `panel` exists). Unknown panel types and unknown cfg fields
+  are preserved, never silently stripped.
+
 ### Changed
+- **A panel-config edit now dirties the tab like a SQL edit, and an untouched
+  auto-derived config is no longer frozen into the entry on Save** (#166).
+  Previously the Chart tab silently persisted whatever autoChart last derived;
+  now `panel` persists only when restored or explicitly configured, and the
+  preview renders a clone (render never mutates tab state). The detached Data
+  Pane's third view is now a read-only render of the source tab's panel
+  (previously an editable chart with its own config bar).
 - **Grid renderer extracted into its own module with shared state wiring**
   (#167). The sortable/resizable data grid (`renderGrid`), the column-resize
   primitives (`colResizeWidth`, `resizeHandle`, `reapplyWidths`), and a new

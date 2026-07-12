@@ -1,39 +1,19 @@
-// The chart renderer, extracted from results.js (#166 prep): the per-view
-// config derivation (chartCfgFor), the Type/X/Y/Series config bar, and the
-// Chart.js instantiation with the zoom/cross-realm fixes. This module never
-// imports results.js — repaint scope (`rerender`) and instance ownership
-// (`setChart`) are caller seams, so panels.js (the registry) and results.js
-// can both consume it without a cycle.
+// The chart renderer, extracted from results.js (#166 prep): the Type/X/Y/
+// Series config bar and the Chart.js instantiation with the zoom/cross-realm
+// fixes. This module never imports results.js — repaint scope (`rerender`)
+// and instance ownership (`setChart`) are caller seams, so panels.js (the
+// registry, its only production caller) consumes it without a cycle. Config
+// derivation lives in core/panel-cfg.js (resolvePanel/autoPanel) — render
+// never derives into or writes tab state (#166's dirty pin).
 
 import { h, zoomScale } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
-import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, chartRowCap } from '../core/chart-data.js';
+import { chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, chartRowCap } from '../core/chart-data.js';
 
-/**
- * Per-tab chart config: derive defaults via autoChart the first time (or when
- * the result schema changes), then keep the user's overrides. A config restored
- * from a saved query / share link carries the schema key it was built for, so
- * when the re-run result matches that schema the restored config sticks. Returns
- * null when the result has nothing chartable.
- */
-function chartCfgFor(tab, columns) {
-  const key = schemaKey(columns);
-  if (tab.panelKey !== key) {
-    tab.panelKey = key;
-    tab.panelCfg = autoChart(columns);
-  } else if (tab.panelCfg && !chartCfgValid(tab.panelCfg, columns)) {
-    // Key matches but the config doesn't fit (a hand-edited share link or a
-    // corrupted import) — fall back to a safe default rather than crash.
-    tab.panelCfg = autoChart(columns);
-  }
-  // Fold cross-field invariants on whatever we ended up with (a restored config
-  // can be in-range yet self-contradictory, e.g. a multi-measure pie).
-  return normalizeChartCfg(tab.panelCfg);
-}
-
-/** A labelled <select> for the config bar. */
-function chartSelect(label, value, options, onChange) {
+/** A labelled <select> for the config bar (shared with the Panel tab's
+ * pickers — one builder, one look). Exported for panels.js. */
+export function chartSelect(label, value, options, onChange) {
   const sel = h('select', { class: 'chart-select', onchange: (e) => onChange(e.target.value) });
   for (const o of options) {
     const opt = h('option', { value: o.value }, o.label);
@@ -43,7 +23,8 @@ function chartSelect(label, value, options, onChange) {
   return h('label', { class: 'chart-field' }, h('span', { class: 'chart-field-label' }, label), sel);
 }
 
-function chartEmpty(icon, msg) {
+/** The chart/panel empty-state chip + message. Exported for panels.js. */
+export function chartEmpty(icon, msg) {
   return h('div', { class: 'chart-empty' }, h('div', { class: 'chip' }, icon), h('div', null, msg));
 }
 
@@ -65,37 +46,32 @@ export function installChartZoomFix(chart, canvas) {
 }
 
 /**
- * Config sourcing, one of two modes:
- *  - `opts.cfg` — the caller supplies a ready (already-resolved) config and
- *    render never writes anything back (#166's dirty pin: the Panel tab passes
- *    resolvePanel's clone here; `opts.onCfgChange(cfg)` fires on every config-
- *    bar edit so the caller can write the edited clone back explicitly);
- *  - `opts.tab` — a holder object (`panelKey`/`panelCfg`) this module derives
- *    into via chartCfgFor (the detached snapshot's caller-owned local object).
- * `opts.rerender` repaints after a config change — required whenever the
- * config bar renders (`controls !== false`): this module must not default it
- * to results.js's repaint, or the import cycle this extraction breaks would
- * come right back. `opts.setChart` receives the new Chart.js instance to
- * store/destroy (the shared `app.chart` slot by default — a detached view
- * must use its own slot instead, or closing one view's chart would tear down
- * another's). `opts.running` overrides the run-state gate — a detached
- * snapshot's `r` is always already-complete, independent of whatever the live
- * tab is doing. `opts.controls === false` omits the Type/X/Y config bar
- * (read-only tiles). `opts.hideGrid` suppresses the value-axis gridlines
+ * `opts.cfg` (required) is a ready, caller-owned config — resolvePanel's
+ * clone; render never writes anything back (#166's dirty pin), and
+ * `opts.onCfgChange(cfg)` fires on every config-bar edit so the caller can
+ * write the edited clone back explicitly (the caller's rerender then
+ * repaints — the handlers do NOT rerender themselves when onCfgChange is
+ * supplied, avoiding a double repaint). `opts.rerender` repaints after a
+ * config change — required whenever the config bar renders
+ * (`controls !== false`): this module must not default it to results.js's
+ * repaint, or the import cycle this extraction breaks would come right back.
+ * `opts.setChart` receives the new Chart.js instance to store/destroy (the
+ * shared `app.chart` slot by default — an isolated surface must use its own
+ * slot instead, or closing one view's chart would tear down another's).
+ * `opts.controls === false` omits the Type/X/Y config bar (read-only tiles);
+ * `opts.typeControl === false` omits just the Type select (the Panel tab's
+ * picker owns type). `opts.hideGrid` suppresses the value-axis gridlines
  * (dashboard tiles — #149).
  */
 export function renderChart(app, r, opts = {}) {
   const rerender = opts.rerender;
   const setChart = opts.setChart || ((c) => { app.chart = c; });
-  const onCfgChange = opts.onCfgChange || (() => {});
-  const running = opts.running !== undefined ? opts.running : app.state.running.value;
-  // Gate on run state BEFORE deriving the config: while a query streams its
-  // columns can be empty (pre-meta), and letting chartCfgFor see that empty
-  // schema would clobber a restored saved/shared config with autoChart(null).
-  if (running) return chartEmpty(Icon.spinner(), 'Chart renders when the query completes.');
-  const cfg = opts.cfg !== undefined
-    ? (chartCfgValid(opts.cfg, r.columns) ? normalizeChartCfg(opts.cfg) : null)
-    : chartCfgFor(opts.tab || app.activeTab(), r.columns);
+  // With an onCfgChange the caller owns the repaint (writeBack → rerender);
+  // without one the handlers repaint directly. Never both.
+  const changed = opts.onCfgChange
+    ? (cfg) => opts.onCfgChange(cfg)
+    : () => rerender();
+  const cfg = chartCfgValid(opts.cfg, r.columns) ? normalizeChartCfg(opts.cfg) : null;
   if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 
   // `opts.controls === false` omits the interactive Type/X/Y config bar entirely
@@ -105,29 +81,29 @@ export function renderChart(app, r, opts = {}) {
   if (opts.controls !== false) {
     const f = chartFieldOptions(r.columns, cfg);
 
-    // Each handler mutates the shared cfg (= tab.panelCfg) and re-renders;
-    // chartCfgFor folds the cross-field invariants (pie → single measure,
-    // series ≠ X) on the way back in, so the handlers don't normalize themselves.
+    // Each handler mutates the caller's cfg clone and reports it via
+    // `changed`; normalizeChartCfg folds the cross-field invariants (pie →
+    // single measure, series ≠ X) on the next render, so the handlers don't
+    // normalize themselves.
     bar = h('div', { class: 'chart-config' });
     // The Panel drawer tab (#166) renders its own all-types picker above this
     // bar, so it suppresses the chart-family Type select (`typeControl:false`)
     // rather than showing two competing type controls.
     if (opts.typeControl !== false) {
-      bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; onCfgChange(cfg); rerender(); }));
+      bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; changed(cfg); }));
     }
-    bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); onCfgChange(cfg); rerender(); }));
-    bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; onCfgChange(cfg); rerender(); }));
+    bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); changed(cfg); }));
+    bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; changed(cfg); }));
     if (f.showMulti) {
       bar.appendChild(h('button', {
         class: 'chart-toggle', title: 'Plot every numeric column as its own series',
-        onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; onCfgChange(cfg); rerender(); },
+        onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; changed(cfg); },
       }, f.multiActive ? 'Single series' : 'All measures'));
     }
     if (f.showSeries) {
       bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
         cfg.series = v === '' ? null : Number(v);
-        onCfgChange(cfg);
-        rerender();
+        changed(cfg);
       }));
     }
     // The chart plots at most cap points for the current type; say so when the
