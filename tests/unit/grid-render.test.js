@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderGrid, renderGridView, colResizeWidth, resizeHandle, reapplyWidths, PLAIN_KEY, GRID_VIS_CAP } from '../../src/ui/grid-render.js';
+import { renderGrid, renderGridView, colResizeWidth, resizeHandle, reapplyWidths, PLAIN_KEY, GRID_VIS_CAP, visCap, truncationFooter } from '../../src/ui/grid-render.js';
 import { h } from '../../src/ui/dom.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
@@ -12,6 +12,19 @@ const gridArgs = (over = {}) => ({
 });
 
 afterEach(() => { document.body.replaceChildren(); });
+
+describe('visCap', () => {
+  it('follows the result row limit, else the 5000 fallback', () => {
+    expect(visCap({ rowLimit: 10000 })).toBe(10000);
+    expect(visCap({ rowLimit: 0 })).toBe(5000);
+  });
+});
+
+describe('truncationFooter', () => {
+  it('renders the shared "+N more rows" note', () => {
+    expect(truncationFooter(42).textContent).toBe('… + 42 more rows truncated for display.');
+  });
+});
 
 describe('colResizeWidth', () => {
   it('converts client px via scale and clamps to the floor', () => {

@@ -11,7 +11,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { renderChart } from './results.js';
+import { renderChart } from './chart-render.js';
 import { schemaKey } from '../core/chart-data.js';
 import { classifyTile } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';

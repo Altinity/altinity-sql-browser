@@ -14,6 +14,27 @@ export const GRID_VIS_CAP = 5000; // fallback display cap for results that carry
 const MIN_COL = 48; // px floor for a resized column
 
 /**
+ * How many rows to render: follow the result's own row cap when set (so a 10000
+ * limit renders 10000), else the grid's fixed fallback. The server cap already
+ * trims a normal SELECT to its limit, so this just keeps the renderers from
+ * re-capping a large-but-allowed result. Pure — exported for tests.
+ */
+export function visCap(r) {
+  return r.rowLimit > 0 ? r.rowLimit : GRID_VIS_CAP;
+}
+
+/**
+ * In-body "+N more rows truncated for display" footer, shared by every capped
+ * row view (renderGrid here, the dashboard's logs view) so the wording and
+ * styling can't drift between adjacent surfaces.
+ */
+export function truncationFooter(hidden) {
+  return h('div', {
+    style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
+  }, '… + ' + hidden + ' more rows truncated for display.');
+}
+
+/**
  * New width (px) for a column dragged by `dx` client px. `scale` converts client
  * px → CSS px under the page `zoom` (computed per element); 0/NaN falls back to
  * 1. Clamped to MIN_COL. Pure — exported for tests.
@@ -175,11 +196,7 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   });
   table.appendChild(tbody);
   wrap.appendChild(table);
-  if (rows.length > cap) {
-    wrap.appendChild(h('div', {
-      style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
-    }, '… + ' + (rows.length - cap) + ' more rows truncated for display.'));
-  }
+  if (rows.length > cap) wrap.appendChild(truncationFooter(rows.length - cap));
   return wrap;
 }
 
