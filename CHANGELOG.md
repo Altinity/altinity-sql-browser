@@ -9,6 +9,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **Grid renderer extracted into its own module with shared state wiring**
+  (#167). The sortable/resizable data grid (`renderGrid`), the column-resize
+  primitives (`colResizeWidth`, `resizeHandle`, `reapplyWidths`), and a new
+  `renderGridView` adapter now live in `src/ui/grid-render.js`. The adapter
+  centralizes the sort-update → repaint choreography that the main results
+  table, the script-result rows viewer, and the detached Data pane each
+  hand-rolled — the caller still owns where sort/width state lives and what a
+  repaint means, so every surface keeps its exact state lifetime and repaint
+  scope. Behavior-preserving; prepares the module boundary the Panels track
+  (#166) builds on (a `table` panel becomes the fourth consumer without
+  another copy of the wiring). A grid consumer may now omit `onCell` (cell
+  clicks are inert instead of a TypeError).
+
 ### Fixed
 - **Unbounded column types no longer crush width-constrained UI** (#177). A
   declared type with an arbitrarily long body — a giant `Enum16(…)`, a

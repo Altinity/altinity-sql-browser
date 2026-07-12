@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderResults, renderJson, renderTable, renderChart, colResizeWidth, openCellDetail, openRowsViewer, installChartZoomFix, visCap, expandDataPane } from '../../src/ui/results.js';
+import { renderResults, renderJson, renderTable, renderChart, openCellDetail, openRowsViewer, installChartZoomFix, visCap, expandDataPane } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey, chartRowCap } from '../../src/core/chart-data.js';
@@ -159,6 +159,11 @@ describe('renderTable', () => {
     expect(acts.map((b) => b.textContent)).toEqual(['Expand', 'Copy']);
     click(acts[1]);
     expect(app.actions.copyResult).toHaveBeenCalled();
+    click(acts[0]); // Expand opens the detached Data pane (overlay fallback here)
+    expect(document.querySelector('.graph-overlay .data-pane-body')).not.toBeNull();
+    // Close for real (Escape) so the pane's own keydown listener detaches too.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(document.querySelector('.graph-overlay')).toBeNull();
   });
   it('no Copy button on an error result', () => {
     const r = newResult('Table');
@@ -277,15 +282,11 @@ describe('result row cap', () => {
   });
 });
 
+// The grid mechanics (colResizeWidth math, the splitter model, renderGrid,
+// renderGridView) are specced in grid-render.test.js (#167); these cover only
+// the main table's WIRING: state lands in app.state.resultSort / r.colWidths
+// and survives the renderResults repaint.
 describe('column resize', () => {
-  it('colResizeWidth converts client px via scale and clamps to the floor', () => {
-    expect(colResizeWidth(100, 50, 1)).toBe(150);
-    expect(colResizeWidth(100, -90, 1)).toBe(48);    // floored at MIN_COL
-    expect(colResizeWidth(100, 120, 1.2)).toBe(200); // zoom: 100 + 120/1.2
-    expect(colResizeWidth(100, 0, 0)).toBe(100);     // scale 0 → /1
-    expect(colResizeWidth(100, 0, NaN)).toBe(100);   // NaN → /1
-  });
-
   it('puts a resize handle on each data column; the handle does not sort', () => {
     const app = appWithResult(tableResult());
     renderResults(app);
@@ -307,42 +308,6 @@ describe('column resize', () => {
     expect(table.classList.contains('fixed')).toBe(true);
     expect(Object.keys(r.colWidths).sort()).toEqual(['0', '1', 'idx']); // every column measured
     handle.ownerDocument.defaultView.dispatchEvent(new MouseEvent('mouseup', {}));
-  });
-
-  it('splitter model: dragging a border grows the column and shrinks its neighbor (total constant)', () => {
-    const r = tableResult();
-    r.colWidths = { idx: 36, 0: 100, 1: 100 }; // pre-seeded so the pair math is meaningful
-    const app = appWithResult(r);
-    renderResults(app);
-    const region = app.dom.resultsRegion;
-    const win = region.ownerDocument.defaultView;
-    const handle = region.querySelectorAll('.res-table th .col-resize-h')[0]; // col 0, neighbor col 1
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
-    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 130 })); // +30
-    expect(r.colWidths[0]).toBe(130);
-    expect(r.colWidths[1]).toBe(70); // neighbor gave up 30 — pair sum stays 200
-    // drag past the neighbor's floor: neighbor clamps at MIN_COL (48), column caps
-    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 999 }));
-    expect(r.colWidths[1]).toBe(48);
-    expect(r.colWidths[0]).toBe(152); // 200 - 48
-    win.dispatchEvent(new MouseEvent('mouseup', {}));
-    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 0 }));
-    expect(r.colWidths[0]).toBe(152); // listeners removed on mouseup
-  });
-
-  it('dragging the last column has no neighbor, so it grows the table', () => {
-    const r = tableResult();
-    r.colWidths = { idx: 36, 0: 100, 1: 100 };
-    const app = appWithResult(r);
-    renderResults(app);
-    const region = app.dom.resultsRegion;
-    const win = region.ownerDocument.defaultView;
-    const handle = region.querySelectorAll('.res-table th .col-resize-h')[1]; // last data column
-    handle.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, bubbles: true }));
-    win.dispatchEvent(new MouseEvent('mousemove', { clientX: 150 })); // +50
-    expect(r.colWidths[1]).toBe(150);
-    expect(r.colWidths[0]).toBe(100); // unchanged — no redistribution
-    win.dispatchEvent(new MouseEvent('mouseup', {}));
   });
 
   it('reapplies stored widths on re-render (survives sort / streaming)', () => {
@@ -1131,6 +1096,14 @@ describe('multiquery script grid (#83)', () => {
     // SQL is collapsed to one line, full text on the title attribute
     const sqlCell = region.querySelector('tbody td.script-sql');
     expect(sqlCell.querySelector('.cell-val').textContent).toBe('CREATE TABLE t (a Int8)');
+  });
+
+  it('the script grid resize handles swallow clicks (no row-open / header side effects)', () => {
+    const app = appWithResult(scriptResult());
+    renderResults(app);
+    const handle = app.dom.resultsRegion.querySelector('.script-grid .col-resize-h');
+    handle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(document.querySelector('.cd-backdrop')).toBeNull(); // nothing opened
   });
 
   it('flags a truncated SELECT in its row meta', () => {
