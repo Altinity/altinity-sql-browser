@@ -1960,8 +1960,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-seg-btn:hover { color: var(--fg); }
 .dash-seg-btn.is-active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
-.dash-cols-wrap { display: inline-flex; align-items: center; gap: 8px; }
-.dash-seg-cols .dash-seg-btn { padding: 4px 10px; font-family: var(--mono); }
+.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; }
 .dash-seg-label { font-size: 11px; color: var(--fg-faint); }
 /* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
    workbench's var-field/var-name/var-input classes. Sits in the toolbar's
@@ -1999,8 +1998,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-btn:hover { background: var(--bg-hover); }
 .dash-btn:disabled { opacity: .55; cursor: default; }
 /* Arrange grid: the persisted column count (2 or 3, via `--dash-cols`, default
-   3) on wide screens, degrading to 2 then 1 as width shrinks. The 2/3 switcher
-   lives in the toolbar (#149 D2); drag-reorder + 1/2-col span land in D3. */
+   3) on wide screens, degrading to 2 then 1 as width shrinks. The four-way
+   layout switcher lives in the toolbar (#149 D2, #184). */
 .dash-grid {
   display: grid; gap: 14px; padding: 18px 20px 40px;
   grid-template-columns: repeat(var(--dash-cols, 3), minmax(0, 1fr));
@@ -2008,9 +2007,17 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 @media (max-width: 1100px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
-/* Report mode (#149 D2): one full-width scrolling column with taller tiles. */
+/* Report mode (#149 D2): one centered column (1100px) with taller tiles. The
+   .is-report/.is-wide selectors outweigh the responsive `.dash-grid` rules
+   above (class+class > single class), so both stay one column at every width —
+   consistent with the all-modes-to-one-column narrow fallback. */
 .dash-grid.is-report { grid-template-columns: 1fr; max-width: 1100px; }
 .dash-grid.is-report .dash-tile { min-height: 440px; }
+/* Full width mode (#184): one tile per row filling the whole available
+   dashboard content width (inside the grid's existing 20px page gutters), for
+   horizontally expansive Grafana-style panels. Unlike Report it keeps the
+   normal Arrange tile height — it tests width, not document-like height. */
+.dash-grid.is-wide { grid-template-columns: 1fr; max-width: none; width: 100%; margin: 0; }
 /* D1 shows charts read-only: renderChart is called with controls:false so the
    Type/X/Y config bar isn't built at all (a settings-popover arrives in D6). */
 .dash-empty { padding: 60px 20px; text-align: center; color: var(--fg-mute); font-size: 13px; }

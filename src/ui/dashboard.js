@@ -18,7 +18,9 @@ import { Icon } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { schemaKey } from '../core/chart-data.js';
 import { resolvePanel, autoPanel } from '../core/panel-cfg.js';
-import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
+import {
+  DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP, activeDashboardView, dashboardViewSelection,
+} from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
@@ -45,22 +47,27 @@ const TILE_CONCURRENCY = 6;
 const FILTER_DEBOUNCE_MS = 500;
 
 /**
- * Build a segmented control (`Arrange | Report`, `2 | 3`): a row of buttons of
- * which exactly one reads active. `getActive` returns the currently-selected
- * value; `onPick(value)` fires on a click. Returns `{ el, sync }` — `sync()`
- * repaints the active button from `getActive()` (called after a pick so the
- * two controls can share one `apply()`).
+ * Build a segmented control (the four-way `Full width | Report | 2 columns |
+ * 3 columns` layout switcher, #184): a row of buttons of which exactly one
+ * reads active. `options` are `[value, label, title?]` triples (the optional
+ * `title` becomes the button's hover tooltip); `ariaLabel` names the group for
+ * assistive tech. `getActive` returns the currently-selected value; `onPick(
+ * value)` fires on a click. Returns `{ el, sync }` — `sync()` repaints the
+ * active button (and its `aria-pressed`) from `getActive()`, so a pick and the
+ * shared `apply()` stay in agreement.
  */
-function buildSeg(cls, options, getActive, onPick) {
-  const btns = options.map(([, label]) =>
-    h('button', { class: 'dash-seg-btn', type: 'button' }, label));
+function buildSeg(cls, options, getActive, onPick, ariaLabel) {
+  // `h` skips nullish attribute values, so an option's absent `title` (or a
+  // missing `ariaLabel`) simply isn't set — no explicit guard needed here.
+  const btns = options.map(([, label, title]) =>
+    h('button', { class: 'dash-seg-btn', type: 'button', title }, label));
   const sync = () => btns.forEach((b, i) => {
     const on = options[i][0] === getActive();
     b.classList.toggle('is-active', on);
     b.setAttribute('aria-pressed', String(on));
   });
   btns.forEach((b, i) => { b.onclick = () => onPick(options[i][0]); });
-  const el = h('div', { class: 'dash-seg ' + cls, role: 'group' }, ...btns);
+  const el = h('div', { class: 'dash-seg ' + cls, role: 'group', 'aria-label': ariaLabel }, ...btns);
   sync();
   return { el, sync };
 }
@@ -423,44 +430,48 @@ export function renderDashboard(app) {
   const empty = h('div', { class: 'dash-empty', style: { display: favorites.length ? 'none' : '' } },
     'No favorites yet — star a query in the Library to add it to the dashboard.');
 
-  // Layout toolbar (#149 D2) + global filter bar (#149 D3). The Arrange|Report
-  // switcher is the primary control; the 2/3 column count is a secondary
-  // setting, meaningful only in Arrange (hidden in Report's single column).
-  // Both are presentation-only: `apply()` reshapes the grid and the tiles'
-  // Chart.js instances resize themselves via their ResizeObserver — no tile
-  // re-query. State is mutated + persisted (asb:dashLayout/dashCols) so the
-  // choice survives reloads and Refresh. The filter bar sits between them; it
-  // is entirely absent (no row, no spacing) when no favorite references a
-  // `{name:Type}` parameter.
+  // Layout toolbar (#149 D2, #184) + global filter bar (#149 D3). One four-way
+  // segmented control — Full width | Report | 2 columns | 3 columns — replaces
+  // the old Arrange|Report + separate Columns pair (#184): every effective view
+  // is one click away and the two persisted keys (dashLayout/dashCols) are
+  // driven together through activeDashboardView / dashboardViewSelection. It is
+  // presentation-only: `apply()` toggles the grid's mutually-exclusive shape
+  // classes and the tiles' Chart.js instances resize themselves via their
+  // ResizeObserver — no tile re-query. Only the keys that actually change are
+  // persisted (asb:dashLayout/dashCols) so the choice survives reloads and
+  // Refresh. The filter bar sits immediately after the switcher; it is entirely
+  // absent (no row, no spacing) when no favorite references a `{name:Type}`.
   const apply = () => {
+    grid.classList.toggle('is-wide', state.dashLayout === 'wide');
     grid.classList.toggle('is-report', state.dashLayout === 'report');
     grid.style.setProperty('--dash-cols', String(state.dashCols));
-    colsWrap.style.display = state.dashLayout === 'report' ? 'none' : '';
     layoutSeg.sync();
-    colsSeg.sync();
   };
-  const layoutSeg = buildSeg('dash-seg-layout', [['arrange', 'Arrange'], ['report', 'Report']],
-    () => state.dashLayout, (v) => {
-      if (v === state.dashLayout) return;
-      state.dashLayout = v;
-      app.savePref('dashLayout', v);
-      apply();
-    });
-  const colsSeg = buildSeg('dash-seg-cols', [[2, '2'], [3, '3']],
-    () => state.dashCols, (v) => {
-      if (v === state.dashCols) return;
-      state.dashCols = v;
-      app.savePref('dashCols', v);
-      apply();
-    });
-  const colsWrap = h('div', { class: 'dash-cols-wrap' },
-    h('span', { class: 'dash-seg-label' }, 'Columns'), colsSeg.el);
+  const layoutSeg = buildSeg('dash-seg-layout', [
+    ['wide', 'Full width', 'One tile per row using all available width'],
+    ['report', 'Report', 'One centered, taller tile per row'],
+    ['columns-2', '2 columns', 'Arrange tiles in two columns'],
+    ['columns-3', '3 columns', 'Arrange tiles in three columns'],
+  ], () => activeDashboardView(state), (view) => {
+    if (view === activeDashboardView(state)) return;
+    const sel = dashboardViewSelection(view);
+    if (sel.dashLayout !== state.dashLayout) {
+      state.dashLayout = sel.dashLayout;
+      app.savePref('dashLayout', sel.dashLayout);
+    }
+    if (sel.dashCols != null && sel.dashCols !== state.dashCols) {
+      state.dashCols = sel.dashCols;
+      app.savePref('dashCols', sel.dashCols);
+    }
+    apply();
+  }, 'Dashboard layout');
+  const layoutWrap = h('div', { class: 'dash-layout-wrap' },
+    h('span', { class: 'dash-seg-label' }, 'Layout'), layoutSeg.el);
   const filterBar = buildFilterBar(app, fieldControls(analysis), (name) => runAffected(name), getFilterField);
-  const toolbar = h('div', { class: 'dash-toolbar' },
-    layoutSeg.el,
-    filterBar,
-    h('div', { class: 'dash-spacer', style: { flex: '1' } }),
-    colsWrap);
+  // The toolbar is flex-start (default), so layoutWrap + filterBar pack left as
+  // the issue specifies — no trailing spacer needed now the right-aligned
+  // Columns control is gone (#184).
+  const toolbar = h('div', { class: 'dash-toolbar' }, layoutWrap, filterBar);
   apply();
 
   // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
