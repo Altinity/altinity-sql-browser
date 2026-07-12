@@ -132,6 +132,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   clicks are inert instead of a TypeError).
 
 ### Fixed
+- **The workbench Panel tab keeps Logs authoring controls available when a
+  saved Logs panel falls back** (#192). A saved `{type:'logs'}` panel whose
+  Time/Message roles no longer resolve against the current result used to
+  fall back to the ordinary fallback diagnostic and preview (usually Table)
+  with no way to repair it — reselecting Logs from the picker is a same-type
+  no-op, so the saved configuration was stuck. `renderPanelView` now derives
+  controls from the saved Logs config whenever the fallback is a saved Logs
+  panel (`src/ui/panels.js`), while the preview keeps rendering the existing
+  `resolvePanel()` fallback + diagnostic unchanged; selecting explicit
+  Time/Message/Level roles repairs the panel in place (marks the tab dirty,
+  runs no SQL) and the next repaint renders Logs normally. Dashboard,
+  detached, and other read-only surfaces are unaffected — the rescue is
+  scoped to the editable workbench tab and strictly to a saved Logs type.
 - **Unbounded column types no longer crush width-constrained UI** (#177). A
   declared type with an arbitrarily long body — a giant `Enum16(…)`, a
   many-field `Tuple(…)`, `Nested`/`Variant`/`AggregateFunction`/`JSON(…)` —

@@ -26,6 +26,38 @@ function logsResult() {
   r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
   return r;
 }
+// A result with a time column by convention but no message-shaped column at
+// all — a saved `{type:'logs'}` cannot resolve Message, so resolvePanel falls
+// back (#192's rescue scenario).
+function noMessageResult() {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'operation', type: 'String' },
+    { name: 'component', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', 'op', 'comp']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+// Neither Time nor Message resolves by convention — findTimeColumn matches by
+// TYPE (not name), so no column here may be DateTime-shaped.
+function noTimeNoMessageResult() {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'ts', type: 'String' },
+    { name: 'operation', type: 'String' },
+    { name: 'component', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', 'op', 'comp']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+const selectRole = (app, index, value) => {
+  const sel = [...region(app).querySelectorAll('.panel-config .chart-config select')][index];
+  sel.value = value;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+};
 
 function panelApp(result, panelCfg = null, over = {}) {
   const app = makeApp();
@@ -138,6 +170,54 @@ describe('Panel drawer tab', () => {
     const bad = panelApp(chartResult(), { type: 'logs' });
     renderResults(bad);
     expect(region(bad).textContent).toContain('no time + message columns'); // impossible → fallback diagnostic
+  });
+  it('rescue (#192): a saved Logs panel that falls back still shows Logs controls, and Message repair resolves it', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs' });
+    renderResults(app);
+    // Fallback diagnostic + fallback Table preview are both visible...
+    expect(region(app).textContent).toContain('no time + message columns');
+    expect(region(app).querySelector('.res-table')).not.toBeNull();
+    // ...alongside the three Logs role selectors (the rescue path), fed the
+    // saved cfg — not the fallback (Table) cfg.
+    const roleSels = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    expect(roleSels).toHaveLength(3);
+
+    selectRole(app, 1, 'component'); // Message → component
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
+    expect(app.activeTab().dirty).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // The repair resolves the shape: Logs renders, the fallback note is gone.
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+    expect(region(app).querySelector('.res-table')).toBeNull();
+  });
+  it('rescue (#192): two-step repair keeps controls visible until both roles resolve', () => {
+    const app = panelApp(noTimeNoMessageResult(), { type: 'logs' });
+    renderResults(app);
+    expect([...region(app).querySelectorAll('.panel-config .chart-config select')]).toHaveLength(3);
+
+    selectRole(app, 0, 'ts'); // Time → ts (Message still unresolved)
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts' });
+    expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull(); // still falling back
+    expect([...region(app).querySelectorAll('.panel-config .chart-config select')]).toHaveLength(3); // still visible
+
+    selectRole(app, 1, 'component'); // Message → component completes the shape
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+  });
+  it('rescue (#192) does not engage for a table panel type: no false controls leak in', () => {
+    const app = panelApp(noMessageResult(), { type: 'table' });
+    renderResults(app);
+    // Not a saved Logs panel → no rescue; Table has no controls at all.
+    expect(region(app).querySelector('.panel-config')).toBeNull();
+  });
+  it('an unknown saved panel type still falls back safely, without a rescue path', () => {
+    const app = panelApp(noMessageResult(), { type: 'gauge' });
+    expect(() => renderResults(app)).not.toThrow();
+    expect(region(app).textContent).toContain('Unknown panel type');
+    expect(region(app).querySelector('.panel-config')).toBeNull();
   });
   it('text: renders from cfg.content with NO result; textarea edits update cfg + preview', () => {
     const app = panelApp(null, { type: 'text', content: '# Hello' });

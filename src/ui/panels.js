@@ -286,8 +286,18 @@ export function renderPanelView(app, r, hooks) {
   });
   const onChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
 
-  const arm = PANEL_TYPES[resolved.cfg.type];
-  const controlsNode = arm.controls({ app, result: hasGrid ? r : null, cfg: resolved.cfg, onChange });
+  // Rescue path (#192): a saved Logs panel that falls back (its Time/Message
+  // roles no longer resolve) still needs its Logs controls so the user can
+  // repair the roles — the fallback arm (usually Table) has no such fields.
+  // Scoped strictly to saved.cfg.type === 'logs' (never a generic saved-type
+  // dispatch): unknown saved types must keep falling back safely.
+  const rescueLogs = hasGrid && saved?.cfg?.type === 'logs' && resolved.fallback;
+  // A clone, like resolved.cfg always is — saved.cfg is the live tab.panelCfg
+  // reference, and controls() must never be handed that to mutate in place.
+  const [controlsArm, controlsCfg] = rescueLogs
+    ? [PANEL_TYPES.logs, { ...saved.cfg }]
+    : [PANEL_TYPES[resolved.cfg.type], resolved.cfg];
+  const controlsNode = controlsArm.controls({ app, result: hasGrid ? r : null, cfg: controlsCfg, onChange });
   const bar = controlsNode ? h('div', { class: 'panel-config' }, controlsNode) : null;
 
   const body = h('div', { class: 'panel-body' });
