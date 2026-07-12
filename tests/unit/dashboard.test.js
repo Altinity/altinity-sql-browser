@@ -2,8 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase, dashboardTileSql, parseJsonResult, classifyTile,
-  normalizeDashLayout, normalizeDashCols,
+  normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP,
 } from '../../src/core/dashboard.js';
+import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
   snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
@@ -58,6 +59,7 @@ describe('dashboardTileSql', () => {
 });
 
 describe('parseJsonResult', () => {
+  const nData = (n) => Array.from({ length: n }, (_, i) => ({ n: i }));
   it('transforms a full FORMAT JSON response into columns + array rows + meta', () => {
     const out = parseJsonResult({
       meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }],
@@ -67,13 +69,45 @@ describe('parseJsonResult', () => {
     });
     expect(out.columns.map((c) => c.name)).toEqual(['k', 'v']);
     expect(out.rows).toEqual([['a', 1], ['b', 2]]);
-    expect(out.meta).toEqual({ rows: 2, ms: 12, bytes: 2048 });
+    expect(out.meta).toEqual({ rows: 2, ms: 12, bytes: 2048, truncated: false });
   });
   it('is defensive about a bare response (no meta/data/statistics/rows)', () => {
     const out = parseJsonResult({});
     expect(out.columns).toEqual([]);
     expect(out.rows).toEqual([]);
-    expect(out.meta).toEqual({ rows: 0, ms: null, bytes: null });
+    expect(out.meta).toEqual({ rows: 0, ms: null, bytes: null, truncated: false });
+  });
+  it('exactly cap rows → kept whole, not truncated (#149 D9)', () => {
+    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(3) }, 3);
+    expect(out.rows).toEqual([[0], [1], [2]]);
+    expect(out.meta.rows).toBe(3);
+    expect(out.meta.truncated).toBe(false);
+  });
+  it('cap+1 rows → sliced to cap, truncated, and meta.rows is rows SHOWN (json.rows ignored)', () => {
+    const out = parseJsonResult(
+      // json.rows is a block-boundary overshoot count under result_overflow_mode
+      // 'break' — neither the full nor the displayed count, so never surfaced.
+      { meta: [{ name: 'n', type: 'UInt64' }], data: nData(4), rows: 9999 },
+      3,
+    );
+    expect(out.rows).toEqual([[0], [1], [2]]);
+    expect(out.meta.rows).toBe(3);
+    expect(out.meta.truncated).toBe(true);
+  });
+  it('an uncapped call reports rows shown with truncated false, even when json.rows disagrees', () => {
+    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(2), rows: 9999 });
+    expect(out.rows).toEqual([[0], [1]]);
+    expect(out.meta.rows).toBe(2);
+    expect(out.meta.truncated).toBe(false);
+  });
+});
+
+describe('DASH_TILE_ROW_CAP', () => {
+  // The invariant the constant's docstring states, enforced: a fetch cap below
+  // any chart display cap would silently truncate dashboard charts relative to
+  // the workbench. Bumping CHART_ROW_CAPS must be a deliberate two-file edit.
+  it('covers every chart display cap (no silent chart starvation)', () => {
+    expect(DASH_TILE_ROW_CAP).toBeGreaterThanOrEqual(Math.max(...Object.values(CHART_ROW_CAPS)));
   });
 });
 
@@ -261,6 +295,14 @@ describe('renderDashboard', () => {
       vi.fn(async () => chartResult({ rows: 2, ms: null, bytes: null })));
     await renderDashboard(app);
     expect(app.root.querySelector('.dash-tile-foot').children.length).toBe(1);
+  });
+
+  it('a fetch-truncated tile gets the honest "first N rows fetched" footer note (#149 D9)', async () => {
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }],
+      vi.fn(async () => chartResult({ rows: 5000, ms: 5, bytes: 100, truncated: true })));
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile-foot').textContent)
+      .toContain('first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched — sorting/charts cover this prefix only');
   });
 
   it('has a theme toggle wired to app.toggleTheme', async () => {
@@ -1121,6 +1163,20 @@ describe('app.runTile', () => {
   it('errors (without driving sign-out) when there is no token', async () => {
     const app = createApp(appEnv({ sessionStorage: memSession({}) }));
     expect(await app.runTile('SELECT 1')).toEqual({ error: 'Not signed in' });
+  });
+  it('trims an over-cap result to DASH_TILE_ROW_CAP and flags meta.truncated (#149 D9)', async () => {
+    // Server sentinel (max_result_rows = cap + 1, overflow 'break') delivered
+    // one row past the cap — the client trim is the guaranteed bound.
+    const data = Array.from({ length: DASH_TILE_ROW_CAP + 1 }, (_, i) => ({ n: i }));
+    const app = createApp(appEnv({
+      fetch: makeFetch([[(u, sql) => /SELECT n/.test(sql || ''),
+        resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data, rows: data.length } })]]),
+    }));
+    const r = await app.runTile('SELECT n FROM big');
+    expect(r.rows).toHaveLength(DASH_TILE_ROW_CAP);
+    expect(r.rows[DASH_TILE_ROW_CAP - 1]).toEqual([DASH_TILE_ROW_CAP - 1]);
+    expect(r.meta.rows).toBe(DASH_TILE_ROW_CAP);
+    expect(r.meta.truncated).toBe(true);
   });
 });
 

@@ -13,7 +13,7 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './chart-render.js';
 import { schemaKey } from '../core/chart-data.js';
-import { classifyTile } from '../core/dashboard.js';
+import { classifyTile, DASH_TILE_ROW_CAP } from '../core/dashboard.js';
 import { formatBytes, formatRows } from '../core/format.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
@@ -60,11 +60,20 @@ function buildSeg(cls, options, getActive, onPick) {
   return { el, sync };
 }
 
-/** Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't return. */
+/**
+ * Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't
+ * return. A fetch-truncated result (#149 D9: the client trimmed it to
+ * DASH_TILE_ROW_CAP) gets an honest note — client-side sort and chart
+ * aggregation only cover that fetched prefix, not the full underlying result.
+ */
 function tileFooter(meta) {
   const parts = [h('span', null, formatRows(meta.rows) + ' rows')];
   if (meta.ms != null) parts.push(h('span', null, meta.ms + ' ms'));
   if (meta.bytes != null) parts.push(h('span', null, formatBytes(meta.bytes) + ' scanned'));
+  if (meta.truncated) {
+    parts.push(h('span', null,
+      'first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched — sorting/charts cover this prefix only'));
+  }
   return parts;
 }
 
