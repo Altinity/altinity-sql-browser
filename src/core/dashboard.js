@@ -30,11 +30,16 @@ export function configBase(pathname) {
 }
 
 /**
- * Dashboard layout modes (#149 D2): `arrange` = uniform multi-column grid
- * (default), `report` = single full-width scrolling column with taller tiles.
- * Persisted per browser (`asb:dashLayout`).
+ * Dashboard layout modes (#149 D2, #184): `arrange` = uniform multi-column grid
+ * (default, column count from `dashCols`), `report` = single centered column
+ * (1100px) with taller tiles, `wide` = one tile per row filling the full
+ * available dashboard width (#184, Grafana-style). Persisted per browser
+ * (`asb:dashLayout`); `wide` extends the key rather than migrating it, so
+ * existing arrange/report selections stay valid. The four *effective* views the
+ * UI exposes are derived by `activeDashboardView` below (wide, report, and
+ * arrange split into its 2- and 3-column cases).
  */
-export const DASH_LAYOUTS = ['arrange', 'report'];
+export const DASH_LAYOUTS = ['arrange', 'report', 'wide'];
 
 /** Snap a persisted layout to a known mode, defaulting to `arrange`. Pure. */
 export function normalizeDashLayout(v) {
@@ -47,6 +52,33 @@ export const DASH_COLS = [2, 3];
 /** Snap a persisted column count to 2 or 3, defaulting to 3. Pure. */
 export function normalizeDashCols(n) {
   return DASH_COLS.includes(n) ? n : 3;
+}
+
+/**
+ * The four-way layout switcher's active value (#184), derived from the two
+ * persisted keys so a single control can drive them: `wide` and `report` map
+ * straight through; `arrange` splits into `columns-2`/`columns-3` by `dashCols`.
+ * Pure — the UI's segmented control reads this to mark exactly one button
+ * active, and `dashboardViewSelection` is its inverse (view → state changes).
+ */
+export function activeDashboardView(state) {
+  if (state.dashLayout === 'wide') return 'wide';
+  if (state.dashLayout === 'report') return 'report';
+  return state.dashCols === 2 ? 'columns-2' : 'columns-3';
+}
+
+/**
+ * Inverse of `activeDashboardView` (#184): the `{dashLayout, dashCols?}` a
+ * picked switcher value implies. `dashCols` is present only for the column
+ * views (the caller persists just the keys that actually changed, so choosing a
+ * column count never rewrites `dashLayout` when it is already `arrange`, and
+ * vice-versa). An unrecognized view falls back to the default `columns-3`.
+ */
+export function dashboardViewSelection(view) {
+  if (view === 'wide') return { dashLayout: 'wide' };
+  if (view === 'report') return { dashLayout: 'report' };
+  if (view === 'columns-2') return { dashLayout: 'arrange', dashCols: 2 };
+  return { dashLayout: 'arrange', dashCols: 3 };
 }
 
 /**

@@ -10,8 +10,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
-- **Panels: one visualization system for the workbench drawer and the
-  dashboard** (#166, absorbing #164's D9 slice; supersedes unmerged PR #168).
+- **Dashboard: one four-way layout switcher with a new Full-width mode**
+  (#184). The dashboard's two separate layout controls (Arrange|Report plus a
+  right-aligned Columns 2|3) collapse into a single segmented control —
+  `Full width | Report | 2 columns | 3 columns` — so every effective layout is
+  one click away. **Full width** is a new experimental mode: one tile per row
+  filling the entire available dashboard width (inside the existing page
+  gutters) for horizontally expansive Grafana-style panels, keeping the normal
+  Arrange tile height rather than Report's taller document look. State is
+  unchanged — `dashLayout` gains a `wide` value alongside `arrange`/`report`
+  (no preference migration; existing selections stay valid) and `dashCols`
+  keeps its 2/3 meaning. The control carries a `Dashboard layout` group label
+  and per-button tooltips, exposes exactly one `aria-pressed` button, and
+  layout changes stay presentation-only (no tile re-query).
   The saved-query visualization config is promoted from "a chart, plus special
   cases" to a first-class panel union — `panel.cfg.type ∈ bar | hbar | line |
   area | pie | table | logs | text` — designed in the results pane's new

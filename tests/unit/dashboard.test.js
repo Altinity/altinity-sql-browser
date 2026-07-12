@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase, dashboardTileSql, parseJsonResult,
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP,
+  activeDashboardView, dashboardViewSelection,
 } from '../../src/core/dashboard.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import {
@@ -112,11 +113,31 @@ describe('DASH_TILE_ROW_CAP', () => {
 });
 
 describe('normalizeDashLayout', () => {
-  it('passes through known modes, defaults everything else to arrange', () => {
+  it('passes through known modes (incl. wide, #184), defaults everything else to arrange', () => {
     expect(normalizeDashLayout('arrange')).toBe('arrange');
     expect(normalizeDashLayout('report')).toBe('report');
+    expect(normalizeDashLayout('wide')).toBe('wide');
     expect(normalizeDashLayout('grid')).toBe('arrange');
     expect(normalizeDashLayout(undefined)).toBe('arrange');
+  });
+});
+
+describe('activeDashboardView (#184)', () => {
+  it('maps wide/report straight through and splits arrange by column count', () => {
+    expect(activeDashboardView({ dashLayout: 'wide', dashCols: 3 })).toBe('wide');
+    expect(activeDashboardView({ dashLayout: 'report', dashCols: 3 })).toBe('report');
+    expect(activeDashboardView({ dashLayout: 'arrange', dashCols: 2 })).toBe('columns-2');
+    expect(activeDashboardView({ dashLayout: 'arrange', dashCols: 3 })).toBe('columns-3');
+  });
+});
+
+describe('dashboardViewSelection (#184)', () => {
+  it('is the inverse of activeDashboardView, omitting dashCols for the single-column views', () => {
+    expect(dashboardViewSelection('wide')).toEqual({ dashLayout: 'wide' });
+    expect(dashboardViewSelection('report')).toEqual({ dashLayout: 'report' });
+    expect(dashboardViewSelection('columns-2')).toEqual({ dashLayout: 'arrange', dashCols: 2 });
+    expect(dashboardViewSelection('columns-3')).toEqual({ dashLayout: 'arrange', dashCols: 3 });
+    expect(dashboardViewSelection('nonsense')).toEqual({ dashLayout: 'arrange', dashCols: 3 });
   });
 });
 
@@ -375,66 +396,133 @@ describe('renderDashboard', () => {
     expect(app.root.querySelector('.dash-tile .chart-select')).toBeNull();
   });
 
-  // ── D2: layout toolbar (Arrange/Report + column count) ──────────────────────
+  // ── #184: one four-way layout switcher (Full width | Report | 2/3 columns) ───
   const oneFav = () => dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
-  const seg = (root, cls, label) =>
-    [...root.querySelectorAll('.' + cls + ' .dash-seg-btn')].find((b) => b.textContent === label);
+  const seg = (root, label) =>
+    [...root.querySelectorAll('.dash-seg-layout .dash-seg-btn')].find((b) => b.textContent === label);
+  const layoutBtns = (root) => [...root.querySelectorAll('.dash-seg-layout .dash-seg-btn')];
 
-  it('defaults to Arrange (3 columns), grid not in report mode, column control shown', async () => {
+  it('renders exactly four layout buttons, an accessible group label, and no separate Columns control', async () => {
     const app = oneFav();
     await renderDashboard(app);
-    const grid = app.root.querySelector('.dash-grid');
-    expect(grid.classList.contains('is-report')).toBe(false);
-    expect(grid.style.getPropertyValue('--dash-cols')).toBe('3');
-    expect(seg(app.root, 'dash-seg-layout', 'Arrange').classList.contains('is-active')).toBe(true);
-    expect(seg(app.root, 'dash-seg-layout', 'Report').classList.contains('is-active')).toBe(false);
-    expect(app.root.querySelector('.dash-cols-wrap').style.display).toBe('');
-    expect(seg(app.root, 'dash-seg-cols', '3').getAttribute('aria-pressed')).toBe('true');
+    expect(layoutBtns(app.root).map((b) => b.textContent))
+      .toEqual(['Full width', 'Report', '2 columns', '3 columns']);
+    expect(app.root.querySelector('.dash-seg-layout').getAttribute('aria-label')).toBe('Dashboard layout');
+    // The old right-aligned Columns control is gone entirely.
+    expect(app.root.querySelector('.dash-cols-wrap')).toBeNull();
+    expect(app.root.querySelector('.dash-seg-cols')).toBeNull();
+    expect([...app.root.querySelectorAll('.dash-seg-label')].map((s) => s.textContent)).toEqual(['Layout']);
   });
 
-  it('switching to Report reshapes the grid, hides the column control, and persists', async () => {
+  it('exactly one button is active/aria-pressed at a time', async () => {
     const app = oneFav();
     await renderDashboard(app);
-    seg(app.root, 'dash-seg-layout', 'Report').dispatchEvent(new Event('click', { bubbles: true }));
+    const pressed = () => layoutBtns(app.root).filter((b) => b.getAttribute('aria-pressed') === 'true');
+    expect(pressed().map((b) => b.textContent)).toEqual(['3 columns']); // default arrange + 3 cols
+    seg(app.root, 'Full width').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(pressed().map((b) => b.textContent)).toEqual(['Full width']);
+    expect(layoutBtns(app.root).filter((b) => b.classList.contains('is-active'))).toHaveLength(1);
+  });
+
+  it('activates 2 columns / 3 columns from the persisted arrange + dashCols state', async () => {
+    const app2 = oneFav();
+    app2.state.dashLayout = 'arrange';
+    app2.state.dashCols = 2;
+    await renderDashboard(app2);
+    expect(seg(app2.root, '2 columns').getAttribute('aria-pressed')).toBe('true');
+
+    const app3 = oneFav();
+    app3.state.dashLayout = 'arrange';
+    app3.state.dashCols = 3;
+    await renderDashboard(app3);
+    expect(seg(app3.root, '3 columns').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('reflects a persisted wide/report layout on first render', async () => {
+    const appW = oneFav();
+    appW.state.dashLayout = 'wide';
+    await renderDashboard(appW);
+    expect(appW.root.querySelector('.dash-grid').classList.contains('is-wide')).toBe(true);
+    expect(seg(appW.root, 'Full width').getAttribute('aria-pressed')).toBe('true');
+
+    const appR = oneFav();
+    appR.state.dashLayout = 'report';
+    await renderDashboard(appR);
+    expect(appR.root.querySelector('.dash-grid').classList.contains('is-report')).toBe(true);
+    expect(seg(appR.root, 'Report').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('Full width stores dashLayout=wide and toggles is-wide (only that key persists)', async () => {
+    const app = oneFav();
+    await renderDashboard(app);
+    seg(app.root, 'Full width').dispatchEvent(new Event('click', { bubbles: true }));
+    const grid = app.root.querySelector('.dash-grid');
+    expect(grid.classList.contains('is-wide')).toBe(true);
+    expect(grid.classList.contains('is-report')).toBe(false);
+    expect(app.state.dashLayout).toBe('wide');
+    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'wide');
+    expect(app.savePref).not.toHaveBeenCalledWith('dashCols', expect.anything());
+  });
+
+  it('Report stores dashLayout=report and toggles is-report', async () => {
+    const app = oneFav();
+    await renderDashboard(app);
+    seg(app.root, 'Report').dispatchEvent(new Event('click', { bubbles: true }));
     const grid = app.root.querySelector('.dash-grid');
     expect(grid.classList.contains('is-report')).toBe(true);
-    expect(seg(app.root, 'dash-seg-layout', 'Report').classList.contains('is-active')).toBe(true);
-    expect(app.root.querySelector('.dash-cols-wrap').style.display).toBe('none');
+    expect(app.state.dashLayout).toBe('report');
     expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'report');
-    // …and back to Arrange restores the grid + column control.
-    seg(app.root, 'dash-seg-layout', 'Arrange').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(grid.classList.contains('is-report')).toBe(false);
-    expect(app.root.querySelector('.dash-cols-wrap').style.display).toBe('');
   });
 
-  it('the column-count control switches 2/3 and persists', async () => {
+  it('2 columns stores dashLayout=arrange + dashCols=2 (persisting both when both change)', async () => {
     const app = oneFav();
+    app.state.dashLayout = 'wide'; // start off-arrange so both keys change
     await renderDashboard(app);
-    seg(app.root, 'dash-seg-cols', '2').dispatchEvent(new Event('click', { bubbles: true }));
+    seg(app.root, '2 columns').dispatchEvent(new Event('click', { bubbles: true }));
     const grid = app.root.querySelector('.dash-grid');
+    expect(grid.classList.contains('is-wide')).toBe(false);
     expect(grid.style.getPropertyValue('--dash-cols')).toBe('2');
-    expect(seg(app.root, 'dash-seg-cols', '2').classList.contains('is-active')).toBe(true);
+    expect(app.state.dashLayout).toBe('arrange');
+    expect(app.state.dashCols).toBe(2);
+    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'arrange');
     expect(app.savePref).toHaveBeenCalledWith('dashCols', 2);
   });
 
-  it('clicking the already-active layout or column is a no-op (no persist)', async () => {
+  it('3 columns stores dashLayout=arrange + dashCols=3', async () => {
     const app = oneFav();
+    app.state.dashLayout = 'wide';
+    app.state.dashCols = 2; // start at 2 so the dashCols save path runs
     await renderDashboard(app);
-    seg(app.root, 'dash-seg-layout', 'Arrange').dispatchEvent(new Event('click', { bubbles: true }));
-    seg(app.root, 'dash-seg-cols', '3').dispatchEvent(new Event('click', { bubbles: true }));
+    seg(app.root, '3 columns').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state.dashLayout).toBe('arrange');
+    expect(app.state.dashCols).toBe(3);
+    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'arrange');
+    expect(app.savePref).toHaveBeenCalledWith('dashCols', 3);
+  });
+
+  it('picking the same column count keeps dashLayout untouched (only dashCols persists)', async () => {
+    const app = oneFav(); // default arrange + 3
+    await renderDashboard(app);
+    seg(app.root, '2 columns').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.savePref).toHaveBeenCalledWith('dashCols', 2);
+    expect(app.savePref).not.toHaveBeenCalledWith('dashLayout', expect.anything());
+  });
+
+  it('clicking the already-active view is a no-op (no persist)', async () => {
+    const app = oneFav(); // default arrange + 3 → "3 columns" active
+    await renderDashboard(app);
+    seg(app.root, '3 columns').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.savePref).not.toHaveBeenCalled();
   });
 
-  it('reflects the persisted layout (Report) and column count (2) on first render', async () => {
+  it('changing layout never re-runs tile queries', async () => {
     const app = oneFav();
-    app.state.dashLayout = 'report';
-    app.state.dashCols = 2;
     await renderDashboard(app);
-    const grid = app.root.querySelector('.dash-grid');
-    expect(grid.classList.contains('is-report')).toBe(true);
-    expect(grid.style.getPropertyValue('--dash-cols')).toBe('2');
-    expect(app.root.querySelector('.dash-cols-wrap').style.display).toBe('none');
-    expect(seg(app.root, 'dash-seg-cols', '2').classList.contains('is-active')).toBe(true);
+    expect(app.runTile).toHaveBeenCalledTimes(1); // the initial render
+    seg(app.root, 'Full width').dispatchEvent(new Event('click', { bubbles: true }));
+    seg(app.root, 'Report').dispatchEvent(new Event('click', { bubbles: true }));
+    seg(app.root, '2 columns').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.runTile).toHaveBeenCalledTimes(1); // presentation-only — no refetch
   });
 });
 
