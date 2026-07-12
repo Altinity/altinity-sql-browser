@@ -156,6 +156,19 @@ describe('paramComparisonColumns (#172 v2 heuristic)', () => {
     expect(paramComparisonColumns('SELECT * FROM t WHERE {p:UInt8} = 5')).toEqual({});
   });
 
+  it('an = inside a heredoc / // comment / quoted identifier is never an outer comparison (#182)', () => {
+    // The heredoc body carries `x = {p:String}` but is one opaque token, so only
+    // the real `status = {p:String}` counts. The placeholder inside the heredoc
+    // is not even a param occurrence (opaque), so `p` resolves to `status`.
+    const sql = 'SELECT * FROM t WHERE message = $body$x = {p:String}$body$ AND status = {p:String}';
+    expect(paramComparisonColumns(sql)).toEqual({
+      p: { qualifier: null, column: 'status', pos: sql.lastIndexOf('{p:String}') },
+    });
+    // an `=` inside a // comment likewise can't create a comparison
+    const c = 'SELECT * FROM t WHERE a = {q:UInt8} // z = {q:UInt8}';
+    expect(paramComparisonColumns(c)).toEqual({ q: { qualifier: null, column: 'a', pos: c.indexOf('{q:') } });
+  });
+
   it('a param with no comparison at all (just selected) yields no match', () => {
     expect(paramComparisonColumns('SELECT {p:String}')).toEqual({});
   });

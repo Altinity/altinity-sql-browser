@@ -104,15 +104,6 @@ export function qualifyIdent(...parts) {
 }
 
 /**
- * Inverse of `quoteIdent` for a single part: strip the surrounding backticks and
- * unescape `` \` `` / `\\` when `part` is backtick-quoted; bare names pass through.
- */
-export function unquoteIdent(part) {
-  const s = String(part);
-  return s[0] === '`' ? s.slice(1, -1).replace(/\\(.)/g, '$1') : s;
-}
-
-/**
  * Terminate `sql` so a programmatic full-replace (Format / Insert DDL) leaves the
  * caret on empty space rather than at the end of the last token. The editor's
  * autocomplete needs ≥1 word char immediately before the caret, so without this

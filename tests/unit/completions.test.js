@@ -3,7 +3,7 @@ import {
   assembleReferenceData, buildCompletions, completionContext, rankCompletions,
   resolveScopeAlias, wordAt,
 } from '../../src/core/completions.js';
-import { SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-highlight.js';
+import { SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-reference.js';
 
 describe('assembleReferenceData', () => {
   it('falls back to the built-in sets when given null', () => {
@@ -124,6 +124,20 @@ describe('completionContext', () => {
   it('a dot NOT preceded by an identifier is not qualified — falls back to normal completion (#4 review)', () => {
     expect(completionContext('.col', 4)).toMatchObject({ word: 'col', qualified: false, parent: null });
     expect(completionContext('count().c', 9)).toMatchObject({ word: 'c', qualified: false, parent: null });
+  });
+  it('qualification requires exact token adjacency around the dot (#182)', () => {
+    expect(completionContext('t.col', 5)).toMatchObject({ qualified: true, parent: 't' }); // adjacent
+    expect(completionContext('t .col', 6)).toMatchObject({ qualified: false, parent: null }); // space before dot
+    expect(completionContext('t. col', 6)).toMatchObject({ qualified: false, parent: null }); // space after dot
+  });
+  it('caret-relative open backtick: a closer after the caret is open relative to it (#182)', () => {
+    // `ab` is closed in the full text, but with the caret before its closing
+    // backtick it is still an OPEN quoted identifier being typed.
+    expect(completionContext('`ab`', 2)).toMatchObject({ word: 'a', from: 0, qualified: false });
+    // caret immediately after the closing backtick → closed (not open mode)
+    expect(completionContext('`ab`', 4)).toMatchObject({ word: '', from: 4 });
+    // an unterminated token at EOF is open; doubled backticks don't desync it
+    expect(completionContext('`a``b', 5)).toMatchObject({ from: 0, qualified: false });
   });
   it('treats an open backtick as the word start (from = the backtick, word unquoted)', () => {
     // SELECT * FROM `part   (caret at end) → word 'part', replace range starts at the backtick

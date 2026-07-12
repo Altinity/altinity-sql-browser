@@ -50,6 +50,12 @@ describe('parseMvTarget', () => {
   it('returns a single {table} when the TO target is unqualified', () => {
     expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.mv TO `weird.dst` AS SELECT 1')).toEqual({ table: 'weird.dst' });
   });
+  it('captures a doubled-backtick identifier whole (IDENT_PART + decoder, #182)', () => {
+    // ``a``b`` is one quoted name meaning a`b — the regex must not stop at the
+    // first inner backtick, and the decoder must collapse the doubled delimiter.
+    expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.mv TO lin.`a``b` AS SELECT 1'))
+      .toEqual({ db: 'lin', table: 'a`b' });
+  });
   it('returns null for an implicit MV (ENGINE = …, no TO)', () => {
     expect(parseMvTarget('CREATE MATERIALIZED VIEW lin.events_mv2 (`day` Date) ENGINE = SummingMergeTree ORDER BY day AS SELECT toDate(ts) AS day FROM lin.events GROUP BY day')).toBeNull();
   });

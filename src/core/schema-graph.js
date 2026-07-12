@@ -10,7 +10,7 @@
 // engine_full for Distributed/Buffer/Merge. All best-effort: a miss yields a node
 // with no edge, never a throw.
 
-import { unquoteIdent } from './format.js';
+import { decodeQuotedIdent } from './sql-lex.js';
 
 /** Map a ClickHouse engine name to a node kind. */
 export function objectKind(engine) {
@@ -33,10 +33,12 @@ export function parseAstTables(astText) {
   return out;
 }
 
-// One ClickHouse identifier part: a backtick-quoted run (with `\`` / `\\` escapes)
+// One ClickHouse identifier part: a backtick-quoted run (with `\`` / `\\`
+// backslash escapes AND doubled-backtick `` `` `` escapes — so a name like
+// ``a``b`` is captured whole, not truncated at the first inner backtick, #182)
 // or a bare identifier. Used to parse names out of create_table_query, where CH
 // backtick-quotes non-bare names (e.g. TO target_all.`agg.out.parquet`).
-const IDENT_PART = '(?:`(?:[^`\\\\]|\\\\.)*`|[A-Za-z_][A-Za-z0-9_]*)';
+const IDENT_PART = '(?:`(?:[^`\\\\]|\\\\.|``)*`|[A-Za-z_][A-Za-z0-9_]*)';
 const TO_RE = new RegExp('\\sTO\\s+(' + IDENT_PART + ')(?:\\.(' + IDENT_PART + '))?');
 
 /**
@@ -53,7 +55,8 @@ export function parseMvTarget(createTableQuery) {
   const head = s.split(/\sAS\s+SELECT/i)[0].split('(')[0];
   const m = TO_RE.exec(head);
   if (!m) return null;
-  return m[2] ? { db: unquoteIdent(m[1]), table: unquoteIdent(m[2]) } : { table: unquoteIdent(m[1]) };
+  // The regex captures complete quoted identifiers, so decode with closed=true.
+  return m[2] ? { db: decodeQuotedIdent(m[1], true), table: decodeQuotedIdent(m[2], true) } : { table: decodeQuotedIdent(m[1], true) };
 }
 
 /** A dictionary's source as `{ db, table }` (ClickHouse source) or `{ external }`. */
