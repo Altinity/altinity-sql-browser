@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId, effectiveFilterActive,
   saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, filterSaved, filterHistory, importSaved,
-  deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabChart,
+  deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabPanel,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
 
@@ -20,11 +20,24 @@ const reader = (over = {}) => ({
 
 describe('newTabObj', () => {
   it('creates a blank tab', () => {
-    expect(newTabObj('t9')).toEqual({ id: 't9', name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null });
+    expect(newTabObj('t9')).toEqual({ id: 't9', name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null });
   });
 });
 
 describe('createState', () => {
+  it('upgrades persisted saved queries at the localStorage startup ingress (#166)', () => {
+    const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
+    const s = createState(reader({ 'asb:saved': [
+      { id: 's1', name: 'A', sql: '1', favorite: true, chart, view: 'chart' },
+      { id: 's2', name: 'T', sql: '2', favorite: false, chart, view: 'table' },
+    ] }));
+    expect(s.savedQueries[0].panel).toEqual({ cfg: chart.cfg, key: 'k' });
+    expect(s.savedQueries[0].view).toBe('panel');
+    // view:'table' + latent chart → lossless table panel with the roles stashed
+    expect(s.savedQueries[1].panel).toEqual({ cfg: { type: 'table', chart: { ...chart.cfg, key: 'k' } } });
+    expect(s.savedQueries[1].view).toBe('table');
+    expect('chart' in s.savedQueries[1]).toBe(false);
+  });
   it('uses defaults', () => {
     const s = createState(reader());
     expect(s.theme).toBe('light');
@@ -255,31 +268,58 @@ describe('saved queries', () => {
     importSaved(s, [{ name: 'Z', sql: 'zz' }]);
     expect(s.savedQueries.find((q) => q.name === 'Z').id).toMatch(/^s/);
   });
-  it('tabChart packs a tab chart config (or null), defaulting a missing key', () => {
-    expect(tabChart(null)).toBeNull();
-    expect(tabChart({ chartCfg: null })).toBeNull();
+  it('tabPanel packs a tab panel config (or null); the schema key travels only for the chart family', () => {
+    expect(tabPanel(null)).toBeNull();
+    expect(tabPanel({ panelCfg: null })).toBeNull();
     const cfg = { type: 'bar', x: 0, y: [1], series: null };
-    expect(tabChart({ chartCfg: cfg, chartKey: 'k' })).toEqual({ cfg, key: 'k' });
-    expect(tabChart({ chartCfg: cfg })).toEqual({ cfg, key: null }); // key ?? null
+    expect(tabPanel({ panelCfg: cfg, panelKey: 'k' })).toEqual({ cfg, key: 'k' });
+    expect(tabPanel({ panelCfg: cfg })).toEqual({ cfg, key: null }); // key ?? null
+    // name-based / schema-free arms carry no key (#166 field policy)
+    expect(tabPanel({ panelCfg: { type: 'text', content: 'hi' }, panelKey: 'k' }))
+      .toEqual({ cfg: { type: 'text', content: 'hi' } });
   });
-  it('saveQuery persists, updates, and clears the chart config alongside the SQL', () => {
+  it('saveQuery persists, updates, and clears the panel config (+ chart mirror) alongside the SQL', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT a, b';
-    tab.chartCfg = { type: 'pie', x: 0, y: [1], series: null };
-    tab.chartKey = 'a:String|b:UInt64';
+    tab.panelCfg = { type: 'pie', x: 0, y: [1], series: null };
+    tab.panelKey = 'a:String|b:UInt64';
     const e1 = saveQuery(s, tab, 'Chartd', '', save, 100);
-    expect(e1.chart).toEqual({ cfg: tab.chartCfg, key: tab.chartKey });
-    expect(e1.chart.cfg).not.toBe(tab.chartCfg); // cloned into the entry
-    // re-save with a different chart → entry.chart updates in place
-    tab.chartCfg = { type: 'line', x: 0, y: [1], series: null };
+    expect(e1.panel).toEqual({ cfg: tab.panelCfg, key: tab.panelKey });
+    expect(e1.panel.cfg).not.toBe(tab.panelCfg); // cloned into the entry
+    // dual-write (#166): a chart-family panel carries the legacy chart mirror
+    expect(e1.chart).toEqual({ cfg: tab.panelCfg, key: tab.panelKey });
+    // re-save with a different chart → panel AND mirror update in place
+    tab.panelCfg = { type: 'line', x: 0, y: [1], series: null };
     saveQuery(s, tab, 'Chartd', '', save, 200);
+    expect(s.savedQueries[0].panel.cfg.type).toBe('line');
     expect(s.savedQueries[0].chart.cfg.type).toBe('line');
-    // re-save after the chart is cleared → entry.chart is dropped
-    tab.chartCfg = null;
-    saveQuery(s, tab, 'Chartd', '', save, 300);
+    // a non-chart panel drops the mirror (rollback degrades to heuristics)
+    tab.panelCfg = { type: 'logs' };
+    saveQuery(s, tab, 'Chartd', '', save, 250);
+    expect(s.savedQueries[0].panel).toEqual({ cfg: { type: 'logs' } });
     expect(s.savedQueries[0].chart).toBeUndefined();
+    // re-save after the panel is cleared → panel and mirror are dropped
+    tab.panelCfg = null;
+    saveQuery(s, tab, 'Chartd', '', save, 300);
+    expect(s.savedQueries[0].panel).toBeUndefined();
+    expect(s.savedQueries[0].chart).toBeUndefined();
+  });
+  it("saveQuery allows sql:'' for a text panel only (#166 per-type save guard)", () => {
+    const s = createState(reader());
+    const save = vi.fn();
+    const tab = s.tabs.value[0];
+    tab.sql = '';
+    expect(saveQuery(s, tab, 'NoSql', '', save, 100)).toBeNull(); // no panel → still blocked
+    tab.panelCfg = { type: 'table' };
+    expect(saveQuery(s, tab, 'NoSql', '', save, 150)).toBeNull(); // non-text panel → blocked
+    tab.panelCfg = { type: 'text', content: '# hello' };
+    const e = saveQuery(s, tab, 'Note', '', save, 200);
+    expect(e).not.toBeNull();
+    expect(e.sql).toBe('');
+    expect(e.panel.cfg).toEqual({ type: 'text', content: '# hello' });
+    expect(e.chart).toBeUndefined(); // no mirror for text
   });
   it('saveQuery persists the result view (Table/JSON/Chart), updates it, and ignores the transient raw view', () => {
     const s = createState(reader());
@@ -368,12 +408,20 @@ describe('library document', () => {
     const incoming = [
       { id: 'keep', name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' },
       { name: 'B', sql: '2', favorite: false },          // id-less → genId
+      { id: 'txt', name: 'N', sql: '', favorite: false, panel: { cfg: { type: 'text', content: 'x' } } },
     ];
     let n = 0;
     const save = vi.fn(), saveName = vi.fn();
     replaceLibrary(s, incoming, 'My Library.json', save, saveName, () => 'g' + (++n));
-    expect(s.savedQueries.map((q) => q.id)).toEqual(['keep', 'g1']);
-    expect(s.savedQueries[0]).toMatchObject({ name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' });
+    expect(s.savedQueries.map((q) => q.id)).toEqual(['keep', 'g1', 'txt']);
+    // the legacy chart upgrades to a panel; the chart field survives as its mirror
+    expect(s.savedQueries[0]).toMatchObject({
+      name: 'A', sql: '1', favorite: true, description: 'd',
+      panel: { cfg: chart.cfg, key: 'k' }, chart, view: 'json',
+    });
+    // the panel whitelist carries non-chart panels too — without a stale mirror
+    expect(s.savedQueries[2].panel).toEqual({ cfg: { type: 'text', content: 'x' } });
+    expect('chart' in s.savedQueries[2]).toBe(false);
     expect(s.libraryName.value).toBe('My Library');            // extension stripped
     expect(s.libraryDirty.value).toBe(false);
     expect(s.tabs.value[0].savedId).toBeNull();

@@ -617,7 +617,7 @@ describe('expandDataPane', () => {
     typeSelect.value = 'pie';
     typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
     expect(overlay.querySelector('.chart-view canvas')).not.toBeNull(); // re-rendered locally, no throw
-    expect(app.activeTab().chartCfg).toBeNull(); // the live tab's own config is untouched
+    expect(app.activeTab().panelCfg).toBeNull(); // the live tab's own config is untouched
     expect(app.chart).toBeNull(); // the snapshot's chart never occupies the shared app.chart slot
   });
 

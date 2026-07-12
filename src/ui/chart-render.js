@@ -19,17 +19,17 @@ import { autoChart, schemaKey, chartFieldOptions, chartColors, chartJsConfig, ch
  */
 function chartCfgFor(tab, columns) {
   const key = schemaKey(columns);
-  if (tab.chartKey !== key) {
-    tab.chartKey = key;
-    tab.chartCfg = autoChart(columns);
-  } else if (tab.chartCfg && !chartCfgValid(tab.chartCfg, columns)) {
+  if (tab.panelKey !== key) {
+    tab.panelKey = key;
+    tab.panelCfg = autoChart(columns);
+  } else if (tab.panelCfg && !chartCfgValid(tab.panelCfg, columns)) {
     // Key matches but the config doesn't fit (a hand-edited share link or a
     // corrupted import) — fall back to a safe default rather than crash.
-    tab.chartCfg = autoChart(columns);
+    tab.panelCfg = autoChart(columns);
   }
   // Fold cross-field invariants on whatever we ended up with (a restored config
   // can be in-range yet self-contradictory, e.g. a multi-measure pie).
-  return normalizeChartCfg(tab.chartCfg);
+  return normalizeChartCfg(tab.panelCfg);
 }
 
 /** A labelled <select> for the config bar. */
@@ -65,7 +65,7 @@ export function installChartZoomFix(chart, canvas) {
 }
 
 /**
- * `opts.tab` holds the per-view chart config (`chartKey`/`chartCfg`) — the
+ * `opts.tab` holds the per-view chart config (`panelKey`/`panelCfg`) — the
  * active tab for the main results pane, or a caller-owned local object for a
  * detached snapshot (so switching chart fields there never touches the live
  * tab's own config). `opts.rerender` repaints after a config change — required
@@ -99,7 +99,7 @@ export function renderChart(app, r, opts = {}) {
   if (opts.controls !== false) {
     const f = chartFieldOptions(r.columns, cfg);
 
-    // Each handler mutates the shared cfg (= tab.chartCfg) and re-renders;
+    // Each handler mutates the shared cfg (= tab.panelCfg) and re-renders;
     // chartCfgFor folds the cross-field invariants (pie → single measure,
     // series ≠ X) on the way back in, so the handlers don't normalize themselves.
     bar = h('div', { class: 'chart-config' });

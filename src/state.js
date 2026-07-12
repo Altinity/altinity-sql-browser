@@ -3,16 +3,22 @@
 // every operation is unit-testable with a spy and no real localStorage.
 
 import { clamp } from './core/format.js';
-import { mergeSaved } from './core/saved-io.js';
-import { cloneChartCfg } from './core/chart-data.js';
+import { mergeSaved, upgradeSavedEntry, withChartMirror } from './core/saved-io.js';
+import { clonePanelCfg, isChartFamily } from './core/panel-cfg.js';
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 import { emptyRecentMap } from './core/recent-values.js';
 import { signal } from '@preact/signals-core';
 
-/** A tab's chart state as a persistable payload `{ cfg, key }`, or null. */
-export function tabChart(tab) {
-  return tab && tab.chartCfg ? { cfg: cloneChartCfg(tab.chartCfg), key: tab.chartKey ?? null } : null;
+/**
+ * A tab's panel state as a persistable payload `{ cfg, key }`, or null. `key`
+ * (the schema signature the cfg was derived for) only travels for the chart
+ * family — name-based/schema-free arms carry none (#166 field policy).
+ */
+export function tabPanel(tab) {
+  if (!tab || !tab.panelCfg) return null;
+  const cfg = clonePanelCfg(tab.panelCfg);
+  return isChartFamily(cfg.type) ? { cfg, key: tab.panelKey ?? null } : { cfg };
 }
 
 /** Result views a saved query can remember (a raw FORMAT-clause view is transient). */
@@ -60,10 +66,10 @@ export const DEFAULT_LIBRARY_NAME = 'SQL Library';
  */
 export const MOBILE_BREAKPOINT_PX = 768;
 
-/** A blank query tab. `chartCfg`/`chartKey` hold the per-tab chart config and
- * the schema signature it was derived for (re-derived when the schema changes). */
+/** A blank query tab. `panelCfg`/`panelKey` hold the per-tab panel config and
+ * (for chart-family cfgs) the schema signature it was derived for. */
 export function newTabObj(id) {
-  return { id, name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null };
+  return { id, name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null };
 }
 
 /**
@@ -170,7 +176,10 @@ export function createState(read = { loadJSON, loadStr }) {
     // cleared (Clear all recent values / per-field Clear recent).
     varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false),
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
-    savedQueries: read.loadJSON(KEYS.saved, []),
+    // The localStorage startup ingress (#166): every persisted entry is
+    // upgraded to the panel format here, so nothing downstream ever sees a
+    // bare legacy `chart` payload.
+    savedQueries: read.loadJSON(KEYS.saved, []).map(upgradeSavedEntry),
     // Which saved row (if any) is showing its inline edit form (saved-history.js).
     // Session-only, never persisted.
     editingSavedId: signal(null),
@@ -250,10 +259,13 @@ export function savedForTab(state, tab) {
 export function saveQuery(state, tab, name, description, save = saveJSON, now = Date.now()) {
   const sql = String(tab.sql || '').trim();
   const nm = String(name || '').trim();
-  if (!sql || !nm) return null;
+  const panel = tabPanel(tab);
+  // The save guard relaxes per panel type (#166): a text panel is authored
+  // entirely in its cfg, so `sql: ''` is allowed for that type ONLY.
+  const sqlOptional = panel && panel.cfg.type === 'text';
+  if ((!sql && !sqlOptional) || !nm) return null;
   const desc = String(description || '').trim();
-  const chart = tabChart(tab);
-  // Remember the current result view (Table/JSON/Chart) so a restore reopens the
+  // Remember the current result view (Table/JSON/Panel) so a restore reopens the
   // same data representation; the transient raw view isn't persisted.
   const view = SAVED_VIEWS.has(state.resultView.value) ? state.resultView.value : undefined;
   let entry = savedForTab(state, tab);
@@ -261,16 +273,17 @@ export function saveQuery(state, tab, name, description, save = saveJSON, now = 
     entry.name = nm;
     entry.sql = sql;
     if (desc) entry.description = desc; else delete entry.description;
-    if (chart) entry.chart = chart; else delete entry.chart;
+    if (panel) entry.panel = panel; else delete entry.panel;
     if (view) entry.view = view; else delete entry.view;
   } else {
     entry = { id: makeId('s', now), name: nm, sql, favorite: false };
     if (desc) entry.description = desc;
-    if (chart) entry.chart = chart;
+    if (panel) entry.panel = panel;
     if (view) entry.view = view;
     state.savedQueries.unshift(entry);
     tab.savedId = entry.id;
   }
+  withChartMirror(entry); // dual-write: legacy chart mirror tracks the panel (#166)
   tab.name = nm;
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
@@ -388,7 +401,7 @@ export function newLibrary(state, save = saveJSON, saveName = saveStr) {
  *  Clears dirty; open tabs are kept (dangling links pruned). */
 export function replaceLibrary(state, queries, fileName, save = saveJSON, saveName = saveStr, genId = () => makeId('s', Date.now())) {
   const seen = new Set();
-  state.savedQueries = queries.map((q) => {
+  state.savedQueries = queries.map(upgradeSavedEntry).map((q) => {
     // Mint a fresh id for a missing OR already-seen id so every saved row has a
     // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
     // id would let one delete remove several rows and rename/favorite hit the
@@ -396,11 +409,14 @@ export function replaceLibrary(state, queries, fileName, save = saveJSON, saveNa
     let id = q.id;
     if (!id || seen.has(id)) { do { id = genId(); } while (seen.has(id)); }
     seen.add(id);
-    return {
+    // The field whitelist must carry `panel` (#166) — omitting it here would
+    // silently strip every panel on File → Replace; the chart mirror is then
+    // re-derived so it can't drift from what the file carried.
+    return withChartMirror({
       id, name: q.name, sql: q.sql, favorite: !!q.favorite,
       ...(q.description ? { description: q.description } : {}),
-      ...(q.chart ? { chart: q.chart } : {}), ...(q.view ? { view: q.view } : {}),
-    };
+      ...(q.panel ? { panel: q.panel } : {}), ...(q.view ? { view: q.view } : {}),
+    });
   });
   pruneTabLinks(state);
   const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();

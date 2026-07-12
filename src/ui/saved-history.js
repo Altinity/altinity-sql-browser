@@ -110,7 +110,7 @@ function renderSaved(app, list) {
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
     }, Icon.star(q.favorite));
 
-    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.chart); if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view }); } },
+    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.panel); if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view }); } },
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, q.name),

@@ -144,8 +144,8 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sql).toBe('SELECT 1');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
-    expect(app.state.tabs.value[0].chartCfg).toBeFalsy(); // legacy hash carries no chart
-    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: 'SELECT 1', chart: null }); // survives a login redirect
+    expect(app.state.tabs.value[0].panelCfg).toBeFalsy(); // legacy hash carries no chart
+    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: 'SELECT 1', panel: null }); // survives a login redirect
   });
 
   it('seeds SQL + chart config from a tagged share-link hash', async () => {
@@ -155,9 +155,21 @@ describe('bootstrap', () => {
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sql).toBe('SELECT a, b FROM t');
-    expect(app.state.tabs.value[0].chartCfg).toEqual(chart.cfg);
-    expect(app.state.tabs.value[0].chartCfg).not.toBe(chart.cfg); // cloned, not aliased
-    expect(app.state.tabs.value[0].chartKey).toBe(chart.key);
+    expect(app.state.tabs.value[0].panelCfg).toEqual(chart.cfg);
+    expect(app.state.tabs.value[0].panelCfg).not.toBe(chart.cfg); // cloned, not aliased
+    expect(app.state.tabs.value[0].panelKey).toBe(chart.key);
+  });
+
+  it('seeds a text panel from a share link with EMPTY SQL (#166 — the gate is sql || panel)', async () => {
+    const app = fakeApp();
+    const panel = { cfg: { type: 'text', content: '# Note' } };
+    const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: '', panel }))));
+    const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
+    await bootstrap(app, env);
+    expect(app.state.tabs.value[0].name).toBe('Shared query');
+    expect(app.state.tabs.value[0].sql).toBe('');
+    expect(app.state.tabs.value[0].panelCfg).toEqual(panel.cfg);
+    expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({ sql: '', panel }); // stash survives login too
   });
 
   it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {
@@ -169,7 +181,7 @@ describe('bootstrap', () => {
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sql).toBe('SELECT 42');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
-    expect(app.state.tabs.value[0].chartCfg).toEqual(chart.cfg);
+    expect(app.state.tabs.value[0].panelCfg).toEqual(chart.cfg);
     expect(app.renderApp).toHaveBeenCalled();
     expect(env.sessionStorage.getItem('oauth_shared')).toBeNull(); // consumed on render
   });

@@ -10,7 +10,8 @@ import { createCodeMirrorEditor } from './editor/codemirror-adapter.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
-import { cloneChartCfg } from './core/chart-data.js';
+import { upgradeSavedEntry } from './core/saved-io.js';
+import { clonePanelCfg } from './core/panel-cfg.js';
 import { isDashboardRoute } from './core/dashboard.js';
 
 export async function bootstrap(app, env) {
@@ -57,24 +58,31 @@ export async function bootstrap(app, env) {
     hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
   }
 
-  // A shared query (SQL + chart config) rides in the URL hash, which is lost
+  // A shared query (SQL + panel config) rides in the URL hash, which is lost
   // through the OAuth redirect (and we strip it below). Stash it in
   // sessionStorage so it survives the round-trip and restore it once we're back.
   // The dashboard route has no editor tab to seed, so it skips this entirely.
+  // Gates are `sql || panel` (#166): a text panel legitimately has no SQL, so
+  // a sql-only check would silently drop its share link.
   if (!dash) {
     let shared = decodeShare(loc.hash);
-    if (shared.sql) ss.setItem('oauth_shared', JSON.stringify(shared));
+    if (shared.sql || shared.panel) ss.setItem('oauth_shared', JSON.stringify(shared));
     else {
-      try { shared = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '', chart: null }; }
-      catch { shared = { sql: '', chart: null }; }
+      // The stash is a second deserialization point that bypasses decodeShare —
+      // it may hold a pre-#166 `{sql, chart}` stash, so upgrade applies here too.
+      try {
+        const raw = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '' };
+        const up = upgradeSavedEntry(raw);
+        shared = { sql: up.sql || '', panel: up.panel && up.panel.cfg ? up.panel : null };
+      } catch { shared = { sql: '', panel: null }; }
     }
-    if (shared.sql) {
+    if (shared.sql || shared.panel) {
       const t0 = app.state.tabs.value[0];
       t0.sql = shared.sql;
       t0.name = 'Shared query';
-      if (shared.chart && shared.chart.cfg) {
-        t0.chartCfg = cloneChartCfg(shared.chart.cfg);
-        t0.chartKey = shared.chart.key ?? null;
+      if (shared.panel && shared.panel.cfg) {
+        t0.panelCfg = clonePanelCfg(shared.panel.cfg);
+        t0.panelKey = shared.panel.key ?? null;
       }
       hist.replaceState(null, '', loc.pathname + loc.search);
     }

@@ -7,7 +7,7 @@
 import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabChart, normalizeRowLimit,
+  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabPanel, normalizeRowLimit,
   MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
@@ -1501,7 +1501,7 @@ export function createApp(env = {}) {
     const tab = app.activeTab();
     const sql = (tab.sql || '').trim();
     if (!sql) return;
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, tabChart(tab));
+    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, tabPanel(tab));
     win.history && win.history.replaceState && win.history.replaceState(null, '', url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
@@ -2134,7 +2134,7 @@ export function createApp(env = {}) {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (name, sql, savedId, chart) => { loadIntoNewTab(app, name, sql, savedId, chart); toEditorOnMobile(); },
+    loadIntoNewTab: (name, sql, savedId, panel) => { loadIntoNewTab(app, name, sql, savedId, panel); toEditorOnMobile(); },
     login: (idpId, targetOrigin) => login(idpId, targetOrigin),
     connect,
     share,

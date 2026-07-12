@@ -68,7 +68,7 @@ test.describe('CM6 editor', () => {
     await page.keyboard.type('one');
     await page.evaluate(() => {
       const { state } = window.__app;
-      state.tabs.value = [...state.tabs.value, { id: 't2', name: 'T2', sql: '', dirty: false, result: null, savedId: null, chartCfg: null, chartKey: null }];
+      state.tabs.value = [...state.tabs.value, { id: 't2', name: 'T2', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null }];
       state.activeTabId.value = 't2';
       window.__port.syncFromState();
     });

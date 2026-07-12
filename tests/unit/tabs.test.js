@@ -71,7 +71,7 @@ describe('newTab / loadIntoNewTab', () => {
     app.editor.focus = vi.fn();
     loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1');
     expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1', savedId: 's1' });
-    expect(app.activeTab().chartCfg).toBeNull(); // no chart payload → stays null
+    expect(app.activeTab().panelCfg).toBeNull(); // no chart payload → stays null
     expect(app.editor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab restores a chart payload (cfg cloned, key set)', () => {
@@ -79,9 +79,9 @@ describe('newTab / loadIntoNewTab', () => {
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
     loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1', chart);
     const tab = app.activeTab();
-    expect(tab.chartCfg).toEqual(chart.cfg);
-    expect(tab.chartCfg).not.toBe(chart.cfg); // cloned, not aliased into the saved entry
-    expect(tab.chartKey).toBe(chart.key);
+    expect(tab.panelCfg).toEqual(chart.cfg);
+    expect(tab.panelCfg).not.toBe(chart.cfg); // cloned, not aliased into the saved entry
+    expect(tab.panelKey).toBe(chart.key);
   });
   it('loadIntoNewTab defaults the name and leaves savedId null (history restore)', () => {
     const app = makeApp();

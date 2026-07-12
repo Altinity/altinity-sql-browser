@@ -30,15 +30,15 @@ describe('renderSavedHistory', () => {
   it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
-    app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, chart, view: 'chart' }];
+    const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
+    app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }];
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.saved-row');
     expect(row.querySelector('.preview').textContent).toBe('SELECT 1');
     click(row);
     // links the tab + restores the chart, then runs in the saved view so results show immediately
-    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('Q1', 'SELECT 1\n-- more', 's1', chart);
-    expect(app.actions.run).toHaveBeenCalledWith({ view: 'chart' });
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('Q1', 'SELECT 1\n-- more', 's1', panel);
+    expect(app.actions.run).toHaveBeenCalledWith({ view: 'panel' });
     byTitle(row, 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.savedQueries).toHaveLength(0);
     expect(app.updateSaveBtn).toHaveBeenCalled();

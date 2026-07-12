@@ -171,7 +171,7 @@ function applyTileResult(app, q, slot, r) {
   // (and so never re-renders); its Chart.js instance is torn down via
   // destroySlotChart above, on the next result for this same slot.
   const res = { columns: r.columns, rows: r.rows };
-  const chartTab = { chartKey: schemaKey(r.columns), chartCfg: cls.cfg };
+  const chartTab = { panelKey: schemaKey(r.columns), panelCfg: cls.cfg };
   let inst = null;
   slot.body.replaceChildren(renderChart(app, res, {
     tab: chartTab, setChart: (c) => { inst = c; }, running: false, controls: false, hideGrid: true,
