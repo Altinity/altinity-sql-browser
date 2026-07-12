@@ -21,14 +21,22 @@
 //
 // #171: an optional `getRecents(text)` — a LIVE callback, not a snapshot
 // array (see recent-field.js's header comment on why) — upgrades the preset
-// list into ONE combined dropdown: presets first (group "Presets"), then a
-// "Recent" group of recorded expressions (a relative expression like `-1h`
-// is recorded as typed and re-resolves on reuse, same as picking a preset).
-// Omitting `getRecents` keeps this exactly the presets-only dropdown it
-// always was — combobox.js itself is untouched either way. (#160's curated
-// `filter:` params, when they land, opt a field out of both presets and
-// recents entirely — nothing to check yet, since no curated param exists
-// before #160.)
+// list into ONE combined dropdown: a "Recent" group of recorded expressions
+// FIRST (a relative expression like `-1h` is recorded as typed and
+// re-resolves on reuse, same as picking a preset), then the "Presets" group
+// (user decision, phase-7 feedback: recents-first — a repeat query is more
+// likely to want its own recent expression than to rediscover it in the
+// static preset list). Omitting `getRecents` keeps this exactly the
+// presets-only dropdown it always was — combobox.js itself is untouched
+// either way. (#160's curated `filter:` params, when they land, opt a field
+// out of both presets and recents entirely — nothing to check yet, since no
+// curated param exists before #160.)
+//
+// Dedup direction follows the group order: a recorded expression that's ALSO
+// a preset (`-1h`) surfaces once, under whichever group renders it FIRST —
+// i.e. Recent, not Presets (inverted from the enum/plain-recents fields,
+// which stay Values/plain-first and so dedup the other way — see #172's
+// enum-field.js and #171's recent-field.js).
 
 import { h } from './dom.js';
 import { createCombobox, idSafe } from './combobox.js';
@@ -128,21 +136,36 @@ export function buildRelativeTimeField({
     }
   }
 
-  // #171: with `getRecents`, one combined list — presets first (tagged so
-  // they render under a "Presets" group header), then a "Recent" group of
-  // recorded expressions, live-filtered by both the field's current declared
-  // type and the typed text (see recentOptions in core/recent-values.js).
-  // Without `getRecents`, this is unchanged: bare, ungrouped presets.
+  // #171: with `getRecents`, one combined list — a "Recent" group of
+  // recorded expressions FIRST, then the "Presets" group, live-filtered by
+  // both the field's current declared type and the typed text (see
+  // recentOptions in core/recent-values.js). Without `getRecents`, this is
+  // unchanged: bare, ungrouped presets.
   function buildOptions(text) {
     const presets = filterPresets(text);
     if (!getRecents) return presets;
-    // Review F5: a recorded expression that IS a rendered preset (`-1h` after
-    // one run) must not appear twice — the preset row already offers it.
-    const shown = new Set(presets.map((p) => p.value));
-    const recents = getRecents(text).filter((v) => !shown.has(v))
-      .map((v) => ({ value: v, label: v, group: 'Recent' }));
-    return presets.map((p) => ({ ...p, group: 'Presets' })).concat(recents);
+    const recentValues = getRecents(text);
+    // Review F5, inverted for the recents-first order (phase-7 feedback): a
+    // recorded expression that IS a rendered preset (`-1h` after one run)
+    // must not appear twice — it now surfaces under Recent (the FIRST group
+    // it appears in), so it's the preset row that's filtered out, not the
+    // recent one.
+    const shown = new Set(recentValues);
+    const recents = recentValues.map((v) => ({ value: v, label: v, group: 'Recent' }));
+    const presetsMinusRecents = presets.filter((p) => !shown.has(p.value))
+      .map((p) => ({ ...p, group: 'Presets' }));
+    return recents.concat(presetsMinusRecents);
   }
+
+  // `footer` is assigned below (it needs `combo` to exist first), but
+  // `createCombobox`'s `onClose` needs to reach it too — a `let` + a
+  // `syncFooter` closure declared up front (rather than after `footer`
+  // exists, as before) lets the combobox's own close path (mousedown-commit
+  // included, see combobox.js's closeList()) hide the footer immediately
+  // instead of waiting for the next focus/input/keydown/blur event (phase-7
+  // user feedback: the footer used to linger on screen after an option pick).
+  let footer = null;
+  const syncFooter = () => { if (footer) footer.sync(); };
 
   const combo = createCombobox({
     input, listEl, liveEl, document: d,
@@ -153,6 +176,7 @@ export function buildRelativeTimeField({
     // (workbench: re-validates and re-enables Run right away; dashboard:
     // bypasses the 500ms debounce).
     onCommit: () => { updatePreview(true); onValueInput(); onCommit(); },
+    onClose: syncFooter,
   });
 
   // The initial paint reflects an already-stored value (a tab switch, a
@@ -162,7 +186,7 @@ export function buildRelativeTimeField({
   // See combo-footer.js's header comment for why this is a separate element
   // rather than combobox.js growing a footer concept. Absent entirely (no
   // DOM node) when the caller hasn't wired recents at all.
-  const footer = getRecents
+  footer = getRecents
     ? attachComboFooter({
       input, listEl, combo,
       hasRecents: () => getRecents('').length > 0,
@@ -172,7 +196,6 @@ export function buildRelativeTimeField({
       onClear: () => { if (onClearRecent) onClearRecent(); combo.refresh(); },
     })
     : null;
-  const syncFooter = () => { if (footer) footer.sync(); };
 
   return {
     el: h('div', { class: 'var-combo' }, input, listEl, liveEl, previewEl, footer ? footer.el : null),

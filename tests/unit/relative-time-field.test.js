@@ -204,13 +204,13 @@ describe('buildRelativeTimeField — #171 recents composition', () => {
     const { field } = build();
     expect(field.el.querySelector('.var-combo-footer')).toBeNull();
   });
-  it('with getRecents, the list groups presets first, then a Recent group', () => {
+  it('with getRecents, the list groups Recent first, then Presets (user decision, phase-7 feedback)', () => {
     const { field } = build({ getRecents: () => ['-3h'] });
     field.onFocus();
     const groups = [...field.el.querySelectorAll('.combo-group')].map((g) => g.textContent);
-    expect(groups).toEqual(['Presets', 'Recent']);
+    expect(groups).toEqual(['Recent', 'Presets']);
     const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
-    expect(opts[opts.length - 1]).toBe('-3h');
+    expect(opts[0]).toBe('-3h');
     expect(opts).toHaveLength(RELATIVE_TIME_PRESETS.length + 1);
   });
   it('recents are live-filtered by the typed text, same as presets', () => {
@@ -227,7 +227,7 @@ describe('buildRelativeTimeField — #171 recents composition', () => {
     const { field, onValueInput, onCommit } = build({ value: '', getRecents: () => ['-3h'] });
     field.onFocus();
     const opts = field.el.querySelectorAll('[role="option"]');
-    const recentOpt = opts[opts.length - 1];
+    const recentOpt = opts[0]; // Recent renders first now
     recentOpt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(field.input.value).toBe('-3h');
     expect(onValueInput).toHaveBeenCalledTimes(1);
@@ -265,12 +265,13 @@ describe('buildRelativeTimeField — #171 recents composition', () => {
     const btn = field.el.querySelector('button.var-combo-clear');
     expect(() => btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).not.toThrow();
   });
-  it('a recorded expression that IS a preset appears only under Presets (review F5)', () => {
+  it('a recorded expression that IS a preset appears only under Recent (review F5, inverted for the recents-first order)', () => {
     const { field } = build({ getRecents: () => ['-1h', '-3h'] });
     field.onFocus();
     const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
-    expect(opts.filter((t) => t.startsWith('-1h'))).toHaveLength(1); // the preset row only
-    expect(opts[opts.length - 1]).toBe('-3h'); // the genuinely-new recent still shows
+    expect(opts.filter((t) => t === '-1h')).toHaveLength(1); // the Recent row only, not also under Presets
+    expect(opts[0]).toBe('-1h');
+    expect(opts[1]).toBe('-3h');
     expect(opts).toHaveLength(RELATIVE_TIME_PRESETS.length + 1);
   });
   it('Clear removes the recents from the OPEN list too, keeping the presets (review F4)', () => {
@@ -297,5 +298,20 @@ describe('buildRelativeTimeField — #171 recents composition', () => {
     field.onCompositionStart();
     field.onCompositionEnd();
     expect(footer.hidden).toBe(false);
+  });
+  // Phase-7 user feedback: picking an option via mousedown closes the list
+  // without firing any of the field's own focus/input/keydown/blur handlers
+  // (the input never blurs — see combobox.js's commit()), so the footer used
+  // to linger on screen until the next keypress. combobox.js's `onClose` hook
+  // fixes this at the shared combo-footer wiring, not per field module.
+  it('the footer hides immediately after picking an option via mousedown (no lingering "Clear recent" box)', () => {
+    const { field } = build({ getRecents: () => ['-3h'] });
+    field.onFocus();
+    const footer = field.el.querySelector('.var-combo-footer');
+    expect(footer.hidden).toBe(false);
+    const opt = field.el.querySelectorAll('[role="option"]')[0];
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.input.getAttribute('aria-expanded')).toBe('false'); // value committed, list closed
+    expect(footer.hidden).toBe(true); // and the footer hid with it, immediately
   });
 });
