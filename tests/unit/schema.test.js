@@ -1,9 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSchema } from '../../src/ui/schema.js';
-import { IDENT_MIME, SCHEMA_GRAPH_MIME } from '../../src/ui/dnd-mime.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 const rows = (app) => [...app.dom.schemaList.querySelectorAll('.tree-row')];
+// Column rows only ('.tree-row.small'), found by their name label text.
+const colRow = (app, name) => [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+  .find((r) => r.querySelector('.label').textContent === name);
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 const shiftClick = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
 // A double-click is two quick clicks on the same row — the app detects it itself
@@ -308,16 +311,111 @@ describe('renderSchema drag sources', () => {
     expect(d[IDENT_MIME]).toBe('db1.orders');
     expect(JSON.parse(d[SCHEMA_GRAPH_MIME])).toEqual({ kind: 'table', db: 'db1', table: 'orders' });
   });
-  it('dragging a column carries the bare column name', () => {
+  it('dragging the column row itself (not a child span) carries no payload', () => {
     const app = withSchema();
     app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
     setExpanded(app, 'tb:db1.orders');
     renderSchema(app);
-    const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
-      .find((r) => r.querySelector('.label').textContent === 'id');
-    const d = dragstart(colRow);
+    const row = colRow(app, 'id');
+    const d = dragstart(row);
+    expect(d[IDENT_MIME]).toBeUndefined();
+    expect(d[COLUMN_TYPE_MIME]).toBeUndefined();
+    expect(d[SCHEMA_GRAPH_MIME]).toBeUndefined();
+  });
+  it('dragging the column icon or the row\'s padding (not a labeled span) carries no payload', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const icon = colRow(app, 'id').querySelector('.icon');
+    const d = dragstart(icon);
+    expect(d[IDENT_MIME]).toBeUndefined();
+    expect(d[COLUMN_TYPE_MIME]).toBeUndefined();
+  });
+  it('dragging the name label emits only the SQL-safe quoted identifier', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const label = colRow(app, 'id').querySelector('.label');
+    const d = dragstart(label);
     expect(d[IDENT_MIME]).toBe('id');
-    expect(d[SCHEMA_GRAPH_MIME]).toBeUndefined(); // columns aren't graph drag sources
+    expect(d[COLUMN_TYPE_MIME]).toBeUndefined();
+    expect(d[SCHEMA_GRAPH_MIME]).toBeUndefined();
+  });
+  it('dragging a non-bare name emits the correctly quoted identifier', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'odd col', type: 'String', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const label = colRow(app, 'odd col').querySelector('.label');
+    expect(dragstart(label)[IDENT_MIME]).toBe('`odd col`');
+  });
+  it('dragging the type meta emits only the full type', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const meta = colRow(app, 'id').querySelector('.meta');
+    const d = dragstart(meta);
+    expect(d[COLUMN_TYPE_MIME]).toBe('UInt64');
+    expect(d[IDENT_MIME]).toBeUndefined();
+  });
+  it('a compact Enum summary drags the complete original declaration, byte-for-byte', () => {
+    const app = withSchema();
+    const enumType = "Enum16('Close' = -11, 'Error' = -1, 'Watch' = 0, 'Create' = 1, 'Remove' = 2)";
+    app.state.schema.value[0].tables[0].columns = [{ name: 'operation', type: enumType, comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = colRow(app, 'operation');
+    // the visible meta is the compacted summary, never the drag payload
+    expect(row.querySelector('.meta').textContent).toBe('Enum16(5 values)');
+    expect(dragstart(row.querySelector('.meta'))[COLUMN_TYPE_MIME]).toBe(enumType);
+  });
+  it('a nested/parameterized type is emitted byte-for-byte, not reconstructed', () => {
+    const app = withSchema();
+    const nested = 'LowCardinality(Nullable(String))';
+    app.state.schema.value[0].tables[0].columns = [
+      { name: 'a', type: nested, comment: '' },
+      { name: 'b', type: 'Decimal(38, 9)', comment: '' },
+      { name: 'c', type: "Tuple(`x` Int32, `y str` String)", comment: '' },
+    ];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    expect(dragstart(colRow(app, 'a').querySelector('.meta'))[COLUMN_TYPE_MIME]).toBe(nested);
+    expect(dragstart(colRow(app, 'b').querySelector('.meta'))[COLUMN_TYPE_MIME]).toBe('Decimal(38, 9)');
+    expect(dragstart(colRow(app, 'c').querySelector('.meta'))[COLUMN_TYPE_MIME]).toBe("Tuple(`x` Int32, `y str` String)");
+  });
+  it('a type-less column has a draggable name but a non-draggable, empty type meta', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'odd', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = colRow(app, 'odd');
+    expect(row.querySelector('.label').getAttribute('draggable')).toBe('true');
+    expect(row.querySelector('.meta').getAttribute('draggable')).toBeNull();
+    expect(row.querySelector('.meta').getAttribute('title')).toBeNull();
+    const d = dragstart(row.querySelector('.meta'));
+    expect(d[COLUMN_TYPE_MIME]).toBeUndefined();
+  });
+  it('name/type dragstart does not invoke the column click/double-click insertion path', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = colRow(app, 'id');
+    dragstart(row.querySelector('.label'));
+    dragstart(row.querySelector('.meta'));
+    expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
+  });
+  it('name and type spans expose distinct tooltips', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'id', type: 'UInt64', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = colRow(app, 'id');
+    expect(row.querySelector('.label').getAttribute('title')).toBe('Drag to insert column name');
+    expect(row.querySelector('.meta').getAttribute('title')).toBe('Drag to insert full column type');
   });
 });
 
@@ -338,12 +436,19 @@ describe('renderSchema in mobile mode (#126)', () => {
     const app = mobileSchema(true);
     const dbRow = rows(app).find((r) => r.querySelector('.label').textContent === 'db1');
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
-    const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
-      .find((r) => r.querySelector('.label').textContent === 'id');
-    for (const row of [dbRow, ordersRow, colRow]) {
-      expect(row.getAttribute('draggable')).toBeNull();
-      expect(row.getAttribute('title')).toBeNull();
+    const row = colRow(app, 'id');
+    for (const r of [dbRow, ordersRow, row]) {
+      expect(r.getAttribute('draggable')).toBeNull();
+      expect(r.getAttribute('title')).toBeNull();
     }
+  });
+  it('the column name and type spans have no draggable attribute or tooltip in mobile mode', () => {
+    const app = mobileSchema(true);
+    const row = colRow(app, 'id');
+    expect(row.querySelector('.label').getAttribute('draggable')).toBeNull();
+    expect(row.querySelector('.label').getAttribute('title')).toBeNull();
+    expect(row.querySelector('.meta').getAttribute('draggable')).toBeNull();
+    expect(row.querySelector('.meta').getAttribute('title')).toBeNull();
   });
   it('a dragstart carries no payload when mobile (no drag source wired)', () => {
     const app = mobileSchema(false);
@@ -351,6 +456,14 @@ describe('renderSchema in mobile mode (#126)', () => {
     const d = dragstart(dbRow);
     expect(d[IDENT_MIME]).toBeUndefined();
     expect(d[SCHEMA_GRAPH_MIME]).toBeUndefined();
+  });
+  it('a synthetic dragstart from either column child span emits no payload in mobile mode', () => {
+    const app = mobileSchema(true);
+    const row = colRow(app, 'id');
+    const d1 = dragstart(row.querySelector('.label'));
+    const d2 = dragstart(row.querySelector('.meta'));
+    expect(d1[IDENT_MIME]).toBeUndefined();
+    expect(d2[COLUMN_TYPE_MIME]).toBeUndefined();
   });
   it('tap (click) still expands + draws the graph — the core loop is intact', () => {
     const app = mobileSchema(false);
@@ -398,10 +511,9 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
     app.state.schema.value[0].tables[0].columns = [{ name: 'odd col', type: 'String', comment: '' }];
     setExpanded(app, 'tb:target_all.' + PARQUET);
     renderSchema(app);
-    const colRow = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
-      .find((r) => r.querySelector('.label').textContent === 'odd col');
-    expect(dragstart(colRow)[IDENT_MIME]).toBe('`odd col`');
-    shiftClick(colRow);
+    const row = colRow(app, 'odd col');
+    expect(dragstart(row.querySelector('.label'))[IDENT_MIME]).toBe('`odd col`');
+    shiftClick(row);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('`odd col`::String');
   });
 });

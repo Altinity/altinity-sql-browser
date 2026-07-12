@@ -28,7 +28,7 @@ import { fromScopeAt, pendingColumnLoads } from '../core/from-scope.js';
 import { lexSql } from '../core/sql-lex.js';
 import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
-import { IDENT_MIME, SUBQUERY_MIME } from '../ui/dnd-mime.js';
+import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
 
 // Programmatic state syncs (tab switch, external tab.sql reconcile) must not
 // reach onDocChange subscribers — the app-level subscriber writes tab.sql +
@@ -263,13 +263,15 @@ export function hoverSourceFor(app) {
 }
 
 /**
- * Drop handler for the app's drag sources (schema identifiers, saved/history
- * queries). Both land at the POINTER position (falling back to the caret when
- * the point doesn't map to text) — the dropCursor extension shows the user
- * exactly that target while dragging. Returns true when it consumed the event
- * (so CM6's native text drop can't double-insert). Exported for direct tests —
- * happy-dom's posAtCoords can't exercise the coordinate fallback via real
- * events.
+ * Drop handler for the app's drag sources (schema identifiers, a column's full
+ * type — #186, saved/history queries). All land at the POINTER position
+ * (falling back to the caret when the point doesn't map to text) — the
+ * dropCursor extension shows the user exactly that target while dragging.
+ * Identifier precedence is checked first so db/table/column-name drops keep
+ * their existing behavior even if a future source ever supplied more than one
+ * supported MIME. Returns true when it consumed the event (so CM6's native
+ * text drop can't double-insert). Exported for direct tests — happy-dom's
+ * posAtCoords can't exercise the coordinate fallback via real events.
  */
 export function handleDrop(app, view, e) {
   const dt = e.dataTransfer;
@@ -289,6 +291,8 @@ export function handleDrop(app, view, e) {
   };
   const ident = dt.getData(IDENT_MIME);
   if (ident) return insertAt(ident);
+  const type = dt.getData(COLUMN_TYPE_MIME);
+  if (type) return insertAt(type);
   const sub = dt.getData(SUBQUERY_MIME);
   if (sub) {
     const text = toSubquery(sub);

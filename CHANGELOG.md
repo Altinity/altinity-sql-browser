@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Schema column name and type are now independent drag targets** (#186).
+  Dragging a column's name still inserts the SQL-safe quoted identifier;
+  dragging its type meta now inserts the complete schema-provided ClickHouse
+  type — including every Enum member — never the compacted display text
+  (e.g. dragging `Enum16(33 values)` inserts the full `Enum16('Close' = -11,
+  …)` declaration). A new `COLUMN_TYPE_MIME` drag payload
+  (`src/ui/dnd-mime.js`) keeps this separate from the existing identifier
+  drag; the CodeMirror drop handler consumes it with identifier precedence
+  preserved. Icon/whitespace and type-less columns carry no type-drag
+  payload; database/table row dragging is unchanged.
 - **Dashboard: one four-way layout switcher with a new Full-width mode**
   (#184). The dashboard's two separate layout controls (Arrange|Report plus a
   right-aligned Columns 2|3) collapse into a single segmented control —

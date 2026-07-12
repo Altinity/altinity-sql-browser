@@ -6,7 +6,7 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
 import { compactType, INLINE_TYPE_MAX } from '../core/type-display.js';
-import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './dnd-mime.js';
+import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from './dnd-mime.js';
 
 // Copy-on-write expand toggle: returns a new Set with `key` added or removed, so
 // assigning it to the `expanded` signal triggers the repaint effect (signals
@@ -17,12 +17,18 @@ const toggleKey = (set, key) => {
   return next;
 };
 
-// Make a tree row a drag source carrying `text` as the schema identifier, so it
-// can be dropped onto the editor (see editor.js drop handler). Click behavior is
-// unaffected — drag is a separate gesture.
-const dragProps = (text) => ({
+// A drag source carrying exactly one MIME payload — used by the column
+// name/type child spans (#186), each an independent drag target within one
+// row. `stopPropagation` keeps an ancestor row from also contributing a
+// payload for the same gesture (db/table rows use `lineageDrag` below
+// instead, since they carry more than one MIME on the row itself).
+const dragTextProps = (mime, text) => ({
   draggable: 'true',
-  ondragstart: (e) => e.dataTransfer.setData(IDENT_MIME, text),
+  ondragstart: (e) => {
+    e.stopPropagation();
+    e.dataTransfer.setData(mime, text);
+    e.dataTransfer.effectAllowed = 'copy';
+  },
 });
 
 // Database/table rows carry BOTH the identifier (for an editor drop) and a
@@ -38,18 +44,30 @@ const lineageDrag = (ident, payload) => ({
 const OPEN_ROTATE = 'rotate(0deg)';
 const CLOSED_ROTATE = 'rotate(-90deg)';
 
+// Merge a base class ('label'/'meta') with an optional extra-props object that
+// may itself carry a `class` (e.g. the column drag classes) — keeping the base
+// class rather than letting the spread silently replace it.
+const spanProps = (base, extra) => {
+  if (!extra) return { class: base };
+  const { class: extraClass, ...rest } = extra;
+  return { class: extraClass ? base + ' ' + extraClass : base, ...rest };
+};
+
 // The four spans every tree row shares: chevron, icon, label, meta. `expanded`
 // null → an empty chevron (column rows); true/false → the same down-pointing
 // chevron rotated open/closed (matches the login screen's Advanced disclosure —
 // one icon, no icon-swap flash — rather than swapping between two glyphs).
-const treeRow = (icon, label, meta, { expanded, iconColor } = {}) => [
+// `labelProps`/`metaProps` let a caller (column rows, #186) turn either span
+// into its own independent drag target without every row duplicating this
+// structure — db/table callers pass neither and get the plain spans as before.
+const treeRow = (icon, label, meta, { expanded, iconColor, labelProps, metaProps } = {}) => [
   h('span', {
     class: 'chev',
     style: expanded == null ? null : { transform: expanded ? OPEN_ROTATE : CLOSED_ROTATE },
   }, expanded == null ? null : Icon.chevDown()),
   h('span', { class: 'icon', style: iconColor ? { color: iconColor } : null }, icon),
-  h('span', { class: 'label' }, label),
-  h('span', { class: 'meta' }, meta),
+  h('span', spanProps('label', labelProps), label),
+  h('span', spanProps('meta', metaProps), meta),
 ];
 
 // A row's DOM is fully rebuilt on every expand/collapse (renderSchema always
@@ -202,9 +220,25 @@ export function renderSchema(app) {
             if (e.shiftKey) { app.actions.insertAtCursor(quoteIdent(c.name) + '::' + c.type); return; }
             if (isDoubleClick(app, 'col:' + key + '.' + c.name)) app.actions.insertAtCursor(quoteIdent(c.name));
           },
-          ...dragAttrs(dragProps(quoteIdent(c.name))),
         },
-          ...treeRow(Icon.col(), c.name, compactType(c.type, INLINE_TYPE_MAX), { expanded: null, iconColor: 'var(--fg-faint)' }),
+          // Two independent drag targets (#186): the name always inserts the
+          // quoted identifier; the type meta — only when a type is present —
+          // inserts the FULL schema-provided type, never the compacted display
+          // text. The row itself carries neither payload.
+          ...treeRow(Icon.col(), c.name, compactType(c.type, INLINE_TYPE_MAX), {
+            expanded: null,
+            iconColor: 'var(--fg-faint)',
+            labelProps: dragAttrs({
+              class: 'schema-col-name-drag',
+              title: 'Drag to insert column name',
+              ...dragTextProps(IDENT_MIME, quoteIdent(c.name)),
+            }),
+            metaProps: c.type ? dragAttrs({
+              class: 'schema-col-type-drag',
+              title: 'Drag to insert full column type',
+              ...dragTextProps(COLUMN_TYPE_MIME, c.type),
+            }) : undefined,
+          }),
         ));
       }
     }
