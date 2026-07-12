@@ -1,6 +1,9 @@
 // Pure formatting + small string helpers. No DOM, no globals — trivially
 // unit-testable and shared across the UI layer.
 
+import { scanSpans } from './sql-spans.js';
+import { leadingKeyword } from './sql-split.js';
+
 /** Clamp `v` into the inclusive range [lo, hi]. */
 export function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
@@ -137,24 +140,56 @@ export function detectSqlFormat(sql) {
 }
 
 /**
- * Peel a trailing `;` and any trailing SQL comments (line `-- …` / block
- * `/* … *​/`) from `sql`, then resolve its output format: if what remains already
- * ends in a `FORMAT <name>` clause (detectSqlFormat) that format is kept and
- * reported; otherwise `fallbackFormat` is appended. Comments are peeled *before*
- * the check so a `… FORMAT JSON -- note` isn't mis-read as unformatted (which
- * would double the FORMAT) and so an appended clause lands after real SQL rather
- * than after a line comment that would swallow it. Empty input → `{ sql: '',
- * format: fallbackFormat }` (nothing is appended to an empty query). Pure —
+ * Strip a trailing run of trivia from `sql`: whitespace, **closed** comment
+ * spans (`--` / `#` / `//` / nested `/* *​/`, in any order, including comments
+ * that follow a `;`), and statement-terminating `;` in code — using one
+ * `scanSpans()` pass and a backward walk over the spans (#182), never a
+ * repeated full-string rescan. An **unterminated** block comment is left in
+ * place: stripping it could silently turn malformed SQL into a valid query.
+ * Semicolons and comment characters inside strings/identifiers/heredocs are
+ * never inspected, because the scanner already made those spans opaque. Pure.
+ */
+function stripTrailingTrivia(text) {
+  const spans = [...scanSpans(text)];
+  let end = text.length;
+  for (let si = spans.length - 1; si >= 0;) {
+    const sp = spans[si];
+    if (sp.start >= end) { si -= 1; continue; }
+    if (sp.kind === 'comment') {
+      if (!sp.closed) break;      // never strip an unterminated comment
+      end = sp.start; si -= 1; continue;
+    }
+    if (sp.kind === 'code') {
+      let e = Math.min(sp.end, end);
+      for (;;) {
+        while (e > sp.start && /\s/.test(text[e - 1])) e -= 1;
+        if (e > sp.start && text[e - 1] === ';') { e -= 1; continue; }
+        break;
+      }
+      if (e > sp.start) { end = e; break; } // real code remains
+      end = sp.start; si -= 1; continue;    // span was only whitespace/`;`
+    }
+    break; // a string / quoted-ident is real content — stop
+  }
+  return text.slice(0, end);
+}
+
+/**
+ * Peel a trailing `;` and any trailing **closed** SQL comments (line
+ * `-- …` / `# …` / `// …`, nested block `/* … *​/`, incl. after a `;`) from
+ * `sql`, then resolve its output format: if what remains already ends in a
+ * `FORMAT <name>` clause (detectSqlFormat) that format is kept and reported;
+ * otherwise `fallbackFormat` is appended. Comments are peeled *before* the
+ * check so a `… FORMAT JSON // note` isn't mis-read as unformatted (which would
+ * double the FORMAT) and so an appended clause lands after real SQL rather than
+ * after a line comment that would swallow it. An unterminated trailing block
+ * comment is *not* stripped (see `stripTrailingTrivia`). Empty input → `{ sql:
+ * '', format: fallbackFormat }` (nothing is appended to an empty query). Pure —
  * shared by the export prep and the dashboard tile fetch so this edge handling
  * lives in one place.
  */
 export function withTrailingFormat(sql, fallbackFormat) {
-  let s = String(sql || '').trim().replace(/;+\s*$/, '').trim();
-  let prev;
-  do {
-    prev = s;
-    s = s.replace(/--[^\n]*$/, '').replace(/\/\*[\s\S]*?\*\/\s*$/, '').trim();
-  } while (s !== prev);
+  const s = stripTrailingTrivia(String(sql || '')).replace(/^\s+/, '');
   const fmt = detectSqlFormat(s);
   if (fmt) return { sql: s, format: fmt };
   return { sql: s ? s + '\nFORMAT ' + fallbackFormat : s, format: fallbackFormat };
@@ -170,17 +205,21 @@ export function prepareExportSql(sql) {
   return withTrailingFormat(sql, 'TabSeparatedWithNames');
 }
 
-const SCHEMA_MUTATING_RE = /^(CREATE|DROP|ALTER|RENAME|TRUNCATE|ATTACH|DETACH|EXCHANGE)\b/i;
+const SCHEMA_MUTATING = new Set([
+  'CREATE', 'DROP', 'ALTER', 'RENAME', 'TRUNCATE', 'ATTACH', 'DETACH', 'EXCHANGE',
+]);
 
 /**
  * True when `sql`'s first statement is a DDL keyword that can change the set
  * of databases/tables/columns (CREATE/DROP/ALTER/RENAME/TRUNCATE/ATTACH/
  * DETACH/EXCHANGE) — used to trigger a schema-tree reload after a run. Leading
- * whitespace/comments are skipped. Pure.
+ * whitespace and every supported closed comment form (`--` / `#` / `//` /
+ * nested block) are skipped through the shared `leadingKeyword()` helper (#182),
+ * so DDL after any of them still refreshes the schema, while an invalid `#x`
+ * (not a comment) correctly does not. Pure.
  */
 export function isSchemaMutatingSql(sql) {
-  const s = String(sql || '').replace(/^(\s|--[^\n]*\n|\/\*[\s\S]*?\*\/)+/, '').trim();
-  return SCHEMA_MUTATING_RE.test(s);
+  return SCHEMA_MUTATING.has(leadingKeyword(sql));
 }
 
 /**

@@ -9,14 +9,19 @@
 // (`Array(Tuple(12 fields))`). Display-only: callers keep the full original
 // type in schema/completion data and expose it via a hover/detail affordance.
 //
-// Pure, no DOM, no ClickHouse type AST. One quote-aware balanced-parenthesis
-// scan (ClickHouse string escapes: `\` and doubled `''`, same rules as
-// sql-spans.js); only the wrapper heads recurse, depth-capped, so total work
-// stays effectively linear in the type length. Anything malformed (unbalanced
-// parens, trailing garbage, unexpected tokens) falls back to format.js
-// truncate() on the raw string — never an exception.
+// Pure, no DOM, no ClickHouse type AST. One shared-scanner pass (#182) marks
+// every character inside an opaque literal — `'…'` strings, `$tag$…$tag$`
+// heredocs, and `"…"` / `` `…` `` quoted identifiers (named Tuple/Nested
+// fields) — so commas and parentheses inside a member name (including a heredoc
+// Enum member like `$$a,b$$`) never split or close a type argument. On top of
+// that mask a single balanced-bracket walk splits top-level arguments; only the
+// wrapper heads recurse, depth-capped, so total work stays effectively linear
+// in the type length. Anything malformed (unbalanced parens, trailing garbage,
+// unexpected tokens) falls back to format.js truncate() on the raw string —
+// never an exception.
 
 import { truncate } from './format.js';
+import { scanSpans } from './sql-spans.js';
 
 // The shared display budget for a type rendered inline in a row-shaped surface
 // (the schema tree's meta column and the completion dropdown's detail column
@@ -37,43 +42,35 @@ const isWordChar = (ch) => {
   return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95;
 };
 
-// Skip a quoted run starting at s[i] === quote (a '…' string literal or a
-// `…`/"…" quoted identifier — a named Tuple/Nested field can carry any of
-// them): `\` escapes the next char, a doubled quote is an escaped quote (same
-// rules as sql-spans.js). Returns the index just past the closing quote, or
-// -1 when the run reaches EOF unterminated.
-function skipQuoted(s, i, quote) {
-  let j = i + 1;
-  while (j < s.length) {
-    const c = s[j];
-    if (c === '\\') { j += 2; continue; }
-    if (c === quote) {
-      if (s[j + 1] === quote) { j += 2; continue; }
-      return j + 1;
-    }
-    j += 1;
+// A per-character opacity mask for `s`: 1 where the character lies inside an
+// opaque literal (string / heredoc / quoted identifier) and 0 in code, so the
+// bracket walk below ignores commas and parens inside member names. One
+// scanSpans() pass (#182); an unterminated literal marks its (partial) span
+// opaque too, and the walk then simply never finds its closer → null → the
+// caller falls back to truncate().
+function opacityMask(s) {
+  const mask = new Uint8Array(s.length);
+  for (const { kind, start, end } of scanSpans(s)) {
+    if (kind !== 'code') mask.fill(1, start, end);
   }
-  return -1;
+  return mask;
 }
 
 // Scan a parenthesised body whose '(' sits at s[open], splitting it into
-// top-level argument ranges `{from, to}` (commas inside strings or nested
-// brackets don't split — `[…]`/`{…}` also nest, so an array-literal aggregate
-// parameter like `sumMapFiltered([1, 2])` counts as one entry). Returns
+// top-level argument ranges `{from, to}` (commas inside opaque literals or
+// nested brackets don't split — `[…]`/`{…}` also nest, so an array-literal
+// aggregate parameter like `sumMapFiltered([1, 2])` counts as one entry).
+// `opaque` masks literal characters (built once by the caller). Returns
 // { args, end } with `end` just past the ')', or null when the body is
-// unbalanced / a string in it is unterminated.
-function scanBody(s, open) {
+// unbalanced / a literal in it is unterminated (no closer is ever reached).
+function scanBody(s, open, opaque) {
   const args = [];
   let depth = 1;
   let argStart = open + 1;
   let i = open + 1;
   while (i < s.length) {
+    if (opaque[i]) { i += 1; continue; } // inside a string/heredoc/quoted-ident
     const c = s[i];
-    if (c === "'" || c === '`' || c === '"') {
-      i = skipQuoted(s, i, c);
-      if (i < 0) return null;
-      continue;
-    }
     if (c === '(' || c === '[' || c === '{') { depth += 1; i += 1; continue; }
     if (c === ')' || c === ']' || c === '}') {
       if (depth === 1) {
@@ -119,17 +116,18 @@ function countArgs(s, args) {
   return args.length;
 }
 
-// Compact the type occupying exactly s[from..to). Returns the compact display
-// string, or null when the slice isn't a recognizable type shape (the caller
-// then falls back to generic truncation of the raw string).
-function compactOne(s, from, to, depth) {
+// Compact the type occupying exactly s[from..to). `opaque` is the shared
+// literal mask for `s`. Returns the compact display string, or null when the
+// slice isn't a recognizable type shape (the caller then falls back to generic
+// truncation of the raw string).
+function compactOne(s, from, to, depth, opaque) {
   let i = from;
   while (i < to && isWordChar(s[i])) i += 1;
   const head = s.slice(from, i);
   if (i >= to) return head || null; // bare type name (empty → not a type)
   if (s[i] !== '(' || !head) return null; // unexpected token where a declaration should be
   const noun = COUNT_HEADS[head];
-  const body = scanBody(s, i);
+  const body = scanBody(s, i, opaque);
   if (!body) {
     // Unbalanced / unterminated body. For a collapse head the summary is still
     // better than a raw fragment — the "can't count confidently" form.
@@ -158,7 +156,7 @@ function compactOne(s, from, to, depth) {
     const parts = [];
     for (const r of body.args) {
       const t = trimRange(s, r);
-      const inner = compactOne(s, t.from, t.to, depth + 1);
+      const inner = compactOne(s, t.from, t.to, depth + 1, opaque);
       if (inner == null) return null;
       parts.push(inner);
     }
@@ -186,7 +184,7 @@ function compactOne(s, from, to, depth) {
 export function compactType(type, maxLen) {
   const s = type == null ? '' : String(type);
   if (s.length <= maxLen) return s;
-  const compacted = compactOne(s, 0, s.length, 0);
+  const compacted = compactOne(s, 0, s.length, 0, opacityMask(s));
   const out = compacted == null ? s : compacted;
   return out.length <= maxLen ? out : truncate(out, maxLen);
 }

@@ -197,6 +197,23 @@ describe('prepareExportSql', () => {
     expect(prepareExportSql('SELECT 1 FORMAT CSV -- note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
     expect(prepareExportSql('SELECT 1 /* note */')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
   });
+  it('peels // and restricted # trailing comments, and nested block comments (#182)', () => {
+    expect(prepareExportSql('SELECT 1 FORMAT CSV // note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+    expect(prepareExportSql('SELECT 1 FORMAT CSV #! note')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+    expect(prepareExportSql('SELECT 1 FORMAT CSV /* a /* b */ c */')).toEqual({ sql: 'SELECT 1 FORMAT CSV', format: 'CSV' });
+  });
+  it('peels a comment that follows the terminating ; (#182)', () => {
+    expect(prepareExportSql('SELECT 1; // note')).toEqual({ sql: 'SELECT 1\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
+  });
+  it('does NOT strip an unterminated trailing block comment (would validate malformed SQL) (#182)', () => {
+    // The open comment stays; nothing is peeled, so the FORMAT is appended after it.
+    const r = prepareExportSql('SELECT 1 /* oops');
+    expect(r.sql).toBe('SELECT 1 /* oops\nFORMAT TabSeparatedWithNames');
+  });
+  it('leaves a query that ends in a string/quoted-ident literal intact (#182)', () => {
+    expect(prepareExportSql("SELECT 'x'")).toEqual({ sql: "SELECT 'x'\nFORMAT TabSeparatedWithNames", format: 'TabSeparatedWithNames' });
+    expect(prepareExportSql('SELECT `c`')).toEqual({ sql: 'SELECT `c`\nFORMAT TabSeparatedWithNames', format: 'TabSeparatedWithNames' });
+  });
 });
 
 describe('isSchemaMutatingSql', () => {
@@ -216,6 +233,12 @@ describe('isSchemaMutatingSql', () => {
     expect(isSchemaMutatingSql('-- a comment\nCREATE DATABASE t3')).toBe(true);
     expect(isSchemaMutatingSql('/* block */ DROP TABLE t')).toBe(true);
     expect(isSchemaMutatingSql('-- one\n/* two */\nALTER TABLE t ADD COLUMN c UInt8')).toBe(true);
+  });
+  it('skips leading // and restricted # / nested block comments, but not #x (#182)', () => {
+    expect(isSchemaMutatingSql('// note\nCREATE TABLE t (a Int) engine=Memory')).toBe(true);
+    expect(isSchemaMutatingSql('# note\nDROP TABLE t')).toBe(true);
+    expect(isSchemaMutatingSql('/* a /* b */ c */ ALTER TABLE t ADD COLUMN c UInt8')).toBe(true);
+    expect(isSchemaMutatingSql('#x\nDROP TABLE t')).toBe(false); // #x is not a comment → first code isn't a keyword
   });
   it('is false for non-DDL statements and empty/null input', () => {
     expect(isSchemaMutatingSql('SELECT 1')).toBe(false);

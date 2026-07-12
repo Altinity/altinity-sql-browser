@@ -134,6 +134,11 @@ describe('compactType — difficult lexical cases', () => {
       .toBe('Tuple(3 fields)');
   });
 
+  it('parens and commas inside heredoc Enum member names do not split entries (#182)', () => {
+    expect(compactType('Enum8($$a,b$$ = 1, $$c(d)$$ = 2, $$e$$ = 3)', MAX))
+      .toBe('Enum8(3 values)');
+  });
+
   it('backtick-quoted field names may carry commas, parens, and doubled backticks', () => {
     expect(compactType('Tuple(`a,b` UInt8, `c)d` String, `e``f` DateTime, g Float64)', MAX))
       .toBe('Tuple(4 fields)');

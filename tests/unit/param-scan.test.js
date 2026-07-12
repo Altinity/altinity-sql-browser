@@ -36,6 +36,17 @@ describe('scanParamDeclarations', () => {
     expect(scanParamDeclarations('SELECT 1 -- {x:String}\n /* {y:UInt8} */ # {z:UInt8}')).toEqual([]);
   });
 
+  it('skips placeholders inside heredocs, // comments and valid # comments (#182)', () => {
+    expect(scanParamDeclarations('SELECT $$ {x:String} $$')).toEqual([]);
+    expect(scanParamDeclarations('SELECT $tag$ {x:String} $tag$')).toEqual([]);
+    expect(scanParamDeclarations('SELECT 1 // {y:UInt8}')).toEqual([]);
+    expect(scanParamDeclarations('SELECT 1 #! {z:UInt8}')).toEqual([]);
+  });
+
+  it('still finds a placeholder after #x, which is code not a comment (#182)', () => {
+    expect(scanParamDeclarations('SELECT 1 #{p:String}')).toEqual([{ name: 'p', type: 'String' }]);
+  });
+
   it('keeps a quoted `}` / `{` inside the type (#139) and skips the {{macro}} (#39)', () => {
     expect(scanParamDeclarations("SELECT {e:Enum8('}' = 1, 'ok' = 2)}, {{cte}}")).toEqual([
       { name: 'e', type: "Enum8('}' = 1, 'ok' = 2)" },

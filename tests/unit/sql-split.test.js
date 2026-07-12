@@ -48,6 +48,18 @@ describe('splitStatements', () => {
       .toEqual(['SELECT "a;b", `c;d`', 'SELECT 2']);
   });
 
+  it('ignores ; inside $$…$$ / $tag$…$tag$ heredocs (#182)', () => {
+    expect(splitStatements('SELECT $$a;b$$; SELECT 2'))
+      .toEqual(['SELECT $$a;b$$', 'SELECT 2']);
+    expect(splitStatements('SELECT $t$a;/*x*/b$t$; SELECT 2'))
+      .toEqual(['SELECT $t$a;/*x*/b$t$', 'SELECT 2']);
+  });
+
+  it('ignores ; inside // line comments (#182)', () => {
+    expect(splitStatements('SELECT 1 // a;b\n; SELECT 2'))
+      .toEqual(['SELECT 1 // a;b', 'SELECT 2']);
+  });
+
   it('leaves an unterminated string as one trailing statement', () => {
     expect(splitStatements("SELECT 'oops")).toEqual(["SELECT 'oops"]);
   });
@@ -101,10 +113,20 @@ describe('leadingKeyword', () => {
     expect(leadingKeyword('((SELECT 1) UNION ALL (SELECT 2))')).toBe('SELECT');
     expect(leadingKeyword('/* c */ ( select 1 )')).toBe('SELECT');
   });
+  it('skips leading // comments and nested block comments (#182)', () => {
+    expect(leadingKeyword('// note\nSELECT 1')).toBe('SELECT');
+    expect(leadingKeyword('/* a /* b */ c */ SELECT 1')).toBe('SELECT');
+  });
+  it('does NOT treat #x as skippable trivia — #x is not a comment (#182)', () => {
+    expect(leadingKeyword('#x\nCREATE TABLE t')).toBe(''); // first code char is '#', not a word
+    expect(leadingKeyword('# note\nCREATE TABLE t')).toBe('CREATE'); // valid `# ` comment
+  });
   it('returns "" when there is no leading keyword', () => {
     expect(leadingKeyword('')).toBe('');
     expect(leadingKeyword('-- only a comment')).toBe('');
     expect(leadingKeyword('42 + 1')).toBe('');
+    expect(leadingKeyword('/* unterminated SELECT')).toBe(''); // open comment leads nothing runnable
+    expect(leadingKeyword("'a string' SELECT")).toBe(''); // a leading literal is not a keyword
   });
 });
 
