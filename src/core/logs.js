@@ -22,6 +22,21 @@ const LEVEL_TYPE_RE = /^(String|FixedString|Enum8|Enum16)/;
 const MSG_NAMES = new Set(['message', 'msg', 'body', 'log', 'line']);
 const LEVEL_NAMES = new Set(['level', 'severity', 'log_level', 'loglevel', 'severity_text', 'severitytext']);
 
+// Per-role convention scanners (first match by position, -1 when absent).
+// Exported so panel-cfg's name-based logs arm (#166) can fall back per role —
+// an explicit `msg` name may pair with a convention-detected time column.
+export function findTimeColumn(columns) {
+  return (columns || []).findIndex((c) => TIME_TYPE_RE.test(chartStripType(c.type)));
+}
+export function findMsgColumn(columns) {
+  return (columns || []).findIndex((c) =>
+    MSG_NAMES.has(String(c.name).toLowerCase()) && MSG_TYPE_RE.test(chartStripType(c.type)));
+}
+export function findLevelColumn(columns) {
+  return (columns || []).findIndex((c) =>
+    LEVEL_NAMES.has(String(c.name).toLowerCase()) && LEVEL_TYPE_RE.test(chartStripType(c.type)));
+}
+
 /**
  * Detect a log-shaped result from its columns: the first (by position)
  * DateTime/DateTime64 column is the time, the first String-ish column with a
@@ -33,15 +48,13 @@ const LEVEL_NAMES = new Set(['level', 'severity', 'log_level', 'loglevel', 'seve
  */
 export function detectLogsView(columns) {
   const cols = columns || [];
-  const types = cols.map((c) => chartStripType(c.type));
-  const names = cols.map((c) => String(c.name).toLowerCase());
-  const time = types.findIndex((t) => TIME_TYPE_RE.test(t));
+  const time = findTimeColumn(cols);
   if (time < 0) return null;
-  const msg = names.findIndex((n, i) => MSG_NAMES.has(n) && MSG_TYPE_RE.test(types[i]));
+  const msg = findMsgColumn(cols);
   if (msg < 0) return null;
-  const found = names.findIndex((n, i) => LEVEL_NAMES.has(n) && LEVEL_TYPE_RE.test(types[i]));
+  const found = findLevelColumn(cols);
   const level = found < 0 ? null : found;
-  const extras = names.map((_, i) => i).filter((i) => i !== time && i !== msg && i !== level);
+  const extras = cols.map((_, i) => i).filter((i) => i !== time && i !== msg && i !== level);
   return { time, msg, level, extras };
 }
 
