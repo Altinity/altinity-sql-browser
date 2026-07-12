@@ -143,6 +143,47 @@ export function autoPanel(columns) {
 }
 
 /**
+ * Switch a panel's type (the Panel tab's picker, #166) — pure. Returns a NEW
+ * `{cfg, key}` payload; never mutates the input. Role continuity rules:
+ *  - same type → the payload passes through unchanged;
+ *  - chart → chart: keep the configured axes, swap the type (normalized);
+ *  - leaving the chart family: the chart roles are STASHED as `cfg.chart`
+ *    ({type,x,y,series,key}) — an unknown field to the target arm, preserved
+ *    by the ignore-and-preserve policy — so switching back is lossless (the
+ *    same shape the `view:'table'` migration writes);
+ *  - entering the chart family: consume the stash when present (its axes and
+ *    schema key win, the picked type overrides), else derive roles via
+ *    autoChart — a non-chartable result yields a bare `{type}` (invalid, so
+ *    the preview shows the not-chartable hint rather than a broken chart);
+ *  - text always (re)gains a string `content` ('' when absent).
+ */
+export function switchPanelType(payload, type, columns) {
+  const cur = payload && payload.cfg ? payload : { cfg: null };
+  const cfg = cur.cfg ? clonePanelCfg(cur.cfg) : {};
+  if (cfg.type === type) return { cfg, key: cur.key ?? null };
+  const wasChart = isChartFamily(cfg.type);
+  const { type: _oldType, x, y, series, chart: stash, content, ...rest } = cfg;
+  if (isChartFamily(type)) {
+    const roles = wasChart
+      ? { x, y, series: series ?? null, key: cur.key ?? null }
+      : stash
+        ? { x: stash.x, y: stash.y, series: stash.series ?? null, key: stash.key ?? null }
+        : (() => { const a = autoChart(columns); return a ? { ...a, key: schemaKey(columns) } : null; })();
+    if (!roles) return { cfg: { ...rest, type }, key: null };
+    // The picked type wins LAST: an autoChart-derived `roles` carries its own
+    // type pick, which must not override the user's.
+    const { key, ...axes } = roles;
+    return { cfg: normalizeChartCfg({ ...rest, ...axes, type }), key };
+  }
+  const next = { ...rest, type };
+  if (wasChart) next.chart = { type: _oldType, x, y, series: series ?? null, key: cur.key ?? null };
+  else if (stash) next.chart = stash; // keep an existing stash riding along
+  if (type === 'text') next.content = typeof content === 'string' ? content : '';
+  else if (typeof content === 'string') next.content = content; // preserved (unknown to other arms)
+  return { cfg: next, key: null };
+}
+
+/**
  * Resolve a saved `panel: {cfg, key?}` against a result — the one mismatch
  * policy both surfaces share (#166): a schema change *retains the explicit
  * type and re-derives the roles within it* (chart: fresh axes for that chart

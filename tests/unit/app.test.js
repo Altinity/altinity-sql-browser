@@ -435,19 +435,21 @@ describe('query run', () => {
   });
   it('keeps the current result view on a plain re-run, and restores a remembered view when opened (#34)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
-    const { app } = appForRun(routes, { Chart: class { destroy() {} } }); // Chart seam so the chart view renders
+    const { app } = appForRun(routes, { Chart: class { destroy() {} } }); // Chart seam so the panel view renders
     app.activeTab().sql = 'SELECT 1';
-    app.state.resultView.value = 'chart';
-    await app.actions.run();                  // no opts → keep the current (chart) tab
-    expect(app.state.resultView.value).toBe('chart');
+    app.state.resultView.value = 'panel';
+    await app.actions.run();                  // no opts → keep the current (panel) tab
+    expect(app.state.resultView.value).toBe('panel');
     await app.actions.run({ view: 'json' });  // saved-query open restores its view
     expect(app.state.resultView.value).toBe('json');
     await app.actions.run({ view: 'table' });
     expect(app.state.resultView.value).toBe('table');
-    await app.actions.run({ view: 'chart' });
-    expect(app.state.resultView.value).toBe('chart');
-    await app.actions.run({ view: 'bogus' }); // unknown view → keep current (chart)
-    expect(app.state.resultView.value).toBe('chart');
+    await app.actions.run({ view: 'panel' });
+    expect(app.state.resultView.value).toBe('panel');
+    await app.actions.run({ view: 'chart' }); // legacy remembered view maps to panel (#166)
+    expect(app.state.resultView.value).toBe('panel');
+    await app.actions.run({ view: 'bogus' }); // unknown view → keep current (panel)
+    expect(app.state.resultView.value).toBe('panel');
   });
   it('switching the result view repaints via the effect (the view-tab onclick only sets the signal)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];

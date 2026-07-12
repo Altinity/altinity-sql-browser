@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { renderChart, installChartZoomFix } from '../../src/ui/chart-render.js';
-import { renderResults } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { schemaKey, chartRowCap } from '../../src/core/chart-data.js';
@@ -45,6 +44,18 @@ const fieldSel = (el, label) => [...el.querySelectorAll('.chart-field')]
   .find((f) => f.querySelector('.chart-field-label').textContent === label).querySelector('select');
 const change = (sel, value) => { sel.value = value; sel.dispatchEvent(new Event('change', { bubbles: true })); };
 
+// A minimal holder-mode paint loop standing in for the old results-pane chart
+// view: destroy-before-rebuild via app.chart (the default setChart slot) and
+// a rerender that repaints this same region — renderChart's own contract.
+function paintChart(app) {
+  const region = app.dom.resultsRegion;
+  const paint = () => {
+    if (app.chart) { app.chart.destroy(); app.chart = null; }
+    region.replaceChildren(renderChart(app, app.activeTab().result, { rerender: paint }));
+  };
+  paint();
+}
+
 describe('renderChart', () => {
   it('shows a not-chartable hint when no measure exists', () => {
     const r = newResult('Table');
@@ -59,7 +70,7 @@ describe('renderChart', () => {
   });
   it('builds a config bar and instantiates Chart.js on a canvas (categorical → hbar default)', () => {
     const app = appWithResult(tableResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const view = app.dom.resultsRegion.querySelector('.chart-view');
     expect(view.querySelector('canvas')).not.toBeNull();
     expect(app.chart).not.toBeNull();
@@ -73,7 +84,7 @@ describe('renderChart', () => {
     const tab = app.activeTab();
     tab.panelKey = schemaKey(r.columns);
     tab.panelCfg = { type: 'pie', x: 0, y: [2], series: null }; // a deliberate non-default
-    renderResults(app);
+    paintChart(app);
     expect(app.activeTab().panelCfg).toEqual({ type: 'pie', x: 0, y: [2], series: null }); // not re-derived
     expect(app.chart.config.type).toBe('pie');
   });
@@ -83,13 +94,13 @@ describe('renderChart', () => {
     const tab = app.activeTab();
     tab.panelKey = schemaKey(r.columns);
     tab.panelCfg = { type: 'bar', x: 99, y: [1], series: null }; // x out of range
-    renderResults(app);
+    paintChart(app);
     expect(app.activeTab().panelCfg.x).toBeLessThan(r.columns.length); // guard re-derived a safe default
     expect(app.chart).not.toBeNull();
   });
   it('Type select switches renderer; non-pie keeps series, pie resets it to single-measure', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     // group-by first so we can prove pie clears it
     change(fieldSel(app.dom.resultsRegion, 'Series'), '1');
     expect(app.activeTab().panelCfg.series).toBe(1);
@@ -103,7 +114,7 @@ describe('renderChart', () => {
   });
   it('X and Y selects update the per-tab config', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     change(fieldSel(app.dom.resultsRegion, 'X'), '1');
     expect(app.activeTab().panelCfg.x).toBe(1);
     change(fieldSel(app.dom.resultsRegion, 'Y'), '3');
@@ -111,7 +122,7 @@ describe('renderChart', () => {
   });
   it('"All measures" toggles between single and multi-series', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const btn = () => [...app.dom.resultsRegion.querySelectorAll('.chart-toggle')][0];
     expect(btn().textContent).toBe('All measures');
     click(btn());
@@ -123,7 +134,7 @@ describe('renderChart', () => {
   });
   it('Series select sets and clears a group-by dimension', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     change(fieldSel(app.dom.resultsRegion, 'Series'), '1');
     expect(app.activeTab().panelCfg.series).toBe(1);
     change(fieldSel(app.dom.resultsRegion, 'Series'), '');
@@ -135,13 +146,13 @@ describe('renderChart', () => {
     r.rows = Array.from({ length: 600 }, (_, i) => ['k' + i, String(i)]);
     r.progress = { rows: 600, bytes: 100, elapsed_ns: 5e6 };
     const app = appWithResult(r, { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const note = app.dom.resultsRegion.querySelector('.chart-cap-note');
     expect(note).not.toBeNull();
     expect(note.textContent).toContain('first 500 of');
     // a small result shows no cap note
     const small = appWithResult(tableResult(), { resultView: 'chart' });
-    renderResults(small);
+    paintChart(small);
     expect(small.dom.resultsRegion.querySelector('.chart-cap-note')).toBeNull();
   });
   it('switching chart type re-slices to the new type\'s cap and updates the note', () => {
@@ -150,7 +161,7 @@ describe('renderChart', () => {
     r.rows = Array.from({ length: 600 }, (_, i) => ['k' + i, String(i)]);
     r.progress = { rows: 600, bytes: 100, elapsed_ns: 5e6 };
     const app = appWithResult(r, { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     // default (hbar, autoChart's categorical pick) cap is 500 < 600 rows
     expect(app.activeTab().panelCfg.type).toBe('hbar');
     expect(app.dom.resultsRegion.querySelector('.chart-cap-note').textContent)
@@ -167,15 +178,15 @@ describe('renderChart', () => {
   });
   it('destroys the previous Chart instance on re-render, and re-derives config on a new schema', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const first = app.chart;
     const cfg = app.activeTab().panelCfg;
-    renderResults(app); // stable schema → keep config, swap chart instance
+    paintChart(app); // stable schema → keep config, swap chart instance
     expect(first.destroyed).toBe(true);
     expect(app.chart).not.toBe(first);
     expect(app.activeTab().panelCfg).toBe(cfg);
     app.activeTab().result = tableResult(); // different schema → re-derive
-    renderResults(app);
+    paintChart(app);
     expect(app.activeTab().panelCfg).not.toBe(cfg);
   });
   it('does not re-derive (clobber) a restored config while the query is still running', () => {
@@ -187,7 +198,7 @@ describe('renderChart', () => {
     const restored = { type: 'pie', x: 0, y: [2], series: null };
     tab.panelCfg = restored;
     tab.panelKey = 'STALE_KEY'; // deliberately != schemaKey(result.columns)
-    renderResults(app);
+    paintChart(app);
     expect(app.dom.resultsRegion.textContent).toContain('renders when the query completes');
     expect(tab.panelCfg).toBe(restored); // untouched — chartCfgFor never ran
     expect(tab.panelKey).toBe('STALE_KEY');
@@ -198,13 +209,13 @@ describe('renderChart', () => {
     const tab = app.activeTab();
     tab.panelKey = schemaKey(r.columns); // in-range but invalid combination
     tab.panelCfg = { type: 'pie', x: 0, y: [2, 3], series: 1 };
-    renderResults(app);
+    paintChart(app);
     expect(app.activeTab().panelCfg).toEqual({ type: 'pie', x: 0, y: [2], series: null });
     expect(app.chart.config.data.datasets).toHaveLength(1); // single pie dataset
   });
   it('clears the series when the X column is changed to equal it', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     change(fieldSel(app.dom.resultsRegion, 'Series'), '1'); // series = region(1)
     expect(app.activeTab().panelCfg.series).toBe(1);
     change(fieldSel(app.dom.resultsRegion, 'X'), '1'); // X now equals series → series cleared
@@ -213,7 +224,7 @@ describe('renderChart', () => {
   });
   it("forces an explicit resize + 'resize'-mode update once attached, working around Chart.js's cross-window responsive sizing", async () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const canvas = app.dom.resultsRegion.querySelector('canvas');
     const wrap = canvas.parentElement;
     Object.defineProperty(wrap, 'offsetWidth', { value: 640, configurable: true });
@@ -224,7 +235,7 @@ describe('renderChart', () => {
   });
   it('skips the forced resize when the container never gets a real size (e.g. torn down before the rAF fires)', async () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const chart = app.chart;
     await new Promise((resolve) => window.requestAnimationFrame(resolve)); // offsetWidth/Height are 0 in happy-dom by default
     expect(chart.lastResize).toBeUndefined();
@@ -235,7 +246,7 @@ describe('renderChart', () => {
 describe('installChartZoomFix', () => {
   it('undoes the page CSS zoom on pointer events before Chart.js hit-tests them', () => {
     const app = appWithResult(tableResult(), { resultView: 'chart' });
-    renderResults(app);
+    paintChart(app);
     const canvas = app.chart.canvas;
     // Simulate html{zoom:1.2}: rect (zoomed) is 1.2× the layout offsetWidth.
     canvas.getBoundingClientRect = () => ({ width: 120, height: 60, left: 0, top: 0, right: 120, bottom: 60 });

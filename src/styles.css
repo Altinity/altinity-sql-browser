@@ -967,6 +967,51 @@ body.detached-tab .graph-overlay-panel {
   display: flex; align-items: center; justify-content: center;
 }
 
+/* ------------ Panel drawer tab (#166) ------------ */
+.panel-view {
+  height: 100%; background: var(--bg-table);
+  display: flex; flex-direction: column; overflow: auto;
+}
+/* The type picker + per-type controls row shares the chart config bar's look
+   (its children reuse .chart-field/.chart-select). */
+.panel-config {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 7px 14px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border-faint);
+}
+.panel-config .chart-config { padding: 0; border-bottom: none; flex: 1; }
+.panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel-body > .chart-view, .panel-body > .res-table-wrap,
+.panel-body > .dash-logs, .panel-body > .panel-with-note { flex: 1; min-height: 0; }
+.panel-with-note { display: flex; flex-direction: column; }
+.panel-with-note > :last-child { flex: 1; min-height: 0; }
+.panel-note {
+  padding: 4px 14px; font-size: 11px; color: var(--fg-faint);
+  border-bottom: 1px solid var(--border-faint); flex-shrink: 0;
+}
+.panel-note.is-fallback { color: var(--warn-fg); background: var(--warn-bg); }
+/* Text panel: the Markdown editor (config area) + rendered preview below. */
+.panel-text-edit { flex: 1; min-width: 240px; display: flex; }
+.panel-text-input {
+  flex: 1; min-height: 64px; max-height: 180px; resize: vertical;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 5px;
+  color: var(--fg); font-family: var(--mono); font-size: 11.5px;
+  padding: 6px 8px; outline: none;
+}
+.md-view { padding: 14px 18px; overflow: auto; font-size: 13px; line-height: 1.55; color: var(--fg); }
+.md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 {
+  margin: .6em 0 .3em; line-height: 1.25; color: var(--fg);
+}
+.md-view h1 { font-size: 20px; } .md-view h2 { font-size: 17px; } .md-view h3 { font-size: 15px; }
+.md-view h4, .md-view h5, .md-view h6 { font-size: 13px; }
+.md-view p { margin: .4em 0; }
+.md-view ul, .md-view ol { margin: .4em 0; padding-left: 22px; }
+.md-view code {
+  font-family: var(--mono); font-size: .92em;
+  background: var(--bg-chip); border-radius: 3px; padding: 1px 4px;
+}
+.md-view a { color: var(--accent); }
+
 /* ------------ schema tree ------------ */
 .schema-search {
   padding: 8px 10px;

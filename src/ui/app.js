@@ -751,15 +751,16 @@ export function createApp(env = {}) {
     app.state.runQueryId = uid('q');
     app.state.abortController = new AbortController();
     app.state.runTick = setInterval(tickElapsed, 100);
-    // Keep the current Table/JSON/Chart tab across re-runs (#34); a saved-query
-    // open passes its remembered view in opts.view to restore that instead.
-    const view = opts && opts.view;
+    // Keep the current Table/JSON/Panel tab across re-runs (#34); a saved-query
+    // open passes its remembered view in opts.view to restore that instead
+    // (a stray legacy 'chart' value maps to 'panel' — #166).
+    const view = opts && opts.view === 'chart' ? 'panel' : opts && opts.view;
     // Flip the run signals last, in one batch: the results + Run-button effects
     // fire on this write and read runT0/elapsed, so the bookkeeping above must
     // already be set. (The old explicit setRunBtn(true)/renderResults are now
     // those effects' job.)
     batch(() => {
-      app.state.resultView.value = ['table', 'json', 'chart'].includes(view) ? view : app.state.resultView.value;
+      app.state.resultView.value = ['table', 'json', 'panel'].includes(view) ? view : app.state.resultView.value;
       app.state.running.value = true;
     });
 

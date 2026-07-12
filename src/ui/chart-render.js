@@ -65,31 +65,37 @@ export function installChartZoomFix(chart, canvas) {
 }
 
 /**
- * `opts.tab` holds the per-view chart config (`panelKey`/`panelCfg`) — the
- * active tab for the main results pane, or a caller-owned local object for a
- * detached snapshot (so switching chart fields there never touches the live
- * tab's own config). `opts.rerender` repaints after a config change — required
- * whenever the config bar renders (`controls !== false`): this module must not
- * default it to results.js's repaint, or the import cycle this extraction
- * breaks would come right back. `opts.setChart` receives the new Chart.js
- * instance to store/destroy (the shared `app.chart` slot by default — a
- * detached view must use its own slot instead, or closing one view's chart
- * would tear down another's). `opts.running` overrides the run-state gate — a
- * detached snapshot's `r` is always already-complete, independent of whatever
- * the live tab is doing. `opts.controls === false` omits the Type/X/Y config
- * bar (read-only tiles). `opts.hideGrid` suppresses the value-axis gridlines
+ * Config sourcing, one of two modes:
+ *  - `opts.cfg` — the caller supplies a ready (already-resolved) config and
+ *    render never writes anything back (#166's dirty pin: the Panel tab passes
+ *    resolvePanel's clone here; `opts.onCfgChange(cfg)` fires on every config-
+ *    bar edit so the caller can write the edited clone back explicitly);
+ *  - `opts.tab` — a holder object (`panelKey`/`panelCfg`) this module derives
+ *    into via chartCfgFor (the detached snapshot's caller-owned local object).
+ * `opts.rerender` repaints after a config change — required whenever the
+ * config bar renders (`controls !== false`): this module must not default it
+ * to results.js's repaint, or the import cycle this extraction breaks would
+ * come right back. `opts.setChart` receives the new Chart.js instance to
+ * store/destroy (the shared `app.chart` slot by default — a detached view
+ * must use its own slot instead, or closing one view's chart would tear down
+ * another's). `opts.running` overrides the run-state gate — a detached
+ * snapshot's `r` is always already-complete, independent of whatever the live
+ * tab is doing. `opts.controls === false` omits the Type/X/Y config bar
+ * (read-only tiles). `opts.hideGrid` suppresses the value-axis gridlines
  * (dashboard tiles — #149).
  */
 export function renderChart(app, r, opts = {}) {
-  const tab = opts.tab || app.activeTab();
   const rerender = opts.rerender;
   const setChart = opts.setChart || ((c) => { app.chart = c; });
+  const onCfgChange = opts.onCfgChange || (() => {});
   const running = opts.running !== undefined ? opts.running : app.state.running.value;
   // Gate on run state BEFORE deriving the config: while a query streams its
   // columns can be empty (pre-meta), and letting chartCfgFor see that empty
   // schema would clobber a restored saved/shared config with autoChart(null).
   if (running) return chartEmpty(Icon.spinner(), 'Chart renders when the query completes.');
-  const cfg = chartCfgFor(tab, r.columns);
+  const cfg = opts.cfg !== undefined
+    ? (chartCfgValid(opts.cfg, r.columns) ? normalizeChartCfg(opts.cfg) : null)
+    : chartCfgFor(opts.tab || app.activeTab(), r.columns);
   if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 
   // `opts.controls === false` omits the interactive Type/X/Y config bar entirely
@@ -103,18 +109,24 @@ export function renderChart(app, r, opts = {}) {
     // chartCfgFor folds the cross-field invariants (pie → single measure,
     // series ≠ X) on the way back in, so the handlers don't normalize themselves.
     bar = h('div', { class: 'chart-config' });
-    bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; rerender(); }));
-    bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); rerender(); }));
-    bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; rerender(); }));
+    // The Panel drawer tab (#166) renders its own all-types picker above this
+    // bar, so it suppresses the chart-family Type select (`typeControl:false`)
+    // rather than showing two competing type controls.
+    if (opts.typeControl !== false) {
+      bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; onCfgChange(cfg); rerender(); }));
+    }
+    bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); onCfgChange(cfg); rerender(); }));
+    bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; onCfgChange(cfg); rerender(); }));
     if (f.showMulti) {
       bar.appendChild(h('button', {
         class: 'chart-toggle', title: 'Plot every numeric column as its own series',
-        onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; rerender(); },
+        onclick: () => { cfg.y = f.multiActive ? [cfg.y[0]] : f.allMeasures; onCfgChange(cfg); rerender(); },
       }, f.multiActive ? 'Single series' : 'All measures'));
     }
     if (f.showSeries) {
       bar.appendChild(chartSelect('Series', String(cfg.series ?? ''), f.seriesOptions, (v) => {
         cfg.series = v === '' ? null : Number(v);
+        onCfgChange(cfg);
         rerender();
       }));
     }

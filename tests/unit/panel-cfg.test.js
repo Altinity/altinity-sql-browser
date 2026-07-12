@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CHART_FAMILY, PANEL_TYPE_IDS, isChartFamily, isKnownPanelType,
   clonePanelCfg, resolveLogsShape, panelCfgValid, normalizePanelCfg,
-  autoPanel, resolvePanel,
+  autoPanel, resolvePanel, switchPanelType,
 } from '../../src/core/panel-cfg.js';
 import { schemaKey } from '../../src/core/chart-data.js';
 
@@ -130,6 +130,55 @@ describe('autoPanel', () => {
     expect(autoPanel(chartCols).cfg).toMatchObject({ type: 'hbar', x: 0, y: [1] });
     expect(autoPanel(strCols).cfg).toEqual({ type: 'table' });
     expect(autoPanel([]).cfg).toEqual({ type: 'table' });
+  });
+});
+
+describe('switchPanelType', () => {
+  const chartPayload = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'K' };
+  it('same type → payload passes through (as a clone)', () => {
+    const out = switchPanelType(chartPayload, 'bar', chartCols);
+    expect(out).toEqual(chartPayload);
+    expect(out.cfg).not.toBe(chartPayload.cfg);
+  });
+  it('chart → chart keeps the configured axes and key, swaps the type (normalized)', () => {
+    const out = switchPanelType({ cfg: { type: 'bar', x: 0, y: [1], series: 0 }, key: 'K' }, 'pie', chartCols);
+    expect(out.cfg).toMatchObject({ type: 'pie', x: 0, y: [1], series: null }); // pie invariant folded
+    expect(out.key).toBe('K');
+  });
+  it('leaving the chart family stashes the roles; switching back consumes them (lossless)', () => {
+    const table = switchPanelType(chartPayload, 'table', chartCols);
+    expect(table.cfg).toEqual({ type: 'table', chart: { type: 'bar', x: 0, y: [1], series: null, key: 'K' } });
+    expect(table.key).toBeNull();
+    const back = switchPanelType(table, 'line', chartCols);
+    expect(back.cfg).toMatchObject({ type: 'line', x: 0, y: [1], series: null });
+    expect(back.key).toBe('K');
+    expect('chart' in back.cfg).toBe(false); // stash consumed
+  });
+  it('entering the chart family with no stash derives roles via autoChart (+ fresh schema key)', () => {
+    const out = switchPanelType({ cfg: { type: 'table' } }, 'line', chartCols);
+    expect(out.cfg).toMatchObject({ type: 'line', x: 0, y: [1] });
+    expect(out.key).toBe(schemaKey(chartCols));
+  });
+  it('entering the chart family on a non-chartable result yields a bare (invalid) type marker', () => {
+    const out = switchPanelType({ cfg: { type: 'table' } }, 'line', strCols);
+    expect(out.cfg).toEqual({ type: 'line' });
+    expect(out.key).toBeNull();
+  });
+  it("text gains a string content (''), and content survives switches away and back", () => {
+    const text = switchPanelType({ cfg: { type: 'table' } }, 'text', []);
+    expect(text.cfg).toEqual({ type: 'text', content: '' });
+    const away = switchPanelType({ cfg: { type: 'text', content: '# kept' } }, 'table', []);
+    const back = switchPanelType(away, 'text', []);
+    expect(back.cfg.content).toBe('# kept');
+  });
+  it('logs role names ride along through a table round-trip (unknown-field preservation)', () => {
+    const away = switchPanelType({ cfg: { type: 'logs', msg: 'body' } }, 'table', logCols);
+    const back = switchPanelType(away, 'logs', logCols);
+    expect(back.cfg).toMatchObject({ type: 'logs', msg: 'body' });
+  });
+  it('a null/empty payload starts from scratch', () => {
+    expect(switchPanelType(null, 'text', []).cfg).toEqual({ type: 'text', content: '' });
+    expect(switchPanelType({ cfg: null }, 'table', []).cfg).toEqual({ type: 'table' });
   });
 });
 

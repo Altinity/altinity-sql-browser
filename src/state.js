@@ -21,8 +21,10 @@ export function tabPanel(tab) {
   return isChartFamily(cfg.type) ? { cfg, key: tab.panelKey ?? null } : { cfg };
 }
 
-/** Result views a saved query can remember (a raw FORMAT-clause view is transient). */
-export const SAVED_VIEWS = new Set(['table', 'json', 'chart']);
+/** Result views a saved query can remember (a raw FORMAT-clause view is
+ * transient). 'panel' replaced 'chart' in #166 — upgradeSavedEntry maps the
+ * legacy value at every ingress. */
+export const SAVED_VIEWS = new Set(['table', 'json', 'panel']);
 
 export const KEYS = {
   theme: 'asb:theme',

@@ -117,10 +117,19 @@ describe('renderResults states', () => {
     renderResults(app);
     expect(app.dom.resultsRegion.querySelector('.json-view').textContent).toContain('"n": "2"');
   });
-  it('chart view', () => {
-    const app = appWithResult(tableResult(), { resultView: 'chart' });
+  it('panel view (the Panel drawer tab, #166) renders the type picker + auto preview', () => {
+    const app = appWithResult(tableResult(), { resultView: 'panel' });
     renderResults(app);
-    expect(app.dom.resultsRegion.querySelector('.chart-view')).not.toBeNull();
+    const region = app.dom.resultsRegion;
+    expect(region.querySelector('.panel-view')).not.toBeNull();
+    expect(region.querySelector('.panel-config select')).not.toBeNull(); // the type picker
+    expect(region.querySelector('.chart-view canvas')).not.toBeNull();   // autoPanel picked a chart
+    expect(app.activeTab().panelCfg).toBeNull(); // preview never writes the tab cfg (#166 dirty pin)
+  });
+  it('panel view with no result shows the run hint (query-backed types need a Run)', () => {
+    const app = appWithResult(null, { resultView: 'panel' });
+    renderResults(app);
+    expect(app.dom.resultsRegion.textContent).toContain('Run the query');
   });
   it('clicking a view tab switches the view', () => {
     const app = appWithResult(tableResult(), { resultView: 'table' });
@@ -585,7 +594,7 @@ describe('expandDataPane', () => {
     expandDataPane(app, r);
     const overlay = document.querySelector('.graph-overlay');
     const tabLabels = () => [...overlay.querySelectorAll('.result-view-tab')].map((b) => b.textContent);
-    expect(tabLabels()).toEqual(['Table', 'JSON', 'Chart']);
+    expect(tabLabels()).toEqual(['Table', 'JSON', 'Panel']);
     expect(overlay.querySelector('.result-view-tab.active').textContent).toBe('Table');
 
     // JSON
@@ -594,10 +603,10 @@ describe('expandDataPane', () => {
     expect(overlay.querySelector('.result-view-tab.active').textContent).toBe('JSON');
     expect(overlay.querySelector('.res-table')).toBeNull(); // grid torn down
 
-    // Chart
-    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Chart'));
+    // Panel (read-only render of the source tab's resolved panel — #166 v1)
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
     expect(overlay.querySelector('.chart-view canvas')).not.toBeNull();
-    expect(overlay.querySelector('.result-view-tab.active').textContent).toBe('Chart');
+    expect(overlay.querySelector('.result-view-tab.active').textContent).toBe('Panel');
 
     // switching away destroys the chart instance (no leaked canvas/observers)
     const chartBefore = overlay.querySelector('canvas');
@@ -607,32 +616,40 @@ describe('expandDataPane', () => {
     expect(chartBefore).not.toBeNull(); // sanity: we did have a canvas to lose
   });
 
-  it("the snapshot's chart config is local — switching it never touches the live tab's own chartCfg/chartKey", () => {
+  it('the snapshot panel is render-only: no config bar, and the shared app.chart slot stays free', () => {
     const app = makeApp();
     const r = chartResult();
     expandDataPane(app, r);
     const overlay = document.querySelector('.graph-overlay');
-    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Chart'));
-    const typeSelect = overlay.querySelector('.chart-config select');
-    typeSelect.value = 'pie';
-    typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(overlay.querySelector('.chart-view canvas')).not.toBeNull(); // re-rendered locally, no throw
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
+    expect(overlay.querySelector('.chart-view canvas')).not.toBeNull();
+    expect(overlay.querySelector('.chart-config')).toBeNull(); // readonly — no editor (v1 scope)
+    expect(overlay.querySelector('.panel-config')).toBeNull();
     expect(app.activeTab().panelCfg).toBeNull(); // the live tab's own config is untouched
     expect(app.chart).toBeNull(); // the snapshot's chart never occupies the shared app.chart slot
   });
+  it("the snapshot honours the source tab's saved panel type (a table panel renders the grid)", () => {
+    const app = makeApp();
+    app.activeTab().panelCfg = { type: 'table' };
+    expandDataPane(app, chartResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
+    expect(overlay.querySelector('.res-table')).not.toBeNull(); // grid, not the auto chart
+    expect(overlay.querySelector('canvas')).toBeNull();
+  });
 
-  it('running a new query in the main tab does not blank the snapshot\'s Chart view', () => {
+  it('running a new query in the main tab does not blank the snapshot\'s Panel view', () => {
     const app = makeApp();
     const r = chartResult();
     expandDataPane(app, r);
     const overlay = document.querySelector('.graph-overlay');
     app.state.running.value = true; // a different, unrelated query starts in the main window
-    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Chart'));
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
     expect(overlay.querySelector('.chart-view canvas')).not.toBeNull(); // not the "renders when complete" placeholder
     expect(overlay.textContent).not.toContain('renders when the query completes');
   });
 
-  it('closing the overlay while on Chart view destroys the chart instance (teardown)', () => {
+  it('closing the overlay while on Panel view destroys the chart instance (teardown)', () => {
     const app = makeApp();
     const instances = [];
     const RealChart = app.Chart;
@@ -640,7 +657,7 @@ describe('expandDataPane', () => {
     const r = chartResult();
     expandDataPane(app, r);
     const overlay = document.querySelector('.graph-overlay');
-    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Chart'));
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
     expect(instances).toHaveLength(1);
     expect(instances[0].destroyed).toBe(false);
     overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));

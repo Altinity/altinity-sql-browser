@@ -321,14 +321,14 @@ describe('saved queries', () => {
     expect(e.panel.cfg).toEqual({ type: 'text', content: '# hello' });
     expect(e.chart).toBeUndefined(); // no mirror for text
   });
-  it('saveQuery persists the result view (Table/JSON/Chart), updates it, and ignores the transient raw view', () => {
+  it('saveQuery persists the result view (Table/JSON/Panel), updates it, and ignores the transient raw view', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT 1';
-    s.resultView.value = 'chart';
+    s.resultView.value = 'panel';
     const e = saveQuery(s, tab, 'V', '', save, 100);
-    expect(e.view).toBe('chart');
+    expect(e.view).toBe('panel');
     // re-save under a different view → updates
     s.resultView.value = 'json';
     saveQuery(s, tab, 'V', '', save, 200);

@@ -8,7 +8,7 @@ import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
 import { SUBQUERY_MIME } from './dnd-mime.js';
 import {
-  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory,
+  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory, SAVED_VIEWS,
 } from '../state.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 
@@ -110,7 +110,16 @@ function renderSaved(app, list) {
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
     }, Icon.star(q.favorite));
 
-    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: () => { app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.panel); if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view }); } },
+    // Run-less view restore (#166): an entry that can't auto-run (empty SQL —
+    // a text panel — or a DDL script) still restores its remembered drawer
+    // view, so clicking a text panel actually shows the panel instead of
+    // nothing. `run({view})` handles the auto-runnable path as before.
+    const open = () => {
+      app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.panel);
+      if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view });
+      else if (SAVED_VIEWS.has(q.view)) app.state.resultView.value = q.view;
+    };
+    const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: open },
       h('div', { class: 'top' },
         star,
         h('span', { class: 'name' }, q.name),

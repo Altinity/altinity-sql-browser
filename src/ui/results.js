@@ -1,17 +1,19 @@
-// The results pane: a view switcher (Table | JSON | Chart, or a single Raw
+// The results pane: a view switcher (Table | JSON | Panel, or a single Raw
 // view for TSV/JSON output) plus the renderers. Heavy logic (sorting, axis
-// selection) lives in core/ and is reused here.
+// selection, the panel-cfg union) lives in core/ and is reused here; the
+// panel registry + drawer tab live in panels.js (#166).
 
 import { h, zoomScale, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes } from '../core/format.js';
 import { looksLikeHtml, prettyValue } from '../core/cell.js';
-import { renderChart } from './chart-render.js';
+import { renderPanelView, renderResolvedPanel } from './panels.js';
 import { renderGridView, resizeHandle, reapplyWidths, PLAIN_KEY, visCap } from './grid-render.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
-import { RESULT_ROW_LIMIT_OPTIONS } from '../state.js';
+import { resolvePanel } from '../core/panel-cfg.js';
+import { RESULT_ROW_LIMIT_OPTIONS, tabPanel } from '../state.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
@@ -54,16 +56,19 @@ export function renderResults(app) {
     region.replaceChildren(body);
     return;
   }
+  const view = app.state.resultView.value;
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank) {
     inner.appendChild(loadingPlaceholder('Starting query…'));
-  } else if (!r) {
+  } else if (!r && view !== 'panel') {
+    // The Panel tab renders even with no result at all (#166): a text panel
+    // needs none, and query-backed types show their own empty-preview hint.
     inner.appendChild(h('div', { class: 'empty-results' },
       h('div', { class: 'chip' }, Icon.play()),
       h('div', null, 'Press ', h('kbd', null, '⌘↵'), ' to run query')));
-  } else if (r.error) {
+  } else if (r && r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
-  } else if (r.schemaGraph) {
+  } else if (r && r.schemaGraph) {
     // Progressive draw (#124): once Phase A resolves (tableCount known) the
     // real graph draws even while Phase B (per-view/MV EXPLAIN AST) is still
     // loading — only the pre-Phase-A window (nothing known yet, always still
@@ -71,23 +76,39 @@ export function renderResults(app) {
     inner.appendChild(r.schemaGraph.tableCount != null
       ? renderSchemaGraph(app, r)
       : loadingPlaceholder('Loading data flow…', () => app.actions.cancelSchemaGraph({ clearResult: true })));
-  } else if (r.explainView) {
+  } else if (r && r.explainView) {
     inner.appendChild(renderExplainView(app, r));
-  } else if (r.rawText != null) {
+  } else if (r && r.rawText != null) {
     inner.appendChild(h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText));
+  } else if (view === 'panel') {
+    inner.appendChild(renderPanelView(app, r, panelHooks(app, r)));
   } else if (r.rows.length === 0) {
     inner.appendChild(h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.')));
-  } else if (app.state.resultView.value === 'json') {
+  } else if (view === 'json') {
     inner.appendChild(renderJson(r));
-  } else if (app.state.resultView.value === 'chart') {
-    // The repaint scope is supplied here (not defaulted inside chart-render.js)
-    // so the chart module never imports results.js back.
-    inner.appendChild(renderChart(app, r, { rerender: () => renderResults(app) }));
   } else {
     inner.appendChild(renderTable(app, r));
   }
   body.appendChild(inner);
   region.replaceChildren(body);
+}
+
+// The Panel drawer tab's caller seams (#166): the repaint scope, the cell
+// drawer, the tab-dirty wiring (a panel-cfg edit dirties exactly like a SQL
+// edit — same signal writes as app.editor.onDocChange), and the display cap.
+// Supplied from here (not imported by panels.js) so panels.js never imports
+// results.js back.
+function panelHooks(app, r) {
+  return {
+    rerender: () => renderResults(app),
+    onCell: (name, type, value) => openCellDetail(app, name, type, value),
+    cap: r ? visCap(r) : undefined,
+    markDirty: () => {
+      app.activeTab().dirty = true;
+      app.actions.rerenderTabs();
+      app.updateSaveBtn();
+    },
+  };
 }
 
 // Render the active EXPLAIN view: monospace text (Explain/Indexes/Projections),
@@ -465,7 +486,7 @@ function buildToolbar(app, r) {
 }
 
 /**
- * The Table/JSON/Chart tabs — shared by the main results toolbar and the
+ * The Table/JSON/Panel tabs — shared by the main results toolbar and the
  * detached Data Pane, each with its own view-state slot. `current` is the
  * active view id; `onSelect(id)` switches it. Icons are built fresh on every
  * call (never cached/shared across the two consumers' documents — an Icon
@@ -476,7 +497,7 @@ function viewSwitcherTabs(current, onSelect) {
   for (const v of [
     { id: 'table', label: 'Table', icon: Icon.table2() },
     { id: 'json', label: 'JSON', icon: Icon.json() },
-    { id: 'chart', label: 'Chart', icon: Icon.chart() },
+    { id: 'panel', label: 'Panel', icon: Icon.chart() },
   ]) {
     tabs.appendChild(h('button', {
       class: 'result-view-tab' + (current === v.id ? ' active' : ''),
@@ -535,7 +556,11 @@ export function expandDataPane(app, r) {
       const isTab = doc !== mainDoc;
       if (closeBtn) bar.appendChild(closeBtn); // title bar, top-right — same slot schema/pipeline use
       const view = { current: 'table' };
-      const chartTab = {}; // local chartKey/chartCfg holder — independent of the live tab's own chart config
+      // Render-only panel snapshot (#166): the source tab's panel cfg is
+      // resolved once, at expand time — the detached pane keeps no panel
+      // editor (v1 scope), so later edits in the live tab don't leak in.
+      const panelResolved = resolvePanel(tabPanel(app.activeTab()), r.columns);
+      const panelState = {}; // the panel grid's own sort/width holder
       let sort = { col: null, dir: 'asc' }; // lives only for this opened snapshot
       const widths = {};
       let chartInstance = null;
@@ -544,17 +569,21 @@ export function expandDataPane(app, r) {
       const paint = () => withDocument(doc, () => {
         // Always destroy the previous chart before rebuilding — same reasoning
         // as renderResults' own destroy-before-rebuild (a view switch or a
-        // chart-config change re-creates it; nothing may leak its canvas/observers).
+        // panel-config change re-creates it; nothing may leak its canvas/observers).
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
         if (view.current === 'json') {
           inner.replaceChildren(renderJson(r));
-        } else if (view.current === 'chart') {
-          inner.replaceChildren(renderChart(app, r, {
-            tab: chartTab,
+        } else if (view.current === 'panel') {
+          const { node } = renderResolvedPanel(app, panelResolved, r, {
+            surface: 'workbench',
+            state: panelState,
             rerender: paint,
+            readonly: true, // render-only: no config bar, no editor
+            cap: visCap(r),
+            onCell: (name, type, value) => openCellDetail(app, name, type, value, doc),
             setChart: (c) => { chartInstance = c; },
-            running: false, // a snapshot's own data is always already complete
-          }));
+          });
+          inner.replaceChildren(node);
         } else {
           inner.replaceChildren(renderGridView({
             columns: r.columns,
