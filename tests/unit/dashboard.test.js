@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import {
-  isDashboardRoute, configBase, dashboardTileSql, parseJsonResult,
-  normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP,
+  isDashboardRoute, configBase,
+  normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection,
 } from '../../src/core/dashboard.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
@@ -11,6 +11,7 @@ import {
   snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
 } from '../../src/core/auth-handoff.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
+import { applyStreamLine } from '../../src/core/stream.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
@@ -37,71 +38,10 @@ describe('configBase', () => {
   });
 });
 
-describe('dashboardTileSql', () => {
-  it('strips a trailing ; and appends FORMAT JSON', () => {
-    expect(dashboardTileSql('SELECT 1;')).toBe('SELECT 1\nFORMAT JSON');
-    expect(dashboardTileSql('SELECT 1')).toBe('SELECT 1\nFORMAT JSON');
-  });
-  it('leaves an explicit FORMAT clause intact (no double FORMAT)', () => {
-    expect(dashboardTileSql('SELECT 1 FORMAT CSV')).toBe('SELECT 1 FORMAT CSV');
-    expect(dashboardTileSql('SELECT 1 FORMAT JSON;')).toBe('SELECT 1 FORMAT JSON');
-    // FORMAT followed by SETTINGS (either-order clause) must still count as trailing.
-    expect(dashboardTileSql('SELECT 1 FORMAT JSON SETTINGS max_threads=1'))
-      .toBe('SELECT 1 FORMAT JSON SETTINGS max_threads=1');
-  });
-  it('peels a trailing comment so an existing FORMAT is not doubled', () => {
-    expect(dashboardTileSql('SELECT 1 FORMAT JSON -- daily')).toBe('SELECT 1 FORMAT JSON');
-    expect(dashboardTileSql('SELECT 1 /* note */')).toBe('SELECT 1\nFORMAT JSON');
-  });
-  it('is defensive about empty/absent SQL (empty in → empty out)', () => {
-    expect(dashboardTileSql('')).toBe('');
-    expect(dashboardTileSql(undefined)).toBe('');
-  });
-});
-
-describe('parseJsonResult', () => {
-  const nData = (n) => Array.from({ length: n }, (_, i) => ({ n: i }));
-  it('transforms a full FORMAT JSON response into columns + array rows + meta', () => {
-    const out = parseJsonResult({
-      meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }],
-      data: [{ k: 'a', v: 1 }, { k: 'b', v: 2 }],
-      rows: 2,
-      statistics: { elapsed: 0.012, bytes_read: 2048 },
-    });
-    expect(out.columns.map((c) => c.name)).toEqual(['k', 'v']);
-    expect(out.rows).toEqual([['a', 1], ['b', 2]]);
-    expect(out.meta).toEqual({ rows: 2, ms: 12, bytes: 2048, truncated: false });
-  });
-  it('is defensive about a bare response (no meta/data/statistics/rows)', () => {
-    const out = parseJsonResult({});
-    expect(out.columns).toEqual([]);
-    expect(out.rows).toEqual([]);
-    expect(out.meta).toEqual({ rows: 0, ms: null, bytes: null, truncated: false });
-  });
-  it('exactly cap rows → kept whole, not truncated (#149 D9)', () => {
-    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(3) }, 3);
-    expect(out.rows).toEqual([[0], [1], [2]]);
-    expect(out.meta.rows).toBe(3);
-    expect(out.meta.truncated).toBe(false);
-  });
-  it('cap+1 rows → sliced to cap, truncated, and meta.rows is rows SHOWN (json.rows ignored)', () => {
-    const out = parseJsonResult(
-      // json.rows is a block-boundary overshoot count under result_overflow_mode
-      // 'break' — neither the full nor the displayed count, so never surfaced.
-      { meta: [{ name: 'n', type: 'UInt64' }], data: nData(4), rows: 9999 },
-      3,
-    );
-    expect(out.rows).toEqual([[0], [1], [2]]);
-    expect(out.meta.rows).toBe(3);
-    expect(out.meta.truncated).toBe(true);
-  });
-  it('an uncapped call reports rows shown with truncated false, even when json.rows disagrees', () => {
-    const out = parseJsonResult({ meta: [{ name: 'n', type: 'UInt64' }], data: nData(2), rows: 9999 });
-    expect(out.rows).toEqual([[0], [1]]);
-    expect(out.meta.rows).toBe(2);
-    expect(out.meta.truncated).toBe(false);
-  });
-});
+// (dashboardTileSql + parseJsonResult were retired in #193 — the tiles stream
+// through the shared app.runReadInto seam, so SQL prep is now just the shared
+// materialization (#165) and the client row bound is newResult's trim + `capped`
+// flag. The tile↔seam wiring is covered under `renderDashboard` below.)
 
 describe('DASH_TILE_ROW_CAP', () => {
   // The invariant the constant's docstring states, enforced: a fetch cap below
@@ -213,8 +153,37 @@ const chartResult = (meta = { rows: 2, ms: 5, bytes: 100 }) => ({
 });
 const kpiResult = () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]], meta: { rows: 1, ms: 1, bytes: 10 } });
 
+// Bridge the legacy tile-outcome fixtures onto the streaming `app.runReadInto`
+// seam (#193): `spy(sql, param_* args)` returns the logical tile outcome
+// ({columns, rows, meta} | {error, cancelled}); `streamInto` folds it into the
+// caller-owned result exactly as ClickHouse's JSONStrings…Progress stream would
+// (columns, rows, progress bytes, and the `capped` flag from meta.truncated),
+// then fires onChunk once. Keeping the spy's (sql, params) signature lets the
+// existing call-count/arg assertions ride unchanged — only the param_* subset
+// reaches the spy (the seam's readonly:2 / max_result_bytes / rowLimit are
+// asserted separately, on the runReadInto opts). Returns the runReadInto mock.
+function streamInto(spy) {
+  return vi.fn(async (result, opts = {}) => {
+    const params = opts.params || {};
+    const paramArgs = Object.fromEntries(Object.entries(params).filter(([k]) => k.startsWith('param_')));
+    const out = await spy(opts.sql, paramArgs);
+    if (out.error != null) { result.error = out.error; return result; }
+    if (out.cancelled) { result.cancelled = true; return result; }
+    result.columns = out.columns || [];
+    result.rows = (out.rows || []).slice();
+    result.progress = { ...result.progress, rows: result.rows.length, bytes: (out.meta && out.meta.bytes) || 0 };
+    result.capped = !!(out.meta && out.meta.truncated);
+    if (opts.onChunk) opts.onChunk();
+    return result;
+  });
+}
+
+// Build a dashboard app whose tiles run through the seam via `streamInto`. The
+// `runTile` spy is exposed as `app.tileSpy` for the few call-count assertions
+// that referenced the old `app.runTile`.
 function dashApp(favorites, runTile) {
-  const app = makeApp({ runTile });
+  const app = makeApp({ runReadInto: streamInto(runTile) });
+  app.tileSpy = runTile;
   app.state.savedQueries = favorites;
   return app;
 }
@@ -279,11 +248,17 @@ describe('renderDashboard', () => {
     expect(app.root.querySelector('.dash-skip').style.display).toBe('none'); // an error is not a skip
   });
 
-  it('omits ms/bytes from the footer when CH did not report them', async () => {
+  it('the footer always shows rows · ms · bytes on the streaming seam (#193: wall-clock ms + progress bytes)', async () => {
+    // Unlike the old FORMAT-JSON path (which omitted stats CH did not report),
+    // the streaming seam always has a wall-clock ms and a progress byte count
+    // (0 when none streamed), so the footer row is unconditional — three spans.
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }],
-      vi.fn(async () => chartResult({ rows: 2, ms: null, bytes: null })));
+      vi.fn(async () => chartResult({ rows: 2, bytes: 0 })));
     await renderDashboard(app);
-    expect(app.root.querySelector('.dash-tile-foot').children.length).toBe(1);
+    const foot = app.root.querySelector('.dash-tile-foot');
+    expect(foot.children.length).toBe(3);
+    expect(foot.textContent).toContain('0 ms');
+    expect(foot.textContent).toContain('scanned');
   });
 
   it('a fetch-truncated tile gets the honest "first N rows fetched" footer note (#149 D9)', async () => {
@@ -296,7 +271,7 @@ describe('renderDashboard', () => {
 
   it('has a theme toggle wired to app.toggleTheme', async () => {
     const toggleTheme = vi.fn();
-    const app = makeApp({ runTile: vi.fn(async () => chartResult()), toggleTheme });
+    const app = makeApp({ runReadInto: streamInto(vi.fn(async () => chartResult())), toggleTheme });
     app.state.theme = 'dark'; // exercise the dark-theme icon branch
     app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'q', favorite: true }];
     await renderDashboard(app);
@@ -309,7 +284,7 @@ describe('renderDashboard', () => {
   it('redirects to login once (no tiles) when the session cannot be refreshed', async () => {
     const onSignedOut = vi.fn();
     const app = makeApp({
-      runTile: vi.fn(async () => chartResult()),
+      runReadInto: streamInto(vi.fn(async () => chartResult())),
       ensureFreshToken: vi.fn(async () => false),
       chCtx: { onSignedOut },
     });
@@ -319,7 +294,7 @@ describe('renderDashboard', () => {
     ];
     await renderDashboard(app);
     expect(onSignedOut).toHaveBeenCalledTimes(1); // one redirect, not one per tile
-    expect(app.runTile).not.toHaveBeenCalled();
+    expect(app.runReadInto).not.toHaveBeenCalled();
     expect(app.root.querySelectorAll('.dash-tile').length).toBe(0);
   });
 
@@ -518,11 +493,225 @@ describe('renderDashboard', () => {
   it('changing layout never re-runs tile queries', async () => {
     const app = oneFav();
     await renderDashboard(app);
-    expect(app.runTile).toHaveBeenCalledTimes(1); // the initial render
+    expect(app.runReadInto).toHaveBeenCalledTimes(1); // the initial render
     seg(app.root, 'Full width').dispatchEvent(new Event('click', { bubbles: true }));
     seg(app.root, 'Report').dispatchEvent(new Event('click', { bubbles: true }));
     seg(app.root, '2 columns').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.runTile).toHaveBeenCalledTimes(1); // presentation-only — no refetch
+    expect(app.runReadInto).toHaveBeenCalledTimes(1); // presentation-only — no refetch
+  });
+});
+
+// ── #193: tiles on the shared streaming app.runReadInto seam ─────────────────
+describe('renderDashboard — streaming seam (#193)', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const yearInput = (root) => root.querySelector('.var-field input[aria-label="year"]');
+  const commit = (input, value) => {
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  };
+  const paramFav = (id, table = id) => ({ id, name: id, sql: `SELECT * FROM ${table} WHERE y = {year:UInt16}`, favorite: true });
+
+  it('streams read-only with the row-cap split, readonly/byte caps, param args, and a signal (req 1/3)', async () => {
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'SELECT {year:UInt16} AS n', favorite: true }],
+      vi.fn(async () => chartResult()));
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(app.runReadInto).toHaveBeenCalledTimes(1);
+    const [result, opts] = app.runReadInto.mock.calls[0];
+    expect(opts.format).toBe('Table');
+    expect(opts.rowLimit).toBe(DASH_TILE_ROW_CAP + 1); // server max_result_rows = CAP + 1 (sentinel)
+    expect(result.rowLimit).toBe(DASH_TILE_ROW_CAP); // client-side trim = CAP
+    expect(opts.params).toMatchObject({ readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, param_year: '2024' });
+    expect(opts.signal).toBeTruthy(); // an AbortController signal → real per-tile cancellation
+  });
+
+  it('exactly-CAP is not truncated; CAP+1 is trimmed AND flagged (req 1, via the real applyStreamLine)', async () => {
+    // Stream N single-column rows through the REAL accumulator so the client cap
+    // (newResult('Table', CAP)) trims + flags exactly as production would.
+    const streamN = (n) => vi.fn(async (result, opts) => {
+      applyStreamLine({ meta: [{ name: 'n', type: 'UInt64' }] }, result);
+      for (let i = 0; i < n; i++) applyStreamLine({ row: { n: i } }, result);
+      applyStreamLine({ progress: { read_rows: n, read_bytes: 10 } }, result);
+      opts.onChunk();
+      return result;
+    });
+    const fav = [{ id: '1', name: 'Q', sql: 'q', favorite: true, panel: { cfg: { type: 'table' } } }];
+
+    const exact = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP) });
+    exact.state.savedQueries = fav;
+    await renderDashboard(exact);
+    expect(exact.root.querySelector('.dash-tile-foot').textContent).not.toContain('rows fetched');
+
+    const over = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP + 1) });
+    over.state.savedQueries = fav;
+    await renderDashboard(over);
+    const foot = over.root.querySelector('.dash-tile-foot').textContent;
+    expect(foot).toContain('first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched');
+    expect(foot).toContain(DASH_TILE_ROW_CAP.toLocaleString() + ' rows'); // rows SHOWN = trimmed CAP, not CAP+1
+  });
+
+  it('updates only the loading placeholder as rows stream — never classifies mid-stream (req 4)', async () => {
+    const runReadInto = vi.fn((result, opts) => {
+      applyStreamLine({ meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }] }, result);
+      applyStreamLine({ row: { k: 'a', v: '1' } }, result);
+      applyStreamLine({ progress: { read_rows: 1420, read_bytes: 10 } }, result);
+      opts.onChunk(); // mid-stream repaint
+      return new Promise(() => {}); // never settles — stay in the loading state
+    });
+    const app = makeApp({ runReadInto });
+    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'q', favorite: true }];
+    renderDashboard(app);
+    await flush();
+    const load = app.root.querySelector('.dash-tile-load');
+    expect(load).not.toBeNull();
+    expect(load.textContent).toBe('Loading… 1.4K rows'); // progress row count (formatRows compact), placeholder only
+    expect(app.root.querySelector('.dash-tile canvas')).toBeNull(); // NOT classified/charted yet
+    expect(app.root.querySelector('.dash-tile-foot').textContent).toBe(''); // no footer mid-stream
+  });
+
+  it('rejects an explicit FORMAT clause with a clear error and issues no request (req 5)', async () => {
+    const spy = vi.fn(async () => chartResult());
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'SELECT 1 FORMAT JSON', favorite: true }], spy);
+    await renderDashboard(app);
+    expect(app.root.querySelector('.dash-tile-error').textContent)
+      .toContain('Remove the explicit FORMAT clause');
+    expect(app.runReadInto).not.toHaveBeenCalled(); // never mis-parsed as a structured stream
+  });
+
+  it('full Refresh performs exactly one token preflight before fanning out (req 2)', async () => {
+    const app = dashApp([
+      { id: '1', name: 'A', sql: 'a', favorite: true },
+      { id: '2', name: 'B', sql: 'b', favorite: true },
+    ], vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    expect(app.ensureFreshToken).toHaveBeenCalledTimes(1); // once for the whole wave, not per tile
+  });
+
+  it('an affected-filter wave preflights once; a failed preflight issues no requests and signs out (req 2)', async () => {
+    const app = dashApp([paramFav('1', 't')], vi.fn(async () => chartResult()));
+    app.state.varValues = { year: '1' };
+    await renderDashboard(app);
+    expect(app.ensureFreshToken).toHaveBeenCalledTimes(1); // the initial refresh
+    app.runReadInto.mockClear();
+    app.ensureFreshToken.mockResolvedValue(false); // session lost before the affected wave
+    commit(yearInput(app.root), '2');
+    await flush();
+    expect(app.ensureFreshToken).toHaveBeenCalledTimes(2); // one preflight for the affected wave
+    expect(app.chCtx.onSignedOut).toHaveBeenCalledTimes(1);
+    expect(app.runReadInto).not.toHaveBeenCalled(); // failed preflight → no tile requests
+  });
+
+  it('a newer wave aborts the previous slot request at wave creation (generation reserved up front, req 3/5)', async () => {
+    const signals = [];
+    const resolvers = [];
+    const runReadInto = vi.fn((result, opts) => {
+      signals.push(opts.signal);
+      return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+    });
+    const app = makeApp({ runReadInto });
+    app.state.savedQueries = [paramFav('1', 't')];
+    app.state.varValues = { year: '1' };
+    const rendered = renderDashboard(app);
+    await flush();
+    expect(signals).toHaveLength(1);
+    resolvers.splice(0).forEach((r) => r());
+    await rendered;
+    const input = yearInput(app.root);
+    commit(input, '11'); // wave A
+    await flush();
+    expect(signals).toHaveLength(2);
+    commit(input, '22'); // wave B — created before A's request settled
+    await flush();
+    expect(signals).toHaveLength(3);
+    expect(signals[1].aborted).toBe(true); // A superseded at B's CREATION, before A resolved
+    expect(signals[2].aborted).toBe(false);
+    resolvers.splice(0).forEach((r) => r()); // drain (both A and B) — no throw
+    await flush();
+  });
+
+  it('a queued Refresh worker superseded by a newer wave discards itself without issuing (req 3/5/7)', async () => {
+    const calls = [];
+    const resolvers = [];
+    const runReadInto = vi.fn((result, opts) => {
+      calls.push(opts.params.param_year);
+      return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+    });
+    const app = makeApp({ runReadInto });
+    app.state.savedQueries = Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i));
+    app.state.varValues = { year: '1' };
+    const rendered = renderDashboard(app); // wave A (full Refresh)
+    await flush();
+    expect(calls.filter((v) => v === '1')).toHaveLength(6); // TILE_CONCURRENCY: 6 in flight, 2 queued
+    // Wave B (a filter change) supersedes every slot at CREATION — before A's
+    // queued workers ever reach tiles 6 & 7.
+    commit(yearInput(app.root), '2');
+    await flush();
+    expect(calls.filter((v) => v === '2')).toHaveLength(6); // B fans out its own 6
+    // Drain everything; A's two queued workers dequeue AFTER B superseded them,
+    // see the stale generation, and discard WITHOUT issuing a year=1 request.
+    while (resolvers.length) { resolvers.splice(0).forEach((r) => r()); await flush(); }
+    await rendered;
+    expect(calls.filter((v) => v === '1')).toHaveLength(6); // A never issued the 2 queued
+    expect(calls.filter((v) => v === '2')).toHaveLength(8); // B issued all 8
+  });
+
+  it('an affected wave is bounded to the same 6-way pool as full Refresh (req 7)', async () => {
+    const resolvers = [];
+    const runReadInto = vi.fn((result, opts) => new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
+    const app = makeApp({ runReadInto });
+    app.state.savedQueries = Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i));
+    app.state.varValues = { year: '1' };
+    const rendered = renderDashboard(app);
+    await flush();
+    expect(resolvers).toHaveLength(6); // initial full refresh caps at 6
+    while (resolvers.length) { resolvers.splice(0).forEach((r) => r()); await flush(); }
+    await rendered;
+    const before = runReadInto.mock.calls.length; // 8
+    commit(yearInput(app.root), '2');
+    await flush();
+    expect(runReadInto.mock.calls.length - before).toBe(6); // the affected wave also caps at 6 concurrent
+    // …but every affected tile shows the loading placeholder up front (not just
+    // the 6 in flight) — no queued tile lingers on stale content while waiting.
+    expect(app.root.querySelectorAll('.dash-tile-load')).toHaveLength(8);
+    while (resolvers.length) { resolvers.splice(0).forEach((r) => r()); await flush(); }
+  });
+
+  it('a stale (superseded) response neither renders nor records recents (req 6)', async () => {
+    const resolvers = [];
+    const runReadInto = vi.fn((result, opts) => new Promise((res) => resolvers.push((out) => {
+      Object.assign(result, out);
+      res(result);
+    })));
+    const app = makeApp({ runReadInto });
+    app.state.savedQueries = [paramFav('1', 't')];
+    app.state.varValues = { year: '1' };
+    const rendered = renderDashboard(app);
+    await flush();
+    // ≥2 rows so the tile renders a table (a 1-row unconfigured result is a KPI skip).
+    resolvers.splice(0).forEach((r) => r({ columns: [{ name: 'k', type: 'String' }], rows: [['a'], ['a2']] }));
+    await rendered;
+    app.recordBoundParams.mockClear();
+    const input = yearInput(app.root);
+    commit(input, '11'); // wave A (superseded below)
+    await flush();
+    commit(input, '22'); // wave B supersedes A
+    await flush();
+    // B resolves first (current), then the stale A resolves late.
+    resolvers[1]({ columns: [{ name: 'k', type: 'String' }], rows: [['B'], ['B2']] });
+    await flush();
+    resolvers[0]({ columns: [{ name: 'k', type: 'String' }], rows: [['A-stale'], ['A2']] });
+    await flush();
+    expect(app.root.querySelector('.dash-tile').textContent).toContain('B'); // B rendered
+    expect(app.root.querySelector('.dash-tile').textContent).not.toContain('A-stale');
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // only B recorded; the stale A did not
+  });
+
+  it('never touches workbench run state — tiles own their own results (req: isolation)', async () => {
+    const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
+    await renderDashboard(app);
+    expect(app.state.running.value).toBe(false); // dashboard tiles never flip the workbench run signal
+    expect(app.activeTab().result).toBeFalsy(); // no active-tab result written
   });
 });
 
@@ -924,7 +1113,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     await rendered;
 
     // Distinct but still UInt16-valid values (#170: an invalid value would
-    // never reach app.runTile at all, short-circuiting this race).
+    // never reach the seam at all, short-circuiting this race).
     const input = fieldInput(app.root, 'year');
     setInput(input, '11');
     pressEnter(input);
@@ -1162,7 +1351,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
         paramFav('2', 'SELECT * FROM u WHERE d >= {from:DateTime}'),
       ];
       const runTile = vi.fn(async () => chartResult());
-      const app = makeApp({ runTile, wallNow: vi.fn(() => 1751200000000) });
+      const app = makeApp({ runReadInto: streamInto(runTile), wallNow: vi.fn(() => 1751200000000) });
       app.state.savedQueries = favorites;
       app.state.varValues = { from: '-1h' };
       await renderDashboard(app);
@@ -1316,7 +1505,7 @@ describe('renderDashboard — recent values (#171)', () => {
   });
 });
 
-// ── app.js: runTile + auth handoff wiring ────────────────────────────────────
+// ── app.js: dashboard render + auth handoff wiring ───────────────────────────
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
   return `${b({ alg: 'RS256' })}.${b(payload)}.sig`;
@@ -1328,7 +1517,19 @@ function resp(opts) {
     ok: opts.ok ?? true, status: opts.status ?? 200,
     json: async () => opts.json, text: async () => opts.text ?? JSON.stringify(opts.json),
     clone() { return this; },
+    body: opts.body,
     headers: { get: () => null },
+  };
+}
+// A streaming response body (JSONStringsEachRowWithProgress lines), for the
+// tile/run() path that reads resp.body.getReader() rather than resp.json().
+function streamBody(lines) {
+  let i = 0;
+  return {
+    getReader: () => ({
+      read: async () => (i < lines.length ? { done: false, value: new TextEncoder().encode(lines[i++]) } : { done: true }),
+      releaseLock: () => {},
+    }),
   };
 }
 function makeFetch(routes) {
@@ -1357,73 +1558,6 @@ const msg = (data, source, origin = 'https://ch.example') => {
   return e;
 };
 
-describe('app.runTile', () => {
-  it('returns the parsed result on success', async () => {
-    const app = createApp(appEnv({
-      fetch: makeFetch([[(u, sql) => /SELECT k/.test(sql || ''),
-        resp({ json: { meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], data: [{ k: 'a', v: 1 }], statistics: { elapsed: 0.01, bytes_read: 2048 } } })]]),
-    }));
-    const r = await app.runTile('SELECT k, v FROM t');
-    expect(r.columns.map((c) => c.name)).toEqual(['k', 'v']);
-    expect(r.rows).toEqual([['a', 1]]);
-    expect(r.meta).toMatchObject({ ms: 10, bytes: 2048 });
-  });
-  it('reports the CH error message on a rejected query', async () => {
-    const app = createApp(appEnv({
-      fetch: makeFetch([[(u, sql) => /SELECT/.test(sql || ''), resp({ ok: false, status: 500, text: 'Cannot execute query in readonly mode' })]]),
-    }));
-    expect((await app.runTile('SELECT 1')).error).toMatch(/readonly/);
-  });
-  it('substitutes state.varValues as param_<name> args (#149 D3)', async () => {
-    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
-      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
-    const app = createApp(appEnv({ fetch }));
-    app.state.varValues.year = '2024';
-    await app.runTile('SELECT {year:UInt16} AS n');
-    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
-    expect(queryCall[0]).toContain('param_year=2024');
-  });
-  it('prepares per-statement, so a multi-statement favorite still binds its params (#155)', async () => {
-    // paramArgs over the whole blob saw the leading SET and skipped substitution
-    // entirely; the pipeline splits first, so param_year rides along.
-    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
-      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
-    const app = createApp(appEnv({ fetch }));
-    app.state.varValues.year = '2024';
-    await app.runTile('SET x = 1; SELECT {year:UInt16} AS n');
-    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
-    expect(queryCall[0]).toContain('param_year=2024');
-  });
-  it('explicit prepared args win over self-preparation (the dashboard wave passes them)', async () => {
-    const fetch = makeFetch([[(u, sql) => /SELECT/.test(sql || ''),
-      resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data: [{ n: 1 }] } })]]);
-    const app = createApp(appEnv({ fetch }));
-    app.state.varValues.year = '1999'; // must NOT be read — the caller's batch is authoritative
-    await app.runTile('SELECT {year:UInt16} AS n', { param_year: '2024' });
-    const queryCall = fetch.mock.calls.find((c) => c[1] && c[1].method === 'POST');
-    expect(queryCall[0]).toContain('param_year=2024');
-    expect(queryCall[0]).not.toContain('param_year=1999');
-  });
-  it('errors (without driving sign-out) when there is no token', async () => {
-    const app = createApp(appEnv({ sessionStorage: memSession({}) }));
-    expect(await app.runTile('SELECT 1')).toEqual({ error: 'Not signed in' });
-  });
-  it('trims an over-cap result to DASH_TILE_ROW_CAP and flags meta.truncated (#149 D9)', async () => {
-    // Server sentinel (max_result_rows = cap + 1, overflow 'break') delivered
-    // one row past the cap — the client trim is the guaranteed bound.
-    const data = Array.from({ length: DASH_TILE_ROW_CAP + 1 }, (_, i) => ({ n: i }));
-    const app = createApp(appEnv({
-      fetch: makeFetch([[(u, sql) => /SELECT n/.test(sql || ''),
-        resp({ json: { meta: [{ name: 'n', type: 'UInt64' }], data, rows: data.length } })]]),
-    }));
-    const r = await app.runTile('SELECT n FROM big');
-    expect(r.rows).toHaveLength(DASH_TILE_ROW_CAP);
-    expect(r.rows[DASH_TILE_ROW_CAP - 1]).toEqual([DASH_TILE_ROW_CAP - 1]);
-    expect(r.meta.rows).toBe(DASH_TILE_ROW_CAP);
-    expect(r.meta.truncated).toBe(true);
-  });
-});
-
 describe('app config base on the dashboard route', () => {
   it('resolves config.json from /sql, not /sql/dashboard', async () => {
     const fetch = makeFetch([]);
@@ -1439,14 +1573,24 @@ describe('app config base on the dashboard route', () => {
 });
 
 describe('app.renderDashboard', () => {
-  it('renders the favorites dashboard into the root', async () => {
-    const app = createApp(appEnv({
-      fetch: makeFetch([[(u, sql) => /mychart/.test(sql || ''),
-        resp({ json: { meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], data: [{ k: 'a', v: 1 }, { k: 'b', v: 2 }] } })]]),
-    }));
+  it('renders the favorites dashboard into the root — streaming the tile through the real seam (#193)', async () => {
+    // End-to-end through createApp's real app.runReadInto → ch.runQuery → the
+    // streaming JSONStringsEachRowWithProgress reader (not resp.json()), the
+    // same transport run() and the detached view use.
+    const fetch = makeFetch([[(u, sql) => /mychart/.test(sql || ''), resp({
+      body: streamBody([
+        '{"meta":[{"name":"k","type":"String"},{"name":"v","type":"UInt64"}]}\n',
+        '{"row":{"k":"a","v":"1"}}\n',
+        '{"row":{"k":"b","v":"2"}}\n',
+      ]),
+    })]]);
+    const app = createApp(appEnv({ fetch }));
     app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart', favorite: true }];
     await app.renderDashboard();
     expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
+    // The read-only tile guard (readonly=2) + the row-cap sentinel reach the wire.
+    expect(fetch.mock.calls.some((c) => /readonly=2/.test(c[0]))).toBe(true);
+    expect(fetch.mock.calls.some((c) => /max_result_rows=5001/.test(c[0]))).toBe(true);
   });
 });
 

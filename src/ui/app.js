@@ -31,7 +31,7 @@ import { encodeShare } from '../core/share.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
-import { configBase, dashboardTileSql, parseJsonResult, DASH_TILE_ROW_CAP } from '../core/dashboard.js';
+import { configBase } from '../core/dashboard.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
@@ -2077,43 +2077,11 @@ export function createApp(env = {}) {
   }
   app.ensureFreshToken = ensureFreshToken;
 
-  // Run one favorite's SQL for a dashboard tile: read-only (writes rejected
-  // server-side by queryDashboardTile), FORMAT JSON, transformed to the
-  // array-row shape renderChart wants. `params` are the tile's prepared
-  // `param_<name>` args from the dashboard's per-wave batch (#149 D3/#173) —
-  // the dashboard then passes `sql` already materialized (#165); when omitted
-  // (a standalone call) both are prepared here from the shared
-  // `state.varValues`/`state.filterActive`, mirroring the workbench's run(). Returns
-  // { columns, rows, meta } on success or { error } on failure. The token is
-  // resolved up front by ensureFreshToken (above), so this does not itself
-  // drive sign-out.
-  async function runTile(sql, params) {
-    try {
-      // ensureConfig + getToken are inside the try: getToken→refresh can THROW on
-      // a network/IdP failure, and a tile must degrade to { error } rather than
-      // reject (a rejected tile would break the whole grid's Promise.all).
-      // ensureConfig is memoized, so calling it here and in ensureFreshToken is
-      // cheap and keeps runTile usable on its own.
-      await ensureConfig();
-      if (!(await getToken())) return { error: 'Not signed in' };
-      let text = sql;
-      let args = params;
-      if (!args) {
-        const src = prepareTabSource(sql, wallNow());
-        args = mergedSourceArgs(src);
-        // #165: swap in the materialized execution text only when the SQL
-        // actually is a template — block-free favorites keep their exact bytes.
-        if (hasOptionalBlocks(sql)) text = mergedSourceSql(src, sql);
-      }
-      const json = await ch.queryDashboardTile(chCtx, dashboardTileSql(text), undefined, args);
-      // DASH_TILE_ROW_CAP is the guaranteed client-side row bound (#149 D9):
-      // the server-side caps in queryDashboardTile are best-effort only.
-      return parseJsonResult(json, DASH_TILE_ROW_CAP);
-    } catch (e) {
-      return { error: String((e && e.message) || e) };
-    }
-  }
-  app.runTile = runTile;
+  // Dashboard tiles stream their read-only SQL through the shared
+  // `app.runReadInto` seam directly (#193 — see src/ui/dashboard.js
+  // `runSlotTile`), the same path run() and the detached Data view use; the
+  // former bespoke `runTile`/`queryDashboardTile`/`parseJsonResult` machinery
+  // was retired so cap/settings fixes can't apply to only one path.
   app.renderDashboard = () => renderDashboard(app);
 
   // One-time cross-tab auth handoff. The dashboard opens in a new same-origin

@@ -1,12 +1,11 @@
 // Pure logic for the Dashboard view (#149). No DOM, no globals.
 //
 // A dashboard is "the favorited subset of the Library, rendered together" — no
-// new schema. This module holds the route helpers, the ClickHouse `FORMAT JSON`
-// → array-rows transform the panel layer expects, and the tile result caps.
+// new schema. This module holds the route helpers and the tile result caps.
 // (Per-tile classification moved to core/panel-cfg.js's autoPanel/resolvePanel
-// in #166 — the panel union replaced classifyTile's chart-vs-skip ladder.)
-
-import { withTrailingFormat } from './format.js';
+// in #166 — the panel union replaced classifyTile's chart-vs-skip ladder. The
+// tiles stream through the shared `app.runReadInto` seam as of #193, so the
+// former `FORMAT JSON` → array-rows transform and its SQL prep were retired.)
 
 /**
  * True on the standalone dashboard route (a path ending in `/dashboard`,
@@ -84,9 +83,10 @@ export function dashboardViewSelection(view) {
 /**
  * Rows kept per dashboard tile (#149 D9). Preserves the 5000-point line/area
  * chart cap (`CHART_ROW_CAPS` in `src/core/chart-data.js`) — a fetch cap below
- * it would silently regress charts. `queryDashboardTile` requests
- * `max_result_rows = cap + 1` (the `+1` is the truncation sentinel) and
- * `parseJsonResult` trims to this bound client-side, which is the guarantee.
+ * it would silently regress charts. The tile streams with server
+ * `max_result_rows = cap + 1` (the `+1` is the truncation sentinel) while the
+ * client result's `newResult('Table', cap)` trims to `cap` and flags `capped`
+ * on the overshoot — the client-side trim is the guarantee (#193).
  */
 export const DASH_TILE_ROW_CAP = 5000;
 
@@ -106,50 +106,11 @@ export const DASH_TILE_BYTE_CAP = 50_000_000;
  */
 export const DASH_TABLE_DISPLAY_CAP = 1000;
 
-/**
- * A favorite's SQL prepared for a one-shot tile fetch: `FORMAT JSON` appended
- * unless the query already ends in its own trailing `FORMAT` clause (which we
- * leave intact; a non-JSON format just errors the tile gracefully rather than
- * being silently doubled). Delegates to `withTrailingFormat`, which strips a
- * trailing `;`/comments and reuses `detectSqlFormat` (handling ClickHouse's
- * `FORMAT x SETTINGS y` ordering). Empty input → '' (no favorite is empty).
- */
-export function dashboardTileSql(sql) {
-  return withTrailingFormat(sql, 'JSON').sql;
-}
-
-/**
- * Transform a ClickHouse `FORMAT JSON` response into the shape the chart layer
- * wants: `columns` = `meta` ([{name,type}]), `rows` = array-of-arrays (row[i]
- * by column position), plus a small footer meta ({rows, ms, bytes, truncated}).
- *
- * `cap` (optional, #149 D9) is the guaranteed client-side row bound: when more
- * than `cap` data rows arrive, `rows` is sliced to `cap` and `meta.truncated`
- * is true. The server-side `max_result_rows = cap + 1` sentinel plus
- * `result_overflow_mode:'break'` (see `queryDashboardTile`) overshoots at
- * block boundaries, so the response's own `json.rows` is neither the full
- * result count nor the displayed count — it is deliberately not exposed.
- * `meta.rows` is the rows *shown* (`rows.length` after the trim); without a
- * cap it is simply the row count, with `meta.truncated` false.
- */
-export function parseJsonResult(json, cap) {
-  const columns = json.meta || [];
-  const data = json.data || [];
-  const truncated = cap != null && data.length > cap;
-  const rows = (truncated ? data.slice(0, cap) : data)
-    .map((o) => columns.map((c) => o[c.name]));
-  const stats = json.statistics || {};
-  return {
-    columns,
-    rows,
-    meta: {
-      rows: rows.length,
-      ms: stats.elapsed != null ? Math.round(stats.elapsed * 1000) : null,
-      bytes: stats.bytes_read != null ? stats.bytes_read : null,
-      truncated,
-    },
-  };
-}
+// (The tiles' SQL prep + `FORMAT JSON` → array-rows transform — the former
+// `dashboardTileSql` / `parseJsonResult` — were retired in #193 when the tiles
+// moved onto the shared streaming `app.runReadInto` seam. The client row bound
+// is now `newResult('Table', DASH_TILE_ROW_CAP)`'s trim + `capped` flag, and
+// the tile result shape is pinned by `dashboardTileResult` in src/ui/dashboard.js.)
 
 // (The filter bar's field discovery moved to the parameter pipeline in #165:
 // `fieldControls(analysis)` in param-pipeline.js replaces the old

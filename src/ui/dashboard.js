@@ -3,8 +3,11 @@
 // favorited Library query (a snapshot taken when the tab opens — Refresh
 // re-runs the data, it does not re-scan the Library). Favorites are
 // PARTITIONED BEFORE EXECUTION (#166): a text panel renders immediately with
-// zero queries; everything else runs its SQL read-only via `app.runTile` and
-// renders through the shared panel registry (panels.js) — an explicit saved
+// zero queries; everything else streams its SQL read-only through the shared
+// `app.runReadInto` seam (#193 — full streaming transport, server-side row cap,
+// bounded client memory, and real per-tile AbortController cancellation, the
+// same path the workbench run() and the detached Data view use) and renders
+// through the shared panel registry (panels.js) — an explicit saved
 // `panel` wins (and never vanishes: zero-row explicit panels show an honest
 // "0 rows" state), an unconfigured result goes through the autoPanel
 // heuristic, and only unconfigured empty/single-row (future KPI) results are
@@ -19,9 +22,11 @@ import { renderResolvedPanel } from './panels.js';
 import { schemaKey } from '../core/chart-data.js';
 import { resolvePanel, autoPanel } from '../core/panel-cfg.js';
 import {
-  DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP, activeDashboardView, dashboardViewSelection,
+  DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
+  activeDashboardView, dashboardViewSelection,
 } from '../core/dashboard.js';
-import { formatBytes, formatRows } from '../core/format.js';
+import { formatBytes, formatRows, detectSqlFormat } from '../core/format.js';
+import { newResult } from '../core/stream.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../core/param-pipeline.js';
@@ -61,20 +66,47 @@ function buildSeg(cls, options, getActive, onPick, ariaLabel) {
 }
 
 /**
- * Build a tile's footer meta row (rows · ms · bytes), omitting stats CH didn't
- * return. A fetch-truncated result (#149 D9: the client trimmed it to
- * DASH_TILE_ROW_CAP) gets an honest note — client-side sort and chart
- * aggregation only cover that fetched prefix, not the full underlying result.
+ * Build a tile's footer meta row (rows · ms · bytes). On the streaming seam
+ * (#193) `ms` is wall-clock (like run()'s finally) and `bytes` is the progress
+ * byte count — both always present — so the row is unconditional. A
+ * fetch-truncated result (#149 D9: the client trimmed it to DASH_TILE_ROW_CAP)
+ * gets an honest note — client-side sort and chart aggregation only cover that
+ * fetched prefix, not the full underlying result.
  */
 function tileFooter(meta) {
-  const parts = [h('span', null, formatRows(meta.rows) + ' rows')];
-  if (meta.ms != null) parts.push(h('span', null, meta.ms + ' ms'));
-  if (meta.bytes != null) parts.push(h('span', null, formatBytes(meta.bytes) + ' scanned'));
+  const parts = [
+    h('span', null, formatRows(meta.rows) + ' rows'),
+    h('span', null, meta.ms + ' ms'),
+    h('span', null, formatBytes(meta.bytes) + ' scanned'),
+  ];
   if (meta.truncated) {
     parts.push(h('span', null,
       'first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched — sorting/charts cover this prefix only'));
   }
   return parts;
+}
+
+/**
+ * Adapt a streamed `result` (from `app.runReadInto`) to the tile result shape
+ * `applyTileResult`/`tileFooter` expect (#193). `ms` is wall-clock (start→finish,
+ * like run()'s finally), `bytes` is the streamed progress byte count, and
+ * `truncated` reflects the client-side cap (`result.capped` — set once a row
+ * past `DASH_TILE_ROW_CAP` arrives). Only a successful, non-cancelled,
+ * current-generation result is ever applied (see runSlotTile).
+ */
+function dashboardTileResult(result, startedAt, finishedAt) {
+  return {
+    columns: result.columns,
+    rows: result.rows,
+    error: result.error,
+    cancelled: result.cancelled,
+    meta: {
+      rows: result.rows.length,
+      ms: Math.round(finishedAt - startedAt),
+      bytes: result.progress.bytes,
+      truncated: result.capped,
+    },
+  };
 }
 
 /**
@@ -104,10 +136,13 @@ async function runPool(items, limit, worker) {
 // updates this same slot's contents/visibility in place instead. `gen` is a
 // per-tile monotonically increasing generation counter guarding against
 // out-of-order responses (edit A, then B, before A's request returns — B's
-// response must win); `destroy` tears down the slot's live panel instance
-// (a chart's Chart.js object, via the registry's renderPanel contract) before
-// it's replaced; `panelState` is the slot-persistent table-tile state (#166 —
-// sort + column widths, keyed by result schema).
+// response must win — and a queued Refresh worker that a newer wave has already
+// superseded); `abortController` cancels this slot's in-flight streamed request
+// when a newer wave supersedes it (#193); `destroy` tears down the slot's live
+// panel instance (a chart's Chart.js object, via the registry's renderPanel
+// contract) before it's replaced; `panelState` is the slot-persistent table-tile
+// state (#166 — sort + column widths, keyed by result schema); `loadLabel` is
+// the loading placeholder's live row-count text node (streamed progress, #193).
 function buildTileSlot(q) {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
@@ -117,7 +152,24 @@ function buildTileSlot(q) {
     h('span', { class: 'dash-tile-name', title: q.name }, q.name));
   if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
   const card = h('div', { class: 'dash-tile' }, head, body, foot);
-  return { card, body, foot, gen: 0, status: null, destroy: null, panelState: null };
+  return {
+    card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
+    abortController: null, loadLabel: null,
+  };
+}
+
+// Reserve the next generation for a slot AND abort its in-flight streamed
+// request, atomically, at WAVE CREATION time (#193 design req 3). A queued
+// Refresh worker only reaches its request when a pool slot frees up; reserving
+// the generation up front (not when the worker starts) closes the stale-wave
+// race where a slower older wave's worker finally runs a tile and supersedes a
+// newer affected wave with older values. Returns the reserved generation; the
+// worker re-checks `slot.gen === generation` before issuing and after streaming.
+function supersedeSlot(slot) {
+  const generation = ++slot.gen;
+  if (slot.abortController) slot.abortController.abort();
+  slot.abortController = null;
+  return generation;
 }
 
 function destroySlotChart(slot) {
@@ -151,12 +203,19 @@ function renderTextSlot(app, q, slot) {
 function setSlotLoading(slot) {
   destroySlotChart(slot);
   slot.card.style.display = '';
-  slot.body.replaceChildren(h('div', { class: 'dash-tile-load' }, Icon.spinner(), h('span', null, 'Loading…')));
+  // Return the label node so streamed progress (onChunk, #193) can update just
+  // its text — "Loading… N rows" — without rebuilding the tile or classifying
+  // yet. Panel classification + rendering happen ONCE, after completion (never
+  // per chunk, which would thrash Chart.js and flash partial data).
+  const label = h('span', null, 'Loading…');
+  slot.loadLabel = label;
+  slot.body.replaceChildren(h('div', { class: 'dash-tile-load' }, Icon.spinner(), label));
   slot.foot.replaceChildren();
+  return label;
 }
 
 // A tile whose SQL still has an empty/absent, or invalid (#170), {name:Type}
-// value never calls app.runTile — it shows this placeholder instead (reusing
+// value never issues a request — it shows this placeholder instead (reusing
 // the card's header/footer chrome so it doesn't look broken), and stays
 // visible: unlike a classifyTile `skip`, one filter value away it becomes
 // chartable, so it is NOT counted in the header's "N not shown" note.
@@ -229,18 +288,23 @@ function applyTileResult(app, q, slot, r) {
 
 // Run (or re-run) one favorite's tile into its slot, gated by its prepared
 // source from the wave's batch (#173): unfilled OR invalid (#170) `{name:Type}`
-// values show the placeholder (never calling app.runTile — an invalid value
-// left to reach the server would either error confusingly or, for Int/UInt,
-// silently wrap; see param-validate.js), a per-source error (e.g. a value
-// that can't serialize for this tile's declaration) shows an error card —
-// blocking only this tile, never its siblings — otherwise fetch with the
-// batch's prepared args and classify. `onSettled()` fires after every
-// transition (unfilled, errored or fetched) so the caller can recompute the
-// live "N not shown" count. The generation bump happens before the gate check
-// so a superseded in-flight fetch is discarded even if the newer edit resolves
-// to "unfilled".
-async function runSlotTile(app, q, slot, onSettled, src) {
-  const myGen = ++slot.gen;
+// values show the placeholder (never issuing a request — an invalid value left
+// to reach the server would either error confusingly or, for Int/UInt, silently
+// wrap; see param-validate.js), a per-source error (e.g. a value that can't
+// serialize for this tile's declaration) shows an error card — blocking only
+// this tile, never its siblings — otherwise stream the SQL read-only through the
+// shared `app.runReadInto` seam (#193) and classify ONCE on completion.
+// `onSettled()` fires after every transition (unfilled, errored or fetched) so
+// the caller can recompute the live "N not shown" count.
+//
+// `generation` was reserved (and any prior in-flight request aborted) by
+// `supersedeSlot` at WAVE CREATION (#193 design req 3), not here: a queued
+// Refresh worker whose slot a newer wave has already re-reserved discards itself
+// up front without issuing, and a supersede mid-stream aborts this request and
+// makes the post-await guard drop it — so a stale wave can never overwrite a
+// newer one, even under the 6-way pool's queueing.
+async function runSlotTile(app, q, slot, onSettled, src, generation) {
+  if (slot.gen !== generation) return; // a newer wave already superseded this queued tile
   if (src.missing.length || src.invalid.length) {
     setSlotUnfilled(slot, src.missing.concat(src.invalid));
     onSettled();
@@ -251,18 +315,54 @@ async function runSlotTile(app, q, slot, onSettled, src) {
     onSettled();
     return;
   }
-  setSlotLoading(slot);
   // The wire text is the wave's materialized execution view (#165) — only when
   // the favorite actually is a template; block-free SQL keeps its exact bytes.
   const execSql = hasOptionalBlocks(q.sql) ? mergedSourceSql(src, q.sql) : q.sql;
-  const r = await app.runTile(execSql, mergedSourceArgs(src));
-  if (slot.gen !== myGen) return; // a newer edit started after this fetch; discard
+  // #193 design req 5: the shared seam streams the structured
+  // JSONStringsEachRowWithProgress format, so an explicit `FORMAT` clause would
+  // silently corrupt the tile (an empty successful-looking result, or ignored
+  // lines). Reject it with a clear error rather than mis-parse.
+  if (detectSqlFormat(execSql)) {
+    applyTileResult(app, q, slot, {
+      error: 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.',
+    });
+    onSettled();
+    return;
+  }
+  const label = setSlotLoading(slot);
+  const ac = new AbortController();
+  slot.abortController = ac;
+  const startedAt = app.now();
+  // Client row limit = CAP (newResult trims + flags `capped`); server cap =
+  // CAP + 1 (the sentinel one past the client limit), so an exactly-CAP result
+  // is NOT marked truncated and a >CAP result is trimmed AND flagged (#193 req 1).
+  const result = newResult('Table', DASH_TILE_ROW_CAP);
+  await app.runReadInto(result, {
+    sql: execSql,
+    format: 'Table',
+    rowLimit: DASH_TILE_ROW_CAP + 1,
+    // readonly:2 rejects writes server-side (a favorite containing an INSERT/DDL
+    // is guarded, not executed); max_result_bytes bounds wide rows; param_<name>
+    // are the wave's prepared filter args (#173).
+    params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(src) },
+    signal: ac.signal,
+    // Progress-only repaint (#193 design req 4): update the loading placeholder's
+    // row count as rows stream, never classify/render mid-stream. Updates the
+    // label captured for THIS request, so a superseded wave's late chunk can only
+    // touch its own (already-replaced) node.
+    onChunk: () => { label.textContent = 'Loading… ' + formatRows(result.progress.rows) + ' rows'; },
+  });
+  // Superseded mid-stream (a newer wave bumped the generation and aborted this
+  // request via supersedeSlot) or otherwise stale → discard silently: never
+  // render a partial/aborted result, never record recents.
+  if (slot.gen !== generation) return;
+  slot.abortController = null;
+  const r = dashboardTileResult(result, startedAt, app.now());
   applyTileResult(app, q, slot, r);
-  // #171: this tile completed successfully — record its bound params (the
-  // exact wave's boundParams snapshot, so a param confined to an inactive
-  // optional block — never in `src.statements[*].boundParams` — is never
-  // recorded). A superseded/discarded fetch (the `return` above) never
-  // reaches here at all.
+  // #171: this tile completed (current generation) — record its bound params on
+  // success only (the exact wave's boundParams snapshot, so a param confined to
+  // an inactive optional block — never in `src.statements[*].boundParams` — is
+  // never recorded). An errored tile records nothing.
   if (r.error == null) app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
   onSettled();
 }
@@ -392,20 +492,48 @@ export function renderDashboard(app) {
     }
   };
 
+  // Build the wave's execution plan for a set of query-backed favorites: one
+  // `{ q, slot, src, generation }` per tile, reserving each slot's generation
+  // (and aborting any in-flight request) synchronously HERE, at wave creation
+  // (#193 design req 3). Reserving up front — not when a pool worker starts —
+  // closes the stale-wave race: a queued older worker sees `slot.gen !==
+  // generation` and discards itself instead of superseding a newer wave.
+  const planWave = (indices, wave) => indices
+    .filter((i) => !isTextFav(favorites[i]))
+    .map((i) => ({ q: favorites[i], slot: slots[i], src: wave[i], generation: supersedeSlot(slots[i]) }));
+
+  const runPlan = (plan) => {
+    // Mark every planned slot loading up front — before the 6-way pool starts —
+    // so tiles beyond TILE_CONCURRENCY's window don't linger on stale content
+    // while queued. Applies to BOTH full Refresh and targeted affected waves
+    // (#193); runSlotTile re-marks its own slot loading when its worker starts
+    // (capturing the progress label), so filled tiles simply repaint identically.
+    plan.forEach(({ slot }) => setSlotLoading(slot));
+    return runPool(plan, TILE_CONCURRENCY,
+      ({ q, slot, src, generation }) => runSlotTile(app, q, slot, updateSkipNote, src, generation));
+  };
+
   // Re-run only the favorites whose SQL references `name` (a filter field's
   // debounced/committed edit, #149 D3) — not the whole grid. Affected-source
   // detection comes from the analysis (#173): `optionalIn` keeps a tile
   // affected even while the param's optional blocks are inactive (#165), so an
   // activation flip re-runs it exactly like a value change. A no-op before
   // the first successful run (slots not built yet).
-  function runAffected(name) {
-    if (!slots.length) return;
+  async function runAffected(name) {
+    if (!slots.length) return undefined;
+    // Match full Refresh: ONE token preflight before the wave (#193 design
+    // req 2). `runReadInto` leaves token freshness to the caller, so without
+    // this each affected tile would independently race a rotating-token refresh
+    // through authedFetch; a failed preflight issues no requests and drives
+    // sign-out exactly once, exactly like Refresh.
+    if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return undefined; }
     const f = analysis.fields[name]; // the filter bar only renders analyzed params
     const affected = new Set(f.requiredIn.concat(f.optionalIn));
     const wave = prepareWave();
-    const targets = favorites.map((q, i) => i)
-      .filter((i) => !isTextFav(favorites[i]) && affected.has(tileId(i)));
-    return Promise.all(targets.map((i) => runSlotTile(app, favorites[i], slots[i], updateSkipNote, wave[i])));
+    const targets = favorites.map((q, i) => i).filter((i) => affected.has(tileId(i)));
+    // Same 6-way pool as full Refresh (#193 design req 7): a wide filter change
+    // is bounded to TILE_CONCURRENCY concurrent reads, not an unbounded fan-out.
+    return runPlan(planWave(targets, wave));
   }
 
   const runAll = async () => {
@@ -422,19 +550,16 @@ export function renderDashboard(app) {
     // synchronously, before any tile query is issued — and they never join
     // the wave below (zero queries for a text favorite).
     slots.forEach((s, i) => { if (isTextFav(favorites[i])) renderTextSlot(app, favorites[i], s); });
-    // Every query-backed favorite re-runs on a full refresh (unlike a filter's
-    // targeted runAffected). Mark every such slot loading up front rather than
-    // leaving tiles beyond TILE_CONCURRENCY's window showing stale content (or,
-    // on first load, an empty card) until the pool gets around to them.
-    slots.forEach((s, i) => { if (!isTextFav(favorites[i])) setSlotLoading(s); });
-    // One prepared batch (and one wall-clock read) for the whole refresh wave.
-    const wave = prepareWave();
+    // One prepared batch (and one wall-clock read) for the whole refresh wave;
+    // reserve every query-backed slot's generation NOW (planWave), before the
+    // pool starts, so a queued worker from an older Refresh discards itself.
+    // runPlan marks every planned slot loading up front (queued tiles included).
+    const plan = planWave(favorites.map((q, i) => i), prepareWave());
     // try/finally so the button always re-enables and the timestamp always
     // updates — even if a tile render unexpectedly throws (runSlotTile itself
     // is total, so this is belt-and-suspenders against the pool rejecting).
     try {
-      await runPool(favorites, TILE_CONCURRENCY,
-        (q, i) => (isTextFav(q) ? undefined : runSlotTile(app, q, slots[i], updateSkipNote, wave[i])));
+      await runPlan(plan);
     } finally {
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       refreshBtn.disabled = false;

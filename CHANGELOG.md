@@ -33,8 +33,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   are untouched. Copy always copies the current detached result. The
   Table/JSON/Panel dispatch is now one shared `renderResultView` used by both
   the live pane and the detached view (no parallel copies). No new runtime
-  dependency. (Dashboard tiles keep their existing execution path for now; a
-  follow-up migrates them onto the shared streaming seam.)
+  dependency. (Dashboard tiles moved onto the same shared streaming seam in
+  #193 — see Changed below.)
 - **Schema column name and type are now independent drag targets** (#186).
   Dragging a column's name still inserts the SQL-safe quoted identifier;
   dragging its type meta now inserts the complete schema-provided ClickHouse
@@ -95,6 +95,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   are preserved, never silently stripped.
 
 ### Changed
+- **Dashboard tiles now stream through the shared `app.runReadInto` seam** (#193,
+  follow-up to #185). Every query-backed tile runs on the same execution path as
+  the workbench `run()` and the detached Data view instead of the bespoke
+  `queryDashboardTile` (`FORMAT JSON`, whole-response `parseJsonResult`) it used
+  before — gaining streaming transport, bounded client memory, live progress, and
+  **real per-tile cancellation** via an `AbortController`. The read-only guard is
+  preserved (`readonly:2` + `max_result_bytes` ride in the request; the row cap is
+  the `newResult('Table', DASH_TILE_ROW_CAP)` client trim against a server
+  `max_result_rows = CAP + 1` sentinel, so exactly-cap results are not flagged and
+  `>CAP` are trimmed and flagged). Each wave reserves its slot generation **at
+  creation** (aborting any in-flight request then) so a queued Refresh worker a
+  newer filter wave has superseded discards itself without issuing — closing a
+  stale-wave race; targeted filter re-runs now take one token preflight and the
+  same 6-way concurrency pool as full Refresh. While a tile streams, only its
+  loading placeholder's row count updates — panel classification and rendering
+  happen once, on completion, so charts are never rebuilt mid-stream. Two small,
+  deliberate behavior changes: a Dashboard panel query with an **explicit `FORMAT`
+  clause** is now rejected with a clear tile error (the streaming parser only
+  understands the structured stream, so a stray `FORMAT` would silently corrupt
+  the tile), and the tile footer always shows ms (wall-clock) and bytes (streamed
+  progress). The now-unused `app.runTile` / `queryDashboardTile` /
+  `dashboardTileSql` / `parseJsonResult` machinery is deleted so future cap or
+  settings fixes can't apply to only one path. No new runtime dependency; no change
+  to the workbench or detached view.
 - **One authoritative ClickHouse lexical scanner + structural lexer replaces the
   legacy highlighter tokenizer** (#182, supersedes #141). All string-based SQL
   analysis — statement splitting, parameter detection, optional-block/format
