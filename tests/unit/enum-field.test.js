@@ -238,6 +238,20 @@ describe('buildEnumField — #171 recents composition', () => {
     const opts = [...field.el.querySelectorAll('[role="option"]')].map((o) => o.textContent);
     expect(opts).toEqual([...VALUES, 'legacy-status']); // 'active' listed once, as a member
   });
+  // Phase-7 user feedback: picking an option via mousedown closes the list
+  // without firing any of the field's own focus/input/keydown/blur handlers,
+  // so the footer used to linger on screen until the next keypress.
+  // combobox.js's `onClose` hook fixes this once, shared across every field.
+  it('the footer hides immediately after picking an option via mousedown (no lingering "Clear recent" box)', () => {
+    const { field } = build({ getRecents: () => ['legacy-status'] });
+    field.onFocus();
+    const footer = field.el.querySelector('.var-combo-footer');
+    expect(footer.hidden).toBe(false);
+    const opt = field.el.querySelectorAll('[role="option"]')[0]; // 'active'
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.input.getAttribute('aria-expanded')).toBe('false');
+    expect(footer.hidden).toBe(true);
+  });
   it('Clear removes the recents from the OPEN list too, keeping the members (review F4)', () => {
     let recents = ['legacy-status', 'other-old'];
     const onClearRecent = vi.fn(() => { recents = []; });

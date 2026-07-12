@@ -209,7 +209,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   desync from the gate; the array-element serializer now shares the
   validator's live-verified Int/Float token grammar (rejects `007`, accepts
   `inf`/`nan`); and the var strip no longer analyzes the same SQL twice per
-  editor keystroke.
+  editor keystroke. Manual-testing follow-ups (PR #176): a date-like field's
+  combined dropdown now lists **Recent first, then Presets** (a recorded
+  expression that duplicates a preset surfaces under Recent, not Presets —
+  the enum/plain-recents fields are unchanged, still Values/plain-first);
+  the "Clear recent" footer no longer lingers on screen after an option is
+  picked via mousedown (`combobox.js` gained a shared `onClose` hook so every
+  field module's footer hides on the same close path, not just focus/input/
+  keydown/blur); and the README's Enum section now spells out that a bare
+  `{o:Enum8}`/`{o:Enum16}` is rejected by ClickHouse (`Enum data type cannot
+  be empty`) rather than inferring the dropdown.
 - **Multi-statement SQL now binds query parameters per statement everywhere**
   (#155, absorbed by #173). `paramArgs` gated on the leading keyword of the
   whole text, so a favorite like `SET x = 1; SELECT {year:UInt16}` never

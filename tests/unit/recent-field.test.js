@@ -132,6 +132,20 @@ describe('buildRecentField — Clear recent footer', () => {
     const btn = field.el.querySelector('button.var-combo-clear');
     expect(() => btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))).not.toThrow();
   });
+  // Phase-7 user feedback: picking an option via mousedown closes the list
+  // without firing any of the field's own focus/input/keydown/blur handlers,
+  // so the footer used to linger on screen until the next keypress.
+  // combobox.js's `onClose` hook fixes this once, shared across every field.
+  it('hides immediately after picking an option via mousedown (no lingering "Clear recent" box)', () => {
+    const { field } = build();
+    field.onFocus();
+    const footer = field.el.querySelector('.var-combo-footer');
+    expect(footer.hidden).toBe(false);
+    const opt = field.el.querySelectorAll('[role="option"]')[0]; // 'b'
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(field.input.getAttribute('aria-expanded')).toBe('false');
+    expect(footer.hidden).toBe(true);
+  });
   it('Clear also empties the OPEN listbox and updates the aria-live count (review F4: no stale, clickable options)', () => {
     let recents = ['c', 'b', 'a'];
     const onClearRecent = vi.fn(() => { recents = []; });

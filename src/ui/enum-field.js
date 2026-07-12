@@ -105,6 +105,15 @@ export function buildEnumField({
     return enumOpts.map((o) => ({ ...o, group: 'Values' })).concat(recents);
   }
 
+  // `footer` is assigned below (needs `combo` first); declared as a `let` +
+  // closure up front so `createCombobox`'s `onClose` can reach it — the
+  // combobox's own close path (mousedown-commit included, see combobox.js's
+  // closeList()) hides the footer immediately instead of waiting for the
+  // next focus/input/keydown/blur event (phase-7 user feedback: the footer
+  // used to linger on screen after an option pick).
+  let footer = null;
+  const syncFooter = () => { if (footer) footer.sync(); };
+
   const combo = createCombobox({
     input, listEl, liveEl, document: d,
     getOptions: (text) => buildOptions(text),
@@ -112,9 +121,10 @@ export function buildEnumField({
     // (mirrors relative-time-field.js's preset pick / recent-field.js's
     // recent pick), rather than waiting on the caller's own debounce.
     onCommit: () => { onValueInput(); onCommit(); },
+    onClose: syncFooter,
   });
 
-  const footer = getRecents
+  footer = getRecents
     ? attachComboFooter({
       input, listEl, combo,
       hasRecents: () => getRecents('').length > 0,
@@ -124,7 +134,6 @@ export function buildEnumField({
       onClear: () => { if (onClearRecent) onClearRecent(); combo.refresh(); },
     })
     : null;
-  const syncFooter = () => { if (footer) footer.sync(); };
 
   return {
     el: h('div', { class: 'var-combo' }, input, listEl, liveEl, hintEl, footer ? footer.el : null),

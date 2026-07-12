@@ -303,6 +303,66 @@ describe('createCombobox — refresh()', () => {
   });
 });
 
+// Phase-7 user feedback: the "Clear recent" footer (combo-footer.js) used to
+// linger on screen after an option mousedown-commit, because that path
+// closed the list without ever running the field module's own focus/input/
+// keydown/blur handlers (the only places footer.sync() was called). `onClose`
+// is the fix: it fires on EVERY open→closed transition, funneled through the
+// single `closeList()` body, so a field module wiring `onClose` to its
+// `syncFooter` gets the fix for free on every close path — including the one
+// that was missing it — without per-module copy-paste.
+describe('createCombobox — onClose hook (phase-7 user feedback)', () => {
+  function buildWithClose(options = PRESETS) {
+    const { input, listEl, liveEl } = makeParts();
+    const onCommit = vi.fn();
+    const onClose = vi.fn();
+    const getOptions = vi.fn((text) => options.filter((o) => !text || o.value.includes(text) || o.label.includes(text)));
+    const combo = createCombobox({ input, listEl, liveEl, getOptions, onCommit, onClose });
+    return { input, listEl, combo, onCommit, onClose };
+  }
+  it('fires on option mousedown-commit (the path that used to leave the footer stranded)', () => {
+    const { listEl, combo, onClose } = buildWithClose();
+    combo.onFocus();
+    expect(onClose).not.toHaveBeenCalled();
+    const opt = listEl.querySelectorAll('[role="option"]')[0];
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(combo.isOpen()).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('fires on blur', () => {
+    const { combo, onClose } = buildWithClose();
+    combo.onFocus();
+    combo.onBlur();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('fires on Escape', () => {
+    const { combo, onClose } = buildWithClose();
+    combo.onFocus();
+    combo.onKeyDown(key('Escape'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it('fires on Enter, whether or not an option was active', () => {
+    const { combo, onClose } = buildWithClose();
+    combo.onFocus();
+    combo.onKeyDown(key('Enter')); // no active option — still closes
+    expect(onClose).toHaveBeenCalledTimes(1);
+    combo.onFocus();
+    combo.onKeyDown(key('ArrowDown'));
+    combo.onKeyDown(key('Enter')); // commits the active option
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+  it('does not fire when already closed (no spurious transition)', () => {
+    const { combo, onClose } = buildWithClose();
+    combo.onBlur(); // already closed
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it('is optional — omitting it is tolerated on every close path', () => {
+    const { combo } = build();
+    combo.onFocus();
+    expect(() => combo.onBlur()).not.toThrow();
+  });
+});
+
 describe('idSafe (shared id-suffix sanitizer — review F8)', () => {
   it('passes identifier-shaped names through and replaces anything else', () => {
     expect(idSafe('from_date')).toBe('from_date');

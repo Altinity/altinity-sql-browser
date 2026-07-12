@@ -43,6 +43,15 @@ export function buildRecentField({ document: doc, name, type, value, baseTitle, 
   const listEl = h('ul', { class: 'var-combo-list', id: listId, role: 'listbox', hidden: true });
   const liveEl = h('div', { class: 'sr-only', id: liveId, 'aria-live': 'polite' });
 
+  // `footer` is assigned right after (needs `combo` first); declared as a
+  // `let` + closure up front so `createCombobox`'s `onClose` can reach it —
+  // the combobox's own close path (mousedown-commit included, see
+  // combobox.js's closeList()) hides the footer immediately instead of
+  // waiting for the next focus/input/keydown/blur event (phase-7 user
+  // feedback: the footer used to linger on screen after an option pick).
+  let footer = null;
+  const syncFooter = () => { if (footer) footer.sync(); };
+
   const combo = createCombobox({
     input, listEl, liveEl, document: d,
     getOptions: (text) => getRecents(text).map((v) => ({ value: v, label: v })),
@@ -50,9 +59,10 @@ export function buildRecentField({ document: doc, name, type, value, baseTitle, 
     // relative-time-field.js's preset pick) — commit immediately rather than
     // waiting for the caller's own blur/Enter/debounce path.
     onCommit: () => { onValueInput(); onCommit(); },
+    onClose: syncFooter,
   });
 
-  const footer = attachComboFooter({
+  footer = attachComboFooter({
     input, listEl, combo,
     hasRecents: () => getRecents('').length > 0,
     // Review F4: after clearing, rebuild the OPEN list too — the footer hides

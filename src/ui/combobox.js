@@ -71,9 +71,12 @@ export function wireComboInput(field, { onValueInput, onCommit }) {
  *   document?: Document,
  *   getOptions: (text: string) => {value: string, label: string, group?: string}[],
  *   onCommit: (option: {value: string, label: string, group?: string}) => void,
+ *   onClose?: () => void, // fires on every open→closed transition (blur, Esc,
+ *                         // Enter-commit, Enter-with-no-active-option, AND the
+ *                         // option mousedown-commit path — see closeList()).
  * }} opts
  */
-export function createCombobox({ input, listEl, liveEl, document: doc, getOptions, onCommit }) {
+export function createCombobox({ input, listEl, liveEl, document: doc, getOptions, onCommit, onClose }) {
   const d = doc || input.ownerDocument;
   let open = false;
   let composing = false;
@@ -139,6 +142,15 @@ export function createCombobox({ input, listEl, liveEl, document: doc, getOption
     input.setAttribute('aria-expanded', 'false');
     activeIndex = -1;
     input.removeAttribute('aria-activedescendant');
+    // Review (phase-7 user feedback): this is the ONE place every close path
+    // funnels through — blur, Escape, Enter (with or without an active
+    // option), AND an option's mousedown-commit (which closes the list
+    // without ever running the field module's own focus/input/keydown/blur
+    // handlers, since focus never actually leaves the input). A field module
+    // that composes a combo-footer.js footer wires `onClose` to the same
+    // `syncFooter()` it already calls from those handlers, so the footer
+    // hides immediately on an option pick too — no per-module copy-paste.
+    if (onClose) onClose();
   }
 
   function refresh() {

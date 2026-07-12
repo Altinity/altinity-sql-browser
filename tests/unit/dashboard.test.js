@@ -1017,7 +1017,7 @@ describe('renderDashboard — recent values (#171)', () => {
     expect(app.clearVarRecent).toHaveBeenCalledWith('region');
   });
 
-  it('a date-like field composes ONE dropdown: presets first, then a Recent group', async () => {
+  it('a date-like field composes ONE dropdown: Recent first, then Presets (user decision, phase-7 feedback)', async () => {
     const favorites = [paramFav('1', 'SELECT * FROM t WHERE d >= {from:DateTime}')];
     const app = dashApp(favorites, vi.fn(async () => chartResult()));
     app.state.varRecent = recordRecent(emptyRecentMap(), 'from', '-3h'); // not a built-in preset
@@ -1025,7 +1025,7 @@ describe('renderDashboard — recent values (#171)', () => {
     const input = fieldInput(app.root, 'from');
     input.dispatchEvent(new Event('focus', { bubbles: true }));
     const groups = [...app.root.querySelectorAll('.combo-group')].map((g) => g.textContent);
-    expect(groups).toEqual(['Presets', 'Recent']);
+    expect(groups).toEqual(['Recent', 'Presets']);
     expect([...app.root.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toContain('-3h');
   });
 });

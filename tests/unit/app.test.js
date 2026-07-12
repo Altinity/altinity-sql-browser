@@ -1845,7 +1845,7 @@ describe('recent-value history (#171)', () => {
     expect(app.state.varRecent.byName.tenant).toBeUndefined();
   });
 
-  it('a date-like field composes ONE dropdown: presets first, then a Recent group of recorded expressions', async () => {
+  it('a date-like field composes ONE dropdown: Recent first, then Presets (user decision, phase-7 feedback)', async () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
@@ -1861,7 +1861,7 @@ describe('recent-value history (#171)', () => {
     input.value = '';
     input.dispatchEvent(new Event('focus', { bubbles: true }));
     const groups = [...app.dom.varStrip.querySelectorAll('.combo-group')].map((g) => g.textContent);
-    expect(groups).toEqual(['Presets', 'Recent']);
+    expect(groups).toEqual(['Recent', 'Presets']);
     expect([...app.dom.varStrip.querySelectorAll('[role="option"]')].map((o) => o.textContent)).toContain('-3h');
   });
 

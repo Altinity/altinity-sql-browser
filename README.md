@@ -183,6 +183,21 @@ zero third-party requests. On top of it:
   variable's value. "Clear recent" (per field) and "Clear all recent
   values" + a "Remember recent variable values" toggle live in the header
   **File** menu.
+- **Enum-valued dropdown** — a variable declared `{name:Enum8(…)}` /
+  `Enum16(…)` gets a dropdown of its member names, parsed straight out of the
+  declaration (type-to-filter; click inserts). A **bare** `{o:Enum}` /
+  `{o:Enum8}` / `{o:Enum16}` — no member list in the braces — is **not** a
+  valid ClickHouse parameter type: the server rejects it outright with
+  `Enum data type cannot be empty` (verified live on 26.3.13), so there's no
+  way to get the dropdown by declaring an empty Enum and letting the workbench
+  fill in the members. Two ways to actually get it: paste the **full**
+  `Enum8('a'=1,'b'=2,…)` type into the declaration for a real, blocking
+  validation (a non-member value is rejected on both the workbench and the
+  Dashboard filter bar); or, workbench only, declare the variable as
+  `{o:String}` and compare it directly to the Enum column
+  (`WHERE operation = {o:String}`) — the dropdown is then inferred from that
+  column's *cached* schema type, offered purely as a **suggestion**: the
+  declared type stays `String`, so a value that isn't a member still runs.
 
 **The keystroke rule:** none of this runs SQL while you type. Reference data —
 the server's keyword and function lists — is fetched **once per connection**
