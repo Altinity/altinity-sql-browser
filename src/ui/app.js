@@ -822,6 +822,26 @@ export function createApp(env = {}) {
       app.state.runQueryId = null;
       app.state.runT0 = null;
       tab.result.progress.elapsed_ns = (now() - t0) * 1e6;
+      // #185: capture the source that produced a normal, row-returning
+      // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
+      // empty results stay ineligible), so the Data Pane's Expand can open an
+      // interactive, independently re-runnable detached view. The authored
+      // template (srcSql — optional-block markers intact) and the run-time
+      // title/description are snapshotted here, never re-derived from the
+      // editor/Library at expand time (which may have changed). This MUST run
+      // BEFORE the running flip below: that flip fires the results effect that
+      // renders the toolbar + its Expand affordance, which gates on
+      // `result.source` — set it after and the button never appears until the
+      // next paint.
+      if (!tab.result.error && !tab.result.cancelled && fmt === 'Table' && tab.result.rows.length > 0) {
+        tab.result.source = buildResultSource({
+          srcSql,
+          tabId: tab.id,
+          rowLimit,
+          tabName: tab.name,
+          savedEntry: savedForTab(app.state, tab),
+        });
+      }
       // Flip running off last: the results + Run-button effects fire here and
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
@@ -832,22 +852,6 @@ export function createApp(env = {}) {
         // what was actually sent; an omitted-optional-block param never
         // reached `src.statements[*].boundParams` in the first place).
         app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
-        // #185: capture the source that produced a normal, row-returning
-        // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
-        // empty results stay ineligible), so the Data Pane's Expand can open an
-        // interactive, independently re-runnable detached view. The authored
-        // template (srcSql — optional-block markers intact) and the run-time
-        // title/description are snapshotted here, never re-derived from the
-        // editor/Library at expand time (which may have changed).
-        if (fmt === 'Table' && tab.result.rows.length > 0) {
-          tab.result.source = buildResultSource({
-            srcSql,
-            tabId: tab.id,
-            rowLimit,
-            tabName: tab.name,
-            savedEntry: savedForTab(app.state, tab),
-          });
-        }
         if (isSchemaMutatingSql(runSql)) app.loadSchema(); // not awaited — fire and forget
       }
     }

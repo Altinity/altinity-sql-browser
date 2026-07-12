@@ -412,6 +412,12 @@ describe('query run', () => {
     expect(tab.result.source).toEqual({
       sql: 'SELECT 1', tabId: tab.id, rowLimit: app.state.resultRowLimit, title: 'My query', description: '',
     });
+    // #185: source must be captured BEFORE the running flip that renders the
+    // toolbar, so the Expand affordance appears on the same paint (regression:
+    // capturing after the flip left the button missing until the next render).
+    const expandBtn = [...app.dom.resultsRegion.querySelectorAll('.res-act')]
+      .find((b) => /Expand/.test(b.textContent));
+    expect(expandBtn).toBeTruthy();
   });
   it('does not capture result.source for an empty (0-row) result (#185)', async () => {
     const { app } = appForRun([
