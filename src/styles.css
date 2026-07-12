@@ -1019,6 +1019,13 @@ body.detached-tab .graph-overlay-panel {
 .panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-body > .chart-view, .panel-body > .res-table-wrap,
 .panel-body > .dash-logs, .panel-body > .panel-with-note { flex: 1; min-height: 0; }
+/* Detached-view / readonly panel: a resolved panel renders straight into the
+   block-level `.res-body` (no `.panel-body` flex wrapper), so `flex:1` can't
+   bound it. Like `.chart-view`, these need `height:100%` to fill `.res-body`
+   and let their own `overflow:auto` scroll — otherwise `.dash-logs` grows to
+   content height and `.res-body`'s `overflow:hidden` clips it with no scroll. */
+.res-body > .dash-logs, .res-body > .md-view,
+.res-body > .panel-with-note { height: 100%; }
 .panel-with-note { display: flex; flex-direction: column; }
 .panel-with-note > :last-child { flex: 1; min-height: 0; }
 .panel-note {

@@ -156,6 +156,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   clicks are inert instead of a TypeError).
 
 ### Fixed
+- **The detached view's Logs (Panel) surface now scrolls** (#185 follow-up).
+  A readonly panel renders straight into the block-level `.res-body` with no
+  `.panel-body` flex wrapper, so the `flex:1; min-height:0` that bounds
+  `.dash-logs` in the docked pane never applied — the logs list grew to its
+  full content height and `.res-body`'s `overflow:hidden` clipped it with no
+  way to scroll. `.res-body > .dash-logs` (and the `.panel-with-note` wrapper)
+  now take `height:100%` like the adjacent `.chart-view`, so the list is
+  bounded to the pane and its own `overflow:auto` scrolls (`src/styles.css`).
 - **The workbench Panel tab keeps Logs authoring controls available when a
   saved Logs panel falls back** (#192). A saved `{type:'logs'}` panel whose
   Time/Message roles no longer resolve against the current result used to
