@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderResults, renderJson, renderTable, openCellDetail, openRowsViewer, expandDataPane } from '../../src/ui/results.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
+import { formatRows } from '../../src/core/format.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 // A genuine backdrop click: mousedown and click both land on `el` itself
@@ -726,7 +727,7 @@ describe('expandDataPane', () => {
       runReadInto: vi.fn(async (result, opts) => {
         result.columns = [{ name: 'n', type: 'UInt64' }];
         result.rows = [[opts.params.param_level]];
-        opts.onChunk(); // simulate a streamed chunk → progressive repaint
+        opts.onChunk(); // a streamed chunk → progress-only status, no repaint (#198)
         return result;
       }),
     });
@@ -850,6 +851,147 @@ describe('expandDataPane', () => {
     await tick();
     expect(refreshBtn(overlay).disabled).toBe(false);
     expect(overlay.querySelector('.detached-status').textContent).toContain('Enter a value for: level');
+  });
+
+  // ── commit-on-success streaming policy (#198) ──────────────────────────────
+  // A controllable runReadInto: captures the in-flight result + onChunk so a
+  // test can emit chunks and resolve on its own schedule. `chunk(patch)` merges
+  // into the result then fires onChunk; `finish(patch)` merges then resolves.
+  const deferredRun = () => {
+    const ctl = { runs: [] };
+    ctl.fn = vi.fn((result, opts) => new Promise((resolve) => {
+      const run = {
+        result,
+        chunk: (patch = {}) => { Object.assign(result, patch); opts.onChunk(); },
+        finish: (patch = {}) => { Object.assign(result, patch); resolve(result); },
+      };
+      ctl.runs.push(run);
+      ctl.last = run;
+    }));
+    return ctl;
+  };
+  // A chart-shaped result whose captured source declares a `{region:String}`
+  // param, so the detached view renders the filter row + Refresh AND its Panel
+  // view auto-resolves to a chart.
+  const chartParamResult = () => {
+    const r = chartResult();
+    r.source = { ...r.source, sql: 'SELECT carrier, region, flights, delay FROM flights WHERE region = {region:String}', rowLimit: 100 };
+    return r;
+  };
+
+  it('keeps the previous committed result visible during streaming and never flashes "Query returned 0 rows."', async () => {
+    const run = deferredRun();
+    const app = makeApp({ runReadInto: run.fn });
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(refreshBtn(overlay).disabled).toBe(true);
+    expect(overlay.querySelector('.detached-status').textContent).toBe('Running…');
+    // metadata-only chunk: columns present, zero rows — must NOT flash "0 rows".
+    run.last.chunk({ columns: [{ name: 'n', type: 'UInt64' }], rows: [], progress: { rows: 0, bytes: 0, elapsed_ns: 0 } });
+    expect(overlay.textContent).not.toContain('Query returned 0 rows.');
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // previous result intact
+    expect(overlay.querySelector('.detached-status').textContent).toBe('Running…');
+    // a data chunk carrying a progress counter → status reports rows read.
+    run.last.chunk({ rows: [['x']], progress: { rows: 12400, bytes: 0, elapsed_ns: 0 } });
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // STILL the previous result
+    expect(overlay.querySelector('.stat .v').textContent).toBe('2 rows'); // committed count unchanged while streaming
+    expect(overlay.querySelector('.detached-status').textContent).toBe(`Running… ${formatRows(12400)} rows read`);
+    // resolve → commit exactly once.
+    run.last.finish();
+    await tick();
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(1); // the new result is now committed
+    expect(overlay.querySelector('.detached-status').textContent).toBe('');
+    expect(refreshBtn(overlay).disabled).toBe(false);
+  });
+
+  it('commits exactly once on success: before completion Copy/recents target the OLD result, after they target the NEW', async () => {
+    const run = deferredRun();
+    const app = makeApp({ runReadInto: run.fn });
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    // in-flight rows exist, but nothing is committed yet.
+    run.last.chunk({ columns: [{ name: 'n', type: 'UInt64' }], rows: [['NEW']], progress: { rows: 1, bytes: 0, elapsed_ns: 0 } });
+    expect(overlay.querySelector('.res-table tbody td.cell').textContent).toBe('2'); // still the old snapshot
+    expect(app.recordBoundParams).not.toHaveBeenCalled();
+    click([...overlay.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Copy')));
+    expect(app.actions.copySnapshot.mock.calls.at(-1)[0].rows).toEqual([['2', 'b'], ['1', null]]); // Copy = OLD result
+    // resolve → commit.
+    run.last.finish();
+    await tick();
+    expect(overlay.querySelector('.res-table tbody td.cell').textContent).toBe('NEW');
+    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // recents recorded exactly once, on success
+    click([...overlay.querySelectorAll('.res-act')].find((b) => b.textContent.includes('Copy')));
+    expect(app.actions.copySnapshot.mock.calls.at(-1)[0].rows).toEqual([['NEW']]); // Copy = NEW result
+  });
+
+  it('Panel: streaming chunks do not churn the chart; a successful commit destroys the old chart once and creates one replacement', async () => {
+    const run = deferredRun();
+    const app = makeApp({ runReadInto: run.fn });
+    const instances = [];
+    const RealChart = app.Chart;
+    app.Chart = class extends RealChart { constructor(...a) { super(...a); instances.push(this); } };
+    app.state.varValues.region = 'E';
+    expandDataPane(app, chartParamResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
+    expect(instances).toHaveLength(1); // the committed snapshot's chart
+    const chart0 = instances[0];
+    expect(chart0.destroyed).toBe(false);
+    // Refresh → stream several chunks WITHOUT resolving.
+    click(refreshBtn(overlay));
+    await tick();
+    run.last.chunk({ progress: { rows: 100, bytes: 0, elapsed_ns: 0 } });
+    run.last.chunk({ progress: { rows: 200, bytes: 0, elapsed_ns: 0 } });
+    expect(chart0.destroyed).toBe(false); // not churned by chunks
+    expect(instances).toHaveLength(1); // no per-chunk chart rebuild
+    // resolve successfully → one destroy + one replacement.
+    run.last.finish({ columns: chartResult().columns, rows: [['B6', 'E', '30', '1.1']] });
+    await tick();
+    expect(chart0.destroyed).toBe(true);
+    expect(instances).toHaveLength(2);
+  });
+
+  it('a current-generation cancelled result never replaces the committed result and records nothing', async () => {
+    const run = deferredRun();
+    const app = makeApp({ runReadInto: run.fn });
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    run.last.chunk({ columns: [{ name: 'n', type: 'UInt64' }], rows: [['NEW']], progress: { rows: 1, bytes: 0, elapsed_ns: 0 } });
+    run.last.finish({ cancelled: true });
+    await tick();
+    expect(overlay.querySelectorAll('.res-table tbody tr')).toHaveLength(2); // previous result kept
+    expect(overlay.querySelector('.res-table tbody td.cell').textContent).toBe('2');
+    expect(app.recordBoundParams).not.toHaveBeenCalled();
+    expect(overlay.querySelector('.detached-status').textContent).toBe(''); // cancel clears the status
+    expect(refreshBtn(overlay).disabled).toBe(false);
+  });
+
+  it('a late chunk from a superseded run does not update the status; only the newest run controls it', async () => {
+    const run = deferredRun();
+    const app = makeApp({ runReadInto: run.fn });
+    app.state.varValues.level = 'A';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay)); // run 1
+    await tick();
+    const run1 = run.last;
+    app.state.varValues.level = 'B';
+    click(refreshBtn(overlay)); // run 2 supersedes (aborts run 1)
+    await tick();
+    const run2 = run.last;
+    run1.chunk({ progress: { rows: 99999 } }); // a late chunk from the superseded run
+    expect(overlay.querySelector('.detached-status').textContent).toBe('Running…'); // NOT run 1's count
+    run2.chunk({ progress: { rows: 5 } }); // the current run drives the status
+    expect(overlay.querySelector('.detached-status').textContent).toBe(`Running… ${formatRows(5)} rows read`);
   });
 });
 

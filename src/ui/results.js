@@ -675,9 +675,12 @@ export function expandDataPane(app, r) {
       let statusEl = null;
 
       const inner = h('div', { class: 'res-body' });
-      // Render `res` (defaults to the committed `current`) into the body. A
-      // rerun paints the in-flight result progressively as it streams, then
-      // paints `current` once it commits (or reverts to `current` on failure).
+      // Render `res` (defaults to the committed `current`) into the body.
+      // Commit-on-success (#198): a rerun NEVER paints its in-flight result —
+      // paint runs only on view changes, local sorting, the initial render, and
+      // a successful current-generation commit. So the previous committed result
+      // stays on screen through streaming (no metadata-only "0 rows" flash) and
+      // the chart is not destroyed/recreated per chunk.
       const paint = (res = current) => withDocument(doc, () => {
         // Destroy the previous chart before rebuilding — same reasoning as
         // renderResults' destroy-before-rebuild (nothing may leak its canvas).
@@ -739,7 +742,7 @@ export function expandDataPane(app, r) {
         if (blockers.length) { settle('Enter a value for: ' + blockers.join(', ')); return; }
         if (src.errors.length) { settle(src.errors[0]); return; }
         running = true;
-        setStatus('');
+        setStatus('Running…');
         if (refreshBtn) refreshBtn.disabled = true;
         if (!(await app.ensureFreshToken())) {
           if (myGen === gen && !closed) settle('Not signed in');
@@ -753,21 +756,25 @@ export function expandDataPane(app, r) {
           // Native param_<name> bindings + the captured session (when any).
           params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
           signal,
-          // Progressive streaming: paint the in-flight result as rows arrive.
-          onChunk: () => { if (myGen === gen && !closed) paint(result); },
+          // Progress-only streaming (#198): update the lightweight status text as
+          // rows arrive, but NEVER paint the in-flight result and NEVER touch the
+          // committed `current` / stat / view / chart — only the winning
+          // completion below commits and repaints. A stale/closed chunk is dropped.
+          onChunk: () => {
+            if (myGen !== gen || closed) return;
+            const rowsRead = Number(result.progress?.rows) || 0;
+            setStatus(rowsRead > 0 ? `Running… ${formatRows(rowsRead)} rows read` : 'Running…');
+          },
         });
         if (myGen !== gen || closed) return; // superseded or closed → discard silently
-        if (result.error) {
-          // A failed refresh keeps the previous result visible (revert any
-          // partial streamed rows) and reports the error in the status line.
-          settle(result.error);
-          paint(current);
-          return;
-        }
-        settle('');
+        // The in-flight result was never painted, so failure/cancel needs no
+        // restore repaint — the committed `current` is still on screen (#198).
+        if (result.cancelled) { settle(''); return; }
+        if (result.error) { settle(result.error); return; }
         current = result;
         // #171: record the winning run's bound params via the shared recorder.
         app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
+        settle('');
         paint();
       }
 
