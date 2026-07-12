@@ -223,6 +223,9 @@ function renderCardNode(n, model, nodeClass, onNode) {
   const rowY = () => divY + row * CARD.ROW_H + CARD.ROW_BASELINE;
   for (const c of model.cols) {
     const t = s('text', { class: 'eg-col', x: left, y: rowY() },
+      // A compacted type (#177) keeps the full declaration reachable as a
+      // native hover tooltip on the column row; an unchanged type adds none.
+      c.fullType && c.fullType !== c.type ? s('title', {}, c.fullType) : null,
       s('tspan', { class: 'eg-col-name' }, c.name),
       s('tspan', { class: 'eg-col-type', dx: '6' }, c.type));
     for (const role of c.roles) t.appendChild(s('tspan', { class: 'eg-badge eg-badge--' + role.toLowerCase(), dx: '6' }, role));

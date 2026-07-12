@@ -5,6 +5,7 @@ import { batch } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
+import { compactType, INLINE_TYPE_MAX } from '../core/type-display.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 
 // Copy-on-write expand toggle: returns a new Set with `key` added or removed, so
@@ -192,8 +193,10 @@ export function renderSchema(app) {
         list.appendChild(h('div', {
           class: 'tree-row small mono' + (filter && matches(c.name) ? ' match' : ''),
           style: { paddingLeft: '38px' },
-          ...hoverTitle((c.comment && c.comment.trim())
-            || ('Double-click or drag to insert ' + c.name + ' · shift-click for ' + c.name + '::' + c.type)),
+          // The full type leads the hover title — the rendered meta may be a
+          // compacted summary (#177) — followed by the comment or usage hints.
+          ...hoverTitle((c.type ? c.type + '\n' : '') + ((c.comment && c.comment.trim())
+            || ('Double-click or drag to insert ' + c.name + ' · shift-click for ' + c.name + '::type'))),
           onclick: (e) => {
             e.stopPropagation();
             if (e.shiftKey) { app.actions.insertAtCursor(quoteIdent(c.name) + '::' + c.type); return; }
@@ -201,7 +204,7 @@ export function renderSchema(app) {
           },
           ...dragAttrs(dragProps(quoteIdent(c.name))),
         },
-          ...treeRow(Icon.col(), c.name, c.type, { expanded: null, iconColor: 'var(--fg-faint)' }),
+          ...treeRow(Icon.col(), c.name, compactType(c.type, INLINE_TYPE_MAX), { expanded: null, iconColor: 'var(--fg-faint)' }),
         ));
       }
     }

@@ -933,6 +933,30 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     expect(card.querySelector('title').textContent).toBe('a very long comment that would never fit on the card at all');
   });
 
+  it('a compacted column type carries the full type as a hover <title> on its row (#177)', () => {
+    const full = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
+    const g = {
+      nodes: [{
+        id: 'lin.c', label: 'c', kind: 'table', db: 'lin', name: 'c',
+        card: {
+          title: 'lin.c', kind: 'table', summary: 'MergeTree · 0 rows · 0 B', comment: '',
+          cols: [
+            { name: 'state', type: 'Enum8(4 values)', fullType: full, roles: [] },
+            { name: 'id', type: 'UInt64', roles: [] }, // untouched → no title
+          ],
+          overflow: 0, skipLine: '',
+        },
+      }],
+      edges: [],
+    };
+    const built = buildRichSchemaSvg(g, dagre);
+    const rows = [...built.svg.querySelectorAll('text.eg-col')];
+    const stateRow = rows.find((t) => t.textContent.includes('state'));
+    expect(stateRow.querySelector('title').textContent).toBe(full);
+    const idRow = rows.find((t) => t.textContent.includes('id'));
+    expect(idRow.querySelector('title')).toBeNull();
+  });
+
   it('draws no <title> on a card without a comment', () => {
     const g = { nodes: [{ id: 'lin.b', label: 'b', kind: 'table', db: 'lin', name: 'b' }], edges: [] };
     const built = buildRichSchemaSvg(g, dagre);

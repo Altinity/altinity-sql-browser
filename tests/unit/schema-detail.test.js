@@ -233,4 +233,28 @@ describe('openDetailPane', () => {
     expect(emptyCommentCell.textContent).toBe('');
     expect(emptyCommentCell.classList.contains('schema-detail-comment')).toBe(false);
   });
+
+  it('compacts an unbounded column type and caps a long codec, full text on each cell title (#177)', () => {
+    mountPanel();
+    const enumType = "Enum16('queued' = 1, 'started' = 2, 'running' = 3, 'done' = 4, 'failed' = 5, 'cancelled' = 6)";
+    const longCodec = 'CODEC(Delta(8), Gorilla, LZ4HC(9), ZSTD(22), DoubleDelta, T64)';
+    const detail = {
+      ...DETAIL,
+      columns: [
+        { name: 'state', type: enumType, codec: longCodec, compressed: 1, uncompressed: 2 },
+        { name: 'id', type: 'UInt64', compressed: 1, uncompressed: 2 }, // short type, no codec
+      ],
+    };
+    const pane = openDetailPane(APP(), NODE, detail);
+    const rows = [...pane.querySelectorAll('.schema-detail-cols tbody tr')];
+    const [, typeCell, codecCell] = rows[0].children;
+    expect(typeCell.textContent).toBe('Enum16(6 values)'); // summary, never partial member text
+    expect(typeCell.getAttribute('title')).toBe(enumType); // full declared type on hover
+    expect(codecCell.textContent.endsWith('…')).toBe(true);
+    expect(codecCell.textContent.length).toBeLessThan(longCodec.length);
+    expect(codecCell.getAttribute('title')).toBe(longCodec);
+    // a short type passes through; an absent codec still renders its (empty) cell
+    expect(rows[1].children[1].textContent).toBe('UInt64');
+    expect(rows[1].children[2].textContent).toBe('');
+  });
 });

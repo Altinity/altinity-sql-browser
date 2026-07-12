@@ -1035,6 +1035,10 @@ body.detached-tab .graph-overlay-panel {
   font-size: 10px; color: var(--fg-faint);
   font-family: var(--mono); flex-shrink: 0;
   margin-left: 6px;
+  /* Defense in depth (#177): the meta value is already compacted in JS, but a
+     raw value must never crush the label — cap it and ellipsize. */
+  max-width: 55%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tree-row .meta.loading { font-style: italic; opacity: .6; }
 

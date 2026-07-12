@@ -423,6 +423,16 @@ describe('infoFor', () => {
     expect(infoFor(makeApp(), { kind: 'fn', label: 'sum' })).toBeUndefined();
     expect(infoFor(makeApp(), { kind: 'table', label: 't' })).toBeUndefined();
   });
+  it('a column with a compacted type exposes the full declared type; an unchanged one stays quiet (#177)', () => {
+    const full = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
+    const node = infoFor(makeApp(), { kind: 'column', label: 'state', detail: 'Enum8(4 values)', fullType: full })();
+    expect(node.nodeType).toBe(1); // a DOM node, as CM6's addInfoPane requires
+    expect(node.textContent).toBe(full);
+    // detail === fullType (nothing was hidden) → no info pane noise
+    expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64', fullType: 'UInt64' })).toBeUndefined();
+    // items without fullType (defensive) → no info
+    expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64' })).toBeUndefined();
+  });
 });
 
 describe('hoverSourceFor', () => {

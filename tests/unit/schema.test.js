@@ -234,6 +234,34 @@ describe('renderSchema tree', () => {
     shiftClick(colRow);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id::UInt64');
   });
+  it('columns: compacts an unbounded type in the row meta, full type leads the hover title (#177)', () => {
+    const app = withSchema();
+    const enumType = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
+    app.state.schema.value[0].tables[0].columns = [
+      { name: 'state', type: enumType, comment: 'job state' },
+      { name: 'id', type: 'UInt64', comment: '' },
+    ];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = (name) => [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+      .find((r) => r.querySelector('.label').textContent === name);
+    // never partial member text in the row — a semantic summary instead
+    expect(row('state').querySelector('.meta').textContent).toBe('Enum8(4 values)');
+    expect(row('state').title).toBe(enumType + '\njob state');
+    // a short type renders raw; its title still leads with the type
+    expect(row('id').querySelector('.meta').textContent).toBe('UInt64');
+    expect(row('id').title).toBe('UInt64\nDouble-click or drag to insert id · shift-click for id::type');
+  });
+  it('columns: a type-less column row renders an empty meta and a hint-only title', () => {
+    const app = withSchema();
+    app.state.schema.value[0].tables[0].columns = [{ name: 'odd', comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    renderSchema(app);
+    const row = [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+      .find((r) => r.querySelector('.label').textContent === 'odd');
+    expect(row.querySelector('.meta').textContent).toBe('');
+    expect(row.title).toBe('Double-click or drag to insert odd · shift-click for odd::type'); // no 'undefined' leader
+  });
   it('two quick clicks on different rows are two single clicks, not a double', () => {
     const app = withSchema();
     renderSchema(app);

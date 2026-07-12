@@ -195,6 +195,11 @@ export function infoFor(app, it) {
     if (!app.entityDoc) return undefined;
     return () => Promise.resolve(app.entityDoc(it.label)).then(doc);
   }
+  // A column whose `detail` is a compacted type summary (#177) exposes the full
+  // declared type here — CM6's detail column has no native title fallback.
+  if (it.kind === 'column' && it.fullType && it.fullType !== it.detail) {
+    return () => doc(it.fullType);
+  }
   return undefined;
 }
 

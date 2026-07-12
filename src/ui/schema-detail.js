@@ -11,19 +11,29 @@ import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { clamp, formatRows, formatBytes, formatCompressionRatio, qualifyIdent, truncate } from '../core/format.js';
 import { columnRoles } from '../core/schema-cards.js';
+import { compactType } from '../core/type-display.js';
 
 const MIN_H = 90; // smallest pane height; max is panel height - this margin
 const TOP_MARGIN = 100;
 const MAX_HEAD_COMMENT = 120; // table's own comment, next to the kind badge — the header row has ~1.5x the room MAX_COL_COMMENT does
 const MAX_COL_COMMENT = 80; // per-column comment — 2x the original 40, more room to read without opening DDL
+const MAX_COL_TYPE = 48; // a column's type cell (#177) — an unbounded Enum/Tuple declaration compacts; the full type stays in the cell title
+const MAX_COL_CODEC = 40; // a CODEC(...) chain can get long the same way; full text stays in the cell title
 
-// A capped `<td>` for a column's comment — always rendered (even empty) so every
-// row in the columns table keeps the same cell count. The full text always lands
-// in `title` (native hover tooltip) so truncation never actually loses information.
-const commentCell = (text) => {
+// A capped `<td>` — always rendered (even empty) so every row in the columns
+// table keeps the same cell count. The full text always lands in `title`
+// (native hover tooltip) so truncation never actually loses information.
+const cappedCell = (text, max, cls) => {
   const t = (text || '').trim();
-  return t ? h('td', { class: 'schema-detail-comment', title: t }, truncate(t, MAX_COL_COMMENT)) : h('td');
+  return t ? h('td', { class: cls || null, title: t }, truncate(t, max)) : h('td');
 };
+const commentCell = (text) => cappedCell(text, MAX_COL_COMMENT, 'schema-detail-comment');
+// A long CODEC(Delta, ZSTD(...)) chain is the same class of layout hazard (#177).
+const codecCell = (text) => cappedCell(text, MAX_COL_CODEC);
+
+// The type cell: compact display form (#177), full declared type in the native
+// hover tooltip so compaction never actually loses information.
+const typeCell = (type) => h('td', { title: type }, compactType(type, MAX_COL_TYPE));
 
 // The table's own comment, next to the kind badge in the pane header — omitted
 // entirely (not just empty) when there is none, so the flex row's gap doesn't
@@ -114,7 +124,7 @@ function buildDetailPane(node, detail, panel) {
         h('th', null, 'column'), h('th', null, 'type'), h('th', null, 'codec'), h('th', null, 'comment'),
         h('th', { class: 'num' }, 'compressed'), h('th', { class: 'num', title: '% of the uncompressed size remaining on disk' }, 'size %'), h('th', null, 'key'))),
       h('tbody', null, ...cols.map((c) => h('tr', null,
-        h('td', null, c.name), h('td', null, c.type), h('td', null, c.codec || ''), commentCell(c.comment),
+        h('td', null, c.name), typeCell(c.type), codecCell(c.codec), commentCell(c.comment),
         h('td', { class: 'num' }, formatBytes(c.compressed)),
         h('td', { class: 'num' }, formatCompressionRatio(c.compressed, c.uncompressed)),
         h('td', { class: 'schema-detail-roles' }, columnRoles(c).join(' '))))));

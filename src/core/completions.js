@@ -8,6 +8,7 @@
 
 import { SQL_KEYWORDS, SQL_FUNCS, tokenize } from './sql-highlight.js';
 import { quoteIdent, unquoteIdent } from './format.js';
+import { compactType, INLINE_TYPE_MAX } from './type-display.js';
 
 const BUILTIN_KEYWORDS = [...SQL_KEYWORDS];
 const BUILTIN_FUNCS = [...SQL_FUNCS];
@@ -101,7 +102,9 @@ export function buildCompletions(ref, schema) {
       items.push({ label: tb.name, kind: 'table', insert: quoteIdent(tb.name), detail: 'table', parent: db.db });
       if (Array.isArray(tb.columns)) {
         for (const c of tb.columns) {
-          items.push({ label: c.name, kind: 'column', insert: quoteIdent(c.name), detail: c.type, parent: tb.name });
+          // `detail` may be a compacted summary (#177); `fullType` keeps the
+          // declared type for the completion info pane.
+          items.push({ label: c.name, kind: 'column', insert: quoteIdent(c.name), detail: compactType(c.type, INLINE_TYPE_MAX), fullType: c.type, parent: tb.name });
         }
       }
     }

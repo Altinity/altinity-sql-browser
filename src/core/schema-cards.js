@@ -4,7 +4,8 @@
 // pure so the geometry (which dagre needs *before* layout) is fully testable
 // under happy-dom, which has no layout engine to measure rendered text.
 
-import { formatRows, formatBytes, truncate } from './format.js';
+import { formatRows, formatBytes } from './format.js';
+import { compactType } from './type-display.js';
 
 // Card geometry — the single source of truth shared by cardSize() (which feeds
 // dagre) and the SVG renderer (which places text at these offsets). HEADER_H
@@ -23,13 +24,14 @@ export const CARD = {
   MAX_IDX: 6, // skip-indices have no dedicated overflow row (unlike columns) — cap the
               // single idx: line itself so a heavily-indexed table (bloom filters per
               // Map key/value, tokenbf on Body, …) can't blow the card absurdly wide.
-  MAX_TYPE: 28, // truncate the displayed column type — a big Enum/Tuple/Map would
+  MAX_TYPE: 28, // compact the displayed column type — a big Enum/Tuple/Map would
                 // otherwise blow the card (and the whole graph) absurdly wide.
 };
 
-// Clamp an over-long column type for the card (the full type stays in the detail
-// pane). Keeps a giant inline Enum8('a'=1, …) from stretching the layout.
-const clampType = (t) => truncate(t, CARD.MAX_TYPE);
+// Compact an over-long column type for the card (#177): a semantic summary
+// (`Enum8(41 values)`) rather than the old blind character cut. The full type
+// stays reachable — a per-column <title> in the SVG renderer + the detail pane.
+const clampType = (t) => compactType(t, CARD.MAX_TYPE);
 
 // A ClickHouse UInt8 flag is 1/0, but JSON vs JSONStrings formats deliver it as
 // a number or a string — treat both (and a real boolean) uniformly.
@@ -63,8 +65,11 @@ export function buildCardModel(node, tableRow, columns, skipIndices) {
   const summary = engine + ' · ' + formatRows(tr.total_rows) + ' rows · ' + formatBytes(tr.total_bytes);
   const comment = (tr.comment || '').trim();
   const allCols = columns || [];
+  // `fullType` always carries the declared type (same contract as completion
+  // items, #177); the renderer compares it against `type` to decide whether a
+  // hover <title> adds anything.
   const cols = allCols.slice(0, CARD.MAX_COLS).map((c) => ({
-    name: c.name, type: clampType(c.type), roles: columnRoles(c),
+    name: c.name, type: clampType(c.type), fullType: c.type, roles: columnRoles(c),
   }));
   const overflow = Math.max(0, allCols.length - CARD.MAX_COLS);
   const idx = skipIndices || [];

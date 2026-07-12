@@ -32,7 +32,7 @@ describe('buildCardModel', () => {
     expect(m.kind).toBe('mv');
     expect(m.summary).toBe('MaterializedView · 1.5M rows · 2.0 KB');
     expect(m.cols).toHaveLength(CARD.MAX_COLS);
-    expect(m.cols[0]).toEqual({ name: 'c0', type: 'UInt64', roles: ['PK'] });
+    expect(m.cols[0]).toEqual({ name: 'c0', type: 'UInt64', fullType: 'UInt64', roles: ['PK'] });
     expect(m.overflow).toBe(1);
     expect(m.skipLine).toBe('idx: idx_a (minmax)');
   });
@@ -72,14 +72,20 @@ describe('buildCardModel', () => {
     expect(buildCardModel(null).title).toBe(''); // no node at all
     expect(buildCardModel(null).summary).toBe('table · — rows · —'); // kind → 'table'
   });
-  it('truncates an over-long column type so a giant Enum can’t blow out the card width', () => {
+  it('compacts an over-long column type so a giant Enum can’t blow out the card width (#177)', () => {
     const enumType = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
     const m = buildCardModel({ label: 't', kind: 'table' }, {}, [{ name: 'state', type: enumType }]);
-    expect(m.cols[0].type.length).toBe(CARD.MAX_TYPE);
-    expect(m.cols[0].type.endsWith('…')).toBe(true);
-    // a short type is left untouched
-    expect(buildCardModel({ label: 't' }, {}, [{ name: 'id', type: 'UInt64' }]).cols[0].type).toBe('UInt64');
-    // the truncation bounds the card width (vs the full ~60-char enum)
+    // Semantic compaction, not a partial-member character cut.
+    expect(m.cols[0].type).toBe('Enum8(4 values)');
+    expect(m.cols[0].type.length).toBeLessThanOrEqual(CARD.MAX_TYPE);
+    // The full declared type always rides along for the renderer's hover title
+    // (same contract as completion items — the consumer compares type vs fullType).
+    expect(m.cols[0].fullType).toBe(enumType);
+    // a short type is left untouched — fullType and type agree (nothing hidden)
+    const short = buildCardModel({ label: 't' }, {}, [{ name: 'id', type: 'UInt64' }]);
+    expect(short.cols[0].type).toBe('UInt64');
+    expect(short.cols[0].fullType).toBe('UInt64');
+    // the compaction bounds the card width (vs the full ~60-char enum)
     const wide = cardSize({ title: 't', summary: '', cols: [{ name: 'state', type: enumType, roles: [] }], overflow: 0, skipLine: '' });
     const clamped = cardSize(m);
     expect(clamped.w).toBeLessThan(wide.w);

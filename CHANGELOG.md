@@ -9,6 +9,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Unbounded column types no longer crush width-constrained UI** (#177). A
+  declared type with an arbitrarily long body — a giant `Enum16(…)`, a
+  many-field `Tuple(…)`, `Nested`/`Variant`/`AggregateFunction`/`JSON(…)` —
+  used to consume the schema-tree row (reducing the column name to zero
+  width) or was blindly character-cut in graph cards
+  (`Enum16('Close' = -11, 'Err…`). A shared pure formatter
+  (`core/type-display.js` `compactType`) now collapses unbounded declaration
+  bodies to semantic summaries (`Enum16(41 values)`, `Tuple(12 fields)`,
+  `Array(Tuple(12 fields))` — outer wrappers preserved; quote-aware,
+  balanced-bracket, effectively linear scan; malformed input degrades to
+  plain truncation) across the schema tree, the schema-detail table, column
+  completion detail, and the schema graph cards. The full declared type
+  stays reachable everywhere: row/cell hover titles, a per-column SVG
+  `<title>` on graph cards, and the CM6 completion info pane (via a new
+  `fullType` on column completion items). Long `CODEC(…)` chains in the
+  detail table are capped the same way, and `.tree-row .meta` gained a CSS
+  max-width backstop so no future raw value can reproduce the layout
+  failure.
+
 ### Added
 - **Optional SQL blocks `/*[ … ]*/` with explicit filter activation** (#165).
   A comment-wrapped predicate — `WHERE 1 /*[ AND d = {d:String} ]*/` — is

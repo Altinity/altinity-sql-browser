@@ -91,6 +91,17 @@ describe('buildCompletions', () => {
     expect(items.find((i) => i.label === 'odd col'))
       .toMatchObject({ kind: 'column', insert: '`odd col`' });
   });
+  it('compacts an unbounded column type into detail, keeping the full type as fullType (#177)', () => {
+    const enumType = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
+    const items = buildCompletions(ref, [
+      { db: 'd', tables: [{ name: 't', columns: [{ name: 'state', type: enumType }, { name: 'id', type: 'UInt64' }] }] },
+    ]);
+    expect(items.find((i) => i.label === 'state'))
+      .toMatchObject({ kind: 'column', detail: 'Enum8(4 values)', fullType: enumType });
+    // a short type is untouched — detail and fullType agree
+    expect(items.find((i) => i.label === 'id'))
+      .toMatchObject({ kind: 'column', detail: 'UInt64', fullType: 'UInt64' });
+  });
   it('handles a null schema', () => {
     const items = buildCompletions(ref, null);
     expect(items.every((i) => i.kind === 'keyword' || ['agg', 'cast', 'fn'].includes(i.kind))).toBe(true);
