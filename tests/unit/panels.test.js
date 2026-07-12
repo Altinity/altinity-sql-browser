@@ -271,6 +271,95 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.panel-config')).toBeNull();
     expect(region(app).querySelectorAll('.chart-config')).toHaveLength(1); // only renderChart's own bar
   });
+  it('#196: stale required roles show "<name> (missing)", selected + disabled, and never mutate cfg', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    renderResults(app);
+    const roleSels = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    expect(roleSels).toHaveLength(3);
+    const [timeSel, msgSel, levelSel] = roleSels;
+
+    expect(timeSel.value).toBe('old_time_col');
+    expect(timeSel.selectedOptions[0].textContent).toBe('old_time_col (missing)');
+    expect(timeSel.selectedOptions[0].disabled).toBe(true);
+    expect(timeSel.disabled).toBe(false);
+    expect(timeSel.getAttribute('aria-invalid')).toBe('true');
+    expect(timeSel.title).toContain('old_time_col');
+
+    expect(msgSel.value).toBe('old_msg_col');
+    expect(msgSel.selectedOptions[0].textContent).toBe('old_msg_col (missing)');
+    expect(msgSel.getAttribute('aria-invalid')).toBe('true');
+
+    // Level was omitted → plain (auto), not stale.
+    expect(levelSel.value).toBe('');
+    expect(levelSel.selectedOptions[0].textContent).toBe('(auto)');
+    expect(levelSel.getAttribute('aria-invalid')).toBeNull();
+
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    expect(app.activeTab().dirty).toBe(false);
+  });
+  it('#196: partial repair keeps the untouched stale role stored and visibly marked', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    renderResults(app);
+    selectRole(app, 1, 'operation'); // Message → operation
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'operation' });
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // Time remains stored and still rendered as missing; panel still falls back.
+    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    expect(timeSel.value).toBe('old_time_col');
+    expect(timeSel.selectedOptions[0].textContent).toBe('old_time_col (missing)');
+    expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull();
+  });
+  it('#196: repairing with a current column clears the missing option and invalid state', () => {
+    const app = panelApp(noTimeNoMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'component' });
+    renderResults(app);
+    selectRole(app, 0, 'ts'); // Time → ts
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
+    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    expect(timeSel.value).toBe('ts');
+    expect([...timeSel.options].some((o) => o.textContent.includes('(missing)'))).toBe(false);
+    expect(timeSel.getAttribute('aria-invalid')).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+  it('#196: repairing with (auto) deletes the property rather than storing an empty string', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'component' });
+    renderResults(app);
+    selectRole(app, 0, ''); // Time → (auto)
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
+    expect('time' in app.activeTab().panelCfg).toBe(false);
+    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    expect(timeSel.value).toBe('');
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+  it('#196: case-insensitive saved names match without a synthetic missing option', () => {
+    const app = panelApp(logsResult(), { type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' });
+    renderResults(app);
+    const [timeSel, msgSel] = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    expect(timeSel.value).toBe('event_time');
+    expect(msgSel.value).toBe('message');
+    expect(timeSel.getAttribute('aria-invalid')).toBeNull();
+    expect(msgSel.getAttribute('aria-invalid')).toBeNull();
+    expect([...timeSel.options].some((o) => o.textContent.includes('missing'))).toBe(false);
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' }); // never rewritten
+  });
+  it('#196: a stale optional Level is marked missing even while Logs renders', () => {
+    const app = panelApp(logsResult(), { type: 'logs', level: 'old_level_col' });
+    renderResults(app);
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull(); // renders fine — Level is optional
+    const levelSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][2];
+    expect(levelSel.value).toBe('old_level_col');
+    expect(levelSel.selectedOptions[0].textContent).toBe('old_level_col (missing)');
+    expect(levelSel.getAttribute('aria-invalid')).toBe('true');
+
+    selectRole(app, 2, ''); // Level → (auto) deletes it
+    expect('level' in app.activeTab().panelCfg).toBe(false);
+  });
+  it('#196: a markup-like stale saved name renders as inert text, not markup', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: '<img src=x onerror=alert(1)>' });
+    renderResults(app);
+    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    expect(timeSel.querySelector('img')).toBeNull();
+    expect(timeSel.selectedOptions[0].textContent).toBe('<img src=x onerror=alert(1)> (missing)');
+  });
   it('rescue (#192) does not engage for a table panel type: no false controls leak in', () => {
     const app = panelApp(noMessageResult(), { type: 'table' });
     renderResults(app);
