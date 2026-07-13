@@ -76,26 +76,26 @@ function panelApp(result, panelCfg = null, over = {}) {
   const app = makeApp();
   const tab = app.activeTab();
   tab.result = result;
-  if (panelCfg) tab.spec.panel = { cfg: panelCfg };
+  if (panelCfg) tab.specParsed.panel = { cfg: panelCfg };
   // Keep the assertions terse while routing every read/write through the v2
   // tab spec. These aliases exist only in this test harness.
   Object.defineProperties(tab, {
     panelCfg: {
       configurable: true,
-      get() { return this.spec.panel?.cfg ?? null; },
+      get() { return this.specParsed?.panel?.cfg ?? null; },
       set(cfg) {
-        if (cfg == null) delete this.spec.panel;
-        else this.spec.panel = { ...(this.spec.panel || {}), cfg };
+        if (cfg == null) delete this.specParsed.panel;
+        else this.specParsed.panel = { ...(this.specParsed.panel || {}), cfg };
       },
     },
     panelKey: {
       configurable: true,
-      get() { return this.spec.panel?.key ?? null; },
+      get() { return this.specParsed?.panel?.key ?? null; },
       set(key) {
-        if (!this.spec.panel && key != null) this.spec.panel = {};
+        if (!this.specParsed.panel && key != null) this.specParsed.panel = {};
         if (key == null) {
-          if (this.spec.panel) delete this.spec.panel.key;
-        } else this.spec.panel.key = key;
+          if (this.specParsed.panel) delete this.specParsed.panel.key;
+        } else this.specParsed.panel.key = key;
       },
     },
   });
@@ -151,18 +151,44 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.panel-config')).toBeNull(); // no separate picker row
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
     expect(app.activeTab().panelCfg).toBeNull(); // #166 dirty pin: derived cfg never persisted
-    expect(app.activeTab().dirty).toBe(false);
+    expect(app.activeTab().dirtySpec).toBe(false);
   });
   it('picking a type writes tab.panelCfg + marks the tab dirty (like a SQL edit); no SQL runs', () => {
     const app = panelApp(chartResult());
     renderResults(app);
     pickType(app, 'pie');
     expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie' });
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
     expect(region(app).querySelector('.chart-view')).not.toBeNull();
+  });
+  it('a panel control merges into a linked dirty valid Spec draft', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.dirtySpec = true;
+    tab.specParsed.future = { keep: true };
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(tab.specParsed).toMatchObject({ panel: { cfg: { type: 'pie' } }, future: { keep: true } });
+    expect(tab.dirtySpec).toBe(true);
+    expect(app.actions.rerenderTabs).toHaveBeenCalled();
+  });
+  it('a panel control focuses invalid Spec JSON without mutating it', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.specText = '{"panel":';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.dirtySpec = true;
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+    expect(tab.specText).toBe('{"panel":');
+    expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
   });
   it('the toolbar selector activates Panel view from the ordinary Table view', () => {
     const app = panelApp(chartResult());
@@ -185,7 +211,7 @@ describe('Panel drawer tab', () => {
     xSel.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.activeTab().panelCfg.x).toBe(1);
     expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
   });
   it('adopting an auto-derived chart records the current schema key', () => {
     const app = panelApp(chartResult());
@@ -220,7 +246,7 @@ describe('Panel drawer tab', () => {
 
     selectRole(app, 1, 'component'); // Message → component
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     // The repair resolves the shape: Logs renders, the fallback note is gone.
     expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
@@ -264,14 +290,14 @@ describe('Panel drawer tab', () => {
     // Rendering alone must not touch tab state.
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs' });
     expect(app.activeTab().panelKey).toBeNull();
-    expect(app.activeTab().dirty).toBe(false);
+    expect(app.activeTab().dirtySpec).toBe(false);
   });
   it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
     const app = panelApp(noMessageChartResult(), { type: 'logs' });
     renderResults(app);
     selectRole(app, 1, 'operation'); // Message → operation
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'operation' });
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
     expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
@@ -283,7 +309,7 @@ describe('Panel drawer tab', () => {
     pickType(app, 'bar');
     expect(app.activeTab().panelCfg).toMatchObject({ type: 'bar' });
     expect(app.activeTab().panelKey).toBe('event_time:DateTime|duration_ms:Int64|operation:String');
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     // Rescue is over: ordinary chart controls (X/Y) are now present, and the
     // Logs rescue row (a `.panel-config` wrapper; the chart arm has no
@@ -299,20 +325,20 @@ describe('Panel drawer tab', () => {
     const app = panelApp(noMessageResult());
     const savedCfg = { type: 'logs', extension };
     app.activeTab().panelCfg = savedCfg;
-    app.activeTab().spec.panel.fieldConfig = { future: { value: 2 } };
+    app.activeTab().specParsed.panel.fieldConfig = { future: { value: 2 } };
 
     renderResults(app);
     // Rendering alone (no control change) must not mutate or replace the saved cfg.
     expect(app.activeTab().panelCfg).toBe(savedCfg);
     expect(app.activeTab().panelCfg.extension).toBe(extension);
-    expect(app.activeTab().dirty).toBe(false);
+    expect(app.activeTab().dirtySpec).toBe(false);
 
     selectRole(app, 1, 'component'); // Message → component
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component', extension: { nested: { value: 1 } } });
     expect(app.activeTab().panelCfg.extension).not.toBe(extension);
     expect(app.activeTab().panelCfg.extension.nested).not.toBe(extension.nested);
-    expect(app.activeTab().spec.panel.fieldConfig).toEqual({ future: { value: 2 } });
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().specParsed.panel.fieldConfig).toEqual({ future: { value: 2 } });
+    expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     // The originally-saved object (and its nested field) are untouched.
     expect(savedCfg).toEqual({ type: 'logs', extension: { nested: { value: 1 } } });
@@ -342,7 +368,7 @@ describe('Panel drawer tab', () => {
     expect(levelSel.getAttribute('aria-invalid')).toBeNull();
 
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
-    expect(app.activeTab().dirty).toBe(false);
+    expect(app.activeTab().dirtySpec).toBe(false);
   });
   it('#196: partial repair keeps the untouched stale role stored and visibly marked', () => {
     const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
@@ -428,7 +454,7 @@ describe('Panel drawer tab', () => {
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     expect(app.activeTab().panelCfg.content).toBe('# Bye');
     expect(region(app).querySelector('.md-view h1').textContent).toBe('Bye');
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().dirtySpec).toBe(true);
   });
   it('query-backed types show the empty-preview hint before any Run (and while running)', () => {
     const app = panelApp(null);

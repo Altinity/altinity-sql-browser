@@ -43,6 +43,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **The workbench now has independent SQL and saved-query Spec JSON editor
+  modes** (#212). A visible `SQL | Spec` switch keeps separate per-tab drafts,
+  undo/search state, dirty flags, and injected CodeMirror adapters. Spec mode
+  adds local JSON formatting, folding, search, parse markers with line/column,
+  and synchronously registered semantic validators keyed by exact path arrays;
+  known core field types are checked while unknown extension fields remain
+  valid. Linked Save atomically commits SQL plus the current valid Spec in one
+  Library write, with normalized Name/Description and all other fields/order
+  retained; invalid Spec persists nothing. Spec is a lightweight editing mode:
+  its toolbar contains only Format, Save, and the SQL | Spec switch, while Run,
+  Explain, SQL Format, Export, Share, and Share’s global shortcut are SQL-only.
+  Validation remains continuous through diagnostics and status. Library pencil,
+  favorite, and Panel writers merge their changes into every valid open draft,
+  preserving unrelated unsaved and extension fields; invalid JSON alone blocks
+  the writer, focuses the affected Spec tab, and persists nothing. Reopening an
+  already-open saved query activates its existing tab. No package or lockfile
+  change was needed because JSON language support landed in #213.
 - **A shared, injected read-only CodeMirror source viewer** (#213) now provides
   complete-text rendering, line numbers, local search, selection/copy, and
   compartment-based wrapping for text, JSON, SQL, XML/HTML source, and plain

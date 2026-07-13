@@ -3,11 +3,13 @@ import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
+import { createSpecEditor } from '../../src/editor/spec-editor.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import { decodeShare } from '../../src/core/share.js';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -108,6 +110,7 @@ function env(over = {}) {
     crypto: webcrypto,
     Dagre: dagre,
     Editor: createCodeMirrorEditor, // the real adapter — app tests exercise editor-backed flows (#143/#21)
+    SpecEditor: createSpecEditor,
     CodeViewer: vi.fn(() => ({ setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn() })),
     fetch: makeFetch([]),
     now: () => 0,
@@ -127,6 +130,29 @@ describe('createApp basics', () => {
     expect(app.isSignedIn()).toBe(true);
     expect(app.email()).toBe('me@example.com');
     expect(app.host()).toBe('ch.example');
+  });
+  it('wires every document-toolbar control to its injected action', () => {
+    const app = createApp(env());
+    app.renderApp();
+    const actions = {
+      run: vi.fn(), formatQuery: vi.fn(), explainQuery: vi.fn(),
+      formatSpec: vi.fn(), save: vi.fn(), setEditorMode: vi.fn(),
+      exportEntry: vi.fn(), share: vi.fn(),
+    };
+    Object.assign(app.actions, actions);
+    for (const button of [
+      app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn,
+      app.dom.formatSpecBtn, app.dom.saveBtn,
+      app.dom.sqlModeBtn, app.dom.specModeBtn, app.dom.exportBtn, app.dom.shareBtn,
+    ]) button.dispatchEvent(new Event('click'));
+    expect(actions.run).toHaveBeenCalled();
+    expect(actions.formatQuery).toHaveBeenCalled();
+    expect(actions.explainQuery).toHaveBeenCalled();
+    expect(actions.formatSpec).toHaveBeenCalled();
+    expect(actions.save).toHaveBeenCalled();
+    expect(actions.setEditorMode.mock.calls).toEqual([['sql'], ['spec']]);
+    expect(actions.exportEntry).toHaveBeenCalled();
+    expect(actions.share).toHaveBeenCalled();
   });
   it('host falls back when location.host is empty', () => {
     const app = createApp(env({ location: { host: '', origin: 'o', pathname: '/sql' } }));
@@ -150,7 +176,7 @@ describe('createApp basics', () => {
     // default stylesText reads the served page's inlined <style>
     const styleEl = document.createElement('style');
     styleEl.textContent = '.x{}';
-    document.head.appendChild(styleEl);
+    document.head.prepend(styleEl);
     expect(createApp(env({ stylesText: undefined })).stylesText).toBe('.x{}');
     styleEl.remove();
   });
@@ -363,8 +389,8 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     delete e.Editor;
     const app = createApp(e);
     await expect(app.loadReference()).resolves.toBeUndefined(); // refreshReference on the noop port
-    expect(app.editor.hasFocus()).toBe(false);
-    expect(app.editor.getSelection()).toEqual({ start: 0, end: 0, text: '' });
+    expect(app.sqlEditor.hasFocus()).toBe(false);
+    expect(app.sqlEditor.getSelection()).toEqual({ start: 0, end: 0, text: '' });
     expect(() => app.actions.insertAtCursor('x')).not.toThrow();
   });
   it('loadColumns folds the newly-loaded columns into the completion list (#26)', async () => {
@@ -417,7 +443,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]);
     expect(app.state.history.length).toBe(1);
@@ -429,7 +455,7 @@ describe('query run', () => {
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
     const tab = app.activeTab();
-    tab.sql = 'SELECT 1';
+    tab.sqlDraft = 'SELECT 1';
     tab.name = 'My query';
     await app.actions.run();
     // the authored template + run-time identity, snapshotted for a detached rerun
@@ -447,7 +473,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n']) })],
     ]);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.rows.length).toBe(0);
     expect(app.activeTab().result.source).toBeUndefined();
@@ -456,20 +482,20 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /FORMAT CSV/.test(sql), resp({ text: 'a\n1\n' })],
     ]);
-    app.activeTab().sql = 'SELECT 1 FORMAT CSV';
+    app.activeTab().sqlDraft = 'SELECT 1 FORMAT CSV';
     await app.actions.run();
     expect(app.activeTab().result.rawText).toBe('a\n1\n');
     expect(app.activeTab().result.source).toBeUndefined();
   });
   it('opens a ClickHouse session only for SQL that needs one (SET / TEMPORARY), and it sticks to the tab', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]]);
-    app.activeTab().sql = 'SET max_threads = 1';
+    app.activeTab().sqlDraft = 'SET max_threads = 1';
     await app.actions.run(); // SET → opens a session
     const setUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(setUrl).not.toMatch(/session_timeout/); // rely on the server default (60s) — see sessionParams
     const sid = /session_id=([^&]+)/.exec(setUrl)[1];
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT 1'; // plain SELECT now, but the tab already has a session
+    app.activeTab().sqlDraft = 'SELECT 1'; // plain SELECT now, but the tab already has a session
     await app.actions.run();
     const selUrl = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(/session_id=([^&]+)/.exec(selUrl)[1]).toBe(sid); // sticky: same session id
@@ -480,7 +506,7 @@ describe('query run', () => {
     ]);
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = 'CREATE DATABASE t3';
+    app.activeTab().sqlDraft = 'CREATE DATABASE t3';
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -490,14 +516,14 @@ describe('query run', () => {
     ]);
     await new Promise((r) => setTimeout(r));
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(spy).not.toHaveBeenCalled();
   });
   it('keeps the current result view on a plain re-run, and restores a remembered view when opened (#34)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
     const { app } = appForRun(routes, { Chart: class { destroy() {} } }); // Chart seam so the panel view renders
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.state.resultView.value = 'panel';
     await app.actions.run();                  // no opts → keep the current (panel) tab
     expect(app.state.resultView.value).toBe('panel');
@@ -515,7 +541,7 @@ describe('query run', () => {
   it('switching the result view repaints via the effect (the view-tab onclick only sets the signal)', async () => {
     const routes = [[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]];
     const { app } = appForRun(routes);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const region = app.dom.resultsRegion;
     expect(region.querySelector('.res-table')).not.toBeNull(); // table view by default
@@ -527,7 +553,7 @@ describe('query run', () => {
   });
   it('no-ops on empty SQL', async () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = '   ';
+    app.activeTab().sqlDraft = '   ';
     await app.actions.run();
     expect(app.activeTab().result).toBeNull();
   });
@@ -550,15 +576,15 @@ describe('query run', () => {
     expect(app.dom.runBtn.textContent).toContain('Run');
     expect(app.dom.runBtn.querySelector('kbd')).not.toBeNull();
   });
-  it('typing drives the real onDocChange subscriber: tab.sql/dirty, tab strip, Save button, var strip (#143)', () => {
+  it('typing drives the real onDocChange subscriber: tab.sqlDraft/dirty, tab strip, Save button, var strip (#143)', () => {
     const { app } = appForRun([]);
-    const view = app.dom.editorView;
+    const view = app.dom.sqlEditorView;
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT {p:UInt8}' } });
     // the subscriber (registered once in createApp) owns the state writes…
-    expect(app.activeTab().sql).toBe('SELECT {p:UInt8}');
-    expect(app.activeTab().dirty).toBe(true);
+    expect(app.activeTab().sqlDraft).toBe('SELECT {p:UInt8}');
+    expect(app.activeTab().dirtySql).toBe(true);
     // …and runs its dependents AFTER them: the var strip read the new text
-    // (visible strip proves the tab.sql write happened first), and the Run
+    // (visible strip proves the tab.sqlDraft write happened first), and the Run
     // button picked up the unfilled-variable gate.
     expect(app.dom.varStrip.style.display).not.toBe('none');
     expect(app.dom.varStrip.querySelector('.var-name').textContent).toBe('p');
@@ -568,7 +594,7 @@ describe('query run', () => {
   });
   it('query variables (#134): renders an input per detected {name:Type}, hides when none', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {database:String}, {table:String}';
+    app.activeTab().sqlDraft = 'SELECT {database:String}, {table:String}';
     app.renderVarStrip();
     expect(app.dom.varStrip.style.display).not.toBe('none');
     const fields = app.dom.varStrip.querySelectorAll('.var-field');
@@ -582,7 +608,7 @@ describe('query run', () => {
     app.renderVarStrip();
     expect(app.dom.varStrip.querySelector('.var-input')).toBe(before);
     // no variables → strip hidden again
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.renderVarStrip();
     expect(app.dom.varStrip.style.display).toBe('none');
     expect(app.dom.runBtn.disabled).toBe(false);
@@ -590,7 +616,7 @@ describe('query run', () => {
   it('query variables (#134): typing a value updates the shared store, persists, and re-enables Run', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {id:UInt32}';
+    app.activeTab().sqlDraft = 'SELECT {id:UInt32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '42';
@@ -602,13 +628,13 @@ describe('query run', () => {
   });
   it('query variables (#134): a value is shared across queries — reused/prefilled by name', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {database:String}';
+    app.activeTab().sqlDraft = 'SELECT {database:String}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'analytics';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     // a *different* query using the same variable prefills the value, no retyping
-    app.activeTab().sql = 'SELECT count() FROM {database:String}.events WHERE 1';
+    app.activeTab().sqlDraft = 'SELECT count() FROM {database:String}.events WHERE 1';
     app.renderVarStrip();
     expect(app.dom.varStrip.querySelector('.var-input').value).toBe('analytics');
     expect(app.dom.runBtn.disabled).toBe(false); // already satisfied from the shared store
@@ -617,7 +643,7 @@ describe('query run', () => {
     vi.stubGlobal('localStorage', memStore({ 'asb:varValues': JSON.stringify({ table: 'events' }) }));
     const { app } = appForRun([]);
     expect(app.state.varValues.table).toBe('events'); // loaded from localStorage at startup
-    app.activeTab().sql = 'SELECT * FROM {table:String}';
+    app.activeTab().sqlDraft = 'SELECT * FROM {table:String}';
     app.renderVarStrip();
     expect(app.dom.varStrip.querySelector('.var-input').value).toBe('events');
     expect(app.dom.runBtn.disabled).toBe(false);
@@ -626,7 +652,7 @@ describe('query run', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r)); // let the initial-mount fetches settle
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {id:UInt32}';
+    app.activeTab().sqlDraft = 'SELECT {id:UInt32}';
     await app.actions.run(); // ⌘↵/button path (runEntry) — bypasses the disabled button
     expect(app.activeTab().result).toBeNull(); // never executed
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
@@ -637,7 +663,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'WITH {database:String} AS d, {table:String} AS t SELECT 1';
+    tab.sqlDraft = 'WITH {database:String} AS d, {table:String} AS t SELECT 1';
     app.state.varValues = { database: 'default', table: 'events' };
     await app.actions.run();
     const [url, init] = app.chCtx.fetch.mock.calls[0];
@@ -648,7 +674,7 @@ describe('query run', () => {
   });
   it('relative time (#169): a DateTime var gets the combobox — focus opens the preset list', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     expect(input.getAttribute('role')).toBe('combobox');
@@ -659,7 +685,7 @@ describe('query run', () => {
   });
   it('relative time (#169): a non-date type gets the recents-only combobox (#171), not the date-like preset+preview one', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:UInt32}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     // Still a combobox (#171 gives every field a recents dropdown)...
@@ -670,7 +696,7 @@ describe('query run', () => {
   it('relative time (#169): picking a preset inserts the expression, persists it (not the resolved value), and shows a live preview', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([], { wallNow: () => 1751200000000 });
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -684,7 +710,7 @@ describe('query run', () => {
   });
   it('relative time (#169): an invalid (near-miss) expression disables Run with a structured reason', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'now/q';
@@ -697,7 +723,7 @@ describe('query run', () => {
   });
   it("relative time (#169 review finding #2): typing a near-miss stays neutral (incomplete) — Run stays enabled until blur hardens it", () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'now/q';
@@ -722,7 +748,7 @@ describe('query run', () => {
   });
   it('relative time (#169): Enter with the preset list closed hardens/gates via the same keydown path as a plain field', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'now/q';
@@ -733,7 +759,7 @@ describe('query run', () => {
   });
   it('relative time (#169): Enter with an active preset option commits it via keydown instead of hardening the prior text', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.focus(); // a real focus (not a synthetic dispatchEvent) — matches document.activeElement
@@ -747,7 +773,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'SELECT {from:DateTime}';
+    tab.sqlDraft = 'SELECT {from:DateTime}';
     app.state.varValues = { from: '-1h' };
     await app.actions.run();
     const [url1] = app.chCtx.fetch.mock.calls[0];
@@ -765,7 +791,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'SELECT {day:Date}, {tag:String}';
+    tab.sqlDraft = 'SELECT {day:Date}, {tag:String}';
     app.state.varValues = { day: 'now', tag: '-1h' }; // a String var keeps a relative-looking value verbatim
     await app.actions.run();
     const [url] = app.chCtx.fetch.mock.calls[0];
@@ -778,7 +804,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'SELECT * FROM t WHERE 1 /*[ AND d >= {from:DateTime} ]*/';
+    tab.sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d >= {from:DateTime} ]*/';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '-1h';
@@ -793,7 +819,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'CREATE VIEW v AS SELECT {x:String}';
+    tab.sqlDraft = 'CREATE VIEW v AS SELECT {x:String}';
     app.state.varValues = { x: 'default' }; // even with a value present, a view is not substituted
     await app.actions.run(); // not row-returning, no variables shown → runs freely
     const [url, init] = app.chCtx.fetch.mock.calls[0];
@@ -808,7 +834,7 @@ describe('query run', () => {
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
     const tab = app.activeTab();
-    tab.sql = 'CREATE VIEW v AS SELECT {x:String}; SELECT {id:UInt32}';
+    tab.sqlDraft = 'CREATE VIEW v AS SELECT {x:String}; SELECT {id:UInt32}';
     app.state.varValues = { id: '5' }; // x is confined to the view → not required, not sent
     await app.actions.run(); // >1 statement → runScript
     const viewCall = app.chCtx.fetch.mock.calls.find((c) => /CREATE VIEW/.test(c[1].body));
@@ -820,7 +846,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ text: 'plan' })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {id:UInt32}';
+    app.activeTab().sqlDraft = 'SELECT {id:UInt32}';
     await app.actions.explainQuery(); // clicks Explain → run({explain}) → gate
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
     expect(document.body.querySelector('.share-toast').textContent).toContain('id');
@@ -829,7 +855,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ text: '{"meta":[],"data":[]}' })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {a:String}; SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT {a:String}; SELECT 1';
     await app.actions.run(); // >1 statement → runScript → gate
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
     expect(document.body.querySelector('.share-toast').textContent).toContain('a');
@@ -838,7 +864,7 @@ describe('query run', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {xs:Array(String)}';
+    app.activeTab().sqlDraft = 'SELECT {xs:Array(String)}';
     app.state.varValues = { xs: ['a', "b'c"] };
     await app.actions.run();
     const [url] = app.chCtx.fetch.mock.calls[0];
@@ -848,7 +874,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {db:String}';
+    app.activeTab().sqlDraft = 'SELECT {db:String}';
     app.state.varValues = { db: ['not', 'scalar'] }; // array value, scalar declaration → structural
     await app.actions.run();
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
@@ -858,7 +884,7 @@ describe('query run', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     expect(app.dom.runBtn.disabled).toBe(false); // blank optional never gates
     await app.actions.run();
@@ -870,7 +896,7 @@ describe('query run', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'abc';
@@ -883,7 +909,7 @@ describe('query run', () => {
   });
   it('optional blocks (#165): the strip lists a block-only param with the optional affordance', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {y:UInt16} FROM t /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT {y:UInt16} FROM t /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     const fields = [...app.dom.varStrip.querySelectorAll('.var-field')];
     expect(fields.map((f) => f.querySelector('.var-name').textContent)).toEqual(['y', 'd']);
@@ -897,7 +923,7 @@ describe('query run', () => {
   it('optional blocks (#165): activation persists alongside the value (own storage key)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT 1 /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'v1';
@@ -916,7 +942,7 @@ describe('query run', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     await app.actions.run();
     const [url, init] = app.chCtx.fetch.mock.calls[0];
     expect(init.body).toBe('SELECT * FROM t WHERE 1 '); // dormant value is inert
@@ -926,7 +952,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT 1 /*[ AND 1 = 1 ]*/'; // parameterless block
+    app.activeTab().sqlDraft = 'SELECT 1 /*[ AND 1 = 1 ]*/'; // parameterless block
     await app.actions.run();
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
     expect(document.body.querySelector('.share-toast').textContent).toContain('optional block');
@@ -935,7 +961,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ text: 'plan' })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.state.varValues = { d: 'x' };
     app.state.filterActive = { d: true };
     await app.actions.explainQuery();
@@ -949,7 +975,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ text: '{"meta":[],"data":[]}' })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT 1 /*[ AND a = {a:String} ]*/; SELECT 2 /*[ AND b = {b:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT 1 /*[ AND a = {a:String} ]*/; SELECT 2 /*[ AND b = {b:String} ]*/';
     app.state.varValues = { a: 'x' };
     app.state.filterActive = { a: true };
     await app.actions.run(); // >1 statement → runScript
@@ -963,7 +989,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): a clearly-invalid value shows the inline error immediately and disables Run', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'abc'; // not a plausible prefix of anything — invalid, not incomplete
@@ -974,7 +1000,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): an out-of-range value shows a specific reason, exceeding server strictness on purpose', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '256'; // the live server accepts this and silently wraps to 0 — blocked client-side instead
@@ -984,7 +1010,7 @@ describe('query run', () => {
   });
   it("typed validation (#170): a plausible mid-typing prefix ('-') stays neutral while focused, hardens on blur", () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:Int32}';
+    app.activeTab().sqlDraft = 'SELECT {n:Int32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '-';
@@ -997,7 +1023,7 @@ describe('query run', () => {
   });
   it('typed validation (#170 review): a hardened invalid value keeps blocking Run across unrelated re-renders, until the field itself is edited', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:Int32}';
+    app.activeTab().sqlDraft = 'SELECT {n:Int32}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '-';
@@ -1031,7 +1057,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): Enter also hardens an incomplete value', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:Float64}';
+    app.activeTab().sqlDraft = 'SELECT {n:Float64}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '1e'; // live-rejected, but a genuine mid-typing state
@@ -1043,7 +1069,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): correcting an invalid value clears the affordance and re-enables Run', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'abc';
@@ -1056,7 +1082,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): an out-of-scope type (String) is never marked invalid', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {s:String}';
+    app.activeTab().sqlDraft = 'SELECT {s:String}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = 'anything at all, ,,, {}';
@@ -1068,7 +1094,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.state.varValues = { n: '256' };
     await app.actions.run();
     expect(app.chCtx.fetch.mock.calls.length).toBe(0);
@@ -1076,7 +1102,7 @@ describe('query run', () => {
   });
   it('typed validation (#170): a persisted invalid value paints the affordance on strip (re)build, e.g. a tab switch', () => {
     const { app } = appForRun([]);
-    app.activeTab().sql = 'SELECT {n:UInt8}';
+    app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.state.varValues = { n: '256' };
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
@@ -1117,7 +1143,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /bad/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],
     ]);
-    app.activeTab().sql = 'bad';
+    app.activeTab().sqlDraft = 'bad';
     await app.actions.run();
     expect(app.activeTab().result.error).toContain('nope');
     expect(app.state.history.length).toBe(0);
@@ -1126,7 +1152,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 9/.test(sql), resp({ text: 'a\tb' })],
     ]);
-    app.activeTab().sql = 'SELECT 9 FORMAT TabSeparatedWithNames';
+    app.activeTab().sqlDraft = 'SELECT 9 FORMAT TabSeparatedWithNames';
     await app.actions.run();
     expect(app.activeTab().result.rawText).toBe('a\tb');
     expect(app.activeTab().result.rawFormat).toBe('TabSeparatedWithNames'); // label for the raw tab
@@ -1136,7 +1162,7 @@ describe('query run', () => {
     const { app, e } = appForRun([
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'Expression\n  ReadFromTable' })],
     ]);
-    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('explain');
     expect(app.activeTab().result.rawText).toBe('Expression\n  ReadFromTable');
@@ -1144,46 +1170,46 @@ describe('query run', () => {
   });
   it('keeps a complex EXPLAIN (extra settings) on the verbatim Explain view', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
-    app.activeTab().sql = 'EXPLAIN indexes = 1, actions = 1 SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN indexes = 1, actions = 1 SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('explain'); // not auto-jumped to Indexes
     expect(sentExplains(e)).toContain('EXPLAIN indexes = 1, actions = 1 SELECT 1'); // run as typed
   });
   it('auto-selects the Indexes view for an exact indexes=1 EXPLAIN', async () => {
     const { app } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'idx plan' })]]);
-    app.activeTab().sql = 'EXPLAIN indexes = 1 SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN indexes = 1 SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('indexes');
   });
   it('does not leak a previous rich view onto a freshly-typed plain EXPLAIN', async () => {
     const { app } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'digraph{}' })]]);
-    app.activeTab().sql = 'EXPLAIN PIPELINE graph = 1 SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN PIPELINE graph = 1 SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('pipeline');
-    app.activeTab().sql = 'EXPLAIN SELECT 2'; // plain → must show the plan, not pipeline
+    app.activeTab().sqlDraft = 'EXPLAIN SELECT 2'; // plain → must show the plan, not pipeline
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('explain');
   });
   it('setExplainView re-runs a derived query and never edits the SQL', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'digraph{}' })]]);
-    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN SELECT 1';
     await app.actions.run();
     await app.actions.setExplainView('pipeline');
-    expect(app.activeTab().sql).toBe('EXPLAIN SELECT 1'); // editor untouched
+    expect(app.activeTab().sqlDraft).toBe('EXPLAIN SELECT 1'); // editor untouched
     expect(app.activeTab().result.explainView).toBe('pipeline');
     expect(sentExplains(e)).toContain('EXPLAIN PIPELINE graph = 1 SELECT 1');
   });
   it('the Explain button explains a plain SELECT (wraps it, editor untouched)', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.explainQuery();
-    expect(app.activeTab().sql).toBe('SELECT 1'); // editor untouched
+    expect(app.activeTab().sqlDraft).toBe('SELECT 1'); // editor untouched
     expect(app.activeTab().result.explainView).toBe('explain');
     expect(sentExplains(e)).toContain('EXPLAIN SELECT 1');
   });
   it('Explain on a multi-statement script shows a message and sends no EXPLAIN', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
-    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    app.activeTab().sqlDraft = 'SELECT 1; SELECT 2';
     await app.actions.explainQuery();
     expect(document.querySelector('.share-toast').textContent).toMatch(/multi-statement/);
     expect(sentExplains(e)).toHaveLength(0); // nothing sent to ClickHouse
@@ -1191,7 +1217,7 @@ describe('query run', () => {
   });
   it('setExplainView on a multi-statement script is also blocked', async () => {
     const { app, e } = appForRun([[(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })]]);
-    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    app.activeTab().sqlDraft = 'SELECT 1; SELECT 2';
     await app.actions.setExplainView('pipeline');
     expect(document.querySelector('.share-toast').textContent).toMatch(/multi-statement/);
     expect(sentExplains(e)).toHaveLength(0);
@@ -1200,7 +1226,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],
     ]);
-    app.activeTab().sql = 'EXPLAIN ESTIMATE SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN ESTIMATE SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.explainView).toBe('estimate');
     expect(app.activeTab().result.rows).toEqual([['42']]);
@@ -1212,10 +1238,10 @@ describe('query run', () => {
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
     await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.explainQuery();
     expect(sentExplains(e)).toContain('EXPLAIN pretty = 1, compact = 1 SELECT 1');
-    app.activeTab().sql = 'EXPLAIN indexes = 1 SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN indexes = 1 SELECT 1';
     await app.actions.run();
     expect(sentExplains(e)).toContain('EXPLAIN indexes = 1, pretty = 1, compact = 1 SELECT 1');
   });
@@ -1225,7 +1251,7 @@ describe('query run', () => {
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
     await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
-    app.activeTab().sql = 'EXPLAIN SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN SELECT 1';
     await app.actions.run();
     expect(sentExplains(e)).toContain('EXPLAIN SELECT 1'); // verbatim, no decoration
   });
@@ -1233,7 +1259,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: '{"plan":[]}' })],
     ]);
-    app.activeTab().sql = 'EXPLAIN SELECT 1 FORMAT JSON';
+    app.activeTab().sqlDraft = 'EXPLAIN SELECT 1 FORMAT JSON';
     await app.actions.run();
     expect(app.activeTab().result.rawFormat).toBe('JSON'); // FORMAT clause, not the EXPLAIN default
   });
@@ -1249,7 +1275,7 @@ describe('query run', () => {
   it('runs a ;-separated script sequentially, one summary row per statement, and records one history entry', async () => {
     const { app } = appForRun(scriptRoutes());
     app.state.sidePanel.value = 'history'; // exercise the history repaint in the finally
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     const script = app.activeTab().result.script;
     expect(script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']);
@@ -1269,7 +1295,7 @@ describe('query run', () => {
     const { app } = appForRun(scriptRoutes());
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = SCRIPT; // CREATE TABLE t; INSERT …; SELECT …
+    app.activeTab().sqlDraft = SCRIPT; // CREATE TABLE t; INSERT …; SELECT …
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -1280,7 +1306,7 @@ describe('query run', () => {
     ]);
     await new Promise((r) => setTimeout(r));
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -1290,7 +1316,7 @@ describe('query run', () => {
     ]);
     await new Promise((r) => setTimeout(r));
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = 'SELECT 1; SELECT 2';
+    app.activeTab().sqlDraft = 'SELECT 1; SELECT 2';
     await app.actions.run();
     expect(spy).not.toHaveBeenCalled();
   });
@@ -1300,7 +1326,7 @@ describe('query run', () => {
       [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
       [(u, sql) => /SELECT \* FROM t/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'a', type: 'Int8' }], data: [['1']] }) })],
     ]);
-    app.activeTab().sql = 'CREATE TEMPORARY TABLE t (a Int8); INSERT INTO t VALUES (1); SELECT * FROM t';
+    app.activeTab().sqlDraft = 'CREATE TEMPORARY TABLE t (a Int8); INSERT INTO t VALUES (1); SELECT * FROM t';
     await app.actions.run();
     const sids = app.chCtx.fetch.mock.calls.map((c) => c[0]).filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)[1]);
     expect(sids).toHaveLength(3); // all three statements carry the session
@@ -1312,7 +1338,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'n', type: 'Int' }], data }) })],
     ]);
-    app.activeTab().sql = 'SELECT 1; SELECT 2'; // two statements → script mode
+    app.activeTab().sqlDraft = 'SELECT 1; SELECT 2'; // two statements → script mode
     await app.actions.run();
     const last = app.activeTab().result.script[1];
     expect(last.rows).toHaveLength(100); // displayed cap
@@ -1321,9 +1347,9 @@ describe('query run', () => {
 
   it('a comment-only selection is a no-op (nothing is sent)', async () => {
     const { app } = appForRun([]);
-    app.editor.replaceDocument('-- just a note');
-    app.dom.editorView.dispatch({ selection: { anchor: 0, head: app.editor.getValue().length } });
-    app.activeTab().sql = 'SELECT 1';
+    app.sqlEditor.replaceDocument('-- just a note');
+    app.dom.sqlEditorView.dispatch({ selection: { anchor: 0, head: app.sqlEditor.getValue().length } });
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result).toBeNull(); // no run started
     // the comment text was never POSTed to ClickHouse
@@ -1332,7 +1358,7 @@ describe('query run', () => {
 
   it('copyResult treats a script result as non-exportable (no throw)', async () => {
     const { app } = appForRun(scriptRoutes());
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result.script).toHaveLength(3);
     expect(() => app.actions.copyResult()).not.toThrow();
@@ -1343,7 +1369,7 @@ describe('query run', () => {
       [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
       [(u, sql) => /INSERT INTO t/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     const script = app.activeTab().result.script;
     expect(script).toHaveLength(2); // CREATE ok, INSERT error; SELECT never run
@@ -1356,7 +1382,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /CREATE TABLE t/.test(sql), () => { throw new TypeError('fetch failed'); }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error' });
     expect(app.activeTab().result.script[0].error).toMatch(/may have executed/);
@@ -1366,7 +1392,7 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /CREATE TABLE t/.test(sql), () => { throw new Error('kaput'); }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result.script[0]).toMatchObject({ status: 'error', error: 'kaput' });
   });
@@ -1376,7 +1402,7 @@ describe('query run', () => {
       [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
       [(u, sql) => /INSERT INTO t/.test(sql), () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result.cancelled).toBe(true);
     expect(app.activeTab().result.script).toHaveLength(1); // CREATE ran; INSERT aborted before pushing
@@ -1391,7 +1417,7 @@ describe('query run', () => {
       // the SELECT (idempotent) resets once, then the retry succeeds
       [(u, sql) => /SELECT count/.test(sql), () => { if (sel++ === 0) throw new TypeError('Failed to fetch'); return resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) }); }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(sel).toBe(2); // retried the SELECT
     expect(app.activeTab().result.script.map((e) => e.status)).toEqual(['ok', 'ok', 'rows']); // recovered
@@ -1403,7 +1429,7 @@ describe('query run', () => {
       [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
       [(u, sql) => /INSERT INTO t/.test(sql), () => { inserts++; throw new TypeError('Failed to fetch'); }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(inserts).toBe(1); // the INSERT is NOT re-sent — it may have run server-side
     expect(app.activeTab().result.script[1]).toMatchObject({ status: 'error' });
@@ -1418,7 +1444,7 @@ describe('query run', () => {
       [(u, sql) => /INSERT INTO t/.test(sql), resp({ text: '' })],
       [(u, sql) => /SELECT count/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'c', type: 'UInt64' }], data: [['1']] }) })],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(n).toBe(2); // retried past the transient lock
     expect(app.activeTab().result.script[0].status).toBe('ok');
@@ -1430,7 +1456,7 @@ describe('query run', () => {
       [(u, sql) => /CREATE TABLE t/.test(sql), resp({ text: '' })],
       [(u, sql) => /INSERT INTO t/.test(sql), () => { inserts++; return resp({ ok: false, status: 400, text: '{"exception":"DB::Exception: bad value"}' }); }],
     ]);
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(inserts).toBe(1); // no retry for a non-transient error
     expect(app.activeTab().result.script[1]).toMatchObject({ status: 'error' });
@@ -1439,7 +1465,7 @@ describe('query run', () => {
   it('session_id falls back to a unique non-UUID id without crypto.randomUUID', async () => {
     const noUuid = { getRandomValues: (a) => webcrypto.getRandomValues(a) }; // non-secure context: no randomUUID
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]], { crypto: noUuid });
-    app.activeTab().sql = 'SET max_threads = 1'; // SET opens a session, so a session_id is sent
+    app.activeTab().sqlDraft = 'SET max_threads = 1'; // SET opens a session, so a session_id is sent
     await app.actions.run();
     const url = app.chCtx.fetch.mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(decodeURIComponent(/session_id=([^&]+)/.exec(url)[1])).toMatch(/^sess-/); // collision-resistant fallback
@@ -1449,8 +1475,8 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
-    app.editor.replaceDocument('SELECT 1; SELECT 2');
-    app.dom.editorView.dispatch({ selection: { anchor: 0, head: 8 } }); // "SELECT 1"
+    app.sqlEditor.replaceDocument('SELECT 1; SELECT 2');
+    app.dom.sqlEditorView.dispatch({ selection: { anchor: 0, head: 8 } }); // "SELECT 1"
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]); // single-statement rich path, not the script grid
     expect(app.activeTab().result.script).toBeUndefined();
@@ -1460,7 +1486,7 @@ describe('query run', () => {
   it('runEntry while already running is a no-op', async () => {
     const { app } = appForRun([]);
     app.state.running.value = true;
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result).toBeNull();
   });
@@ -1468,7 +1494,7 @@ describe('query run', () => {
   it('a signed-out script run hits onSignedOut and produces no result', async () => {
     const app = createApp(env({ sessionStorage: memSession({}) }));
     app.renderApp();
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(app.activeTab().result).toBeNull(); // returns before building the grid
   });
@@ -1477,7 +1503,7 @@ describe('query run', () => {
     const { app } = appForRun([]);
     let focused = true;
     let sel = { start: 0, end: 8, text: 'SELECT 1' };
-    app.editor = { ...app.editor, hasFocus: () => focused, getSelection: () => sel };
+    app.sqlEditor = { ...app.sqlEditor, hasFocus: () => focused, getSelection: () => sel };
     app.syncSelection();
     expect(app.state.hasSelection.value).toBe(true);
     app.setRunBtn(false);
@@ -1502,7 +1528,7 @@ describe('query run', () => {
       ]) })],
     ]);
     app.state.resultRowLimit = 2;
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const url = runUrl(e, /SELECT 1/);
     expect(url).toContain('max_result_rows=2');
@@ -1515,7 +1541,7 @@ describe('query run', () => {
       [(u, sql) => /ESTIMATE/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"rows","type":"UInt64"}]}\n', '{"row":{"rows":"42"}}\n']) })],
     ]);
     app.state.resultRowLimit = 100;
-    app.activeTab().sql = 'EXPLAIN ESTIMATE SELECT 1';
+    app.activeTab().sqlDraft = 'EXPLAIN ESTIMATE SELECT 1';
     await app.actions.run();
     expect(runUrl(e, /ESTIMATE/)).not.toContain('max_result_rows');
     expect(app.activeTab().result.capped).toBe(false);
@@ -1528,7 +1554,7 @@ describe('query run', () => {
     const { app, e } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.setResultRowLimit(99); // not an option → snaps back to the default 500
     expect(app.state.resultRowLimit).toBe(500);
     expect(globalThis.localStorage.getItem('asb:resultRowLimit')).toBe('500');
@@ -1539,7 +1565,7 @@ describe('query run', () => {
 
   it('run(): the args snapshot is captured at wave start — a var edit during the auth awaits does not change the sent params (review F6)', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
-    app.activeTab().sql = 'SELECT {id:String}';
+    app.activeTab().sqlDraft = 'SELECT {id:String}';
     app.state.varValues = { id: 'first' };
     const p = app.actions.run(); // runs synchronously through the gate + capture, suspends at ensureConfig/getToken
     app.state.varValues.id = 'second'; // the mid-await edit — must apply to the NEXT run only
@@ -1553,7 +1579,7 @@ describe('query run', () => {
     const ENUM_TYPE = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";
     it('v1: a declared Enum8 variable renders a dropdown of its members', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1562,7 +1588,7 @@ describe('query run', () => {
     });
     it('v1: a non-member value is gated inline (blocking — the declared type is a real Enum)', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.value = 'nope';
@@ -1574,7 +1600,7 @@ describe('query run', () => {
     });
     it('v1: a bare numeric code matching a declared code passes (live-server fact)', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.value = '2';
@@ -1586,7 +1612,7 @@ describe('query run', () => {
     it('v2: a String var compared to a column not yet loaded stays a plain input (no dropdown, no recents recorded)', () => {
       const { app } = appForRun([]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
-      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String}';
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1597,7 +1623,7 @@ describe('query run', () => {
         [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
       ]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
-      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String}';
       app.renderVarStrip();
       let input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1617,7 +1643,7 @@ describe('query run', () => {
         [(u, sql) => /SELECT \* FROM events/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })],
       ]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
-      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String}';
       app.renderVarStrip();
       await app.actions.loadColumns('d', 'events');
       const input = app.dom.varStrip.querySelector('.var-input');
@@ -1631,7 +1657,7 @@ describe('query run', () => {
     });
     it('v1: Enter with no active option (list closed) falls through to the plain hard-commit/harden path', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.value = 'nope';
@@ -1642,7 +1668,7 @@ describe('query run', () => {
     });
     it('v1: Enter with an active option commits it via keydown (combobox delegation)', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.focus();
@@ -1657,7 +1683,7 @@ describe('query run', () => {
         { name: 'events', columns: [{ name: 'status', type: ENUM_TYPE }] },
         { name: 'other', columns: [] },
       ] }];
-      app.activeTab().sql = 'SELECT * FROM events e JOIN other o ON 1=1 WHERE status = {s:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events e JOIN other o ON 1=1 WHERE status = {s:String}';
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1668,7 +1694,7 @@ describe('query run', () => {
         [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
       ]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
-      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
       app.renderVarStrip();
       const region = app.dom.varStrip.querySelectorAll('.var-input')[1];
       region.focus(); // real focus: sets document.activeElement AND fires the field's focus listener (dropdown opens)
@@ -1697,7 +1723,7 @@ describe('query run', () => {
       const { app } = appForRun([]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'status', type: ENUM_TYPE }] }] }];
       // In the RAW text this whole comparison is one opaque comment span.
-      app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND status = {s:String} ]*/';
+      app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND status = {s:String} ]*/';
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1707,7 +1733,7 @@ describe('query run', () => {
     it('v2: alias-qualified + unqualified refs to the same single-table column still get the dropdown (review F3: resolved identity, not qualifier text)', () => {
       const { app } = appForRun([]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: [{ name: 'status', type: ENUM_TYPE }] }] }];
-      app.activeTab().sql = 'SELECT * FROM events e WHERE e.status = {s:String} OR status = {s:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events e WHERE e.status = {s:String} OR status = {s:String}';
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       input.dispatchEvent(new Event('focus', { bubbles: true }));
@@ -1716,7 +1742,7 @@ describe('query run', () => {
     });
     it('a type-conflicted variable renders a plain input with a visible warning — the enum control is disabled (#173 acceptance, review F1)', () => {
       const { app } = appForRun([]);
-      app.activeTab().sql = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}; SELECT {status:String}`;
+      app.activeTab().sqlDraft = `SELECT * FROM t WHERE status = {status:${ENUM_TYPE}}; SELECT {status:String}`;
       app.renderVarStrip();
       const input = app.dom.varStrip.querySelector('.var-input');
       expect(input.classList.contains('is-conflict')).toBe(true); // visible warning, distinct from is-invalid
@@ -1732,7 +1758,7 @@ describe('query run', () => {
         [(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'status', type: ENUM_TYPE, comment: '' }] } })],
       ]);
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
-      app.activeTab().sql = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
+      app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
       app.renderVarStrip();
       const inputs = app.dom.varStrip.querySelectorAll('.var-input');
       const sInput = inputs[0];
@@ -1763,7 +1789,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.state.varValues = { from: '-1h' };
     await app.actions.run();
     expect(app.state.varRecent.byName.from.map((e) => e.value)).toEqual(['-1h']); // the expression, never the epoch timestamp
@@ -1773,7 +1799,7 @@ describe('recent-value history (#171)', () => {
   it('a failed statement records nothing', async () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[() => true, resp({ ok: false, status: 500, text: 'DB::Exception: boom' })]]);
-    app.activeTab().sql = 'SELECT {id:String}';
+    app.activeTab().sqlDraft = 'SELECT {id:String}';
     app.state.varValues = { id: 'nope' };
     await app.actions.run();
     expect(app.state.varRecent.byName.id).toBeUndefined();
@@ -1785,7 +1811,7 @@ describe('recent-value history (#171)', () => {
       [(u, sql) => /SELECT \{a:String\}/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'a', type: 'String' }], data: [['x']] }) })],
       [(u, sql) => /SELECT \{b:String\}/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
     ]);
-    app.activeTab().sql = 'SELECT {a:String}; SELECT {b:String}; SELECT {c:String}';
+    app.activeTab().sqlDraft = 'SELECT {a:String}; SELECT {b:String}; SELECT {c:String}';
     app.state.varValues = { a: 'va', b: 'vb', c: 'vc' };
     await app.actions.run(); // >1 statement → runScript, stops after statement 2 fails
     expect(app.state.varRecent.byName.a.map((e) => e.value)).toEqual(['va']);
@@ -1801,7 +1827,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     await app.actions.run();
     expect(app.state.varRecent.byName.d).toBeUndefined();
   });
@@ -1811,7 +1837,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.state.varValues = { d: '' };
     app.state.filterActive = { d: true }; // explicitly active despite the blank value
     await app.actions.run();
@@ -1823,7 +1849,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
     app.state.varValues = { tenant: 'other' };
@@ -1838,7 +1864,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {id:String}';
+    app.activeTab().sqlDraft = 'SELECT {id:String}';
     app.state.varValues = { id: 'first' };
     await app.actions.run();
     app.state.varRecentDisabled = true;
@@ -1853,7 +1879,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
     const { app: app2 } = appForRun([]); // fresh app, same localStorage — simulates a reload
@@ -1865,7 +1891,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     // Type each value into the real field (not a direct state write) — the
@@ -1897,7 +1923,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {tenant:String}';
+    app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
     app.renderVarStrip();
@@ -1913,7 +1939,7 @@ describe('recent-value history (#171)', () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
     app.chCtx.fetch.mockClear();
-    app.activeTab().sql = 'SELECT {from:DateTime}';
+    app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = app.dom.varStrip.querySelector('.var-input');
     input.value = '-3h'; // not one of RELATIVE_TIME_PRESETS
@@ -1979,23 +2005,23 @@ describe('formatQuery', () => {
     const { app } = appFor([
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT\n  1' }] } })],
     ]);
-    app.activeTab().sql = 'select 1';
+    app.activeTab().sqlDraft = 'select 1';
     await app.actions.formatQuery();
     // withStatementBreak appends a newline so the caret lands past the last
     // token — otherwise the replace re-opens autocomplete on it (#format bug).
-    expect(app.editor.getValue()).toBe('SELECT\n  1\n');
+    expect(app.sqlEditor.getValue()).toBe('SELECT\n  1\n');
   });
   it('no-ops on empty SQL', async () => {
     const { app, e } = appFor([]);
     await Promise.resolve(); // let render's loadVersion/loadSchema settle
     e.fetch.mockClear();
-    app.activeTab().sql = '   ';
+    app.activeTab().sqlDraft = '   ';
     await app.actions.formatQuery();
     expect(e.fetch).not.toHaveBeenCalled();
   });
   it('signs out when there is no usable token', async () => {
     const { app } = appFor([], { sessionStorage: memSession({}) }); // no token
-    app.activeTab().sql = 'select 1';
+    app.activeTab().sqlDraft = 'select 1';
     await app.actions.formatQuery();
     expect(app.root.querySelector('.login-screen')).not.toBeNull();
   });
@@ -2003,14 +2029,14 @@ describe('formatQuery', () => {
     const { app } = appFor([
       [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)"}' })],
     ]);
-    app.activeTab().sql = 'select x BEWEEN 2';
-    app.editor.replaceDocument('select x BEWEEN 2');
+    app.activeTab().sqlDraft = 'select x BEWEEN 2';
+    app.sqlEditor.replaceDocument('select x BEWEEN 2');
     await app.actions.formatQuery();
-    expect(app.editor.getValue()).toBe('select x BEWEEN 2'); // editor unchanged
+    expect(app.sqlEditor.getValue()).toBe('select x BEWEEN 2'); // editor unchanged
     const err = app.root.querySelector('.results-error');
     expect(err).not.toBeNull();
     expect(err.textContent).toContain('Code: 62. DB::Exception: Syntax error: failed at position 8 (BEWEEN): BEWEEN 2. Expected one of: BETWEEN, …. (SYNTAX_ERROR)'); // full original message, untruncated
-    expect(app.dom.editorView.state.selection.main.head).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
+    expect(app.dom.sqlEditorView.state.selection.main.head).toBe(7); // caret jumped to the offending token (pos 8 → offset 7)
     expect(app.activeTab().result.formatError).toBe(true);
   });
   it('a later successful format clears a prior format error', async () => {
@@ -2018,10 +2044,10 @@ describe('formatQuery', () => {
       [(u, sql) => /BEWEEN/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error: failed at position 8 (BEWEEN): x. Expected one of: foo"}' })],
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
     ]);
-    app.activeTab().sql = 'select x BEWEEN 2';
+    app.activeTab().sqlDraft = 'select x BEWEEN 2';
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).not.toBeNull();
-    app.activeTab().sql = 'select 1'; // fixed
+    app.activeTab().sqlDraft = 'select 1'; // fixed
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).toBeNull(); // error cleared
     expect(app.activeTab().result).toBeNull();
@@ -2031,18 +2057,18 @@ describe('formatQuery', () => {
       [(u, sql) => /create table/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE t\n(\n    a Int8\n)' }] } })],
       [(u, sql) => /count/.test(sql), resp({ json: { data: [{ q: 'SELECT count()\nFROM t' }] } })],
     ]);
-    app.activeTab().sql = 'create table t (a Int8); select count() from t';
+    app.activeTab().sqlDraft = 'create table t (a Int8); select count() from t';
     await app.actions.formatQuery();
-    expect(app.editor.getValue()).toBe('CREATE TABLE t\n(\n    a Int8\n);\n\nSELECT count()\nFROM t\n');
+    expect(app.sqlEditor.getValue()).toBe('CREATE TABLE t\n(\n    a Int8\n);\n\nSELECT count()\nFROM t\n');
   });
   it('multi-statement format is best-effort: an unformattable statement keeps its original text', async () => {
     const { app } = appFor([
       [(u, sql) => /create table/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE t (a Int8)' }] } })],
       [(u, sql) => /bad syntax/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error"}' })],
     ]);
-    app.activeTab().sql = 'create table t (a Int8); bad syntax here';
+    app.activeTab().sqlDraft = 'create table t (a Int8); bad syntax here';
     await app.actions.formatQuery();
-    expect(app.editor.getValue()).toContain('bad syntax here'); // original kept
+    expect(app.sqlEditor.getValue()).toContain('bad syntax here'); // original kept
     expect(app.root.querySelector('.results-error')).toBeNull(); // no scary error for the script
   });
   it('a multi-statement format clears a prior single-statement format error', async () => {
@@ -2050,10 +2076,10 @@ describe('formatQuery', () => {
       [(u, sql) => /BEWEEN/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"Syntax error: failed at position 8 (BEWEEN): x"}' })],
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
     ]);
-    app.activeTab().sql = 'select x BEWEEN 2';
+    app.activeTab().sqlDraft = 'select x BEWEEN 2';
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).not.toBeNull();
-    app.activeTab().sql = 'select 1; select 2'; // now a script
+    app.activeTab().sqlDraft = 'select 1; select 2'; // now a script
     await app.actions.formatQuery();
     expect(app.root.querySelector('.results-error')).toBeNull();
   });
@@ -2061,11 +2087,11 @@ describe('formatQuery', () => {
     const { app, e } = appFor([]);
     await Promise.resolve(); // let render's loadVersion/loadSchema settle
     e.fetch.mockClear();
-    app.activeTab().sql = 'select 1 /*[ AND d = {d:String} ]*/';
-    app.editor.replaceDocument('select 1 /*[ AND d = {d:String} ]*/');
+    app.activeTab().sqlDraft = 'select 1 /*[ AND d = {d:String} ]*/';
+    app.sqlEditor.replaceDocument('select 1 /*[ AND d = {d:String} ]*/');
     await app.actions.formatQuery();
     expect(e.fetch).not.toHaveBeenCalled(); // never round-tripped through formatQuery()
-    expect(app.editor.getValue()).toBe('select 1 /*[ AND d = {d:String} ]*/'); // untouched
+    expect(app.sqlEditor.getValue()).toBe('select 1 /*[ AND d = {d:String} ]*/'); // untouched
     expect(document.body.querySelector('.share-toast').textContent)
       .toContain('optional blocks — not formatted');
   });
@@ -2073,9 +2099,9 @@ describe('formatQuery', () => {
     const { app, e } = appFor([
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'SELECT 1' }] } })],
     ]);
-    app.activeTab().sql = 'select 1; select 2 /*[ AND d = {d:String} ]*/';
+    app.activeTab().sqlDraft = 'select 1; select 2 /*[ AND d = {d:String} ]*/';
     await app.actions.formatQuery();
-    expect(app.editor.getValue()).toBe('SELECT 1;\n\nselect 2 /*[ AND d = {d:String} ]*/\n');
+    expect(app.sqlEditor.getValue()).toBe('SELECT 1;\n\nselect 2 /*[ AND d = {d:String} ]*/\n');
     expect(document.body.querySelector('.share-toast').textContent)
       .toContain('1 statement contains optional blocks — not formatted');
     // exactly one formatQuery round trip — the template statement never went out
@@ -2109,7 +2135,7 @@ describe('insertCreate', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE db.t\n(\n  a Int\n)' }] } })],
     ]);
     await app.actions.insertCreate('db.t');
-    expect(app.editor.getValue()).toBe('CREATE TABLE db.t\n(\n  a Int\n)');
+    expect(app.sqlEditor.getValue()).toBe('CREATE TABLE db.t\n(\n  a Int\n)');
   });
   it('falls back to the raw DDL when formatting fails', async () => {
     const { app } = appFor([
@@ -2117,23 +2143,23 @@ describe('insertCreate', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"x"}' })],
     ]);
     await app.actions.insertCreate('db.t');
-    expect(app.editor.getValue()).toBe('CREATE TABLE db.t (a Int)');
+    expect(app.sqlEditor.getValue()).toBe('CREATE TABLE db.t (a Int)');
   });
   it('no-ops when SHOW CREATE returns no statement', async () => {
     const { app } = appFor([
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [] } })],
     ]);
-    app.editor.replaceDocument('keep');
+    app.sqlEditor.replaceDocument('keep');
     await app.actions.insertCreate('db.t');
-    expect(app.editor.getValue()).toBe('keep');
+    expect(app.sqlEditor.getValue()).toBe('keep');
   });
   it('surfaces a SHOW CREATE failure without changing the editor', async () => {
     const { app } = appFor([
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: no table"}' })],
     ]);
-    app.editor.replaceDocument('keep');
+    app.sqlEditor.replaceDocument('keep');
     await app.actions.insertCreate('db.t');
-    expect(app.editor.getValue()).toBe('keep');
+    expect(app.sqlEditor.getValue()).toBe('keep');
     expect(document.body.querySelector('.share-toast')).not.toBeNull();
   });
   it('signs out when there is no usable token', async () => {
@@ -2155,15 +2181,15 @@ describe('openCreateInNewTab (#180)', () => {
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [{ statement: 'CREATE TABLE db1.events (a Int)' }] } })],
       [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE db1.events\n(\n  a Int\n)' }] } })],
     ]);
-    app.editor.replaceDocument('keep');
+    app.sqlEditor.replaceDocument('keep');
     const priorId = app.state.activeTabId.value;
     const priorCount = app.state.tabs.value.length;
     await app.actions.openCreateInNewTab('db1.events', 'db1.events');
     expect(app.state.tabs.value.length).toBe(priorCount + 1);
-    expect(app.state.tabs.value.find((t) => t.id === priorId).sql).toBe('keep');
+    expect(app.state.tabs.value.find((t) => t.id === priorId).sqlDraft).toBe('keep');
     expect(app.activeTab().id).not.toBe(priorId);
     expect(app.activeTab().name).toBe('db1.events');
-    expect(app.activeTab().sql).toBe('CREATE TABLE db1.events\n(\n  a Int\n)');
+    expect(app.activeTab().sqlDraft).toBe('CREATE TABLE db1.events\n(\n  a Int\n)');
   });
   it('falls back to the raw DDL in the new tab when formatting fails', async () => {
     const { app } = appFor([
@@ -2171,7 +2197,7 @@ describe('openCreateInNewTab (#180)', () => {
       [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"x"}' })],
     ]);
     await app.actions.openCreateInNewTab('db1.events', 'db1.events');
-    expect(app.activeTab().sql).toBe('CREATE TABLE db1.events (a Int)');
+    expect(app.activeTab().sqlDraft).toBe('CREATE TABLE db1.events (a Int)');
   });
   it('creates no tab when SHOW CREATE returns no statement', async () => {
     const { app } = appFor([
@@ -2187,13 +2213,13 @@ describe('openCreateInNewTab (#180)', () => {
     const { app } = appFor([
       [(u, sql) => /SHOW CREATE/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: no table"}' })],
     ]);
-    app.editor.replaceDocument('keep');
+    app.sqlEditor.replaceDocument('keep');
     const priorId = app.state.activeTabId.value;
     const priorCount = app.state.tabs.value.length;
     await app.actions.openCreateInNewTab('db1.events', 'db1.events');
     expect(app.state.tabs.value.length).toBe(priorCount);
     expect(app.state.activeTabId.value).toBe(priorId);
-    expect(app.editor.getValue()).toBe('keep');
+    expect(app.sqlEditor.getValue()).toBe('keep');
     expect(document.body.querySelector('.share-toast')).not.toBeNull();
   });
   it('signs out when there is no usable token, creating no tab', async () => {
@@ -2399,7 +2425,7 @@ describe('share + star + columns', () => {
     const e = env({ window: { history: { replaceState: vi.fn() }, navigator: {} } });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.share();
     await Promise.resolve();
     expect(e.navigator.clipboard.writeText).toHaveBeenCalled();
@@ -2407,13 +2433,13 @@ describe('share + star + columns', () => {
   it('share no-ops on empty SQL', () => {
     const app = createApp(env());
     app.renderApp();
-    app.activeTab().sql = '  ';
+    app.activeTab().sqlDraft = '  ';
     expect(() => app.actions.share()).not.toThrow();
   });
   it('save opens a name popover; Save commits, links the tab, and the button reads "Saved"', () => {
     const app = createApp(env());
     app.renderApp();
-    app.activeTab().sql = 'SELECT 42';
+    app.activeTab().sqlDraft = 'SELECT 42';
     app.actions.save();
     const pop = document.querySelector('.save-popover');
     expect(pop).not.toBeNull();
@@ -2430,7 +2456,7 @@ describe('share + star + columns', () => {
   it('save popover: re-opening is idempotent, Esc closes, dirty edit flips "Saved"→"Save"', () => {
     const app = createApp(env());
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.save();
     app.actions.save(); // second call no-ops while open
     expect(document.querySelectorAll('.save-popover')).toHaveLength(1);
@@ -2438,7 +2464,8 @@ describe('share + star + columns', () => {
     document.querySelector('.save-popover .sp-save').dispatchEvent(new Event('click'));
     expect(app.dom.saveBtn.textContent).toContain('Saved');
     // edit → button reverts to "Save"
-    app.activeTab().sql = 'SELECT 2';
+    app.activeTab().sqlDraft = 'SELECT 2';
+    app.activeTab().dirtySql = true;
     app.updateSaveBtn();
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(false);
     expect(app.dom.saveBtn.textContent).toContain('Save');
@@ -2450,15 +2477,26 @@ describe('share + star + columns', () => {
   it('save is a no-op (toast) for empty SQL', () => {
     const app = createApp(env());
     app.renderApp();
-    app.activeTab().sql = '   ';
+    app.activeTab().sqlDraft = '   ';
     app.actions.save();
     expect(document.querySelector('.save-popover')).toBeNull();
     expect(document.querySelector('.share-toast').textContent).toBe('Nothing to save');
   });
+  it('linked Save also retains the empty-SQL guard', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.sqlEditor.replaceDocument('');
+    app.actions.save();
+    expect(app.state.savedQueries[0].sql).toBe('SELECT 9');
+    expect(document.querySelector('.share-toast').textContent).toBe('Nothing to save');
+    expect(app.activeTab().dirtySql).toBe(true);
+  });
   it('save popover closes on click outside', () => {
     const app = createApp(env());
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.save();
     expect(document.querySelector('.save-popover')).not.toBeNull();
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
@@ -2473,18 +2511,164 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
     expect(app.dom.saveBtn.textContent).toContain('Saved');
   });
-  it('save popover: prefills the linked query description; ⌘Enter on the textarea commits', () => {
+  it('keeps Spec unavailable until creation, then exposes only Format, Save, and the mode switch', async () => {
+    const showSaveFilePicker = vi.fn();
+    const e = env({ showSaveFilePicker, isSecureContext: true });
+    const app = createApp(e);
+    app.renderApp();
+    expect(app.dom.specModeBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(app.actions.setEditorMode('spec')).toBe(false);
+    expect(app.activeTab().editorMode).toBe('sql');
+    expect(document.querySelector('.share-toast').textContent).toContain('Save this query');
+
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    expect(app.actions.setEditorMode('spec')).toBe(true);
+    expect(app.activeTab().editorMode).toBe('spec');
+    expect(app.dom.sqlEditorHost.hidden).toBe(true);
+    expect(app.dom.specPane.hidden).toBe(false);
+    expect(app.dom.runBtn.hidden).toBe(true);
+    expect(app.dom.formatSpecBtn.hidden).toBe(false);
+    expect(app.dom.fmtBtn.hidden).toBe(true);
+    expect(app.dom.explainBtn.hidden).toBe(true);
+    expect(app.dom.saveBtn.hidden).toBe(false);
+    expect(app.dom.editorModeSwitch.hidden).toBe(false);
+    expect(app.dom.exportBtn.hidden).toBe(true);
+    expect(app.dom.shareBtn.hidden).toBe(true);
+    expect(app.dom.validateSpecBtn).toBeUndefined();
+    expect(app.dom.revertSpecBtn).toBeUndefined();
+    expect(app.dom.varStrip.hidden).toBe(true);
+
+    await Promise.resolve();
+    e.fetch.mockClear();
+    await app.actions.run();
+    await app.actions.formatQuery();
+    await app.actions.explainQuery();
+    await app.actions.setExplainView('pipeline');
+    await app.actions.setResultRowLimit(1000);
+    await app.actions.exportEntry();
+    await app.actions.exportDirect('SELECT 9');
+    await app.actions.share();
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(e.navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(app.state.resultRowLimit).toBe(1000); // preference changes; Spec mode only blocks the rerun
+
+    app.actions.setEditorMode('sql');
+    expect(app.dom.runBtn.hidden).toBe(false);
+    expect(app.dom.fmtBtn.hidden).toBe(false);
+    expect(app.dom.explainBtn.hidden).toBe(false);
+    expect(app.dom.formatSpecBtn.hidden).toBe(true);
+    expect(app.dom.saveBtn.hidden).toBe(false);
+    expect(app.dom.exportBtn.hidden).toBe(false);
+    expect(app.dom.shareBtn.hidden).toBe(false);
+  });
+  it('disables Save and Share for invalid Spec and performs no persistence or sharing', async () => {
+    const store = { getItem: vi.fn(() => null), setItem: vi.fn() };
+    vi.stubGlobal('localStorage', store);
+    const replaceState = vi.fn();
+    const writeText = vi.fn(async () => {});
+    const app = createApp(env({
+      window: { history: { replaceState }, navigator: {} },
+      navigator: { clipboard: { writeText } },
+    }));
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.actions.setEditorMode('spec');
+    app.specEditor.replaceDocument('{"name":');
+    expect(app.activeTab().specParsed).toBeNull();
+    expect(app.dom.saveBtn.disabled).toBe(true);
+    expect(app.dom.shareBtn.disabled).toBe(true);
+    const before = structuredClone(app.state.savedQueries[0]);
+    store.setItem.mockClear();
+
+    app.actions.save();
+    app.actions.setEditorMode('sql');
+    app.actions.share();
+    await Promise.resolve();
+    expect(app.state.savedQueries[0]).toEqual(before);
+    expect(store.setItem).not.toHaveBeenCalled();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+  it('shares sqlDraft with the current valid parsed Spec, including unknown fields', async () => {
+    const replaceState = vi.fn();
+    const writeText = vi.fn(async () => {});
+    const app = createApp(env({
+      window: { history: { replaceState }, navigator: {} },
+      navigator: { clipboard: { writeText } },
+    }));
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.sqlEditor.replaceDocument('SELECT 10');
+    app.specEditor.replaceDocument('{"name":"Draft","favorite":false,"future":{"v":2}}');
+    app.actions.share();
+    await Promise.resolve();
+    const url = replaceState.mock.calls[0][2];
+    const shared = decodeShare(new URL(url).hash);
+    expect(shared.sql).toBe('SELECT 10');
+    expect(shared.spec).toEqual({ name: 'Draft', favorite: false, future: { v: 2 } });
+    expect(writeText).toHaveBeenCalled();
+  });
+  it('formats the active valid Spec while invalid JSON remains untouched with diagnostics', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.actions.setEditorMode('spec');
+    app.specEditor.replaceDocument('{"name":');
+    app.actions.formatSpec();
+    expect(app.specEditor.getValue()).toBe('{"name":');
+    expect(app.activeTab().specDiagnostics).not.toHaveLength(0);
+    app.specEditor.replaceDocument('{"name":"Draft","favorite":false}');
+    app.actions.formatSpec();
+    expect(app.specEditor.getValue()).toBe('{\n  "name": "Draft",\n  "favorite": false\n}');
+  });
+  it('activates an invalid linked tab directly in Spec mode', () => {
+    const app = createApp(env({ window: { history: { replaceState: vi.fn() }, navigator: {} } }));
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    const tab = app.activeTab();
+    expect(app.activateInvalidSpecDraft(null)).toBeUndefined();
+    app.activateInvalidSpecDraft(tab);
+    expect(app.state.activeTabId.value).toBe(tab.id);
+    expect(tab.editorMode).toBe('spec');
+    expect(document.querySelector('.share-toast').textContent).toBe('Fix Spec JSON first');
+  });
+  it('registers and unregisters synchronous semantic validators by exact path', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.specEditor.replaceDocument('{"name":"Fav","favorite":false,"items":[{"kind":"bad"}]}');
+    const linked = app.activeTab();
+    app.actions.newTab();
+    const unregister = app.registerSpecValidator(['items', 0, 'kind'], ({ value, path }) =>
+      value === 'ok' ? [] : [{ path, severity: 'warning', code: 'bad-kind', message: 'Unexpected kind' }]);
+    expect(linked.specDiagnostics).toEqual([{
+      path: ['items', 0, 'kind'], severity: 'warning', code: 'bad-kind', message: 'Unexpected kind',
+    }]);
+    unregister();
+    expect(linked.specDiagnostics).toEqual([]);
+  });
+  it('linked Save commits SQL and authoritative Spec directly without a popover', () => {
     const app = createApp(env());
     app.renderApp();
     app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9', description: 'why' })];
     app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.sqlEditor.replaceDocument('SELECT 10');
+    app.specEditor.replaceDocument('{"name":"  Renamed  ","description":"  updated reason  ","favorite":false,"future":{"kept":true}}');
     app.actions.save();
-    const desc = document.querySelector('.save-popover .sp-desc');
-    expect(desc.value).toBe('why'); // prefilled from the linked entry
-    desc.value = 'updated reason';
-    desc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true }));
-    expect(document.querySelector('.save-popover')).toBeNull(); // committed + closed
+    expect(document.querySelector('.save-popover')).toBeNull();
+    expect(app.state.savedQueries[0].sql).toBe('SELECT 10');
+    expect(app.state.savedQueries[0].spec).toEqual({
+      name: 'Renamed', description: 'updated reason', favorite: false, future: { kept: true },
+    });
     expect(queryDescription(app.state.savedQueries[0])).toBe('updated reason');
+    expect(app.activeTab().dirtySql).toBe(false);
+    expect(app.activeTab().dirtySpec).toBe(false);
   });
   it('loadColumns fills the target table by reference, leaving siblings untouched', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });
@@ -2533,7 +2717,7 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     app.root.querySelector('.new-tab').dispatchEvent(new Event('click'));
     app.root.querySelector('.hd-btn[title^="Keyboard"]').dispatchEvent(new Event('click')); // shortcuts
-    app.activeTab().sql = 'SELECT 1'; // set sql on the now-active tab
+    app.activeTab().sqlDraft = 'SELECT 1'; // set sql on the now-active tab
     app.dom.saveBtn.dispatchEvent(new Event('click')); // open save popover
     document.querySelector('.save-popover .sp-input').value = 'Q';
     document.querySelector('.save-popover .sp-save').dispatchEvent(new Event('click')); // commit
@@ -2568,7 +2752,7 @@ describe('exhaustive controller coverage', () => {
     const e = env({ fetch: vi.fn(async () => { throw new TypeError('net down'); }) });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.error).toBe('Network error');
   });
@@ -2576,7 +2760,7 @@ describe('exhaustive controller coverage', () => {
     const e = env({ fetch: vi.fn(async () => { const err = new Error('x'); err.name = 'AbortError'; throw err; }) });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.cancelled).toBe(true);
     expect(app.activeTab().result.error).toBeNull();
@@ -2586,7 +2770,7 @@ describe('exhaustive controller coverage', () => {
     const e = env({ fetch: vi.fn(async () => { throw new Error('weird'); }) });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.error).toBe('weird');
   });
@@ -2595,7 +2779,7 @@ describe('exhaustive controller coverage', () => {
     const e = env({ window: fakeWin(), navigator: { clipboard: { writeText: vi.fn(async () => { throw new Error('denied'); }) } } });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.share();
     await new Promise((r) => setTimeout(r));
     expect(document.querySelector('.share-toast')).not.toBeNull();
@@ -2604,7 +2788,7 @@ describe('exhaustive controller coverage', () => {
     const e = env({ window: fakeWin(), navigator: {} });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.share();
     expect(document.querySelector('.share-toast').textContent).toContain('copy manually');
   });
@@ -2638,7 +2822,7 @@ describe('exhaustive controller coverage', () => {
 
     // signed-out run with non-empty SQL exercises the getToken()→onSignedOut path
     const noToken = createApp(env({ sessionStorage: memSession({}) }));
-    noToken.activeTab().sql = 'SELECT 1';
+    noToken.activeTab().sqlDraft = 'SELECT 1';
     await noToken.actions.run();
     expect(noToken.activeTab().result).toBeNull();
 
@@ -2646,7 +2830,7 @@ describe('exhaustive controller coverage', () => {
     const noRender = createApp(env({
       fetch: makeFetch([[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]),
     }));
-    noRender.activeTab().sql = 'SELECT 1';
+    noRender.activeTab().sqlDraft = 'SELECT 1';
     await noRender.actions.run();
     expect(noRender.activeTab().result.error).toBeNull();
   });
@@ -2672,10 +2856,10 @@ describe('exhaustive controller coverage', () => {
     const e = env({ window: { history: { replaceState: vi.fn() }, navigator: undefined }, navigator: undefined });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = ''; // empty
+    app.activeTab().sqlDraft = ''; // empty
     app.actions.share(); // returns at !sql (covers the `|| ''` empty branch)
     app.actions.save(); // empty sql → toast, no popover
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.share(); // no clipboard anywhere → manual toast
     expect(document.querySelector('.share-toast')).not.toBeNull();
   });
@@ -2693,7 +2877,7 @@ describe('exhaustive controller coverage', () => {
     e.fetch = makeFetch([[(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.error).toBeNull();
   });
@@ -2703,7 +2887,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     app.state.outputFormat = ''; // exercises the `outputFormat || 'Table'` fallback
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.error).toBe('boom-str');
   });
@@ -2726,7 +2910,7 @@ describe('exhaustive controller coverage', () => {
     });
     const app = createApp(e);
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     app.actions.share();
     await Promise.resolve();
     expect(e.window.navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('#'));
@@ -2745,7 +2929,7 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     await app.ensureConfig();
     expect(app.chAuth).toBe('basic');
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const q = e.fetch.mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1');
     const auth = q[1].headers.Authorization;
@@ -2768,7 +2952,7 @@ describe('exhaustive controller coverage', () => {
     app.renderApp();
     await app.ensureConfig();
     expect(app.basicUserClaim).toBe('nickname');
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const q = e.fetch.mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1');
     const auth = q[1].headers.Authorization;
@@ -2851,7 +3035,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     app.state.sidePanel.value = 'history';
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.state.history.length).toBe(1);
   });
@@ -2880,14 +3064,14 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker1 = vi.fn();
     const unavailable = createApp(env({ window: fakeWin(), showSaveFilePicker: null, isSecureContext: false }));
     unavailable.renderApp();
-    unavailable.activeTab().sql = 'SELECT 1';
+    unavailable.activeTab().sqlDraft = 'SELECT 1';
     await unavailable.actions.exportEntry();
     expect(showSaveFilePicker1).not.toHaveBeenCalled();
 
     const showSaveFilePicker2 = vi.fn();
     const busy = createApp(env({ window: fakeWin(), showSaveFilePicker: showSaveFilePicker2, isSecureContext: true }));
     busy.renderApp();
-    busy.activeTab().sql = 'SELECT 1';
+    busy.activeTab().sqlDraft = 'SELECT 1';
     busy.state.exporting.value = true;
     await busy.actions.exportEntry();
     expect(showSaveFilePicker2).not.toHaveBeenCalled();
@@ -2896,7 +3080,7 @@ describe('streaming export (issue #87)', () => {
   it('"Nothing to export" toast when the editor is empty', async () => {
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = '   ';
+    app.activeTab().sqlDraft = '   ';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast').textContent).toBe('Nothing to export');
   });
@@ -2905,7 +3089,7 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker = vi.fn();
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT {database:String}';
+    app.activeTab().sqlDraft = 'SELECT {database:String}';
     await app.actions.exportEntry();
     expect(showSaveFilePicker).not.toHaveBeenCalled();
     expect(document.querySelector('.share-toast').textContent).toContain('database');
@@ -2918,7 +3102,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['x']) })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT {database:String}';
+    app.activeTab().sqlDraft = 'SELECT {database:String}';
     app.state.varValues = { database: 'default' };
     await app.actions.exportEntry();
     const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL);
@@ -2929,7 +3113,7 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast')).toBeNull();
     expect(app.state.exporting.value).toBe(false);
@@ -2939,7 +3123,7 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker = vi.fn(async () => { throw new Error('disk full'); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast').textContent).toBe('Save dialog failed: disk full');
   });
@@ -2952,7 +3136,7 @@ describe('streaming export (issue #87)', () => {
       window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch, sessionStorage: memSession({}),
     }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
     expect(handle.createWritable).not.toHaveBeenCalled(); // never reached the streaming step
@@ -2967,7 +3151,7 @@ describe('streaming export (issue #87)', () => {
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
     app.activeTab().name = 'My Query!';
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(showSaveFilePicker.opts.suggestedName).toBe('My_Query.tsv');
     expect(writtenText(chunks)).toBe('a'.repeat(100));
@@ -2986,7 +3170,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['[]']) })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = EXPORT_SQL;
+    app.activeTab().sqlDraft = EXPORT_SQL;
     await app.actions.exportEntry();
     expect(showSaveFilePicker.opts.suggestedName).toMatch(/\.json$/);
     expect(showSaveFilePicker.opts.types[0].accept).toEqual({ 'application/json': ['.json'] });
@@ -3001,7 +3185,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody([big]) })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     // mid-loop commit (8192 = 40960 - 32768 HOLDBACK) then the EOF flush of the held-back tail.
     expect(writable.write.mock.calls.map((c) => c[0].length)).toEqual([8192, 32768]);
@@ -3019,7 +3203,7 @@ describe('streaming export (issue #87)', () => {
       () => resp({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(writtenText(chunks)).toBe(clean); // the exception frame never reaches the file
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -3046,7 +3230,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     // close (not abort), so the already-committed bytes materialize under the
     // target handle instead of a hidden 0-byte .crswap orphan being left behind.
@@ -3065,7 +3249,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(writable.abort).not.toHaveBeenCalled();
     expect(writable.close).toHaveBeenCalledTimes(1);
@@ -3082,7 +3266,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(writable.abort).not.toHaveBeenCalled();
     expect(handle.move).toHaveBeenCalledTimes(1);
@@ -3098,7 +3282,7 @@ describe('streaming export (issue #87)', () => {
       () => resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast').textContent).toBe('Export failed: DB::Exception: nope');
     expect(handle.createWritable).not.toHaveBeenCalled();
@@ -3115,7 +3299,7 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker = vi.fn(async () => handle);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     const pending = app.actions.exportEntry();
     await new Promise((r) => setTimeout(r)); // let the picker + export request kick off
     expect(app.state.exporting.value).toBe(true);
@@ -3141,7 +3325,7 @@ describe('streaming export (issue #87)', () => {
     app.renderApp();
     const tab = app.activeTab();
     tab.chSession = 'sess-abc';
-    tab.sql = 'SELECT * FROM t';
+    tab.sqlDraft = 'SELECT * FROM t';
     await app.actions.exportEntry();
     const exportCall = fetch.mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL);
     expect(exportCall[0]).toContain('session_id=sess-abc');
@@ -3154,7 +3338,7 @@ describe('streaming export (issue #87)', () => {
     const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => { throw new Error('signed out'); }]]);
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast')).toBeNull();
     expect(app.state.exporting.value).toBe(false);
@@ -3165,7 +3349,7 @@ describe('streaming export (issue #87)', () => {
     const showSaveFilePicker = vi.fn(() => new Promise((_res, rej) => { rejectPicker = rej; }));
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     const first = app.actions.exportEntry();
     await new Promise((r) => setTimeout(r)); // let the first call reach the picker await
     expect(app.state.exporting.value).toBe(true);
@@ -3214,26 +3398,31 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.exportEntry();
     expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
     expect(showDirectoryPicker).not.toHaveBeenCalled();
 
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
 
-  it('exportEntry exports the editor selection when non-empty, not the whole tab', async () => {
+  it('exportEntry is unavailable in Spec mode and exports sqlDraft after switching to SQL', async () => {
     const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.editor.replaceDocument('SELECT 1; SELECT 2');
-    app.dom.editorView.dispatch({ selection: { anchor: 0, head: 8 } }); // "SELECT 1" — a single statement
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 1; SELECT 2' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.actions.setEditorMode('spec');
+    app.dom.specEditorView.dispatch({ selection: { anchor: 0, head: 8 } });
     await app.actions.exportEntry();
-    expect(showSaveFilePicker).toHaveBeenCalledTimes(1); // one selected statement → single-file path
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
     expect(showDirectoryPicker).not.toHaveBeenCalled();
+    app.actions.setEditorMode('sql');
+    await app.actions.exportEntry();
+    expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
 
   it('exportDirect itself guards against empty input (defensive — exportEntry never sends it empty)', async () => {
@@ -3255,7 +3444,7 @@ describe('script export (issue #99)', () => {
   it('toasts and never opens the directory picker when canExportScript is false', async () => {
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker: null, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast').textContent)
       .toBe('Script export requires Chrome/Edge directory access over HTTPS');
@@ -3266,7 +3455,7 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn();
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'CREATE TABLE t (a Int8);\nINSERT INTO t VALUES (1);';
+    app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nINSERT INTO t VALUES (1);';
     await app.actions.exportEntry();
     expect(showDirectoryPicker).not.toHaveBeenCalled();
     expect(document.querySelector('.share-toast').textContent)
@@ -3277,7 +3466,7 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast')).toBeNull();
     expect(app.state.exporting.value).toBe(false);
@@ -3287,7 +3476,7 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn(async () => { throw new Error('denied'); });
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(document.querySelector('.share-toast').textContent).toBe('Folder dialog failed: denied');
   });
@@ -3299,7 +3488,7 @@ describe('script export (issue #99)', () => {
       window: fakeWin(), showDirectoryPicker, isSecureContext: true, sessionStorage: memSession({}),
     }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(showDirectoryPicker).toHaveBeenCalledTimes(1); // opened despite no token
     expect(dir.getFileHandle).not.toHaveBeenCalled(); // never reached the run loop
@@ -3311,7 +3500,7 @@ describe('script export (issue #99)', () => {
     const showDirectoryPicker = vi.fn(() => new Promise((_res, rej) => { rejectPicker = rej; }));
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     const first = app.actions.exportEntry();
     await new Promise((r) => setTimeout(r)); // let the first call reach the picker await
     expect(app.state.exporting.value).toBe(true);
@@ -3333,7 +3522,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = SCRIPT;
+    app.activeTab().sqlDraft = SCRIPT;
     await app.actions.exportEntry();
     const SCRIPT_SQLS = ['CREATE TEMPORARY TABLE t (a Int8)', 'INSERT INTO t VALUES (1)', 'SELECT * FROM t\nFORMAT TabSeparatedWithNames'];
     // renderApp's mount also fires a version/schema fetch — filter to this script's own requests.
@@ -3366,7 +3555,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     const entries = app.activeTab().result.scriptExport;
     expect(entries[0].file).toBe('001-select-1.tsv');
@@ -3382,7 +3571,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1 FORMAT JSON;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1 FORMAT JSON;\nSELECT 2;';
     await app.actions.exportEntry();
     const entries = app.activeTab().result.scriptExport;
     expect(entries[0].file).toBe('001-select-1-format-json.json');
@@ -3397,7 +3586,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'CREATE TABLE bad;\nSELECT 1;';
+    app.activeTab().sqlDraft = 'CREATE TABLE bad;\nSELECT 1;';
     await app.actions.exportEntry();
     const entries = app.activeTab().result.scriptExport;
     expect(entries[0].status).toBe('failed');
@@ -3416,7 +3605,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     const entries = app.activeTab().result.scriptExport;
     expect(entries[0].status).toBe('failed');
@@ -3435,7 +3624,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     const entries = app.activeTab().result.scriptExport;
     expect(entries[0].status).toBe('failed');
@@ -3453,7 +3642,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'INSERT INTO t VALUES (1);\nSELECT 1;';
+    app.activeTab().sqlDraft = 'INSERT INTO t VALUES (1);\nSELECT 1;';
     await app.actions.exportEntry();
     const insertCalls = fetch.mock.calls.filter((c) => c[1] && c[1].body === 'INSERT INTO t VALUES (1)');
     expect(insertCalls).toHaveLength(1); // no retry
@@ -3470,7 +3659,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;\nSELECT 3;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;\nSELECT 3;';
     const pending = app.actions.exportEntry();
     await new Promise((r) => setTimeout(r)); // let stmt1 finish and stmt2's request kick off
     const entries = app.activeTab().result.scriptExport;
@@ -3497,7 +3686,7 @@ describe('script export (issue #99)', () => {
     ]);
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
-    app.activeTab().sql = 'CREATE TABLE t (a Int8);\nSELECT 1;';
+    app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nSELECT 1;';
     const pending = app.actions.exportEntry();
     await new Promise((r) => setTimeout(r)); // let it reach the pending fetch for stmt1
     app.actions.cancelExportScript(); // cancel arrives while stmt1 is still in flight...
@@ -3519,7 +3708,7 @@ describe('script export (issue #99)', () => {
     app.renderApp();
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = 'CREATE TABLE t (a Int8);\nSELECT 1;';
+    app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nSELECT 1;';
     await app.actions.exportEntry();
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -3535,7 +3724,7 @@ describe('script export (issue #99)', () => {
     app.renderApp();
     await new Promise((r) => setTimeout(r));
     const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sql = 'SELECT 1;\nSELECT 2;';
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
     expect(spy).not.toHaveBeenCalled();
   });
@@ -3729,7 +3918,7 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     const graphPromise = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' }); // hangs on system.tables
     await untilResult(app); // let the pre-Phase-A loading placeholder land
     expect(app.activeTab().result.schemaGraph.loading).toBe(true);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]);
     expect(app.activeTab().result.schemaGraph).toBeUndefined();
@@ -3750,7 +3939,7 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     const graphPromise = app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
     await untilResult(app);
     expect(app.activeTab().result.schemaGraph.loading).toBe(true);
-    app.activeTab().sql = 'SELECT 1;\nSELECT 1'; // >1 statement → runScript path
+    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 1'; // >1 statement → runScript path
     await app.actions.run();
     expect(app.activeTab().result.script).toBeDefined();
     expect(app.activeTab().result.schemaGraph).toBeUndefined();
@@ -3789,7 +3978,7 @@ describe('schema lineage graph (drag a db/table onto the results pane)', () => {
     app.actions.showSchemaGraph({ kind: 'db', db: 'lin' });
     await untilResult(app);
     expect(app.activeTab().result.schemaGraph.loading).toBe(true);
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run(); // aborts the pending lineage fetch via cancelSchemaGraph() at its top
     expect(app.activeTab().result.schemaGraph).toBeUndefined(); // run()'s own result, not clobbered
   });
@@ -3996,7 +4185,7 @@ describe('mobile best-effort mode (#126)', () => {
     app.state.mobileView.value = 'tables';
     app.actions.insertAtCursor('foo');
     expect(app.state.mobileView.value).toBe('editor'); // insert jumped to Editor
-    app.activeTab().sql = 'SELECT 1';
+    app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.state.mobileView.value).toBe('results'); // run jumped to Results
   });
@@ -4019,7 +4208,7 @@ describe('mobile best-effort mode (#126)', () => {
 
   it('anchored popovers center horizontally on mobile instead of anchoring off-screen', () => {
     const { app } = mobileApp(true);
-    app.activeTab().sql = 'SELECT 1'; // openSavePopover no-ops on empty SQL
+    app.activeTab().sqlDraft = 'SELECT 1'; // openSavePopover no-ops on empty SQL
     app.actions.save();
     const pop = document.querySelector('.save-popover');
     expect(pop).not.toBeNull();

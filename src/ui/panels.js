@@ -21,7 +21,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './chart-render.js';
-import { tabPanel } from '../state.js';
+import { patchSpecDraft, tabPanel } from '../state.js';
 import { patchQueryPanel } from '../core/saved-query.js';
 import { renderGridView, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs } from './logs.js';
@@ -245,7 +245,7 @@ export function renderResolvedPanel(app, resolved, result, opts) {
  * a local repaint. The text arm needs no result at all; query-backed arms
  * show an empty-preview hint until a Run has happened.
  *
- * Dirty pin (#166): the preview renders resolvePanel's CLONE; `tab.spec.panel`
+ * Dirty pin (#166): the preview renders resolvePanel's CLONE; `tab.specParsed.panel`
  * is written only here from picker/controls changes. Render never writes it,
  * so auto-derived cfg stays transient. Unknown panel siblings are retained.
  *
@@ -273,7 +273,16 @@ function panelContext(app, r) {
 
 function writePanel(app, hooks, payload, activate = false) {
   const tab = app.activeTab();
-  tab.spec = patchQueryPanel(tab, { cfg: payload.cfg, key: payload.key ?? undefined }).spec;
+  const result = patchSpecDraft(tab, (spec) => patchQueryPanel(
+    { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
+    { cfg: payload.cfg, key: payload.key ?? undefined },
+  ).spec, { dirty: true });
+  if (!result.ok) {
+    app.activateInvalidSpecDraft(result.invalidTab);
+    return;
+  }
+  app.revalidateSpecDrafts();
+  app.specEditor.syncFromState();
   if (activate) app.state.resultView.value = 'panel';
   hooks.markDirty();
   hooks.rerender();

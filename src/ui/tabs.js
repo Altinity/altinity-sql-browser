@@ -3,7 +3,7 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { activeTab, allocTabId, newTabObj } from '../state.js';
+import { activeTab, allocTabId, newTabObj, setTabSpecDraft, tabDirty } from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { batch } from '@preact/signals-core';
 
@@ -15,7 +15,7 @@ export function renderTabs(app) {
     const isActive = t.id === app.state.activeTabId.value;
     return h('div', { class: 'qtab' + (isActive ? ' active' : ''), onclick: () => selectTab(app, t.id) },
       h('span', { class: 'name' }, t.name),
-      t.dirty ? h('span', { class: 'dirty' }) : null,
+      tabDirty(t) ? h('span', { class: 'dirty' }) : null,
       app.state.tabs.value.length > 1
         ? h('button', {
             class: 'close',
@@ -44,7 +44,7 @@ export function newTab(app) {
     app.state.tabs.value = [...app.state.tabs.value, newTabObj(id)];
     app.state.activeTabId.value = id;
   });
-  app.editor.focus();
+  app.sqlEditor.focus();
 }
 
 /**
@@ -53,25 +53,34 @@ export function newTab(app) {
  * sharing, and Save retain extensions rather than reconstructing known fields.
  */
 export function loadIntoNewTab(app, queryOrName, sql = '') {
+  if (queryOrName && typeof queryOrName === 'object' && queryOrName.id) {
+    const existing = app.state.tabs.value.find((tab) => tab.savedId === queryOrName.id);
+    if (existing) {
+      app.state.activeTabId.value = existing.id;
+      app.sqlEditor.focus();
+      return existing;
+    }
+  }
   const id = allocTabId(app.state);
   const tab = newTabObj(id);
   if (queryOrName && typeof queryOrName === 'object') {
     const query = upgradeSavedQuery(queryOrName);
     tab.name = queryName(query);
-    tab.sql = query.sql;
+    tab.sqlDraft = query.sql;
     tab.savedId = query.id || null;
     tab.specVersion = query.specVersion;
-    tab.spec = cloneJson(query.spec);
+    setTabSpecDraft(tab, cloneJson(query.spec));
   } else {
     tab.name = queryOrName || 'Untitled';
-    tab.sql = sql;
-    tab.spec.name = tab.name;
+    tab.sqlDraft = sql;
+    setTabSpecDraft(tab, { ...tab.specParsed, name: tab.name });
   }
   batch(() => {
     app.state.tabs.value = [...app.state.tabs.value, tab];
     app.state.activeTabId.value = id;
   });
-  app.editor.focus();
+  app.sqlEditor.focus();
+  return tab;
 }
 
 /** Close a tab (never the last one), re-selecting a neighbour if needed. */

@@ -1408,7 +1408,59 @@ body.detached-tab .graph-overlay-panel {
 .tb-btn.is-disabled { opacity: .4; cursor: not-allowed; }
 .tb-btn.is-disabled:hover { background: transparent; color: var(--fg-mute); }
 
-/* ------------ SQL editor ------------ */
+/* SQL | Spec is a persistent document mode, so it uses the same compact
+   segmented-control vocabulary as result views rather than reading as another
+   toolbar command. */
+.editor-mode-switch {
+  display: inline-flex; align-items: center; padding: 2px;
+  background: var(--bg-chip); border-radius: 5px;
+}
+.editor-mode-btn {
+  height: 22px; min-width: 42px; padding: 0 9px;
+  border: none; border-radius: 5px; background: transparent;
+  color: var(--fg-mute); font: 500 11px var(--ui); cursor: pointer;
+}
+.editor-mode-btn:hover { color: var(--fg); }
+.editor-mode-btn.active {
+  background: var(--bg-editor); color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .14);
+}
+.editor-mode-btn.is-disabled { opacity: .42; cursor: not-allowed; }
+.editor-mode-btn:focus-visible,
+.tb-btn:focus-visible,
+.run-btn:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.ed-toolbar > [hidden],
+.document-editor[hidden],
+.spec-editor-pane[hidden] { display: none !important; }
+.var-strip[hidden] { display: none !important; }
+
+.document-editor,
+.spec-editor-pane { width: 100%; height: 100%; min-height: 0; }
+.spec-editor-pane { display: flex; flex-direction: column; background: var(--bg-editor); }
+.spec-document-editor { flex: 1; height: auto; }
+.spec-status {
+  min-height: 24px; padding: 4px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-toolbar); color: var(--fg-mute);
+  font: 11px/15px var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spec-status.is-error { background: var(--error-bg); color: var(--error-fg); }
+.spec-status.is-warning { background: var(--warn-bg); color: var(--warn-fg); }
+.spec-status.is-valid::before { content: '✓ '; color: var(--accent); }
+.spec-diagnostic {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.spec-diagnostic-error { text-decoration-color: var(--error-fg); background: var(--error-bg); }
+.spec-diagnostic-warning { text-decoration-color: var(--warn-fg); background: var(--warn-bg); }
+.spec-diagnostic-info { text-decoration-color: var(--accent); background: var(--bg-highlight); }
+
+/* ------------ SQL + Spec editors ------------ */
 /* Token colors — applied by the CM6 adapter's HighlightStyle (class: entries). */
 .sql-keyword { color: #C586C0; font-weight: 500; }
 [data-theme='light'] .sql-keyword { color: #AF00DB; }

@@ -10,7 +10,7 @@ import { test, expect } from '@playwright/test';
 
 // Serialized into page.evaluate calls — reads the editor through the CM6 view.
 const readEditor = () => {
-  const view = window.__app.dom.editorView;
+  const view = window.__app.dom.sqlEditorView;
   return {
     value: view.state.doc.toString(),
     caret: view.state.selection.main.head,
@@ -27,7 +27,7 @@ test.describe('editor insertion (schema double-click path)', () => {
   test('insertAtCursor splices at the caret and leaves the caret after the text', async ({ page }) => {
     await page.evaluate(() => {
       window.__setSql('SELECT  FROM t');
-      window.__app.dom.editorView.dispatch({ selection: { anchor: 7 } }); // caret at the 2nd space
+      window.__app.dom.sqlEditorView.dispatch({ selection: { anchor: 7 } }); // caret at the 2nd space
       window.__insertAtCursor('count(*)');           // what a column/db double-click does
     });
     const r = await page.evaluate(readEditor);
@@ -83,7 +83,7 @@ test.describe('editor insertion (schema double-click path)', () => {
     // FORMAT, which must be stripped, wrapped in parens, and spliced at the
     // drop point.
     const value = await page.evaluate(() => {
-      const view = window.__app.dom.editorView;
+      const view = window.__app.dom.sqlEditorView;
       window.__setSql('SELECT * FROM t');
       const rect = view.contentDOM.getBoundingClientRect();
       const dt = new DataTransfer();

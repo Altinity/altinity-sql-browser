@@ -194,7 +194,7 @@ refreshReference / onDocChange, injected as `env.Editor`), and #21 swapped the
 adapter from the hand-rolled textarea to **CodeMirror 6** — the fourth bundled
 runtime dependency. Signals still coordinate the state (`hasSelection`,
 tab/effect wiring, the app-level `onDocChange` subscriber owns the
-`tab.sql`/dirty writes); CM6 owns every keystroke, selection, undo, and
+`tab.sqlDraft`/`dirtySql` writes); CM6 owns every keystroke, selection, undo, and
 measurement inside the port. Per-tab `EditorState`s give per-tab undo — a
 capability the shared-textarea design structurally lacked — and the adapter is
 unit-tested against the real CM6 under happy-dom (the coverage gate holds
@@ -222,3 +222,34 @@ without reconstructing the view, and the adapter supplies the target parent and
 document root before CM6 initializes its realm-bound observers. This is the same imperative-island rule
 applied at a smaller boundary, and gives later cell/detail consumers a stub-able
 `app.CodeViewer` seam without coupling them to CodeMirror imports.
+
+## Addendum — independent SQL and Spec JSON editor seams (#212)
+
+Saved-query authoring now owns two explicit imperative islands:
+`app.sqlEditor` and `app.specEditor`, injected by `env.Editor` and
+`env.SpecEditor`. The former `app.editor` ambiguity is intentionally gone.
+Execution, schema insertion, SQL formatting, and Export always address the SQL
+adapter; changing which document is visible cannot redirect a SQL operation to
+JSON. Each tab holds independent `sqlDraft` and `specText` documents, parsed
+Spec state, diagnostics, mode, and dirty flags, while each adapter parks its own
+CodeMirror state so undo, selection, scroll, and search remain local.
+
+Spec parsing, normalization, and synchronous semantic validation live in pure
+`core/spec-draft.js`. Validator paths are arrays of string/number segments, not
+dotted strings, so array indices and object keys containing dots are exact.
+The app owns the registry and feature code owns individual rules. Direct Spec
+writers use one state-level patch helper. Panel controls patch the active valid
+draft and leave it dirty. Immediately persisted Library pencil/favorite changes
+patch every valid open draft while preserving both unrelated unsaved fields and
+each draft's existing dirty state: clean stays clean; dirty stays dirty. A
+syntactically invalid JSON draft is the only block; the writer reports that tab
+before any mutation or persistence. Linked Save validates and persists SQL plus
+Spec once, atomically; a failed Save writes nothing.
+
+Spec is intentionally a lightweight editing mode rather than a second
+workbench. Its toolbar owns Format, Save, and the SQL | Spec switch. Run,
+Explain, SQL formatting, Export, Share, and Share’s global shortcut are owned by
+SQL mode. Validation is continuous through diagnostics and status; there are no
+manual Validate or Revert commands. The adapter shares only the generic
+CodeMirror presentation/search base and JSON language package that had already
+landed with #213, so #212 adds no runtime dependency.

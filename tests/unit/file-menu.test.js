@@ -246,6 +246,7 @@ describe('Open / Append (JSON only)', () => {
     expect(app.state.savedQueries.map(queryName)).toEqual(['New', 'New2']);
     expect(app.state.libraryName.value).toBe('team');
     expect(app.updateSaveBtn).toHaveBeenCalled();
+    expect(app.updateEditorModeUi).toHaveBeenCalled();
     expect(toast()).toBe('Opened library · 2 queries');
   });
 
@@ -314,6 +315,7 @@ describe('New Library + confirm dialogs', () => {
     click(item(/New Library/));
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(toast()).toBe('Started a new library');
+    expect(app.updateEditorModeUi).toHaveBeenCalled();
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     app.state.libraryName.value = 'Old';
     openFileMenu(app);

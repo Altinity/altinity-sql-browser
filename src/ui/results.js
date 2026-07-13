@@ -114,7 +114,7 @@ export function renderResults(app) {
 }
 // The Panel drawer tab's caller seams (#166): the repaint scope, the cell
 // drawer, the tab-dirty wiring (a panel-cfg edit dirties exactly like a SQL
-// edit — same signal writes as app.editor.onDocChange), and the display cap.
+// edit — same UI writes as the independent editor callbacks), and the display cap.
 // Supplied from here (not imported by panels.js) so panels.js never imports
 // results.js back.
 function panelHooks(app, r) {
@@ -123,9 +123,9 @@ function panelHooks(app, r) {
     onCell: (name, type, value) => openCellDetail(app, name, type, value),
     cap: r ? visCap(r) : undefined,
     markDirty: () => {
-      app.activeTab().dirty = true;
       app.actions.rerenderTabs();
       app.updateSaveBtn();
+      app.updateEditorModeUi?.();
     },
   };
 }

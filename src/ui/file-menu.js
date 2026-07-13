@@ -233,6 +233,7 @@ function doNew(app) {
  *  repaints itself via the libraryName/libraryDirty effect in createApp. */
 function afterLibraryChange(app) {
   app.updateSaveBtn();
+  app.updateEditorModeUi();
   renderSavedHistory(app);
 }
 

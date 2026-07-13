@@ -5,6 +5,7 @@ import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
+import { createNoopSpecEditor } from '../../src/editor/spec-editor.js';
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
 // exposes a destroy() spy, so the chart glue is testable without a real canvas.
@@ -38,7 +39,8 @@ export function makeApp(over = {}) {
     host: () => 'test.host',
     build: 'v0.0.0-test',
     activeTab: () => activeTab(state),
-    editor: createNoopPort(), // render modules call the port unconditionally (#143)
+    sqlEditor: createNoopPort(),
+    specEditor: createNoopSpecEditor(),
     isSignedIn: () => true,
     // Dashboard (#149) surface: auth is resolved once before tiles fan out, the
     // Back link derives from the SPA base, and onSignedOut redirects on failure.
@@ -62,6 +64,9 @@ export function makeApp(over = {}) {
     saveStr: vi.fn(),
     downloadFile: vi.fn(),
     updateSaveBtn: vi.fn(),
+    updateEditorModeUi: vi.fn(),
+    revalidateSpecDrafts: vi.fn(),
+    activateInvalidSpecDraft: vi.fn(),
     elapsedMs: () => 0,
     now: () => 0,
     wallNow: () => 0, // the #173 wave wall clock (epoch ms; fixed in tests)
@@ -98,6 +103,8 @@ export function makeApp(over = {}) {
       cancelExportScript: vi.fn(),
       save: vi.fn(),
       formatQuery: vi.fn(),
+      formatSpec: vi.fn(),
+      setEditorMode: vi.fn(),
       explainQuery: vi.fn(),
       setExplainView: vi.fn(),
       setResultRowLimit: vi.fn(),

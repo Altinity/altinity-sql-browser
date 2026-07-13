@@ -30,7 +30,7 @@ const makeApp = (over = {}) => baseApp({
   ...over,
 });
 
-// Mount a fresh port + view; subscribe like app.js does (#143) so tab.sql
+// Mount a fresh port + view; subscribe like app.js does (#143) so tab.sqlDraft
 // tracks the view.
 function mounted(over = {}) {
   const app = makeApp(over);
@@ -39,13 +39,13 @@ function mounted(over = {}) {
   port.onDocChange((v) => {
     changes.push(v);
     const tab = activeTab(app.state);
-    tab.sql = v;
-    tab.dirty = true;
+    tab.sqlDraft = v;
+    tab.dirtySql = true;
   });
   const host = document.createElement('div');
   document.body.appendChild(host);
   port.mount(host);
-  return { app, port, host, changes, view: app.dom.editorView };
+  return { app, port, host, changes, view: app.dom.sqlEditorView };
 }
 
 describe('EditorPort surface (pre-mount tolerance)', () => {
@@ -67,19 +67,19 @@ describe('EditorPort surface (pre-mount tolerance)', () => {
 describe('mount / re-mount / destroy', () => {
   it('mounts a CM6 view showing the active tab and reparents on re-mount (same view, subscriptions intact)', () => {
     const app = makeApp();
-    activeTab(app.state).sql = 'SELECT 1';
+    activeTab(app.state).sqlDraft = 'SELECT 1';
     const port = createCodeMirrorEditor(app);
     const seen = [];
     port.onDocChange((v) => seen.push(v));
     const a = document.createElement('div');
     port.mount(a);
-    const view = app.dom.editorView;
+    const view = app.dom.sqlEditorView;
     expect(a.querySelector('.cm-editor')).toBe(view.dom);
     expect(port.getValue()).toBe('SELECT 1');
     // renderApp re-run (sign-out → sign-in): new container, same live view.
     const b = document.createElement('div');
     port.mount(b);
-    expect(app.dom.editorView).toBe(view);
+    expect(app.dom.sqlEditorView).toBe(view);
     expect(b.querySelector('.cm-editor')).toBe(view.dom);
     expect(a.querySelector('.cm-editor')).toBe(null);
     view.dispatch({ selection: { anchor: view.state.doc.length } });
@@ -119,7 +119,7 @@ describe('document edits through the port', () => {
     expect(port.getValue()).toBe('SELECT count(*) FROM t');
     expect(view.state.selection.main.head).toBe(15);
     expect(changes.at(-1)).toBe('SELECT count(*) FROM t');
-    expect(activeTab(app.state).sql).toBe('SELECT count(*) FROM t');
+    expect(activeTab(app.state).sqlDraft).toBe('SELECT count(*) FROM t');
   });
 
   it('replaceDocument replaces the whole doc with the caret at the end, preserving undo', () => {
@@ -199,7 +199,7 @@ describe('global-chord bubbling (the ⌘↵ acceptance rule)', () => {
 describe('per-tab EditorState (syncFromState)', () => {
   const addTab = (app, id, sqlText) => {
     const t = newTabObj(id);
-    t.sql = sqlText;
+    t.sqlDraft = sqlText;
     app.state.tabs.value = [...app.state.tabs.value, t];
     return t;
   };
@@ -212,12 +212,12 @@ describe('per-tab EditorState (syncFromState)', () => {
     port.syncFromState(); // the effect also fires on unrelated tab-list changes
     expect(view.state.selection.main.head).toBe(3);
     expect(changes.length).toBe(emitted);
-    expect(activeTab(app.state).dirty).toBe(true); // untouched, not re-written
+    expect(activeTab(app.state).dirtySql).toBe(true); // untouched, not re-written
   });
 
-  it('same tab + external tab.sql change reconciles the doc WITHOUT emitting (no false dirty)', () => {
+  it('same tab + external tab.sqlDraft change reconciles the doc WITHOUT emitting (no false dirty)', () => {
     const { port, view, app, changes } = mounted();
-    activeTab(app.state).sql = 'SELECT 42';
+    activeTab(app.state).sqlDraft = 'SELECT 42';
     port.syncFromState();
     expect(port.getValue()).toBe('SELECT 42');
     expect(changes).toEqual([]); // annotation-guarded — a sync is not a user edit
@@ -246,14 +246,14 @@ describe('per-tab EditorState (syncFromState)', () => {
     expect(port.getValue()).toBe('tab two');
   });
 
-  it('a restored tab reconciles an external tab.sql change silently', () => {
+  it('a restored tab reconciles an external tab.sqlDraft change silently', () => {
     const { port, app, changes } = mounted();
     addTab(app, 't2', 'two');
     app.state.activeTabId.value = 't2';
     port.syncFromState();
     app.state.activeTabId.value = 't1';
     port.syncFromState();
-    app.state.tabs.value.find((t) => t.id === 't2').sql = 'two rewritten';
+    app.state.tabs.value.find((t) => t.id === 't2').sqlDraft = 'two rewritten';
     const emitted = changes.length;
     app.state.activeTabId.value = 't2';
     port.syncFromState();
@@ -290,7 +290,7 @@ describe('per-tab EditorState (syncFromState)', () => {
     expect(port.getSelection()).toEqual({ start: 18, end: 18, text: '' }); // caret kept, range gone
   });
 
-  it('an update mixing a user edit with a sync transaction still emits (tab.sql must not go stale)', () => {
+  it('an update mixing a user edit with a sync transaction still emits (tab.sqlDraft must not go stale)', () => {
     const { view, changes } = mounted();
     const user = view.state.update({ changes: { from: 0, to: 0, insert: 'user' } });
     const sync = user.state.update({ changes: { from: 0, to: 0, insert: 'x' }, annotations: syncTx.of(true) });
@@ -315,7 +315,7 @@ describe('per-tab EditorState (syncFromState)', () => {
     app.state.activeTabId.value = 't1';
     port.syncFromState(); // restore re-applies the current dialect to the parked state
     expect(port.getValue()).toBe('select magicword from t');
-    const kw = app.dom.editorView.dom.querySelectorAll('.sql-keyword');
+    const kw = app.dom.sqlEditorView.dom.querySelectorAll('.sql-keyword');
     const texts = [...kw].map((n) => n.textContent);
     expect(texts).toContain('magicword'); // the new server keyword set took effect
   });
@@ -651,11 +651,11 @@ describe('reference-data lifecycle', () => {
     const app = makeApp({ refData: null });
     const port = createCodeMirrorEditor(app); // createApp builds the port BEFORE assembling refData
     app.refData = assembleReferenceData(null); // …then assigns the built-in fallback pre-render
-    activeTab(app.state).sql = 'select 1 from t';
+    activeTab(app.state).sqlDraft = 'select 1 from t';
     const host = document.createElement('div');
     document.body.appendChild(host);
     port.mount(host);
-    const kw = [...app.dom.editorView.dom.querySelectorAll('.sql-keyword')].map((n) => n.textContent);
+    const kw = [...app.dom.sqlEditorView.dom.querySelectorAll('.sql-keyword')].map((n) => n.textContent);
     expect(kw).toContain('select'); // NOT an empty dialect at first paint
   });
 
@@ -668,11 +668,11 @@ describe('reference-data lifecycle', () => {
       }),
     });
     const port = createCodeMirrorEditor(app);
-    activeTab(app.state).sql = 'select toDateTime(x) from t';
+    activeTab(app.state).sqlDraft = 'select toDateTime(x) from t';
     const host = document.createElement('div');
     document.body.appendChild(host);
     port.mount(host);
-    const fns = [...app.dom.editorView.dom.querySelectorAll('.sql-func')].map((n) => n.textContent);
+    const fns = [...app.dom.sqlEditorView.dom.querySelectorAll('.sql-func')].map((n) => n.textContent);
     expect(fns).toContain('toDateTime'); // lang-sql looks words up lowercased
   });
 });
@@ -794,7 +794,7 @@ describe('FROM-scope column loading (#84)', () => {
       const host = document.createElement('div');
       document.body.appendChild(host);
       port.mount(host);
-      const view = app.dom.editorView;
+      const view = app.dom.sqlEditorView;
       // A user edit schedules the tick; an open completion is the refresh target.
       view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT t FROM events' }, selection: { anchor: 8 } });
       startCompletion(view);
