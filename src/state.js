@@ -372,7 +372,7 @@ export function patchSavedSpec(state, id, patch, save = saveJSON) {
   const entry = withQuerySpec(current, patchedSpec(current.spec, patch));
   state.savedQueries[index] = entry;
   for (const tab of tabsForSaved(state, id)) {
-    patchSpecDraft(tab, patch, { dirty: true });
+    patchSpecDraft(tab, patch, { dirty: tab.dirtySpec });
   }
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);

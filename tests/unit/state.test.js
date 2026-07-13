@@ -269,7 +269,7 @@ describe('saved queries', () => {
     expect(second.specParsed).toMatchObject({
       name: 'New', description: 'Description', favorite: true, secondDraftOnly: ['keep'],
     });
-    expect(second.dirtySpec).toBe(true);
+    expect(second.dirtySpec).toBe(false);
     expect(save).toHaveBeenCalledTimes(2);
     expect(original.spec.name).toBe('Old');
     expect(original.spec.extension.nested[0].value).toBe(1);

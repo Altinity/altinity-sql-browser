@@ -238,12 +238,13 @@ Spec parsing, normalization, and synchronous semantic validation live in pure
 `core/spec-draft.js`. Validator paths are arrays of string/number segments, not
 dotted strings, so array indices and object keys containing dots are exact.
 The app owns the registry and feature code owns individual rules. Direct Spec
-writers use one state-level patch helper: Library pencil/favorite, Panel, and
-future controls patch each valid open draft’s own parsed Spec, regenerate its
-text, preserve unrelated unsaved fields, and leave it dirty. A syntactically
-invalid JSON draft is the only block; the writer reports that tab before any
-mutation or persistence. Linked Save validates and persists SQL plus Spec once,
-atomically; a failed Save writes nothing.
+writers use one state-level patch helper. Panel controls patch the active valid
+draft and leave it dirty. Immediately persisted Library pencil/favorite changes
+patch every valid open draft while preserving both unrelated unsaved fields and
+each draft's existing dirty state: clean stays clean; dirty stays dirty. A
+syntactically invalid JSON draft is the only block; the writer reports that tab
+before any mutation or persistence. Linked Save validates and persists SQL plus
+Spec once, atomically; a failed Save writes nothing.
 
 Spec is intentionally a lightweight editing mode rather than a second
 workbench. Its toolbar owns Format, Save, and the SQL | Spec switch. Run,
