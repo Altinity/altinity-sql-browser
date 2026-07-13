@@ -558,3 +558,274 @@ describe('renderSchema filter', () => {
     expect(app.dom.schemaList.textContent).toContain('user_id');
   });
 });
+
+// #208 — hierarchical, cascading search: a match at any level pulls in its
+// ancestors for context and, for a db/table match, its descendants. Fixture
+// mirrors the issue's own example tree, all persisted-collapsed by default.
+function withSearchSchema() {
+  const app = makeApp();
+  app.state.schema.value = [
+    {
+      db: 'analytics',
+      tables: [
+        {
+          name: 'events', total_rows: '10', total_bytes: '20', comment: '',
+          columns: [
+            { name: 'event_time', type: 'DateTime', comment: '' },
+            { name: 'event_name', type: 'String', comment: '' },
+            { name: 'user_id', type: 'UInt64', comment: '' },
+          ],
+        },
+        {
+          name: 'users', total_rows: '2', total_bytes: '4', comment: '',
+          columns: [
+            { name: 'id', type: 'UInt64', comment: '' },
+            { name: 'email', type: 'String', comment: '' },
+          ],
+        },
+      ],
+    },
+    {
+      db: 'system',
+      tables: [
+        {
+          name: 'query_log', total_rows: '5', total_bytes: '9', comment: '',
+          columns: [
+            { name: 'event_time', type: 'DateTime', comment: '' },
+            { name: 'query', type: 'String', comment: '' },
+          ],
+        },
+      ],
+    },
+  ];
+  app.state.expanded.value = new Set(); // everything persisted-collapsed
+  return app;
+}
+const colRowsNamed = (app, name) => [...app.dom.schemaList.querySelectorAll('.tree-row.small')]
+  .filter((r) => r.querySelector('.label').textContent === name);
+
+describe('renderSchema search cascade (#208)', () => {
+  it('database match: shows the whole matching database, hides the other, columns stay collapsed, expanded state untouched', () => {
+    const app = withSearchSchema();
+    const before = new Set(app.state.expanded.value);
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toEqual(expect.arrayContaining(['analytics', 'events', 'users']));
+    expect(labels).not.toContain('system');
+    expect(labels).not.toContain('query_log');
+    expect(labels).not.toContain('event_time');
+    expect(labels).not.toContain('id');
+    const dbRow = rows(app).find((r) => r.querySelector('.label').textContent === 'analytics');
+    expect(dbRow.classList.contains('match')).toBe(true);
+    expect(dbRow.querySelector('.chev').style.transform).toBe('rotate(0deg)');
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    expect(eventsRow.classList.contains('match')).toBe(false);
+    expect(app.state.expanded.value).toEqual(before);
+  });
+
+  it('table match: shows the parent db, matching table, and all its loaded columns; hides sibling tables', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'events';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('analytics');
+    expect(labels).toContain('events');
+    expect(labels).not.toContain('users');
+    expect(labels).not.toContain('system');
+    expect(labels).toContain('event_time');
+    expect(labels).toContain('event_name');
+    expect(labels).toContain('user_id');
+    const tblRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    expect(tblRow.classList.contains('match')).toBe(true);
+    expect(tblRow.querySelector('.chev').style.transform).toBe('rotate(0deg)');
+    expect(app.state.expanded.value.size).toBe(0); // persisted expansion untouched
+  });
+
+  it('column match: shows every matching column and its db/table ancestors, hides everything else', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'event_time';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toEqual(expect.arrayContaining(['analytics', 'events', 'system', 'query_log']));
+    expect(labels).not.toContain('users');
+    expect(labels).not.toContain('event_name');
+    expect(labels).not.toContain('user_id');
+    expect(labels).not.toContain('query');
+    const eventTimeRows = colRowsNamed(app, 'event_time');
+    expect(eventTimeRows.length).toBe(2); // one under events, one under query_log
+    for (const r of eventTimeRows) expect(r.classList.contains('match')).toBe(true);
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    expect(eventsRow.classList.contains('match')).toBe(false); // ancestor context only, not a direct match
+    expect(app.state.expanded.value.size).toBe(0);
+  });
+
+  it('database match with one persistently expanded table: expanded table\'s columns still show; collapsed sibling does not reveal columns solely from the db match', () => {
+    const app = withSearchSchema();
+    setExpanded(app, 'tb:analytics.events');
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('events');
+    expect(labels).toContain('users');
+    expect(labels).toContain('event_time');
+    expect(labels).toContain('event_name');
+    expect(labels).toContain('user_id');
+    expect(labels).not.toContain('id');
+    expect(labels).not.toContain('email');
+  });
+
+  it('overlapping direct matches: a term matching both a table and a column favors the table match (shows every loaded column)', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'query';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('query_log');
+    expect(labels).toContain('event_time'); // shown via the table match, not because 'event_time' itself matches 'query'
+    expect(labels).toContain('query');
+    expect(labels).not.toContain('analytics');
+  });
+
+  it('a directly matching table with columns not yet loaded shows no columns and triggers no load', () => {
+    const app = withSearchSchema();
+    app.state.schema.value[0].tables[0].columns = null; // events
+    app.state.schemaFilter.value = 'events';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('analytics');
+    expect(labels).toContain('events');
+    expect(labels).not.toContain('event_time');
+    expect(app.actions.loadColumns).not.toHaveBeenCalled();
+  });
+
+  it('a directly matching table whose columns are loading shows the loading row', () => {
+    const app = withSearchSchema();
+    app.state.schema.value[0].tables[0].columns = 'loading'; // events
+    app.state.schemaFilter.value = 'events';
+    renderSchema(app);
+    expect(app.dom.schemaList.textContent).toContain('loading columns…');
+  });
+
+  it('after the cache is replaced and repainted, a table match shows all columns and a column match shows only the matches', () => {
+    const app = withSearchSchema();
+    app.state.schema.value[0].tables[0].columns = null; // events
+    app.state.schemaFilter.value = 'events';
+    renderSchema(app); // no columns cached yet
+    expect(rows(app).map((r) => r.querySelector('.label').textContent)).not.toContain('event_time');
+
+    app.state.schema.value[0].tables[0].columns = [
+      { name: 'event_time', type: 'DateTime', comment: '' },
+      { name: 'event_name', type: 'String', comment: '' },
+      { name: 'user_id', type: 'UInt64', comment: '' },
+    ];
+    renderSchema(app);
+    let labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('event_time');
+    expect(labels).toContain('user_id');
+
+    app.state.schemaFilter.value = 'event_time';
+    renderSchema(app);
+    labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('event_time');
+    expect(labels).not.toContain('user_id');
+  });
+
+  it('clearing the filter restores the exact pre-search expansion-driven tree', () => {
+    const app = withSearchSchema();
+    setExpanded(app, 'db:analytics');
+    renderSchema(app);
+    const before = rows(app).map((r) => r.querySelector('.label').textContent);
+    app.state.schemaFilter.value = 'events';
+    renderSchema(app);
+    app.state.schemaFilter.value = '';
+    renderSchema(app);
+    const after = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(after).toEqual(before);
+  });
+
+  it('a non-matching filter renders exactly one empty-search message and no database rows', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'nope-nothing-matches';
+    renderSchema(app);
+    expect(app.dom.schemaList.textContent).toBe('No matching databases, tables, or columns.');
+    expect(rows(app).length).toBe(0);
+  });
+
+  it('matching is case-insensitive and trims surrounding whitespace', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = '  ANALYTICS  ';
+    renderSchema(app);
+    const labels = rows(app).map((r) => r.querySelector('.label').textContent);
+    expect(labels).toContain('analytics');
+  });
+
+  it('regression: a row click during an active search still updates persisted expansion', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const usersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'users');
+    click(usersRow);
+    expect(app.state.expanded.value.has('tb:analytics.users')).toBe(true);
+  });
+
+  // Clicking a row that a search cascade already forces open ends at the same
+  // *final* chevron rotation with or without the flip animation running (the
+  // reset-then-restore both land back on "open"), so asserting on the final
+  // `.style.transform` can't tell a fixed skip apart from the original flash
+  // bug. Spy on the `.chev`'s `offsetHeight` getter instead — flipChevron only
+  // reads it to force the reflow that makes the animation's "from" state
+  // commit — so whether that read happens is a direct proxy for whether the
+  // (needless, flash-causing) animation ran at all.
+  it('clicking a db row shown open only via a search match skips the chevron flip (no flash), but still updates persisted state', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const dbRow = rows(app).find((r) => r.querySelector('.label').textContent === 'analytics');
+    const chev = dbRow.querySelector('.chev');
+    let reflowRead = false;
+    Object.defineProperty(chev, 'offsetHeight', { get: () => { reflowRead = true; return 0; } });
+    click(dbRow);
+    expect(reflowRead).toBe(false);
+    expect(app.state.expanded.value.has('db:analytics')).toBe(true);
+  });
+
+  it('clicking a table row shown open only via its own search match skips the flip; one shown only via its db\'s match still animates', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'events'; // direct table-name match
+    renderSchema(app);
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    const eventsChev = eventsRow.querySelector('.chev');
+    let eventsReflow = false;
+    Object.defineProperty(eventsChev, 'offsetHeight', { get: () => { eventsReflow = true; return 0; } });
+    click(eventsRow);
+    expect(eventsReflow).toBe(false);
+
+    app.state.schemaFilter.value = 'analytics'; // 'users' included only via the db match
+    renderSchema(app);
+    const usersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'users');
+    const usersChev = usersRow.querySelector('.chev');
+    let usersReflow = false;
+    Object.defineProperty(usersChev, 'offsetHeight', { get: () => { usersReflow = true; return 0; } });
+    click(usersRow);
+    expect(usersReflow).toBe(true); // not cascade-forced by its own match — flips normally
+  });
+
+  it('regression: drag still works on a table row revealed only by its db match', () => {
+    const app = withSearchSchema();
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    const d = dragstart(eventsRow);
+    expect(d[IDENT_MIME]).toBe('analytics.events');
+  });
+
+  it('regression: mobile mode still drops draggable/title on rows revealed only by search', () => {
+    const app = withSearchSchema();
+    app.state.isMobile.value = true;
+    app.state.schemaFilter.value = 'analytics';
+    renderSchema(app);
+    const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
+    expect(eventsRow.getAttribute('draggable')).toBeNull();
+    expect(eventsRow.getAttribute('title')).toBeNull();
+  });
+});

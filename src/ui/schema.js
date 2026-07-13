@@ -137,19 +137,58 @@ export function renderSchema(app) {
   const filter = state.schemaFilter.value.trim().toLowerCase();
   const matches = (s) => !filter || s.toLowerCase().includes(filter);
 
+  // Search cascades through the db → table → column hierarchy (#208): a
+  // direct match at one level pulls in its ancestors for context and, for a
+  // database/table match, reveals its descendants — see the issue for the
+  // exact precedence. This is a pure presentation-time projection over the
+  // existing cache: it never writes `state.expanded` (persisted expand/
+  // collapse is untouched and comes back exactly when the filter clears) and
+  // never triggers column loading — a directly-matching table whose columns
+  // aren't cached yet just renders with none until the user expands it.
+  let anyDbShown = false;
+
   for (const db of schema) {
     const qdb = quoteIdent(db.db); // SQL-safe db name (reused by the 3 emit sites)
     const dbKey = 'db:' + db.db;
     const dbOpen = state.expanded.value.has(dbKey);
+    const dbMatch = matches(db.db);
+
+    const tableInfos = db.tables.map((tb) => {
+      const tableMatch = matches(tb.name);
+      const loadedColumns = Array.isArray(tb.columns) ? tb.columns : [];
+      // Only scan a table's cached columns once a search is actually active —
+      // otherwise every table in every database would pay this on every
+      // no-filter repaint for a result nothing downstream uses.
+      const matchingColumns = filter ? loadedColumns.filter((c) => matches(c.name)) : [];
+      const includeTable = !filter || dbMatch || tableMatch || matchingColumns.length > 0;
+      return { tb, tableMatch, loadedColumns, matchingColumns, includeTable };
+    });
+    const includedTables = tableInfos.filter((t) => t.includeTable);
+
+    if (filter && !dbMatch && includedTables.length === 0) continue;
+    anyDbShown = true;
+
+    // An included db is shown open whenever a search is active — the guard
+    // above already guarantees `dbMatch || includedTables.length > 0` holds
+    // for any db that reaches this line while `filter` is set, so toggling
+    // `dbOpen` can never change this db row's visual open/closed state
+    // during a search (only its persisted expansion, for when the filter
+    // clears) — see the flipChevron skip below.
+    const dbShownOpen = dbOpen || !!filter;
+
     list.appendChild(h('div', {
-      class: 'tree-row bold',
+      class: 'tree-row bold' + (filter && dbMatch ? ' match' : ''),
       'data-key': dbKey,
       ...hoverTitle(db.comment || 'Click to expand · double-click to insert · shift-click for SHOW CREATE · drag to Data for Schema'),
       onclick: (e) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + qdb); return; }
         if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
         state.expanded.value = toggleKey(state.expanded.value, dbKey);
-        flipChevron(list, dbKey, dbOpen);
+        // A search-active db is always shown open (see dbShownOpen above), so
+        // toggling persisted expansion here never actually changes what's on
+        // screen — animating the chevron would just flash it shut and back
+        // open for no visible reason.
+        if (!filter) flipChevron(list, dbKey, dbOpen);
         // Only the collapsed → expanded transition also draws the schema graph
         // (issue #124) — collapsing an open db must not re-fetch/re-draw/steal
         // focus back to the drawer, and re-clicking an already-open db is a no-op
@@ -158,15 +197,11 @@ export function renderSchema(app) {
       },
       ...dragAttrs(lineageDrag(qdb, { kind: 'db', db: db.db })),
     },
-      ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: dbOpen }),
+      ...treeRow(Icon.database(), db.db, String(db.tables.length), { expanded: dbShownOpen }),
     ));
-    if (!dbOpen) continue;
+    if (!dbShownOpen) continue;
 
-    for (const tb of db.tables) {
-      const tableMatch = matches(tb.name);
-      const colsHave = Array.isArray(tb.columns) ? tb.columns : [];
-      const visibleCols = filter ? colsHave.filter((c) => matches(c.name)) : colsHave;
-      if (filter && !tableMatch && visibleCols.length === 0 && tb.columns !== 'loading') continue;
+    for (const { tb, tableMatch, loadedColumns, matchingColumns } of includedTables) {
       const key = db.db + '.' + tb.name; // internal identity (Sets, dbl-click tracking)
       const tbKey = 'tb:' + key;
       const qname = qualifyIdent(db.db, tb.name); // SQL-safe qualified name
@@ -175,6 +210,11 @@ export function renderSchema(app) {
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
         : 'Click to expand · double-click SELECT * in new tab · shift-click SHOW CREATE in new tab · drag to insert name';
+      // Unlike the db case above, this table's own forcing term isn't always
+      // true just because a search is active — a table only included via its
+      // parent db's match (no direct match of its own) still toggles normally.
+      const tableCascadeForced = !!(filter && (tableMatch || matchingColumns.length > 0));
+      const tableShownOpen = isOpen || tableCascadeForced;
 
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
@@ -193,13 +233,16 @@ export function renderSchema(app) {
             state.expanded.value = toggleKey(state.expanded.value, tbKey);
             if (willOpen && tb.columns == null) app.actions.loadColumns(db.db, tb.name);
           });
-          flipChevron(list, tbKey, isOpen);
+          // Same reasoning as the db row's flip guard above: when this
+          // table's own match forces it open, toggling isOpen never changes
+          // what's rendered, so there's nothing to animate.
+          if (!tableCascadeForced) flipChevron(list, tbKey, isOpen);
         },
       },
-        ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: isOpen, iconColor: 'var(--accent)' }),
+        ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: tableShownOpen, iconColor: 'var(--accent)' }),
       ));
 
-      if (!isOpen && !(filter && visibleCols.length > 0)) continue;
+      if (!tableShownOpen) continue;
       if (tb.columns === 'loading') {
         list.appendChild(h('div', {
           class: 'tree-row small',
@@ -207,7 +250,16 @@ export function renderSchema(app) {
         }, 'loading columns…'));
         continue;
       }
-      for (const c of visibleCols) {
+
+      // Every case shows every loaded column EXCEPT a column-only match
+      // (own name doesn't match, but one or more columns do) — that one case
+      // narrows to just the matches; everything else (no filter, a direct
+      // table match, or a table shown only via its db's match) shows all.
+      const visibleColumns = filter && !tableMatch && matchingColumns.length > 0
+        ? matchingColumns
+        : loadedColumns;
+
+      for (const c of visibleColumns) {
         list.appendChild(h('div', {
           class: 'tree-row small mono' + (filter && matches(c.name) ? ' match' : ''),
           style: { paddingLeft: '38px' },
@@ -242,5 +294,9 @@ export function renderSchema(app) {
         ));
       }
     }
+  }
+
+  if (filter && !anyDbShown) {
+    list.appendChild(h('div', { class: 'schema-empty' }, 'No matching databases, tables, or columns.'));
   }
 }
