@@ -871,7 +871,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
         card: {
           title: 'lin.a', kind: 'table', summary: 'MergeTree · 5 rows · 0 B', comment: 'raw ingest table',
           cols: [{ name: 'id', type: 'UInt64', roles: ['PK', 'SK'] }, { name: 'd', type: 'Date', roles: [] }],
-          overflow: 2, skipLine: 'idx: i (minmax)',
+          overflow: 2,
         },
       },
       { id: 'lin.mv', label: 'mv', kind: 'mv', db: 'lin', name: 'mv' }, // no .card → header-only fallback
@@ -883,7 +883,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     ],
   };
 
-  it('draws a card group per node with title, summary, divider, columns + role badges, overflow and skip rows', () => {
+  it('draws a card group per node with title, summary, divider, columns + role badges, and an overflow row', () => {
     const built = buildRichSchemaSvg(RICH, dagre);
     expect(built.nodeCount).toBe(3);
     const svg = built.svg;
@@ -897,7 +897,9 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     expect(svg.querySelector('tspan.eg-badge--pk')).not.toBeNull();
     expect(svg.querySelector('tspan.eg-badge--sk')).not.toBeNull();
     expect([...svg.querySelectorAll('text.eg-col-more')].map((t) => t.textContent)).toContain('+2 more');
-    expect(svg.querySelector('text.eg-skipidx').textContent).toBe('idx: i (minmax)');
+    // #179: data-skipping indexes are never drawn on a card — the geometry-inflating
+    // idx: line is gone; index metadata lives in the detail drawer instead.
+    expect(svg.querySelector('text.eg-skipidx')).toBeNull();
     // the comment is a hover-only <title> on the whole card — same idiom as the
     // plain inline graph's nodeTitle — never a drawn row, so it can't affect
     // any other row's position or the card's own size.
@@ -923,7 +925,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
         card: {
           title: 'lin.c', kind: 'table', summary: 'MergeTree · 0 rows · 0 B',
           comment: 'a very long comment that would never fit on the card at all',
-          cols: [], overflow: 0, skipLine: '',
+          cols: [], overflow: 0,
         },
       }],
       edges: [],
@@ -944,7 +946,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
             { name: 'state', type: 'Enum8(4 values)', fullType: full, roles: [] },
             { name: 'id', type: 'UInt64', roles: [] }, // untouched → no title
           ],
-          overflow: 0, skipLine: '',
+          overflow: 0,
         },
       }],
       edges: [],

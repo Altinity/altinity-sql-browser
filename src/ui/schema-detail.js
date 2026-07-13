@@ -1,7 +1,8 @@
 // The node detail pane for the fullscreen schema graph: a resizable strip docked
 // at the bottom of the overlay panel, showing a clicked object's full columns
-// (with key-role flags, comments + compression), per-partition part/row/byte
-// sums, the table's own comment (next to the kind badge), and its DDL. Pure DOM
+// (with key-role flags, comments + compression), its data-skipping indexes
+// (#179), per-partition part/row/byte sums, the table's own comment (next to the
+// kind badge), and its DDL. Pure DOM
 // over the app controller; the data is fetched by app.actions.openNodeDetail
 // (ch.loadTableDetail). Opening the pane also rings the clicked card in the
 // graph so it's clear which object the pane describes.
@@ -19,6 +20,14 @@ const MAX_HEAD_COMMENT = 120; // table's own comment, next to the kind badge —
 const MAX_COL_COMMENT = 80; // per-column comment — 2x the original 40, more room to read without opening DDL
 const MAX_COL_TYPE = 48; // a column's type cell (#177) — an unbounded Enum/Tuple declaration compacts; the full type stays in the cell title
 const MAX_COL_CODEC = 40; // a CODEC(...) chain can get long the same way; full text stays in the cell title
+// Data-skipping index cells (#179): the drawer shows EVERY index (never a capped
+// subset), but each field can be long — cap the width per cell (JS truncate +
+// full value in `title`, same idiom as the column cells) so a long index name,
+// expression, or parameterised type can't force the drawer wider. Expression +
+// Type get the most room; Name is medium.
+const MAX_IDX_NAME = 28;
+const MAX_IDX_EXPR = 48;
+const MAX_IDX_TYPE = 48;
 
 // A capped `<td>` — always rendered (even empty) so every row in the columns
 // table keeps the same cell count. The full text always lands in `title`
@@ -45,8 +54,8 @@ const headComment = (text) => {
 
 /**
  * Mount (or replace) the detail pane for `node` inside the live fullscreen overlay,
- * populated from `detail` ({ columns, partitions, ddl }). Returns the pane element,
- * or null when no overlay is open. The ✕ button and Esc both close just the pane
+ * populated from `detail` ({ columns, indexes, partitions, ddl }). Returns the pane
+ * element, or null when no overlay is open. The ✕ button and Esc both close just the pane
  * and clear the card's selection ring (Esc is wired in explain-graph.js via the
  * exported clearSchemaSelection); a further Esc / backdrop click closes the view.
  */
@@ -117,6 +126,7 @@ function buildDetailPane(node, detail, panel) {
     body = loadingPlaceholder('Loading table…');
   } else {
     const cols = detail.columns || [];
+    const indexes = detail.indexes || [];
     const parts = detail.partitions || [];
 
     const colsTable = h('table', { class: 'schema-detail-cols' },
@@ -128,6 +138,26 @@ function buildDetailPane(node, detail, panel) {
         h('td', { class: 'num' }, formatBytes(c.compressed)),
         h('td', { class: 'num' }, formatCompressionRatio(c.compressed, c.uncompressed)),
         h('td', { class: 'schema-detail-roles' }, columnRoles(c).join(' '))))));
+
+    // Data-skipping indexes (#179): the whole list, one single-line row each,
+    // long Name/Expression/Type capped with a full-value hover title. `type_full`
+    // is preferred over `type` so a parameterised index (bloom_filter(0.01),
+    // tokenbf_v1(…)) stays distinguishable; it falls back to `type` when absent.
+    // Omitted entirely when the table carries no skipping indexes.
+    const idxSection = indexes.length
+      ? h('div', null,
+        h('h4', null, 'Data-skipping indexes (' + indexes.length + ')'),
+        h('table', { class: 'schema-detail-cols' },
+          h('thead', null, h('tr', null,
+            h('th', null, 'name'), h('th', null, 'expression'), h('th', null, 'type'),
+            h('th', { class: 'num' }, 'granularity'), h('th', { class: 'num' }, 'compressed'))),
+          h('tbody', null, ...indexes.map((ix) => h('tr', null,
+            cappedCell(ix.name, MAX_IDX_NAME),
+            cappedCell(ix.expr, MAX_IDX_EXPR),
+            cappedCell(ix.type_full || ix.type, MAX_IDX_TYPE),
+            h('td', { class: 'num' }, ix.granularity != null ? String(ix.granularity) : ''),
+            h('td', { class: 'num' }, formatBytes(ix.compressed)))))))
+      : null;
 
     const partsSection = parts.length
       ? h('div', null,
@@ -144,6 +174,7 @@ function buildDetailPane(node, detail, panel) {
     body = h('div', null,
       h('h4', null, 'Columns (' + cols.length + ')'),
       colsTable,
+      idxSection,
       partsSection,
       detail.ddl ? h('h4', null, 'DDL') : null,
       detail.ddl ? h('pre', { class: 'schema-detail-ddl' }, detail.ddl) : null);

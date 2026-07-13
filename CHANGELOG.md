@@ -95,6 +95,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   are preserved, never silently stripped.
 
 ### Changed
+- **Data-skipping indexes moved off schema graph cards into the detail drawer**
+  (#179). Expanded schema-graph cards no longer render the inline `idx: …` line:
+  because a card's width is the widest rendered text line, long index names/types
+  used to inflate the card and distort graph spacing (a heavily-indexed table
+  spread far wider than the same columns with no indexes). Card geometry
+  (width/height/layout/spacing) is now completely independent of index count,
+  name, and type. The full index metadata instead appears in a new
+  **Data-skipping indexes (N)** section of the bottom detail drawer, after
+  Columns: every index (never a capped subset), with Name, Expression, full Type
+  (`type_full` preferred so `bloom_filter(0.01)` / `tokenbf_v1(…)` stay
+  distinguishable, falling back to `type`), Granularity, and compressed size —
+  long Name/Expression/Type cells ellipsize with the full value on hover, and the
+  section is omitted when a table has no skipping indexes. The rows are fetched
+  once per detail-open (one read added to `loadTableDetail`'s existing parallel
+  batch); the now-dead skip-index read `loadSchemaCards` issued on every graph
+  load is gone. No new runtime dependency. (Follow-up to the #177 compact-type
+  work.)
 - **Dashboard tiles now stream through the shared `app.runReadInto` seam** (#193,
   follow-up to #185). Every query-backed tile runs on the same execution path as
   the workbench `run()` and the detached Data view instead of the bespoke

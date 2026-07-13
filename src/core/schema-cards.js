@@ -1,8 +1,13 @@
 // Pure assembly + sizing of the rich node "cards" the fullscreen schema graph
-// draws. No DOM, no fetch — the column/skip-index rows come from ch-client
+// draws. No DOM, no fetch — the column rows come from ch-client
 // (loadSchemaCards) and the SVG drawing lives in src/ui/explain-graph.js. Kept
 // pure so the geometry (which dagre needs *before* layout) is fully testable
 // under happy-dom, which has no layout engine to measure rendered text.
+//
+// Data-skipping indexes are deliberately NOT part of the card model (#179): a
+// flattened idx: line inflated card width from the widest index name/type and
+// distorted graph spacing. Index metadata lives in the bottom detail drawer
+// (schema-detail.js), fetched per-open by ch.loadTableDetail — see that module.
 
 import { formatRows, formatBytes } from './format.js';
 import { compactType } from './type-display.js';
@@ -21,9 +26,6 @@ export const CARD = {
   BADGE_W: 26, // approx width of one role badge (PK/SK/PARTITION/SAMPLING)
   MIN_W: 130,
   MAX_COLS: 16,
-  MAX_IDX: 6, // skip-indices have no dedicated overflow row (unlike columns) — cap the
-              // single idx: line itself so a heavily-indexed table (bloom filters per
-              // Map key/value, tokenbf on Body, …) can't blow the card absurdly wide.
   MAX_TYPE: 28, // compact the displayed column type — a big Enum/Tuple/Map would
                 // otherwise blow the card (and the whole graph) absurdly wide.
 };
@@ -49,16 +51,16 @@ export function columnRoles(col) {
 }
 
 /**
- * Build the display model for one node's card from its lineage row + columns +
- * skip-indices. `node` carries `{ label, kind }`; `tableRow` is the system.tables
- * row (engine/total_rows/total_bytes/comment), `columns` the system.columns rows,
- * and `skipIndices` the system.data_skipping_indices rows — any may be missing
- * (an external/dictionary-source leaf has none), degrading to a header-only card.
- * `comment` (trimmed, untruncated) isn't drawn as its own row — like the plain
- * inline graph, it's a hover-only tooltip on the whole card, so it never affects
- * the card's own layout.
+ * Build the display model for one node's card from its lineage row + columns.
+ * `node` carries `{ label, kind }`; `tableRow` is the system.tables row
+ * (engine/total_rows/total_bytes/comment) and `columns` the system.columns rows —
+ * either may be missing (an external/dictionary-source leaf has none), degrading
+ * to a header-only card. Data-skipping indexes are intentionally absent (#179):
+ * they belong in the detail drawer, not in card geometry. `comment` (trimmed,
+ * untruncated) isn't drawn as its own row — like the plain inline graph, it's a
+ * hover-only tooltip on the whole card, so it never affects the card's own layout.
  */
-export function buildCardModel(node, tableRow, columns, skipIndices) {
+export function buildCardModel(node, tableRow, columns) {
   const n = node || {};
   const tr = tableRow || {};
   const engine = tr.engine || n.kind || 'table';
@@ -72,31 +74,26 @@ export function buildCardModel(node, tableRow, columns, skipIndices) {
     name: c.name, type: clampType(c.type), fullType: c.type, roles: columnRoles(c),
   }));
   const overflow = Math.max(0, allCols.length - CARD.MAX_COLS);
-  const idx = skipIndices || [];
-  const idxOverflow = Math.max(0, idx.length - CARD.MAX_IDX);
-  const skipLine = idx.length
-    ? 'idx: ' + idx.slice(0, CARD.MAX_IDX).map((i) => i.name + ' (' + (i.type || '') + ')').join(', ')
-      + (idxOverflow ? ', +' + idxOverflow + ' more' : '')
-    : '';
-  return { title: n.label || n.id || '', kind: n.kind || 'table', summary, comment, cols, overflow, skipLine };
+  return { title: n.label || n.id || '', kind: n.kind || 'table', summary, comment, cols, overflow };
 }
 
 /**
  * The pixel size {w,h} of a card, computed purely from its model so dagre can lay
- * it out. Height = header + one row per shown column (+ overflow + skip rows) —
- * the comment is a hover-only tooltip on the whole card, not a row, so it never
- * affects height or width. Width = the widest text line (monospace estimate)
- * plus side padding, floored at MIN_W. `opts` overrides the CARD constants
- * (used by tests).
+ * it out. Height = header + one row per shown column (+ an overflow row) — the
+ * comment is a hover-only tooltip on the whole card, not a row, so it never
+ * affects height or width, and data-skipping indexes aren't part of the card at
+ * all (#179), so index count/name/type can't change card geometry. Width = the
+ * widest text line (monospace estimate) plus side padding, floored at MIN_W.
+ * `opts` overrides the CARD constants (used by tests).
  */
 export function cardSize(model, opts = {}) {
-  const m = model || { title: '', summary: '', comment: '', cols: [], overflow: 0, skipLine: '' };
+  const m = model || { title: '', summary: '', comment: '', cols: [], overflow: 0 };
   const ROW_H = opts.rowH != null ? opts.rowH : CARD.ROW_H;
   const HEADER_H = opts.headerH != null ? opts.headerH : CARD.HEADER_H;
   const CHAR_W = opts.charW != null ? opts.charW : CARD.CHAR_W;
   const PAD_X = opts.padX != null ? opts.padX : CARD.PAD_X;
   const BADGE_W = opts.badgeW != null ? opts.badgeW : CARD.BADGE_W;
-  const rowCount = m.cols.length + (m.overflow ? 1 : 0) + (m.skipLine ? 1 : 0);
+  const rowCount = m.cols.length + (m.overflow ? 1 : 0);
   const h = HEADER_H + rowCount * ROW_H;
   const textW = (str) => String(str).length * CHAR_W;
   let maxLine = Math.max(textW(m.title), textW(m.summary));
@@ -104,26 +101,24 @@ export function cardSize(model, opts = {}) {
     maxLine = Math.max(maxLine, textW(c.name + ' ' + c.type) + c.roles.length * BADGE_W);
   }
   if (m.overflow) maxLine = Math.max(maxLine, textW('+' + m.overflow + ' more'));
-  if (m.skipLine) maxLine = Math.max(maxLine, textW(m.skipLine));
   const w = Math.max(CARD.MIN_W, Math.round(maxLine + PAD_X * 2));
   return { w, h };
 }
 
 /**
  * Attach a `.card` model to every node of a lineage `graph` (from
- * buildSchemaGraph), looking up each node's row/columns/skip-indices by `db.table`
- * id. Pure: `data = { tables, columnsByKey, skipByKey }`. Returns a new graph
- * `{ nodes, edges }` (edges passed through) for the rich renderer.
+ * buildSchemaGraph), looking up each node's row/columns by `db.table` id. Pure:
+ * `data = { tables, columnsByKey }`. Returns a new graph `{ nodes, edges }`
+ * (edges passed through) for the rich renderer.
  */
 export function buildCardGraph(graph, data) {
   const g = graph || {};
   const d = data || {};
   const tablesByKey = new Map((d.tables || []).map((t) => [t.database + '.' + t.name, t]));
   const colsByKey = d.columnsByKey || {};
-  const skipByKey = d.skipByKey || {};
   const nodes = (g.nodes || []).map((n) => ({
     ...n,
-    card: buildCardModel(n, tablesByKey.get(n.id), colsByKey[n.id], skipByKey[n.id]),
+    card: buildCardModel(n, tablesByKey.get(n.id), colsByKey[n.id]),
   }));
   return { nodes, edges: g.edges || [] };
 }

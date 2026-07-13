@@ -1462,7 +1462,7 @@ export function createApp(env = {}) {
       const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
       const cards = await ch.loadSchemaCards(chCtx, dbs);
       const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
-        { tables: lineage.rows.tables, columnsByKey: cards.columnsByKey, skipByKey: cards.skipByKey });
+        { tables: lineage.rows.tables, columnsByKey: cards.columnsByKey });
       // Persist manually-moved node positions per result: the map hangs off the live
       // schemaGraph result (captured above) so re-opening keeps the layout.
       const positions = (sg && sg.savedPositions) || {};

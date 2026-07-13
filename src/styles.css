@@ -761,7 +761,6 @@ body {
 .explain-graph .eg-col .eg-col-name { fill: var(--fg); }
 .explain-graph .eg-col .eg-col-type { fill: var(--fg-faint); }
 .explain-graph .eg-col-more { fill: var(--fg-faint); font-style: italic; }
-.explain-graph .eg-skipidx { fill: #c297ff; font-family: var(--mono); font-size: 9px; }
 .explain-graph .eg-badge { font-weight: 700; font-size: 8px; }
 .explain-graph .eg-badge--pk { fill: #ff8f6b; }
 .explain-graph .eg-badge--sk { fill: #6bb6ff; }

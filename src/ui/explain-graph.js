@@ -203,12 +203,14 @@ export function buildSchemaSvg(graph, dagre, onNode) {
 
 // Draw one node as a rich card: a kind-coloured background rect with a title +
 // engine/rows/bytes summary header, then a row per column (with key-role
-// badges), an overflow row, and a skip-index row — all placed at the
-// deterministic offsets cardSize() used to size the node, so no DOM
-// measurement is needed. `model` is always supplied by renderRichGraphSvg (a
-// header-only model for a card-less node). A table comment (when there is
-// one) is a hover-only <title> on the whole card — same as the plain inline
-// graph's nodeTitle — never a drawn row, so it can't affect card layout.
+// badges) and an overflow row — all placed at the deterministic offsets
+// cardSize() used to size the node, so no DOM measurement is needed. Data-
+// skipping indexes are deliberately not drawn here (#179) — they'd inflate card
+// width and distort layout; they live in the detail drawer instead. `model` is
+// always supplied by renderRichGraphSvg (a header-only model for a card-less
+// node). A table comment (when there is one) is a hover-only <title> on the
+// whole card — same as the plain inline graph's nodeTitle — never a drawn row,
+// so it can't affect card layout.
 function renderCardNode(n, model, nodeClass, onNode) {
   const g = s('g', { class: 'eg-card', 'data-node-id': n.id });
   if (model.comment) g.appendChild(s('title', {}, model.comment));
@@ -232,8 +234,7 @@ function renderCardNode(n, model, nodeClass, onNode) {
     g.appendChild(t);
     row++;
   }
-  if (model.overflow) { g.appendChild(s('text', { class: 'eg-col eg-col-more', x: left, y: rowY() }, '+' + model.overflow + ' more')); row++; }
-  if (model.skipLine) g.appendChild(s('text', { class: 'eg-skipidx', x: left, y: rowY() }, model.skipLine));
+  if (model.overflow) g.appendChild(s('text', { class: 'eg-col eg-col-more', x: left, y: rowY() }, '+' + model.overflow + ' more'));
   if (onNode) {
     rect.setAttribute('cursor', 'pointer');
     g.addEventListener('click', (e) => { e.stopPropagation(); onNode(n, e); });
