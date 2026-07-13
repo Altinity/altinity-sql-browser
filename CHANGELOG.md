@@ -9,6 +9,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **Builds now use a committed `package-lock.json` and `npm ci`** (#157), making
+  local, pull-request, and tagged-release artifacts resolve the same complete
+  dependency graph instead of silently picking up newly published transitive
+  versions. The lockfile includes esbuild's platform binaries as optional
+  packages, so Linux CI and macOS development each install the correct binary
+  without sacrificing reproducibility.
+
 ### Fixed
 - **Schema search cascades through the database/table/column hierarchy instead
   of flat-filtering table and column names independently** (#208). A database

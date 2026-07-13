@@ -377,7 +377,7 @@ on Save JSON / Open / New.
 ## Quick start (development)
 
 ```bash
-npm install            # esbuild ships platform-specific binaries; use install, not ci
+npm ci                 # exact dependency tree from the committed lockfile
 npm test               # vitest + 100% coverage gate
 npm run build          # → dist/sql.html (single file)
 npm run dev            # build + serve dist/ at http://localhost:8900
@@ -667,6 +667,12 @@ The release attaches `altinity-sql-browser.tar.gz` (+ `.sha256`) and the raw
 every PR smoke-tests it in CI (`bundle` job: extract → boot the runner → fetch
 `/sql` + `/config.json`). The `curl | sh` `install.sh` resolves the latest tag and
 installs that artifact.
+
+`package-lock.json` is committed and every CI/release job uses `npm ci`, so a tag
+build resolves the same complete dependency graph—including transitives—as a
+local checkout of that commit. npm records platform-specific esbuild binaries as
+optional packages and installs only the current platform's binary; the lockfile
+therefore remains portable between Linux CI and macOS development.
 
 ## License
 
