@@ -9,6 +9,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Schema search cascades through the database/table/column hierarchy instead
+  of flat-filtering table and column names independently** (#208). A database
+  name match now shows that database and every one of its tables; a table
+  match shows its parent database, the matching table, and all its currently
+  loaded columns; a column match shows only the matching columns plus their
+  table/database context. Ancestors required by a match render as visually
+  open even when persistently collapsed, and a database with no matching
+  descendant is hidden entirely (previously every database always rendered,
+  even empty ones) — a non-empty filter with no matches at all now renders one
+  "No matching databases, tables, or columns." message instead of empty rows.
+  Search-driven reveals are a pure presentation-time projection: they never
+  write `state.expanded`, so clearing the filter restores the exact prior
+  expand/collapse state, and typing never triggers column-loading requests — a
+  directly-matching table whose columns aren't cached yet shows none until
+  expanded. Fixes a related cosmetic bug found in review: a click on a row
+  shown open only via the search cascade (not persisted expansion) no longer
+  flashes its chevron shut and back open (`src/ui/schema.js`).
+
 ## [0.4.0] - 2026-07-13
 
 ### Added
