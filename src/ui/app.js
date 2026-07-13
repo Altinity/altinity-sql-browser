@@ -8,7 +8,7 @@ import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab, KEYS, recordHistory, recordScriptHistory,
-  createSavedQuery, commitSavedQuery, savedForTab, setTabSpecDraft, tabPanel,
+  createSavedQuery, commitSavedQuery, savedForTab, tabPanel,
   normalizeRowLimit, MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
@@ -131,7 +131,6 @@ export function createApp(env = {}) {
     // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
     // always-desktop — the mobile CSS still applies, just no JS branching).
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
-    confirm: env.confirm || (typeof win.confirm === 'function' ? win.confirm.bind(win) : () => true),
   };
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
@@ -1614,6 +1613,7 @@ export function createApp(env = {}) {
   // --- share + star ------------------------------------------------------
   function share() {
     const tab = app.activeTab();
+    if (tab.editorMode !== 'sql') return;
     const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
       flashToast('Fix Spec errors before sharing', { document: doc });
@@ -1684,6 +1684,7 @@ export function createApp(env = {}) {
   // (its own directory + per-statement log, since one file per script makes
   // no sense). Mirrors runEntry's split/branch.
   function exportEntry() {
+    if (app.activeTab().editorMode !== 'sql') return;
     if (app.state.exporting.value) return;
     const waveMs = wallNow(); // one wall clock for this export wave (gate + args)
     if (varGateBlocked(waveMs)) return; // don't export with unfilled variables (#134)
@@ -1695,6 +1696,7 @@ export function createApp(env = {}) {
   }
 
   async function exportDirect(sqlInput, waveMs) {
+    if (app.activeTab().editorMode !== 'sql') return;
     if (app.state.exporting.value) return;
     if (!app.canExport()) return; // aria-disabled button; defensive guard
     const tab = app.activeTab();
@@ -2137,14 +2139,6 @@ export function createApp(env = {}) {
   }
   app.openSavePopover = openSavePopover;
 
-  function validateSpecDraft({ focus = true } = {}) {
-    const tab = app.activeTab();
-    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    if (focus && evaluated.diagnostics.length) app.specEditor.revealDiagnostic(0);
-    app.updateEditorModeUi();
-    return evaluated;
-  }
-
   function formatSpec() {
     const tab = app.activeTab();
     if (tab.editorMode !== 'spec') return;
@@ -2155,20 +2149,6 @@ export function createApp(env = {}) {
       return;
     }
     app.specEditor.replaceDocument(formatted.text);
-  }
-
-  function revertSpec() {
-    const tab = app.activeTab();
-    const entry = savedForTab(app.state, tab);
-    if (!entry) return;
-    if (tab.dirtySpec && !app.confirm('Discard this Spec draft and restore the last saved version?')) return;
-    setTabSpecDraft(tab, entry.spec);
-    app.revalidateSpecDrafts();
-    app.specEditor.resetDocument(tab.specText);
-    app.actions.rerenderTabs();
-    app.updateSaveBtn();
-    app.updateEditorModeUi();
-    renderResults(app);
   }
 
   function setEditorMode(mode) {
@@ -2186,13 +2166,13 @@ export function createApp(env = {}) {
     return true;
   }
 
-  app.activateSpecConflict = (tab) => {
+  app.activateInvalidSpecDraft = (tab) => {
     if (!tab) return;
     batch(() => { app.state.activeTabId.value = tab.id; });
     tab.editorMode = 'spec';
     app.updateEditorModeUi();
     app.specEditor.focus();
-    flashToast('This query has an unsaved Spec draft. Save or Revert it before changing Spec elsewhere.', { document: doc });
+    flashToast('Fix Spec JSON first', { document: doc });
   };
 
   // User menu: dropdown under the header user button, holding the identity and
@@ -2337,9 +2317,7 @@ export function createApp(env = {}) {
     save: saveActiveQuery,
     openUserMenu,
     formatQuery,
-    validateSpec: validateSpecDraft,
     formatSpec,
-    revertSpec,
     setEditorMode,
     explainQuery,
     setExplainView,
@@ -2448,9 +2426,7 @@ export function renderApp(app, helpers) {
   app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
   app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
   app.dom.explainBtn = h('button', { class: 'tb-btn', title: 'Explain this query (plan, indexes, pipeline, estimate)', onclick: () => app.actions.explainQuery() }, Icon.plan(), 'Explain');
-  app.dom.validateSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Validate Spec JSON', onclick: () => app.actions.validateSpec() }, Icon.shield(), 'Validate');
-  app.dom.formatSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Format JSON (⌘⇧↵)', onclick: () => app.actions.formatSpec() }, Icon.braces(), 'Format JSON');
-  app.dom.revertSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Restore the last saved Spec', onclick: () => app.actions.revertSpec() }, Icon.undo(), 'Revert');
+  app.dom.formatSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Format Spec JSON (⌘⇧↵)', onclick: () => app.actions.formatSpec() }, Icon.braces(), 'Format');
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
   app.dom.sqlModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('sql'), 'aria-pressed': 'true' }, 'SQL');
   app.dom.specModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('spec'), 'aria-pressed': 'false' }, 'Spec');
@@ -2467,7 +2443,7 @@ export function renderApp(app, helpers) {
 
   const editorToolbar = h('div', { class: 'ed-toolbar' },
     app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn,
-    app.dom.validateSpecBtn, app.dom.formatSpecBtn, app.dom.revertSpecBtn,
+    app.dom.formatSpecBtn,
     app.dom.saveBtn, app.dom.editorModeSwitch,
     h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
   // Query-variable strip (#134): one input per detected {name:Type} placeholder,
@@ -2530,7 +2506,8 @@ export function renderApp(app, helpers) {
     app.dom.sqlEditorHost.hidden = specMode;
     app.dom.specPane.hidden = !specMode;
     for (const button of [app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn]) button.hidden = specMode;
-    for (const button of [app.dom.validateSpecBtn, app.dom.formatSpecBtn, app.dom.revertSpecBtn]) button.hidden = !specMode;
+    app.dom.formatSpecBtn.hidden = !specMode;
+    for (const button of [app.dom.exportBtn, app.dom.shareBtn]) button.hidden = specMode;
     app.dom.sqlModeBtn.classList.toggle('active', !specMode);
     app.dom.specModeBtn.classList.toggle('active', specMode);
     app.dom.sqlModeBtn.setAttribute('aria-pressed', String(!specMode));

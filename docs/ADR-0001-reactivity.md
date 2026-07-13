@@ -238,9 +238,17 @@ Spec parsing, normalization, and synchronous semantic validation live in pure
 `core/spec-draft.js`. Validator paths are arrays of string/number segments, not
 dotted strings, so array indices and object keys containing dots are exact.
 The app owns the registry and feature code owns individual rules. Direct Spec
-writers use one state-level conflict gate: no Library pencil, favorite, Panel,
-or future dashboard control may overwrite a dirty linked text draft. Linked
-Save validates and persists SQL plus Spec once, atomically; a failed Save writes
-nothing. The adapter shares only the generic CodeMirror presentation/search
-base and JSON language package that had already landed with #213, so #212 adds
-no runtime dependency.
+writers use one state-level patch helper: Library pencil/favorite, Panel, and
+future controls patch each valid open draft’s own parsed Spec, regenerate its
+text, preserve unrelated unsaved fields, and leave it dirty. A syntactically
+invalid JSON draft is the only block; the writer reports that tab before any
+mutation or persistence. Linked Save validates and persists SQL plus Spec once,
+atomically; a failed Save writes nothing.
+
+Spec is intentionally a lightweight editing mode rather than a second
+workbench. Its toolbar owns Format, Save, and the SQL | Spec switch. Run,
+Explain, SQL formatting, Export, Share, and Share’s global shortcut are owned by
+SQL mode. Validation is continuous through diagnostics and status; there are no
+manual Validate or Revert commands. The adapter shares only the generic
+CodeMirror presentation/search base and JSON language package that had already
+landed with #213, so #212 adds no runtime dependency.

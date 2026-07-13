@@ -66,7 +66,7 @@ export function makeApp(over = {}) {
     updateSaveBtn: vi.fn(),
     updateEditorModeUi: vi.fn(),
     revalidateSpecDrafts: vi.fn(),
-    activateSpecConflict: vi.fn(),
+    activateInvalidSpecDraft: vi.fn(),
     elapsedMs: () => 0,
     now: () => 0,
     wallNow: () => 0, // the #173 wave wall clock (epoch ms; fixed in tests)
@@ -103,9 +103,7 @@ export function makeApp(over = {}) {
       cancelExportScript: vi.fn(),
       save: vi.fn(),
       formatQuery: vi.fn(),
-      validateSpec: vi.fn(),
       formatSpec: vi.fn(),
-      revertSpec: vi.fn(),
       setEditorMode: vi.fn(),
       explainQuery: vi.fn(),
       setExplainView: vi.fn(),

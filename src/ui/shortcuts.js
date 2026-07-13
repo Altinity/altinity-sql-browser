@@ -96,7 +96,7 @@ export function handleKeydown(e, app) {
     return mode + 'Mode';
   }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
-    if (!signedIn) return null;
+    if (!signedIn || editorMode !== 'sql') return null;
     e.preventDefault();
     app.actions.share();
     return 'share';

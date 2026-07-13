@@ -135,22 +135,20 @@ describe('createApp basics', () => {
     const app = createApp(env());
     app.renderApp();
     const actions = {
-      run: vi.fn(), formatQuery: vi.fn(), explainQuery: vi.fn(), validateSpec: vi.fn(),
-      formatSpec: vi.fn(), revertSpec: vi.fn(), save: vi.fn(), setEditorMode: vi.fn(),
+      run: vi.fn(), formatQuery: vi.fn(), explainQuery: vi.fn(),
+      formatSpec: vi.fn(), save: vi.fn(), setEditorMode: vi.fn(),
       exportEntry: vi.fn(), share: vi.fn(),
     };
     Object.assign(app.actions, actions);
     for (const button of [
-      app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.validateSpecBtn,
-      app.dom.formatSpecBtn, app.dom.revertSpecBtn, app.dom.saveBtn,
+      app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn,
+      app.dom.formatSpecBtn, app.dom.saveBtn,
       app.dom.sqlModeBtn, app.dom.specModeBtn, app.dom.exportBtn, app.dom.shareBtn,
     ]) button.dispatchEvent(new Event('click'));
     expect(actions.run).toHaveBeenCalled();
     expect(actions.formatQuery).toHaveBeenCalled();
     expect(actions.explainQuery).toHaveBeenCalled();
-    expect(actions.validateSpec).toHaveBeenCalled();
     expect(actions.formatSpec).toHaveBeenCalled();
-    expect(actions.revertSpec).toHaveBeenCalled();
     expect(actions.save).toHaveBeenCalled();
     expect(actions.setEditorMode.mock.calls).toEqual([['sql'], ['spec']]);
     expect(actions.exportEntry).toHaveBeenCalled();
@@ -2513,8 +2511,9 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
     expect(app.dom.saveBtn.textContent).toContain('Saved');
   });
-  it('keeps Spec unavailable until creation, then switches the visible document and SQL actions', async () => {
-    const e = env();
+  it('keeps Spec unavailable until creation, then exposes only Format, Save, and the mode switch', async () => {
+    const showSaveFilePicker = vi.fn();
+    const e = env({ showSaveFilePicker, isSecureContext: true });
     const app = createApp(e);
     app.renderApp();
     expect(app.dom.specModeBtn.getAttribute('aria-disabled')).toBe('true');
@@ -2530,6 +2529,14 @@ describe('share + star + columns', () => {
     expect(app.dom.specPane.hidden).toBe(false);
     expect(app.dom.runBtn.hidden).toBe(true);
     expect(app.dom.formatSpecBtn.hidden).toBe(false);
+    expect(app.dom.fmtBtn.hidden).toBe(true);
+    expect(app.dom.explainBtn.hidden).toBe(true);
+    expect(app.dom.saveBtn.hidden).toBe(false);
+    expect(app.dom.editorModeSwitch.hidden).toBe(false);
+    expect(app.dom.exportBtn.hidden).toBe(true);
+    expect(app.dom.shareBtn.hidden).toBe(true);
+    expect(app.dom.validateSpecBtn).toBeUndefined();
+    expect(app.dom.revertSpecBtn).toBeUndefined();
     expect(app.dom.varStrip.hidden).toBe(true);
 
     await Promise.resolve();
@@ -2539,8 +2546,21 @@ describe('share + star + columns', () => {
     await app.actions.explainQuery();
     await app.actions.setExplainView('pipeline');
     await app.actions.setResultRowLimit(1000);
-    expect(e.fetch).not.toHaveBeenCalled();
+    await app.actions.exportEntry();
+    await app.actions.exportDirect('SELECT 9');
+    await app.actions.share();
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(e.navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(app.state.resultRowLimit).toBe(1000); // preference changes; Spec mode only blocks the rerun
+
+    app.actions.setEditorMode('sql');
+    expect(app.dom.runBtn.hidden).toBe(false);
+    expect(app.dom.fmtBtn.hidden).toBe(false);
+    expect(app.dom.explainBtn.hidden).toBe(false);
+    expect(app.dom.formatSpecBtn.hidden).toBe(true);
+    expect(app.dom.saveBtn.hidden).toBe(false);
+    expect(app.dom.exportBtn.hidden).toBe(false);
+    expect(app.dom.shareBtn.hidden).toBe(false);
   });
   it('disables Save and Share for invalid Spec and performs no persistence or sharing', async () => {
     const store = { getItem: vi.fn(() => null), setItem: vi.fn() };
@@ -2563,6 +2583,7 @@ describe('share + star + columns', () => {
     store.setItem.mockClear();
 
     app.actions.save();
+    app.actions.setEditorMode('sql');
     app.actions.share();
     await Promise.resolve();
     expect(app.state.savedQueries[0]).toEqual(before);
@@ -2590,40 +2611,31 @@ describe('share + star + columns', () => {
     expect(shared.spec).toEqual({ name: 'Draft', favorite: false, future: { v: 2 } });
     expect(writeText).toHaveBeenCalled();
   });
-  it('formats valid Spec and Revert restores the committed document behind confirmation', () => {
-    const confirm = vi.fn(() => false);
-    const app = createApp(env({ confirm }));
+  it('formats the active valid Spec while invalid JSON remains untouched with diagnostics', () => {
+    const app = createApp(env());
     app.renderApp();
     app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
     app.actions.loadIntoNewTab(app.state.savedQueries[0]);
     app.actions.setEditorMode('spec');
     app.specEditor.replaceDocument('{"name":');
-    expect(app.actions.validateSpec().diagnostics).not.toHaveLength(0);
     app.actions.formatSpec();
     expect(app.specEditor.getValue()).toBe('{"name":');
+    expect(app.activeTab().specDiagnostics).not.toHaveLength(0);
     app.specEditor.replaceDocument('{"name":"Draft","favorite":false}');
     app.actions.formatSpec();
     expect(app.specEditor.getValue()).toBe('{\n  "name": "Draft",\n  "favorite": false\n}');
-    app.actions.revertSpec();
-    expect(confirm).toHaveBeenCalled();
-    expect(app.specEditor.getValue()).toContain('Draft');
-    confirm.mockReturnValue(true);
-    app.actions.revertSpec();
-    expect(app.specEditor.getValue()).toContain('"name": "Fav"');
-    expect(app.activeTab().dirtySpec).toBe(false);
   });
-  it('activates a conflicting linked tab directly in Spec mode', () => {
+  it('activates an invalid linked tab directly in Spec mode', () => {
     const app = createApp(env({ window: { history: { replaceState: vi.fn() }, navigator: {} } }));
     app.renderApp();
     app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
     app.actions.loadIntoNewTab(app.state.savedQueries[0]);
     const tab = app.activeTab();
-    expect(app.activateSpecConflict(null)).toBeUndefined();
-    app.activateSpecConflict(tab);
+    expect(app.activateInvalidSpecDraft(null)).toBeUndefined();
+    app.activateInvalidSpecDraft(tab);
     expect(app.state.activeTabId.value).toBe(tab.id);
     expect(tab.editorMode).toBe('spec');
-    expect(document.querySelector('.share-toast').textContent).toContain('unsaved Spec draft');
-    expect(app.confirm()).toBe(true);
+    expect(document.querySelector('.share-toast').textContent).toBe('Fix Spec JSON first');
   });
   it('registers and unregisters synchronous semantic validators by exact path', () => {
     const app = createApp(env());
@@ -3396,7 +3408,7 @@ describe('script export (issue #99)', () => {
     expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
 
-  it('exportEntry always exports sqlDraft and ignores a Spec-editor selection', async () => {
+  it('exportEntry is unavailable in Spec mode and exports sqlDraft after switching to SQL', async () => {
     const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
@@ -3407,6 +3419,9 @@ describe('script export (issue #99)', () => {
     app.dom.specEditorView.dispatch({ selection: { anchor: 0, head: 8 } });
     await app.actions.exportEntry();
     expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(showDirectoryPicker).not.toHaveBeenCalled();
+    app.actions.setEditorMode('sql');
+    await app.actions.exportEntry();
     expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
 

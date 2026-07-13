@@ -59,11 +59,17 @@ only the complete `query.spec` JSON. Linked Save validates and atomically
 commits both drafts; an unsaved tab remains SQL-only until its first Save.
 
 Spec mode provides JSON highlighting, line numbers, bracket matching, folding,
-local search, undoable two-space formatting, Revert, and path-addressed parse
-and semantic diagnostics. Blocking errors disable Save and Share and are never
-persisted. Unknown fields remain valid and survive Save. Run, Explain, and SQL
-formatting are SQL-only; Export always exports the SQL draft, regardless of the
-visible editor or selection.
+local search, undoable two-space formatting, and continuous path-addressed parse
+and semantic diagnostics. Its toolbar is deliberately small: **Format**,
+**Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
+never persisted; unknown fields remain valid and survive Save.
+
+Panel controls and Library favorite/pencil edits merge their fields into valid
+open Spec drafts, preserving unrelated unsaved and extension fields. Invalid
+JSON is the only external-writer block: the affected Spec tab opens with a
+**Fix Spec JSON first** message, and nothing is changed or persisted. Run,
+Explain, SQL formatting, Export, and Share are SQL-mode actions; switch back to
+SQL to use them.
 
 The same bundled CodeMirror presentation/search base also powers an injected
 read-only `CodeViewer` seam (#213) for source surfaces. It supports complete

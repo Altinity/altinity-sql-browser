@@ -4,6 +4,7 @@ import { SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import { setTabSpecDraft } from '../../src/state.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
@@ -79,31 +80,52 @@ describe('renderSavedHistory', () => {
     expect(app.revalidateSpecDrafts).toHaveBeenCalled();
   });
 
-  it('saved: favorite refuses to overwrite a linked dirty Spec draft', () => {
+  it('saved: favorite merges into a linked dirty valid Spec draft', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
     tab.savedId = 's1';
-    tab.dirtySpec = true;
+    setTabSpecDraft(tab, { name: 'Draft', favorite: false, future: { keep: true } }, { dirty: true });
     renderSavedHistory(app);
     click(app.dom.savedList.querySelector('.sv-star'));
-    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
-    expect(app.activateSpecConflict).toHaveBeenCalledWith(tab);
-    expect(app.saveJSON).not.toHaveBeenCalled();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
+    expect(tab.specParsed).toMatchObject({ name: 'Draft', favorite: true, future: { keep: true } });
+    expect(tab.dirtySpec).toBe(true);
+    expect(app.saveJSON).toHaveBeenCalledTimes(1);
   });
 
-  it('saved: pencil refuses to open while a linked Spec draft is dirty', () => {
+  it('saved: pencil focuses an invalid linked Spec draft instead of opening', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
     tab.savedId = 's1';
+    tab.specParsed = null;
+    tab.specText = '{"name":';
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
     tab.dirtySpec = true;
     renderSavedHistory(app);
     click(byTitle(app.dom.savedList, 'Edit name & description'));
     expect(app.state.editingSavedId.value).toBeNull();
-    expect(app.activateSpecConflict).toHaveBeenCalledWith(tab);
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+  });
+
+  it('saved: favorite blocks on invalid JSON without persistence', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.specParsed = null;
+    tab.specText = '{';
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.dirtySpec = true;
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.sv-star'));
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+    expect(app.saveJSON).not.toHaveBeenCalled();
   });
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {

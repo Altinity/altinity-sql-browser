@@ -9,7 +9,7 @@ import { timeAgo } from '../core/format.js';
 import { SUBQUERY_MIME } from './dnd-mime.js';
 import {
   sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved,
-  deleteHistory, dirtySpecTabForSaved, SAVED_VIEWS,
+  deleteHistory, invalidSpecTabForSaved, SAVED_VIEWS,
 } from '../state.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
@@ -118,7 +118,7 @@ function renderSaved(app, list) {
       onclick: (e) => {
         e.stopPropagation();
         const result = toggleFavorite(state, q.id, app.saveJSON);
-        if (result && result.conflictTab) app.activateSpecConflict(result.conflictTab);
+        if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.revalidateSpecDrafts();
           app.specEditor.syncFromState();
@@ -147,8 +147,8 @@ function renderSaved(app, list) {
           class: 'sv-act', title: 'Edit name & description',
           onclick: (e) => {
             e.stopPropagation();
-            const conflict = dirtySpecTabForSaved(state, q.id);
-            if (conflict) app.activateSpecConflict(conflict);
+            const invalidTab = invalidSpecTabForSaved(state, q.id);
+            if (invalidTab) app.activateInvalidSpecDraft(invalidTab);
             else app.state.editingSavedId.value = q.id;
             renderSavedHistory(app);
           },
@@ -187,7 +187,7 @@ function savedEditForm(app, q) {
     done = true;
     if (commit && nameInput.value.trim()) {
       const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON);
-      if (result && result.conflictTab) app.activateSpecConflict(result.conflictTab);
+      if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
       else {
         app.revalidateSpecDrafts();
         app.specEditor.syncFromState();

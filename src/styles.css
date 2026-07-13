@@ -1431,7 +1431,7 @@ body.detached-tab .graph-overlay-panel {
 .run-btn:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
-.spec-action[hidden],
+.ed-toolbar > [hidden],
 .document-editor[hidden],
 .spec-editor-pane[hidden] { display: none !important; }
 .var-strip[hidden] { display: none !important; }

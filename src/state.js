@@ -268,9 +268,28 @@ const rnd = () => Math.random().toString(36).slice(2, 6);
 const makeId = (prefix, now) => prefix + now + rnd();
 export const tabsForSaved = (state, id) => state.tabs.value.filter((t) => t.savedId === id);
 
-/** First linked tab whose textual Spec draft must not be overwritten. */
-export const dirtySpecTabForSaved = (state, id) =>
-  tabsForSaved(state, id).find((tab) => tab.dirtySpec) || null;
+/** First linked tab whose textual Spec is not currently parseable JSON. */
+export const invalidSpecTabForSaved = (state, id) =>
+  tabsForSaved(state, id).find((tab) =>
+    tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) || null;
+
+const patchedSpec = (spec, patch) => (typeof patch === 'function'
+  ? patch(cloneJson(spec))
+  : patchQuerySpec({ spec }, patch).spec);
+
+/**
+ * Patch one valid open Spec draft without replacing unrelated unsaved fields.
+ * External writers use this helper so text and parsed state stay synchronized.
+ */
+export function patchSpecDraft(tab, patch, { dirty = true } = {}) {
+  if (!tab) return { ok: false, invalidTab: null };
+  if (tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) {
+    return { ok: false, invalidTab: tab };
+  }
+  setTabSpecDraft(tab, patchedSpec(tab.specParsed, patch), { dirty });
+  tab.name = queryName({ spec: tab.specParsed });
+  return { ok: true, invalidTab: null, spec: tab.specParsed };
+}
 
 /** The saved query a tab is linked to (via tab.savedId), or null. */
 export function savedForTab(state, tab) {
@@ -340,26 +359,24 @@ export function commitSavedQuery(state, tab, spec, save = saveJSON) {
 }
 
 /**
- * Generic committed-Spec writer for pencil/star/future controls. A dirty linked
- * draft returns its owning tab and performs no mutation or persistence.
+ * Generic committed-Spec writer for pencil/star/future controls. The patch is
+ * applied independently to the persisted entry and every linked valid draft,
+ * preserving unrelated unsaved fields. Invalid JSON blocks the whole write.
  */
 export function patchSavedSpec(state, id, patch, save = saveJSON) {
-  const conflictTab = dirtySpecTabForSaved(state, id);
-  if (conflictTab) return { ok: false, conflictTab, entry: null };
+  const invalidTab = invalidSpecTabForSaved(state, id);
+  if (invalidTab) return { ok: false, invalidTab, entry: null };
   const index = state.savedQueries.findIndex((query) => query.id === id);
-  if (index < 0) return { ok: false, conflictTab: null, entry: null };
+  if (index < 0) return { ok: false, invalidTab: null, entry: null };
   const current = state.savedQueries[index];
-  const entry = typeof patch === 'function'
-    ? withQuerySpec(current, patch(cloneJson(current.spec)))
-    : patchQuerySpec(current, patch);
+  const entry = withQuerySpec(current, patchedSpec(current.spec, patch));
   state.savedQueries[index] = entry;
   for (const tab of tabsForSaved(state, id)) {
-    tab.name = queryName(entry);
-    setTabSpecDraft(tab, entry.spec);
+    patchSpecDraft(tab, patch, { dirty: true });
   }
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
-  return { ok: true, conflictTab: null, entry };
+  return { ok: true, invalidTab: null, entry };
 }
 
 /**

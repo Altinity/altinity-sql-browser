@@ -47,4 +47,15 @@ test.describe('Spec JSON editor', () => {
     expect(await page.evaluate(() => window.__app.dom.specEditorView.state.selection.main.head))
       .toBe(json.indexOf('"unknown"'));
   });
+
+  test('Spec toolbar hidden controls stay visually absent in the real CSS cascade', async ({ page }) => {
+    const toolbar = page.locator('#spec-toolbar-probe');
+    for (const label of ['Run', 'SQL Format', 'Explain', 'Export', 'Share']) {
+      await expect(toolbar.getByRole('button', { name: label, exact: true })).toBeHidden();
+    }
+    for (const label of ['Format', 'Save']) {
+      await expect(toolbar.getByRole('button', { name: label, exact: true })).toBeVisible();
+    }
+    await expect(toolbar.locator('.editor-mode-switch')).toBeVisible();
+  });
 });

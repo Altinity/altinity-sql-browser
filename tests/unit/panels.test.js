@@ -82,7 +82,7 @@ function panelApp(result, panelCfg = null, over = {}) {
   Object.defineProperties(tab, {
     panelCfg: {
       configurable: true,
-      get() { return this.specParsed.panel?.cfg ?? null; },
+      get() { return this.specParsed?.panel?.cfg ?? null; },
       set(cfg) {
         if (cfg == null) delete this.specParsed.panel;
         else this.specParsed.panel = { ...(this.specParsed.panel || {}), cfg };
@@ -90,7 +90,7 @@ function panelApp(result, panelCfg = null, over = {}) {
     },
     panelKey: {
       configurable: true,
-      get() { return this.specParsed.panel?.key ?? null; },
+      get() { return this.specParsed?.panel?.key ?? null; },
       set(key) {
         if (!this.specParsed.panel && key != null) this.specParsed.panel = {};
         if (key == null) {
@@ -164,16 +164,30 @@ describe('Panel drawer tab', () => {
     expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
     expect(region(app).querySelector('.chart-view')).not.toBeNull();
   });
-  it('a panel control activates the linked dirty Spec tab instead of overwriting its draft', () => {
+  it('a panel control merges into a linked dirty valid Spec draft', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
     const tab = app.activeTab();
     tab.savedId = 's1';
     tab.dirtySpec = true;
-    const before = structuredClone(tab.specParsed);
+    tab.specParsed.future = { keep: true };
     renderResults(app);
     pickType(app, 'pie');
-    expect(app.activateSpecConflict).toHaveBeenCalledWith(tab);
-    expect(tab.specParsed).toEqual(before);
+    expect(tab.specParsed).toMatchObject({ panel: { cfg: { type: 'pie' } }, future: { keep: true } });
+    expect(tab.dirtySpec).toBe(true);
+    expect(app.actions.rerenderTabs).toHaveBeenCalled();
+  });
+  it('a panel control focuses invalid Spec JSON without mutating it', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.specText = '{"panel":';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.dirtySpec = true;
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+    expect(tab.specText).toBe('{"panel":');
     expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
   });
   it('the toolbar selector activates Panel view from the ordinary Table view', () => {

@@ -21,7 +21,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './chart-render.js';
-import { dirtySpecTabForSaved, setTabSpecDraft, tabPanel } from '../state.js';
+import { patchSpecDraft, tabPanel } from '../state.js';
 import { patchQueryPanel } from '../core/saved-query.js';
 import { renderGridView, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs } from './logs.js';
@@ -273,16 +273,14 @@ function panelContext(app, r) {
 
 function writePanel(app, hooks, payload, activate = false) {
   const tab = app.activeTab();
-  const conflict = tab.savedId && dirtySpecTabForSaved(app.state, tab.savedId);
-  if (conflict) {
-    app.activateSpecConflict(conflict);
+  const result = patchSpecDraft(tab, (spec) => patchQueryPanel(
+    { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
+    { cfg: payload.cfg, key: payload.key ?? undefined },
+  ).spec, { dirty: true });
+  if (!result.ok) {
+    app.activateInvalidSpecDraft(result.invalidTab);
     return;
   }
-  const next = patchQueryPanel(
-    { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec: tab.specParsed },
-    { cfg: payload.cfg, key: payload.key ?? undefined },
-  ).spec;
-  setTabSpecDraft(tab, next, { dirty: true });
   app.revalidateSpecDrafts();
   app.specEditor.syncFromState();
   if (activate) app.state.resultView.value = 'panel';

@@ -16,6 +16,19 @@
 <body data-theme="dark">
   <div id="host"></div>
   <div id="spec-host"></div>
+  <!-- CSS cascade probe for the shipped editor toolbar. `.tb-btn` and
+       `.run-btn` set explicit display values, so the app's `hidden` attributes
+       need an author rule that still wins in every browser engine. -->
+  <div id="spec-toolbar-probe" class="ed-toolbar" data-editor-mode="spec">
+    <button class="run-btn" hidden>Run</button>
+    <button class="tb-btn" hidden>SQL Format</button>
+    <button class="tb-btn" hidden>Explain</button>
+    <button class="tb-btn spec-action">Format</button>
+    <button class="tb-btn save-btn">Save</button>
+    <div class="editor-mode-switch"><button class="editor-mode-btn">SQL</button><button class="editor-mode-btn active">Spec</button></div>
+    <button class="tb-btn" hidden>Export</button>
+    <button class="tb-btn" hidden>Share</button>
+  </div>
   <!-- Mount the real CM6 adapter with a minimal stub controller. No bundling:
        the browser resolves the /src ESM graph directly, so every bare
        specifier the graph imports needs an import-map entry (the #89

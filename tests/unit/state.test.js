@@ -3,7 +3,7 @@ import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId, effectiveFilterActive,
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
   sortedSaved, filterSaved, filterHistory, importSaved, deleteSaved, recordHistory,
-  recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, tabDirty,
+  recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
@@ -233,7 +233,7 @@ describe('saved queries', () => {
     renameSaved(s, 's1', 'A', null, save); // null (not undefined) → cleared, not stored as 'null' (#4 review)
     expect('description' in s.savedQueries[0].spec).toBe(false);
   });
-  it('rename/description/favorite mutations preserve complete unknown Spec data and linked tabs', () => {
+  it('rename/description/favorite patches merge into valid linked drafts and persist once per action', () => {
     const s = createState(reader());
     const original = savedQuery({
       id: 's1', sql: 'x', name: 'Old', favorite: false,
@@ -245,6 +245,13 @@ describe('saved queries', () => {
     const tab = s.tabs.value[0];
     tab.savedId = 's1';
     setTabSpecDraft(tab, original.spec);
+    tab.specParsed.extension.localDraft = true;
+    tab.specParsed.draftOnly = { value: 2 };
+    setTabSpecDraft(tab, tab.specParsed, { dirty: true });
+    const second = newTabObj('t2');
+    second.savedId = 's1';
+    setTabSpecDraft(second, { ...original.spec, secondDraftOnly: ['keep'] });
+    s.tabs.value = [tab, second];
     const save = vi.fn();
     renameSaved(s, 's1', 'New', 'Description', save);
     toggleFavorite(s, 's1', save);
@@ -256,6 +263,14 @@ describe('saved queries', () => {
         extension: { nested: [{ value: 1 }] },
       });
     }
+    expect(tab.specParsed.extension.localDraft).toBe(true);
+    expect(tab.specParsed.draftOnly).toEqual({ value: 2 });
+    expect(tab.dirtySpec).toBe(true);
+    expect(second.specParsed).toMatchObject({
+      name: 'New', description: 'Description', favorite: true, secondDraftOnly: ['keep'],
+    });
+    expect(second.dirtySpec).toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
     expect(original.spec.name).toBe('Old');
     expect(original.spec.extension.nested[0].value).toBe(1);
   });
@@ -273,19 +288,39 @@ describe('saved queries', () => {
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
     expect(save).toHaveBeenCalledTimes(1);
   });
-  it('dirty Spec blocks pencil/favorite persistence and identifies the conflicting tab', () => {
+  it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', () => {
     const s = createState(reader());
     const tab = s.tabs.value[0];
     const entry = savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' });
     s.savedQueries = [entry];
     tab.savedId = 's1';
-    setTabSpecDraft(tab, entry.spec, { dirty: true });
+    tab.specText = '{"name":';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ severity: 'error', code: 'invalid-json' }];
+    tab.dirtySpec = true;
     const save = vi.fn();
-    expect(renameSaved(s, 's1', 'Overwrite', undefined, save)).toMatchObject({ ok: false, conflictTab: tab });
-    expect(toggleFavorite(s, 's1', save)).toMatchObject({ ok: false, conflictTab: tab });
+    expect(renameSaved(s, 's1', 'Overwrite', undefined, save)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(toggleFavorite(s, 's1', save)).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryName(s.savedQueries[0])).toBe('Original');
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(save).not.toHaveBeenCalled();
+  });
+  it('patchSpecDraft handles object/function patches and reports a missing or invalid draft', () => {
+    const tab = newTabObj('t1');
+    tab.specParsed.extension = { keep: true };
+    expect(patchSpecDraft(tab, { favorite: true }, { dirty: false })).toMatchObject({ ok: true, invalidTab: null });
+    expect(tab.specParsed).toMatchObject({ favorite: true, extension: { keep: true } });
+    expect(tab.dirtySpec).toBe(false);
+    expect(patchSpecDraft(tab, (spec) => ({ ...spec, name: 'Patched' }))).toMatchObject({ ok: true });
+    expect(tab.name).toBe('Patched');
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    expect(patchSpecDraft(tab, { favorite: false })).toEqual({ ok: false, invalidTab: tab });
+    expect(patchSpecDraft(null, {})).toEqual({ ok: false, invalidTab: null });
+    tab.specText = 'null';
+    tab.specDiagnostics = [{ code: 'root-object', severity: 'error' }];
+    expect(patchSpecDraft(tab, { name: 'Recovered' })).toMatchObject({ ok: true });
+    expect(tab.specParsed).toMatchObject({ name: 'Recovered' });
   });
   it('an invalid linked Spec makes atomic Save persist nothing and retain both dirty flags', () => {
     const s = createState(reader());

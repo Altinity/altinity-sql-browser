@@ -103,7 +103,7 @@ const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(fals
 
 export function createNoopSpecEditor() {
   return {
-    mount() {}, destroy() {}, focus() {}, requestMeasure() {}, resetDocument() {},
+    mount() {}, destroy() {}, focus() {}, requestMeasure() {},
     hasFocus: () => false,
     getValue: () => '',
     getSelection: () => ({ start: 0, end: 0, text: '' }),
@@ -188,14 +188,6 @@ export function createSpecEditor(app) {
     replaceDocument(text) {
       if (!view || view.state.doc.toString() === text) return;
       view.dispatch({ ...fullReplace(view.state, text), userEvent: 'input.replace', scrollIntoView: true });
-      focusSoon();
-    },
-    resetDocument(text) {
-      if (!view) return;
-      const next = freshState(text);
-      view.setState(next);
-      tabStates.set(shownTabId, next);
-      applyDiagnostics();
       focusSoon();
     },
     revealOffset(pos) {

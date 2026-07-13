@@ -66,7 +66,6 @@ describe('Spec editor adapter', () => {
     expect(port.getSelection()).toEqual({ start: 0, end: 0, text: '' });
     expect(port.insertAtCursor('x')).toBeUndefined();
     expect(port.replaceDocument('x')).toBeUndefined();
-    expect(port.resetDocument('x')).toBeUndefined();
     expect(port.revealOffset(1)).toBeUndefined();
     expect(port.revealDiagnostic()).toBeUndefined();
     expect(port.setDiagnostics([])).toBeUndefined();
@@ -87,7 +86,6 @@ describe('Spec editor adapter', () => {
     expect(port.requestMeasure()).toBeUndefined();
     expect(port.insertAtCursor('x')).toBeUndefined();
     expect(port.replaceDocument('x')).toBeUndefined();
-    expect(port.resetDocument('x')).toBeUndefined();
     expect(port.revealOffset(2)).toBeUndefined();
     expect(port.revealDiagnostic()).toBeUndefined();
     expect(port.syncFromState()).toBeUndefined();
@@ -126,15 +124,11 @@ describe('Spec editor adapter', () => {
     expect(changes.at(-1)).toBe('{"name":"New"}');
   });
 
-  it('Format-style replace is undoable while reset clears undo history', () => {
+  it('Format-style replacement remains undoable', () => {
     const { port, view } = mounted();
     port.replaceDocument('{"name":"Q"}');
     expect(undoDepth(view.state)).toBe(1);
     expect(undo(view)).toBe(true);
-    port.resetDocument('{\n  "name": "Saved"\n}');
-    expect(port.getValue()).toContain('Saved');
-    expect(undoDepth(view.state)).toBe(0);
-    expect(undo(view)).toBe(false);
   });
 
   it('parks independent per-tab documents and undo histories', () => {

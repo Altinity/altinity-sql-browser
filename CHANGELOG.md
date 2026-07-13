@@ -51,12 +51,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   known core field types are checked while unknown extension fields remain
   valid. Linked Save atomically commits SQL plus the current valid Spec in one
   Library write, with normalized Name/Description and all other fields/order
-  retained; invalid Spec persists nothing. Share uses the valid drafts, Export
-  always uses SQL, and SQL Run/Explain/format actions and shortcuts cannot fire
-  from Spec mode. Library pencil, favorite, and Panel writers now activate a
-  dirty linked Spec tab with a conflict explanation instead of overwriting it;
-  reopening an already-open saved query activates its existing tab. No package
-  or lockfile change was needed because JSON language support landed in #213.
+  retained; invalid Spec persists nothing. Spec is a lightweight editing mode:
+  its toolbar contains only Format, Save, and the SQL | Spec switch, while Run,
+  Explain, SQL Format, Export, Share, and Share’s global shortcut are SQL-only.
+  Validation remains continuous through diagnostics and status. Library pencil,
+  favorite, and Panel writers merge their changes into every valid open draft,
+  preserving unrelated unsaved and extension fields; invalid JSON alone blocks
+  the writer, focuses the affected Spec tab, and persists nothing. Reopening an
+  already-open saved query activates its existing tab. No package or lockfile
+  change was needed because JSON language support landed in #213.
 - **A shared, injected read-only CodeMirror source viewer** (#213) now provides
   complete-text rendering, line numbers, local search, selection/copy, and
   compartment-based wrapping for text, JSON, SQL, XML/HTML source, and plain

@@ -128,10 +128,17 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ ctrlKey: true, altKey: true, key: '2' }), app)).toBe('specMode');
     expect(app.actions.setEditorMode).toHaveBeenLastCalledWith('spec');
   });
-  it('⌘⇧S shares; ⌘S toggles saved', () => {
+  it('⌘⇧S shares only from SQL mode; ⌘S saves either document', () => {
     const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'S' }), app)).toBe('share');
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBe('save');
+    app.activeTab().editorMode = 'spec';
+    const specShare = ev({ metaKey: true, shiftKey: true, key: 's' });
+    expect(handleKeydown(specShare, app)).toBeNull();
+    expect(specShare.preventDefault).not.toHaveBeenCalled();
+    expect(app.actions.share).toHaveBeenCalledTimes(1);
+    expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBe('save');
+    expect(app.actions.save).toHaveBeenCalledTimes(2);
     const out = makeApp({ isSignedIn: () => false });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 's' }), out)).toBeNull();
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), out)).toBeNull();
