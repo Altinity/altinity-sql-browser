@@ -317,7 +317,7 @@ user can otherwise access). What you grant only buys *fidelity*:
 |---|---|---|
 | the graph itself + node cards | `SHOW TABLES`, `SHOW COLUMNS` (→ implicit `SELECT ON system.tables` / `system.columns`) | required — without these there's nothing to draw |
 | dictionary (`dict`) data-flow edges | `SELECT ON system.dictionaries` | no dictionary edges; the rest of the graph still draws |
-| skip-index badges on the rich cards | `SELECT ON system.data_skipping_indices` | cards show the engine/rows/bytes header without the skip line |
+| the data-skipping-index section in the node detail pane | `SELECT ON system.data_skipping_indices` | detail pane shows columns/keys/partitions/DDL but no index section |
 | per-partition rows in the node detail pane | `SELECT ON system.parts` | detail pane shows columns/keys/DDL but no partition breakdown |
 
 So for full, **no-degrade** schema mode, grant the three optional `SELECT`s above to

@@ -329,37 +329,27 @@ export async function loadColumns(ctx, db, table, sqlString) {
 }
 
 /**
- * Load the rich-card metadata (columns with key-role flags + skip indices) for a
- * set of databases, keyed by `db.table`. Best-effort via tryQueryData: a missing
- * system table or denied SELECT degrades to an empty map (cards then show just the
- * engine/rows/bytes header — no badges/skip line), never a query error. Returns
- * `{ columnsByKey, skipByKey }`.
+ * Load the rich-card metadata (columns with key-role flags) for a set of
+ * databases, keyed by `db.table`. Best-effort via trySystemAwareQueryData: a
+ * missing system table or denied SELECT degrades to an empty map (cards then
+ * show just the engine/rows/bytes header — no badges), never a query error.
+ * Returns `{ columnsByKey }`. Data-skipping indexes are no longer fetched here
+ * (#179) — they're detail-drawer metadata (ch.loadTableDetail), not card
+ * geometry, so pulling them on graph load was a dead read.
  */
 export async function loadSchemaCards(ctx, dbs) {
   const columnsByKey = {};
-  const skipByKey = {};
   const list = (dbs || []).map((d) => sqlString(d)).join(', ');
-  if (!list) return { columnsByKey, skipByKey };
-  // The two reads are independent — run them concurrently (one server round-trip
-  // of wall-clock instead of two).
-  const [colRows, idxRows] = await Promise.all([
-    trySystemAwareQueryData(ctx,
-      'SELECT database, table, name, type, is_in_partition_key, is_in_sorting_key, '
-      + 'is_in_primary_key, is_in_sampling_key, compression_codec, position '
-      + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position'),
-    tryQueryData(ctx,
-      'SELECT database, table, name, type, expr FROM system.data_skipping_indices '
-      + 'WHERE database IN (' + list + ') FORMAT JSON'),
-  ]);
+  if (!list) return { columnsByKey };
+  const colRows = await trySystemAwareQueryData(ctx,
+    'SELECT database, table, name, type, is_in_partition_key, is_in_sorting_key, '
+    + 'is_in_primary_key, is_in_sampling_key, compression_codec, position '
+    + 'FROM system.columns WHERE database IN (' + list + ') ORDER BY database, table, position');
   for (const r of colRows || []) {
     const key = r.database + '.' + r.table;
     (columnsByKey[key] = columnsByKey[key] || []).push(r);
   }
-  for (const r of idxRows || []) {
-    const key = r.database + '.' + r.table;
-    (skipByKey[key] = skipByKey[key] || []).push(r);
-  }
-  return { columnsByKey, skipByKey };
+  return { columnsByKey };
 }
 
 /**
@@ -406,16 +396,24 @@ export async function loadLineageTransitive(ctx, focus, opts = {}) {
 
 /**
  * Per-table detail for the node detail pane: full columns (with key-role flags,
- * per-column comments + compression sizes), per-partition part/row/byte sums, the
- * table's own comment, and the DDL. All reads are best-effort (a denied/missing
- * system table degrades to empty, never an error); the system.columns/system.tables
- * reads also see DataLakeCatalog-backed tables (#122) via trySystemAwareQueryData.
- * Returns `{ columns, partitions, ddl, comment }`.
+ * per-column comments + compression sizes), data-skipping indexes, per-partition
+ * part/row/byte sums, the table's own comment, and the DDL. All reads are
+ * best-effort (a denied/missing system table degrades to empty, never an error);
+ * the system.columns/system.tables reads also see DataLakeCatalog-backed tables
+ * (#122) via trySystemAwareQueryData. Returns `{ columns, indexes, partitions,
+ * ddl, comment }`.
+ *
+ * The index rows are fetched here — in this same parallel batch, one read per
+ * detail-open — rather than reused from the schema-graph payload (#179): that
+ * payload only carries name/type/expr and can't reach the drawer's click handler
+ * without threading arrays through the dagre layout (worse coupling), and the
+ * drawer needs `type_full` + `granularity` besides. `data_skipping_indices` is a
+ * MergeTree-only view (no DataLakeCatalog tables), so the plain client suffices.
  */
 export async function loadTableDetail(ctx, db, table) {
   const byCol = 'database = ' + sqlString(db) + ' AND table = ' + sqlString(table);
   const byName = 'database = ' + sqlString(db) + ' AND name = ' + sqlString(table);
-  const [columns, partitions, tableRows] = await Promise.all([
+  const [columns, indexes, partitions, tableRows] = await Promise.all([
     trySystemAwareQueryData(ctx,
       'SELECT name, type, compression_codec AS codec, comment, '
       + 'is_in_partition_key, is_in_sorting_key, is_in_primary_key, is_in_sampling_key, '
@@ -423,12 +421,18 @@ export async function loadTableDetail(ctx, db, table) {
       + 'toUInt64(marks_bytes) AS marks, position '
       + 'FROM system.columns WHERE ' + byCol + ' ORDER BY position'),
     tryQueryData(ctx,
+      'SELECT name, expr, type, type_full, granularity, '
+      + 'toUInt64(data_compressed_bytes) AS compressed, toUInt64(data_uncompressed_bytes) AS uncompressed, '
+      + 'toUInt64(marks_bytes) AS marks '
+      + 'FROM system.data_skipping_indices WHERE ' + byCol + ' ORDER BY name FORMAT JSON'),
+    tryQueryData(ctx,
       'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
       + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
     trySystemAwareQueryData(ctx, 'SELECT create_table_query AS ddl, comment FROM system.tables WHERE ' + byName),
   ]);
   return {
     columns: columns || [],
+    indexes: indexes || [],
     partitions: partitions || [],
     ddl: (tableRows && tableRows[0] && tableRows[0].ddl) || '',
     comment: (tableRows && tableRows[0] && tableRows[0].comment) || '',

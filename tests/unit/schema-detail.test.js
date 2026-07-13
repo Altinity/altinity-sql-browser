@@ -234,6 +234,69 @@ describe('openDetailPane', () => {
     expect(emptyCommentCell.classList.contains('schema-detail-comment')).toBe(false);
   });
 
+  it('shows a Data-skipping indexes (N) section with every index and the required fields, type_full preferred (#179)', () => {
+    mountPanel();
+    const detail = {
+      ...DETAIL,
+      indexes: [
+        { name: 'event_time_index', expr: 'event_time', type: 'minmax', granularity: 1, compressed: 128 }, // no type_full → falls back to type
+        { name: 'query_id_index', expr: 'query_id', type: 'bloom_filter', type_full: 'bloom_filter(0.01)', granularity: 4, compressed: 4096 },
+      ],
+    };
+    const pane = openDetailPane(APP(), NODE, detail);
+    const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
+    expect(heads).toContain('Data-skipping indexes (2)');
+    // the section lives right after Columns, before Partitions
+    expect(heads.indexOf('Data-skipping indexes (2)')).toBe(heads.indexOf('Columns (2)') + 1);
+    // the index table is the second .schema-detail-cols (Columns is the first)
+    const idxTable = pane.querySelectorAll('.schema-detail-cols')[1];
+    const headers = [...idxTable.querySelectorAll('thead th')].map((th) => th.textContent);
+    expect(headers).toEqual(['name', 'expression', 'type', 'granularity', 'compressed']);
+    const rows = [...idxTable.querySelectorAll('tbody tr')];
+    expect(rows).toHaveLength(2); // every index, never a capped subset
+    // parameterised type prefers type_full over the base type…
+    expect(rows[1].children[2].textContent).toBe('bloom_filter(0.01)');
+    // …but falls back to the base type when type_full is absent
+    expect(rows[0].children[2].textContent).toBe('minmax');
+    expect(rows[0].children[0].textContent).toBe('event_time_index');
+    expect(rows[0].children[1].textContent).toBe('event_time');
+    expect(rows[0].children[3].textContent).toBe('1'); // granularity, numeric
+  });
+
+  it('caps long index name / expression / type, exposing full text via title, and tolerates missing granularity (#179)', () => {
+    mountPanel();
+    const longExpr = 'multiIf(' + 'x = 1, '.repeat(20) + '0)';
+    const longType = 'tokenbf_v1(' + '10240, '.repeat(10) + '3, 0)';
+    const detail = {
+      ...DETAIL,
+      indexes: [
+        { name: 'a_rather_long_data_skipping_index_name_here', expr: longExpr, type: 'tokenbf_v1', type_full: longType }, // no granularity
+      ],
+    };
+    const pane = openDetailPane(APP(), NODE, detail);
+    const idxTable = pane.querySelectorAll('.schema-detail-cols')[1];
+    const [nameCell, exprCell, typeCell, granCell] = idxTable.querySelector('tbody tr').children;
+    expect(nameCell.textContent.endsWith('…')).toBe(true);
+    expect(nameCell.getAttribute('title')).toBe('a_rather_long_data_skipping_index_name_here');
+    expect(exprCell.textContent.endsWith('…')).toBe(true);
+    expect(exprCell.getAttribute('title')).toBe(longExpr);
+    expect(typeCell.textContent.endsWith('…')).toBe(true);
+    expect(typeCell.getAttribute('title')).toBe(longType);
+    expect(granCell.textContent).toBe(''); // missing granularity degrades to empty, not "undefined"
+  });
+
+  it('omits the index section entirely for a table with no data-skipping indexes (#179)', () => {
+    mountPanel();
+    const pane = openDetailPane(APP(), NODE, DETAIL); // DETAIL has no `indexes`
+    const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
+    expect(heads.some((t) => t.startsWith('Data-skipping indexes'))).toBe(false);
+    // only Columns + Partitions tables — no index table between them
+    expect(pane.querySelectorAll('.schema-detail-cols')).toHaveLength(2);
+    // an explicitly empty index list is treated the same as none
+    const paneEmpty = openDetailPane(APP(), NODE, { ...DETAIL, indexes: [] });
+    expect([...paneEmpty.querySelectorAll('h4')].map((e) => e.textContent).some((t) => t.startsWith('Data-skipping indexes'))).toBe(false);
+  });
+
   it('compacts an unbounded column type and caps a long codec, full text on each cell title (#177)', () => {
     mountPanel();
     const enumType = "Enum16('queued' = 1, 'started' = 2, 'running' = 3, 'done' = 4, 'failed' = 5, 'cancelled' = 6)";

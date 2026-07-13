@@ -776,13 +776,10 @@ describe('loadSchemaLineage', () => {
 });
 
 describe('loadSchemaCards', () => {
-  it('keys columns + skip indices by db.table and scopes via IN (…)', async () => {
+  it('keys columns by db.table, scopes via IN (…), and no longer fetches skip indices (#179)', async () => {
     const seen = [];
     const ctx = ctxWith((url, init) => {
       const sql = init.body; seen.push(sql);
-      if (/system\.data_skipping_indices/.test(sql)) {
-        return jsonResp({ data: [{ database: 'lin', table: 'events', name: 'idx_d', type: 'minmax', expr: 'd' }] });
-      }
       return jsonResp({ data: [
         { database: 'lin', table: 'events', name: 'id', type: 'UInt64', is_in_primary_key: 1, position: 1 },
         { database: 'lin', table: 'events', name: 'd', type: 'Date', is_in_partition_key: 1, position: 2 },
@@ -792,17 +789,18 @@ describe('loadSchemaCards', () => {
     const out = await loadSchemaCards(ctx, ['lin']);
     expect(out.columnsByKey['lin.events']).toHaveLength(2);
     expect(out.columnsByKey['lin.other']).toHaveLength(1);
-    expect(out.skipByKey['lin.events']).toEqual([{ database: 'lin', table: 'events', name: 'idx_d', type: 'minmax', expr: 'd' }]);
+    expect(out).not.toHaveProperty('skipByKey'); // indexes moved to the detail drawer
     expect(seen.some((s) => /system\.columns/.test(s) && /database IN \('lin'\)/.test(s))).toBe(true);
-    expect(seen.some((s) => /data_skipping_indices/.test(s) && /database IN \('lin'\)/.test(s))).toBe(true);
+    // the dead skip-index read on graph load is gone (#179)
+    expect(seen.some((s) => /data_skipping_indices/.test(s))).toBe(false);
   });
-  it('degrades to empty maps when the system tables are denied (no throw)', async () => {
+  it('degrades to an empty map when the system table is denied (no throw)', async () => {
     const ctx = ctxWith(() => jsonResp('Code: 497 ACCESS_DENIED', false, 500));
-    expect(await loadSchemaCards(ctx, ['lin', 'other'])).toEqual({ columnsByKey: {}, skipByKey: {} });
+    expect(await loadSchemaCards(ctx, ['lin', 'other'])).toEqual({ columnsByKey: {} });
   });
   it('issues no query for an empty database list', async () => {
     const ctx = ctxWith(() => { throw new Error('should not fetch'); });
-    expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {}, skipByKey: {} });
+    expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {} });
     expect(ctx.fetch).not.toHaveBeenCalled();
   });
   it('requests data-lake-catalog visibility on the system.columns query (#122)', async () => {
@@ -818,7 +816,6 @@ describe('loadSchemaCards', () => {
   it('falls back to the plain system.columns query when an older ClickHouse rejects the setting', async () => {
     const ctx = ctxWith((url, init) => {
       const sql = init.body;
-      if (/data_skipping_indices/.test(sql)) return jsonResp({ data: [] });
       if (sql.includes('SETTINGS show_data_lake_catalogs_in_system_tables')) return textResp('Unknown setting', false, 500);
       return jsonResp({ data: [{ database: 'ice', table: 'orders', name: 'id', type: 'Int64', position: 1 }] });
     });
@@ -911,23 +908,35 @@ describe('loadLineageTransitive', () => {
 });
 
 describe('loadTableDetail', () => {
-  it('returns columns (with comments), per-partition sums, DDL, and the table comment (best-effort)', async () => {
+  it('returns columns (with comments), skip indexes, per-partition sums, DDL, and the table comment (best-effort)', async () => {
+    const seen = [];
     const ctx = ctxWith((url, init) => {
-      const sql = init.body;
+      const sql = init.body; seen.push(sql);
       if (/system\.parts/.test(sql)) return jsonResp({ data: [{ partition: '2024', parts: 3, rows: 100, bytes: 5000 }] });
       if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree', comment: 'ids table' }] });
+      if (/system\.data_skipping_indices/.test(sql)) {
+        return jsonResp({ data: [{ name: 'idx_d', expr: 'd', type: 'minmax', type_full: 'minmax', granularity: 1, compressed: 128, uncompressed: 256, marks: 8 }] });
+      }
       return jsonResp({ data: [{ name: 'id', type: 'UInt64', comment: 'the id', is_in_primary_key: 1, position: 1 }] });
     });
     const d = await loadTableDetail(ctx, 'a', 't');
     expect(d.columns).toHaveLength(1);
     expect(d.columns[0].comment).toBe('the id');
+    expect(d.indexes).toEqual([{ name: 'idx_d', expr: 'd', type: 'minmax', type_full: 'minmax', granularity: 1, compressed: 128, uncompressed: 256, marks: 8 }]);
     expect(d.partitions[0].partition).toBe('2024');
     expect(d.ddl).toContain('CREATE TABLE');
     expect(d.comment).toBe('ids table');
+    // the index read selects type_full + granularity (the drawer's required fields)
+    // and is scoped to this one table — one read per detail-open, no duplicate.
+    const idxSql = seen.filter((s) => /system\.data_skipping_indices/.test(s));
+    expect(idxSql).toHaveLength(1);
+    expect(idxSql[0]).toMatch(/type_full/);
+    expect(idxSql[0]).toMatch(/granularity/);
+    expect(idxSql[0]).toMatch(/database = 'a' AND table = 't'/);
   });
   it('degrades to empty arrays + empty DDL/comment when the system tables are denied', async () => {
     const ctx = ctxWith(() => jsonResp('Code: 497', false, 500));
-    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], partitions: [], ddl: '', comment: '' });
+    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '' });
   });
   it('requests data-lake-catalog visibility on system.columns/system.tables (#122 — Iceberg tables\' columns/DDL otherwise hidden)', async () => {
     const seen = [];
