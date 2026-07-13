@@ -118,7 +118,7 @@ export function renderLogin(app, errorMsg) {
   // noise the user has to parse before signing in (#123).
   const card = h('div', { class: 'login-card login-card-wide' },
     h('div', { class: 'login-brand' },
-      h('div', { class: 'login-logo' }, 'A'),
+      h('div', { class: 'login-logo' }, Icon.brand()),
       h('div', { class: 'login-brand-text' },
         h('div', { class: 'login-brand-name' }, 'Altinity® SQL Browser'),
         h('div', { class: 'login-brand-sub mono' }, 'ClickHouse® query console'))),
