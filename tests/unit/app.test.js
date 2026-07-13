@@ -2119,6 +2119,68 @@ describe('insertCreate', () => {
   });
 });
 
+describe('openCreateInNewTab (#180)', () => {
+  function appFor(routes, over) {
+    const e = env({ fetch: makeFetch(routes), ...over });
+    const app = createApp(e);
+    app.renderApp();
+    return { app, e };
+  }
+  it('opens the formatted DDL in a new active tab, leaving the prior tab untouched', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [{ statement: 'CREATE TABLE db1.events (a Int)' }] } })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ json: { data: [{ q: 'CREATE TABLE db1.events\n(\n  a Int\n)' }] } })],
+    ]);
+    app.editor.replaceDocument('keep');
+    const priorId = app.state.activeTabId.value;
+    const priorCount = app.state.tabs.value.length;
+    await app.actions.openCreateInNewTab('db1.events', 'db1.events');
+    expect(app.state.tabs.value.length).toBe(priorCount + 1);
+    expect(app.state.tabs.value.find((t) => t.id === priorId).sql).toBe('keep');
+    expect(app.activeTab().id).not.toBe(priorId);
+    expect(app.activeTab().name).toBe('db1.events');
+    expect(app.activeTab().sql).toBe('CREATE TABLE db1.events\n(\n  a Int\n)');
+  });
+  it('falls back to the raw DDL in the new tab when formatting fails', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [{ statement: 'CREATE TABLE db1.events (a Int)' }] } })],
+      [(u, sql) => /formatQuery/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"x"}' })],
+    ]);
+    await app.actions.openCreateInNewTab('db1.events', 'db1.events');
+    expect(app.activeTab().sql).toBe('CREATE TABLE db1.events (a Int)');
+  });
+  it('creates no tab when SHOW CREATE returns no statement', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ json: { data: [] } })],
+    ]);
+    const priorId = app.state.activeTabId.value;
+    const priorCount = app.state.tabs.value.length;
+    await app.actions.openCreateInNewTab('db1.events', 'db1.events');
+    expect(app.state.tabs.value.length).toBe(priorCount);
+    expect(app.state.activeTabId.value).toBe(priorId);
+  });
+  it('creates no tab and surfaces the toast when SHOW CREATE fails', async () => {
+    const { app } = appFor([
+      [(u, sql) => /SHOW CREATE/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: no table"}' })],
+    ]);
+    app.editor.replaceDocument('keep');
+    const priorId = app.state.activeTabId.value;
+    const priorCount = app.state.tabs.value.length;
+    await app.actions.openCreateInNewTab('db1.events', 'db1.events');
+    expect(app.state.tabs.value.length).toBe(priorCount);
+    expect(app.state.activeTabId.value).toBe(priorId);
+    expect(app.editor.getValue()).toBe('keep');
+    expect(document.body.querySelector('.share-toast')).not.toBeNull();
+  });
+  it('signs out when there is no usable token, creating no tab', async () => {
+    const { app } = appFor([], { sessionStorage: memSession({}) });
+    const priorCount = app.state.tabs.value.length;
+    await app.actions.openCreateInNewTab('db1.events', 'db1.events');
+    expect(app.root.querySelector('.login-screen')).not.toBeNull();
+    expect(app.state.tabs.value.length).toBe(priorCount);
+  });
+});
+
 describe('auth flows', () => {
   it('login builds the redirect URL and stashes pkce/state', async () => {
     const loc = { host: 'ch', origin: 'https://ch', pathname: '/sql', search: '', hash: '', href: 'https://ch/sql' };

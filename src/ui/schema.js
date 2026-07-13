@@ -174,7 +174,7 @@ export function renderSchema(app) {
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
         ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
-        : 'Click to expand · double-click for SELECT * · shift-click for SHOW CREATE · drag to insert name';
+        : 'Click to expand · double-click SELECT * in new tab · shift-click SHOW CREATE in new tab · drag to insert name';
 
       list.appendChild(h('div', {
         class: 'tree-row' + (filter && tableMatch ? ' match' : ''),
@@ -183,8 +183,8 @@ export function renderSchema(app) {
         ...hoverTitle(title),
         ...dragAttrs(lineageDrag(qname, { kind: 'table', db: db.db, table: tb.name })),
         onclick: (e) => {
-          if (e.shiftKey) { app.actions.insertCreate(qname); return; }
-          if (isDoubleClick(app, tbKey)) { app.actions.replaceEditor('SELECT * FROM ' + qname + ' LIMIT 100'); return; }
+          if (e.shiftKey) { app.actions.openCreateInNewTab(qname, key); return; }
+          if (isDoubleClick(app, tbKey)) { app.actions.loadIntoNewTab(key, 'SELECT * FROM ' + qname + ' LIMIT 100'); return; }
           const willOpen = !state.expanded.value.has(tbKey);
           // Batch the expand + first column fetch so the row opens *with* its
           // spinner in one repaint (loadColumns' 'loading' write runs synchronously

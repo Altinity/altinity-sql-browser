@@ -173,6 +173,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   clicks are inert instead of a TypeError).
 
 ### Fixed
+- **Schema tree table actions open generated SQL in a new query tab instead of
+  overwriting the active editor** (#180). Double-clicking a table used to
+  `replaceEditor()` the current document with `SELECT * FROM … LIMIT 100`, and
+  Shift-click replaced it with the formatted `SHOW CREATE` DDL — both could
+  destroy an unrelated query the user was mid-edit on. Both actions now go
+  through the existing `loadIntoNewTab()` path instead, naming the new tab with
+  the unquoted `db.table` display name while the SQL itself still uses the
+  SQL-safe `qualifyIdent()` result. Fetching/formatting the DDL is now shared
+  between the editor-replacing `insertCreate()` (unchanged, still used by
+  database rows) and the new tab-opening `openCreateInNewTab()` via a common
+  `fetchCreateSql()` helper (`src/ui/app.js`, `src/ui/schema.js`). Database,
+  column, drag, and expand/collapse behavior is unchanged.
 - **The Logs rescue path deep-clones the saved panel configuration before
   handing it to controls** (#200). The rescue branch (#192/#195) fed Logs
   controls `{ ...saved.cfg }`, a shallow spread — any nested unknown field

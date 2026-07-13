@@ -106,6 +106,7 @@ export function makeApp(over = {}) {
       expandSchemaGraph: vi.fn(),
       openNodeDetail: vi.fn(),
       insertCreate: vi.fn(),
+      openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
       insertAtCursor: vi.fn(),
       replaceEditor: vi.fn(),

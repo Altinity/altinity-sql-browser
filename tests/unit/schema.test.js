@@ -93,7 +93,7 @@ describe('renderSchema tree', () => {
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
     const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
     expect(ordersRow.title).toBe('the orders · 1.0K rows'); // has a comment, unchanged
-    expect(eventsRow.title).toBe('Click to expand · double-click for SELECT * · shift-click for SHOW CREATE · drag to insert name');
+    expect(eventsRow.title).toBe('Click to expand · double-click SELECT * in new tab · shift-click SHOW CREATE in new tab · drag to insert name');
   });
   it('clicking a db toggles expansion', () => {
     const app = withSchema();
@@ -189,19 +189,21 @@ describe('renderSchema tree', () => {
     click(ordersRow); // collapse
     expect(app.state.expanded.value.has('tb:db1.orders')).toBe(false);
   });
-  it('double-clicking a table replaces the editor with a SELECT *', () => {
+  it('double-clicking a table opens a SELECT * in a new tab, not the active editor', () => {
     const app = withSchema();
     renderSchema(app);
     const ordersRow = rows(app).find((r) => r.querySelector('.label').textContent === 'orders');
     dblclick(ordersRow);
-    expect(app.actions.replaceEditor).toHaveBeenCalledWith('SELECT * FROM db1.orders LIMIT 100');
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('db1.orders', 'SELECT * FROM db1.orders LIMIT 100');
+    expect(app.actions.replaceEditor).not.toHaveBeenCalled();
   });
-  it('shift-clicking a table inserts its formatted DDL without expanding', () => {
+  it('shift-clicking a table opens its formatted DDL in a new tab, without expanding', () => {
     const app = withSchema();
     renderSchema(app);
     const eventsRow = rows(app).find((r) => r.querySelector('.label').textContent === 'events');
     shiftClick(eventsRow);
-    expect(app.actions.insertCreate).toHaveBeenCalledWith('db1.events');
+    expect(app.actions.openCreateInNewTab).toHaveBeenCalledWith('db1.events', 'db1.events');
+    expect(app.actions.insertCreate).not.toHaveBeenCalled();
     expect(app.state.expanded.value.has('tb:db1.events')).toBe(false);
     expect(app.actions.loadColumns).not.toHaveBeenCalled();
   });
@@ -487,17 +489,23 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
   }
   const tbRow = (app) => rows(app).find((r) => r.querySelector('.label').textContent === PARQUET);
 
-  it('double-click → SELECT * quotes the dotted/dashed table name', () => {
+  it('double-click → SELECT * quotes the dotted/dashed table name, display name stays unquoted', () => {
     const app = withParquet();
     renderSchema(app);
     dblclick(tbRow(app));
-    expect(app.actions.replaceEditor).toHaveBeenCalledWith('SELECT * FROM target_all.`' + PARQUET + '` LIMIT 100');
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(
+      'target_all.' + PARQUET,
+      'SELECT * FROM target_all.`' + PARQUET + '` LIMIT 100',
+    );
   });
-  it('shift-click → SHOW CREATE target is backtick-quoted', () => {
+  it('shift-click → SHOW CREATE target is backtick-quoted, tab name stays unquoted', () => {
     const app = withParquet();
     renderSchema(app);
     shiftClick(tbRow(app));
-    expect(app.actions.insertCreate).toHaveBeenCalledWith('target_all.`' + PARQUET + '`');
+    expect(app.actions.openCreateInNewTab).toHaveBeenCalledWith(
+      'target_all.`' + PARQUET + '`',
+      'target_all.' + PARQUET,
+    );
   });
   it('drag carries the quoted identifier (but the graph payload keeps raw names)', () => {
     const app = withParquet();
@@ -515,6 +523,21 @@ describe('renderSchema with non-bare object names (backtick quoting)', () => {
     expect(dragstart(row.querySelector('.label'))[IDENT_MIME]).toBe('`odd col`');
     shiftClick(row);
     expect(app.actions.insertAtCursor).toHaveBeenCalledWith('`odd col`::String');
+  });
+  it('double-click on a table name with a space: tab name is unquoted, SQL is quoted', () => {
+    const app = makeApp();
+    app.state.schema.value = [{
+      db: 'analytics',
+      tables: [{ name: 'daily events', total_rows: '1', total_bytes: '1', comment: '', columns: null }],
+    }];
+    app.state.expanded.value = new Set(['db:analytics']);
+    renderSchema(app);
+    const row = rows(app).find((r) => r.querySelector('.label').textContent === 'daily events');
+    dblclick(row);
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(
+      'analytics.daily events',
+      'SELECT * FROM analytics.`daily events` LIMIT 100',
+    );
   });
 });
 

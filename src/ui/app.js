@@ -1518,25 +1518,39 @@ export function createApp(env = {}) {
   }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
-  // SHOW CREATE, pretty-print it through formatQuery(), and drop it into the
-  // editor (replacing its content — undo restores the prior query). Two
-  // round-trips by design; if formatting fails the raw DDL is used.
-  async function insertCreate(target) {
+  // SHOW CREATE and pretty-print it through formatQuery(). Two round-trips
+  // by design; if formatting fails the raw DDL is returned. Returns null on
+  // failure or an empty statement (having already surfaced the toast), so
+  // callers can no-op without inspecting the error themselves.
+  async function fetchCreateSql(target) {
     await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
+    if (!(await getToken())) { chCtx.onSignedOut(); return null; }
     try {
       const show = await ch.queryJson(chCtx, 'SHOW CREATE ' + target + ' FORMAT JSON');
       const stmt = (show.data && show.data[0] && show.data[0].statement) || '';
-      if (!stmt) return;
-      let out = stmt;
+      if (!stmt) return null;
       try {
         const fmt = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
-        out = (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
-      } catch { /* formatting is best-effort — fall back to the raw DDL */ }
-      app.editor.replaceDocument(out);
+        return (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
+      } catch { return stmt; /* formatting is best-effort — fall back to the raw DDL */ }
     } catch (e) {
       flashToast('SHOW CREATE failed: ' + String((e && e.message) || e), { document: doc });
+      return null;
     }
+  }
+
+  // Replaces the active editor's content (undo restores the prior query).
+  async function insertCreate(target) {
+    const sql = await fetchCreateSql(target);
+    if (sql != null) app.editor.replaceDocument(sql);
+  }
+
+  // Opens the DDL in a new tab, leaving the active tab untouched.
+  async function openCreateInNewTab(target, name) {
+    const sql = await fetchCreateSql(target);
+    if (sql == null) return;
+    loadIntoNewTab(app, name, sql);
+    toEditorOnMobile();
   }
 
   // --- saved / history bridges ------------------------------------------
@@ -2185,6 +2199,7 @@ export function createApp(env = {}) {
     expandSchemaGraph,
     openNodeDetail,
     insertCreate: async (target) => { await insertCreate(target); toEditorOnMobile(); },
+    openCreateInNewTab: (target, name) => openCreateInNewTab(target, name),
     openShortcuts: () => openShortcuts(app),
     openDashboard,
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
