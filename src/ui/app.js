@@ -234,6 +234,9 @@ export function createApp(env = {}) {
   // tests omit it and get the noop port. The instance is created here — before
   // renderApp mounts it — so every consumer can call the port unconditionally.
   app.Editor = env.Editor || createNoopPort;
+  app.CodeViewer = env.CodeViewer || (() => ({
+    setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
+  }));
   app.editor = app.Editor(app);
   // The editor→state inversion (#143): the adapter reports each text change;
   // the state writes live here. Order matters — updateSaveBtn and the #134

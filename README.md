@@ -9,8 +9,9 @@ saved queries, history, and shareable links. It ships as a
 **single self-contained HTML file served from ClickHouse itself** (no Node
 server, no CDN, no external fonts) — the page makes **zero third-party
 requests** and renders in the OS's native UI font. Its four bundled runtime
-dependencies — **CodeMirror 6** (the SQL editor), **Chart.js** (the chart
-result view), **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
+dependencies — **CodeMirror 6** (the SQL editor and read-only source viewer),
+**Chart.js** (the chart result view), **@dagrejs/dagre** (the EXPLAIN
+pipeline-graph layout), and
 **@preact/signals-core** (state reactivity) — are inlined into that one file.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase
@@ -52,6 +53,13 @@ only moving parts are ClickHouse's HTTP handlers and your OAuth provider.
 The editor is **CodeMirror 6** behind an injected `EditorPort` seam (#143/#21)
 — bundled and inlined like the other runtime deps, so the page still makes
 zero third-party requests. On top of it:
+
+The same bundled CodeMirror presentation/search base also powers an injected
+read-only `CodeViewer` seam (#213) for source surfaces. It supports complete
+text, JSON, SQL, XML/HTML-source, and plain Markdown-source documents with line
+numbers, local search, selection/copy, configurable wrapping, detached-document
+mounting, and explicit teardown—without inheriting editor history, completion,
+schema, drag/drop, or app-state behavior.
 
 - **Per-tab undo** — each query tab keeps its own edit history; switching tabs
   parks and restores it.
@@ -565,8 +573,8 @@ src/
              stream, storage, chart-data, completions (editor reference data
              + ranking) — no DOM, no globals
   net/       oauth-config, oauth, ch-client (injected fetch seam)
-  editor/    the EditorPort seam (editor-port) + its CodeMirror 6 adapter
-             (codemirror-adapter) — injected via createApp(env)
+  editor/    injected CodeMirror islands: the editable EditorPort adapter and
+             the smaller read-only CodeViewer, sharing presentation/search base
   ui/        dom (hyperscript), icons, + render modules (login, tabs, schema,
              results, saved-history, shortcuts, splitters, toast, app)
   state.js   state model + pure operations

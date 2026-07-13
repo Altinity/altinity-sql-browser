@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { undoDepth, undo } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import {
   createCodeMirrorEditor, langExtensionFor, completionSourceFor, applyFor,
   infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, inputGuards, syncTx,
@@ -94,6 +95,18 @@ describe('mount / re-mount / destroy', () => {
     port.insertAtCursor('x'); // no view — silent no-op, no emit
     expect(changes).toEqual([]);
     expect(port.destroy()).toBeUndefined(); // idempotent
+  });
+
+  it('keeps the editable SQL surface and shared token classes after the base extraction', () => {
+    const { port, view } = mounted();
+    port.replaceDocument("SELECT count(*) FROM t WHERE n = 1 AND s = 'x'");
+    expect(view.state.readOnly).toBe(false);
+    expect(view.state.facet(EditorView.editable)).toBe(true);
+    expect(view.contentDOM.getAttribute('contenteditable')).toBe('true');
+    expect(view.dom.querySelector('.sql-keyword')?.textContent).toBe('SELECT');
+    expect(view.dom.querySelector('.sql-string')?.textContent).toBe("'x'");
+    expect(view.dom.querySelector('.cm-lineNumbers')).not.toBeNull();
+    port.destroy();
   });
 });
 

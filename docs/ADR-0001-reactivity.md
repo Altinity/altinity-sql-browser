@@ -207,3 +207,18 @@ keyword/function sets via a `Compartment` reconfigure. Nothing about the state m
 addendum records that the editor island now has its intended long-term
 implementation, and that #84 (schema-aware autocomplete) plugs into the CM6
 completion source rather than growing new overlay machinery.
+
+## Addendum — read-only CodeMirror viewer behind a separate seam (#213)
+
+Read-only source surfaces now use a smaller injected `env.CodeViewer` factory,
+not the editable `EditorPort`. The two adapters share only CodeMirror
+presentation/search extensions and the established `.sql-*` token-class map in
+`editor/codemirror-base.js`; the viewer cannot inherit editor history,
+completion, hover, schema loading, drag/drop insertion, tab parking, or app-state
+subscriptions. Its language registry is explicit (text, JSON, SQL, XML,
+XML-style HTML, and plain Markdown source), adding only the CodeMirror JSON/XML
+language packages. Wrapping and language changes reconfigure compartments
+without reconstructing the view, and the adapter supplies the target parent and
+document root before CM6 initializes its realm-bound observers. This is the same imperative-island rule
+applied at a smaller boundary, and gives later cell/detail consumers a stub-able
+`app.CodeViewer` seam without coupling them to CodeMirror imports.

@@ -29,8 +29,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    graph in local, CI, and release builds, and update the lock only with an
    intentional dependency change.
    There are **four** bundled runtime dependencies — **CodeMirror 6** (the SQL
-   editor, behind the `EditorPort` seam — #21), **Chart.js** (the Chart
-   result view), **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
+   editor and read-only source viewer, behind injected seams — #21/#213),
+   **Chart.js** (the Chart result view), **@dagrejs/dagre** (the EXPLAIN
+   pipeline-graph layout), and
    **@preact/signals-core** (the reactivity primitive — see
    `docs/ADR-0001-reactivity.md`) — all inlined into the artifact, so the page
    still makes zero third-party requests.
@@ -39,10 +40,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
    `src/core/chart-data.js`; DOT→positions in `src/core/dot-layout.js`, both
    100%-covered) and make the library call an **injected seam** (`app.Chart` /
-   `app.Dagre` / `env.Editor`, like the fetch/crypto seams) so the DOM wrapper
-   stays fully tested rather than dropping below the coverage gate. (The CM6
-   adapter is the port-shaped variant: the *factory* is injected, and the
-   adapter is unit-tested against the real library under happy-dom.)
+   `app.Dagre` / `env.Editor` / `env.CodeViewer`, like the fetch/crypto seams)
+   so the DOM wrapper stays fully tested rather than dropping below the coverage gate. (The CM6
+   adapters are unit-tested against the real libraries under happy-dom.)
 5. **No UI framework; signals for state, imperative adapters for islands.** State
    reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),
    migrated slice-by-slice (ADR-0001). **No React/Preact/Solid** — a Preact spike
