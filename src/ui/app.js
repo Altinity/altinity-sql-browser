@@ -28,6 +28,7 @@ import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core
 import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
+import { queryDescription, queryName, withQuerySpec } from '../core/saved-query.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
@@ -1570,7 +1571,8 @@ export function createApp(env = {}) {
     // The gate matches the decode side (main.js): sql OR panel — a text panel
     // legitimately has no SQL, and a sql-only check would make it unshareable.
     if (!sql && !isQuerylessPanel(panel)) return;
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(sql, panel);
+    const query = withQuerySpec({ ...tab, sql }, tab.spec);
+    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(query);
     win.history && win.history.replaceState && win.history.replaceState(null, '', url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
@@ -1967,9 +1969,8 @@ export function createApp(env = {}) {
     if (!app.dom.saveBtn) return;
     const tab = app.activeTab();
     const entry = savedForTab(app.state, tab);
-    const panelClean = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
     const clean = !!entry && entry.sql.trim() === String(tab.sql || '').trim()
-      && panelClean(entry.panel, tabPanel(tab));
+      && JSON.stringify(entry.spec) === JSON.stringify(tab.spec);
     app.dom.saveBtn.classList.toggle('saved', clean);
     app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
     app.dom.saveBtn.title = clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
@@ -2022,10 +2023,10 @@ export function createApp(env = {}) {
     }
     if (app.dom.savePopover) return;
     const entry = savedForTab(app.state, tab);
-    const prefill = entry ? entry.name : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));
+    const prefill = entry ? queryName(entry) : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));
     const input = h('input', { class: 'sp-input', value: prefill });
     const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
-    if (entry && entry.description) descInput.value = entry.description;
+    if (entry && queryDescription(entry)) descInput.value = queryDescription(entry);
     let close;
     const commit = () => {
       if (!input.value.trim()) return;
@@ -2181,7 +2182,7 @@ export function createApp(env = {}) {
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
-    loadIntoNewTab: (name, sql, savedId, panel) => { loadIntoNewTab(app, name, sql, savedId, panel); toEditorOnMobile(); },
+    loadIntoNewTab: (queryOrName, sql) => { loadIntoNewTab(app, queryOrName, sql); toEditorOnMobile(); },
     login: (idpId, targetOrigin) => login(idpId, targetOrigin),
     connect,
     share,

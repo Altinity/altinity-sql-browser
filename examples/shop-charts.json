@@ -1,79 +1,183 @@
 {
   "format": "altinity-sql-browser/saved-queries",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-06-28T00:00:00.000Z",
   "queries": [
     {
       "id": "shop-revenue-by-country",
-      "name": "Revenue by country",
-      "description": "Total revenue per country from the daily_sales aggregate (fed by the mv_daily_sales materialized view). A LowCardinality category on the X axis → horizontal Bar.",
       "sql": "SELECT country, sum(revenue) AS revenue\nFROM shop.daily_sales\nGROUP BY country\nORDER BY revenue DESC",
-      "favorite": true,
-      "view": "chart",
-      "chart": { "cfg": { "type": "hbar", "x": 0, "y": [1], "series": null }, "key": "country:LowCardinality(String)|revenue:Decimal(38, 2)" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Revenue by country",
+        "favorite": true,
+        "description": "Total revenue per country from the daily_sales aggregate (fed by the mv_daily_sales materialized view). A LowCardinality category on the X axis → horizontal Bar.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "hbar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "country:LowCardinality(String)|revenue:Decimal(38, 2)"
+        }
+      }
     },
     {
       "id": "shop-daily-revenue",
-      "name": "Daily revenue",
-      "description": "Revenue per day across the last ~90 days, from daily_sales. A Date X axis is auto-detected as a time series → filled Area chart.",
       "sql": "SELECT day, sum(revenue) AS revenue\nFROM shop.daily_sales\nGROUP BY day\nORDER BY day",
-      "favorite": false,
-      "view": "chart",
-      "chart": { "cfg": { "type": "area", "x": 0, "y": [1], "series": null }, "key": "day:Date|revenue:Decimal(38, 2)" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily revenue",
+        "favorite": false,
+        "description": "Revenue per day across the last ~90 days, from daily_sales. A Date X axis is auto-detected as a time series → filled Area chart.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "day:Date|revenue:Decimal(38, 2)"
+        }
+      }
     },
     {
       "id": "shop-revenue-by-category",
-      "name": "Revenue by category",
-      "description": "Revenue per product category from category_revenue — the mv_category_revenue view derives the category with dictGet() against the products_dict dictionary. A small breakdown → Pie.",
       "sql": "SELECT category, sum(revenue) AS revenue\nFROM shop.category_revenue\nGROUP BY category\nORDER BY revenue DESC",
-      "favorite": true,
-      "view": "chart",
-      "chart": { "cfg": { "type": "pie", "x": 0, "y": [1], "series": null }, "key": "category:LowCardinality(String)|revenue:Decimal(38, 2)" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Revenue by category",
+        "favorite": true,
+        "description": "Revenue per product category from category_revenue — the mv_category_revenue view derives the category with dictGet() against the products_dict dictionary. A small breakdown → Pie.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "pie",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "category:LowCardinality(String)|revenue:Decimal(38, 2)"
+        }
+      }
     },
     {
       "id": "shop-event-mix",
-      "name": "Event type mix",
-      "description": "Share of raw events by type (purchase / view / cart) straight from events_raw. A small categorical split → Pie with a legend.",
       "sql": "SELECT event_type, count() AS events\nFROM shop.events_raw\nGROUP BY event_type\nORDER BY events DESC",
-      "favorite": false,
-      "view": "chart",
-      "chart": { "cfg": { "type": "pie", "x": 0, "y": [1], "series": null }, "key": "event_type:LowCardinality(String)|events:UInt64" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Event type mix",
+        "favorite": false,
+        "description": "Share of raw events by type (purchase / view / cart) straight from events_raw. A small categorical split → Pie with a legend.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "pie",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "event_type:LowCardinality(String)|events:UInt64"
+        }
+      }
     },
     {
       "id": "shop-top-products",
-      "name": "Top 15 products by revenue",
-      "description": "Joins events_raw to the products dimension table for readable names, summing purchase amounts. Horizontal Bar of the top 15.",
       "sql": "SELECT p.name AS product, round(sum(e.amount)) AS revenue\nFROM shop.events_raw AS e\nINNER JOIN shop.products AS p ON p.product_id = e.product_id\nWHERE e.event_type = 'purchase'\nGROUP BY product\nORDER BY revenue DESC\nLIMIT 15",
-      "favorite": false,
-      "view": "chart",
-      "chart": { "cfg": { "type": "hbar", "x": 0, "y": [1], "series": null }, "key": "product:String|revenue:Decimal(38, 2)" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Top 15 products by revenue",
+        "favorite": false,
+        "description": "Joins events_raw to the products dimension table for readable names, summing purchase amounts. Horizontal Bar of the top 15.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "hbar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "product:String|revenue:Decimal(38, 2)"
+        }
+      }
     },
     {
       "id": "shop-daily-active-users",
-      "name": "Daily active users",
-      "description": "Distinct users per day, merged from the hourly_active_users AggregatingMergeTree with uniqMerge() — shows how an AggregateFunction state is finalized. Date axis → Line.",
       "sql": "SELECT toDate(hour) AS day, uniqMerge(users) AS users\nFROM shop.hourly_active_users\nGROUP BY day\nORDER BY day",
-      "favorite": false,
-      "view": "chart",
-      "chart": { "cfg": { "type": "line", "x": 0, "y": [1], "series": null }, "key": "day:Date|users:UInt64" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily active users",
+        "favorite": false,
+        "description": "Distinct users per day, merged from the hourly_active_users AggregatingMergeTree with uniqMerge() — shows how an AggregateFunction state is finalized. Date axis → Line.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "day:Date|users:UInt64"
+        }
+      }
     },
     {
       "id": "shop-revenue-trend-by-country",
-      "name": "Revenue trend by country",
-      "description": "Daily revenue for four countries at once — the country column drives the Series, producing one Line per country with a legend.",
       "sql": "SELECT day, country, sum(revenue) AS revenue\nFROM shop.daily_sales\nWHERE country IN ('US', 'GB', 'DE', 'JP')\nGROUP BY day, country\nORDER BY day",
-      "favorite": true,
-      "view": "chart",
-      "chart": { "cfg": { "type": "line", "x": 0, "y": [2], "series": 1 }, "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Revenue trend by country",
+        "favorite": true,
+        "description": "Daily revenue for four countries at once — the country column drives the Series, producing one Line per country with a legend.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1
+          },
+          "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)"
+        }
+      }
     },
     {
       "id": "shop-orders-by-hour",
-      "name": "Traffic by hour of day",
-      "description": "Event volume by hour of day (0–23) from events_raw. A numeric ordinal X axis → vertical Column chart.",
       "sql": "SELECT toHour(event_time) AS hour, count() AS events\nFROM shop.events_raw\nGROUP BY hour\nORDER BY hour",
-      "favorite": false,
-      "view": "chart",
-      "chart": { "cfg": { "type": "bar", "x": 0, "y": [1], "series": null }, "key": "hour:UInt8|events:UInt64" }
+      "specVersion": 1,
+      "spec": {
+        "name": "Traffic by hour of day",
+        "favorite": false,
+        "description": "Event volume by hour of day (0–23) from events_raw. A numeric ordinal X axis → vertical Column chart.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "hour:UInt8|events:UInt64"
+        }
+      }
     }
   ]
 }

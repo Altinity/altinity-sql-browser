@@ -1,61 +1,72 @@
 import { describe, it, expect } from 'vitest';
 import { encodeShare, decodeShare } from '../../src/core/share.js';
+import { queryPanel } from '../../src/core/saved-query.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 describe('share encode/decode', () => {
-  it('round-trips ASCII SQL (no panel → panel null)', () => {
-    const sql = 'SELECT * FROM t WHERE x = 1';
-    expect(decodeShare('#' + encodeShare(sql))).toEqual({ sql, panel: null });
+  it('round-trips a complete identity-free Spec, including unicode and extensions', () => {
+    const query = savedQuery({ id: 'local-id', sql: "SELECT 'café — 日本語'", name: 'Unicode', favorite: true,
+      panel: { cfg: { type: 'table' }, fieldConfig: { defaults: { color: 'red' } } },
+      dashboard: { role: 'panel' }, extension: { nested: [{ x: 1 }] } });
+    const decoded = decodeShare('#' + encodeShare(query));
+    expect(decoded).toEqual({ sql: query.sql, specVersion: 1, spec: query.spec });
+    expect('id' in decoded).toBe(false);
+    expect(decoded.spec.extension).not.toBe(query.spec.extension);
   });
-  it('round-trips unicode', () => {
-    const sql = 'SELECT \'café — 日本語\'';
-    expect(decodeShare(encodeShare(sql))).toEqual({ sql, panel: null });
+
+  it('uses the documented v2 wire subset and emits no flat/legacy mirrors', () => {
+    const query = savedQuery({ id: 'q', sql: 'SELECT 1', name: 'Q',
+      panel: { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' } });
+    const raw = JSON.parse(decodeURIComponent(escape(atob(encodeShare(query)))));
+    expect(raw).toEqual({ __asb: 2, query: { sql: query.sql, specVersion: 1, spec: query.spec } });
+    expect(raw.query.id).toBeUndefined();
+    expect(raw.chart).toBeUndefined();
+    expect(raw.panel).toBeUndefined();
   });
-  it('round-trips a chart-family panel alongside the SQL', () => {
-    const sql = 'SELECT a, b FROM t';
-    const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
-    expect(decodeShare(encodeShare(sql, panel))).toEqual({ sql, panel });
-  });
-  it('a chart-family panel travels with the legacy chart mirror (rollback link-compat, #166)', () => {
-    const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
-    const raw = JSON.parse(decodeURIComponent(escape(atob(encodeShare('SELECT 1', panel)))));
-    expect(raw.chart).toEqual(panel); // an older build reads this and still shows the chart
-    expect(raw.panel).toEqual(panel);
-  });
-  it('a non-chart panel (text) round-trips WITHOUT a chart mirror, even with empty SQL', () => {
+
+  it('retains the compatibility sql/panel encode call but writes v2', () => {
     const panel = { cfg: { type: 'text', content: '# note' } };
-    const enc = encodeShare('', panel);
-    const raw = JSON.parse(decodeURIComponent(escape(atob(enc))));
-    expect('chart' in raw).toBe(false);
-    expect(decodeShare(enc)).toEqual({ sql: '', panel });
+    const decoded = decodeShare(encodeShare('', panel));
+    expect(decoded.sql).toBe('');
+    expect(queryPanel(decoded)).toEqual(panel);
+    expect(decoded.spec.name).toBe('Shared query');
   });
-  it('a legacy tagged {sql, chart} envelope upgrades to a chart-family panel', () => {
+
+  it('upgrades legacy tagged chart and panel envelopes', () => {
     const chart = { cfg: { type: 'line', x: 0, y: [1], series: null }, key: 'k' };
-    const hash = btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT 3', chart }))));
-    expect(decodeShare(hash)).toEqual({ sql: 'SELECT 3', panel: { cfg: chart.cfg, key: 'k' } });
+    const hash = (payload) => btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    expect(queryPanel(decodeShare(hash({ __asb: 1, sql: 'SELECT 3', chart })))).toEqual(chart);
+    const panel = { cfg: { type: 'logs', msg: 'message' } };
+    expect(queryPanel(decodeShare(hash({ __asb: 1, sql: 'SELECT 4', panel })))).toEqual(panel);
+    expect(queryPanel(decodeShare(hash({ __asb: 1, sql: 'SELECT 2', chart: 'bad' })))).toBeUndefined();
   });
-  it('ignores a panel with no cfg (encodes as legacy SQL)', () => {
-    const sql = 'SELECT 1';
-    expect(decodeShare(encodeShare(sql, { key: 'x' }))).toEqual({ sql, panel: null });
+
+  it('accepts raw SQL links and tolerates a leading hash', () => {
+    const raw = btoa(unescape(encodeURIComponent('SELECT 1')));
+    expect(decodeShare(raw).sql).toBe('SELECT 1');
+    expect(decodeShare('#' + raw).sql).toBe('SELECT 1');
+    expect(queryPanel(decodeShare(raw))).toBeUndefined();
+    expect(decodeShare(btoa('123')).sql).toBe('123');
   });
-  it('drops a non-object chart field in a tagged envelope', () => {
-    // hand-built tagged envelope whose chart is a string, not an object
-    const hash = btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT 2', chart: 'nope' }))));
-    expect(decodeShare(hash)).toEqual({ sql: 'SELECT 2', panel: null });
+
+  it('returns a safe empty shared query for empty/short/garbage/malformed v2 hashes', () => {
+    const empty = { sql: '', specVersion: 1, spec: { name: 'Shared query', favorite: false } };
+    expect(decodeShare('')).toEqual(empty);
+    expect(decodeShare('#')).toEqual(empty);
+    expect(decodeShare(null)).toEqual(empty);
+    expect(decodeShare('#@@@@')).toEqual(empty);
+    const badV2 = btoa(JSON.stringify({ __asb: 2, query: { sql: 1, specVersion: 2, spec: [] } }));
+    expect(decodeShare(badV2)).toEqual(empty);
+    expect(decodeShare(btoa(JSON.stringify({ __asb: 2 })))).toEqual(empty);
+    const tooDeep = '{"__asb":2,"query":{"sql":"","specVersion":1,"spec":'
+      + '{"x":'.repeat(50000) + '0' + '}'.repeat(50000) + '}}';
+    const deepHash = btoa(tooDeep);
+    const deepDecoded = decodeShare(deepHash);
+    expect(deepDecoded.sql).toBe('');
+    expect(deepDecoded.spec.name).toBe('Shared query');
   });
-  it('tolerates a leading # or none', () => {
-    const enc = encodeShare('SELECT 1');
-    expect(decodeShare(enc).sql).toBe('SELECT 1');
-    expect(decodeShare('#' + enc).sql).toBe('SELECT 1');
-  });
-  it('treats valid-JSON-but-untagged decoded text as legacy SQL', () => {
-    // base64 of the literal text "123" → JSON.parse succeeds (number), not tagged
-    const hash = btoa('123');
-    expect(decodeShare(hash)).toEqual({ sql: '123', panel: null });
-  });
-  it('returns empty for empty/short/garbage hashes', () => {
-    expect(decodeShare('')).toEqual({ sql: '', panel: null });
-    expect(decodeShare('#')).toEqual({ sql: '', panel: null });
-    expect(decodeShare(null)).toEqual({ sql: '', panel: null });
-    expect(decodeShare('#@@@@')).toEqual({ sql: '', panel: null });
+
+  it('rejects malformed canonical input at encode time', () => {
+    expect(() => encodeShare({ sql: '1', specVersion: 2, spec: {} })).toThrow('Unsupported saved-query Spec version');
   });
 });

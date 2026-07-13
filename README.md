@@ -364,9 +364,12 @@ an unsaved-changes dot, managed from the header **File ▾** menu:
 - **New Library** — clears to an empty, default-named library (confirms first
   when non-empty). Open editor tabs are unaffected.
 - **Save JSON** (`.json`) — downloads the whole Library in the versioned
-  `altinity-sql-browser/saved-queries` envelope (lossless: keeps id, name,
-  description, sql, favorite, chart, view). The filename derives from the Library
-  name; saving clears the unsaved-changes dot.
+  `altinity-sql-browser/saved-queries` envelope. Version 2 stores each query as
+  `{id, sql, specVersion, spec}`: `spec` is the complete, lossless query
+  definition (`name`, `description`, `favorite`, `view`, `panel`, `dashboard`,
+  and future extension fields). The filename derives from the Library name;
+  saving clears the unsaved-changes dot. Version 1 Library files remain
+  importable and are upgraded in memory; new exports always use version 2.
 - **Open… / Append…** — load a `.json` file: Open swaps the Library and
   adopts the file's base name (confirms when the current Library is non-empty);
   Append merges via the existing dedupe and reports `Added N · updated N ·
@@ -374,8 +377,8 @@ an unsaved-changes dot, managed from the header **File ▾** menu:
   run automatically.
 - **Share / publish** — **Download Markdown** (`.md`, a `### heading` + fenced
   ` ```sql ` cookbook) and **Download SQL** (`.sql`, `/* name + description */`
-  comment blocks, `;`-delimited). Both are **one-way** — lossy by design (no ids,
-  chart, or view), so JSON stays the canonical round-trip format.
+  comment blocks, `;`-delimited). Both are **one-way** — lossy by design (no ids
+  or Spec metadata), so JSON stays the canonical round-trip format.
 
 The Library name is editable inline (click it in the header) and is persisted
 separately from the queries. The **•** dot appears after any change that hasn't

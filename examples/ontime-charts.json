@@ -1,200 +1,230 @@
 {
   "format": "altinity-sql-browser/saved-queries",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-06-24T13:22:11.940Z",
   "queries": [
     {
       "id": "s1",
-      "name": "Busiest origin airports — 2023",
       "sql": "SELECT\n    a.DisplayAirportName AS airport,\n    count() AS flights\nFROM ontime.fact_ontime AS f\nINNER JOIN ontime.dim_airports AS a\n    ON a.AirportCode = f.OriginCode AND a.IsLatest = 1\nWHERE f.Year = 2023\nGROUP BY airport\nORDER BY flights DESC\nLIMIT 15",
-      "favorite": false,
-      "description": "Top 15 departure airports by flight count (joined to dim_airports for readable names). Horizontal Bar — hover any bar, long or short, to read its exact value.",
-      "chart": {
-        "cfg": {
-          "type": "hbar",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "airport:String|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Busiest origin airports — 2023",
+        "favorite": false,
+        "description": "Top 15 departure airports by flight count (joined to dim_airports for readable names). Horizontal Bar — hover any bar, long or short, to read its exact value.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "hbar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "airport:String|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s2",
-      "name": "Flights by month — 2023",
       "sql": "SELECT Month AS month, count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY month\nORDER BY month",
-      "favorite": false,
-      "description": "Monthly US flight volume. A numeric column named \"month\" is detected as an ordinal axis → vertical Column chart, with K/M-humanised value ticks.",
-      "chart": {
-        "cfg": {
-          "type": "bar",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "month:UInt8|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Flights by month — 2023",
+        "favorite": false,
+        "description": "Monthly US flight volume. A numeric column named \"month\" is detected as an ordinal axis → vertical Column chart, with K/M-humanised value ticks.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "month:UInt8|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s3",
-      "name": "Daily flights — 2023",
       "sql": "SELECT FlightDate AS date, count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY date\nORDER BY date",
-      "favorite": false,
-      "description": "One point per day across 2023 (~365 rows). A Date X axis is auto-detected as a time series → Line chart.",
-      "chart": {
-        "cfg": {
-          "type": "line",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "date:Date|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily flights — 2023",
+        "favorite": false,
+        "description": "One point per day across 2023 (~365 rows). A Date X axis is auto-detected as a time series → Line chart.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "date:Date|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s4",
-      "name": "Daily on-time rate — 2023",
       "sql": "SELECT\n    FlightDate AS date,\n    round(100 * countIf(ArrDel15 = 0) / count(), 1) AS on_time_pct\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY date\nORDER BY date",
-      "favorite": false,
-      "description": "Share of flights arriving on time (< 15 min late) per day, as a percentage. Rendered as a filled Area chart.",
-      "chart": {
-        "cfg": {
-          "type": "area",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "date:Date|on_time_pct:Float64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily on-time rate — 2023",
+        "favorite": false,
+        "description": "Share of flights arriving on time (< 15 min late) per day, as a percentage. Rendered as a filled Area chart.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "date:Date|on_time_pct:Float64"
+        }
+      }
     },
     {
       "id": "s5",
-      "name": "Cancellation reasons — 2023",
       "sql": "SELECT\n    multiIf(CancellationCode = 'A', 'Carrier',\n            CancellationCode = 'B', 'Weather',\n            CancellationCode = 'C', 'National Air System',\n            CancellationCode = 'D', 'Security', 'Other') AS reason,\n    count() AS cancellations\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND Cancelled = 1\nGROUP BY reason\nORDER BY cancellations DESC",
-      "favorite": false,
-      "description": "Why flights were cancelled in 2023 (carrier / weather / national air system / security). A small categorical breakdown → Pie chart with a legend.",
-      "chart": {
-        "cfg": {
-          "type": "pie",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "reason:String|cancellations:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Cancellation reasons — 2023",
+        "favorite": false,
+        "description": "Why flights were cancelled in 2023 (carrier / weather / national air system / security). A small categorical breakdown → Pie chart with a legend.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "pie",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "reason:String|cancellations:UInt64"
+        }
+      }
     },
     {
       "id": "s6",
-      "name": "Monthly flights by carrier — 2023",
       "sql": "SELECT\n    Month AS month,\n    Carrier AS carrier,\n    count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND Carrier IN ('WN', 'AA', 'DL', 'UA')\nGROUP BY month, carrier\nORDER BY month, carrier",
-      "favorite": false,
-      "description": "Flights per month split across four major carriers (WN, AA, DL, UA). The \"carrier\" column is used as the Series, producing grouped bars with a per-carrier legend.",
-      "chart": {
-        "cfg": {
-          "type": "bar",
-          "x": 0,
-          "y": [
-            2
-          ],
-          "series": 1
-        },
-        "key": "month:UInt8|carrier:LowCardinality(String)|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Monthly flights by carrier — 2023",
+        "favorite": false,
+        "description": "Flights per month split across four major carriers (WN, AA, DL, UA). The \"carrier\" column is used as the Series, producing grouped bars with a per-carrier legend.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1
+          },
+          "key": "month:UInt8|carrier:LowCardinality(String)|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s7",
-      "name": "Average delay breakdown by carrier — 2023",
       "sql": "SELECT\n    Carrier AS carrier,\n    round(avg(CarrierDelay), 1) AS carrier_delay,\n    round(avg(WeatherDelay), 1) AS weather_delay,\n    round(avg(NASDelay), 1) AS nas_delay,\n    round(avg(LateAircraftDelay), 1) AS late_aircraft_delay\nFROM ontime.fact_ontime\nWHERE Year = 2023 AND ArrDel15 = 1\nGROUP BY carrier\nORDER BY carrier_delay DESC\nLIMIT 12",
-      "favorite": false,
-      "description": "Mean minutes of each delay cause (carrier, weather, NAS, late aircraft) for delayed flights, per carrier. Four measures plotted at once (\"All measures\") as grouped columns.",
-      "chart": {
-        "cfg": {
-          "type": "bar",
-          "x": 0,
-          "y": [
-            1,
-            2,
-            3,
-            4
-          ],
-          "series": null
-        },
-        "key": "carrier:LowCardinality(String)|carrier_delay:Nullable(Float64)|weather_delay:Nullable(Float64)|nas_delay:Nullable(Float64)|late_aircraft_delay:Nullable(Float64)"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Average delay breakdown by carrier — 2023",
+        "favorite": false,
+        "description": "Mean minutes of each delay cause (carrier, weather, NAS, late aircraft) for delayed flights, per carrier. Four measures plotted at once (\"All measures\") as grouped columns.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "series": null
+          },
+          "key": "carrier:LowCardinality(String)|carrier_delay:Nullable(Float64)|weather_delay:Nullable(Float64)|nas_delay:Nullable(Float64)|late_aircraft_delay:Nullable(Float64)"
+        }
+      }
     },
     {
       "id": "s8",
-      "name": "Daily flights since 2022",
       "sql": "SELECT FlightDate AS date, count() AS flights\nFROM ontime.fact_ontime\nWHERE FlightDate >= '2022-01-01'\nGROUP BY date\nORDER BY date",
-      "favorite": false,
-      "description": "Every day from 2022 onward (~1,460 points). The chart plots the first 500 and shows a \"first 500 of N rows\" note — the table view still has them all.",
-      "chart": {
-        "cfg": {
-          "type": "line",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "date:Date|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Daily flights since 2022",
+        "favorite": false,
+        "description": "Every day from 2022 onward (~1,460 points). The chart plots the first 500 and shows a \"first 500 of N rows\" note — the table view still has them all.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "date:Date|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s9",
-      "name": "Flights by day of week — 2023",
       "sql": "SELECT DayOfWeek AS dayofweek, count() AS flights\nFROM ontime.fact_ontime\nWHERE Year = 2023\nGROUP BY dayofweek\nORDER BY dayofweek",
-      "favorite": false,
-      "description": "Volume by day of week (1 = Monday … 7 = Sunday). \"dayofweek\" is recognised as an ordinal axis → Column chart.",
-      "chart": {
-        "cfg": {
-          "type": "bar",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "dayofweek:UInt8|flights:UInt64"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Flights by day of week — 2023",
+        "favorite": false,
+        "description": "Volume by day of week (1 = Monday … 7 = Sunday). \"dayofweek\" is recognised as an ordinal axis → Column chart.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "dayofweek:UInt8|flights:UInt64"
+        }
+      }
     },
     {
       "id": "s10",
-      "name": "Worst average departure delay by airport — 2023",
       "sql": "SELECT\n    a.DisplayAirportName AS airport,\n    round(avg(f.DepDelayMinutes), 1) AS avg_dep_delay\nFROM ontime.fact_ontime AS f\nINNER JOIN ontime.dim_airports AS a\n    ON a.AirportCode = f.OriginCode AND a.IsLatest = 1\nWHERE f.Year = 2023\nGROUP BY airport\nHAVING count() >= 10000\nORDER BY avg_dep_delay DESC\nLIMIT 15",
-      "favorite": false,
-      "description": "Airports with the highest mean departure delay (minutes) among those with ≥ 10,000 departures in 2023. Horizontal Bar of a non-count measure, joined for names.",
-      "chart": {
-        "cfg": {
-          "type": "hbar",
-          "x": 0,
-          "y": [
-            1
-          ],
-          "series": null
-        },
-        "key": "airport:String|avg_dep_delay:Nullable(Float64)"
-      },
-      "view": "chart"
+      "specVersion": 1,
+      "spec": {
+        "name": "Worst average departure delay by airport — 2023",
+        "favorite": false,
+        "description": "Airports with the highest mean departure delay (minutes) among those with ≥ 10,000 departures in 2023. Horizontal Bar of a non-count measure, joined for names.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "hbar",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null
+          },
+          "key": "airport:String|avg_dep_delay:Nullable(Float64)"
+        }
+      }
     }
   ]
 }

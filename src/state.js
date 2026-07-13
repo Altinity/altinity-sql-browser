@@ -3,22 +3,23 @@
 // every operation is unit-testable with a spy and no real localStorage.
 
 import { clamp } from './core/format.js';
-import { mergeSaved, upgradeSavedEntry, withChartMirror } from './core/saved-io.js';
-import { clonePanelCfg, isChartFamily } from './core/panel-cfg.js';
+import { mergeSaved } from './core/saved-io.js';
+import {
+  SPEC_VERSION, cloneJson, patchQuerySpec, queryDescription, queryFavorite, queryName,
+  queryPanel, queryView, upgradeSavedQuery, withQuerySpec,
+} from './core/saved-query.js';
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 import { emptyRecentMap } from './core/recent-values.js';
 import { signal } from '@preact/signals-core';
 
 /**
- * A tab's panel state as a persistable payload `{ cfg, key }`, or null. `key`
- * (the schema signature the cfg was derived for) only travels for the chart
- * family — name-based/schema-free arms carry none (#166 field policy).
+ * A tab's complete `spec.panel` payload, cloned for safe use/persistence. The
+ * cfg/key fields drive today's renderer; future siblings ride along unchanged.
  */
 export function tabPanel(tab) {
-  if (!tab || !tab.panelCfg) return null;
-  const cfg = clonePanelCfg(tab.panelCfg);
-  return isChartFamily(cfg.type) ? { cfg, key: tab.panelKey ?? null } : { cfg };
+  const panel = queryPanel(tab);
+  return panel ? cloneJson(panel) : null;
 }
 
 /** Result views a saved query can remember (a raw FORMAT-clause view is
@@ -68,10 +69,14 @@ export const DEFAULT_LIBRARY_NAME = 'SQL Library';
  */
 export const MOBILE_BREAKPOINT_PX = 768;
 
-/** A blank query tab. `panelCfg`/`panelKey` hold the per-tab panel config and
- * (for chart-family cfgs) the schema signature it was derived for. */
+/** A blank query tab. Its complete Spec is the sole tab-side authoring source;
+ * SQL remains the separate editor document. */
 export function newTabObj(id) {
-  return { id, name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null };
+  return {
+    id, name: 'Untitled', sql: '', specVersion: SPEC_VERSION,
+    spec: { name: 'Untitled', favorite: false },
+    dirty: false, result: null, savedId: null,
+  };
 }
 
 /**
@@ -178,10 +183,9 @@ export function createState(read = { loadJSON, loadStr }) {
     // cleared (Clear all recent values / per-field Clear recent).
     varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false),
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
-    // The localStorage startup ingress (#166): every persisted entry is
-    // upgraded to the panel format here, so nothing downstream ever sees a
-    // bare legacy `chart` payload.
-    savedQueries: read.loadJSON(KEYS.saved, []).map(upgradeSavedEntry),
+    // The localStorage startup ingress: v1 entries become canonical v2 in
+    // memory without an eager write; future Spec versions fail closed here.
+    savedQueries: read.loadJSON(KEYS.saved, []).map(upgradeSavedQuery),
     // Which saved row (if any) is showing its inline edit form (saved-history.js).
     // Session-only, never persisted.
     editingSavedId: signal(null),
@@ -271,21 +275,25 @@ export function saveQuery(state, tab, name, description, save = saveJSON, now = 
   // same data representation; the transient raw view isn't persisted.
   const view = SAVED_VIEWS.has(state.resultView.value) ? state.resultView.value : undefined;
   let entry = savedForTab(state, tab);
+  const favorite = entry ? queryFavorite(entry) : queryFavorite(tab);
+  const draft = patchQuerySpec(withQuerySpec({ ...tab, sql }, tab.spec), {
+    name: nm,
+    favorite,
+    description: desc || undefined,
+    panel: panel || undefined,
+    view,
+  });
   if (entry) {
-    entry.name = nm;
-    entry.sql = sql;
-    if (desc) entry.description = desc; else delete entry.description;
-    if (panel) entry.panel = panel; else delete entry.panel;
-    if (view) entry.view = view; else delete entry.view;
+    const index = state.savedQueries.findIndex((query) => query.id === entry.id);
+    entry = withQuerySpec({ ...draft, id: entry.id, sql }, draft.spec);
+    state.savedQueries[index] = entry;
   } else {
-    entry = { id: makeId('s', now), name: nm, sql, favorite: false };
-    if (desc) entry.description = desc;
-    if (panel) entry.panel = panel;
-    if (view) entry.view = view;
+    entry = withQuerySpec({ ...draft, id: makeId('s', now), sql }, draft.spec);
     state.savedQueries.unshift(entry);
     tab.savedId = entry.id;
   }
-  withChartMirror(entry); // dual-write: legacy chart mirror tracks the panel (#166)
+  tab.specVersion = SPEC_VERSION;
+  tab.spec = cloneJson(entry.spec);
   tab.name = nm;
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
@@ -299,23 +307,31 @@ export function saveQuery(state, tab, name, description, save = saveJSON, now = 
  */
 export function renameSaved(state, id, name, description, save = saveJSON) {
   const nm = String(name || '').trim();
-  const entry = state.savedQueries.find((q) => q.id === id);
+  const index = state.savedQueries.findIndex((q) => q.id === id);
+  const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry || !nm) return;
-  entry.name = nm;
+  const patch = { name: nm };
   if (description !== undefined) {
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
-    if (desc) entry.description = desc; else delete entry.description;
+    patch.description = desc || undefined;
   }
-  for (const t of tabsForSaved(state, id)) t.name = nm;
+  state.savedQueries[index] = patchQuerySpec(entry, patch);
+  for (const tab of tabsForSaved(state, id)) {
+    tab.name = nm;
+    tab.spec = patchQuerySpec(tab, patch).spec;
+  }
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
 }
 
 /** Toggle a saved query's favorite flag. */
 export function toggleFavorite(state, id, save = saveJSON) {
-  const entry = state.savedQueries.find((q) => q.id === id);
+  const index = state.savedQueries.findIndex((q) => q.id === id);
+  const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
-  entry.favorite = !entry.favorite;
+  const favorite = !queryFavorite(entry);
+  state.savedQueries[index] = patchQuerySpec(entry, { favorite });
+  for (const tab of tabsForSaved(state, id)) tab.spec = patchQuerySpec(tab, { favorite }).spec;
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
 }
@@ -324,7 +340,7 @@ export function toggleFavorite(state, id, save = saveJSON) {
 export function sortedSaved(state) {
   return state.savedQueries
     .map((q, i) => [q, i])
-    .sort((a, b) => (b[0].favorite ? 1 : 0) - (a[0].favorite ? 1 : 0) || a[1] - b[1])
+    .sort((a, b) => (queryFavorite(b[0]) ? 1 : 0) - (queryFavorite(a[0]) ? 1 : 0) || a[1] - b[1])
     .map(([q]) => q);
 }
 
@@ -336,8 +352,8 @@ export function filterSaved(list, query) {
   const q = String(query || '').trim().toLowerCase();
   if (!q) return list;
   return list.filter((it) =>
-    (it.name || '').toLowerCase().includes(q) ||
-    (it.description || '').toLowerCase().includes(q) ||
+    queryName(it).toLowerCase().includes(q) ||
+    queryDescription(it).toLowerCase().includes(q) ||
     (it.sql || '').toLowerCase().includes(q));
 }
 
@@ -403,7 +419,7 @@ export function newLibrary(state, save = saveJSON, saveName = saveStr) {
  *  Clears dirty; open tabs are kept (dangling links pruned). */
 export function replaceLibrary(state, queries, fileName, save = saveJSON, saveName = saveStr, genId = () => makeId('s', Date.now())) {
   const seen = new Set();
-  state.savedQueries = queries.map(upgradeSavedEntry).map((q) => {
+  state.savedQueries = queries.map(upgradeSavedQuery).map((q) => {
     // Mint a fresh id for a missing OR already-seen id so every saved row has a
     // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
     // id would let one delete remove several rows and rename/favorite hit the
@@ -411,14 +427,7 @@ export function replaceLibrary(state, queries, fileName, save = saveJSON, saveNa
     let id = q.id;
     if (!id || seen.has(id)) { do { id = genId(); } while (seen.has(id)); }
     seen.add(id);
-    // The field whitelist must carry `panel` (#166) — omitting it here would
-    // silently strip every panel on File → Replace; the chart mirror is then
-    // re-derived so it can't drift from what the file carried.
-    return withChartMirror({
-      id, name: q.name, sql: q.sql, favorite: !!q.favorite,
-      ...(q.description ? { description: q.description } : {}),
-      ...(q.panel ? { panel: q.panel } : {}), ...(q.view ? { view: q.view } : {}),
-    });
+    return withQuerySpec({ ...q, id }, q.spec);
   });
   pruneTabLinks(state);
   const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();

@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { libraryControls, renderLibraryTitle, openFileMenu } from '../../src/ui/file-menu.js';
+import { queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (el, k, mods = {}) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...mods }));
 const item = (re) => [...document.querySelectorAll('.fm-item')].find((b) => re.test(b.textContent));
 const toast = () => document.querySelector('.share-toast').textContent;
+const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
 
 // A FileReader stub: readAsText resolves synchronously with `content` (or errors).
 const fakeReader = (content, fail) => class {
@@ -27,7 +30,7 @@ describe('open as dashboard', () => {
   it('opens the dashboard when at least one query is favorited', () => {
     const app = mount();
     app.actions.openDashboard = vi.fn();
-    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true }];
+    setSaved(app, [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true }]);
     openFileMenu(app);
     const btn = item(/Open as dashboard/);
     expect(btn).toBeTruthy();
@@ -38,7 +41,7 @@ describe('open as dashboard', () => {
   it('is disabled (with a reason) and toasts when there are no favorites', () => {
     const app = mount();
     app.actions.openDashboard = vi.fn();
-    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: false }];
+    setSaved(app, [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: false }]);
     openFileMenu(app);
     const btn = item(/Open as dashboard/);
     expect(btn.textContent).toContain('no favorites');
@@ -131,10 +134,10 @@ describe('library title', () => {
 describe('file menu', () => {
   it('lists every section + item, reflects the (pluralized) count, and re-open is a no-op', () => {
     const app = mount();
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: 's1', name: 'A', sql: '1', favorite: false },
       { id: 's2', name: 'B', sql: '2', favorite: false },
-    ];
+    ]);
     openFileMenu(app);
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
       'New Library', 'Open as dashboard', 'Remember recent variable values', 'Clear all recent values',
@@ -180,7 +183,7 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     click(item(/Save JSON/));
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: true }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: true }]);
     app.state.libraryName.value = 'My Lib';
     app.state.libraryDirty.value = true;
     openFileMenu(app);
@@ -199,7 +202,7 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     click(item(/Download Markdown/));
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: false, description: 'd' }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: false, description: 'd' }]);
     app.state.libraryName.value = 'Lib';
     openFileMenu(app);
     click(item(/Download Markdown/));
@@ -222,10 +225,10 @@ describe('Save JSON / Markdown / SQL downloads', () => {
 describe('Open / Append (JSON only)', () => {
   it('Open item closes the menu and opens the picker; a non-empty library confirms first', () => {
     const app = mount({ FileReader: fakeReader(envFile([{ id: 'x', name: 'New', sql: 'S' }, { name: 'New2', sql: 'S2' }])) });
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: 's1', name: 'Old', sql: '1', favorite: false },
       { id: 's2', name: 'Old2', sql: '2', favorite: false },
-    ];
+    ]);
     openFileMenu(app);
     const replaceInput = picker(0);
     replaceInput.click = vi.fn();
@@ -240,7 +243,7 @@ describe('Open / Append (JSON only)', () => {
     expect(dialog.textContent).toContain('contains 2 queries');
     expect(dialog.textContent).toContain('current 2 saved queries');
     click(document.querySelector('.fm-dialog-confirm'));
-    expect(app.state.savedQueries.map((q) => q.name)).toEqual(['New', 'New2']);
+    expect(app.state.savedQueries.map(queryName)).toEqual(['New', 'New2']);
     expect(app.state.libraryName.value).toBe('team');
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(toast()).toBe('Opened library · 2 queries');
@@ -258,13 +261,13 @@ describe('Open / Append (JSON only)', () => {
     Object.defineProperty(input, 'files', { configurable: true, value: [{ name: 'lib.json' }] });
     input.dispatchEvent(new Event('change', { bubbles: true }));
     expect(document.querySelector('.fm-dialog-card')).toBeNull();
-    expect(app.state.savedQueries.map((q) => q.name)).toEqual(['New']);
+    expect(app.state.savedQueries.map(queryName)).toEqual(['New']);
     expect(app.state.libraryName.value).toBe('lib');
   });
 
   it('Append item closes the menu, merges the file, and toasts counts', () => {
     const app = mount({ FileReader: fakeReader(envFile([{ id: 's1', name: 'A', sql: '1' }, { name: 'B', sql: '2' }])) });
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     openFileMenu(app);
     const appendInput = picker(1);
     appendInput.click = vi.fn();
@@ -273,7 +276,7 @@ describe('Open / Append (JSON only)', () => {
     expect(appendInput.click).toHaveBeenCalled();
     Object.defineProperty(appendInput, 'files', { configurable: true, value: [{ name: 'more.json' }] });
     appendInput.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.state.savedQueries.map((q) => q.name)).toEqual(['A', 'B']);
+    expect(app.state.savedQueries.map(queryName)).toEqual(['A', 'B']);
     expect(toast()).toBe('Added 1 · updated 0 · skipped 1'); // the duplicate A is skipped
   });
 
@@ -311,7 +314,7 @@ describe('New Library + confirm dialogs', () => {
     click(item(/New Library/));
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(toast()).toBe('Started a new library');
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     app.state.libraryName.value = 'Old';
     openFileMenu(app);
     click(item(/New Library/));
@@ -323,10 +326,10 @@ describe('New Library + confirm dialogs', () => {
 
   it('confirm dialog: Cancel, backdrop click, and Escape all dismiss; a card click does not', () => {
     const app = mount();
-    app.state.savedQueries = [ // two queries → exercises the plural dialog copy
+    setSaved(app, [ // two queries → exercises the plural dialog copy
       { id: 's1', name: 'A', sql: '1', favorite: false },
       { id: 's2', name: 'B', sql: '2', favorite: false },
-    ];
+    ]);
     const openNew = () => { openFileMenu(app); click(item(/New Library/)); };
     // Cancel
     openNew();
@@ -350,7 +353,7 @@ describe('New Library + confirm dialogs', () => {
 
   it('a gesture starting on the card and ending on the backdrop does not dismiss it (#110)', () => {
     const app = mount();
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     openFileMenu(app);
     click(item(/New Library/));
     const backdrop = document.querySelector('.fm-dialog-backdrop');

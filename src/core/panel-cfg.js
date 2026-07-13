@@ -16,6 +16,7 @@
 
 import { autoChart, chartCfgValid, normalizeChartCfg, schemaKey, CHART_TYPES } from './chart-data.js';
 import { detectLogsView, findTimeColumn, findMsgColumn, findLevelColumn } from './logs.js';
+import { cloneJson } from './saved-query.js';
 
 /** The chart-family type ids (share the chart-data cfg shape + `panel.key`). */
 export const CHART_FAMILY = new Set(CHART_TYPES.map((t) => t.value));
@@ -46,26 +47,13 @@ export function isQuerylessPanel(panel) {
   return !!(panel && panel.cfg && QUERYLESS_TYPES.has(panel.cfg.type));
 }
 
-// Deep-clone a JSON-shaped value (cfgs live in localStorage/share links, so
-// they are JSON by construction). Preserves unknown fields at every level —
-// the ignore-and-preserve guarantee.
-function plainClone(v) {
-  if (Array.isArray(v)) return v.map(plainClone);
-  if (v && typeof v === 'object') {
-    const out = {};
-    for (const [k, val] of Object.entries(v)) out[k] = plainClone(val);
-    return out;
-  }
-  return v;
-}
-
 /**
  * Deep-clone a panel cfg so a restored config never aliases its saved source
  * (editing the live panel must not mutate the Library entry). Unknown fields
  * ride along untouched. null/undefined → null.
  */
 export function clonePanelCfg(cfg) {
-  return cfg && typeof cfg === 'object' ? plainClone(cfg) : null;
+  return cfg && typeof cfg === 'object' ? cloneJson(cfg) : null;
 }
 
 /**

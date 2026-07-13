@@ -6,6 +6,8 @@ import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
+import { queryDescription } from '../../src/core/saved-query.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 function jwt(payload) {
   const b = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -2419,7 +2421,7 @@ describe('share + star + columns', () => {
     pop.querySelector('.sp-input').value = 'My fave';
     pop.querySelector('.sp-save').dispatchEvent(new Event('click'));
     expect(app.state.savedQueries).toHaveLength(1);
-    expect(app.state.savedQueries[0]).toMatchObject({ name: 'My fave', sql: 'SELECT 42' });
+    expect(app.state.savedQueries[0]).toMatchObject({ sql: 'SELECT 42', spec: { name: 'My fave', favorite: false } });
     expect(app.activeTab().savedId).toBe(app.state.savedQueries[0].id);
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
     expect(app.dom.saveBtn.textContent).toContain('Saved');
@@ -2465,8 +2467,8 @@ describe('share + star + columns', () => {
   it('restoring a saved query links the tab → Save button reads "Saved"', () => {
     const app = createApp(env());
     app.renderApp();
-    app.state.savedQueries = [{ id: 's9', name: 'Fav', sql: 'SELECT 9', favorite: false }];
-    app.actions.loadIntoNewTab('Fav', 'SELECT 9', 's9');
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
     expect(app.activeTab().savedId).toBe('s9');
     expect(app.dom.saveBtn.classList.contains('saved')).toBe(true);
     expect(app.dom.saveBtn.textContent).toContain('Saved');
@@ -2474,15 +2476,15 @@ describe('share + star + columns', () => {
   it('save popover: prefills the linked query description; ⌘Enter on the textarea commits', () => {
     const app = createApp(env());
     app.renderApp();
-    app.state.savedQueries = [{ id: 's9', name: 'Fav', sql: 'SELECT 9', favorite: false, description: 'why' }];
-    app.actions.loadIntoNewTab('Fav', 'SELECT 9', 's9');
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9', description: 'why' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
     app.actions.save();
     const desc = document.querySelector('.save-popover .sp-desc');
     expect(desc.value).toBe('why'); // prefilled from the linked entry
     desc.value = 'updated reason';
     desc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true }));
     expect(document.querySelector('.save-popover')).toBeNull(); // committed + closed
-    expect(app.state.savedQueries[0].description).toBe('updated reason');
+    expect(queryDescription(app.state.savedQueries[0])).toBe('updated reason');
   });
   it('loadColumns fills the target table by reference, leaving siblings untouched', async () => {
     const e = env({ fetch: makeFetch([[(u, sql) => /system\.columns/.test(sql), resp({ json: { data: [{ name: 'id', type: 'UInt64', comment: '' }] } })]]) });

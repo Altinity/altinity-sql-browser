@@ -1,9 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderSavedHistory } from '../../src/ui/saved-history.js';
 import { SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
+import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
+const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
 const dragStart = (el) => {
   const e = new Event('dragstart', { bubbles: true });
   e.dataTransfer = { setData: vi.fn() };
@@ -31,13 +34,13 @@ describe('renderSavedHistory', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
-    app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }];
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }]);
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.saved-row');
     expect(row.querySelector('.preview').textContent).toBe('SELECT 1');
     click(row);
     // links the tab + restores the chart, then runs in the saved view so results show immediately
-    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('Q1', 'SELECT 1\n-- more', 's1', panel);
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
     expect(app.actions.run).toHaveBeenCalledWith({ view: 'panel' });
     byTitle(row, 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.savedQueries).toHaveLength(0);
@@ -47,34 +50,34 @@ describe('renderSavedHistory', () => {
   it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false }]);
     renderSavedHistory(app);
     click(app.dom.savedList.querySelector('.saved-row'));
-    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('Setup', 'CREATE TABLE t (a Int8)', 's1', undefined);
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: 'a', name: 'A', sql: '1', favorite: false },
       { id: 'b', name: 'B', sql: '2', favorite: false },
-    ];
+    ]);
     renderSavedHistory(app);
     expect(app.dom.savedTabsRow.querySelector('.side-count').textContent).toContain('2');
     const names = () => [...app.dom.savedList.querySelectorAll('.saved-row .name')].map((n) => n.textContent);
     expect(names()).toEqual(['A', 'B']);
     const stars = app.dom.savedList.querySelectorAll('.sv-star');
     stars[1].dispatchEvent(new Event('click', { bubbles: true })); // favorite B
-    expect(app.state.savedQueries.find((q) => q.id === 'b').favorite).toBe(true);
+    expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'b'))).toBe(true);
     expect(names()).toEqual(['B', 'A']);
   });
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
     renderSavedHistory(app);
     byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.editingSavedId.value).toBe('s1');
@@ -85,25 +88,25 @@ describe('renderSavedHistory', () => {
     nameInput.value = 'New';
     descInput.value = 'a description';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    expect(app.state.savedQueries[0]).toMatchObject({ name: 'New', description: 'a description' });
+    expect(app.state.savedQueries[0].spec).toMatchObject({ name: 'New', description: 'a description' });
     expect(app.state.editingSavedId.value).toBeNull();
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
     // a second commit on the now-detached field is a no-op (the `done` guard)
     nameInput.value = 'AGAIN';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    expect(app.state.savedQueries[0].name).toBe('New');
+    expect(queryName(app.state.savedQueries[0])).toBe('New');
     // re-open and press Escape on the name field → cancels without saving
     byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     const reName = app.dom.savedList.querySelector('.sv-edit-name');
     reName.value = 'XYZ';
     reName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(app.state.editingSavedId.value).toBeNull();
-    expect(app.state.savedQueries[0].name).toBe('New');
+    expect(queryName(app.state.savedQueries[0])).toBe('New');
   });
   it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }];
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }]);
     renderSavedHistory(app);
     const open = () => byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     // ⌘Enter on the description commits (and prefills the existing description)
@@ -112,39 +115,39 @@ describe('renderSavedHistory', () => {
     expect(descInput.value).toBe('d0');
     descInput.value = 'd1';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
-    expect(app.state.savedQueries[0].description).toBe('d1');
+    expect(queryDescription(app.state.savedQueries[0])).toBe('d1');
     // Ctrl+Enter also commits
     open();
     descInput = app.dom.savedList.querySelector('.sv-edit-desc');
     descInput.value = 'd2';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
-    expect(app.state.savedQueries[0].description).toBe('d2');
+    expect(queryDescription(app.state.savedQueries[0])).toBe('d2');
     // Escape on the description cancels without saving
     open();
     descInput = app.dom.savedList.querySelector('.sv-edit-desc');
     descInput.value = 'nope';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    expect(app.state.savedQueries[0].description).toBe('d2');
+    expect(queryDescription(app.state.savedQueries[0])).toBe('d2');
     expect(app.state.editingSavedId.value).toBeNull();
     // Save button with a blank name does not rename (commit guard)
     open();
     app.dom.savedList.querySelector('.sv-edit-name').value = '   ';
     app.dom.savedList.querySelector('.sv-edit-save').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.state.savedQueries[0].name).toBe('Old');
+    expect(queryName(app.state.savedQueries[0])).toBe('Old');
     expect(app.state.editingSavedId.value).toBeNull();
     // Cancel button reverts an edited name
     open();
     app.dom.savedList.querySelector('.sv-edit-name').value = 'ZZZ';
     app.dom.savedList.querySelector('.sv-edit-cancel').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.state.savedQueries[0].name).toBe('Old');
+    expect(queryName(app.state.savedQueries[0])).toBe('Old');
   });
   it('saved: renders a 2-line description preview when present, omits it otherwise', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: 's1', name: 'A', sql: '1', favorite: false, description: 'explains A' },
       { id: 's2', name: 'B', sql: '2', favorite: false },
-    ];
+    ]);
     renderSavedHistory(app);
     const rows = app.dom.savedList.querySelectorAll('.saved-row');
     expect(rows[0].querySelector('.desc').textContent).toBe('explains A');
@@ -154,7 +157,7 @@ describe('renderSavedHistory', () => {
   it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
     const savedTab = app.dom.savedTabsRow.querySelectorAll('.side-tab')[0];
     expect(savedTab.textContent).toContain('Library');
@@ -230,11 +233,11 @@ describe('renderSavedHistory — search/filter', () => {
   const savedApp = () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false, description: 'worst delays' },
       { id: 's2', name: 'Busiest airports', sql: 'SELECT origin, count() FROM flights', favorite: false },
       { id: 's3', name: 'Monthly cancellations', sql: 'SELECT month, sum(cancelled)', favorite: false },
-    ];
+    ]);
     renderSavedHistory(app);
     return app;
   };
@@ -321,7 +324,7 @@ describe('drag a row into the editor', () => {
   it('a saved row is draggable and carries its SQL as a subquery payload', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
-    app.state.savedQueries = [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }];
+    setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }]);
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.saved-row');
     expect(row.getAttribute('draggable')).toBe('true');

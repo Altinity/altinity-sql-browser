@@ -42,7 +42,7 @@ export function renderResults(app) {
   // separate workbench choice: use the ordinary Table view instead of showing
   // two Tables or a Panel selector with an unavailable value. Normalize before
   // building the toolbar so its active state is correct on the first paint.
-  if (app.state.resultView.value === 'panel' && tab.panelCfg && tab.panelCfg.type === 'table') {
+  if (app.state.resultView.value === 'panel' && tabPanel(tab)?.cfg?.type === 'table') {
     app.state.resultView.value = 'table';
   }
   const body = h('div', { class: 'results' });

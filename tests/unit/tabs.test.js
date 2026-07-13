@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from '../../src/ui/tabs.js';
+import { queryPanel } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 describe('renderTabs', () => {
   it('no-ops without a mount point', () => {
@@ -69,19 +71,18 @@ describe('newTab / loadIntoNewTab', () => {
   it('loadIntoNewTab seeds name + sql, links savedId, and focuses the editor', () => {
     const app = makeApp();
     app.editor.focus = vi.fn();
-    loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1');
+    loadIntoNewTab(app, savedQuery({ id: 's1', name: 'Saved', sql: 'SELECT 1' }));
     expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1', savedId: 's1' });
-    expect(app.activeTab().panelCfg).toBeNull(); // no chart payload → stays null
+    expect(queryPanel(app.activeTab())).toBeUndefined();
     expect(app.editor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab restores a chart payload (cfg cloned, key set)', () => {
     const app = makeApp();
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
-    loadIntoNewTab(app, 'Saved', 'SELECT 1', 's1', chart);
+    loadIntoNewTab(app, savedQuery({ id: 's1', name: 'Saved', sql: 'SELECT 1', panel: chart }));
     const tab = app.activeTab();
-    expect(tab.panelCfg).toEqual(chart.cfg);
-    expect(tab.panelCfg).not.toBe(chart.cfg); // cloned, not aliased into the saved entry
-    expect(tab.panelKey).toBe(chart.key);
+    expect(queryPanel(tab)).toEqual(chart);
+    expect(queryPanel(tab)).not.toBe(chart); // cloned, not aliased into the saved entry
   });
   it('loadIntoNewTab defaults the name and leaves savedId null (history restore)', () => {
     const app = makeApp();

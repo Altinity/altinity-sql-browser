@@ -4,7 +4,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { activeTab, allocTabId, newTabObj } from '../state.js';
-import { clonePanelCfg } from '../core/panel-cfg.js';
+import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { batch } from '@preact/signals-core';
 
 /** Paint the tab strip into app.dom.qtabsInner. */
@@ -48,23 +48,24 @@ export function newTab(app) {
 }
 
 /**
- * Open a tab pre-seeded with `name`/`sql` (used by saved/history). `savedId`
- * links it to a saved query so the Save button reads "Saved" (restoring a saved
- * query); omit it for history entries, which aren't saved. `panel` is the saved
- * panel config `{ cfg, key? }` (#166), cloned onto the tab — this is the tab-
- * restoration ingress, so callers pass the already-upgraded `q.panel`. (The
- * result view is a global setting restored via `run({ view })` by the caller,
- * since `run` resets it.)
+ * Open a saved query (pass its canonical object) or an unsaved/history document
+ * (pass name + sql). Saved tabs clone the COMPLETE Spec, so later panel edits,
+ * sharing, and Save retain extensions rather than reconstructing known fields.
  */
-export function loadIntoNewTab(app, name, sql, savedId = null, panel = null) {
+export function loadIntoNewTab(app, queryOrName, sql = '') {
   const id = allocTabId(app.state);
   const tab = newTabObj(id);
-  tab.name = name || 'Untitled';
-  tab.sql = sql;
-  tab.savedId = savedId;
-  if (panel && panel.cfg) {
-    tab.panelCfg = clonePanelCfg(panel.cfg);
-    tab.panelKey = panel.key ?? null;
+  if (queryOrName && typeof queryOrName === 'object') {
+    const query = upgradeSavedQuery(queryOrName);
+    tab.name = queryName(query);
+    tab.sql = query.sql;
+    tab.savedId = query.id || null;
+    tab.specVersion = query.specVersion;
+    tab.spec = cloneJson(query.spec);
+  } else {
+    tab.name = queryOrName || 'Untitled';
+    tab.sql = sql;
+    tab.spec.name = tab.name;
   }
   batch(() => {
     app.state.tabs.value = [...app.state.tabs.value, tab];

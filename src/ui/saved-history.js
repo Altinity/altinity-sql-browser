@@ -12,6 +12,7 @@ import {
 } from '../state.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
+import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
 // query wrapped as a `( … )` subquery (see the editor's drop handler).
@@ -106,27 +107,32 @@ function renderSaved(app, list) {
   }
   for (const q of items) {
     if (app.state.editingSavedId.value === q.id) { list.appendChild(savedEditForm(app, q)); continue; }
+    const favorite = queryFavorite(q);
+    const name = queryName(q);
+    const description = queryDescription(q);
+    const panel = queryPanel(q);
+    const view = queryView(q);
     const star = h('button', {
-      class: 'sv-star' + (q.favorite ? ' on' : ''), title: q.favorite ? 'Unfavorite' : 'Favorite',
+      class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
-    }, Icon.star(q.favorite));
+    }, Icon.star(favorite));
 
     // Run-less view restore (#166): an entry that can't auto-run (empty SQL —
     // a text panel — or a DDL script) still restores its remembered drawer
     // view, so clicking a text panel actually shows the panel instead of
     // nothing. `run({view})` handles the auto-runnable path as before.
     const open = () => {
-      app.actions.loadIntoNewTab(q.name, q.sql, q.id, q.panel);
-      if (isAutoRunnable(q.sql)) app.actions.run({ view: q.view });
-      else if (SAVED_VIEWS.has(q.view)) app.state.resultView.value = q.view;
+      app.actions.loadIntoNewTab(q);
+      if (isAutoRunnable(q.sql)) app.actions.run({ view });
+      else if (SAVED_VIEWS.has(view)) app.state.resultView.value = view;
       // A queryless panel without a remembered view (hand-authored/imported
       // file) still needs the Panel drawer open, or clicking it shows nothing.
-      else if (isQuerylessPanel(q.panel)) app.state.resultView.value = 'panel';
+      else if (isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
     };
     const row = h('div', { class: 'saved-row', ...dragProps(q.sql), onclick: open },
       h('div', { class: 'top' },
         star,
-        h('span', { class: 'name' }, q.name),
+        h('span', { class: 'name' }, name),
         h('button', {
           class: 'sv-act', title: 'Edit name & description',
           onclick: (e) => { e.stopPropagation(); app.state.editingSavedId.value = q.id; renderSavedHistory(app); },
@@ -135,7 +141,7 @@ function renderSaved(app, list) {
           class: 'sv-act', title: 'Delete',
           onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); },
         }, Icon.trash())),
-      q.description ? h('div', { class: 'desc' }, q.description) : null,
+      description ? h('div', { class: 'desc' }, description) : null,
       h('div', { class: 'preview' }, q.sql.split('\n')[0]));
     list.appendChild(row);
   }
@@ -150,9 +156,9 @@ function renderSaved(app, list) {
  */
 function savedEditForm(app, q) {
   const state = app.state;
-  const nameInput = h('input', { class: 'sv-edit-name', value: q.name, placeholder: 'Query name' });
+  const nameInput = h('input', { class: 'sv-edit-name', value: queryName(q), placeholder: 'Query name' });
   const descInput = h('textarea', { class: 'sv-edit-desc', rows: '3', placeholder: 'What this query does (shown in Markdown export)' });
-  descInput.value = q.description || '';
+  descInput.value = queryDescription(q);
   let done = false;
   const finish = (commit) => {
     if (done) return;

@@ -5,6 +5,8 @@ import {
   deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabPanel,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
+import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -20,7 +22,10 @@ const reader = (over = {}) => ({
 
 describe('newTabObj', () => {
   it('creates a blank tab', () => {
-    expect(newTabObj('t9')).toEqual({ id: 't9', name: 'Untitled', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null });
+    expect(newTabObj('t9')).toEqual({
+      id: 't9', name: 'Untitled', sql: '', specVersion: 1,
+      spec: { name: 'Untitled', favorite: false }, dirty: false, result: null, savedId: null,
+    });
   });
 });
 
@@ -31,11 +36,11 @@ describe('createState', () => {
       { id: 's1', name: 'A', sql: '1', favorite: true, chart, view: 'chart' },
       { id: 's2', name: 'T', sql: '2', favorite: false, chart, view: 'table' },
     ] }));
-    expect(s.savedQueries[0].panel).toEqual({ cfg: chart.cfg, key: 'k' });
-    expect(s.savedQueries[0].view).toBe('panel');
+    expect(queryPanel(s.savedQueries[0])).toEqual({ cfg: chart.cfg, key: 'k' });
+    expect(queryView(s.savedQueries[0])).toBe('panel');
     // view:'table' + latent chart → lossless table panel with the roles stashed
-    expect(s.savedQueries[1].panel).toEqual({ cfg: { type: 'table', chart: { ...chart.cfg, key: 'k' } } });
-    expect(s.savedQueries[1].view).toBe('table');
+    expect(queryPanel(s.savedQueries[1])).toEqual({ cfg: { type: 'table', chart: { ...chart.cfg, key: 'k' } } });
+    expect(queryView(s.savedQueries[1])).toBe('table');
     expect('chart' in s.savedQueries[1]).toBe(false);
   });
   it('uses defaults', () => {
@@ -148,7 +153,8 @@ describe('saved queries', () => {
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT 1';
     const e1 = saveQuery(s, tab, 'My query', '', save, 100);
-    expect(e1).toMatchObject({ name: 'My query', sql: 'SELECT 1', favorite: false });
+    expect(e1).toEqual(expect.objectContaining({ sql: 'SELECT 1', specVersion: 1 }));
+    expect(e1.spec).toMatchObject({ name: 'My query', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
     expect(s.savedQueries).toHaveLength(1);
@@ -158,7 +164,8 @@ describe('saved queries', () => {
     const e2 = saveQuery(s, tab, 'My query v2', '', save, 200);
     expect(e2.id).toBe(e1.id);
     expect(s.savedQueries).toHaveLength(1);
-    expect(s.savedQueries[0]).toMatchObject({ name: 'My query v2', sql: 'SELECT 2' });
+    expect(s.savedQueries[0].sql).toBe('SELECT 2');
+    expect(queryName(s.savedQueries[0])).toBe('My query v2');
     expect(tab.name).toBe('My query v2');
   });
   it('saveQuery stores/updates/clears an optional description', () => {
@@ -167,19 +174,19 @@ describe('saved queries', () => {
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT 1';
     const e = saveQuery(s, tab, 'Q', '  what it does  ', save, 100); // trimmed
-    expect(e.description).toBe('what it does');
+    expect(queryDescription(e)).toBe('what it does');
     saveQuery(s, tab, 'Q', 'changed', save, 200); // update in place
-    expect(s.savedQueries[0].description).toBe('changed');
+    expect(queryDescription(s.savedQueries[0])).toBe('changed');
     saveQuery(s, tab, 'Q', '   ', save, 300); // blank → dropped
-    expect('description' in s.savedQueries[0]).toBe(false);
+    expect('description' in s.savedQueries[0].spec).toBe(false);
     // create with no description arg → no description field
     const t2 = newTabObj('t2'); t2.sql = 'SELECT 2'; s.tabs.value.push(t2);
     const e2 = saveQuery(s, t2, 'Q2', undefined, save, 400);
-    expect('description' in e2).toBe(false);
+    expect('description' in e2.spec).toBe(false);
   });
   it('savedForTab resolves the linked entry (or null)', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', sql: 'x', name: 'n', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
     s.tabs.value[0].savedId = 's1';
     expect(savedForTab(s, s.tabs.value[0])).toMatchObject({ id: 's1' });
     s.tabs.value[0].savedId = 'gone';
@@ -188,51 +195,77 @@ describe('saved queries', () => {
   });
   it('renameSaved updates the entry + any linked tab name', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', sql: 'x', name: 'old', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'old' })];
     s.tabs.value[0].savedId = 's1';
     const save = vi.fn();
     renameSaved(s, 's1', '  new  ', undefined, save);
-    expect(s.savedQueries[0].name).toBe('new');
+    expect(queryName(s.savedQueries[0])).toBe('new');
     expect(s.tabs.value[0].name).toBe('new');
     renameSaved(s, 's1', '   ', undefined, save); // blank ignored
-    expect(s.savedQueries[0].name).toBe('new');
+    expect(queryName(s.savedQueries[0])).toBe('new');
     renameSaved(s, 'missing', 'x', undefined, save); // unknown id ignored
     expect(save).toHaveBeenCalledTimes(1);
   });
   it('renameSaved sets/clears description when given, leaves it untouched when undefined', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', sql: 'x', name: 'A', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'A' })];
     const save = vi.fn();
     renameSaved(s, 's1', 'A', '  a note  ', save); // set (trimmed)
-    expect(s.savedQueries[0].description).toBe('a note');
+    expect(queryDescription(s.savedQueries[0])).toBe('a note');
     renameSaved(s, 's1', 'A', undefined, save); // name-only → description kept
-    expect(s.savedQueries[0].description).toBe('a note');
+    expect(queryDescription(s.savedQueries[0])).toBe('a note');
     renameSaved(s, 's1', 'A', '', save); // explicit empty → cleared
-    expect('description' in s.savedQueries[0]).toBe(false);
+    expect('description' in s.savedQueries[0].spec).toBe(false);
     renameSaved(s, 's1', 'A', '  re  ', save); // re-set
-    expect(s.savedQueries[0].description).toBe('re');
+    expect(queryDescription(s.savedQueries[0])).toBe('re');
     renameSaved(s, 's1', 'A', null, save); // null (not undefined) → cleared, not stored as 'null' (#4 review)
-    expect('description' in s.savedQueries[0]).toBe(false);
+    expect('description' in s.savedQueries[0].spec).toBe(false);
+  });
+  it('rename/description/favorite mutations preserve complete unknown Spec data and linked tabs', () => {
+    const s = createState(reader());
+    const original = savedQuery({
+      id: 's1', sql: 'x', name: 'Old', favorite: false,
+      panel: { cfg: { type: 'table' }, fieldConfig: { defaults: { color: 'red' } } },
+      dashboard: { role: 'panel', refresh: { interval: '30s' } },
+      extension: { nested: [{ value: 1 }] },
+    });
+    s.savedQueries = [original];
+    const tab = s.tabs.value[0];
+    tab.savedId = 's1';
+    tab.spec = structuredClone(original.spec);
+    const save = vi.fn();
+    renameSaved(s, 's1', 'New', 'Description', save);
+    toggleFavorite(s, 's1', save);
+    for (const spec of [s.savedQueries[0].spec, tab.spec]) {
+      expect(spec).toMatchObject({
+        name: 'New', description: 'Description', favorite: true,
+        panel: { fieldConfig: { defaults: { color: 'red' } } },
+        dashboard: { role: 'panel', refresh: { interval: '30s' } },
+        extension: { nested: [{ value: 1 }] },
+      });
+    }
+    expect(original.spec.name).toBe('Old');
+    expect(original.spec.extension.nested[0].value).toBe(1);
   });
   it('toggleFavorite flips the flag; sortedSaved puts favorites first (stable)', () => {
     const s = createState(reader());
     s.savedQueries = [
-      { id: 'a', sql: '1', name: 'A', favorite: false },
-      { id: 'b', sql: '2', name: 'B', favorite: false },
-      { id: 'c', sql: '3', name: 'C', favorite: false },
+      savedQuery({ id: 'a', sql: '1', name: 'A' }),
+      savedQuery({ id: 'b', sql: '2', name: 'B' }),
+      savedQuery({ id: 'c', sql: '3', name: 'C' }),
     ];
     const save = vi.fn();
     toggleFavorite(s, 'c', save);
-    expect(s.savedQueries.find((q) => q.id === 'c').favorite).toBe(true);
+    expect(queryFavorite(s.savedQueries.find((q) => q.id === 'c'))).toBe(true);
     toggleFavorite(s, 'missing', save); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
     expect(save).toHaveBeenCalledTimes(1);
   });
   it('filterSaved matches name/description/sql case-insensitively; blank → unchanged', () => {
     const list = [
-      { id: 'a', name: 'Carrier delays', sql: 'SELECT carrier', description: 'worst delays' },
-      { id: 'b', name: 'Airports', sql: 'SELECT origin FROM flights' },
-      { id: 'c', name: 'Cancellations', sql: 'SELECT month' },
+      savedQuery({ id: 'a', name: 'Carrier delays', sql: 'SELECT carrier', description: 'worst delays' }),
+      savedQuery({ id: 'b', name: 'Airports', sql: 'SELECT origin FROM flights' }),
+      savedQuery({ id: 'c', name: 'Cancellations', sql: 'SELECT month' }),
     ];
     expect(filterSaved(list, '').map((q) => q.id)).toEqual(['a', 'b', 'c']);
     expect(filterSaved(list, '   ')).toBe(list); // blank → same reference, no copy
@@ -242,7 +275,7 @@ describe('saved queries', () => {
     expect(filterSaved(list, 'zzz')).toEqual([]);
   });
   it('filterSaved tolerates entries missing fields', () => {
-    const list = [{ id: 'x' }, { id: 'y', name: 'Yo' }];
+    const list = [savedQuery({ id: 'x' }), savedQuery({ id: 'y', name: 'Yo' })];
     expect(filterSaved(list, 'yo').map((q) => q.id)).toEqual(['y']);
   });
   it('filterHistory matches sql case-insensitively; blank → unchanged', () => {
@@ -253,7 +286,7 @@ describe('saved queries', () => {
   });
   it('importSaved merges (add/skip/update), persists, and uses injected genId', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
     const save = vi.fn();
     const r = importSaved(s, [
       { id: 's1', name: 'A', sql: '1' },      // skip (content dup)
@@ -261,50 +294,47 @@ describe('saved queries', () => {
       { name: 'B', sql: '2' },                // add (genId)
     ], save, () => 'gx');
     expect(r).toEqual({ added: 1, updated: 1, skipped: 1 });
-    expect(s.savedQueries.map((q) => q.name)).toEqual(['A2', 'B']);
-    expect(s.savedQueries.find((q) => q.name === 'B').id).toBe('gx');
+    expect(s.savedQueries.map(queryName)).toEqual(['A2', 'B']);
+    expect(s.savedQueries.find((q) => queryName(q) === 'B').id).toBe('gx');
     expect(save).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
     // default save + genId (no injection) — exercises the default id generator
     importSaved(s, [{ name: 'Z', sql: 'zz' }]);
-    expect(s.savedQueries.find((q) => q.name === 'Z').id).toMatch(/^s/);
+    expect(s.savedQueries.find((q) => queryName(q) === 'Z').id).toMatch(/^s/);
   });
-  it('tabPanel packs a tab panel config (or null); the schema key travels only for the chart family', () => {
+  it('tabPanel clones the complete tab-side panel, including future siblings', () => {
     expect(tabPanel(null)).toBeNull();
-    expect(tabPanel({ panelCfg: null })).toBeNull();
+    expect(tabPanel(savedQuery())).toBeNull();
     const cfg = { type: 'bar', x: 0, y: [1], series: null };
-    expect(tabPanel({ panelCfg: cfg, panelKey: 'k' })).toEqual({ cfg, key: 'k' });
-    expect(tabPanel({ panelCfg: cfg })).toEqual({ cfg, key: null }); // key ?? null
-    // name-based / schema-free arms carry no key (#166 field policy)
-    expect(tabPanel({ panelCfg: { type: 'text', content: 'hi' }, panelKey: 'k' }))
-      .toEqual({ cfg: { type: 'text', content: 'hi' } });
+    const tab = savedQuery({ panel: { cfg, key: 'k', fieldConfig: { defaults: {} } } });
+    const panel = tabPanel(tab);
+    expect(panel).toEqual({ cfg, key: 'k', fieldConfig: { defaults: {} } });
+    expect(panel).not.toBe(tab.spec.panel);
   });
-  it('saveQuery persists, updates, and clears the panel config (+ chart mirror) alongside the SQL', () => {
+  it('saveQuery persists/updates the complete panel without a legacy mirror', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
     tab.sql = 'SELECT a, b';
-    tab.panelCfg = { type: 'pie', x: 0, y: [1], series: null };
-    tab.panelKey = 'a:String|b:UInt64';
+    tab.spec.panel = {
+      cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64',
+      fieldConfig: { defaults: { color: 'red' } },
+    };
     const e1 = saveQuery(s, tab, 'Chartd', '', save, 100);
-    expect(e1.panel).toEqual({ cfg: tab.panelCfg, key: tab.panelKey });
-    expect(e1.panel.cfg).not.toBe(tab.panelCfg); // cloned into the entry
-    // dual-write (#166): a chart-family panel carries the legacy chart mirror
-    expect(e1.chart).toEqual({ cfg: tab.panelCfg, key: tab.panelKey });
-    // re-save with a different chart → panel AND mirror update in place
-    tab.panelCfg = { type: 'line', x: 0, y: [1], series: null };
+    expect(queryPanel(e1)).toEqual(tab.spec.panel);
+    expect(queryPanel(e1)).not.toBe(tab.spec.panel);
+    expect('chart' in e1).toBe(false);
+    // re-save with a different cfg; future panel siblings remain.
+    tab.spec.panel.cfg = { type: 'line', x: 0, y: [1], series: null };
     saveQuery(s, tab, 'Chartd', '', save, 200);
-    expect(s.savedQueries[0].panel.cfg.type).toBe('line');
-    expect(s.savedQueries[0].chart.cfg.type).toBe('line');
-    // a non-chart panel drops the mirror (rollback degrades to heuristics)
-    tab.panelCfg = { type: 'logs' };
+    expect(queryPanel(s.savedQueries[0]).cfg.type).toBe('line');
+    expect(queryPanel(s.savedQueries[0]).fieldConfig.defaults.color).toBe('red');
+    tab.spec.panel.cfg = { type: 'logs' };
     saveQuery(s, tab, 'Chartd', '', save, 250);
-    expect(s.savedQueries[0].panel).toEqual({ cfg: { type: 'logs' } });
-    expect(s.savedQueries[0].chart).toBeUndefined();
-    // re-save after the panel is cleared → panel and mirror are dropped
-    tab.panelCfg = null;
+    expect(queryPanel(s.savedQueries[0]).cfg).toEqual({ type: 'logs' });
+    // re-save after the whole panel is cleared.
+    delete tab.spec.panel;
     saveQuery(s, tab, 'Chartd', '', save, 300);
-    expect(s.savedQueries[0].panel).toBeUndefined();
-    expect(s.savedQueries[0].chart).toBeUndefined();
+    expect(queryPanel(s.savedQueries[0])).toBeUndefined();
   });
   it("saveQuery allows sql:'' for a text panel only (#166 per-type save guard)", () => {
     const s = createState(reader());
@@ -312,14 +342,14 @@ describe('saved queries', () => {
     const tab = s.tabs.value[0];
     tab.sql = '';
     expect(saveQuery(s, tab, 'NoSql', '', save, 100)).toBeNull(); // no panel → still blocked
-    tab.panelCfg = { type: 'table' };
+    tab.spec.panel = { cfg: { type: 'table' } };
     expect(saveQuery(s, tab, 'NoSql', '', save, 150)).toBeNull(); // non-text panel → blocked
-    tab.panelCfg = { type: 'text', content: '# hello' };
+    tab.spec.panel = { cfg: { type: 'text', content: '# hello' } };
     const e = saveQuery(s, tab, 'Note', '', save, 200);
     expect(e).not.toBeNull();
     expect(e.sql).toBe('');
-    expect(e.panel.cfg).toEqual({ type: 'text', content: '# hello' });
-    expect(e.chart).toBeUndefined(); // no mirror for text
+    expect(queryPanel(e).cfg).toEqual({ type: 'text', content: '# hello' });
+    expect(e.chart).toBeUndefined();
   });
   it('saveQuery persists the result view (Table/JSON/Panel), updates it, and ignores the transient raw view', () => {
     const s = createState(reader());
@@ -328,19 +358,19 @@ describe('saved queries', () => {
     tab.sql = 'SELECT 1';
     s.resultView.value = 'panel';
     const e = saveQuery(s, tab, 'V', '', save, 100);
-    expect(e.view).toBe('panel');
+    expect(queryView(e)).toBe('panel');
     // re-save under a different view → updates
     s.resultView.value = 'json';
     saveQuery(s, tab, 'V', '', save, 200);
-    expect(s.savedQueries[0].view).toBe('json');
+    expect(queryView(s.savedQueries[0])).toBe('json');
     // raw view (TSV/JSON output) is not a saved view → dropped
     s.resultView.value = 'raw';
     saveQuery(s, tab, 'V', '', save, 300);
-    expect(s.savedQueries[0].view).toBeUndefined();
+    expect(queryView(s.savedQueries[0])).toBeUndefined();
   });
   it('deleteSaved removes + clears tab pointers', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', sql: 'x', name: 'n' }];
+    s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
     s.tabs.value[0].savedId = 's1';
     const save = vi.fn();
     deleteSaved(s, 's1', save);
@@ -385,7 +415,7 @@ describe('library document', () => {
 
   it('newLibrary clears queries + name, clears dirty, prunes dangling tab links', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
     s.libraryName.value = 'Old'; s.libraryDirty.value = true;
     s.tabs.value[0].savedId = 's1';                            // dangling after clear → pruned
     s.tabs.value.push(newTabObj('t2'));                        // no savedId → skipped by prune
@@ -401,7 +431,7 @@ describe('library document', () => {
 
   it('replaceLibrary keeps ids (mints for id-less), carries metadata, adopts the base name, clears dirty, prunes links', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 'old', name: 'X', sql: 'x', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 'old', name: 'X', sql: 'x' })];
     s.tabs.value[0].savedId = 'old';                           // becomes dangling → pruned
     s.libraryDirty.value = true;
     const chart = { cfg: { type: 'bar' }, key: 'k' };
@@ -414,13 +444,12 @@ describe('library document', () => {
     const save = vi.fn(), saveName = vi.fn();
     replaceLibrary(s, incoming, 'My Library.json', save, saveName, () => 'g' + (++n));
     expect(s.savedQueries.map((q) => q.id)).toEqual(['keep', 'g1', 'txt']);
-    // the legacy chart upgrades to a panel; the chart field survives as its mirror
-    expect(s.savedQueries[0]).toMatchObject({
-      name: 'A', sql: '1', favorite: true, description: 'd',
-      panel: { cfg: chart.cfg, key: 'k' }, chart, view: 'json',
+    expect(s.savedQueries[0].sql).toBe('1');
+    expect(s.savedQueries[0].spec).toEqual({
+      name: 'A', favorite: true, description: 'd',
+      panel: { cfg: chart.cfg, key: 'k' }, view: 'json',
     });
-    // the panel whitelist carries non-chart panels too — without a stale mirror
-    expect(s.savedQueries[2].panel).toEqual({ cfg: { type: 'text', content: 'x' } });
+    expect(queryPanel(s.savedQueries[2])).toEqual({ cfg: { type: 'text', content: 'x' } });
     expect('chart' in s.savedQueries[2]).toBe(false);
     expect(s.libraryName.value).toBe('My Library');            // extension stripped
     expect(s.libraryDirty.value).toBe(false);
@@ -456,13 +485,13 @@ describe('library document', () => {
 
   it('appendLibrary merges via importSaved (dedupe), returns counts, sets dirty', () => {
     const s = createState(reader());
-    s.savedQueries = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
     const r = appendLibrary(s, [
       { id: 's1', name: 'A', sql: '1' },                 // content dup → skip
       { name: 'B', sql: '2' },                           // add
     ], vi.fn(), () => 'gb');
     expect(r).toEqual({ added: 1, updated: 0, skipped: 1 });
-    expect(s.savedQueries.map((q) => q.name)).toEqual(['A', 'B']);
+    expect(s.savedQueries.map(queryName)).toEqual(['A', 'B']);
     expect(s.libraryDirty.value).toBe(true);
   });
 
@@ -475,7 +504,7 @@ describe('library document', () => {
     replaceLibrary(s, [{ id: e.id, name: 'Q', sql: 'SELECT 1' }], 'f.json'); // default seams
     newLibrary(s);                          // default seams
     appendLibrary(s, [{ name: 'Z', sql: 'z' }]); // default seam
-    expect(s.savedQueries.some((q) => q.name === 'Z')).toBe(true);
+    expect(s.savedQueries.some((q) => queryName(q) === 'Z')).toBe(true);
   });
 });
 

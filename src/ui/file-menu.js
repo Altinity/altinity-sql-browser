@@ -10,6 +10,7 @@ import { Icon } from './icons.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
 import { buildExportDoc, parseImportDoc, buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
+import { queryFavorite } from '../core/saved-query.js';
 import { newLibrary, replaceLibrary, appendLibrary, renameLibrary, markLibrarySaved } from '../state.js';
 
 /** Library name → safe file base (strips path/illegal chars, collapses spaces). */
@@ -84,7 +85,7 @@ export function openFileMenu(app) {
     meta ? h('span', { class: 'fm-meta' }, meta) : null);
   const sep = () => h('div', { class: 'fm-sep' });
   const empty = list.length === 0;
-  const hasFav = list.some((q) => q.favorite);
+  const hasFav = list.some(queryFavorite);
 
   const newLibraryItem = item(Icon.plus(), 'New Library', null, () => { close(); newLibraryAction(app); });
   // Open the favorited subset of the Library as a standalone dashboard (#149).

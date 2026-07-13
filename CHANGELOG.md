@@ -10,6 +10,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Saved-query Library JSON now uses the version 2 canonical model** (#211):
+  every entry is `{id, sql, specVersion, spec}`, with the complete Spec carried
+  unchanged through local storage, tabs, panel edits, sharing, import/export,
+  and merge. Version 1 files and share links are upgraded on read; exports,
+  official examples, and generated Libraries now emit only version 2. Unknown
+  Spec and panel fields are preserved for forward compatibility.
 - **Builds now use a committed `package-lock.json` and `npm ci`** (#157), making
   local, pull-request, and tagged-release artifacts resolve the same complete
   dependency graph instead of silently picking up newly published transitive

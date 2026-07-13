@@ -216,9 +216,20 @@ FORMAT TSVRaw`,
 // ---------------------------------------------------------------------------
 const doc = {
   format: 'altinity-sql-browser/saved-queries',
-  version: 1,
+  version: 2,
   exportedAt: new Date().toISOString(),
-  queries,
+  queries: queries.map(({ id, sql, name, favorite, description, panel, view }) => ({
+    id,
+    sql,
+    specVersion: 1,
+    spec: {
+      name,
+      favorite,
+      ...(description ? { description } : {}),
+      ...(panel ? { panel } : {}),
+      ...(view ? { view } : {}),
+    },
+  })),
 };
 
 const out = resolve(here, 'iceberg-install.json');

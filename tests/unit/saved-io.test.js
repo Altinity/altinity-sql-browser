@@ -1,299 +1,199 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildExportDoc, parseImportDoc, mergeSaved, buildMarkdownDoc, buildSqlDoc,
-  upgradeSavedEntry, withChartMirror,
+  buildExportDoc, parseImportDoc, mergeSaved, buildMarkdownDoc, buildSqlDoc, upgradeSavedEntry,
 } from '../../src/core/saved-io.js';
 
+const FORMAT = 'altinity-sql-browser/saved-queries';
+const v2 = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec });
+const envelope = (version, queries, over = {}) => JSON.stringify({ format: FORMAT, version, queries, ...over });
 const CHART = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
 
-describe('upgradeSavedEntry', () => {
-  it('upgrades a bare legacy chart to a chart-family panel, keeping the chart as the mirror', () => {
-    const src = { id: 's1', name: 'A', sql: '1', chart: CHART };
-    const up = upgradeSavedEntry(src);
-    expect(up.panel).toEqual({ cfg: CHART.cfg, key: 'k' });
-    expect(up.chart).toEqual(CHART); // dual-write mirror stays
-    expect(src.panel).toBeUndefined(); // input not mutated
-  });
-  it("view:'table' + latent chart migrates losslessly: table panel with the chart roles stashed", () => {
-    const up = upgradeSavedEntry({ name: 'A', sql: '1', chart: CHART, view: 'table' });
-    // The stash is nested (NOT spread — a flat spread would collide on `type`),
-    // riding through the table arm as an unknown, preserved field (#166 Q6).
-    expect(up.panel).toEqual({ cfg: { type: 'table', chart: { ...CHART.cfg, key: 'k' } } });
-    expect(up.view).toBe('table');
-    expect('chart' in up).toBe(false); // no mirror for a non-chart panel
-  });
-  it("maps the remembered view 'chart' → 'panel' (drawer tab rename)", () => {
-    expect(upgradeSavedEntry({ name: 'A', sql: '1', view: 'chart' }).view).toBe('panel');
-    expect(upgradeSavedEntry({ name: 'A', sql: '1', view: 'json' }).view).toBe('json');
-  });
-  it('is idempotent: an already-upgraded entry passes through unchanged', () => {
-    const entry = { name: 'A', sql: '1', panel: { cfg: { type: 'logs' } }, chart: CHART };
-    const up = upgradeSavedEntry(entry);
-    expect(up.panel).toEqual({ cfg: { type: 'logs' } }); // panel wins over the stale mirror
-    expect(upgradeSavedEntry(up)).toEqual(up);
-  });
-  it('leaves an entry with neither chart nor panel untouched (plus a malformed chart)', () => {
-    expect(upgradeSavedEntry({ name: 'A', sql: '1' }).panel).toBeUndefined();
-    expect(upgradeSavedEntry({ name: 'A', sql: '1', chart: 'nope' }).panel).toBeUndefined();
-  });
-});
-
-describe('withChartMirror', () => {
-  it('derives the legacy chart mirror from a chart-family panel; deletes it otherwise', () => {
-    const e = { panel: { cfg: { type: 'line', x: 0, y: [1], series: null }, key: 'k' } };
-    withChartMirror(e);
-    expect(e.chart).toEqual({ cfg: e.panel.cfg, key: 'k' });
-    e.panel = { cfg: { type: 'text', content: 'x' } };
-    withChartMirror(e);
-    expect('chart' in e).toBe(false); // leaving the family deletes the stale mirror
-    delete e.panel;
-    withChartMirror({ ...e, chart: CHART });
-    expect(withChartMirror({ chart: CHART }).chart).toBeUndefined(); // no panel → no mirror
-  });
-});
-
 describe('buildExportDoc', () => {
-  it('wraps queries in the envelope, keeps only id/name/sql/favorite, coerces favorite', () => {
-    const doc = buildExportDoc([{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: 1, extra: 'x' }], '2026-06-21T00:00:00.000Z');
+  it('writes only the canonical v2 envelope and preserves the complete Spec', () => {
+    const extension = { nested: [{ x: 1 }] };
+    const doc = buildExportDoc([v2('s1', 'SELECT 1', {
+      name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
+    })], '2026-07-13T00:00:00.000Z');
     expect(doc).toEqual({
-      format: 'altinity-sql-browser/saved-queries',
-      version: 1,
-      exportedAt: '2026-06-21T00:00:00.000Z',
-      queries: [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: true }],
+      format: FORMAT, version: 2, exportedAt: '2026-07-13T00:00:00.000Z',
+      queries: [v2('s1', 'SELECT 1', {
+        name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
+      })],
     });
+    expect(doc.queries[0].spec.extension).not.toBe(extension);
+    expect('name' in doc.queries[0]).toBe(false);
+    expect('panel' in doc.queries[0]).toBe(false);
+    expect('chart' in doc.queries[0]).toBe(false);
   });
-  it('handles an empty list', () => {
+
+  it('upgrades defensive v1 input on export and handles an empty list', () => {
+    const doc = buildExportDoc([{ id: 'old', name: 'Old', sql: '1', chart: CHART }], 'T');
+    expect(doc.version).toBe(2);
+    expect(doc.queries[0]).toEqual(v2('old', '1', { name: 'Old', favorite: false, panel: CHART }));
     expect(buildExportDoc([], 'T').queries).toEqual([]);
   });
-  it('upgrades a legacy chart entry on export: panel + chart mirror + view mapped (version stays 1)', () => {
-    const doc = buildExportDoc([
-      { id: 's1', name: 'A', sql: '1', favorite: false, chart: CHART, view: 'chart' },
-      { id: 's2', name: 'B', sql: '2', favorite: false, view: 'bogus' }, // invalid view dropped
-      { id: 's3', name: 'C', sql: '3', favorite: false },
-    ], 'T');
-    expect(doc.version).toBe(1); // additive change — bumping would break older builds
-    expect(doc.queries[0].panel).toEqual({ cfg: CHART.cfg, key: 'k' });
-    expect(doc.queries[0].chart).toEqual(CHART); // dual-write mirror in the file
-    expect(doc.queries[0].view).toBe('panel');
-    expect('view' in doc.queries[1]).toBe(false);
-    expect('chart' in doc.queries[2]).toBe(false);
-    expect('panel' in doc.queries[2]).toBe(false);
-    expect('view' in doc.queries[2]).toBe(false);
+});
+
+describe('parseImportDoc — v1 migration', () => {
+  it('upgrades supported flat entries, defaults a missing name, and skips malformed rows', () => {
+    const { queries } = parseImportDoc(envelope(1, [
+      { id: 's1', name: 'A', sql: 'SELECT 1', favorite: 1, extra: 'drop' },
+      { sql: 'SELECT 2' },
+      { name: 'bad', sql: 5 },
+      null,
+    ]));
+    expect(queries).toEqual([
+      v2('s1', 'SELECT 1', { name: 'A', favorite: true }),
+      v2(undefined, 'SELECT 2', { name: 'Untitled', favorite: false }),
+    ]);
   });
-  it('a non-chart panel exports without a chart mirror', () => {
-    const doc = buildExportDoc([
-      { id: 's1', name: 'N', sql: '', favorite: false, panel: { cfg: { type: 'text', content: 'hi' } } },
-    ], 'T');
-    expect(doc.queries[0].panel).toEqual({ cfg: { type: 'text', content: 'hi' } });
-    expect('chart' in doc.queries[0]).toBe(false);
-    expect(doc.queries[0].sql).toBe(''); // text panels legitimately carry no SQL
+
+  it('preserves panel precedence, dashboard metadata, SQL-less Text, and chart compatibility input', () => {
+    const { queries } = parseImportDoc(envelope(1, [
+      { id: 'panel', name: 'P', sql: '1', panel: { cfg: { type: 'logs', future: [1] } }, chart: CHART,
+        dashboard: { role: 'panel', layout: { x: 1 } } },
+      { id: 'table', name: 'T', sql: '2', chart: CHART, view: 'table' },
+      { id: 'chart', name: 'C', sql: '3', chart: CHART, view: 'chart' },
+      { id: 'text', name: 'N', sql: '', panel: { cfg: { type: 'text', content: '# hi' } } },
+    ]));
+    expect(queries[0].spec).toEqual({ name: 'P', favorite: false,
+      panel: { cfg: { type: 'logs', future: [1] } }, dashboard: { role: 'panel', layout: { x: 1 } } });
+    expect(queries[1].spec.panel).toEqual({ cfg: { type: 'table', chart: { ...CHART.cfg, key: 'k' } } });
+    expect(queries[1].spec.view).toBe('table');
+    expect(queries[2].spec.panel).toEqual(CHART);
+    expect(queries[2].spec.view).toBe('panel');
+    expect(queries[3].sql).toBe('');
+    expect('chart' in queries[2]).toBe(false);
   });
-  it('carries a description when present, omits it when absent', () => {
-    const doc = buildExportDoc([
-      { id: 's1', name: 'A', sql: '1', favorite: false, description: 'note' },
-      { id: 's2', name: 'B', sql: '2', favorite: false },
-    ], 'T');
-    expect(doc.queries[0].description).toBe('note');
-    expect('description' in doc.queries[1]).toBe(false);
+
+  it('keeps v1 optional-field behavior for malformed panel/view/description/dashboard', () => {
+    const { queries } = parseImportDoc(envelope(1, [
+      { name: 'A', sql: '1', panel: { cfg: 'bad' }, chart: 'bad', view: 'wat', description: 1, dashboard: [] },
+      { name: 'B', sql: '2', description: '  note  ' },
+    ]));
+    expect(queries[0].spec).toEqual({ name: 'A', favorite: false });
+    expect(queries[1].spec.description).toBe('note');
   });
 });
 
-describe('parseImportDoc', () => {
-  const env = (over) => JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries: [], ...over });
-  it('parses a valid doc and normalizes entries (drops invalid ones)', () => {
-    const { queries } = parseImportDoc(env({ queries: [
-      { id: 's1', name: 'A', sql: 'SELECT 1', favorite: 1 },
-      { name: 'B', sql: 'SELECT 2' },        // no id → id undefined
-      { name: 'bad', sql: 5 },               // non-string sql → dropped
-      { sql: 'no name' },                    // no name → dropped
-    ] }));
-    expect(queries).toEqual([
-      expect.objectContaining({ id: 's1', name: 'A', sql: 'SELECT 1', favorite: true }),
-      expect.objectContaining({ id: undefined, name: 'B', sql: 'SELECT 2', favorite: false }),
-    ]);
+describe('parseImportDoc — v2 validation', () => {
+  it('accepts supported v2 and deep-clones unknown Spec fields', () => {
+    const source = v2('s1', 'SELECT 1', { name: 'A', extension: { objects: [{ a: 1 }] } });
+    const { queries } = parseImportDoc(envelope(2, [source]));
+    expect(queries).toEqual([source]);
+    expect(queries[0].spec.extension).not.toBe(source.spec.extension);
   });
-  it('upgrades a legacy chart payload to a panel and drops a malformed one', () => {
-    const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
-    const { queries } = parseImportDoc(env({ queries: [
-      { name: 'A', sql: '1', chart },
-      { name: 'B', sql: '2', chart: { nope: true } }, // no cfg → dropped
-      { name: 'C', sql: '3', chart: 'x' },            // non-object → dropped
-    ] }));
-    expect(queries[0].panel).toEqual({ cfg: chart.cfg, key: 'k' });
-    expect(queries[0].chart).toEqual(chart); // mirror kept
-    expect(queries[1].panel).toBeUndefined();
-    expect(queries[2].panel).toBeUndefined();
+
+  it('rejects malformed v2 rows with an index and reason', () => {
+    const cases = [
+      [null, 'query must be an object'],
+      [{ id: '', sql: '', specVersion: 1, spec: {} }, 'id must be a non-empty string'],
+      [{ id: 'x', sql: 1, specVersion: 1, spec: {} }, 'sql must be a string'],
+      [{ id: 'x', sql: '', specVersion: '1', spec: {} }, 'specVersion must be an integer'],
+      [{ id: 'x', sql: '', specVersion: 2, spec: {} }, 'unsupported specVersion 2'],
+      [{ id: 'x', sql: '', specVersion: 1, spec: [] }, 'spec must be an object'],
+    ];
+    for (const [query, reason] of cases) {
+      expect(() => parseImportDoc(envelope(2, [v2('ok', '', {}), query])))
+        .toThrow('Invalid version 2 query at index 1: ' + reason);
+    }
   });
-  it('accepts a panel-format entry, preserving unknown types and extra cfg fields', () => {
-    const { queries } = parseImportDoc(env({ queries: [
-      { name: 'L', sql: '1', panel: { cfg: { type: 'logs', msg: 'body' } }, view: 'panel' },
-      { name: 'T', sql: '', panel: { cfg: { type: 'text', content: '# n' } } }, // sql '' allowed
-      { name: 'G', sql: '2', panel: { cfg: { type: 'gauge', max: 9 } } },       // unknown type preserved
-      { name: 'X', sql: '3', panel: { cfg: 'nope' } },                          // malformed → dropped
-    ] }));
-    expect(queries[0].panel).toEqual({ cfg: { type: 'logs', msg: 'body' } });
-    expect(queries[0].view).toBe('panel');
-    expect(queries[1].sql).toBe('');
-    expect(queries[2].panel).toEqual({ cfg: { type: 'gauge', max: 9 } }); // nothing silently stripped
-    expect(queries[3].panel).toBeUndefined();
-  });
-  it("keeps a known view (mapping legacy 'chart' → 'panel' AFTER cleaning) and drops an unknown one", () => {
-    const { queries } = parseImportDoc(env({ queries: [
-      { name: 'A', sql: '1', view: 'json' },
-      { name: 'B', sql: '2', view: 'wat' },  // not a known view → dropped
-      { name: 'C', sql: '3', view: 'chart' }, // legacy → mapped, NOT dropped (order matters)
-    ] }));
-    expect(queries[0].view).toBe('json');
-    expect(queries[1].view).toBeUndefined();
-    expect(queries[2].view).toBe('panel');
-  });
-  it('trims a string description, dropping a whitespace-only or non-string one', () => {
-    const { queries } = parseImportDoc(env({ queries: [
-      { name: 'A', sql: '1', description: '  a note  ' }, // trimmed
-      { name: 'B', sql: '2', description: 123 },          // non-string → dropped
-      { name: 'C', sql: '3', description: '   ' },        // whitespace-only → dropped (#1 review)
-    ] }));
-    expect(queries[0].description).toBe('a note');
-    expect(queries[1].description).toBeUndefined();
-    expect(queries[2].description).toBeUndefined();
-  });
-  it('throws a user message for each invalid envelope', () => {
-    expect(() => parseImportDoc('{not json')).toThrow('Not a valid JSON file');
+
+  it('throws clear envelope errors', () => {
+    expect(() => parseImportDoc('{bad')).toThrow('Not a valid JSON file');
+    expect(() => parseImportDoc('null')).toThrow('Unrecognized file format');
     expect(() => parseImportDoc(JSON.stringify({ format: 'other' }))).toThrow('Unrecognized file format');
-    expect(() => parseImportDoc(env({ version: 2 }))).toThrow('Unsupported file version');
-    expect(() => parseImportDoc(env({ version: 'x' }))).toThrow('Unsupported file version');
-    expect(() => parseImportDoc(env({ queries: 'nope' }))).toThrow('No queries in file');
-    expect(() => parseImportDoc(env({ queries: Array.from({ length: 1001 }, () => ({ name: 'n', sql: 's' })) }))).toThrow('Too many queries');
-    expect(() => parseImportDoc('null')).toThrow('Unrecognized file format'); // doc falsy
+    expect(() => parseImportDoc(envelope(0, []))).toThrow('Unsupported file version');
+    expect(() => parseImportDoc(envelope(3, []))).toThrow('Unsupported file version');
+    expect(() => parseImportDoc(JSON.stringify({ format: FORMAT, version: 2, queries: 'x' }))).toThrow('No queries in file');
+    expect(() => parseImportDoc(envelope(2, Array.from({ length: 1001 }, (_, i) => v2(String(i), '', {})))))
+      .toThrow('Too many queries (max 1000)');
   });
 });
 
 describe('mergeSaved', () => {
-  const gen = (() => { let n = 0; return () => 'gen' + (++n); });
-  it('adds new, skips content dup, updates by id, generates id when missing', () => {
-    const existing = [{ id: 's1', name: 'A', sql: '1', favorite: false }];
+  const generator = () => { let n = 0; return () => 'gen' + (++n); };
+
+  it('adds, updates by id, generates unique ids, and skips complete-Spec duplicates', () => {
+    const existing = [v2('s1', '1', { name: 'A', favorite: false, extension: { b: 2, a: 1 } })];
     const incoming = [
-      { id: 's1', name: 'A', sql: '1', favorite: false }, // identical → skip (content)
-      { id: 's1', name: 'A2', sql: '1b', favorite: true }, // same id, differs → update
-      { name: 'B', sql: '2', favorite: false },            // no id → genId, add
-      { id: 's2', name: 'C', sql: '3', favorite: false },  // new id → add (keeps id)
+      v2('different-id', '1', { extension: { a: 1, b: 2 }, favorite: false, name: 'A' }),
+      v2('s1', '1b', { name: 'A2', favorite: true, extension: { incoming: [1] } }),
+      { name: 'B', sql: '2' },
+      v2('s2', '3', { name: 'C', favorite: false }),
     ];
-    const r = mergeSaved(existing, incoming, gen());
-    expect(r).toMatchObject({ skipped: 1, updated: 1, added: 2 });
-    expect(r.merged.find((q) => q.id === 's1')).toMatchObject({ name: 'A2', sql: '1b', favorite: true });
-    expect(r.merged.find((q) => q.name === 'B').id).toBe('gen1'); // genId for the id-less entry
-    expect(r.merged.find((q) => q.name === 'C').id).toBe('s2');   // given id kept
-    expect(r.merged.map((q) => q.name)).toEqual(['A2', 'B', 'C']);
-    expect(existing[0]).toEqual({ id: 's1', name: 'A', sql: '1', favorite: false }); // not mutated
+    const result = mergeSaved(existing, incoming, generator());
+    expect(result).toMatchObject({ added: 2, updated: 1, skipped: 1 });
+    expect(result.merged.map((q) => q.id)).toEqual(['s1', 'gen1', 's2']);
+    expect(result.merged[0].spec).toEqual({ name: 'A2', favorite: true, extension: { incoming: [1] } });
+    expect(existing[0].spec.name).toBe('A');
   });
-  it('upgrades incoming legacy charts; by-id updates rewrite panel AND mirror together (no drift)', () => {
-    const chart2 = { cfg: { type: 'line', x: 0, y: [1], series: null }, key: 'k' };
-    const existing = [
-      { id: 's1', name: 'A', sql: '1', favorite: false, panel: { cfg: CHART.cfg, key: 'k' }, chart: CHART },
-      { id: 's2', name: 'B', sql: '2', favorite: false, panel: { cfg: CHART.cfg, key: 'k' }, chart: CHART },
-      { id: 's3', name: 'D', sql: '4', favorite: false, panel: { cfg: CHART.cfg, key: 'k' }, chart: CHART },
-    ];
+
+  it('replaces the complete incoming Spec by id, including extension removal/addition', () => {
+    const existing = [v2('s1', '1', { name: 'A', oldExtension: { keep: false } })];
+    const incoming = [v2('s1', '1', { name: 'A', newExtension: { nested: [1, 2] } })];
+    const result = mergeSaved(existing, incoming, () => 'unused');
+    expect(result.updated).toBe(1);
+    expect(result.merged[0].spec).toEqual(incoming[0].spec);
+    expect(result.merged[0].spec).not.toBe(incoming[0].spec);
+  });
+
+  it('upgrades v1 input, preserves array-order semantics, and avoids duplicate incoming ids', () => {
+    const existing = [v2('taken', 'x', { name: 'X', list: [1, 2] })];
     const incoming = [
-      { id: 's1', name: 'A2', sql: '1b', favorite: false },                              // no panel → both dropped
-      { id: 's2', name: 'B2', sql: '2b', favorite: false, chart: chart2, view: 'json' }, // legacy → upgraded, replaces
-      { id: 's3', name: 'D2', sql: '4b', favorite: false, panel: { cfg: { type: 'logs' } } }, // non-chart → mirror deleted
-      { name: 'C', sql: '3', favorite: false, chart: CHART, view: 'chart' },             // add with legacy chart
+      { id: 'old', name: 'Old', sql: '1', chart: CHART },
+      v2('taken', 'x', { name: 'X', list: [2, 1] }),
+      v2('old', '2', { name: 'Other' }),
     ];
-    const r = mergeSaved(existing, incoming, () => 'g');
-    const s1 = r.merged.find((q) => q.id === 's1');
-    expect(s1.panel).toBeUndefined();
-    expect(s1.chart).toBeUndefined(); // stale mirror can't linger
-    expect(s1.view).toBeUndefined();
-    const s2 = r.merged.find((q) => q.id === 's2');
-    expect(s2.panel).toEqual({ cfg: chart2.cfg, key: 'k' });
-    expect(s2.chart).toEqual(chart2);
-    expect(s2.view).toBe('json');
-    const s3 = r.merged.find((q) => q.id === 's3');
-    expect(s3.panel).toEqual({ cfg: { type: 'logs' } });
-    expect(s3.chart).toBeUndefined(); // incoming non-chart panel deletes the old mirror
-    const c = r.merged.find((q) => q.name === 'C');
-    expect(c.panel).toEqual({ cfg: CHART.cfg, key: 'k' });
-    expect(c.chart).toEqual({ cfg: CHART.cfg, key: 'k' });
-    expect(c.view).toBe('panel'); // legacy 'chart' view mapped
+    const result = mergeSaved(existing, incoming, generator());
+    expect(result).toMatchObject({ added: 1, updated: 2, skipped: 0 });
+    expect(result.merged.find((q) => q.id === 'old').sql).toBe('2');
+    expect(upgradeSavedEntry({ name: 'Alias', sql: 'a' }).spec.name).toBe('Alias');
   });
-  it('treats panel config as content and updates same-id text/chart edits even when name+sql are unchanged', () => {
-    const existing = [{
-      id: 'note', name: 'Note', sql: '', favorite: true,
-      panel: { cfg: { type: 'text', content: 'old' } }, view: 'panel',
-    }];
-    const changed = [{
-      id: 'note', name: 'Note', sql: '', favorite: true,
-      panel: { cfg: { type: 'text', content: 'new' } }, view: 'panel',
-    }];
-    const r = mergeSaved(existing, changed, () => 'unused');
-    expect(r).toMatchObject({ updated: 1, skipped: 0, added: 0 });
-    expect(r.merged[0].panel.cfg.content).toBe('new');
-    expect(existing[0].panel.cfg.content).toBe('old');
-  });
-  it('carries description on add, replaces it by id, and drops it when an update omits it', () => {
-    const existing = [
-      { id: 's1', name: 'A', sql: '1', favorite: false, description: 'old' },
-      { id: 's2', name: 'B', sql: '2', favorite: false, description: 'old2' },
-    ];
-    const incoming = [
-      { id: 's1', name: 'A2', sql: '1b', favorite: false },                       // no description → drop
-      { id: 's2', name: 'B2', sql: '2b', favorite: false, description: 'new' },    // replace
-      { name: 'C', sql: '3', favorite: false, description: 'added' },              // add with description
-    ];
-    const r = mergeSaved(existing, incoming, () => 'g');
-    expect('description' in r.merged.find((q) => q.id === 's1')).toBe(false);
-    expect(r.merged.find((q) => q.id === 's2').description).toBe('new');
-    expect(r.merged.find((q) => q.name === 'C').description).toBe('added');
+
+  it('dedups a v1 null-key chart against its live key-less twin (no spurious duplicate)', () => {
+    // Live editing stores a null schema key by OMITTING it: {cfg}. A v1 file
+    // (or legacy share) carrying the same chart with an absent/null key must
+    // upgrade to the same key-less shape, so a different-id import is skipped
+    // as an exact duplicate rather than added as a second row.
+    const live = v2('live1', 'SELECT 1', { name: 'Chart Q', favorite: false, panel: { cfg: { type: 'bar', x: 'x', y: 'y' } } });
+    const v1file = { id: 'other', name: 'Chart Q', sql: 'SELECT 1', favorite: false, chart: { cfg: { type: 'bar', x: 'x', y: 'y' } } };
+    const result = mergeSaved([live], [v1file], () => 'unused');
+    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(result.merged).toHaveLength(1);
   });
 });
 
-describe('buildMarkdownDoc', () => {
-  it('renders a ### heading, an optional description paragraph, and a fenced sql block', () => {
-    const md = buildMarkdownDoc([
-      { name: 'A', sql: 'SELECT 1', description: 'does A' },
-      { name: 'B', sql: 'SELECT 2' },
+describe('one-way Markdown/SQL exports', () => {
+  it('renders names/descriptions from Spec and protects Markdown fences', () => {
+    const out = buildMarkdownDoc([
+      v2('a', 'SELECT ```x```', { name: 'A\nline', description: 'does A' }),
+      v2('b', 'SELECT 2', { name: 'B' }),
     ]);
-    expect(md).toContain('### A');
-    expect(md).toContain('does A');
-    expect(md).toContain('```sql\nSELECT 1\n```');
-    expect(md).toMatch(/### B\n\n```sql/); // B has no description paragraph
+    expect(out).toContain('### A line\n\ndoes A\n\n````sql');
+    expect(out).toContain('SELECT ```x```\n````');
+    expect(out).toContain('### B\n\n```sql\nSELECT 2\n```');
   });
-  it('widens the fence to four backticks when the sql contains a triple backtick', () => {
-    const md = buildMarkdownDoc([{ name: 'C', sql: 'SELECT ```x```' }]);
-    expect(md).toContain('````sql\n');
-    expect(md).toContain('\n````');
-  });
-  it('a text panel emits its content as the body; the sql block only when SQL exists (#166)', () => {
-    const md = buildMarkdownDoc([
-      { name: 'Note', sql: '', panel: { cfg: { type: 'text', content: '# Hello\n\nworld' } } },
-      { name: 'Both', sql: 'SELECT 1', panel: { cfg: { type: 'text', content: 'intro' } } },
-    ]);
-    expect(md).toContain('### Note\n\n# Hello\n\nworld');
-    expect(md).not.toContain('```sql\n\n```'); // no empty fenced block
-    expect(md).toContain('intro\n\n```sql\nSELECT 1\n```'); // content + real SQL both emitted
-  });
-});
 
-describe('buildSqlDoc', () => {
-  it('renders a /* name + description */ comment then the statement, ;-terminated (trailing ; trimmed)', () => {
-    const out = buildSqlDoc([
-      { name: 'A', sql: 'SELECT 1;;  ', description: 'does A' },
-      { name: 'B', sql: 'SELECT 2' },
+  it('emits Text panel Markdown and omits an empty SQL block', () => {
+    const out = buildMarkdownDoc([
+      v2('note', '', { name: 'Note', panel: { cfg: { type: 'text', content: '# Hello' } } }),
+      v2('both', 'SELECT 1', { name: 'Both', panel: { cfg: { type: 'text', content: 'intro' } } }),
     ]);
-    expect(out).toContain('/* A\ndoes A */\nSELECT 1;');
-    expect(out).toContain('/* B */\nSELECT 2;');
-    expect(out).not.toContain(';;');
+    expect(out).toContain('### Note\n\n# Hello');
+    expect(out).not.toContain('```sql\n\n```');
+    expect(out).toContain('intro\n\n```sql\nSELECT 1\n```');
   });
-  it('defangs a */ sequence inside the comment so the block cannot close early', () => {
-    const out = buildSqlDoc([{ name: 'edge */ name', sql: 'SELECT 1' }]);
-    expect(out).toContain('/* edge * / name */');
-  });
-  it('skips sql-less entries (text panels) — no bare `;` in the runnable batch (#166)', () => {
+
+  it('builds a runnable SQL script, defangs comments, and skips SQL-less entries', () => {
     const out = buildSqlDoc([
-      { name: 'Note', sql: '', panel: { cfg: { type: 'text', content: 'x' } } },
-      { name: 'B', sql: 'SELECT 2' },
+      v2('a', 'SELECT 1;; ', { name: 'A */ name', description: 'does A' }),
+      v2('note', '', { name: 'Note', panel: { cfg: { type: 'text', content: 'x' } } }),
+      { name: 'Legacy', sql: 'SELECT 2' },
     ]);
+    expect(out).toContain('/* A * / name\ndoes A */\nSELECT 1;');
+    expect(out).toContain('/* Legacy */\nSELECT 2;');
     expect(out).not.toContain('Note');
-    expect(out).toContain('/* B */\nSELECT 2;');
+    expect(out).not.toContain(';;');
   });
 });

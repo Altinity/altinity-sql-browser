@@ -15,6 +15,7 @@
 // ids are passed through verbatim. Pure — no DOM, no state.
 
 import { inferQueryName } from './format.js';
+import { queryDescription, queryName } from './saved-query.js';
 
 /**
  * Build the immutable `source` metadata for a run's result.
@@ -33,8 +34,8 @@ export function buildResultSource({ srcSql, tabId, rowLimit, tabName, savedEntry
   let title;
   let description;
   if (savedEntry) {
-    title = savedEntry.name;
-    description = (savedEntry.description || '').trim();
+    title = queryName(savedEntry);
+    description = queryDescription(savedEntry).trim();
   } else {
     title = tabName && tabName !== 'Untitled' ? tabName : inferQueryName(sql);
     description = '';

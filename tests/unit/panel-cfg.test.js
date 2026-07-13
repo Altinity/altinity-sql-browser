@@ -45,6 +45,14 @@ describe('clonePanelCfg', () => {
     expect(clonePanelCfg(null)).toBeNull();
     expect(clonePanelCfg('nope')).toBeNull();
   });
+  it('keeps a literal __proto__ field inert instead of turning it into cfg inheritance', () => {
+    const src = JSON.parse('{"type":"table","__proto__":{"content":"unsafe"}}');
+    const out = clonePanelCfg(src);
+    expect(Object.hasOwn(out, '__proto__')).toBe(true);
+    expect(out.__proto__).toEqual({ content: 'unsafe' });
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.prototype.content).toBeUndefined();
+  });
 });
 
 describe('resolveLogsShape', () => {
