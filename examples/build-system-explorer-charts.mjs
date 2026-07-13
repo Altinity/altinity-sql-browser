@@ -7,7 +7,7 @@
 // https://gist.github.com/filimonov/271e5b27c085356c67db3c1bf2204506
 //
 // Why a generator: the browser only restores a saved chart config when the
-// entry's `chart.key` exactly equals schemaKey(resultColumns) = "name:type|…"
+// entry's `spec.panel.key` exactly equals schemaKey(resultColumns) = "name:type|…"
 // (see src/ui/results.js chartCfgFor / src/core/chart-data.js schemaKey).
 // Hand-writing those type strings is error-prone (Enum8/LowCardinality wrap
 // exactly), so we derive each key live from `DESCRIBE (<query>)` against a
@@ -228,24 +228,23 @@ function schemaKey(sql) {
 const queries = SPECS.map((s, i) => {
   const base = {
     id: 'sys-' + (i + 1),
-    name: s.name,
     sql: s.sql,
-    favorite: !!s.cfg,
-    description: s.description,
+    specVersion: 1,
+    spec: { name: s.name, favorite: !!s.cfg, description: s.description },
   };
   if (!s.cfg) return base;
   const key = schemaKey(s.sql);
   console.log(`#${i + 1} ${s.cfg.type.padEnd(4)} key=${key}`);
-  return { ...base, chart: { cfg: s.cfg, key }, view: 'chart' };
+  return { ...base, spec: { ...base.spec, panel: { cfg: s.cfg, key }, view: 'panel' } };
 });
 
 const doc = {
   format: 'altinity-sql-browser/saved-queries',
-  version: 1,
+  version: 2,
   exportedAt: new Date().toISOString(),
   queries,
 };
 
 const outPath = resolve(here, 'system-explorer-charts.json');
 writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n');
-console.log(`\nwrote ${outPath} (${queries.length} queries, ${queries.filter((q) => q.favorite).length} favorited for the Dashboard)`);
+console.log(`\nwrote ${outPath} (${queries.length} queries, ${queries.filter((q) => q.spec.favorite).length} favorited for the Dashboard)`);

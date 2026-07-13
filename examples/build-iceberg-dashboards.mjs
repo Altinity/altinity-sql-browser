@@ -320,24 +320,25 @@ function buildEntries(specs, idPrefix) {
     const id = `${idPrefix}-${i}`;
     if (s.text) {
       return {
-        id, name: s.name, sql: '', favorite: true, description: s.description,
-        panel: { cfg: { type: 'text', content: s.content } }, view: 'panel',
+        id, sql: '', specVersion: 1, spec: { name: s.name, favorite: true, description: s.description,
+          panel: { cfg: { type: 'text', content: s.content } }, view: 'panel' },
       };
     }
     if (s.logs) {
       return {
-        id, name: s.name, sql: s.sql, favorite: true, description: s.description,
-        panel: { cfg: { type: 'logs', ...s.logs } }, view: 'panel',
+        id, sql: s.sql, specVersion: 1, spec: { name: s.name, favorite: true, description: s.description,
+          panel: { cfg: { type: 'logs', ...s.logs } }, view: 'panel' },
       };
     }
     if (s.detail) {
-      return { id, name: s.name, sql: s.sql, favorite: false, description: s.description, view: 'table' };
+      return { id, sql: s.sql, specVersion: 1,
+        spec: { name: s.name, favorite: false, description: s.description, view: 'table' } };
     }
     const key = schemaKey(s.sql);
     console.log(`${id} ${s.cfg.type.padEnd(4)} key=${key}`);
     return {
-      id, name: s.name, sql: s.sql, favorite: true, description: s.description,
-      panel: { cfg: s.cfg, key }, view: 'panel',
+      id, sql: s.sql, specVersion: 1, spec: { name: s.name, favorite: true, description: s.description,
+        panel: { cfg: s.cfg, key }, view: 'panel' },
     };
   });
 }
@@ -348,8 +349,8 @@ for (const [file, specs, prefix] of [
   ['iceberg-dba-dashboard.json', DBA, 'iced'],
 ]) {
   const queries = buildEntries(specs, prefix);
-  const doc = { format: 'altinity-sql-browser/saved-queries', version: 1, exportedAt: stamp, queries };
+  const doc = { format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: stamp, queries };
   const out = resolve(here, file);
   writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
-  console.log(`wrote ${out} (${queries.length} entries, ${queries.filter((q) => q.favorite).length} on the dashboard)`);
+  console.log(`wrote ${out} (${queries.length} entries, ${queries.filter((q) => q.spec.favorite).length} on the dashboard)`);
 }

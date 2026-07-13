@@ -3,7 +3,7 @@
 // public `ontime` flights dataset on the antalya cluster.
 //
 // Why a generator: the browser only restores a saved chart config when the
-// entry's `chart.key` exactly equals schemaKey(resultColumns) = "name:type|…"
+// entry's `spec.panel.key` exactly equals schemaKey(resultColumns) = "name:type|…"
 // (see src/ui/results.js chartCfgFor / src/core/chart-data.js schemaKey).
 // Hand-writing those type strings is error-prone, so we derive each key live
 // from `DESCRIBE (<query>)` against the real cluster.
@@ -21,7 +21,7 @@ const CONNECTION = 'antalya';
 
 // Each spec: a query + the chart we want it to open with. `cfg` matches the
 // app's shape { type, x, y:[...], series }; x/series are column indices, y a
-// list of measure-column indices. `view:'chart'` makes a click open the chart.
+// list of measure-column indices. `view:'panel'` makes a click open the panel.
 const SPECS = [
   {
     name: 'Busiest origin airports — 2023',
@@ -177,18 +177,21 @@ const queries = SPECS.map((s, i) => {
   console.log(`#${i + 1} ${s.cfg.type.padEnd(4)} rows=${String(rows).padStart(5)}  key=${key}`);
   return {
     id: 's' + (i + 1),
-    name: s.name,
     sql: s.sql,
-    favorite: false,
-    description: s.description,
-    chart: { cfg: s.cfg, key },
-    view: 'chart',
+    specVersion: 1,
+    spec: {
+      name: s.name,
+      favorite: false,
+      description: s.description,
+      panel: { cfg: s.cfg, key },
+      view: 'panel',
+    },
   };
 });
 
 const doc = {
   format: 'altinity-sql-browser/saved-queries',
-  version: 1,
+  version: 2,
   exportedAt: new Date().toISOString(),
   queries,
 };

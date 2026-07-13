@@ -74,8 +74,31 @@ const selectRole = (app, index, value) => {
 
 function panelApp(result, panelCfg = null, over = {}) {
   const app = makeApp();
-  app.activeTab().result = result;
-  app.activeTab().panelCfg = panelCfg;
+  const tab = app.activeTab();
+  tab.result = result;
+  if (panelCfg) tab.spec.panel = { cfg: panelCfg };
+  // Keep the assertions terse while routing every read/write through the v2
+  // tab spec. These aliases exist only in this test harness.
+  Object.defineProperties(tab, {
+    panelCfg: {
+      configurable: true,
+      get() { return this.spec.panel?.cfg ?? null; },
+      set(cfg) {
+        if (cfg == null) delete this.spec.panel;
+        else this.spec.panel = { ...(this.spec.panel || {}), cfg };
+      },
+    },
+    panelKey: {
+      configurable: true,
+      get() { return this.spec.panel?.key ?? null; },
+      set(key) {
+        if (!this.spec.panel && key != null) this.spec.panel = {};
+        if (key == null) {
+          if (this.spec.panel) delete this.spec.panel.key;
+        } else this.spec.panel.key = key;
+      },
+    },
+  });
   app.state.resultView.value = 'panel';
   for (const [k, v] of Object.entries(over)) {
     const cur = app.state[k];
@@ -276,6 +299,7 @@ describe('Panel drawer tab', () => {
     const app = panelApp(noMessageResult());
     const savedCfg = { type: 'logs', extension };
     app.activeTab().panelCfg = savedCfg;
+    app.activeTab().spec.panel.fieldConfig = { future: { value: 2 } };
 
     renderResults(app);
     // Rendering alone (no control change) must not mutate or replace the saved cfg.
@@ -287,6 +311,7 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component', extension: { nested: { value: 1 } } });
     expect(app.activeTab().panelCfg.extension).not.toBe(extension);
     expect(app.activeTab().panelCfg.extension.nested).not.toBe(extension.nested);
+    expect(app.activeTab().spec.panel.fieldConfig).toEqual({ future: { value: 2 } });
     expect(app.activeTab().dirty).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     // The originally-saved object (and its nested field) are untouched.

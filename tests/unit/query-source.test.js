@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildResultSource } from '../../src/core/query-source.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 describe('buildResultSource', () => {
   const base = { srcSql: 'SELECT * FROM system.tables', tabId: 't1', rowLimit: 1000 };
@@ -8,7 +9,7 @@ describe('buildResultSource', () => {
     const s = buildResultSource({
       ...base,
       tabName: 'ignored',
-      savedEntry: { name: 'Warnings', description: '  emitted by CH  ' },
+      savedEntry: savedQuery({ name: 'Warnings', description: '  emitted by CH  ' }),
     });
     expect(s).toEqual({
       sql: 'SELECT * FROM system.tables',
@@ -20,7 +21,7 @@ describe('buildResultSource', () => {
   });
 
   it('normalizes a missing saved description to an empty string', () => {
-    const s = buildResultSource({ ...base, savedEntry: { name: 'Q' } });
+    const s = buildResultSource({ ...base, savedEntry: savedQuery({ name: 'Q' }) });
     expect(s.title).toBe('Q');
     expect(s.description).toBe('');
   });
@@ -42,12 +43,12 @@ describe('buildResultSource', () => {
   });
 
   it('falls back to inferQueryName when a saved entry name is blank', () => {
-    const s = buildResultSource({ ...base, savedEntry: { name: '' } });
+    const s = buildResultSource({ ...base, savedEntry: savedQuery({ name: '' }) });
     expect(s.title).toBe('Query · system.tables');
   });
 
   it('falls back to inferQueryName when a saved entry name is the default Untitled', () => {
-    const s = buildResultSource({ ...base, savedEntry: { name: 'Untitled' } });
+    const s = buildResultSource({ ...base, savedEntry: savedQuery({ name: 'Untitled' }) });
     expect(s.title).toBe('Query · system.tables');
   });
 

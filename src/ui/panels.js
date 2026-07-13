@@ -21,6 +21,8 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './chart-render.js';
+import { tabPanel } from '../state.js';
+import { patchQueryPanel } from '../core/saved-query.js';
 import { renderGridView, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs } from './logs.js';
 import { parseMarkdown } from '../core/markdown-lite.js';
@@ -243,9 +245,9 @@ export function renderResolvedPanel(app, resolved, result, opts) {
  * a local repaint. The text arm needs no result at all; query-backed arms
  * show an empty-preview hint until a Run has happened.
  *
- * Dirty pin (#166): the preview renders resolvePanel's CLONE; `tab.panelCfg`
- * is written only here, from picker/controls changes — render never writes
- * it, so a cfg derived purely by autoPanel is never persisted or dirtying.
+ * Dirty pin (#166): the preview renders resolvePanel's CLONE; `tab.spec.panel`
+ * is written only here from picker/controls changes. Render never writes it,
+ * so auto-derived cfg stays transient. Unknown panel siblings are retained.
  *
  * `hooks`: { onCell(name,type,value), markDirty() } — supplied by results.js
  * (cell drawer + tab-dirty wiring live there; importing them here would
@@ -255,7 +257,7 @@ function panelContext(app, r) {
   const tab = app.activeTab();
   const hasGrid = !!(r && !r.error && r.rawText == null && r.rows);
   const columns = hasGrid ? r.columns : [];
-  const saved = tab.panelCfg ? { cfg: tab.panelCfg, key: tab.panelKey ?? null } : null;
+  const saved = tabPanel(tab);
   const resolved = resolvePanel(saved, columns);
   // Rescue (#192/#195): a saved Logs panel that falls back (its Time/Message
   // roles no longer resolve) still needs its Logs controls so the user can
@@ -271,8 +273,7 @@ function panelContext(app, r) {
 
 function writePanel(app, hooks, payload, activate = false) {
   const tab = app.activeTab();
-  tab.panelCfg = payload.cfg;
-  tab.panelKey = payload.key ?? null;
+  tab.spec = patchQueryPanel(tab, { cfg: payload.cfg, key: payload.key ?? undefined }).spec;
   if (activate) app.state.resultView.value = 'panel';
   hooks.markDirty();
   hooks.rerender();
@@ -325,10 +326,9 @@ export function renderPanelView(app, r, hooks) {
     cfg,
     key: isChartFamily(cfg.type) && hasGrid ? schemaKey(columns) : null,
   });
-  const onChange = (cfg) => writeBack({ cfg, key: tab.panelKey ?? null });
+  const onChange = (cfg) => writeBack({ cfg, key: saved && saved.key != null ? saved.key : null });
 
-  // A clone, like resolved.cfg always is — saved.cfg is the live tab.panelCfg
-  // reference, and controls() must never be handed that to mutate in place.
+  // A clone, like resolved.cfg always is — controls never receive live Spec.
   const [controlsArm, controlsCfg] = rescueLogs
     ? [PANEL_TYPES.logs, clonePanelCfg(saved.cfg)]
     : [PANEL_TYPES[resolved.cfg.type], resolved.cfg];

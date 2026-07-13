@@ -11,8 +11,7 @@ import { createCodeViewer } from './editor/code-viewer.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
-import { upgradeSavedEntry } from './core/saved-io.js';
-import { clonePanelCfg } from './core/panel-cfg.js';
+import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
 import { isDashboardRoute } from './core/dashboard.js';
 
 export async function bootstrap(app, env) {
@@ -59,7 +58,7 @@ export async function bootstrap(app, env) {
     hist.replaceState(null, '', loc.origin + loc.pathname + (qs ? '?' + qs : '') + loc.hash);
   }
 
-  // A shared query (SQL + panel config) rides in the URL hash, which is lost
+  // A shared query (SQL + complete Spec) rides in the URL hash, which is lost
   // through the OAuth redirect (and we strip it below). Stash it in
   // sessionStorage so it survives the round-trip and restore it once we're back.
   // The dashboard route has no editor tab to seed, so it skips this entirely.
@@ -67,26 +66,28 @@ export async function bootstrap(app, env) {
   // a sql-only check would silently drop its share link.
   if (!dash) {
     let shared = decodeShare(loc.hash);
-    if (shared.sql || shared.panel) ss.setItem('oauth_shared', JSON.stringify(shared));
+    if (shared.sql || queryPanel(shared)) ss.setItem('oauth_shared', JSON.stringify(shared));
     else {
       // The stash is a second deserialization point that bypasses decodeShare —
       // it may hold a pre-#166 `{sql, chart}` stash, so upgrade applies here too.
       try {
         const raw = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '' };
-        const up = upgradeSavedEntry(raw);
-        shared = { sql: up.sql || '', panel: up.panel && up.panel.cfg ? up.panel : null };
-      } catch { shared = { sql: '', panel: null }; }
+        shared = upgradeSavedQuery(raw.specVersion == null
+          ? { name: 'Shared query', ...raw }
+          : raw);
+      } catch { shared = decodeShare(''); }
     }
-    if (shared.sql || shared.panel) {
+    const panel = queryPanel(shared);
+    if (shared.sql || panel) {
       const t0 = app.state.tabs.value[0];
       t0.sql = shared.sql;
-      t0.name = 'Shared query';
-      if (shared.panel && shared.panel.cfg) {
-        t0.panelCfg = clonePanelCfg(shared.panel.cfg);
-        t0.panelKey = shared.panel.key ?? null;
+      t0.name = queryName(shared);
+      t0.specVersion = shared.specVersion;
+      t0.spec = cloneJson(shared.spec);
+      if (panel && panel.cfg) {
         // A panel-only link (no SQL to run) must open the Panel drawer, or
         // the recipient lands on an empty Table view and sees nothing.
-        if (!shared.sql) app.state.resultView.value = 'panel';
+        if (!shared.sql) app.state.resultView.value = queryView(shared) || 'panel';
       }
       hist.replaceState(null, '', loc.pathname + loc.search);
     }

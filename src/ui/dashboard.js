@@ -33,6 +33,7 @@ import {
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
 import { buildFilterBar } from './filter-bar.js';
+import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -146,11 +147,13 @@ async function runPool(items, limit, worker) {
 function buildTileSlot(q) {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
+  const name = queryName(q);
+  const description = queryDescription(q);
   // Header: the favorite's name, plus its saved description as a subtitle when it
   // has one (single line, ellipsized) — mirrors the design mockup's tile header.
   const head = h('div', { class: 'dash-tile-head' },
-    h('span', { class: 'dash-tile-name', title: q.name }, q.name));
-  if (q.description) head.appendChild(h('div', { class: 'dash-tile-desc', title: q.description }, q.description));
+    h('span', { class: 'dash-tile-name', title: name }, name));
+  if (description) head.appendChild(h('div', { class: 'dash-tile-desc', title: description }, description));
   const card = h('div', { class: 'dash-tile' }, head, body, foot);
   return {
     card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
@@ -179,7 +182,8 @@ function destroySlotChart(slot) {
 /** The favorite's explicit, known-typed panel payload, or null. Unknown types
  *  stay non-null-ish only through resolvePanel's diagnostic fallback below. */
 function explicitPanel(q) {
-  return q.panel && q.panel.cfg && typeof q.panel.cfg === 'object' ? q.panel : null;
+  const panel = queryPanel(q);
+  return panel && panel.cfg && typeof panel.cfg === 'object' ? panel : null;
 }
 
 /** True for a text panel — the no-query partition (#166). */
@@ -194,7 +198,7 @@ function renderTextSlot(app, q, slot) {
   destroySlotChart(slot);
   slot.status = 'panel';
   slot.card.style.display = '';
-  const { node } = renderResolvedPanel(app, resolvePanel(q.panel, []), null,
+  const { node } = renderResolvedPanel(app, resolvePanel(queryPanel(q), []), null,
     { surface: 'dashboard', state: {}, rerender: () => {}, readonly: true });
   slot.body.replaceChildren(node);
   slot.foot.replaceChildren();
@@ -374,7 +378,7 @@ export function renderDashboard(app) {
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
 
-  const favorites = state.savedQueries.filter((q) => q.favorite);
+  const favorites = state.savedQueries.filter(queryFavorite);
 
   // The favorites snapshot is fixed for this render, so the parameter analysis
   // (#173 phase 1 — structure only) runs once; each wave (runAll / a filter's
@@ -382,7 +386,7 @@ export function renderDashboard(app) {
   // read, and every tile gate + fetch of that wave reads the same batch.
   const tileId = (i) => 'tile:' + i;
   const analysis = analyzeParameterizedSources(favorites.map((q, i) => ({
-    id: tileId(i), label: q.name, kind: 'tile', sql: isTextFav(q) ? '' : q.sql, bindPolicy: 'row-returning',
+    id: tileId(i), label: queryName(q), kind: 'tile', sql: isTextFav(q) ? '' : q.sql, bindPolicy: 'row-returning',
   })));
   const prepareBatch = (validationMode = 'execute') => prepareParameterizedBatch(analysis, {
     values: app.state.varValues,

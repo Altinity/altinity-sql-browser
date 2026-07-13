@@ -16,6 +16,7 @@ import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
+import { savedQuery } from '../helpers/saved-query.js';
 
 // ── core/dashboard.js ───────────────────────────────────────────────────────
 describe('isDashboardRoute', () => {
@@ -184,9 +185,10 @@ function streamInto(spy) {
 function dashApp(favorites, runTile) {
   const app = makeApp({ runReadInto: streamInto(runTile) });
   app.tileSpy = runTile;
-  app.state.savedQueries = favorites;
+  setSaved(app, favorites);
   return app;
 }
+const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
 
 describe('renderDashboard', () => {
   it('renders a header + a chart tile per chartable favorite', async () => {
@@ -273,7 +275,7 @@ describe('renderDashboard', () => {
     const toggleTheme = vi.fn();
     const app = makeApp({ runReadInto: streamInto(vi.fn(async () => chartResult())), toggleTheme });
     app.state.theme = 'dark'; // exercise the dark-theme icon branch
-    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'q', favorite: true }];
+    setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     await renderDashboard(app);
     const btn = app.root.querySelector('.dash-icobtn');
     expect(btn).toBeTruthy();
@@ -288,10 +290,10 @@ describe('renderDashboard', () => {
       ensureFreshToken: vi.fn(async () => false),
       chCtx: { onSignedOut },
     });
-    app.state.savedQueries = [
+    setSaved(app, [
       { id: '1', name: 'Q', sql: 'q', favorite: true },
       { id: '2', name: 'R', sql: 'r', favorite: true },
-    ];
+    ]);
     await renderDashboard(app);
     expect(onSignedOut).toHaveBeenCalledTimes(1); // one redirect, not one per tile
     expect(app.runReadInto).not.toHaveBeenCalled();
@@ -539,12 +541,12 @@ describe('renderDashboard — streaming seam (#193)', () => {
     const fav = [{ id: '1', name: 'Q', sql: 'q', favorite: true, panel: { cfg: { type: 'table' } } }];
 
     const exact = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP) });
-    exact.state.savedQueries = fav;
+    setSaved(exact, fav);
     await renderDashboard(exact);
     expect(exact.root.querySelector('.dash-tile-foot').textContent).not.toContain('rows fetched');
 
     const over = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP + 1) });
-    over.state.savedQueries = fav;
+    setSaved(over, fav);
     await renderDashboard(over);
     const foot = over.root.querySelector('.dash-tile-foot').textContent;
     expect(foot).toContain('first ' + DASH_TILE_ROW_CAP.toLocaleString() + ' rows fetched');
@@ -560,7 +562,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
       return new Promise(() => {}); // never settles — stay in the loading state
     });
     const app = makeApp({ runReadInto });
-    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'q', favorite: true }];
+    setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     renderDashboard(app);
     await flush();
     const load = app.root.querySelector('.dash-tile-load');
@@ -610,7 +612,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
       return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
     const app = makeApp({ runReadInto });
-    app.state.savedQueries = [paramFav('1', 't')];
+    setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
     await flush();
@@ -638,7 +640,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
       return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
     const app = makeApp({ runReadInto });
-    app.state.savedQueries = Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i));
+    setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app); // wave A (full Refresh)
     await flush();
@@ -660,7 +662,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     const resolvers = [];
     const runReadInto = vi.fn((result, opts) => new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
     const app = makeApp({ runReadInto });
-    app.state.savedQueries = Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i));
+    setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
     await flush();
@@ -684,7 +686,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
       res(result);
     })));
     const app = makeApp({ runReadInto });
-    app.state.savedQueries = [paramFav('1', 't')];
+    setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
     await flush();
@@ -1352,7 +1354,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       ];
       const runTile = vi.fn(async () => chartResult());
       const app = makeApp({ runReadInto: streamInto(runTile), wallNow: vi.fn(() => 1751200000000) });
-      app.state.savedQueries = favorites;
+      setSaved(app, favorites);
       app.state.varValues = { from: '-1h' };
       await renderDashboard(app);
       const expected1 = String(Math.round((1751200000000 - 3600000) / 1000));
@@ -1585,7 +1587,7 @@ describe('app.renderDashboard', () => {
       ]),
     })]]);
     const app = createApp(appEnv({ fetch }));
-    app.state.savedQueries = [{ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart', favorite: true }];
+    setSaved(app, [{ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart', favorite: true }]);
     await app.renderDashboard();
     expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
     // The read-only tile guard (readonly=2) + the row-cap sentinel reach the wire.

@@ -3,6 +3,7 @@ import { renderResults, renderJson, renderTable, openCellDetail, openRowsViewer,
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { formatRows } from '../../src/core/format.js';
+import { queryPanel } from '../../src/core/saved-query.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 // A genuine backdrop click: mousedown and click both land on `el` itself
@@ -129,7 +130,7 @@ describe('renderResults states', () => {
     expect(region.querySelector('.result-panel-select')).not.toBeNull();
     expect(region.querySelector('.panel-config')).toBeNull(); // no redundant full-width picker row
     expect(region.querySelector('.chart-view canvas')).not.toBeNull();   // autoPanel picked a chart
-    expect(app.activeTab().panelCfg).toBeNull(); // preview never writes the tab cfg (#166 dirty pin)
+    expect(queryPanel(app.activeTab())).toBeUndefined(); // preview never writes the tab spec
   });
   it('panel view with no result shows the run hint (query-backed types need a Run)', () => {
     const app = appWithResult(null, { resultView: 'panel' });
@@ -638,12 +639,12 @@ describe('expandDataPane', () => {
     expect(overlay.querySelector('.chart-view canvas')).not.toBeNull();
     expect(overlay.querySelector('.chart-config')).toBeNull(); // readonly — no editor (v1 scope)
     expect(overlay.querySelector('.panel-config')).toBeNull();
-    expect(app.activeTab().panelCfg).toBeNull(); // the live tab's own config is untouched
+    expect(queryPanel(app.activeTab())).toBeUndefined(); // the live tab's own config is untouched
     expect(app.chart).toBeNull(); // the snapshot's chart never occupies the shared app.chart slot
   });
   it("the snapshot honours the source tab's saved panel type (a table panel renders the grid)", () => {
     const app = makeApp();
-    app.activeTab().panelCfg = { type: 'table' };
+    app.activeTab().spec.panel = { cfg: { type: 'table' } };
     expandDataPane(app, chartResult());
     const overlay = document.querySelector('.graph-overlay');
     click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));

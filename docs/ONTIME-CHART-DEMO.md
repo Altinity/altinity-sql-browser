@@ -39,7 +39,7 @@ dataset (`ontime`, ~230M rows, 1987–2025) on the Antalya demo cluster.
 | 9 | Flights by day of week — 2023 | Column | ordinal `dayofweek` axis |
 | 10 | Worst average departure delay by airport — 2023 | Bar (horizontal) | a non-count measure (avg minutes), joined for names |
 
-Each saved query stores its chart configuration, so it reopens exactly as designed. (Charts
+Each saved query stores its panel configuration in the complete query Spec, so it reopens exactly as designed. (Charts
 plot the first 500 rows; the full result is always available in the Table view.)
 
 ## Direct links
