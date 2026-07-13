@@ -150,6 +150,18 @@ describe('mergeSaved', () => {
     expect(result.merged.find((q) => q.id === 'old').sql).toBe('2');
     expect(upgradeSavedEntry({ name: 'Alias', sql: 'a' }).spec.name).toBe('Alias');
   });
+
+  it('dedups a v1 null-key chart against its live key-less twin (no spurious duplicate)', () => {
+    // Live editing stores a null schema key by OMITTING it: {cfg}. A v1 file
+    // (or legacy share) carrying the same chart with an absent/null key must
+    // upgrade to the same key-less shape, so a different-id import is skipped
+    // as an exact duplicate rather than added as a second row.
+    const live = v2('live1', 'SELECT 1', { name: 'Chart Q', favorite: false, panel: { cfg: { type: 'bar', x: 'x', y: 'y' } } });
+    const v1file = { id: 'other', name: 'Chart Q', sql: 'SELECT 1', favorite: false, chart: { cfg: { type: 'bar', x: 'x', y: 'y' } } };
+    const result = mergeSaved([live], [v1file], () => 'unused');
+    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(result.merged).toHaveLength(1);
+  });
 });
 
 describe('one-way Markdown/SQL exports', () => {

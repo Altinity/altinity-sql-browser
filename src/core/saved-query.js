@@ -117,7 +117,15 @@ export function upgradeV1Query(entry) {
     if (view === 'table') {
       panel = { cfg: { type: 'table', chart: { ...cloneJson(chart.cfg), key: chart.key ?? null } } };
     } else {
-      panel = { cfg: cloneJson(chart.cfg), key: chart.key ?? null };
+      // Match the live save path (panels.js writePanel): a null schema key is
+      // OMITTED, never stored as `key: null`. Emitting an explicit null here
+      // would make queryContentKey see `{cfg, key:null}` ≠ a live `{cfg}`, so
+      // a v1-origin chart and its identical v2-live twin would fail to dedup
+      // on merge/append (spurious duplicate). resolvePanel treats absent and
+      // null identically (`saved.key != null`), so omission is lossless.
+      panel = chart.key != null
+        ? { cfg: cloneJson(chart.cfg), key: chart.key }
+        : { cfg: cloneJson(chart.cfg) };
     }
   }
   if (view === 'chart') view = 'panel';

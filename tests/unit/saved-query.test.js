@@ -125,6 +125,14 @@ describe('v1 migration', () => {
     expect(normal.spec.view).toBe('panel');
   });
 
+  it('omits a null chart key so v1-upgraded panels match the live key-less shape', () => {
+    // The live save path stores `{cfg}` (no key) when the schema key is null;
+    // emitting `key: null` here would defeat merge dedup against that twin.
+    const nullKey = upgradeV1Query({ name: 'A', sql: '1', chart: { cfg: { type: 'line', x: 0, y: [1], series: null } } });
+    expect(nullKey.spec.panel).toEqual({ cfg: { type: 'line', x: 0, y: [1], series: null } });
+    expect('key' in nullKey.spec.panel).toBe(false);
+  });
+
   it('defaults missing name/favorite, permits SQL-less entries, and omits invalid optional fields', () => {
     const q = upgradeV1Query({ id: '', sql: 7, name: '', favorite: 0, description: ' ', view: 'bad', dashboard: [] });
     expect(q).toEqual({ id: undefined, sql: '', specVersion: 1, spec: { name: 'Untitled', favorite: false } });
