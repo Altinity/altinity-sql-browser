@@ -28,6 +28,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   shown open only via the search cascade (not persisted expansion) no longer
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
+### Added
+- **Iceberg Catalog Explorer example library**
+  ([docs/ICEBERG-CATALOG-EXPLORER-DEMO.md](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md)).
+  Content-only (no code changes): `examples/iceberg-install.json` carries
+  generator entries that emit, from ordinary `{param}` filter inputs, the DDL
+  for per-catalog `ice_meta_<catalog>` Iceberg-metadata navigation views
+  (DEFINER-locked, bucket-scoped S3 grant), a cross-catalog `ice_meta_all`
+  union layer discovered live from `system.databases`, a chmem memory-store
+  seed, and a per-catalog drill-down mini-library — all emitted through
+  `FORMAT TSVRaw` so the raw result cell copy-pastes byte-exact into a new
+  tab. `examples/iceberg-catalog-dashboard.json` (BI) and
+  `examples/iceberg-dba-dashboard.json` (DBA, with snapshot-commit and
+  metadata-version **logs panels**) dashboard the views with one shared
+  optional `catalog` filter on every tile. Built from
+  `examples/iceberg-templates/` by `examples/build-iceberg-install.mjs` /
+  `examples/build-iceberg-dashboards.mjs`.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added
