@@ -34,7 +34,7 @@ test.describe('CM6 editor', () => {
     await page.keyboard.press('Control+Enter'); // the run chord, completion still open
     const chords = await page.evaluate(() => window.__chords);
     expect(chords).toEqual([{ prevented: false, shift: false }]); // reached the global handler, unprevented
-    const value = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
+    const value = await page.evaluate(() => window.__app.dom.sqlEditorView.state.doc.toString());
     expect(value).toBe('sel'); // no blank line inserted, no completion accepted
   });
 
@@ -46,7 +46,7 @@ test.describe('CM6 editor', () => {
     await expect(page.locator('.cm-tooltip-autocomplete li[aria-selected]')).toBeVisible();
     await page.waitForTimeout(150);
     await page.keyboard.press('Enter');
-    const value = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
+    const value = await page.evaluate(() => window.__app.dom.sqlEditorView.state.doc.toString());
     expect(value.toUpperCase()).toBe('SELECT');
   });
 
@@ -55,12 +55,12 @@ test.describe('CM6 editor', () => {
     await page.keyboard.type(')');          // typing the closer steps over, no double
     await page.keyboard.type(" '");         // quote pairs in code
     await page.keyboard.type('a(');         // ( inside the string must NOT inject a stray )
-    const value = await page.evaluate(() => window.__app.dom.editorView.state.doc.toString());
+    const value = await page.evaluate(() => window.__app.dom.sqlEditorView.state.doc.toString());
     expect(value).toBe("select () 'a('");
   });
 
   test('tab switches keep per-tab undo histories', async ({ page }) => {
-    const doc = () => window.__app.dom.editorView.state.doc.toString();
+    const doc = () => window.__app.dom.sqlEditorView.state.doc.toString();
     const switchTab = (id) => {
       window.__app.state.activeTabId.value = id;
       window.__port.syncFromState();
@@ -68,7 +68,7 @@ test.describe('CM6 editor', () => {
     await page.keyboard.type('one');
     await page.evaluate(() => {
       const { state } = window.__app;
-      state.tabs.value = [...state.tabs.value, { id: 't2', name: 'T2', sql: '', dirty: false, result: null, savedId: null, panelCfg: null, panelKey: null }];
+      state.tabs.value = [...state.tabs.value, window.__newTab('t2')];
       state.activeTabId.value = 't2';
       window.__port.syncFromState();
     });
@@ -108,7 +108,7 @@ test.describe('CM6 editor', () => {
     await page.keyboard.type('select e. from events e');
     // Put the caret just after the `e.` and open completion there explicitly.
     await page.evaluate(() => {
-      const v = window.__app.dom.editorView;
+      const v = window.__app.dom.sqlEditorView;
       v.dispatch({ selection: { anchor: 9 } }); // after "select e."
       v.focus();
     });

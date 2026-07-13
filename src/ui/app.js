@@ -7,8 +7,9 @@
 import { h, zoomScale, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, recordScriptHistory, saveQuery, savedForTab, tabPanel, normalizeRowLimit,
-  MOBILE_BREAKPOINT_PX, effectiveFilterActive,
+  createState, activeTab, KEYS, recordHistory, recordScriptHistory,
+  createSavedQuery, commitSavedQuery, savedForTab, setTabSpecDraft, tabPanel,
+  normalizeRowLimit, MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
 import {
@@ -28,7 +29,11 @@ import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core
 import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
-import { queryDescription, queryName, withQuerySpec } from '../core/saved-query.js';
+import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
+import {
+  CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
+  hasBlockingSpecErrors,
+} from '../core/spec-draft.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
@@ -39,6 +44,7 @@ import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
+import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
@@ -125,6 +131,7 @@ export function createApp(env = {}) {
     // MOBILE_BREAKPOINT_PX. null when the platform has no matchMedia (treated as
     // always-desktop — the mobile CSS still applies, just no JS branching).
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
+    confirm: env.confirm || (typeof win.confirm === 'function' ? win.confirm.bind(win) : () => true),
   };
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
@@ -229,27 +236,60 @@ export function createApp(env = {}) {
   app.host = () => originHost(chCtx.origin) || 'clickhouse';
   app.activeTab = () => activeTab(app.state);
 
-  // --- editor seam (#143) --------------------------------------------------
-  // Like Chart/Dagre, the editor adapter factory is injected: main.js passes
-  // the textarea adapter (the CM6 adapter swaps in with #21); headless app
-  // tests omit it and get the noop port. The instance is created here — before
-  // renderApp mounts it — so every consumer can call the port unconditionally.
+  // --- independent SQL + Spec editor seams (#143/#212) ---------------------
   app.Editor = env.Editor || createNoopPort;
+  app.SpecEditor = env.SpecEditor || createNoopSpecEditor;
+  app.specValidators = env.specValidators && typeof env.specValidators.validate === 'function'
+    ? env.specValidators
+    : createSpecValidatorRegistry(env.specValidators || CORE_SPEC_VALIDATORS);
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));
-  app.editor = app.Editor(app);
-  // The editor→state inversion (#143): the adapter reports each text change;
-  // the state writes live here. Order matters — updateSaveBtn and the #134
-  // variables strip read tab.sql, so the tab writes come first.
-  app.editor.onDocChange((value) => {
+  app.sqlEditor = app.Editor(app);
+  app.specEditor = app.SpecEditor(app);
+  app.sqlEditor.onDocChange((value) => {
     const tab = app.activeTab();
-    tab.sql = value;
-    tab.dirty = true;
-    app.actions.rerenderTabs();
-    app.updateSaveBtn();
-    app.renderVarStrip();
+    tab.sqlDraft = value;
+    tab.dirtySql = true;
+    if (app.actions) app.actions.rerenderTabs();
+    if (app.updateSaveBtn) app.updateSaveBtn();
+    if (app.renderVarStrip) app.renderVarStrip();
   });
+  const applySpecEvaluation = (tab, text, { dirty = true } = {}) => {
+    const evaluated = evaluateSpecText(text, app.specValidators);
+    tab.specText = text;
+    tab.specParsed = evaluated.parsed;
+    tab.specDiagnostics = evaluated.diagnostics;
+    tab.dirtySpec = dirty;
+    return evaluated;
+  };
+  app.evaluateSpecDraft = (tab, text, { dirty = true } = {}) => {
+    const evaluated = applySpecEvaluation(tab, text, { dirty });
+    if (tab === app.activeTab()) app.specEditor.setDiagnostics(tab.specDiagnostics);
+    if (app.actions) app.actions.rerenderTabs();
+    if (app.updateSaveBtn) app.updateSaveBtn();
+    if (app.updateEditorModeUi) app.updateEditorModeUi();
+    return evaluated;
+  };
+  app.revalidateSpecDrafts = ({ refreshUi = true } = {}) => {
+    for (const tab of app.state.tabs.value) {
+      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
+    }
+    if (!refreshUi) return;
+    const tab = app.activeTab();
+    app.specEditor.setDiagnostics(tab.specDiagnostics);
+    if (app.actions) app.actions.rerenderTabs();
+    if (app.updateSaveBtn) app.updateSaveBtn();
+    if (app.updateEditorModeUi) app.updateEditorModeUi();
+  };
+  app.specEditor.onDocChange((value) => {
+    app.evaluateSpecDraft(app.activeTab(), value);
+  });
+  app.registerSpecValidator = (path, validate) => {
+    const unregister = app.specValidators.register(path, validate);
+    app.revalidateSpecDrafts();
+    return () => { unregister(); app.revalidateSpecDrafts(); };
+  };
   // A `?host=` query param pre-fills the credential server address on the login
   // screen (and disables SSO, which only targets the serving host).
   app.hostHint = new URLSearchParams(loc.search || '').get('host') || '';
@@ -484,7 +524,7 @@ export function createApp(env = {}) {
     app.refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
     app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
     app.rebuildCompletions();
-    app.editor.refreshReference(); // re-highlight with server keywords
+    app.sqlEditor.refreshReference(); // re-highlight with server keywords
   };
   // A prominent, dismissible banner for schema/auth failures — the schema-panel
   // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
@@ -662,12 +702,12 @@ export function createApp(env = {}) {
   // Block execution while any {name:Type} variable in the active tab is unfilled
   // or invalid, or while its value can't serialize (e.g. an array value against
   // a scalar declaration) — toasting why (#134/#173). Gating on the whole
-  // tab.sql — the exact set the variable strip shows — keeps every execution
+  // tab.sqlDraft — the exact set the variable strip shows — keeps every execution
   // path consistent: the Run button (setRunBtn), the Run/⌘↵ path, Explain, and
   // Export all agree. `wallNowMs` is the caller's wave clock.
   function varGateBlocked(wallNowMs = wallNow()) {
     const tab = app.activeTab();
-    const src = tab ? prepareTabSource(tab.sql, wallNowMs) : null;
+    const src = tab ? prepareTabSource(tab.sqlDraft, wallNowMs) : null;
     if (!src) return false;
     const blockers = src.missing.concat(src.invalid);
     if (blockers.length) {
@@ -723,7 +763,7 @@ export function createApp(env = {}) {
     // `opts.sql` overrides the source SQL (a single selected statement); otherwise
     // the whole tab runs, byte-for-byte as before (FORMAT / EXPLAIN detection,
     // trailing `;`, history).
-    const srcSql = opts && opts.sql != null ? opts.sql : tab.sql;
+    const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
     if (!srcSql.trim()) return;
     const waveMs = wallNow(); // one wall clock for this run wave: gate + args see the same instant
     if (varGateBlocked(waveMs)) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
@@ -749,7 +789,7 @@ export function createApp(env = {}) {
     // Every downstream decision + the request itself operate on the statement's
     // execution view (#165): inactive optional blocks removed, markers
     // stripped — byte-identical to srcSql for SQL without blocks. History still
-    // records the template (srcSql / tab.sql).
+    // records the template (srcSql / tab.sqlDraft).
     const execSql = execStatementSql(srcSql);
 
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
@@ -994,10 +1034,11 @@ export function createApp(env = {}) {
   // split: one statement keeps today's rich Table/Chart/EXPLAIN path (run());
   // more than one runs sequentially as a script (runScript).
   function runEntry(opts) {
+    if (app.activeTab().editorMode !== 'sql') return;
     if (app.state.running.value) return;
-    const sel = app.editor.getSelection().text;
+    const sel = app.sqlEditor.getSelection().text;
     const hasSel = sel.trim() !== '';
-    const input = hasSel ? sel : app.activeTab().sql;
+    const input = hasSel ? sel : app.activeTab().sqlDraft;
     const statements = splitStatements(input);
     if (!statements.length) return; // nothing runnable (empty / comments-only)
     // The unfilled-variable gate (#134) lives in run()/runScript() — the shared
@@ -1061,7 +1102,7 @@ export function createApp(env = {}) {
     if (gate == null) {
       gate = running || !tab
         ? { missing: [], invalid: [], errors: [] }
-        : inputGate(tabAnalysis(tab.sql));
+        : inputGate(tabAnalysis(tab.sqlDraft));
     }
     const blockers = gate.missing.concat(gate.invalid);
     app.dom.runBtn.disabled = running || blockers.length > 0 || gate.errors.length > 0;
@@ -1113,14 +1154,14 @@ export function createApp(env = {}) {
     // comparison scan, a rebuild's initial field paint, and the tail's Run-
     // button gate all feed off this single pass instead of re-analyzing the
     // same SQL a second time per editor keystroke.
-    const analysis = tab ? tabAnalysis(tab.sql) : null;
+    const analysis = tab ? tabAnalysis(tab.sqlDraft) : null;
     const vars = analysis ? fieldControls(analysis) : [];
     // #172 v2 scans the tab SQL's ANALYSIS materialization (review F2): in
     // the raw text a comparison inside a /*[ ]*/ optional block is one opaque
     // comment span and could never match. `resolveComparisonColumnType`
     // resolves each match's position against this same text. (Workbench-only
     // — the Dashboard has no schema cache and gets v1 straight from the type.)
-    const scanSql = tab ? analysisView(tab.sql) : '';
+    const scanSql = tab ? analysisView(tab.sqlDraft) : '';
     const comparisonColumns = tab ? paramComparisonColumns(scanSql) : {};
     // Each field's control kind + member list (shared enum > date-like > text
     // priority; a type-conflicted field degrades to text — fieldControlKind).
@@ -1214,13 +1255,13 @@ export function createApp(env = {}) {
             // 'input' mode (#170): a plausible prefix stays neutral while
             // the field is focused — only a value that's already certainly
             // wrong shows the inline error here.
-            const batch = prepareTabBatch(tab.sql, wallNow(), 'input');
+            const batch = prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
             applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
             setRunBtn(app.state.running.value, batch.sources[0]);
           };
           const onCommitHard = () => {
             // Hardens 'incomplete' → 'invalid' on commit (#170).
-            const batch = prepareTabBatch(tab.sql, wallNow(), 'execute');
+            const batch = prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
             hardenVar(v.name, batch.fields[v.name]);
             applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
             setRunBtn(app.state.running.value, batch.sources[0]);
@@ -1297,7 +1338,8 @@ export function createApp(env = {}) {
   };
 
   async function formatQuery() {
-    const raw = app.activeTab().sql || '';
+    if (app.activeTab().editorMode !== 'sql') return;
+    const raw = app.activeTab().sqlDraft || '';
     if (!raw.trim()) return;
     const stmts = splitStatements(raw);
     // #165 Format policy: a statement containing /*[ ]*/ optional blocks is
@@ -1319,7 +1361,7 @@ export function createApp(env = {}) {
         // then reassemble with a `;` and a blank line between statements.
         const skipped = stmts.filter((s) => hasOptionalBlocks(s)).length;
         const formatted = await Promise.all(stmts.map((s) => (hasOptionalBlocks(s) ? s : formatOne(s).catch(() => s))));
-        app.editor.replaceDocument(withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
+        app.sqlEditor.replaceDocument(withStatementBreak(formatted.map((q, i) => q || stmts[i]).join(';\n\n')));
         clearFormatError();
         if (skipped) {
           flashToast(skipped + (skipped === 1 ? ' statement contains' : ' statements contain')
@@ -1333,7 +1375,7 @@ export function createApp(env = {}) {
         const q = await formatOne(raw);
         // Terminate so the caret lands past the last token — otherwise the input
         // event from the replace re-opens autocomplete on the trailing word.
-        if (q) app.editor.replaceDocument(withStatementBreak(q));
+        if (q) app.sqlEditor.replaceDocument(withStatementBreak(q));
         clearFormatError();
       } catch (e) {
         const msg = String((e && e.message) || e);
@@ -1343,7 +1385,7 @@ export function createApp(env = {}) {
         app.state.resultView.value = 'table';
         renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
         const pos = parseErrorPos(msg);
-        if (pos != null) app.editor.revealOffset(pos);
+        if (pos != null) app.sqlEditor.revealOffset(pos);
       }
     } finally {
       setFmtBtn(false);
@@ -1502,15 +1544,21 @@ export function createApp(env = {}) {
   // `;`-separated script (ClickHouse would reject `EXPLAIN a; b; …` with a confusing
   // parse error). Say so with our own message instead.
   function explainMultiBlocked() {
-    if (splitStatements(app.activeTab().sql).length <= 1) return false;
+    if (splitStatements(app.activeTab().sqlDraft).length <= 1) return false;
     flashToast('Explain isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
     return true;
   }
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
-  function explainQuery() { return explainMultiBlocked() ? undefined : run({ explain: true }); }
+  function explainQuery() {
+    if (app.activeTab().editorMode !== 'sql') return undefined;
+    return explainMultiBlocked() ? undefined : run({ explain: true });
+  }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
-  function setExplainView(id) { return explainMultiBlocked() ? undefined : run({ explainView: id }); }
+  function setExplainView(id) {
+    if (app.activeTab().editorMode !== 'sql') return undefined;
+    return explainMultiBlocked() ? undefined : run({ explainView: id });
+  }
   // Change the global result-row cap: persist the (normalized) preference and
   // re-run the current query so a raise genuinely fetches more (server-side cap),
   // a lower one stops sooner. run() no-ops on an empty editor, so changing the
@@ -1518,7 +1566,7 @@ export function createApp(env = {}) {
   function setResultRowLimit(n) {
     app.state.resultRowLimit = normalizeRowLimit(n);
     app.savePref('resultRowLimit', app.state.resultRowLimit);
-    return run();
+    return app.activeTab().editorMode === 'sql' ? run() : undefined;
   }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
@@ -1546,7 +1594,7 @@ export function createApp(env = {}) {
   // Replaces the active editor's content (undo restores the prior query).
   async function insertCreate(target) {
     const sql = await fetchCreateSql(target);
-    if (sql != null) app.editor.replaceDocument(sql);
+    if (sql != null) app.sqlEditor.replaceDocument(sql);
   }
 
   // Opens the DDL in a new tab, leaving the active tab untouched.
@@ -1566,12 +1614,17 @@ export function createApp(env = {}) {
   // --- share + star ------------------------------------------------------
   function share() {
     const tab = app.activeTab();
-    const sql = (tab.sql || '').trim();
-    const panel = tabPanel(tab);
+    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
+      flashToast('Fix Spec errors before sharing', { document: doc });
+      return;
+    }
+    const sql = String(tab.sqlDraft || '');
+    const panel = queryPanel({ spec: evaluated.parsed });
     // The gate matches the decode side (main.js): sql OR panel — a text panel
     // legitimately has no SQL, and a sql-only check would make it unshareable.
-    if (!sql && !isQuerylessPanel(panel)) return;
-    const query = withQuerySpec({ ...tab, sql }, tab.spec);
+    if (!sql.trim() && !isQuerylessPanel(panel)) return;
+    const query = withQuerySpec({ id: tab.savedId, sql }, evaluated.parsed);
     const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(query);
     win.history && win.history.replaceState && win.history.replaceState(null, '', url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
@@ -1634,8 +1687,7 @@ export function createApp(env = {}) {
     if (app.state.exporting.value) return;
     const waveMs = wallNow(); // one wall clock for this export wave (gate + args)
     if (varGateBlocked(waveMs)) return; // don't export with unfilled variables (#134)
-    const sel = app.editor.getSelection().text;
-    const input = sel.trim() !== '' ? sel : app.activeTab().sql;
+    const input = app.activeTab().sqlDraft;
     const statements = splitStatements(input);
     if (!statements.length) { flashToast('Nothing to export', { document: doc }); return; }
     if (statements.length === 1) return exportDirect(statements[0], waveMs);
@@ -1960,20 +2012,21 @@ export function createApp(env = {}) {
     url.revokeObjectURL(href);
   }
 
-  // The toolbar Save button reads "Saved" (accent) when the active tab is linked
-  // to a saved entry and its SQL AND panel config are unchanged; "Save"
-  // otherwise (incl. dirty) — a panel edit re-arms the button exactly like a
-  // SQL edit (#166 dirty pin), else the stale "Saved" label would tell the
-  // user their panel change needs no re-save.
+  const specBlocked = (tab) => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
+  app.specBlocked = specBlocked;
+
   app.updateSaveBtn = () => {
     if (!app.dom.saveBtn) return;
     const tab = app.activeTab();
     const entry = savedForTab(app.state, tab);
-    const clean = !!entry && entry.sql.trim() === String(tab.sql || '').trim()
-      && JSON.stringify(entry.spec) === JSON.stringify(tab.spec);
+    const clean = !!entry && !tab.dirtySql && !tab.dirtySpec;
+    const blocked = !!entry && specBlocked(tab);
     app.dom.saveBtn.classList.toggle('saved', clean);
     app.dom.saveBtn.replaceChildren(Icon.bookmark(), h('span', null, clean ? 'Saved' : 'Save'));
-    app.dom.saveBtn.title = clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
+    app.dom.saveBtn.disabled = blocked;
+    app.dom.saveBtn.title = blocked
+      ? 'Fix blocking Spec errors before saving'
+      : clean ? 'Saved — edit to re-save (⌘S)' : 'Save query (⌘S)';
   };
   // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
   // button, Esc + click-outside close (capture listeners), stored at
@@ -2010,32 +2063,63 @@ export function createApp(env = {}) {
     return { close };
   }
 
-  // Name popover anchored under the Save button. Prefill with the tab's name (or
-  // a name inferred from the SQL); Enter/Save → saveQuery (create or update in
-  // place) + relink the tab; Esc / click-outside cancels.
+  function commitLinkedQuery() {
+    const tab = app.activeTab();
+    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
+      app.specEditor.revealDiagnostic(0);
+      flashToast('Fix Spec errors before saving', { document: doc });
+      return null;
+    }
+    const panel = queryPanel({ spec: evaluated.parsed });
+    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(panel)) {
+      flashToast('Nothing to save', { document: doc });
+      return null;
+    }
+    const entry = commitSavedQuery(app.state, tab, evaluated.parsed, saveJSON);
+    if (!entry) return null;
+    app.revalidateSpecDrafts();
+    app.specEditor.syncFromState();
+    app.updateSaveBtn();
+    app.actions.rerenderTabs();
+    renderSavedHistory(app);
+    renderResults(app);
+    app.updateEditorModeUi();
+    flashToast('Saved', { document: doc });
+    return entry;
+  }
+
+  function saveActiveQuery() {
+    return savedForTab(app.state, app.activeTab()) ? commitLinkedQuery() : openSavePopover();
+  }
+
+  // Creation-only Name/Description popover. Once linked, the textual Spec is
+  // authoritative and Save bypasses this UI entirely.
   function openSavePopover() {
     const tab = app.activeTab();
     // A queryless panel (text, #166) is authored entirely in its cfg, so it
     // saves with empty SQL — the same per-type relaxation saveQuery applies.
-    if (!String(tab.sql || '').trim() && !isQuerylessPanel(tabPanel(tab))) {
+    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(tabPanel(tab))) {
       flashToast('Nothing to save', { document: doc });
       return;
     }
     if (app.dom.savePopover) return;
-    const entry = savedForTab(app.state, tab);
-    const prefill = entry ? queryName(entry) : (tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sql));
+    const prefill = tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sqlDraft);
     const input = h('input', { class: 'sp-input', value: prefill });
     const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
-    if (entry && queryDescription(entry)) descInput.value = queryDescription(entry);
     let close;
     const commit = () => {
       if (!input.value.trim()) return;
-      saveQuery(app.state, tab, input.value, descInput.value, saveJSON);
+      const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON);
+      if (!entry) return;
       close();
+      app.revalidateSpecDrafts();
+      app.specEditor.syncFromState();
       app.updateSaveBtn();
+      app.updateEditorModeUi();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
-      flashToast('Saved', { document: doc }); // saveQuery dirtied the library → title effect adds the dot
+      flashToast('Saved', { document: doc });
     };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     // In the multiline description, plain Enter inserts a newline; ⌘/Ctrl+Enter commits.
@@ -2052,6 +2136,64 @@ export function createApp(env = {}) {
     setTimeout(() => { input.focus(); input.select(); });
   }
   app.openSavePopover = openSavePopover;
+
+  function validateSpecDraft({ focus = true } = {}) {
+    const tab = app.activeTab();
+    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    if (focus && evaluated.diagnostics.length) app.specEditor.revealDiagnostic(0);
+    app.updateEditorModeUi();
+    return evaluated;
+  }
+
+  function formatSpec() {
+    const tab = app.activeTab();
+    if (tab.editorMode !== 'spec') return;
+    const formatted = formatSpecText(tab.specText);
+    if (formatted.diagnostic) {
+      app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+      app.specEditor.revealDiagnostic(0);
+      return;
+    }
+    app.specEditor.replaceDocument(formatted.text);
+  }
+
+  function revertSpec() {
+    const tab = app.activeTab();
+    const entry = savedForTab(app.state, tab);
+    if (!entry) return;
+    if (tab.dirtySpec && !app.confirm('Discard this Spec draft and restore the last saved version?')) return;
+    setTabSpecDraft(tab, entry.spec);
+    app.revalidateSpecDrafts();
+    app.specEditor.resetDocument(tab.specText);
+    app.actions.rerenderTabs();
+    app.updateSaveBtn();
+    app.updateEditorModeUi();
+    renderResults(app);
+  }
+
+  function setEditorMode(mode) {
+    const tab = app.activeTab();
+    if (mode === 'spec' && !savedForTab(app.state, tab)) {
+      flashToast('Save this query to create an editable Spec.', { document: doc });
+      return false;
+    }
+    if (mode !== 'sql' && mode !== 'spec') return false;
+    tab.editorMode = mode;
+    app.updateEditorModeUi();
+    const editor = mode === 'spec' ? app.specEditor : app.sqlEditor;
+    editor.requestMeasure?.();
+    editor.focus();
+    return true;
+  }
+
+  app.activateSpecConflict = (tab) => {
+    if (!tab) return;
+    batch(() => { app.state.activeTabId.value = tab.id; });
+    tab.editorMode = 'spec';
+    app.updateEditorModeUi();
+    app.specEditor.focus();
+    flashToast('This query has an unsaved Spec draft. Save or Revert it before changing Spec elsewhere.', { document: doc });
+  };
 
   // User menu: dropdown under the header user button, holding the identity and
   // a Log out item. Same close model as the save popover (Esc + outside click).
@@ -2192,9 +2334,13 @@ export function createApp(env = {}) {
     exportDirect,
     cancelExport,
     cancelExportScript,
-    save: openSavePopover,
+    save: saveActiveQuery,
     openUserMenu,
     formatQuery,
+    validateSpec: validateSpecDraft,
+    formatSpec,
+    revertSpec,
+    setEditorMode,
     explainQuery,
     setExplainView,
     setResultRowLimit,
@@ -2208,8 +2354,8 @@ export function createApp(env = {}) {
     openDashboard,
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
-    insertAtCursor: (text) => { app.editor.insertAtCursor(text); toEditorOnMobile(); },
-    replaceEditor: (text) => { app.editor.replaceDocument(text); toEditorOnMobile(); },
+    insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },
+    replaceEditor: (text) => { app.sqlEditor.replaceDocument(text); toEditorOnMobile(); },
     loadColumns,
     rerenderTabs: () => renderTabs(app),
     rerenderResults: () => renderResults(app),
@@ -2302,7 +2448,13 @@ export function renderApp(app, helpers) {
   app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
   app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
   app.dom.explainBtn = h('button', { class: 'tb-btn', title: 'Explain this query (plan, indexes, pipeline, estimate)', onclick: () => app.actions.explainQuery() }, Icon.plan(), 'Explain');
+  app.dom.validateSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Validate Spec JSON', onclick: () => app.actions.validateSpec() }, Icon.shield(), 'Validate');
+  app.dom.formatSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Format JSON (⌘⇧↵)', onclick: () => app.actions.formatSpec() }, Icon.braces(), 'Format JSON');
+  app.dom.revertSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Restore the last saved Spec', onclick: () => app.actions.revertSpec() }, Icon.undo(), 'Revert');
   app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
+  app.dom.sqlModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('sql'), 'aria-pressed': 'true' }, 'SQL');
+  app.dom.specModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('spec'), 'aria-pressed': 'false' }, 'Spec');
+  app.dom.editorModeSwitch = h('div', { class: 'editor-mode-switch', role: 'group', 'aria-label': 'Editor mode' }, app.dom.sqlModeBtn, app.dom.specModeBtn);
   // Chromium + secure-context only (app.canExport), and disabled while one is
   // already running (app.state.exporting — see setExportBtn's effect below).
   // Aria-disabled with a tooltip rather than natively `disabled` — a natively
@@ -2313,14 +2465,23 @@ export function renderApp(app, helpers) {
   }, Icon.download(), 'Export');
   app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
 
-  const editorToolbar = h('div', { class: 'ed-toolbar' }, app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn, app.dom.saveBtn, h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
+  const editorToolbar = h('div', { class: 'ed-toolbar' },
+    app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn,
+    app.dom.validateSpecBtn, app.dom.formatSpecBtn, app.dom.revertSpecBtn,
+    app.dom.saveBtn, app.dom.editorModeSwitch,
+    h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
   // Query-variable strip (#134): one input per detected {name:Type} placeholder,
   // in a single row that scrolls horizontally (never wraps) when there are many.
   // Hidden (no vertical space) until the active tab has variables — see
   // renderVarStrip. Sits below the toolbar so it doesn't compete with the
   // splitter-sized editor for height.
   app.dom.varStrip = h('div', { class: 'var-strip', style: { display: 'none' } });
-  app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } });
+  app.dom.sqlEditorHost = h('div', { class: 'document-editor sql-document-editor' });
+  app.dom.specEditorHost = h('div', { class: 'document-editor spec-document-editor' });
+  app.dom.specStatus = h('div', { class: 'spec-status', role: 'status', 'aria-live': 'polite' });
+  app.dom.specPane = h('div', { class: 'spec-editor-pane' }, app.dom.specEditorHost, app.dom.specStatus);
+  app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } },
+    app.dom.sqlEditorHost, app.dom.specPane);
   app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
   // Drop a database/table from the schema tree here → render its lineage graph.
   // Disabled in mobile mode (#126): native drag doesn't fire from touch, and the
@@ -2359,17 +2520,47 @@ export function renderApp(app, helpers) {
 
   app.root.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
 
-  app.editor.mount(app.dom.editorRegion);
+  app.sqlEditor.mount(app.dom.sqlEditorHost);
+  app.specEditor.mount(app.dom.specEditorHost);
+  app.updateEditorModeUi = () => {
+    const tab = app.activeTab();
+    const linked = !!savedForTab(state, tab);
+    if (!linked && tab.editorMode === 'spec') tab.editorMode = 'sql';
+    const specMode = tab.editorMode === 'spec';
+    app.dom.sqlEditorHost.hidden = specMode;
+    app.dom.specPane.hidden = !specMode;
+    for (const button of [app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn]) button.hidden = specMode;
+    for (const button of [app.dom.validateSpecBtn, app.dom.formatSpecBtn, app.dom.revertSpecBtn]) button.hidden = !specMode;
+    app.dom.sqlModeBtn.classList.toggle('active', !specMode);
+    app.dom.specModeBtn.classList.toggle('active', specMode);
+    app.dom.sqlModeBtn.setAttribute('aria-pressed', String(!specMode));
+    app.dom.specModeBtn.setAttribute('aria-pressed', String(specMode));
+    app.dom.specModeBtn.classList.toggle('is-disabled', !linked);
+    app.dom.specModeBtn.setAttribute('aria-disabled', String(!linked));
+    app.dom.specModeBtn.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
+    const diagnostic = tab.specDiagnostics && tab.specDiagnostics[0];
+    app.dom.specStatus.className = 'spec-status' + (diagnostic ? ` is-${diagnostic.severity}` : ' is-valid');
+    app.dom.specStatus.textContent = diagnostic
+      ? `${diagnostic.line ? `Line ${diagnostic.line}, column ${diagnostic.column}: ` : ''}${diagnostic.message}`
+      : 'Valid Spec JSON';
+    app.dom.shareBtn.disabled = app.specBlocked(tab);
+    app.dom.shareBtn.title = app.specBlocked(tab) ? 'Fix blocking Spec errors before sharing' : 'Share query (copies link)';
+    app.dom.varStrip.hidden = specMode;
+    app.updateSaveBtn();
+  };
   // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
   // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
   // just mutate the signals.
   effect(() => {
     app.state.tabs.value;
     app.state.activeTabId.value;
+    app.revalidateSpecDrafts({ refreshUi: false });
     renderTabs(app);
-    app.editor.syncFromState();
+    app.sqlEditor.syncFromState();
+    app.specEditor.syncFromState();
     app.updateSaveBtn();
     app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
+    app.updateEditorModeUi();
   });
   // Reactive repaint of the results pane: re-runs on a tab switch, a Table/JSON/
   // Chart view change, or a run-state flip. (renderResults' activeTab() also
@@ -2393,7 +2584,7 @@ export function renderApp(app, helpers) {
   // that fires for keyboard, mouse, and programmatic selection; gate on the
   // editor being focused so selecting elsewhere (results, address bar) is ignored.
   app.syncSelection = () => {
-    const sel = app.editor.hasFocus() ? app.editor.getSelection().text : '';
+    const sel = app.sqlEditor.hasFocus() ? app.sqlEditor.getSelection().text : '';
     app.state.hasSelection.value = sel.trim() !== '';
   };
   app.document.addEventListener('selectionchange', app.syncSelection);

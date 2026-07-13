@@ -8,12 +8,14 @@
   <style>
     html, body { margin: 0; background: #111; }
     /* the app mounts into a sized editor-region; give the host the same box */
-    #host { width: 680px; height: 340px; }
-    #host .cm-editor { height: 100%; }
+    #host, #spec-host { width: 680px; height: 340px; }
+    #host .cm-editor, #spec-host .cm-editor { height: 100%; }
+    #spec-host { display: none; }
   </style>
 </head>
 <body data-theme="dark">
   <div id="host"></div>
+  <div id="spec-host"></div>
   <!-- Mount the real CM6 adapter with a minimal stub controller. No bundling:
        the browser resolves the /src ESM graph directly, so every bare
        specifier the graph imports needs an import-map entry (the #89
@@ -44,8 +46,9 @@
   </script>
   <script type="module">
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
+    import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
-    import { createState, activeTab } from '/src/state.js';
+    import { createState, activeTab, newTabObj } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
@@ -59,10 +62,25 @@
     // back to the tab's stale (empty) sql.
     port.onDocChange((value) => {
       const tab = activeTab(state);
-      tab.sql = value;
-      tab.dirty = true;
+      tab.sqlDraft = value;
+      tab.dirtySql = true;
     });
     port.mount(document.getElementById('host'));
+    const specPort = createSpecEditor(app);
+    window.__specPort = specPort;
+    specPort.onDocChange((value) => {
+      const tab = activeTab(state);
+      tab.specText = value;
+      tab.dirtySpec = true;
+    });
+    specPort.mount(document.getElementById('spec-host'));
+    window.__newTab = (id) => newTabObj(id);
+    window.__showSpec = () => {
+      document.getElementById('host').style.display = 'none';
+      document.getElementById('spec-host').style.display = 'block';
+      specPort.requestMeasure();
+      specPort.focus();
+    };
 
     // The real insertion primitives the schema double-clicks use, so specs can
     // drive them synchronously inside a real gesture handler.

@@ -29,8 +29,8 @@ import { activeTab } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
 
-// Programmatic state syncs (tab switch, external tab.sql reconcile) must not
-// reach onDocChange subscribers — the app-level subscriber writes tab.sql +
+// Programmatic state syncs (tab switch, external tab.sqlDraft reconcile) must not
+// reach onDocChange subscribers — the app-level subscriber writes tab.sqlDraft +
 // dirty, and a tab switch dirtying the incoming tab would be a bug. User edits
 // and port edits (insertAtCursor/replaceDocument/drop) DO emit, matching the
 // textarea adapter's input-event semantics. Sync transactions also stay out
@@ -379,7 +379,7 @@ export function createCodeMirrorEditor(app) {
     ]),
     EditorView.updateListener.of((u) => {
       // Suppress only when EVERY transaction is a sync — an update that
-      // coalesces a user edit with a reconcile must still reach tab.sql.
+      // coalesces a user edit with a reconcile must still reach tab.sqlDraft.
       if (u.docChanged && !u.transactions.every((tr) => tr.annotation(syncTx))) {
         emit(u.state.doc.toString());
         scheduleColumnLoad(); // user edit → prefetch the statement's FROM columns (#84)
@@ -401,11 +401,11 @@ export function createCodeMirrorEditor(app) {
       if (!view) {
         const tab = activeTab(app.state); // state guarantees ≥1 tab
         shownTabId = tab.id;
-        view = new EditorView({ state: freshState(tab.sql) });
+        view = new EditorView({ state: freshState(tab.sqlDraft) });
       }
       // renderApp resets app.dom on every run — re-register the reach-in ref
       // (e2e/debug only; the app itself talks through the port).
-      app.dom.editorView = view;
+      app.dom.sqlEditorView = view;
       container.replaceChildren(view.dom);
     },
     destroy: () => {
@@ -456,23 +456,23 @@ export function createCodeMirrorEditor(app) {
       for (const id of tabStates.keys()) if (!ids.has(id)) tabStates.delete(id); // closed tabs
       if (shownTabId === tab.id) {
         // Same tab (the effect also fires on unrelated tab-list changes):
-        // reconcile only an external tab.sql change; equal doc = strict no-op
+        // reconcile only an external tab.sqlDraft change; equal doc = strict no-op
         // (selection/scroll/completion untouched). Length check first — the
         // effect fires on every tab op and O(doc) compares add up.
-        if (view.state.doc.length !== tab.sql.length || view.state.doc.toString() !== tab.sql) {
-          view.dispatch({ ...fullReplace(view.state, tab.sql), annotations: syncAnnotations() });
+        if (view.state.doc.length !== tab.sqlDraft.length || view.state.doc.toString() !== tab.sqlDraft) {
+          view.dispatch({ ...fullReplace(view.state, tab.sqlDraft), annotations: syncAnnotations() });
         }
         return;
       }
       if (ids.has(shownTabId)) tabStates.set(shownTabId, view.state); // park the outgoing tab (undo intact); a just-closed tab isn't kept
       let next = tabStates.get(tab.id) || null;
       if (next) {
-        // A parked state may predate a refData arrival or an external tab.sql
+        // A parked state may predate a refData arrival or an external tab.sqlDraft
         // write — re-apply the current language and reconcile the doc via
         // detached updates (undo history survives; no view listener fires).
         next = next.update({ effects: langCompartment.reconfigure(langExt) }).state;
-        if (next.doc.length !== tab.sql.length || next.doc.toString() !== tab.sql) {
-          next = next.update({ ...fullReplace(next, tab.sql), annotations: syncAnnotations() }).state;
+        if (next.doc.length !== tab.sqlDraft.length || next.doc.toString() !== tab.sqlDraft) {
+          next = next.update({ ...fullReplace(next, tab.sqlDraft), annotations: syncAnnotations() }).state;
         }
         // Collapse the restored selection to its head: an invisible parked
         // selection would silently retarget ⌘↵/Export (which read
@@ -481,7 +481,7 @@ export function createCodeMirrorEditor(app) {
         const head = clamp(next.selection.main.head, 0, next.doc.length);
         next = next.update({ selection: { anchor: head }, annotations: syncAnnotations() }).state;
       } else {
-        next = freshState(tab.sql);
+        next = freshState(tab.sqlDraft);
       }
       shownTabId = tab.id;
       view.setState(next); // setState is not a transaction — nothing emits

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId, effectiveFilterActive,
-  saveQuery, savedForTab, renameSaved, toggleFavorite, sortedSaved, filterSaved, filterHistory, importSaved,
-  deleteSaved, recordHistory, recordScriptHistory, clearHistory, deleteHistory, tabPanel,
+  createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
+  sortedSaved, filterSaved, filterHistory, importSaved, deleteSaved, recordHistory,
+  recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, tabDirty,
   renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
@@ -23,9 +24,14 @@ const reader = (over = {}) => ({
 describe('newTabObj', () => {
   it('creates a blank tab', () => {
     expect(newTabObj('t9')).toEqual({
-      id: 't9', name: 'Untitled', sql: '', specVersion: 1,
-      spec: { name: 'Untitled', favorite: false }, dirty: false, result: null, savedId: null,
+      id: 't9', name: 'Untitled', sqlDraft: '', specVersion: 1,
+      specText: '{\n  "name": "Untitled",\n  "favorite": false\n}',
+      specParsed: { name: 'Untitled', favorite: false }, specDiagnostics: [],
+      editorMode: 'sql', dirtySql: false, dirtySpec: false,
+      result: null, savedId: null,
     });
+    expect(tabDirty(newTabObj('t1'))).toBe(false);
+    expect(tabDirty({ dirtySpec: true })).toBe(true);
   });
 });
 
@@ -138,56 +144,62 @@ describe('activeTab / allocTabId', () => {
 });
 
 describe('saved queries', () => {
-  it('saveQuery is a no-op for empty SQL or empty name', () => {
+  it('createSavedQuery is a no-op for empty SQL or empty name', () => {
     const s = createState(reader());
     const save = vi.fn();
-    s.tabs.value[0].sql = '';
-    expect(saveQuery(s, s.tabs.value[0], 'name', '', save)).toBeNull();
-    s.tabs.value[0].sql = 'SELECT 1';
-    expect(saveQuery(s, s.tabs.value[0], '  ', '', save)).toBeNull();
+    s.tabs.value[0].sqlDraft = '';
+    expect(createSavedQuery(s, s.tabs.value[0], 'name', '', save)).toBeNull();
+    s.tabs.value[0].sqlDraft = 'SELECT 1';
+    expect(createSavedQuery(s, s.tabs.value[0], '  ', '', save)).toBeNull();
     expect(save).not.toHaveBeenCalled();
   });
-  it('saveQuery creates + links the tab, then updates in place on re-save', () => {
+  it('creates an unsaved query, then atomically commits linked SQL + authoritative Spec', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
-    tab.sql = 'SELECT 1';
-    const e1 = saveQuery(s, tab, 'My query', '', save, 100);
+    tab.sqlDraft = 'SELECT 1';
+    const e1 = createSavedQuery(s, tab, 'My query', '', save, 100);
     expect(e1).toEqual(expect.objectContaining({ sql: 'SELECT 1', specVersion: 1 }));
     expect(e1.spec).toMatchObject({ name: 'My query', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
     expect(s.savedQueries).toHaveLength(1);
     expect(save).toHaveBeenLastCalledWith(KEYS.saved, s.savedQueries);
-    // re-save the linked tab → updates the same entry in place
-    tab.sql = 'SELECT 2';
-    const e2 = saveQuery(s, tab, 'My query v2', '', save, 200);
+    // Linked Save bypasses popover fields and commits the two drafts directly.
+    tab.sqlDraft = 'SELECT 2';
+    tab.specParsed.name = 'My query v2';
+    tab.dirtySql = true; tab.dirtySpec = true;
+    const e2 = commitSavedQuery(s, tab, tab.specParsed, save);
     expect(e2.id).toBe(e1.id);
     expect(s.savedQueries).toHaveLength(1);
     expect(s.savedQueries[0].sql).toBe('SELECT 2');
     expect(queryName(s.savedQueries[0])).toBe('My query v2');
     expect(tab.name).toBe('My query v2');
+    expect(tabDirty(tab)).toBe(false);
   });
-  it('saveQuery stores/updates/clears an optional description', () => {
+  it('creation stores a description and linked commits normalize/clear it', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
-    tab.sql = 'SELECT 1';
-    const e = saveQuery(s, tab, 'Q', '  what it does  ', save, 100); // trimmed
+    tab.sqlDraft = 'SELECT 1';
+    const e = createSavedQuery(s, tab, 'Q', '  what it does  ', save, 100); // trimmed
     expect(queryDescription(e)).toBe('what it does');
-    saveQuery(s, tab, 'Q', 'changed', save, 200); // update in place
+    tab.specParsed.description = ' changed ';
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryDescription(s.savedQueries[0])).toBe('changed');
-    saveQuery(s, tab, 'Q', '   ', save, 300); // blank → dropped
+    tab.specParsed.description = '   ';
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect('description' in s.savedQueries[0].spec).toBe(false);
     // create with no description arg → no description field
-    const t2 = newTabObj('t2'); t2.sql = 'SELECT 2'; s.tabs.value.push(t2);
-    const e2 = saveQuery(s, t2, 'Q2', undefined, save, 400);
+    const t2 = newTabObj('t2'); t2.sqlDraft = 'SELECT 2'; s.tabs.value.push(t2);
+    const e2 = createSavedQuery(s, t2, 'Q2', undefined, save, 400);
     expect('description' in e2.spec).toBe(false);
   });
   it('savedForTab resolves the linked entry (or null)', () => {
     const s = createState(reader());
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
     s.tabs.value[0].savedId = 's1';
+    s.tabs.value[0].editorMode = 'spec';
     expect(savedForTab(s, s.tabs.value[0])).toMatchObject({ id: 's1' });
     s.tabs.value[0].savedId = 'gone';
     expect(savedForTab(s, s.tabs.value[0])).toBeNull();
@@ -232,11 +244,11 @@ describe('saved queries', () => {
     s.savedQueries = [original];
     const tab = s.tabs.value[0];
     tab.savedId = 's1';
-    tab.spec = structuredClone(original.spec);
+    setTabSpecDraft(tab, original.spec);
     const save = vi.fn();
     renameSaved(s, 's1', 'New', 'Description', save);
     toggleFavorite(s, 's1', save);
-    for (const spec of [s.savedQueries[0].spec, tab.spec]) {
+    for (const spec of [s.savedQueries[0].spec, tab.specParsed]) {
       expect(spec).toMatchObject({
         name: 'New', description: 'Description', favorite: true,
         panel: { fieldConfig: { defaults: { color: 'red' } } },
@@ -260,6 +272,44 @@ describe('saved queries', () => {
     toggleFavorite(s, 'missing', save); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
     expect(save).toHaveBeenCalledTimes(1);
+  });
+  it('dirty Spec blocks pencil/favorite persistence and identifies the conflicting tab', () => {
+    const s = createState(reader());
+    const tab = s.tabs.value[0];
+    const entry = savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' });
+    s.savedQueries = [entry];
+    tab.savedId = 's1';
+    setTabSpecDraft(tab, entry.spec, { dirty: true });
+    const save = vi.fn();
+    expect(renameSaved(s, 's1', 'Overwrite', undefined, save)).toMatchObject({ ok: false, conflictTab: tab });
+    expect(toggleFavorite(s, 's1', save)).toMatchObject({ ok: false, conflictTab: tab });
+    expect(queryName(s.savedQueries[0])).toBe('Original');
+    expect(queryFavorite(s.savedQueries[0])).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+  });
+  it('an invalid linked Spec makes atomic Save persist nothing and retain both dirty flags', () => {
+    const s = createState(reader());
+    const tab = s.tabs.value[0];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
+    tab.savedId = 's1'; tab.sqlDraft = 'SELECT 2'; tab.dirtySql = true; tab.dirtySpec = true;
+    const save = vi.fn();
+    expect(commitSavedQuery(s, tab, { name: '  ', extension: true }, save)).toBeNull();
+    expect(s.savedQueries[0].sql).toBe('SELECT 1');
+    expect(tabDirty(tab)).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+  });
+  it("linked Save keeps the existing empty-SQL guard except for text panels", () => {
+    const s = createState(reader());
+    const tab = s.tabs.value[0];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
+    tab.savedId = 's1'; tab.sqlDraft = ''; tab.dirtySql = true;
+    const save = vi.fn();
+    expect(commitSavedQuery(s, tab, { name: 'Q', favorite: false }, save)).toBeNull();
+    expect(s.savedQueries[0].sql).toBe('SELECT 1');
+    expect(save).not.toHaveBeenCalled();
+    const textSpec = { name: 'Q', favorite: false, panel: { cfg: { type: 'text', content: 'note' } } };
+    expect(commitSavedQuery(s, tab, textSpec, save)).not.toBeNull();
+    expect(s.savedQueries[0].sql).toBe('');
   });
   it('filterSaved matches name/description/sql case-insensitively; blank → unchanged', () => {
     const list = [
@@ -305,67 +355,67 @@ describe('saved queries', () => {
     expect(tabPanel(null)).toBeNull();
     expect(tabPanel(savedQuery())).toBeNull();
     const cfg = { type: 'bar', x: 0, y: [1], series: null };
-    const tab = savedQuery({ panel: { cfg, key: 'k', fieldConfig: { defaults: {} } } });
+    const tab = newTabObj('t1');
+    setTabSpecDraft(tab, savedQuery({ panel: { cfg, key: 'k', fieldConfig: { defaults: {} } } }).spec);
     const panel = tabPanel(tab);
     expect(panel).toEqual({ cfg, key: 'k', fieldConfig: { defaults: {} } });
-    expect(panel).not.toBe(tab.spec.panel);
+    expect(panel).not.toBe(tab.specParsed.panel);
   });
-  it('saveQuery persists/updates the complete panel without a legacy mirror', () => {
+  it('creation/commit persist the complete panel without a legacy mirror', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
-    tab.sql = 'SELECT a, b';
-    tab.spec.panel = {
+    tab.sqlDraft = 'SELECT a, b';
+    tab.specParsed.panel = {
       cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64',
       fieldConfig: { defaults: { color: 'red' } },
     };
-    const e1 = saveQuery(s, tab, 'Chartd', '', save, 100);
-    expect(queryPanel(e1)).toEqual(tab.spec.panel);
-    expect(queryPanel(e1)).not.toBe(tab.spec.panel);
+    const e1 = createSavedQuery(s, tab, 'Chartd', '', save, 100);
+    expect(queryPanel(e1)).toEqual(tab.specParsed.panel);
+    expect(queryPanel(e1)).not.toBe(tab.specParsed.panel);
     expect('chart' in e1).toBe(false);
     // re-save with a different cfg; future panel siblings remain.
-    tab.spec.panel.cfg = { type: 'line', x: 0, y: [1], series: null };
-    saveQuery(s, tab, 'Chartd', '', save, 200);
+    tab.specParsed.panel.cfg = { type: 'line', x: 0, y: [1], series: null };
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryPanel(s.savedQueries[0]).cfg.type).toBe('line');
     expect(queryPanel(s.savedQueries[0]).fieldConfig.defaults.color).toBe('red');
-    tab.spec.panel.cfg = { type: 'logs' };
-    saveQuery(s, tab, 'Chartd', '', save, 250);
+    tab.specParsed.panel.cfg = { type: 'logs' };
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryPanel(s.savedQueries[0]).cfg).toEqual({ type: 'logs' });
     // re-save after the whole panel is cleared.
-    delete tab.spec.panel;
-    saveQuery(s, tab, 'Chartd', '', save, 300);
+    delete tab.specParsed.panel;
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryPanel(s.savedQueries[0])).toBeUndefined();
   });
-  it("saveQuery allows sql:'' for a text panel only (#166 per-type save guard)", () => {
+  it("createSavedQuery allows sql:'' for a text panel only (#166 per-type save guard)", () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
-    tab.sql = '';
-    expect(saveQuery(s, tab, 'NoSql', '', save, 100)).toBeNull(); // no panel → still blocked
-    tab.spec.panel = { cfg: { type: 'table' } };
-    expect(saveQuery(s, tab, 'NoSql', '', save, 150)).toBeNull(); // non-text panel → blocked
-    tab.spec.panel = { cfg: { type: 'text', content: '# hello' } };
-    const e = saveQuery(s, tab, 'Note', '', save, 200);
+    tab.sqlDraft = '';
+    expect(createSavedQuery(s, tab, 'NoSql', '', save, 100)).toBeNull(); // no panel → still blocked
+    tab.specParsed.panel = { cfg: { type: 'table' } };
+    expect(createSavedQuery(s, tab, 'NoSql', '', save, 150)).toBeNull(); // non-text panel → blocked
+    tab.specParsed.panel = { cfg: { type: 'text', content: '# hello' } };
+    const e = createSavedQuery(s, tab, 'Note', '', save, 200);
     expect(e).not.toBeNull();
     expect(e.sql).toBe('');
     expect(queryPanel(e).cfg).toEqual({ type: 'text', content: '# hello' });
     expect(e.chart).toBeUndefined();
   });
-  it('saveQuery persists the result view (Table/JSON/Panel), updates it, and ignores the transient raw view', () => {
+  it('creation captures the result view; linked Spec becomes authoritative afterward', () => {
     const s = createState(reader());
     const save = vi.fn();
     const tab = s.tabs.value[0];
-    tab.sql = 'SELECT 1';
+    tab.sqlDraft = 'SELECT 1';
     s.resultView.value = 'panel';
-    const e = saveQuery(s, tab, 'V', '', save, 100);
+    const e = createSavedQuery(s, tab, 'V', '', save, 100);
     expect(queryView(e)).toBe('panel');
-    // re-save under a different view → updates
-    s.resultView.value = 'json';
-    saveQuery(s, tab, 'V', '', save, 200);
+    tab.specParsed.view = 'json';
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryView(s.savedQueries[0])).toBe('json');
     // raw view (TSV/JSON output) is not a saved view → dropped
-    s.resultView.value = 'raw';
-    saveQuery(s, tab, 'V', '', save, 300);
+    delete tab.specParsed.view;
+    commitSavedQuery(s, tab, tab.specParsed, save);
     expect(queryView(s.savedQueries[0])).toBeUndefined();
   });
   it('deleteSaved removes + clears tab pointers', () => {
@@ -376,6 +426,7 @@ describe('saved queries', () => {
     deleteSaved(s, 's1', save);
     expect(s.savedQueries).toHaveLength(0);
     expect(s.tabs.value[0].savedId).toBeNull();
+    expect(s.tabs.value[0].editorMode).toBe('sql');
     expect(save).toHaveBeenCalledWith(KEYS.saved, []);
   });
 });
@@ -383,9 +434,9 @@ describe('saved queries', () => {
 describe('library document', () => {
   it('dirty flag: saved-query mutations set it; markLibrarySaved clears it', () => {
     const s = createState(reader());
-    const tab = s.tabs.value[0]; tab.sql = 'SELECT 1';
+    const tab = s.tabs.value[0]; tab.sqlDraft = 'SELECT 1';
     expect(s.libraryDirty.value).toBe(false);
-    saveQuery(s, tab, 'Q', '', vi.fn());
+    createSavedQuery(s, tab, 'Q', '', vi.fn());
     expect(s.libraryDirty.value).toBe(true);
     markLibrarySaved(s);
     expect(s.libraryDirty.value).toBe(false);
@@ -418,6 +469,7 @@ describe('library document', () => {
     s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
     s.libraryName.value = 'Old'; s.libraryDirty.value = true;
     s.tabs.value[0].savedId = 's1';                            // dangling after clear → pruned
+    s.tabs.value[0].editorMode = 'spec';
     s.tabs.value.push(newTabObj('t2'));                        // no savedId → skipped by prune
     const save = vi.fn(), saveName = vi.fn();
     newLibrary(s, save, saveName);
@@ -425,6 +477,7 @@ describe('library document', () => {
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
     expect(s.tabs.value[0].savedId).toBeNull();
+    expect(s.tabs.value[0].editorMode).toBe('sql');
     expect(save).toHaveBeenCalledWith(KEYS.saved, []);
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
   });
@@ -433,6 +486,7 @@ describe('library document', () => {
     const s = createState(reader());
     s.savedQueries = [savedQuery({ id: 'old', name: 'X', sql: 'x' })];
     s.tabs.value[0].savedId = 'old';                           // becomes dangling → pruned
+    s.tabs.value[0].editorMode = 'spec';
     s.libraryDirty.value = true;
     const chart = { cfg: { type: 'bar' }, key: 'k' };
     const incoming = [
@@ -454,6 +508,7 @@ describe('library document', () => {
     expect(s.libraryName.value).toBe('My Library');            // extension stripped
     expect(s.libraryDirty.value).toBe(false);
     expect(s.tabs.value[0].savedId).toBeNull();
+    expect(s.tabs.value[0].editorMode).toBe('sql');
     expect(save).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
     expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My Library');
   });
@@ -498,8 +553,8 @@ describe('library document', () => {
   it('library ops default their persistence seams (real storage helpers)', () => {
     vi.stubGlobal('localStorage', memStore());
     const s = createState(reader());
-    s.tabs.value[0].sql = 'SELECT 1';
-    const e = saveQuery(s, s.tabs.value[0], 'Q'); // default save/now/description
+    s.tabs.value[0].sqlDraft = 'SELECT 1';
+    const e = createSavedQuery(s, s.tabs.value[0], 'Q'); // default save/now/description
     renameLibrary(s, 'Lib');                // default saveName
     replaceLibrary(s, [{ id: e.id, name: 'Q', sql: 'SELECT 1' }], 'f.json'); // default seams
     newLibrary(s);                          // default seams
@@ -510,7 +565,7 @@ describe('library document', () => {
 
 describe('history', () => {
   const tab = (over = {}) => ({
-    sql: 'SELECT 1',
+    sqlDraft: 'SELECT 1',
     result: { rawText: null, rows: [[1], [2]], progress: { elapsed_ns: 5e6 } },
     ...over,
   });
@@ -518,8 +573,8 @@ describe('history', () => {
   it('recordHistory skips empty/nullish sql', () => {
     const s = createState(reader());
     const save = vi.fn();
-    recordHistory(s, tab({ sql: '  ' }), save);
-    recordHistory(s, tab({ sql: null }), save);
+    recordHistory(s, tab({ sqlDraft: '  ' }), save);
+    recordHistory(s, tab({ sqlDraft: null }), save);
     expect(s.history).toHaveLength(0);
     expect(save).not.toHaveBeenCalled();
   });
@@ -535,7 +590,7 @@ describe('history', () => {
     recordHistory(s, tab({ result: { rawText: 'x', rows: [], progress: { elapsed_ns: 0 } } }), vi.fn());
     expect(s.history[0].rows).toBeNull();
   });
-  it('recordHistory records sqlText override (selection run) over tab.sql', () => {
+  it('recordHistory records sqlText override (selection run) over tab.sqlDraft', () => {
     const s = createState(reader());
     recordHistory(s, tab(), vi.fn(), 1000, 'SELECT just_this');
     expect(s.history[0]).toMatchObject({ sql: 'SELECT just_this', rows: 2 });
@@ -578,14 +633,14 @@ describe('history', () => {
 });
 
 describe('default persistence', () => {
-  it('saveQuery/renameSaved/toggleFavorite/deleteSaved/recordHistory/clearHistory persist via storage by default', () => {
+  it('createSavedQuery/renameSaved/toggleFavorite/deleteSaved/recordHistory/clearHistory persist via storage by default', () => {
     const s = createState(reader());
     // Exercises the default saveJSON path (writes to happy-dom localStorage).
-    s.tabs.value[0].sql = 'SELECT 9';
-    const e = saveQuery(s, s.tabs.value[0], 'nine');
+    s.tabs.value[0].sqlDraft = 'SELECT 9';
+    const e = createSavedQuery(s, s.tabs.value[0], 'nine');
     renameSaved(s, e.id, 'nine!');
     toggleFavorite(s, e.id);
-    recordHistory(s, { sql: 'SELECT 9', result: { rawText: null, rows: [], progress: { elapsed_ns: 0 } } });
+    recordHistory(s, { sqlDraft: 'SELECT 9', result: { rawText: null, rows: [], progress: { elapsed_ns: 0 } } });
     deleteSaved(s, 'nope');
     deleteHistory(s, 'nope');
     clearHistory(s);

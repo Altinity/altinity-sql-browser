@@ -14,8 +14,10 @@ all bundled — see hard rule 4). Quality is held by tests.
    globals). Network goes in `src/net/` with the fetch seam *injected*, never
    imported. DOM rendering goes in `src/ui/` as functions that take the `app`
    controller — except the editor, which lives in `src/editor/` behind the
-   injected `EditorPort` seam (#143): only `main.js` imports an adapter, and
-   everything else talks to `app.editor`. Side-effectful environment access
+   injected editor seams (#143/#212): only `main.js` imports concrete adapters,
+   and everything else addresses `app.sqlEditor` or `app.specEditor` explicitly.
+   SQL execution, schema insertion, export, and SQL formatting must never target
+   whichever document happens to be visible. Side-effectful environment access
    (location, crypto, storage, fetch) is injected through `createApp(env)` so
    everything is testable.
 3. **No secrets in git.** `config.json` (rendered) is gitignored; only
@@ -29,7 +31,8 @@ all bundled — see hard rule 4). Quality is held by tests.
    graph in local, CI, and release builds, and update the lock only with an
    intentional dependency change.
    There are **four** bundled runtime dependencies — **CodeMirror 6** (the SQL
-   editor and read-only source viewer, behind injected seams — #21/#213),
+   editor, saved-query Spec JSON editor, and read-only source viewer, behind
+   injected seams — #21/#212/#213),
    **Chart.js** (the Chart result view), **@dagrejs/dagre** (the EXPLAIN
    pipeline-graph layout), and
    **@preact/signals-core** (the reactivity primitive — see
@@ -40,7 +43,7 @@ all bundled — see hard rule 4). Quality is held by tests.
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in
    `src/core/chart-data.js`; DOT→positions in `src/core/dot-layout.js`, both
    100%-covered) and make the library call an **injected seam** (`app.Chart` /
-   `app.Dagre` / `env.Editor` / `env.CodeViewer`, like the fetch/crypto seams)
+   `app.Dagre` / `env.Editor` / `env.SpecEditor` / `env.CodeViewer`, like the fetch/crypto seams)
    so the DOM wrapper stays fully tested rather than dropping below the coverage gate. (The CM6
    adapters are unit-tested against the real libraries under happy-dom.)
 5. **No UI framework; signals for state, imperative adapters for islands.** State
@@ -52,8 +55,8 @@ all bundled — see hard rule 4). Quality is held by tests.
    high-frequency-pointer surfaces (the editor, the EXPLAIN/schema graphs,
    Chart.js, result-grid resize/sort) stay **imperative behind an injected seam** —
    signals coordinate state, they don't own every mousemove. The editor is
-   **CodeMirror 6** behind the `EditorPort` seam (#21, landed ahead of #84 —
-   the completion source swaps to from-scope data there). When a *second* consumer of a
+   **CodeMirror 6** behind explicit injected SQL and Spec editor seams (#21/#212;
+   the SQL completion source swaps to from-scope data in #84). When a *second* consumer of a
    complex UI pattern appears, extract a shared primitive (e.g. `EditorPort`,
    `GraphSurface`, a result-view registry, `Drawer`) rather than copy it — but
    don't build a primitive speculatively for a single caller.
@@ -72,7 +75,7 @@ Touch these in one change:
 | `src/core/*` | pure logic, 100% covered |
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
 | `src/ui/*` | hyperscript, icons, render modules, controller |
-| `src/editor/*` | `EditorPort` seam + editor adapters (#143; CM6 lands here, #21) |
+| `src/editor/*` | injected SQL/Spec editor ports + CodeMirror adapters (#143/#21/#212) |
 | `src/state.js` | state model + pure ops |
 | `src/main.js` | bootstrap (OAuth callback, share-links) |
 | `build/build.mjs` | esbuild → `dist/sql.html` |

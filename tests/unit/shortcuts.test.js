@@ -58,7 +58,9 @@ describe('openShortcuts', () => {
     const app = makeApp({ document });
     openShortcuts(app);
     const text = document.querySelector('.modal-card').textContent;
-    expect(text).toContain('Format query');
+    expect(text).toContain('Format active document');
+    expect(text).toContain('SQL editor mode');
+    expect(text).toContain('Spec editor mode');
     expect(document.querySelector('.modal-card .section-label')).not.toBeNull();
     expect(text).toContain('Double-click');
     expect(text).toContain('Shift-click');
@@ -107,6 +109,24 @@ describe('handleKeydown', () => {
     expect(e.preventDefault).toHaveBeenCalled();
     const out = makeApp({ isSignedIn: () => false });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), out)).toBeNull();
+  });
+  it('Spec mode blocks Run and routes document formatting to the Spec editor', () => {
+    const app = makeApp();
+    app.activeTab().editorMode = 'spec';
+    const run = ev({ metaKey: true, key: 'Enter' });
+    expect(handleKeydown(run, app)).toBeNull();
+    expect(run.preventDefault).not.toHaveBeenCalled();
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), app)).toBe('formatSpec');
+    expect(app.actions.formatSpec).toHaveBeenCalled();
+    expect(app.actions.formatQuery).not.toHaveBeenCalled();
+  });
+  it('⌘⌥1/2 switches the injected document mode', () => {
+    const app = makeApp();
+    expect(handleKeydown(ev({ metaKey: true, altKey: true, key: '1' }), app)).toBe('sqlMode');
+    expect(app.actions.setEditorMode).toHaveBeenLastCalledWith('sql');
+    expect(handleKeydown(ev({ ctrlKey: true, altKey: true, key: '2' }), app)).toBe('specMode');
+    expect(app.actions.setEditorMode).toHaveBeenLastCalledWith('spec');
   });
   it('⌘⇧S shares; ⌘S toggles saved', () => {
     const app = makeApp();

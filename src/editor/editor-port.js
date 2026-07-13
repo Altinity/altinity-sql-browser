@@ -13,7 +13,7 @@
 //   text.
 // - `destroy()` is TERMINAL: it drops all subscriptions — including the
 //   app-level one createApp registers — so a destroyed port must not be
-//   re-mounted (typing would repaint but never reach tab.sql again). To swap
+//   re-mounted (typing would repaint but never reach tab.sqlDraft again). To swap
 //   editors, create a fresh port via `app.Editor(app)` and re-register its
 //   consumers; today nothing calls destroy() and the port lives as long as
 //   the app.

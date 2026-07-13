@@ -4,9 +4,11 @@ import { h, attachBackdropClose } from './dom.js';
 
 const SHORTCUTS = [
   ['Run query', '⌘↵'],
-  ['Format query', '⌘⇧↵'],
+  ['Format active document', '⌘⇧↵'],
   ['Save query', '⌘S'],
   ['Share query', '⌘⇧S'],
+  ['SQL editor mode', '⌘⌥1'],
+  ['Spec editor mode', '⌘⌥2'],
   ['Undo', '⌘Z'],
   ['Redo', '⌘⇧Z'],
   ['Show this dialog', '?'],
@@ -62,6 +64,7 @@ export function handleKeydown(e, app) {
   if (e.defaultPrevented) return null;
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.isSignedIn();
+  const editorMode = app.activeTab().editorMode || 'sql';
   // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
   if (e.key === 'Escape' && app.state.running.value) {
     e.preventDefault();
@@ -69,16 +72,28 @@ export function handleKeydown(e, app) {
     return 'cancel';
   }
   if (mod && e.key === 'Enter') {
-    // ⌘/Ctrl+Shift+Enter = format (gated by sign-in); ⌘/Ctrl+Enter = run.
+    // Format targets the active document. Plain Mod-Enter is SQL-only.
     if (e.shiftKey) {
       if (!signedIn) return null;
       e.preventDefault();
+      if (editorMode === 'spec') {
+        app.actions.formatSpec();
+        return 'formatSpec';
+      }
       app.actions.formatQuery();
       return 'formatQuery';
     }
+    if (editorMode !== 'sql') return null;
     e.preventDefault();
     app.actions.run();
     return 'run';
+  }
+  if (mod && e.altKey && (e.key === '1' || e.key === '2')) {
+    if (!signedIn) return null;
+    e.preventDefault();
+    const mode = e.key === '1' ? 'sql' : 'spec';
+    app.actions.setEditorMode(mode);
+    return mode + 'Mode';
   }
   if (mod && e.shiftKey && e.key.toLowerCase() === 's') {
     if (!signedIn) return null;

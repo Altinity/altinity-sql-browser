@@ -11,6 +11,9 @@ import {
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 import { emptyRecentMap } from './core/recent-values.js';
+import {
+  evaluateSpecText, hasBlockingSpecErrors, normalizeSpec, serializeSpec,
+} from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
 
 /**
@@ -18,7 +21,7 @@ import { signal } from '@preact/signals-core';
  * cfg/key fields drive today's renderer; future siblings ride along unchanged.
  */
 export function tabPanel(tab) {
-  const panel = queryPanel(tab);
+  const panel = queryPanel(tab && { spec: tab.specParsed });
   return panel ? cloneJson(panel) : null;
 }
 
@@ -72,11 +75,26 @@ export const MOBILE_BREAKPOINT_PX = 768;
 /** A blank query tab. Its complete Spec is the sole tab-side authoring source;
  * SQL remains the separate editor document. */
 export function newTabObj(id) {
+  const specParsed = { name: 'Untitled', favorite: false };
   return {
-    id, name: 'Untitled', sql: '', specVersion: SPEC_VERSION,
-    spec: { name: 'Untitled', favorite: false },
-    dirty: false, result: null, savedId: null,
+    id, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
+    specText: serializeSpec(specParsed), specParsed, specDiagnostics: [],
+    editorMode: 'sql', dirtySql: false, dirtySpec: false,
+    result: null, savedId: null,
   };
+}
+
+/** Overall tab dirty state is always the OR of the independent documents. */
+export const tabDirty = (tab) => !!(tab && (tab.dirtySql || tab.dirtySpec));
+
+/** Replace a tab's complete parsed Spec draft and serialized text together. */
+export function setTabSpecDraft(tab, spec, { dirty = false } = {}) {
+  const parsed = cloneJson(spec);
+  tab.specParsed = parsed;
+  tab.specText = serializeSpec(parsed);
+  tab.specDiagnostics = evaluateSpecText(tab.specText).diagnostics;
+  tab.dirtySpec = dirty;
+  return tab;
 }
 
 /**
@@ -248,7 +266,11 @@ export function allocTabId(state) {
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
 const makeId = (prefix, now) => prefix + now + rnd();
-const tabsForSaved = (state, id) => state.tabs.value.filter((t) => t.savedId === id);
+export const tabsForSaved = (state, id) => state.tabs.value.filter((t) => t.savedId === id);
+
+/** First linked tab whose textual Spec draft must not be overwritten. */
+export const dirtySpecTabForSaved = (state, id) =>
+  tabsForSaved(state, id).find((tab) => tab.dirtySpec) || null;
 
 /** The saved query a tab is linked to (via tab.savedId), or null. */
 export function savedForTab(state, tab) {
@@ -256,48 +278,88 @@ export function savedForTab(state, tab) {
 }
 
 /**
- * Save the tab's SQL under `name` (+ an optional free-text `description`). If
- * the tab is already linked to a saved entry, update that entry in place;
- * otherwise create a new one (newest first) and link the tab to it. The tab's
- * name mirrors the saved name. Returns the saved entry, or null for empty
- * SQL/name.
+ * Create a saved query from an unsaved tab. Linked tabs use commitSavedQuery()
+ * instead, so popover metadata can never compete with the textual Spec draft.
  */
-export function saveQuery(state, tab, name, description, save = saveJSON, now = Date.now()) {
-  const sql = String(tab.sql || '').trim();
+export function createSavedQuery(state, tab, name, description, save = saveJSON, now = Date.now()) {
+  if (!tab || tab.savedId) return null;
+  const sql = String(tab.sqlDraft || '');
   const nm = String(name || '').trim();
   const panel = tabPanel(tab);
   // The save guard relaxes per panel type (#166): a text panel is authored
   // entirely in its cfg, so `sql: ''` is allowed for that type ONLY.
   const sqlOptional = panel && panel.cfg.type === 'text';
-  if ((!sql && !sqlOptional) || !nm) return null;
+  if ((!sql.trim() && !sqlOptional) || !nm) return null;
   const desc = String(description || '').trim();
   // Remember the current result view (Table/JSON/Panel) so a restore reopens the
   // same data representation; the transient raw view isn't persisted.
   const view = SAVED_VIEWS.has(state.resultView.value) ? state.resultView.value : undefined;
-  let entry = savedForTab(state, tab);
-  const favorite = entry ? queryFavorite(entry) : queryFavorite(tab);
-  const draft = patchQuerySpec(withQuerySpec({ ...tab, sql }, tab.spec), {
+  const favorite = queryFavorite({ spec: tab.specParsed });
+  const draft = patchQuerySpec(withQuerySpec({ sql }, tab.specParsed), {
     name: nm,
     favorite,
     description: desc || undefined,
     panel: panel || undefined,
     view,
   });
-  if (entry) {
-    const index = state.savedQueries.findIndex((query) => query.id === entry.id);
-    entry = withQuerySpec({ ...draft, id: entry.id, sql }, draft.spec);
-    state.savedQueries[index] = entry;
-  } else {
-    entry = withQuerySpec({ ...draft, id: makeId('s', now), sql }, draft.spec);
-    state.savedQueries.unshift(entry);
-    tab.savedId = entry.id;
-  }
+  const entry = withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec));
+  state.savedQueries.unshift(entry);
+  tab.savedId = entry.id;
   tab.specVersion = SPEC_VERSION;
-  tab.spec = cloneJson(entry.spec);
-  tab.name = nm;
+  tab.sqlDraft = entry.sql;
+  tab.dirtySql = false;
+  tab.name = queryName(entry);
+  setTabSpecDraft(tab, entry.spec);
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
   return entry;
+}
+
+/** Atomically persist both documents of a linked tab in one Library write. */
+export function commitSavedQuery(state, tab, spec, save = saveJSON) {
+  const index = tab && tab.savedId
+    ? state.savedQueries.findIndex((query) => query.id === tab.savedId)
+    : -1;
+  if (index < 0 || !spec) return null;
+  const normalized = normalizeSpec(spec);
+  const diagnostics = evaluateSpecText(serializeSpec(normalized)).diagnostics;
+  if (hasBlockingSpecErrors(diagnostics)) return null;
+  const sql = String(tab.sqlDraft || '');
+  const panel = queryPanel({ spec: normalized });
+  if (!sql.trim() && panel?.cfg?.type !== 'text') return null;
+  const current = state.savedQueries[index];
+  const entry = withQuerySpec({ id: current.id, sql }, normalized);
+  state.savedQueries[index] = entry;
+  tab.specVersion = SPEC_VERSION;
+  tab.name = queryName(entry);
+  tab.dirtySql = false;
+  setTabSpecDraft(tab, entry.spec);
+  state.libraryDirty.value = true;
+  save(KEYS.saved, state.savedQueries);
+  return entry;
+}
+
+/**
+ * Generic committed-Spec writer for pencil/star/future controls. A dirty linked
+ * draft returns its owning tab and performs no mutation or persistence.
+ */
+export function patchSavedSpec(state, id, patch, save = saveJSON) {
+  const conflictTab = dirtySpecTabForSaved(state, id);
+  if (conflictTab) return { ok: false, conflictTab, entry: null };
+  const index = state.savedQueries.findIndex((query) => query.id === id);
+  if (index < 0) return { ok: false, conflictTab: null, entry: null };
+  const current = state.savedQueries[index];
+  const entry = typeof patch === 'function'
+    ? withQuerySpec(current, patch(cloneJson(current.spec)))
+    : patchQuerySpec(current, patch);
+  state.savedQueries[index] = entry;
+  for (const tab of tabsForSaved(state, id)) {
+    tab.name = queryName(entry);
+    setTabSpecDraft(tab, entry.spec);
+  }
+  state.libraryDirty.value = true;
+  save(KEYS.saved, state.savedQueries);
+  return { ok: true, conflictTab: null, entry };
 }
 
 /**
@@ -315,13 +377,7 @@ export function renameSaved(state, id, name, description, save = saveJSON) {
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
     patch.description = desc || undefined;
   }
-  state.savedQueries[index] = patchQuerySpec(entry, patch);
-  for (const tab of tabsForSaved(state, id)) {
-    tab.name = nm;
-    tab.spec = patchQuerySpec(tab, patch).spec;
-  }
-  state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
+  return patchSavedSpec(state, id, patch, save);
 }
 
 /** Toggle a saved query's favorite flag. */
@@ -330,10 +386,7 @@ export function toggleFavorite(state, id, save = saveJSON) {
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
   const favorite = !queryFavorite(entry);
-  state.savedQueries[index] = patchQuerySpec(entry, { favorite });
-  for (const tab of tabsForSaved(state, id)) tab.spec = patchQuerySpec(tab, { favorite }).spec;
-  state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
+  return patchSavedSpec(state, id, { favorite }, save);
 }
 
 /** Saved queries with favorites first (stable within each group). */
@@ -379,7 +432,10 @@ export function importSaved(state, queries, save = saveJSON, genId = () => makeI
 /** Delete a saved query by id and clear any tab pointer to it. */
 export function deleteSaved(state, id, save = saveJSON) {
   state.savedQueries = state.savedQueries.filter((q) => q.id !== id);
-  for (const t of tabsForSaved(state, id)) t.savedId = null;
+  for (const t of tabsForSaved(state, id)) {
+    t.savedId = null;
+    t.editorMode = 'sql';
+  }
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
 }
@@ -393,7 +449,12 @@ export function deleteSaved(state, id, save = saveJSON) {
  *  kept tab doesn't show "Saved" against a query that's gone. */
 function pruneTabLinks(state) {
   const ids = new Set(state.savedQueries.map((q) => q.id));
-  for (const t of state.tabs.value) if (t.savedId && !ids.has(t.savedId)) t.savedId = null;
+  for (const t of state.tabs.value) {
+    if (t.savedId && !ids.has(t.savedId)) {
+      t.savedId = null;
+      t.editorMode = 'sql';
+    }
+  }
 }
 
 /** Rename the library (blank → the default name). Marks dirty; persists name. */
@@ -460,12 +521,12 @@ function pushHistory(state, sql, rows, ms, save, now) {
 
 /**
  * Record a successful run in history. `sqlText` overrides the recorded SQL (used
- * when a selection — not the whole tab — was run); it defaults to `tab.sql`.
+ * when a selection — not the whole tab — was run); it defaults to `tab.sqlDraft`.
  */
 export function recordHistory(state, tab, save = saveJSON, now = Date.now(), sqlText) {
   pushHistory(
     state,
-    sqlText != null ? sqlText : tab.sql,
+    sqlText != null ? sqlText : tab.sqlDraft,
     tab.result.rawText != null ? null : tab.result.rows.length,
     Math.round(tab.result.progress.elapsed_ns / 1e6),
     save, now,

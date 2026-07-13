@@ -8,7 +8,8 @@ import { Icon } from './icons.js';
 import { timeAgo } from '../core/format.js';
 import { SUBQUERY_MIME } from './dnd-mime.js';
 import {
-  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved, deleteHistory, SAVED_VIEWS,
+  sortedSaved, filterSaved, filterHistory, renameSaved, toggleFavorite, deleteSaved,
+  deleteHistory, dirtySpecTabForSaved, SAVED_VIEWS,
 } from '../state.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
@@ -114,7 +115,16 @@ function renderSaved(app, list) {
     const view = queryView(q);
     const star = h('button', {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
-      onclick: (e) => { e.stopPropagation(); toggleFavorite(state, q.id, app.saveJSON); renderSavedHistory(app); },
+      onclick: (e) => {
+        e.stopPropagation();
+        const result = toggleFavorite(state, q.id, app.saveJSON);
+        if (result && result.conflictTab) app.activateSpecConflict(result.conflictTab);
+        else if (result && result.ok) {
+          app.revalidateSpecDrafts();
+          app.specEditor.syncFromState();
+        }
+        renderSavedHistory(app);
+      },
     }, Icon.star(favorite));
 
     // Run-less view restore (#166): an entry that can't auto-run (empty SQL —
@@ -135,11 +145,23 @@ function renderSaved(app, list) {
         h('span', { class: 'name' }, name),
         h('button', {
           class: 'sv-act', title: 'Edit name & description',
-          onclick: (e) => { e.stopPropagation(); app.state.editingSavedId.value = q.id; renderSavedHistory(app); },
+          onclick: (e) => {
+            e.stopPropagation();
+            const conflict = dirtySpecTabForSaved(state, q.id);
+            if (conflict) app.activateSpecConflict(conflict);
+            else app.state.editingSavedId.value = q.id;
+            renderSavedHistory(app);
+          },
         }, Icon.pencil()),
         h('button', {
           class: 'sv-act', title: 'Delete',
-          onclick: (e) => { e.stopPropagation(); deleteSaved(state, q.id, app.saveJSON); app.updateSaveBtn(); renderSavedHistory(app); },
+          onclick: (e) => {
+            e.stopPropagation();
+            deleteSaved(state, q.id, app.saveJSON);
+            app.updateSaveBtn();
+            app.updateEditorModeUi();
+            renderSavedHistory(app);
+          },
         }, Icon.trash())),
       description ? h('div', { class: 'desc' }, description) : null,
       h('div', { class: 'preview' }, q.sql.split('\n')[0]));
@@ -164,8 +186,13 @@ function savedEditForm(app, q) {
     if (done) return;
     done = true;
     if (commit && nameInput.value.trim()) {
-      renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON);
-      app.actions.rerenderTabs();
+      const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON);
+      if (result && result.conflictTab) app.activateSpecConflict(result.conflictTab);
+      else {
+        app.revalidateSpecDrafts();
+        app.specEditor.syncFromState();
+        app.actions.rerenderTabs();
+      }
     }
     app.state.editingSavedId.value = null;
     renderSavedHistory(app);

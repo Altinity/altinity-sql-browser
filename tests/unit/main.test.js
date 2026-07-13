@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { bootstrap } from '../../src/main.js';
-import { queryPanel } from '../../src/core/saved-query.js';
+import { newTabObj, tabPanel } from '../../src/state.js';
 import { signal } from '@preact/signals-core';
 
 function jwt(payload) {
@@ -13,7 +13,7 @@ function fakeApp(over = {}) {
   return {
     token: null,
     state: {
-      tabs: signal([{ id: 't1', sql: '', name: 'Untitled' }]),
+      tabs: signal([newTabObj('t1')]),
       resultView: signal('table'),
     },
     loadConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' })),
@@ -146,9 +146,9 @@ describe('bootstrap', () => {
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
-    expect(app.state.tabs.value[0].sql).toBe('SELECT 1');
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
-    expect(queryPanel(app.state.tabs.value[0])).toBeUndefined();
+    expect(tabPanel(app.state.tabs.value[0])).toBeNull();
     expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({
       sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false },
     });
@@ -160,9 +160,9 @@ describe('bootstrap', () => {
     const hash = '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ __asb: 1, sql: 'SELECT a, b FROM t', chart }))));
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
-    expect(app.state.tabs.value[0].sql).toBe('SELECT a, b FROM t');
-    expect(queryPanel(app.state.tabs.value[0])).toEqual(chart);
-    expect(queryPanel(app.state.tabs.value[0])).not.toBe(chart); // cloned, not aliased
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT a, b FROM t');
+    expect(tabPanel(app.state.tabs.value[0])).toEqual(chart);
+    expect(tabPanel(app.state.tabs.value[0])).not.toBe(chart); // cloned, not aliased
   });
 
   it('seeds a text panel from a share link with EMPTY SQL (#166 — the gate is sql || panel)', async () => {
@@ -172,8 +172,8 @@ describe('bootstrap', () => {
     const env = fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].name).toBe('Shared query');
-    expect(app.state.tabs.value[0].sql).toBe('');
-    expect(queryPanel(app.state.tabs.value[0])).toEqual(panel);
+    expect(app.state.tabs.value[0].sqlDraft).toBe('');
+    expect(tabPanel(app.state.tabs.value[0])).toEqual(panel);
     expect(app.state.resultView.value).toBe('panel');
     expect(JSON.parse(env.sessionStorage.getItem('oauth_shared'))).toEqual({
       sql: '', specVersion: 1,
@@ -188,9 +188,9 @@ describe('bootstrap', () => {
     const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({ sql: 'SELECT 42', chart }));
     await bootstrap(app, env);
-    expect(app.state.tabs.value[0].sql).toBe('SELECT 42');
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 42');
     expect(app.state.tabs.value[0].name).toBe('Shared query');
-    expect(queryPanel(app.state.tabs.value[0])).toEqual(chart);
+    expect(tabPanel(app.state.tabs.value[0])).toEqual(chart);
     expect(app.renderApp).toHaveBeenCalled();
     expect(env.sessionStorage.getItem('oauth_shared')).toBeNull(); // consumed on render
   });
@@ -200,7 +200,7 @@ describe('bootstrap', () => {
     const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
     env.sessionStorage.setItem('oauth_shared', '{not json');
     await bootstrap(app, env);
-    expect(app.state.tabs.value[0].sql).toBe('');
+    expect(app.state.tabs.value[0].sqlDraft).toBe('');
     expect(app.state.tabs.value[0].name).toBe('Untitled');
   });
 
@@ -249,7 +249,7 @@ describe('bootstrap', () => {
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
     await bootstrap(app, fakeEnv({ location: dashLoc({ href: 'https://ch/sql/dashboard' + hash, hash }) }));
-    expect(app.state.tabs.value[0].sql).toBe(''); // not seeded — dashboard has no editor tab
+    expect(app.state.tabs.value[0].sqlDraft).toBe(''); // not seeded — dashboard has no editor tab
     expect(app.renderDashboard).toHaveBeenCalled();
   });
 

@@ -35,6 +35,8 @@ describe('renderSavedHistory', () => {
     app.state.sidePanel.value = 'saved';
     const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }]);
+    app.activeTab().savedId = 's1';
+    app.activeTab().editorMode = 'spec';
     renderSavedHistory(app);
     const row = app.dom.savedList.querySelector('.saved-row');
     expect(row.querySelector('.preview').textContent).toBe('SELECT 1');
@@ -45,6 +47,8 @@ describe('renderSavedHistory', () => {
     byTitle(row, 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.savedQueries).toHaveLength(0);
     expect(app.updateSaveBtn).toHaveBeenCalled();
+    expect(app.updateEditorModeUi).toHaveBeenCalled();
+    expect(app.activeTab().editorMode).toBe('sql');
   });
 
   it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
@@ -72,6 +76,34 @@ describe('renderSavedHistory', () => {
     stars[1].dispatchEvent(new Event('click', { bubbles: true })); // favorite B
     expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'b'))).toBe(true);
     expect(names()).toEqual(['B', 'A']);
+    expect(app.revalidateSpecDrafts).toHaveBeenCalled();
+  });
+
+  it('saved: favorite refuses to overwrite a linked dirty Spec draft', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.dirtySpec = true;
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.sv-star'));
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(app.activateSpecConflict).toHaveBeenCalledWith(tab);
+    expect(app.saveJSON).not.toHaveBeenCalled();
+  });
+
+  it('saved: pencil refuses to open while a linked Spec draft is dirty', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.dirtySpec = true;
+    renderSavedHistory(app);
+    click(byTitle(app.dom.savedList, 'Edit name & description'));
+    expect(app.state.editingSavedId.value).toBeNull();
+    expect(app.activateSpecConflict).toHaveBeenCalledWith(tab);
   });
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
@@ -91,6 +123,7 @@ describe('renderSavedHistory', () => {
     expect(app.state.savedQueries[0].spec).toMatchObject({ name: 'New', description: 'a description' });
     expect(app.state.editingSavedId.value).toBeNull();
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
+    expect(app.revalidateSpecDrafts).toHaveBeenCalled();
     // a second commit on the now-detached field is a no-op (the `done` guard)
     nameInput.value = 'AGAIN';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from '../../src/ui/tabs.js';
-import { queryPanel } from '../../src/core/saved-query.js';
+import { tabPanel } from '../../src/state.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 
@@ -13,8 +13,8 @@ describe('renderTabs', () => {
   it('marks the active tab, shows dirty dot, and a close button only with >1 tab', () => {
     const app = makeApp();
     app.state.tabs.value = [
-      { id: 't1', name: 'A', dirty: true },
-      { id: 't2', name: 'B', dirty: false },
+      { id: 't1', name: 'A', dirtySql: true, dirtySpec: false },
+      { id: 't2', name: 'B', dirtySql: false, dirtySpec: false },
     ];
     app.state.activeTabId.value = 't1';
     renderTabs(app);
@@ -62,33 +62,46 @@ describe('selectTab', () => {
 describe('newTab / loadIntoNewTab', () => {
   it('newTab appends a blank tab + focuses', () => {
     const app = makeApp();
-    app.editor.focus = vi.fn(); // tabs.js focuses through the port (#143)
+    app.sqlEditor.focus = vi.fn(); // tabs.js focuses through the port (#143)
     newTab(app);
     expect(app.state.tabs.value).toHaveLength(2);
     expect(app.activeTab().name).toBe('Untitled');
-    expect(app.editor.focus).toHaveBeenCalled();
+    expect(app.sqlEditor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab seeds name + sql, links savedId, and focuses the editor', () => {
     const app = makeApp();
-    app.editor.focus = vi.fn();
+    app.sqlEditor.focus = vi.fn();
     loadIntoNewTab(app, savedQuery({ id: 's1', name: 'Saved', sql: 'SELECT 1' }));
-    expect(app.activeTab()).toMatchObject({ name: 'Saved', sql: 'SELECT 1', savedId: 's1' });
-    expect(queryPanel(app.activeTab())).toBeUndefined();
-    expect(app.editor.focus).toHaveBeenCalled();
+    expect(app.activeTab()).toMatchObject({ name: 'Saved', sqlDraft: 'SELECT 1', savedId: 's1', editorMode: 'sql' });
+    expect(tabPanel(app.activeTab())).toBeNull();
+    expect(app.sqlEditor.focus).toHaveBeenCalled();
   });
   it('loadIntoNewTab restores a chart payload (cfg cloned, key set)', () => {
     const app = makeApp();
     const chart = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64' };
     loadIntoNewTab(app, savedQuery({ id: 's1', name: 'Saved', sql: 'SELECT 1', panel: chart }));
     const tab = app.activeTab();
-    expect(queryPanel(tab)).toEqual(chart);
-    expect(queryPanel(tab)).not.toBe(chart); // cloned, not aliased into the saved entry
+    expect(tabPanel(tab)).toEqual(chart);
+    expect(tabPanel(tab)).not.toBe(chart); // cloned, not aliased into the saved entry
   });
   it('loadIntoNewTab defaults the name and leaves savedId null (history restore)', () => {
     const app = makeApp();
     loadIntoNewTab(app, '', 'SELECT 2');
     expect(app.activeTab().name).toBe('Untitled');
     expect(app.activeTab().savedId).toBeNull();
+  });
+  it('activates an already-open savedId without replacing either draft', () => {
+    const app = makeApp();
+    const query = savedQuery({ id: 's1', name: 'Saved', sql: 'SELECT committed' });
+    const first = loadIntoNewTab(app, query);
+    first.sqlDraft = 'SELECT unsaved'; first.specText = '{ invalid'; first.dirtySpec = true;
+    newTab(app);
+    const reopened = loadIntoNewTab(app, query);
+    expect(reopened).toBe(first);
+    expect(app.activeTab()).toBe(first);
+    expect(first.sqlDraft).toBe('SELECT unsaved');
+    expect(first.specText).toBe('{ invalid');
+    expect(app.state.tabs.value).toHaveLength(3);
   });
 });
 

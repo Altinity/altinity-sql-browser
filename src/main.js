@@ -7,12 +7,14 @@ import Chart from 'chart.js/auto';
 import Dagre from '@dagrejs/dagre';
 import { createApp } from './ui/app.js';
 import { createCodeMirrorEditor } from './editor/codemirror-adapter.js';
+import { createSpecEditor } from './editor/spec-editor.js';
 import { createCodeViewer } from './editor/code-viewer.js';
 import { handleKeydown } from './ui/shortcuts.js';
 import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
 import { isDashboardRoute } from './core/dashboard.js';
+import { setTabSpecDraft } from './state.js';
 
 export async function bootstrap(app, env) {
   const loc = env.location;
@@ -80,10 +82,10 @@ export async function bootstrap(app, env) {
     const panel = queryPanel(shared);
     if (shared.sql || panel) {
       const t0 = app.state.tabs.value[0];
-      t0.sql = shared.sql;
+      t0.sqlDraft = shared.sql;
       t0.name = queryName(shared);
       t0.specVersion = shared.specVersion;
-      t0.spec = cloneJson(shared.spec);
+      setTabSpecDraft(t0, cloneJson(shared.spec));
       if (panel && panel.cfg) {
         // A panel-only link (no SQL to run) must open the Panel drawer, or
         // the recipient lands on an empty Table view and sees nothing.
@@ -121,7 +123,10 @@ export async function bootstrap(app, env) {
 
 /* c8 ignore start -- browser entry side-effect, exercised via the live app */
 if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
-  const app = createApp({ Chart, Dagre, Editor: createCodeMirrorEditor, CodeViewer: createCodeViewer, build: '__ASB_BUILD__' });
+  const app = createApp({
+    Chart, Dagre, Editor: createCodeMirrorEditor, SpecEditor: createSpecEditor,
+    CodeViewer: createCodeViewer, build: '__ASB_BUILD__',
+  });
   document.addEventListener('keydown', (e) => handleKeydown(e, app));
   bootstrap(app, {
     location: window.location,

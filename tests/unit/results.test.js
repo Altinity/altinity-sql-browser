@@ -644,7 +644,7 @@ describe('expandDataPane', () => {
   });
   it("the snapshot honours the source tab's saved panel type (a table panel renders the grid)", () => {
     const app = makeApp();
-    app.activeTab().spec.panel = { cfg: { type: 'table' } };
+    app.activeTab().specParsed.panel = { cfg: { type: 'table' } };
     expandDataPane(app, chartResult());
     const overlay = document.querySelector('.graph-overlay');
     click([...overlay.querySelectorAll('.result-view-tab')].find((b) => b.textContent === 'Panel'));
