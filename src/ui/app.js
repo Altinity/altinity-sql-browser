@@ -2357,7 +2357,7 @@ export function renderApp(app, helpers) {
   app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: app.email(), onclick: () => app.actions.openUserMenu() },
     h('span', { class: 'user-short' }, userShortName(app.email())), Icon.chevDown());
   const header = h('div', { class: 'app-header' },
-    h('div', { class: 'logo-mark' }, 'A'),
+    h('div', { class: 'logo-mark' }, Icon.brand()),
     h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
     h('div', { class: 'env-chip' }, app.host()),
     h('div', { class: 'hd-divider' }),

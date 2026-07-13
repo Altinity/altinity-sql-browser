@@ -139,7 +139,7 @@ body {
   width: 48px; height: 48px;
   margin: 0 auto 14px;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  background: none;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 22px;
   letter-spacing: -0.02em;
@@ -256,7 +256,7 @@ body {
 .logo-mark {
   width: 22px; height: 22px;
   border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  background: none;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 12px;
   flex-shrink: 0;
