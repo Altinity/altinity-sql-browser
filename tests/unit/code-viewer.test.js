@@ -37,6 +37,7 @@ describe('read-only code viewer', () => {
     expect(view.state.readOnly).toBe(true);
     expect(view.state.facet(EditorView.editable)).toBe(false);
     expect(view.contentDOM.getAttribute('contenteditable')).toBe('false');
+    expect(view.contentDOM.getAttribute('tabindex')).toBe('0');
     const enter = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
     expect(runScopeHandlers(view, enter, 'editor')).toBe(false);
     expect(view.state.doc.toString()).toBe('one\ntwo');

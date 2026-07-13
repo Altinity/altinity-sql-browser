@@ -38,7 +38,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   token classes; editor history, completion, hover, schema loading, drag/drop,
   tab parking, and state synchronization remain isolated behind `EditorPort`.
   `@codemirror/lang-json` and `@codemirror/lang-xml` are the only added packages;
-  the measured self-contained artifact grows by 18,024 bytes raw / 7,039 bytes
+  the measured self-contained artifact grows by 18,063 bytes raw / 7,059 bytes
   gzip.
 - **Iceberg Catalog Explorer example library**
   ([docs/ICEBERG-CATALOG-EXPLORER-DEMO.md](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md)).

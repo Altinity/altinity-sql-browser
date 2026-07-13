@@ -14,6 +14,7 @@ test.describe('read-only CodeMirror viewer', () => {
     const editor = frame.locator('.cm-editor');
     await expect(editor).toBeVisible();
     await expect(frame.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+    await expect(frame.locator('.cm-content')).toHaveAttribute('tabindex', '0');
     await expect(frame.locator('.cm-lineNumbers')).toBeVisible();
     expect(await page.evaluate(() => {
       const doc = window.__viewerFrame.contentDocument;

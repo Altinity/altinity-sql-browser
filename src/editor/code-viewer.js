@@ -44,6 +44,10 @@ export function createCodeViewer({
       extensions: [
         EditorState.readOnly.of(true),
         EditorView.editable.of(false),
+        // editable=false removes contenteditable and its implicit focusability.
+        // Keep the read-only surface keyboard reachable for selection/copy and
+        // the Mod-f search keymap.
+        EditorView.contentAttributes.of({ tabindex: '0' }),
         ...codePresentationExtensions(),
         codeSearchKeymap,
         languageCompartment.of(languageExtension(language)),
