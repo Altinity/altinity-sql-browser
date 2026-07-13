@@ -29,6 +29,15 @@ via **File ▾ → Append**) that introspects ClickHouse's own `system` database
 running queries, merges/replication health, and historical query/part/error
 activity — with a shared From/To filter driving every time-ranged Dashboard tile
 at once.
+The [**Iceberg catalog explorer**](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md) is a
+distributable installer + two dashboards for Iceberg data-lake catalogs:
+[`examples/iceberg-install.json`](examples/iceberg-install.json) generates the
+`ice_meta_<catalog>` navigation views (per catalog, plus a cross-catalog union
+layer) straight from filter inputs, and
+[`examples/iceberg-catalog-dashboard.json`](examples/iceberg-catalog-dashboard.json) (BI) /
+[`examples/iceberg-dba-dashboard.json`](examples/iceberg-dba-dashboard.json) (DBA,
+with snapshot/metadata **log panels**) explore them with one shared `catalog`
+filter across every tile.
 
 ## How it works
 

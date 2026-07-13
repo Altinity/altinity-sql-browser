@@ -1,0 +1,57 @@
+{
+  "format": "altinity-sql-browser/saved-queries",
+  "version": 1,
+  "exportedAt": "2026-01-01T00:00:00.000Z",
+  "queries": [
+    {
+      "id": "iced-__CATALOG__-0",
+      "name": "About: __CATALOG__ per-table drill-down",
+      "sql": "",
+      "favorite": true,
+      "description": "Generated for catalog __CATALOG__ by the Iceberg install Library (i5).",
+      "panel": {
+        "cfg": {
+          "type": "text",
+          "content": "## __CATALOG__ — per-table drill-down\n\nThese tiles use the parameterized views `ice_meta___CATALOG__.data_files(prefix)` and `parquet_stats(prefix)`, which need a table **prefix** in slash form (`namespace/table`).\n\nFill the shared **prefix** filter above — valid values come from:\n\n```sql\nSELECT s3_prefix FROM ice_meta___CATALOG__.tables\n```\n\nThe Parquet footer stats entry is deliberately **not** on the dashboard (it reads every data-file footer — slow); run it from the Library when needed."
+        }
+      },
+      "view": "panel"
+    },
+    {
+      "id": "iced-__CATALOG__-1",
+      "name": "Data files of a table (__CATALOG__)",
+      "sql": "SELECT file_path, file_format, record_count, file_size, partition\nFROM ice_meta___CATALOG__.data_files(prefix = {prefix:String})\nORDER BY file_size DESC",
+      "favorite": true,
+      "description": "Every data file of one Iceberg table with rows/bytes/partition. prefix = tables.s3_prefix (slash form, e.g. namespace/table).",
+      "panel": { "cfg": { "type": "table" } },
+      "view": "panel"
+    },
+    {
+      "id": "iced-__CATALOG__-2",
+      "name": "Small-file buckets (__CATALOG__)",
+      "sql": "SELECT\n  multiIf(file_size < 1048576, 'a: <1 MiB',\n          file_size < 16777216, 'b: 1-16 MiB',\n          file_size < 134217728, 'c: 16-128 MiB',\n          'd: >=128 MiB') AS size_bucket,\n  count() AS files,\n  round(sum(file_size) / 1048576, 1) AS total_mib\nFROM ice_meta___CATALOG__.data_files(prefix = {prefix:String})\nGROUP BY size_bucket\nORDER BY size_bucket",
+      "favorite": true,
+      "description": "Small-file problem detector: data files of the table bucketed by size. Many files under 16 MiB = compaction candidate.",
+      "panel": { "cfg": { "type": "bar", "x": 0, "y": [1], "series": null } },
+      "view": "panel"
+    },
+    {
+      "id": "iced-__CATALOG__-3",
+      "name": "Partition skew (__CATALOG__)",
+      "sql": "SELECT partition, sum(record_count) AS rows, count() AS files\nFROM ice_meta___CATALOG__.data_files(prefix = {prefix:String})\nGROUP BY partition\nORDER BY rows DESC\nLIMIT 30",
+      "favorite": true,
+      "description": "Rows and file count per partition value of the table - a lopsided chart means partition skew.",
+      "panel": { "cfg": { "type": "hbar", "x": 0, "y": [1], "series": null } },
+      "view": "panel"
+    },
+    {
+      "id": "iced-__CATALOG__-4",
+      "name": "Parquet footer stats (__CATALOG__) - SLOW, on demand",
+      "sql": "SELECT * FROM ice_meta___CATALOG__.parquet_stats(prefix = {prefix:String})",
+      "favorite": false,
+      "description": "Compression ratio, row-group counts from every Parquet footer of the table. Reads each file footer (~4s / 40 files) - run on demand, never a live tile.",
+      "panel": { "cfg": { "type": "table" } },
+      "view": "table"
+    }
+  ]
+}

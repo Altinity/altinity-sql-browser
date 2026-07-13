@@ -1,0 +1,90 @@
+[
+  {
+    "kind": "overview",
+    "slug": "db-overview",
+    "title": "ice_meta___CATALOG__ = navigation views over Iceberg catalog '__CATALOG__' metadata",
+    "body": "Read-only views over the raw Iceberg metadata of catalog `__CATALOG__` (NOT the table data itself — query the `__CATALOG__` database for data). Zero-arg views: `tables` (one row per Iceberg table, current metadata), `snapshots` (full snapshot history), `schema_columns` (current schema), `partition_spec` (default spec), `manifest_lists` (manifest inventory), `objects` (whole-warehouse object census), `metadata_log` (prior metadata.json versions). Parameterized per-table views: `data_files(prefix)`, `parquet_stats(prefix)` — pass `tables.s3_prefix` (slash form `namespace/table`). Cross-catalog: same views with a leading `catalog` column live in `ice_meta_all`.",
+    "tables": [],
+    "tags": ["iceberg", "metadata", "catalog", "overview", "s3"]
+  },
+  {
+    "kind": "note",
+    "slug": "tables-naming-convention",
+    "title": "ice_table is dot-form; s3_prefix is the slash-form key for parameterized views",
+    "body": "`ice_table = replaceAll(s3_prefix,'/','.')` (e.g. `logs/pod_logs` -> `logs.pod_logs`). The parameterized views `data_files(prefix)` / `parquet_stats(prefix)` require the raw slash form from `tables.s3_prefix`, not the dot form.",
+    "tables": ["tables"],
+    "tags": ["naming", "prefix"]
+  },
+  {
+    "kind": "note",
+    "slug": "snapshots-need-argmax-for-current",
+    "title": "snapshots is full history — current totals need argMax by sequence_number",
+    "body": "`snapshots` has one row per (table, snapshot) over all history. For CURRENT per-table totals use `argMax(total_records, sequence_number)` / `argMax(total_files_size, sequence_number)` grouped by `ice_table`, or join `tables.current_snapshot_id = snapshots.snapshot_id`.",
+    "tables": ["snapshots"],
+    "tags": ["aggregation", "current-state"]
+  },
+  {
+    "kind": "note",
+    "slug": "data-files-no-cross-table-view",
+    "title": "No all-tables data_files view — Avro partition tuple is table-specific",
+    "body": "A cross-table glob over manifest `.avro` files fails Avro schema binding because `data_file.partition` has a per-table shape. To span tables, UNION per-prefix calls: `SELECT * FROM ice_meta___CATALOG__.data_files(prefix='ns/t1') UNION ALL SELECT * FROM ice_meta___CATALOG__.data_files(prefix='ns/t2')`. Get prefixes from `tables.s3_prefix`.",
+    "tables": ["tables"],
+    "tags": ["limitation", "avro", "union"]
+  },
+  {
+    "kind": "note",
+    "slug": "parquet-stats-is-heavy",
+    "title": "parquet_stats(prefix) reads every data-file footer — on demand only",
+    "body": "`parquet_stats` opens every `.parquet` footer under the table's data/ path (~4s per 40 files). Use for on-demand tuning checks, never as a live dashboard tile.",
+    "tables": ["tables"],
+    "tags": ["performance", "cost"]
+  },
+  {
+    "kind": "note",
+    "slug": "objects-view-is-full-bucket-census",
+    "title": "objects lists the ENTIRE warehouse bucket, classified by Iceberg role",
+    "body": "`objects` globs the whole warehouse (`**`) and classifies each object as metadata.json / manifest-list / manifest / data.parquet / other by filename. Use it against `snapshots`/`data_files` for orphan-file detection; it is not a per-table filter primitive by itself (one full listing per query).",
+    "tables": ["objects"],
+    "tags": ["census", "orphans", "cost"]
+  },
+  {
+    "kind": "recipe",
+    "slug": "rows-per-table",
+    "title": "Current row count per Iceberg table (metadata only, cheap)",
+    "body": "Reads only metadata.json snapshots — no data scan.",
+    "sql": "SELECT ice_table, argMax(total_records, sequence_number) AS rows FROM ice_meta___CATALOG__.snapshots GROUP BY ice_table ORDER BY rows DESC",
+    "tables": ["snapshots"],
+    "tags": ["size", "rows"],
+    "cost_hint": "cheap",
+    "verified": true
+  },
+  {
+    "kind": "recipe",
+    "slug": "storage-per-table-gib",
+    "title": "Current storage footprint per table in GiB (metadata only, cheap)",
+    "body": "Current total_files_size per table from the latest snapshot.",
+    "sql": "SELECT ice_table, round(argMax(total_files_size, sequence_number) / 1024 / 1024 / 1024, 2) AS gib FROM ice_meta___CATALOG__.snapshots GROUP BY ice_table ORDER BY gib DESC",
+    "tables": ["snapshots"],
+    "tags": ["size", "storage"],
+    "cost_hint": "cheap",
+    "verified": true
+  },
+  {
+    "kind": "join",
+    "slug": "tables-snapshots-manifest-lists",
+    "title": "Current manifest set for a table: tables -> snapshots -> manifest_lists",
+    "body": "The live manifest set of a table is the manifest-list owned by its current snapshot: `manifest_lists.list_snapshot_id = tables.current_snapshot_id AND manifest_lists.ice_table = tables.ice_table`. Everything else in manifest_lists is history (snapshot-expiry candidates).",
+    "sql": "SELECT ml.* FROM ice_meta___CATALOG__.manifest_lists ml INNER JOIN ice_meta___CATALOG__.tables t ON ml.ice_table = t.ice_table AND ml.list_snapshot_id = t.current_snapshot_id",
+    "tables": ["tables", "snapshots", "manifest_lists"],
+    "tags": ["join", "manifests", "current-state"]
+  },
+  {
+    "kind": "join",
+    "slug": "tables-objects-orphan-detection",
+    "title": "Orphan data files: objects census minus files referenced by manifests",
+    "body": "Physical `data.parquet` objects not referenced by any manifest of the table are orphans (safe cleanup candidates after snapshot expiry). Compare `objects` (kind='data.parquet') against `data_files(prefix)` file_path per table — needs one data_files call per prefix (see data-files-no-cross-table-view).",
+    "sql": "SELECT o.path FROM ice_meta___CATALOG__.objects o LEFT JOIN ice_meta___CATALOG__.data_files(prefix = {prefix:String}) df ON endsWith(df.file_path, o.file) WHERE o.kind = 'data.parquet' AND o.ice_table = replaceAll({prefix:String},'/','.') AND df.file_path = ''",
+    "tables": ["objects", "tables"],
+    "tags": ["join", "orphans", "cleanup"]
+  }
+]
