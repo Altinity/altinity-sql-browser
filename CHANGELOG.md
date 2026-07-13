@@ -156,6 +156,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   clicks are inert instead of a TypeError).
 
 ### Fixed
+- **The detached Data view keeps its committed result visible during streaming
+  reruns** (#198). Changing a filter or clicking **Refresh** used to repaint the
+  in-flight result on every network chunk, which (a) flashed `Query returned 0
+  rows.` whenever a chunk carried column metadata before any data rows, and (b)
+  destroyed and recreated the Panel's Chart.js instance on every chunk. The
+  detached view now follows the same commit-on-success policy as dashboard
+  tiles: streaming updates a lightweight `Running… <n> rows read` status only,
+  the previously committed Table/JSON/Panel (and its chart) stays on screen
+  untouched, and the new result is committed and repainted exactly once after a
+  successful current-generation completion. Failure, cancellation, supersession,
+  and close all keep the previous committed result — and because the in-flight
+  result is never painted, the old failure-time restore repaint is gone. Winning
+  bound parameters are still recorded once; the committed toolbar row count no
+  longer changes mid-stream (`src/ui/results.js`). Dashboard and workbench
+  streaming behavior are unchanged.
 - **The detached view's Logs (Panel) surface now scrolls** (#185 follow-up).
   A readonly panel renders straight into the block-level `.res-body` with no
   `.panel-body` flex wrapper, so the `flex:1; min-height:0` that bounds
