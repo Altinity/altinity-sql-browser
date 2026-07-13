@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
 ### Added
 - **The detached Data view is now interactive: Panel switcher + query filters**
   (#185). The Data pane's **Expand** used to open a frozen snapshot; it now
@@ -1051,7 +1053,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Altinity/altinity-sql-browser/compare/v0.1.4...v0.1.5
