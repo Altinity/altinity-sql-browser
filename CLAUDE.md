@@ -25,6 +25,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    (see README "Configuring OAuth").
 4. **The build is esbuild only; runtime deps are rare and deliberate.** Source
    files are the tested files; esbuild bundles `src/main.js` → `dist/sql.html`.
+   `package-lock.json` is committed; use `npm ci` for a reproducible dependency
+   graph in local, CI, and release builds, and update the lock only with an
+   intentional dependency change.
    There are **four** bundled runtime dependencies — **CodeMirror 6** (the SQL
    editor and read-only source viewer, behind injected seams — #21/#213),
    **Chart.js** (the Chart result view), **@dagrejs/dagre** (the EXPLAIN

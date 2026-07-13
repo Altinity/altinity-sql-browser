@@ -6,7 +6,7 @@
 /test-results/
 /playwright-report/
 
-# Dependencies (reuse a sibling install or `npm ci`)
+# Dependencies (restore the committed lock with `npm ci`)
 # No trailing slash so a `node_modules` symlink is ignored too.
 /node_modules
 
@@ -33,7 +33,6 @@
 *.log
 .idea/
 .vscode/
-/package-lock.json
 
 # Python bytecode cache
 __pycache__/

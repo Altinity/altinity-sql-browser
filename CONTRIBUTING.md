@@ -8,7 +8,7 @@ please read the hard rules below before opening a PR.
 ## Quickstart
 
 ```bash
-npm install
+npm ci              # exact dependency tree from package-lock.json
 npm test            # vitest + coverage gate (must pass)
 npm run build       # esbuild → dist/sql.html
 npm run local       # build, then serve locally with a connection picker
@@ -53,6 +53,8 @@ Touch these in one change:
 ## Pull requests
 
 - Branch off `main`; keep PRs focused.
+- Keep `package-lock.json` in sync with `package.json`; use `npm ci` for normal
+  installs and `npm install <package>` only when deliberately updating deps.
 - `npm test` green (coverage gate) and `npm run build` succeeds.
 - Update the README / `CHANGELOG.md` (`[Unreleased]`) when behavior or the
   deployed surface changes.
