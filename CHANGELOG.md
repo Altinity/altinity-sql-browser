@@ -173,6 +173,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   clicks are inert instead of a TypeError).
 
 ### Fixed
+- **The Logs rescue path deep-clones the saved panel configuration before
+  handing it to controls** (#200). The rescue branch (#192/#195) fed Logs
+  controls `{ ...saved.cfg }`, a shallow spread — any nested unknown field
+  (the panel-config contract preserves fields it doesn't own, for forward
+  compatibility) stayed aliased to the live `tab.panelCfg` until the explicit
+  `onChange` write-back. `renderPanelView` now uses the canonical
+  `clonePanelCfg` helper, matching the non-rescue path's already-deep-cloned
+  `resolvePanel` output (`src/ui/panels.js`). No behavior change for the
+  current string-valued Logs fields; this closes the gap for a future
+  object-valued or extension field.
 - **The detached Data view keeps its committed result visible during streaming
   reruns** (#198). Changing a filter or clicking **Refresh** used to repaint the
   in-flight result on every network chunk, which (a) flashed `Query returned 0

@@ -271,6 +271,28 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.panel-config')).toBeNull();
     expect(region(app).querySelectorAll('.chart-config')).toHaveLength(1); // only renderChart's own bar
   });
+  it('rescue (#200): a nested unknown field on the saved cfg is deep-cloned, never aliased', () => {
+    const extension = { nested: { value: 1 } };
+    const app = panelApp(noMessageResult());
+    const savedCfg = { type: 'logs', extension };
+    app.activeTab().panelCfg = savedCfg;
+
+    renderResults(app);
+    // Rendering alone (no control change) must not mutate or replace the saved cfg.
+    expect(app.activeTab().panelCfg).toBe(savedCfg);
+    expect(app.activeTab().panelCfg.extension).toBe(extension);
+    expect(app.activeTab().dirty).toBe(false);
+
+    selectRole(app, 1, 'component'); // Message → component
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component', extension: { nested: { value: 1 } } });
+    expect(app.activeTab().panelCfg.extension).not.toBe(extension);
+    expect(app.activeTab().panelCfg.extension.nested).not.toBe(extension.nested);
+    expect(app.activeTab().dirty).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // The originally-saved object (and its nested field) are untouched.
+    expect(savedCfg).toEqual({ type: 'logs', extension: { nested: { value: 1 } } });
+    expect(extension.nested.value).toBe(1);
+  });
   it('#196: stale required roles show "<name> (missing)", selected + disabled, and never mutate cfg', () => {
     const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
     renderResults(app);
