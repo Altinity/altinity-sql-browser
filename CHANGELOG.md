@@ -29,6 +29,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **A shared, injected read-only CodeMirror source viewer** (#213) now provides
+  complete-text rendering, line numbers, local search, selection/copy, and
+  compartment-based wrapping for text, JSON, SQL, XML/HTML source, and plain
+  Markdown source. It mounts in either the app document or a detached document
+  realm and has explicit idempotent teardown. The editable SQL editor and the
+  viewer share only presentation/search extensions and the existing `.sql-*`
+  token classes; editor history, completion, hover, schema loading, drag/drop,
+  tab parking, and state synchronization remain isolated behind `EditorPort`.
+  `@codemirror/lang-json` and `@codemirror/lang-xml` are the only added packages;
+  the measured self-contained artifact grows by 18,024 bytes raw / 7,039 bytes
+  gzip.
 - **Iceberg Catalog Explorer example library**
   ([docs/ICEBERG-CATALOG-EXPLORER-DEMO.md](docs/ICEBERG-CATALOG-EXPLORER-DEMO.md)).
   Content-only (no code changes): `examples/iceberg-install.json` carries

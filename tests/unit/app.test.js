@@ -106,6 +106,7 @@ function env(over = {}) {
     crypto: webcrypto,
     Dagre: dagre,
     Editor: createCodeMirrorEditor, // the real adapter — app tests exercise editor-backed flows (#143/#21)
+    CodeViewer: vi.fn(() => ({ setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn() })),
     fetch: makeFetch([]),
     now: () => 0,
     retryMs: 0, // instant script-statement retry in tests (no real 250ms wait)
@@ -166,6 +167,27 @@ describe('createApp basics', () => {
     const app = createApp(env({ document: customDoc, root: customDoc.createElement('div') }));
     expect(app.document).toBe(customDoc);
     expect(app.document).not.toBe(document);
+  });
+  it('exposes an injected read-only viewer factory with a stub-friendly lifecycle contract', () => {
+    const createViewer = vi.fn(() => ({
+      setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn(),
+    }));
+    const app = createApp(env({ CodeViewer: createViewer }));
+    const args = { parent: document.createElement('div'), document, text: 'raw', language: 'text', wrap: false };
+    const viewer = app.CodeViewer(args);
+    viewer.setWrap(true); // consumer mode change
+    viewer.destroy();     // outgoing mode teardown
+    viewer.destroy();     // parent teardown may safely repeat it
+    expect(createViewer).toHaveBeenCalledWith(args);
+    expect(viewer.setWrap).toHaveBeenCalledWith(true);
+    expect(viewer.destroy).toHaveBeenCalledTimes(2);
+
+    const fallback = createApp(env({ CodeViewer: undefined })).CodeViewer(args);
+    expect(fallback.setText('x')).toBeUndefined();
+    expect(fallback.setLanguage('json')).toBeUndefined();
+    expect(fallback.setWrap(true)).toBeUndefined();
+    expect(fallback.focus()).toBeUndefined();
+    expect(fallback.destroy()).toBeUndefined();
   });
 });
 

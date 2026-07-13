@@ -15,13 +15,11 @@
 // unreliable.
 
 import { EditorState, Compartment, Annotation, Transaction, Prec } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, drawSelection, dropCursor, hoverTooltip } from '@codemirror/view';
+import { EditorView, keymap, dropCursor, hoverTooltip } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { bracketMatching, syntaxHighlighting, syntaxTree, HighlightStyle } from '@codemirror/language';
+import { bracketMatching, syntaxTree } from '@codemirror/language';
 import { sql, SQLDialect } from '@codemirror/lang-sql';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, startCompletion, completionStatus } from '@codemirror/autocomplete';
-import { search, searchKeymap } from '@codemirror/search';
-import { tags } from '@lezer/highlight';
 import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions, wordAt } from '../core/completions.js';
 import { fromScopeAt, pendingColumnLoads } from '../core/from-scope.js';
@@ -29,6 +27,7 @@ import { lexSql } from '../core/sql-lex.js';
 import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
+import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
 
 // Programmatic state syncs (tab switch, external tab.sql reconcile) must not
 // reach onDocChange subscribers — the app-level subscriber writes tab.sql +
@@ -41,21 +40,6 @@ const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(fals
 // The whole-document change spec — shared by replaceDocument and both
 // syncFromState reconcile paths so their shapes can't drift.
 const fullReplace = (state, text) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
-
-// Map the lang-sql token tags onto the EXISTING .sql-* stylesheet classes
-// (styles.css) — token colors and light/dark theming stay in the stylesheet,
-// zero duplicated color values. `class:` entries generate no CSS of their own.
-const sqlClasses = HighlightStyle.define([
-  { tag: tags.keyword, class: 'sql-keyword' },
-  { tag: tags.standard(tags.name), class: 'sql-func' }, // dialect `builtin` = server function names
-  { tag: tags.string, class: 'sql-string' },
-  { tag: tags.special(tags.string), class: 'sql-ident' }, // `quoted` identifiers
-  { tag: tags.number, class: 'sql-number' },
-  { tag: tags.bool, class: 'sql-keyword' },
-  { tag: tags.null, class: 'sql-keyword' },
-  { tag: tags.comment, class: 'sql-comment' },
-  { tag: tags.operator, class: 'sql-op' },
-]);
 
 // String/comment/backtick-ident syntax nodes — the contexts where bracket
 // auto-close and hover docs must stay quiet (the old adapter's maskLiterals
@@ -371,23 +355,20 @@ export function createCodeMirrorEditor(app) {
   };
 
   const extensions = () => [
-    lineNumbers(),
+    ...codePresentationExtensions(),
     history(),
-    drawSelection(),
     dropCursor(),
     bracketMatching(),
     Prec.high(EditorView.inputHandler.of(inputGuards)),
     closeBrackets(),
-    syntaxHighlighting(sqlClasses),
     langCompartment.of(langExt),
     autocompletion({ override: [completionSourceFor(app)] }),
     hoverTooltip(hoverSourceFor(app)),
-    search({ top: true }),
+    codeSearchKeymap,
     keymap.of([
       { key: 'Tab', run: acceptCompletion },
       { key: 'Tab', run: insertTwoSpaces },
       ...closeBracketsKeymap,
-      ...searchKeymap,
       ...historyKeymap,
       // Global chords (⌘↵ run, ⌘⇧↵ format, ⌘S/⌘⇧S, Esc) live on the document
       // handler (main.js) — drop CM6's Mod-Enter (insertBlankLine) so ⌘↵

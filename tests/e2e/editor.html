@@ -25,13 +25,17 @@
       "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
       "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
       "@codemirror/commands": "/node_modules/@codemirror/commands/dist/index.js",
+      "@codemirror/lang-json": "/node_modules/@codemirror/lang-json/dist/index.js",
       "@codemirror/language": "/node_modules/@codemirror/language/dist/index.js",
       "@codemirror/lang-sql": "/node_modules/@codemirror/lang-sql/dist/index.js",
+      "@codemirror/lang-xml": "/node_modules/@codemirror/lang-xml/dist/index.js",
       "@codemirror/autocomplete": "/node_modules/@codemirror/autocomplete/dist/index.js",
       "@codemirror/search": "/node_modules/@codemirror/search/dist/index.js",
       "@lezer/common": "/node_modules/@lezer/common/dist/index.js",
       "@lezer/highlight": "/node_modules/@lezer/highlight/dist/index.js",
       "@lezer/lr": "/node_modules/@lezer/lr/dist/index.js",
+      "@lezer/json": "/node_modules/@lezer/json/dist/index.js",
+      "@lezer/xml": "/node_modules/@lezer/xml/dist/index.js",
       "style-mod": "/node_modules/style-mod/src/style-mod.js",
       "w3c-keyname": "/node_modules/w3c-keyname/index.js",
       "crelt": "/node_modules/crelt/index.js",
@@ -40,6 +44,7 @@
   </script>
   <script type="module">
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
+    import { createCodeViewer } from '/src/editor/code-viewer.js';
     import { createState, activeTab } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
 
@@ -64,6 +69,27 @@
     window.__insertAtCursor = (t) => port.insertAtCursor(t);
     window.__replaceEditor = (t) => port.replaceDocument(t);
     window.__setSql = (sql) => port.replaceDocument(sql);
+    // #213 viewer probe: mount into an iframe document to exercise the real
+    // browser's cross-document adoption/root path (happy-dom unit tests cover
+    // the same contract without a second Window realm).
+    window.__mountViewer = (options = {}) => {
+      const frame = document.createElement('iframe');
+      document.body.appendChild(frame);
+      const targetDocument = frame.contentDocument;
+      const parent = targetDocument.createElement('div');
+      targetDocument.body.appendChild(parent);
+      const viewer = createCodeViewer({
+        parent,
+        document: targetDocument,
+        text: 'one\ntwo',
+        language: 'text',
+        wrap: false,
+        ...options,
+      });
+      window.__viewer = viewer;
+      window.__viewerFrame = frame;
+      return true;
+    };
     window.__ready = true;
   </script>
 </body>
