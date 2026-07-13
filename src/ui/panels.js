@@ -25,7 +25,7 @@ import { renderGridView, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs } from './logs.js';
 import { parseMarkdown } from '../core/markdown-lite.js';
 import {
-  resolvePanel, resolveLogsShape, switchPanelType, isChartFamily, CHART_FAMILY,
+  resolvePanel, resolveLogsShape, switchPanelType, isChartFamily, CHART_FAMILY, clonePanelCfg,
 } from '../core/panel-cfg.js';
 import { CHART_TYPES, schemaKey } from '../core/chart-data.js';
 
@@ -330,7 +330,7 @@ export function renderPanelView(app, r, hooks) {
   // A clone, like resolved.cfg always is — saved.cfg is the live tab.panelCfg
   // reference, and controls() must never be handed that to mutate in place.
   const [controlsArm, controlsCfg] = rescueLogs
-    ? [PANEL_TYPES.logs, { ...saved.cfg }]
+    ? [PANEL_TYPES.logs, clonePanelCfg(saved.cfg)]
     : [PANEL_TYPES[resolved.cfg.type], resolved.cfg];
   const controlsNode = controlsArm.controls({ app, result: hasGrid ? r : null, cfg: controlsCfg, onChange });
   const bar = controlsNode ? h('div', { class: 'panel-config' }, controlsNode) : null;
