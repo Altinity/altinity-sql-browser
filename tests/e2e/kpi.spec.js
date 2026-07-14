@@ -17,6 +17,13 @@ test.describe('KPI panel', () => {
     }
   });
 
+  test('uses the dashboard tile width so KPI cards flow horizontally', async ({ page }) => {
+    const boxes = await page.locator('#dashboard .kpi-card').evaluateAll((nodes) =>
+      nodes.map((node) => node.getBoundingClientRect()));
+    expect(Math.abs(boxes[1].top - boxes[0].top)).toBeLessThan(1);
+    expect(boxes[1].left).toBeGreaterThan(boxes[0].right);
+  });
+
   test('wraps to one card per row on a narrow mobile viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 800 });
     const boxes = await page.locator('#workbench .kpi-card').evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect()));

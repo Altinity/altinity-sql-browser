@@ -2191,7 +2191,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; }
-.dash-tile-body > .chart-view { flex: 1; min-width: 0; }
+.dash-tile-body > .chart-view,
+.dash-tile-body > .kpi-panel { flex: 1; min-width: 0; }
 /* Table/logs tiles (#149 D9): explicit flex constraints so content scrolls
    inside the tile instead of clipping; the workbench grid's height:100% is
    overridden back to auto (flex sizes it here). */
