@@ -99,6 +99,28 @@ describe('parseImportDoc — v2 validation', () => {
     }
   });
 
+  it('rejects schema-invalid supported Specs with query identity and an exact path', () => {
+    expect(() => parseImportDoc(envelope(2, [
+      v2('ok', '', { panel: { cfg: { type: 'table' } } }),
+      v2('latency-kpi', '', { panel: { fieldConfig: { columns: { latency: { decimals: '2' } } } } }),
+    ]))).toThrow('Query "latency-kpi": panel.fieldConfig.columns.latency.decimals must be integer.');
+    expect(() => parseImportDoc(envelope(1, [
+      { sql: 'SELECT 1', name: 'Legacy', chart: { cfg: { type: 'pie', x: 0, y: [1, 2] } } },
+    ]))).toThrow('Query at index 0: panel.cfg.y must contain at most 1 item.');
+    expect(() => parseImportDoc(envelope(1, [
+      null,
+      { sql: 'SELECT 1', name: 'Legacy', chart: { cfg: { type: 'pie', x: 0, y: [1, 2] } } },
+    ]))).toThrow('Query at index 1: panel.cfg.y must contain at most 1 item.');
+  });
+
+  it('runs the injected feature service after structural upgrade', () => {
+    const validationService = { validate: (spec) => spec.forbidden
+      ? [{ path: ['forbidden'], severity: 'error', message: 'forbidden is unavailable' }]
+      : [] };
+    expect(() => parseImportDoc(envelope(2, [v2('feature', '', { forbidden: true })]), validationService))
+      .toThrow('Query "feature": forbidden is unavailable.');
+  });
+
   it('throws clear envelope errors', () => {
     expect(() => parseImportDoc('{bad')).toThrow('Not a valid JSON file');
     expect(() => parseImportDoc('null')).toThrow('Unrecognized file format');

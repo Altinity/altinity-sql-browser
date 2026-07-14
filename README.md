@@ -60,14 +60,19 @@ commits both drafts; an unsaved tab remains SQL-only until its first Save.
 
 Spec mode provides JSON highlighting, line numbers, bracket matching, folding,
 local search, undoable two-space formatting, and continuous path-addressed parse
-and semantic diagnostics. Its toolbar is deliberately small: **Format**,
+and semantic diagnostics backed by the canonical Draft 2020-12
+[`query.spec` schema](schemas/query-spec-v1.schema.json). The
+[schema-service notes](docs/saved-query-spec-json-schema.md) and
+[visualization authoring guide](docs/visualization-spec-authoring-guide.md)
+document the reusable validation and panel contracts. Its toolbar is deliberately small: **Format**,
 **Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
 never persisted; unknown fields remain valid and survive Save.
 
 Panel controls and Library favorite/pencil edits merge their fields into valid
-open Spec drafts, preserving unrelated unsaved and extension fields. Invalid
-JSON is the only external-writer block: the affected Spec tab opens with a
-**Fix Spec JSON first** message, and nothing is changed or persisted. Run,
+open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
+schema/feature errors block the staged writer before any draft or Library entry
+is changed; invalid JSON focuses the affected Spec tab with a
+**Fix Spec JSON first** message. Run,
 Explain, SQL formatting, Export, and Share are SQL-mode actions; switch back to
 SQL to use them.
 
@@ -591,7 +596,7 @@ Preview the rendered artifacts without touching ClickHouse:
 
 ```
 src/
-  core/      pure logic — format, jwt, pkce, sql-highlight, share, sort,
+  core/      pure logic — format, jwt, pkce, Spec schema service, share, sort,
              stream, storage, chart-data, completions (editor reference data
              + ranking) — no DOM, no globals
   net/       oauth-config, oauth, ch-client (injected fetch seam)
@@ -602,7 +607,8 @@ src/
   state.js   state model + pure operations
   main.js    bootstrap (OAuth callback, share-links, initial render)
   styles.css
-build/        esbuild → single-file dist/sql.html
+schemas/      canonical query.spec JSON Schema
+build/        schema compilation + esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
 deploy/k8s/   sample Deployment, Service, ConfigMap, Ingress example
 tests/        vitest + happy-dom, one spec per module

@@ -2078,7 +2078,7 @@ export function createApp(env = {}) {
       flashToast('Nothing to save', { document: doc });
       return null;
     }
-    const entry = commitSavedQuery(app.state, tab, evaluated.parsed, saveJSON);
+    const entry = commitSavedQuery(app.state, tab, evaluated.parsed, saveJSON, app.specValidators);
     if (!entry) return null;
     app.revalidateSpecDrafts();
     app.specEditor.syncFromState();
@@ -2112,7 +2112,7 @@ export function createApp(env = {}) {
     let close;
     const commit = () => {
       if (!input.value.trim()) return;
-      const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON);
+      const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON, Date.now(), app.specValidators);
       if (!entry) return;
       close();
       app.revalidateSpecDrafts();

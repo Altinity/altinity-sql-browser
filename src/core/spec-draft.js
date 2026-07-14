@@ -2,7 +2,8 @@
 // serialization. The workbench/editor layers own presentation and source
 // markers; this module owns the deterministic data contract.
 
-import { cloneJson, isPlainObject } from './saved-query.js';
+import { cloneJson } from './saved-query.js';
+import { createQuerySpecValidationService, querySpecSchemaService } from './spec-schema.js';
 
 const isDigit = (ch) => ch >= '0' && ch <= '9';
 const isHex = (ch) => /[0-9a-f]/i.test(ch);
@@ -144,64 +145,16 @@ export function parseSpecJson(text) {
   }
 }
 
-function atPath(root, path) {
-  let value = root;
-  for (const segment of path) {
-    if (value == null || !Object.hasOwn(Object(value), segment)) return { present: false, value: undefined };
-    value = value[segment];
-  }
-  return { present: true, value };
-}
+// Compatibility name for feature validators that predate the canonical
+// schema. Known static fields now live exclusively in query-spec-v1.schema.json.
+export const CORE_SPEC_VALIDATORS = Object.freeze([]);
 
-const typeRule = (path, type, code) => ({
-  path,
-  validate: ({ value, present }) => {
-    if (!present) return [];
-    const valid = type === 'object' ? isPlainObject(value) : typeof value === type;
-    return valid ? [] : [{ path, severity: 'error', code, message: `${path.join('.')} must be ${type === 'object' ? 'an object' : `a ${type}`}` }];
-  },
-});
-
-/** Initial known-field validators. Unknown fields deliberately pass through. */
-export const CORE_SPEC_VALIDATORS = Object.freeze([
-  typeRule(['name'], 'string', 'invalid-name-type'),
-  {
-    path: ['name'],
-    validate: ({ value, present }) => present && typeof value === 'string' && !value.trim()
-      ? [{ path: ['name'], severity: 'error', code: 'blank-name', message: 'name must not be blank' }]
-      : [],
-  },
-  typeRule(['description'], 'string', 'invalid-description-type'),
-  typeRule(['favorite'], 'boolean', 'invalid-favorite-type'),
-  typeRule(['view'], 'string', 'invalid-view-type'),
-  typeRule(['panel'], 'object', 'invalid-panel-type'),
-  typeRule(['dashboard'], 'object', 'invalid-dashboard-type'),
-]);
-
-function invokeValidators(spec, validators) {
-  const diagnostics = [];
-  for (const entry of validators) {
-    const path = Array.isArray(entry.path) ? entry.path : [];
-    const ctx = { root: spec, path: [...path], ...atPath(spec, path) };
-    const produced = entry.validate(ctx) || [];
-    for (const diagnostic of Array.isArray(produced) ? produced : [produced]) {
-      diagnostics.push({
-        path: [...(diagnostic.path || path)],
-        severity: diagnostic.severity || 'error',
-        code: diagnostic.code || 'invalid-spec',
-        message: String(diagnostic.message || 'Invalid Spec value'),
-      });
-    }
-  }
-  return diagnostics;
-}
-
-/** Validate a parsed Spec with a deterministic list of validator definitions. */
-export function validateSpec(spec, validators = CORE_SPEC_VALIDATORS) {
-  if (!isPlainObject(spec)) {
-    return [{ path: [], severity: 'error', code: 'invalid-spec-root', message: 'Spec must be a JSON object' }];
-  }
-  return invokeValidators(spec, validators);
+/** Validate a parsed Spec through the canonical schema plus feature rules. */
+export function validateSpec(spec, validators = querySpecSchemaService) {
+  const service = Array.isArray(validators)
+    ? createQuerySpecValidationService(validators)
+    : validators;
+  return service.validate(spec);
 }
 
 /**
@@ -210,26 +163,15 @@ export function validateSpec(spec, validators = CORE_SPEC_VALIDATORS) {
  * returns an unregister callback; no mutable module-global registry exists.
  */
 export function createSpecValidatorRegistry(initial = CORE_SPEC_VALIDATORS) {
-  const entries = [...initial];
-  return {
-    register(path, validate) {
-      const entry = { path: [...path], validate };
-      entries.push(entry);
-      return () => {
-        const index = entries.indexOf(entry);
-        if (index >= 0) entries.splice(index, 1);
-      };
-    },
-    validate: (spec) => validateSpec(spec, entries),
-  };
+  return createQuerySpecValidationService(initial);
 }
 
 /** Parse and synchronously run semantic validation. */
-export function evaluateSpecText(text, validators = CORE_SPEC_VALIDATORS) {
+export function evaluateSpecText(text, validators = querySpecSchemaService, context) {
   const parsed = parseSpecJson(text);
   if (parsed.diagnostic) return { parsed: null, diagnostics: [parsed.diagnostic] };
   const diagnostics = validators && typeof validators.validate === 'function'
-    ? validators.validate(parsed.value)
+    ? validators.validate(parsed.value, context)
     : validateSpec(parsed.value, validators);
   return { parsed: parsed.value, diagnostics };
 }

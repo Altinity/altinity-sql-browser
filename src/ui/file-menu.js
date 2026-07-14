@@ -168,7 +168,7 @@ function pickerInput(app, onPick) {
 function readJsonFile(app, file, cb) {
   const reader = new (app.FileReader || globalThis.FileReader)();
   reader.onload = () => {
-    try { cb(parseImportDoc(String(reader.result)).queries); }
+    try { cb(parseImportDoc(String(reader.result), app.specValidators).queries); }
     catch (e) { flashToast('✕ ' + ((e && e.message) || e), { document: app.document }); }
   };
   reader.onerror = () => flashToast('✕ Could not read file', { document: app.document });
@@ -203,7 +203,7 @@ function onReplaceFile(app, file) {
 }
 
 function doReplace(app, qs, fileName) {
-  replaceLibrary(app.state, qs, fileName, app.saveJSON, app.saveStr);
+  replaceLibrary(app.state, qs, fileName, app.saveJSON, app.saveStr, undefined, app.specValidators);
   afterLibraryChange(app);
   flashToast('Opened library · ' + queries(qs.length), { document: app.document });
 }
@@ -211,7 +211,7 @@ function doReplace(app, qs, fileName) {
 function onAppendFile(app, file) {
   readJsonFile(app, file, (qs) => {
     if (!qs.length) { flashToast('✕ No queries in file', { document: app.document }); return; }
-    const { added, updated, skipped } = appendLibrary(app.state, qs, app.saveJSON);
+    const { added, updated, skipped } = appendLibrary(app.state, qs, app.saveJSON, undefined, app.specValidators);
     afterLibraryChange(app);
     flashToast('Added ' + added + ' · updated ' + updated + ' · skipped ' + skipped, { document: app.document });
   });

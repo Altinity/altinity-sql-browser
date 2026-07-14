@@ -43,27 +43,27 @@ describe('Spec semantic validation', () => {
   it('accepts known correct types and arbitrary extensions', () => {
     const spec = {
       name: 'Q', description: 'D', favorite: true, view: 'panel',
-      panel: { cfg: { type: 'future' } }, dashboard: { role: 'future' },
+      panel: { cfg: { type: 'future' } }, dashboard: { role: 'panel', future: true },
       'key.with.dots': [{ anything: true }],
     };
     expect(validateSpec(spec)).toEqual([]);
-    expect(CORE_SPEC_VALIDATORS.length).toBe(7);
+    expect(CORE_SPEC_VALIDATORS).toEqual([]);
   });
 
   it('rejects a non-object root, wrong known types, and a blank name', () => {
     expect(validateSpec([])).toEqual([
-      { path: [], severity: 'error', code: 'invalid-spec-root', message: 'Spec must be a JSON object' },
+      { path: [], severity: 'error', code: 'schema-invalid-type', message: 'Spec must be object', keyword: 'type' },
     ]);
     const diagnostics = validateSpec({
       name: '  ', description: 1, favorite: 'yes', view: [], panel: null, dashboard: [],
     });
     expect(diagnostics.map((d) => [d.path, d.code])).toEqual([
-      [['name'], 'blank-name'],
-      [['description'], 'invalid-description-type'],
-      [['favorite'], 'invalid-favorite-type'],
-      [['view'], 'invalid-view-type'],
-      [['panel'], 'invalid-panel-type'],
-      [['dashboard'], 'invalid-dashboard-type'],
+      [['dashboard'], 'schema-invalid-type'],
+      [['description'], 'schema-invalid-type'],
+      [['favorite'], 'schema-invalid-type'],
+      [['name'], 'schema-invalid-string'],
+      [['panel'], 'schema-invalid-type'],
+      [['view'], 'schema-invalid-type'],
     ]);
     expect(hasBlockingSpecErrors(diagnostics)).toBe(true);
     expect(hasBlockingSpecErrors([{ severity: 'warning' }])).toBe(false);
@@ -104,8 +104,8 @@ describe('Spec draft evaluation/formatting', () => {
     expect(evaluateSpecText('{"favorite":"yes"}')).toEqual({
       parsed: { favorite: 'yes' },
       diagnostics: [{
-        path: ['favorite'], severity: 'error', code: 'invalid-favorite-type',
-        message: 'favorite must be a boolean',
+        path: ['favorite'], severity: 'error', code: 'schema-invalid-type',
+        message: 'favorite must be boolean', keyword: 'type',
       }],
     });
     expect(evaluateSpecText('{').parsed).toBeNull();

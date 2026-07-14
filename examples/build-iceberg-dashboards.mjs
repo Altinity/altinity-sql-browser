@@ -28,6 +28,7 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { assertValidLibraryDocument } from './validate-library.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CH_CMD = (process.env.ICE_CH_CMD || `${homedir()}/bin/cl cw-metrics`).split(' ');
@@ -350,6 +351,7 @@ for (const [file, specs, prefix] of [
 ]) {
   const queries = buildEntries(specs, prefix);
   const doc = { format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: stamp, queries };
+  assertValidLibraryDocument(doc);
   const out = resolve(here, file);
   writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
   console.log(`wrote ${out} (${queries.length} entries, ${queries.filter((q) => q.spec.favorite).length} on the dashboard)`);

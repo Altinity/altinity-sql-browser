@@ -117,7 +117,7 @@ function renderSaved(app, list) {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: (e) => {
         e.stopPropagation();
-        const result = toggleFavorite(state, q.id, app.saveJSON);
+        const result = toggleFavorite(state, q.id, app.saveJSON, app.specValidators);
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.revalidateSpecDrafts();
@@ -186,7 +186,7 @@ function savedEditForm(app, q) {
     if (done) return;
     done = true;
     if (commit && nameInput.value.trim()) {
-      const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON);
+      const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON, app.specValidators);
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
       else {
         app.revalidateSpecDrafts();

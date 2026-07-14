@@ -44,6 +44,7 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { assertValidLibraryDocument } from './validate-library.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONNECTION = process.argv[2] || 'github-admin';
@@ -244,6 +245,8 @@ const doc = {
   exportedAt: new Date().toISOString(),
   queries,
 };
+
+assertValidLibraryDocument(doc);
 
 const outPath = resolve(here, 'system-explorer-charts.json');
 writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n');

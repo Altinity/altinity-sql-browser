@@ -2653,6 +2653,26 @@ describe('share + star + columns', () => {
     unregister();
     expect(linked.specDiagnostics).toEqual([]);
   });
+  it('synchronously reruns registered blocking validation inside linked Save', () => {
+    const store = { getItem: vi.fn(() => null), setItem: vi.fn() };
+    vi.stubGlobal('localStorage', store);
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.sqlEditor.replaceDocument('SELECT 10');
+    app.specEditor.replaceDocument('{"name":"Fav","favorite":false,"runtime":{"blocked":true}}');
+    app.registerSpecValidator(['runtime'], ({ value }) => value?.blocked
+      ? [{ path: ['runtime', 'blocked'], severity: 'error', code: 'runtime-blocked', message: 'Runtime says no' }]
+      : []);
+    // Simulate stale presentation state: Save must not trust this array.
+    app.activeTab().specDiagnostics = [];
+    store.setItem.mockClear();
+    app.actions.save();
+    expect(app.state.savedQueries[0].sql).toBe('SELECT 9');
+    expect(store.setItem).not.toHaveBeenCalled();
+    expect(app.activeTab().specDiagnostics[0]).toMatchObject({ code: 'runtime-blocked' });
+  });
   it('linked Save commits SQL and authoritative Spec directly without a popover', () => {
     const app = createApp(env());
     app.renderApp();

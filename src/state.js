@@ -3,7 +3,7 @@
 // every operation is unit-testable with a spy and no real localStorage.
 
 import { clamp } from './core/format.js';
-import { mergeSaved } from './core/saved-io.js';
+import { mergeSaved, validateLibraryQueries } from './core/saved-io.js';
 import {
   SPEC_VERSION, cloneJson, patchQuerySpec, queryDescription, queryFavorite, queryName,
   queryPanel, queryView, upgradeSavedQuery, withQuerySpec,
@@ -14,6 +14,7 @@ import { emptyRecentMap } from './core/recent-values.js';
 import {
   evaluateSpecText, hasBlockingSpecErrors, normalizeSpec, serializeSpec,
 } from './core/spec-draft.js';
+import { querySpecSchemaService } from './core/spec-schema.js';
 import { signal } from '@preact/signals-core';
 
 /**
@@ -88,11 +89,11 @@ export function newTabObj(id) {
 export const tabDirty = (tab) => !!(tab && (tab.dirtySql || tab.dirtySpec));
 
 /** Replace a tab's complete parsed Spec draft and serialized text together. */
-export function setTabSpecDraft(tab, spec, { dirty = false } = {}) {
+export function setTabSpecDraft(tab, spec, { dirty = false, validationService = querySpecSchemaService } = {}) {
   const parsed = cloneJson(spec);
   tab.specParsed = parsed;
   tab.specText = serializeSpec(parsed);
-  tab.specDiagnostics = evaluateSpecText(tab.specText).diagnostics;
+  tab.specDiagnostics = evaluateSpecText(tab.specText, validationService).diagnostics;
   tab.dirtySpec = dirty;
   return tab;
 }
@@ -281,12 +282,15 @@ const patchedSpec = (spec, patch) => (typeof patch === 'function'
  * Patch one valid open Spec draft without replacing unrelated unsaved fields.
  * External writers use this helper so text and parsed state stay synchronized.
  */
-export function patchSpecDraft(tab, patch, { dirty = true } = {}) {
+export function patchSpecDraft(tab, patch, { dirty = true, validationService = querySpecSchemaService } = {}) {
   if (!tab) return { ok: false, invalidTab: null };
   if (tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) {
     return { ok: false, invalidTab: tab };
   }
-  setTabSpecDraft(tab, patchedSpec(tab.specParsed, patch), { dirty });
+  const spec = patchedSpec(tab.specParsed, patch);
+  const diagnostics = validationService.validate(spec);
+  if (hasBlockingSpecErrors(diagnostics)) return { ok: false, invalidTab: tab, diagnostics };
+  setTabSpecDraft(tab, spec, { dirty, validationService });
   tab.name = queryName({ spec: tab.specParsed });
   return { ok: true, invalidTab: null, spec: tab.specParsed };
 }
@@ -300,7 +304,9 @@ export function savedForTab(state, tab) {
  * Create a saved query from an unsaved tab. Linked tabs use commitSavedQuery()
  * instead, so popover metadata can never compete with the textual Spec draft.
  */
-export function createSavedQuery(state, tab, name, description, save = saveJSON, now = Date.now()) {
+export function createSavedQuery(
+  state, tab, name, description, save = saveJSON, now = Date.now(), validationService = querySpecSchemaService,
+) {
   if (!tab || tab.savedId) return null;
   const sql = String(tab.sqlDraft || '');
   const nm = String(name || '').trim();
@@ -322,26 +328,27 @@ export function createSavedQuery(state, tab, name, description, save = saveJSON,
     view,
   });
   const entry = withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec));
+  if (hasBlockingSpecErrors(validationService.validate(entry.spec))) return null;
   state.savedQueries.unshift(entry);
   tab.savedId = entry.id;
   tab.specVersion = SPEC_VERSION;
   tab.sqlDraft = entry.sql;
   tab.dirtySql = false;
   tab.name = queryName(entry);
-  setTabSpecDraft(tab, entry.spec);
+  setTabSpecDraft(tab, entry.spec, { validationService });
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
   return entry;
 }
 
 /** Atomically persist both documents of a linked tab in one Library write. */
-export function commitSavedQuery(state, tab, spec, save = saveJSON) {
+export function commitSavedQuery(state, tab, spec, save = saveJSON, validationService = querySpecSchemaService) {
   const index = tab && tab.savedId
     ? state.savedQueries.findIndex((query) => query.id === tab.savedId)
     : -1;
   if (index < 0 || !spec) return null;
   const normalized = normalizeSpec(spec);
-  const diagnostics = evaluateSpecText(serializeSpec(normalized)).diagnostics;
+  const diagnostics = validationService.validate(normalized);
   if (hasBlockingSpecErrors(diagnostics)) return null;
   const sql = String(tab.sqlDraft || '');
   const panel = queryPanel({ spec: normalized });
@@ -352,7 +359,7 @@ export function commitSavedQuery(state, tab, spec, save = saveJSON) {
   tab.specVersion = SPEC_VERSION;
   tab.name = queryName(entry);
   tab.dirtySql = false;
-  setTabSpecDraft(tab, entry.spec);
+  setTabSpecDraft(tab, entry.spec, { validationService });
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
   return entry;
@@ -363,16 +370,30 @@ export function commitSavedQuery(state, tab, spec, save = saveJSON) {
  * applied independently to the persisted entry and every linked valid draft,
  * preserving unrelated unsaved fields. Invalid JSON blocks the whole write.
  */
-export function patchSavedSpec(state, id, patch, save = saveJSON) {
+export function patchSavedSpec(state, id, patch, save = saveJSON, validationService = querySpecSchemaService) {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
   const index = state.savedQueries.findIndex((query) => query.id === id);
   if (index < 0) return { ok: false, invalidTab: null, entry: null };
   const current = state.savedQueries[index];
   const entry = withQuerySpec(current, patchedSpec(current.spec, patch));
+  const entryDiagnostics = validationService.validate(entry.spec);
+  if (hasBlockingSpecErrors(entryDiagnostics)) {
+    return { ok: false, invalidTab: null, entry: null, diagnostics: entryDiagnostics };
+  }
+  const draftUpdates = tabsForSaved(state, id).map((tab) => ({
+    tab, spec: patchedSpec(tab.specParsed, patch), dirty: tab.dirtySpec,
+  }));
+  for (const update of draftUpdates) {
+    const diagnostics = validationService.validate(update.spec);
+    if (hasBlockingSpecErrors(diagnostics)) {
+      return { ok: false, invalidTab: update.tab, entry: null, diagnostics };
+    }
+  }
   state.savedQueries[index] = entry;
-  for (const tab of tabsForSaved(state, id)) {
-    patchSpecDraft(tab, patch, { dirty: tab.dirtySpec });
+  for (const update of draftUpdates) {
+    setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
+    update.tab.name = queryName({ spec: update.spec });
   }
   state.libraryDirty.value = true;
   save(KEYS.saved, state.savedQueries);
@@ -384,7 +405,7 @@ export function patchSavedSpec(state, id, patch, save = saveJSON) {
  * `description` is provided (not undefined) it is set/cleared too; pass
  * undefined to leave the existing description untouched (name-only rename).
  */
-export function renameSaved(state, id, name, description, save = saveJSON) {
+export function renameSaved(state, id, name, description, save = saveJSON, validationService = querySpecSchemaService) {
   const nm = String(name || '').trim();
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
@@ -394,16 +415,16 @@ export function renameSaved(state, id, name, description, save = saveJSON) {
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
     patch.description = desc || undefined;
   }
-  return patchSavedSpec(state, id, patch, save);
+  return patchSavedSpec(state, id, patch, save, validationService);
 }
 
 /** Toggle a saved query's favorite flag. */
-export function toggleFavorite(state, id, save = saveJSON) {
+export function toggleFavorite(state, id, save = saveJSON, validationService = querySpecSchemaService) {
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
   const favorite = !queryFavorite(entry);
-  return patchSavedSpec(state, id, { favorite }, save);
+  return patchSavedSpec(state, id, { favorite }, save, validationService);
 }
 
 /** Saved queries with favorites first (stable within each group). */
@@ -495,9 +516,13 @@ export function newLibrary(state, save = saveJSON, saveName = saveStr) {
 /** Replace the library with `queries`, adopting the loaded file's base name.
  *  Unique ids are kept (lossless round-trip); missing OR duplicate ids get a fresh id.
  *  Clears dirty; open tabs are kept (dangling links pruned). */
-export function replaceLibrary(state, queries, fileName, save = saveJSON, saveName = saveStr, genId = () => makeId('s', Date.now())) {
+export function replaceLibrary(
+  state, queries, fileName, save = saveJSON, saveName = saveStr,
+  genId = () => makeId('s', Date.now()), validationService = querySpecSchemaService,
+) {
+  const validated = validateLibraryQueries(queries, validationService);
   const seen = new Set();
-  state.savedQueries = queries.map(upgradeSavedQuery).map((q) => {
+  state.savedQueries = validated.map((q) => {
     // Mint a fresh id for a missing OR already-seen id so every saved row has a
     // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
     // id would let one delete remove several rows and rename/favorite hit the
@@ -517,8 +542,10 @@ export function replaceLibrary(state, queries, fileName, save = saveJSON, saveNa
 
 /** Append `queries` into the library via the standard merge dedupe (sets dirty
  *  through importSaved). Returns { added, updated, skipped }. */
-export function appendLibrary(state, queries, save = saveJSON, genId = () => makeId('s', Date.now())) {
-  return importSaved(state, queries, save, genId);
+export function appendLibrary(
+  state, queries, save = saveJSON, genId = () => makeId('s', Date.now()), validationService = querySpecSchemaService,
+) {
+  return importSaved(state, validateLibraryQueries(queries, validationService), save, genId);
 }
 
 /** Mark the library as saved to a file (clears the unsaved-changes dot). */

@@ -8,6 +8,7 @@ import {
   queryDescription, queryName, queryPanel, upgradeSavedQuery, upgradeV1Query,
   withQuerySpec,
 } from './saved-query.js';
+import { querySpecSchemaService } from './spec-schema.js';
 
 const FORMAT = 'altinity-sql-browser/saved-queries';
 const VERSION = 2;
@@ -39,13 +40,33 @@ function parseV2Query(query, index) {
   return cloneV2Query(query);
 }
 
+function invalidSpecError(query, index, diagnostic) {
+  const identity = query.id ? `Query ${JSON.stringify(query.id)}` : `Query at index ${index}`;
+  throw new Error(`${identity}: ${diagnostic.message}.`);
+}
+
+/** Validate canonical/upgraded queries before any Library mutation. */
+function validateLibraryEntries(entries, validationService) {
+  return entries.map(({ raw, index }) => {
+    const query = upgradeSavedQuery(raw);
+    const diagnostic = validationService.validate(query.spec)
+      .find((item) => item.severity === 'error');
+    if (diagnostic) invalidSpecError(query, index, diagnostic);
+    return query;
+  });
+}
+
+export function validateLibraryQueries(queries, validationService = querySpecSchemaService) {
+  return validateLibraryEntries(queries.map((raw, index) => ({ raw, index })), validationService);
+}
+
 /**
  * Parse one Library JSON document. V1 keeps its historical forgiving item
  * behavior (non-object/non-string-SQL rows are skipped; missing names become
  * Untitled) and upgrades every supported entry. V2 is strict: any malformed
  * item rejects the whole file with its index, preventing partial data loss.
  */
-export function parseImportDoc(text) {
+export function parseImportDoc(text, validationService = querySpecSchemaService) {
   let doc;
   try {
     doc = JSON.parse(text);
@@ -57,12 +78,13 @@ export function parseImportDoc(text) {
   if (!Array.isArray(doc.queries)) throw new Error('No queries in file');
   if (doc.queries.length > MAX) throw new Error('Too many queries (max ' + MAX + ')');
 
-  const queries = doc.version === 1
+  const entries = doc.version === 1
     ? doc.queries
-      .filter((query) => isPlainObject(query) && typeof query.sql === 'string')
-      .map(upgradeV1Query)
-    : doc.queries.map(parseV2Query);
-  return { queries };
+      .map((raw, index) => ({ raw, index }))
+      .filter(({ raw }) => isPlainObject(raw) && typeof raw.sql === 'string')
+      .map(({ raw, index }) => ({ raw: upgradeV1Query(raw), index }))
+    : doc.queries.map((raw, index) => ({ raw: parseV2Query(raw, index), index }));
+  return { queries: validateLibraryEntries(entries, validationService) };
 }
 
 /**

@@ -17,6 +17,7 @@
 import { autoChart, chartCfgValid, normalizeChartCfg, schemaKey, CHART_TYPES } from './chart-data.js';
 import { detectLogsView, findTimeColumn, findMsgColumn, findLevelColumn } from './logs.js';
 import { cloneJson } from './saved-query.js';
+import { querySpecSchemaService } from './spec-schema.js';
 
 /** The chart-family type ids (share the chart-data cfg shape + `panel.key`). */
 export const CHART_FAMILY = new Set(CHART_TYPES.map((t) => t.value));
@@ -94,8 +95,16 @@ export function resolveLogsShape(cfg, columns) {
  * result). Unknown/missing type → false (rendering falls back via
  * resolvePanel). Unknown extra fields are ignored, never a failure.
  */
-export function panelCfgValid(cfg, columns) {
+export function panelCfgStaticValid(cfg, schemaService = querySpecSchemaService) {
   if (!cfg || typeof cfg !== 'object') return false;
+  return !schemaService.validate({ panel: { cfg } })
+    .some((diagnostic) => diagnostic.severity === 'error'
+      && diagnostic.path[0] === 'panel' && diagnostic.path[1] === 'cfg');
+}
+
+export function panelCfgValid(cfg, columns, schemaService = querySpecSchemaService) {
+  if (!cfg || typeof cfg !== 'object') return false;
+  if (!panelCfgStaticValid(cfg, schemaService)) return false;
   if (isChartFamily(cfg.type)) return chartCfgValid(cfg, columns);
   if (cfg.type === 'logs') return resolveLogsShape(cfg, columns) != null;
   return cfg.type === 'table' || cfg.type === 'text';
@@ -152,8 +161,8 @@ export function autoPanel(columns) {
  *    same shape the `view:'table'` migration writes);
  *  - entering the chart family: consume the stash when present (its axes and
  *    schema key win, the picked type overrides), else derive roles via
- *    autoChart — a non-chartable result yields a bare `{type}` (invalid, so
- *    the preview shows the not-chartable hint rather than a broken chart);
+ *    autoChart — a non-chartable result keeps schema-valid placeholder roles
+ *    so the preview can show the result-aware not-chartable hint;
  *  - text always (re)gains a string `content` ('' when absent).
  */
 export function switchPanelType(payload, type, columns) {
@@ -168,7 +177,7 @@ export function switchPanelType(payload, type, columns) {
       : stash
         ? { x: stash.x, y: stash.y, series: stash.series ?? null, key: stash.key ?? null }
         : (() => { const a = autoChart(columns); return a ? { ...a, key: schemaKey(columns) } : null; })();
-    if (!roles) return { cfg: { ...rest, type }, key: null };
+    if (!roles) return { cfg: { ...rest, type, x: 0, y: [columns.length], series: null }, key: null };
     // The picked type wins LAST: an autoChart-derived `roles` carries its own
     // type pick, which must not override the user's.
     const { key, ...axes } = roles;
@@ -199,6 +208,9 @@ export function resolvePanel(saved, columns) {
   const savedCfg = saved && saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : null;
   const fallbackTo = (diagnostic) => ({ ...autoPanel(columns), rederived: false, fallback: true, diagnostic });
   if (!savedCfg) return { ...autoPanel(columns), rederived: false, fallback: false };
+  if (!panelCfgStaticValid(savedCfg)) {
+    return fallbackTo('Saved panel has invalid static configuration.');
+  }
   const cfg = normalizePanelCfg(clonePanelCfg(savedCfg));
   if (isChartFamily(cfg.type)) {
     // An explicit key mismatch means the column positions no longer carry the

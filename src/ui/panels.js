@@ -276,7 +276,7 @@ function writePanel(app, hooks, payload, activate = false) {
   const result = patchSpecDraft(tab, (spec) => patchQueryPanel(
     { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
     { cfg: payload.cfg, key: payload.key ?? undefined },
-  ).spec, { dirty: true });
+  ).spec, { dirty: true, validationService: app.specValidators });
   if (!result.ok) {
     app.activateInvalidSpecDraft(result.invalidTab);
     return;

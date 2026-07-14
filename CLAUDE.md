@@ -19,7 +19,10 @@ all bundled — see hard rule 4). Quality is held by tests.
    SQL execution, schema insertion, export, and SQL formatting must never target
    whichever document happens to be visible. Side-effectful environment access
    (location, crypto, storage, fetch) is injected through `createApp(env)` so
-   everything is testable.
+   everything is testable. Saved-query Spec static validation comes from
+   `schemas/query-spec-v1.schema.json` through the pure `core/spec-schema.js`
+   service; app-owned feature validators extend that one service for
+   result/context-dependent rules.
 3. **No secrets in git.** `config.json` (rendered) is gitignored; only
    `deploy/config.json.example` is committed. Remember `config.json` is served
    to browsers: prefer a PKCE public client; if an IdP requires a
@@ -46,6 +49,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    `app.Dagre` / `env.Editor` / `env.SpecEditor` / `env.CodeViewer`, like the fetch/crypto seams)
    so the DOM wrapper stays fully tested rather than dropping below the coverage gate. (The CM6
    adapters are unit-tested against the real libraries under happy-dom.)
+   Ajv is a **dev dependency only**: it strictly compiles the canonical Spec
+   schema to deterministic, self-contained generated ESM. The production
+   artifact ships the generated validator, never the general Ajv engine.
 5. **No UI framework; signals for state, imperative adapters for islands.** State
    reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),
    migrated slice-by-slice (ADR-0001). **No React/Preact/Solid** — a Preact spike
