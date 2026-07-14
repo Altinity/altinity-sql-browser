@@ -61,7 +61,10 @@ test.describe('Spec JSON editor', () => {
 
   test('completes schema properties and current result columns through the CodeMirror keyboard UI', async ({ page }) => {
     const spec = page.locator('#spec-host');
-    await page.evaluate(() => window.__specPort.replaceDocument('{\n  "pa'));
+    await page.evaluate(() => {
+      window.__specPort.replaceDocument('{\n  "pa');
+      window.__specPort.revealOffset(window.__specPort.getValue().length);
+    });
     await page.keyboard.press('Control+Space');
     await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('panel');
     await spec.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'panel' }).click();
