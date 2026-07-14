@@ -11,7 +11,13 @@
 </head>
 <body data-theme="dark">
   <main id="workbench" class="surface" aria-label="Workbench KPI"></main>
-  <main id="dashboard" class="surface dash-tile-body" aria-label="Dashboard KPI"></main>
+  <main id="dashboard" class="surface dash-grid is-report" aria-label="Dashboard KPI">
+    <section class="dash-tile is-kpi">
+      <header class="dash-tile-head"><span class="dash-tile-name">Service KPIs</span></header>
+      <div id="dashboard-body" class="dash-tile-body"></div>
+      <footer class="dash-tile-foot">1 row</footer>
+    </section>
+  </main>
   <script type="module">
     import { readKpiFields } from '/src/core/kpi.js';
     import { renderKpiPanel } from '/src/ui/kpi-panel.js';
@@ -28,7 +34,7 @@
       } },
     });
     document.querySelector('#workbench').append(renderKpiPanel(normalized));
-    document.querySelector('#dashboard').append(renderKpiPanel(normalized));
+    document.querySelector('#dashboard-body').append(renderKpiPanel(normalized));
     window.__renderDiagnostic = (rowCount) => {
       document.querySelector('#workbench').replaceChildren(renderKpiPanel(readKpiFields({ columns: [{ name: 'n', type: 'UInt64' }], row: [1], rowCount })));
     };

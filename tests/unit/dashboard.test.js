@@ -237,6 +237,7 @@ describe('renderDashboard', () => {
     expect(tiles.length).toBe(2);
     expect(tiles.filter((t) => t.style.display !== 'none')).toHaveLength(2);
     expect(tiles[1].querySelector('.kpi-value').textContent).toBe('42');
+    expect(tiles[1].classList.contains('is-kpi')).toBe(true);
     const note = app.root.querySelector('.dash-skip');
     expect(note.style.display).toBe('none');
   });
@@ -536,6 +537,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     expect(opts).toMatchObject({ format: 'KPI', rowLimit: 2 });
     expect(opts.params).toMatchObject({ readonly: 2, output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 });
     expect(app.root.querySelector('.kpi-value').textContent).toBe('42');
+    expect(app.root.querySelector('.dash-tile').classList.contains('is-kpi')).toBe(true);
   });
 
   it('uses the KPI-specific authored FORMAT diagnostic and sends no request', async () => {
@@ -910,6 +912,7 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.dash-tile').style.display).toBe('');
     expect(app.root.querySelector('.res-table-wrap')).toBeNull(); // stale grid DOM cleared, not just hidden
     expect(app.root.querySelector('.kpi-card')).not.toBeNull();
+    expect(app.root.querySelector('.dash-tile').classList.contains('is-kpi')).toBe(true);
   });
 
   it('grid/logs tiles cap displayed rows at DASH_TABLE_DISPLAY_CAP with the in-body footer', async () => {

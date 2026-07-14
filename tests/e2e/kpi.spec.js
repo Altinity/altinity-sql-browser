@@ -17,11 +17,15 @@ test.describe('KPI panel', () => {
     }
   });
 
-  test('uses the dashboard tile width so KPI cards flow horizontally', async ({ page }) => {
+  test('uses bounded horizontal cards and natural Report tile height', async ({ page }) => {
     const boxes = await page.locator('#dashboard .kpi-card').evaluateAll((nodes) =>
       nodes.map((node) => node.getBoundingClientRect()));
     expect(Math.abs(boxes[1].top - boxes[0].top)).toBeLessThan(1);
     expect(boxes[1].left).toBeGreaterThan(boxes[0].right);
+    expect(boxes[0].width).toBeGreaterThanOrEqual(220);
+    expect(boxes[0].width).toBeLessThanOrEqual(280);
+    expect(Math.abs(boxes[1].height - boxes[0].height)).toBeLessThan(1);
+    expect(await page.locator('#dashboard .dash-tile').evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(300);
   });
 
   test('wraps to one card per row on a narrow mobile viewport', async ({ page }) => {

@@ -155,7 +155,7 @@ function buildTileSlot(q) {
   const head = h('div', { class: 'dash-tile-head' },
     h('span', { class: 'dash-tile-name', title: name }, name));
   if (description) head.appendChild(h('div', { class: 'dash-tile-desc', title: description }, description));
-  const card = h('div', { class: 'dash-tile' }, head, body, foot);
+  const card = h('div', { class: `dash-tile${isKpiPanel(queryPanel(q)) ? ' is-kpi' : ''}` }, head, body, foot);
   return {
     card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
     abortController: null, loadLabel: null,
@@ -268,6 +268,7 @@ function applyTileResult(app, q, slot, r) {
   const resolved = explicit
     ? resolvePanel(explicit, { columns: r.columns, rows: r.rows, fieldConfig: explicit.fieldConfig, serverVersion: app.state.serverVersion })
     : { ...autoPanel({ columns: r.columns, rows: r.rows, serverVersion: app.state.serverVersion }), rederived: false, fallback: false };
+  slot.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
   // Grid state persists across refreshes/filter edits on the stable slot,
   // keyed by result schema — a schema change resets it, a re-run keeps it.
   const key = schemaKey(r.columns);
