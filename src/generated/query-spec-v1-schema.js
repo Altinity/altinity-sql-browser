@@ -39,7 +39,12 @@ export default {
       "default": "table"
     },
     "panel": {
-      "$ref": "#/$defs/panel"
+      "$ref": "#/$defs/panel",
+      "x-altinity-snippet": {
+        "cfg": {
+          "type": ""
+        }
+      }
     },
     "dashboard": {
       "$ref": "#/$defs/dashboard"

@@ -6,7 +6,7 @@ import { undo, undoDepth } from '@codemirror/commands';
 import { openSearchPanel } from '@codemirror/search';
 import { createState, activeTab, newTabObj, setTabSpecDraft } from '../../src/state.js';
 import {
-  createNoopSpecEditor, createSpecEditor, jsonPathRanges,
+  createNoopSpecEditor, createSpecEditor, jsonPathRanges, specCompletionSourceFor,
 } from '../../src/editor/spec-editor.js';
 
 const makeApp = () => ({
@@ -55,6 +55,17 @@ describe('Spec path source ranges', () => {
 });
 
 describe('Spec editor adapter', () => {
+  it('adapts pure Spec completions for CodeMirror and stays quiet outside JSON contexts', () => {
+    const app = makeApp();
+    app.specCompletionSources = { resultColumns: () => [{ value: 'events', detail: 'String' }] };
+    const source = specCompletionSourceFor(app);
+    const state = EditorState.create({ doc: '{"pa', extensions: [json()] });
+    const result = source({ state, pos: 4 });
+    expect(result).toMatchObject({ from: 2, to: 4, filter: false });
+    expect(result.options.find((item) => item.label === 'panel')).toMatchObject({ apply: '"panel": {"cfg":{"type":""}}', type: 'property' });
+    expect(source({ state: EditorState.create({ doc: '{"name":1', extensions: [json()] }), pos: 9 })).toBeNull();
+  });
+
   it('provides a complete safe no-op adapter', () => {
     const port = createNoopSpecEditor();
     const callback = vi.fn();

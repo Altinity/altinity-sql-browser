@@ -68,6 +68,12 @@ document the reusable validation and panel contracts. Its toolbar is deliberatel
 **Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
 never persisted; unknown fields remain valid and survive Save.
 
+Spec completion is schema-aware: **Ctrl-Space** suggests missing properties,
+valid implemented panel types, enum/default/snippet values, and relevant
+documentation. When a tab has an explicit Run result, result-column names and
+zero-based indexes are offered from that in-memory result only; completion never
+runs SQL, fetches metadata, or persists a draft on its own.
+
 Panel controls and Library favorite/pencil edits merge their fields into valid
 open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
 schema/feature errors block the staged writer before any draft or Library entry

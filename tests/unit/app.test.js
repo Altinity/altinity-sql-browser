@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { webcrypto } from 'node:crypto';
 import dagre from '@dagrejs/dagre';
-import { createApp } from '../../src/ui/app.js';
+import { createApp, createSpecCompletionSources } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { createSpecEditor } from '../../src/editor/spec-editor.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
@@ -124,6 +124,26 @@ beforeEach(() => { document.body.innerHTML = ''; document.documentElement.style.
 afterEach(() => vi.unstubAllGlobals());
 
 describe('createApp basics', () => {
+  it('exposes cache-only dynamic Spec completion sources from the current tab', () => {
+    const tab = {
+      result: { columns: [{ name: 'event_time', type: 'DateTime' }, { name: 'requests', type: 'UInt64' }] },
+      sqlDraft: 'SELECT {year:UInt16}, {origin:String}',
+    };
+    const sources = createSpecCompletionSources({ activeTab: () => tab });
+    expect(sources.resultColumns()).toEqual([
+      { value: 'event_time', label: 'event_time', detail: 'DateTime', type: 'column' },
+      { value: 'requests', label: 'requests', detail: 'UInt64', type: 'column' },
+    ]);
+    expect(sources.resultColumnIndexes({ rootValue: { panel: { cfg: { y: [1] } } }, path: ['panel', 'cfg', 'y', 1] }))
+      .toEqual([{ value: 0, label: '0', detail: 'event_time · DateTime', type: 'value' }]);
+    expect(sources.resultColumnIndexes({ rootValue: {}, path: ['panel', 'cfg', 'x'] })).toHaveLength(2);
+    expect(sources.queryParameters()).toEqual([
+      { value: 'year', label: 'year', detail: 'UInt16', type: 'parameter' },
+      { value: 'origin', label: 'origin', detail: 'String', type: 'parameter' },
+    ]);
+    expect(createSpecCompletionSources({ activeTab: () => ({ result: null, sqlDraft: '' }) }).resultColumns()).toEqual([]);
+  });
+
   it('reads the stored token and derives identity', () => {
     const app = createApp(env());
     expect(app.token).toBe(validToken);

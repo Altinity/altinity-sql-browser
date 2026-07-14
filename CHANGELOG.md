@@ -43,6 +43,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **Spec mode now offers schema-aware CodeMirror completion** (#221): tolerant
+  JSON cursor context resolves known paths even through recoverable incomplete
+  documents, while the pure completion engine consumes the canonical schema
+  service rather than copying the Spec contract. It suggests missing properties,
+  implemented panel branches, schema descriptions/defaults/snippets, and current
+  in-memory result-column names or indexes; dynamic suggestions never fetch,
+  execute SQL, or persist data.
 - **A canonical Draft 2020-12 schema and pure validation/introspection service
   now define `query.spec`** (#220). All implemented panel branches carry
   schema-owned documentation, snippets, status, and result-column completion

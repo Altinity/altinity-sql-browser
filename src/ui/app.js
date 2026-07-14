@@ -12,6 +12,7 @@ import {
   normalizeRowLimit, MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
+import { detectParams } from '../core/query-params.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, analysisView,
   fieldControls, fieldControlKind,
@@ -68,6 +69,26 @@ import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import { flashToast } from './toast.js';
+
+/** Cache-only dynamic candidates consumed by the Spec editor at invocation time. */
+export function createSpecCompletionSources(app) {
+  const columns = () => app.activeTab?.().result?.columns || [];
+  return {
+    resultColumns() {
+      return columns().map((column) => ({ value: column.name, label: column.name, detail: column.type, type: 'column' }));
+    },
+    resultColumnIndexes({ rootValue, path }) {
+      const used = (path.at(-1) === 'y' || path.at(-2) === 'y') && Array.isArray(rootValue?.panel?.cfg?.y)
+        ? new Set(rootValue.panel.cfg.y) : new Set();
+      return columns().map((column, index) => ({ value: index, label: String(index), detail: `${column.name} · ${column.type}`, type: 'value' }))
+        .filter((candidate) => !used.has(candidate.value));
+    },
+    queryParameters() {
+      return detectParams(app.activeTab?.().sqlDraft || '')
+        .map((param) => ({ value: param.name, label: param.name, detail: param.type, type: 'parameter' }));
+    },
+  };
+}
 
 export function createApp(env = {}) {
   const doc = env.document || document;
@@ -241,6 +262,8 @@ export function createApp(env = {}) {
   app.specValidators = env.specValidators && typeof env.specValidators.validate === 'function'
     ? env.specValidators
     : createSpecValidatorRegistry(env.specValidators || CORE_SPEC_VALIDATORS);
+  app.specSchemaService = env.specSchemaService || app.specValidators.schemaService;
+  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources(app);
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));

@@ -66,7 +66,14 @@
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
     const refData = assembleReferenceData(null);
-    const app = { state, dom: {}, document, refData, completions: buildCompletions(refData, []) };
+    const app = {
+      state, dom: {}, document, refData, completions: buildCompletions(refData, []),
+      specCompletionSources: {
+        resultColumns: () => (activeTab(state).result?.columns || []).map((column) => ({ value: column.name, detail: column.type })),
+        resultColumnIndexes: () => (activeTab(state).result?.columns || []).map((column, index) => ({ value: index, label: String(index), detail: `${column.name} · ${column.type}` })),
+        queryParameters: () => [],
+      },
+    };
     window.__app = app;
     const port = createCodeMirrorEditor(app);
     window.__port = port;

@@ -58,4 +58,22 @@ test.describe('Spec JSON editor', () => {
     }
     await expect(toolbar.locator('.editor-mode-switch')).toBeVisible();
   });
+
+  test('completes schema properties and current result columns through the CodeMirror keyboard UI', async ({ page }) => {
+    const spec = page.locator('#spec-host');
+    await page.evaluate(() => window.__specPort.replaceDocument('{\n  "pa'));
+    await page.keyboard.press('Control+Space');
+    await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('panel');
+    await spec.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'panel' }).click();
+    await expect.poll(() => page.evaluate(() => window.__specPort.getValue())).toContain('"panel": {"cfg":{"type":""}}');
+
+    await page.evaluate(() => {
+      window.__app.state.tabs.value[0].result = { columns: [{ name: 'message', type: 'String' }] };
+      window.__specPort.replaceDocument('{"panel":{"cfg":{"type":"logs","msg":"');
+    });
+    await page.keyboard.press('Control+Space');
+    await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('message');
+    await spec.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'message' }).click();
+    await expect.poll(() => page.evaluate(() => window.__specPort.getValue())).toContain('"msg":"message"');
+  });
 });

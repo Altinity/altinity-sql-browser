@@ -277,3 +277,15 @@ context. External writers stage the persisted entry and every linked draft,
 validate them all, and only then mutate once. Renderer-level bounds, result
 column resolution, schema-key mismatch handling, and fallback defenses remain
 authoritative for runtime data.
+
+## Addendum — schema-aware Spec completion (#221)
+
+Spec completion remains a narrow CodeMirror adapter over pure data. The
+Lezer-backed tolerant cursor resolver owns incomplete JSON context and a
+best-effort sibling-value model; it is never used for Save or validation. Pure
+`core/spec-completion.js` consumes the #220 schema-service path APIs for
+properties, discriminator branches, annotations, documentation, and snippets.
+The adapter installs one stable completion source, reading app-owned dynamic
+result-column and parameter caches at invocation time, so tab switches and Runs
+need no editor reconstruction. No completion path fetches, executes SQL, or
+persists data; validation and runtime panel rules remain authoritative.

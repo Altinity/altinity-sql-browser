@@ -31,7 +31,10 @@
       "enum": ["table", "json", "panel"],
       "default": "table"
     },
-    "panel": { "$ref": "#/$defs/panel" },
+    "panel": {
+      "$ref": "#/$defs/panel",
+      "x-altinity-snippet": { "cfg": { "type": "" } }
+    },
     "dashboard": { "$ref": "#/$defs/dashboard" }
   },
   "additionalProperties": true,

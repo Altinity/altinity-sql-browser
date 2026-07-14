@@ -8,11 +8,14 @@ import {
   bracketMatching, foldGutter, foldKeymap,
 } from '@codemirror/language';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion } from '@codemirror/autocomplete';
 import { json } from '@codemirror/lang-json';
 import { syntaxTree } from '@codemirror/language';
 import { activeTab } from '../state.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
+import { specJsonContext } from './spec-json-context.js';
+import { completeSpec } from '../core/spec-completion.js';
+import { querySpecSchemaService } from '../core/spec-schema.js';
 
 const syncTx = Annotation.define();
 const setDiagnosticMarks = StateEffect.define();
@@ -101,6 +104,33 @@ const diagnosticField = StateField.define({
 const fullReplace = (state, text) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
 const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(false)];
 
+/** CM6 wrapper over the pure schema completion engine. */
+export function specCompletionSourceFor(app) {
+  return (ctx) => {
+    const resolved = specJsonContext(ctx.state, ctx.pos);
+    if (!resolved) return null;
+    const options = completeSpec({
+      schemaService: app.specSchemaService || querySpecSchemaService,
+      dynamicSources: app.specCompletionSources || {},
+      ...resolved,
+    });
+    if (!options.length) return null;
+    return {
+      from: resolved.from,
+      to: resolved.to,
+      filter: false,
+      options: options.map((item) => ({
+        label: item.label,
+        type: item.type,
+        detail: item.detail,
+        apply: item.apply,
+        info: item.documentation,
+        boost: item.boost,
+      })),
+    };
+  };
+}
+
 export function createNoopSpecEditor() {
   return {
     mount() {}, destroy() {}, focus() {}, requestMeasure() {},
@@ -129,8 +159,10 @@ export function createSpecEditor(app) {
     bracketMatching(),
     closeBrackets(),
     diagnosticField,
+    autocompletion({ override: [specCompletionSourceFor(app)] }),
     codeSearchKeymap,
     keymap.of([
+      { key: 'Tab', run: acceptCompletion },
       ...closeBracketsKeymap,
       ...foldKeymap,
       ...historyKeymap,
