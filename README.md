@@ -71,8 +71,8 @@ query. The popup opens while typing or with **Ctrl-Space**; arrows navigate,
 when the popup is closed. Only blocking errors appear in the bottom Spec status
 strip—warnings and information remain non-blocking and a valid Spec shows no
 success footer. The
-[schema-service notes](docs/saved-query-spec-json-schema.md) and
-[visualization authoring guide](docs/visualization-spec-authoring-guide.md)
+[schema-service notes](docs/drafts/saved-query-spec-json-schema.md) and
+[visualization authoring guide](docs/drafts/visualization-spec-authoring-guide.md)
 document the reusable validation and panel contracts. The
 [complete Library schema guide](docs/library-json-schema.md) documents the
 saved-query and Library envelopes plus the offline schema bundle. Its toolbar is deliberately small: **Format**,
