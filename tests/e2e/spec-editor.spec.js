@@ -70,6 +70,7 @@ test.describe('Spec JSON editor', () => {
     await page.evaluate(() => {
       window.__app.state.tabs.value[0].result = { columns: [{ name: 'message', type: 'String' }] };
       window.__specPort.replaceDocument('{"panel":{"cfg":{"type":"logs","msg":"');
+      window.__specPort.revealOffset(window.__specPort.getValue().length);
     });
     await page.keyboard.press('Control+Space');
     await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('message');
