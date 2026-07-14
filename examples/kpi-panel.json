@@ -6,7 +6,7 @@
   "queries": [
     {
       "id": "kpi-service-health",
-      "sql": "SELECT count() AS active_users, (99.95 AS value, 0.08 AS delta) AS availability",
+      "sql": "SELECT count() AS active_users, (99.95 AS value, 0.08 AS delta) AS availability SETTINGS enable_named_columns_in_function_tuple = 1",
       "specVersion": 1,
       "spec": {
         "name": "Service KPIs",

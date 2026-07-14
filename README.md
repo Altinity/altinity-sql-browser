@@ -86,6 +86,25 @@ SQL owns the values; `panel.fieldConfig` owns labels, descriptions, units,
 rounding, colors, NULL text, visibility, and delta semantics. The complete
 [`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
 **File ▾ → Open** and renders identically in the workbench and Dashboard.
+When constructing a named tuple from expressions, either enable alias-derived
+member names for the query:
+
+```sql
+SELECT (99.95 AS value, 0.08 AS delta) AS availability
+SETTINGS enable_named_columns_in_function_tuple = 1
+```
+
+or cast an ordinary tuple to an explicitly named type:
+
+```sql
+SELECT CAST(
+  (99.95, 0.08),
+  'Tuple(value Float64, delta Float64)'
+) AS availability
+```
+
+Without the setting or cast, ClickHouse reports `Tuple(Float64, Float64)`,
+which is positional and intentionally ineligible for KPI value/delta roles.
 
 Panel controls and Library favorite/pencil edits merge their fields into valid
 open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
