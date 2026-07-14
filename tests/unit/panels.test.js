@@ -279,12 +279,12 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
     expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
   });
-  it('rescue (#195): a chart fallback shows Logs as the picker type, stays read-only, and cannot write panelCfg', () => {
+  it('rescue (#195): a KPI fallback shows Logs as the picker type, stays read-only, and cannot write panelCfg', () => {
     const app = panelApp(noMessageChartResult(), { type: 'logs' });
     renderResults(app);
-    // Fallback diagnostic + a chart (not Table) preview...
+    // Fallback diagnostic + the current auto-panel preview...
     expect(region(app).textContent).toContain('no time + message columns');
-    expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
+    expect(region(app).querySelector('.kpi-card')).not.toBeNull();
     expect(region(app).querySelector('.res-table')).toBeNull();
     // ...the toolbar picker still reads Logs, the authoring type...
     expect(region(app).querySelector('.result-panel-select').value).toBe('logs');
@@ -292,7 +292,7 @@ describe('Panel drawer tab', () => {
     const configRows = region(app).querySelectorAll('.panel-config .chart-config');
     expect(configRows).toHaveLength(1);
     expect([...configRows[0].querySelectorAll('select')]).toHaveLength(3);
-    // ...and the fallback chart itself exposes no X/Y/Series controls.
+    // ...and the fallback renderer exposes no X/Y/Series controls.
     const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
     expect(labels).not.toContain('X');
     expect(labels).not.toContain('Y');
@@ -301,6 +301,15 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs' });
     expect(app.activeTab().panelKey).toBeNull();
     expect(app.activeTab().dirtySpec).toBe(false);
+  });
+  it('shows KPI field presentation guidance without adding tuning controls', () => {
+    const result = newResult('KPI');
+    result.columns = [{ name: 'n', type: 'UInt64' }];
+    result.rows = [[42]];
+    const app = panelApp(result, { type: 'kpi' });
+    renderResults(app);
+    expect(region(app).querySelector('.panel-authoring-hint').textContent).toContain('Spec → panel.fieldConfig');
+    expect(region(app).querySelector('.panel-config select')).toBeNull();
   });
   it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
     const app = panelApp(noMessageChartResult(), { type: 'logs' });

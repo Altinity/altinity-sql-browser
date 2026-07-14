@@ -22,6 +22,7 @@ import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from '.
 import { openInDetachedTab } from './detached-view.js';
 import { buildFilterBar } from './filter-bar.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
+import { panelExecution } from '../core/panel-execution.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -697,7 +698,7 @@ export function expandDataPane(app, r) {
           cap: visCap(res),
           panel: {
             mode: 'readonly',
-            resolved: resolvePanel(savedPanel, res.columns),
+            resolved: resolvePanel(savedPanel, { columns: res.columns, rows: res.rows, fieldConfig: savedPanel?.fieldConfig, serverVersion: app.state.serverVersion }),
             state: panelState,
             setChart: (c) => { chartInstance = c; },
           },
@@ -748,13 +749,18 @@ export function expandDataPane(app, r) {
           if (myGen === gen && !closed) settle('Not signed in');
           return;
         }
-        const result = newResult('Table', source.rowLimit);
+        const execution = panelExecution(savedPanel, mergedSourceSql(src, source.sql), {
+          format: 'Table', rowLimit: source.rowLimit,
+          params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
+        });
+        if (execution.error) { settle(execution.error); return; }
+        const result = newResult(execution.format, execution.rowLimit);
         await app.runReadInto(result, {
           sql: mergedSourceSql(src, source.sql),
-          format: 'Table',
-          rowLimit: source.rowLimit,
+          format: execution.format,
+          rowLimit: execution.rowLimit,
           // Native param_<name> bindings + the captured session (when any).
-          params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
+          params: execution.params,
           signal,
           // Progress-only streaming (#198): update the lightweight status text as
           // rows arrive, but NEVER paint the in-flight result and NEVER touch the

@@ -39,7 +39,7 @@ describe('pure Spec completion', () => {
       positionKind: 'property-value',
     });
     expect(items.filter((item) => item.kind === 'variant').map((item) => item.label)).toEqual([
-      'bar', 'hbar', 'line', 'area', 'pie', 'table', 'logs', 'text',
+      'bar', 'hbar', 'line', 'area', 'pie', 'kpi', 'table', 'logs', 'text',
     ]);
     expect(items.map((item) => item.label)).not.toContain('future-panel');
     expect(items.find((item) => item.label === 'line').documentation).toContain('Line series');

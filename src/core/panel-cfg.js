@@ -18,12 +18,13 @@ import { autoChart, chartCfgValid, normalizeChartCfg, schemaKey, CHART_TYPES } f
 import { detectLogsView, findTimeColumn, findMsgColumn, findLevelColumn } from './logs.js';
 import { cloneJson } from './saved-query.js';
 import { querySpecSchemaService } from './spec-schema.js';
+import { readKpiFields } from './kpi.js';
 
 /** The chart-family type ids (share the chart-data cfg shape + `panel.key`). */
 export const CHART_FAMILY = new Set(CHART_TYPES.map((t) => t.value));
 
 /** Every v1 panel type id, in picker order (chart family first). */
-export const PANEL_TYPE_IDS = [...CHART_FAMILY, 'table', 'logs', 'text'];
+export const PANEL_TYPE_IDS = ['kpi', ...CHART_FAMILY, 'table', 'logs', 'text'];
 
 const KNOWN_TYPES = new Set(PANEL_TYPE_IDS);
 
@@ -107,7 +108,7 @@ export function panelCfgValid(cfg, columns, schemaService = querySpecSchemaServi
   if (!panelCfgStaticValid(cfg, schemaService)) return false;
   if (isChartFamily(cfg.type)) return chartCfgValid(cfg, columns);
   if (cfg.type === 'logs') return resolveLogsShape(cfg, columns) != null;
-  return cfg.type === 'table' || cfg.type === 'text';
+  return cfg.type === 'kpi' || cfg.type === 'table' || cfg.type === 'text';
 }
 
 /**
@@ -142,9 +143,31 @@ function rederiveChart(type, columns) {
  * auto-proposed — they exist only as explicit choices. Returns
  * `{ cfg, shape? }`; never null (table is the universal fallback).
  */
-export function autoPanel(columns) {
+function resultContext(input) {
+  if (Array.isArray(input)) return { columns: input, rows: null, rowCount: null, fieldConfig: {} };
+  const value = input && typeof input === 'object' ? input : {};
+  const rows = Array.isArray(value.rows) ? value.rows : null;
+  return {
+    columns: Array.isArray(value.columns) ? value.columns : [],
+    rows,
+    rowCount: Number.isInteger(value.rowCount) ? value.rowCount : rows ? rows.length : null,
+    fieldConfig: value.fieldConfig || {},
+    serverVersion: value.serverVersion,
+  };
+}
+
+export function autoPanel(input) {
+  const context = resultContext(input);
+  const { columns } = context;
   const shape = detectLogsView(columns);
   if (shape) return { cfg: { type: 'logs' }, shape };
+  if (context.rowCount === 1) {
+    const kpi = readKpiFields({
+      columns, row: context.rows && context.rows[0], rowCount: 1,
+      fieldConfig: context.fieldConfig, serverVersion: context.serverVersion,
+    });
+    if (kpi.items.length) return { cfg: { type: 'kpi' }, kpi };
+  }
   const chart = autoChart(columns);
   if (chart) return { cfg: chart };
   return { cfg: { type: 'table' } };
@@ -204,14 +227,23 @@ export function switchPanelType(payload, type, columns) {
  *
  * Returns { cfg, shape?, rederived, fallback, diagnostic? }.
  */
-export function resolvePanel(saved, columns) {
+export function resolvePanel(saved, input) {
+  const context = resultContext(input);
+  const { columns } = context;
   const savedCfg = saved && saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : null;
-  const fallbackTo = (diagnostic) => ({ ...autoPanel(columns), rederived: false, fallback: true, diagnostic });
-  if (!savedCfg) return { ...autoPanel(columns), rederived: false, fallback: false };
+  const fallbackTo = (diagnostic) => ({ ...autoPanel(context), rederived: false, fallback: true, diagnostic });
+  if (!savedCfg) return { ...autoPanel(context), rederived: false, fallback: false };
   if (!panelCfgStaticValid(savedCfg)) {
     return fallbackTo('Saved panel has invalid static configuration.');
   }
   const cfg = normalizePanelCfg(clonePanelCfg(savedCfg));
+  if (cfg.type === 'kpi') {
+    const kpi = context.rowCount == null ? null : readKpiFields({
+      columns, row: context.rows && context.rows[0], rowCount: context.rowCount,
+      fieldConfig: saved.fieldConfig || context.fieldConfig, serverVersion: context.serverVersion,
+    });
+    return { cfg, kpi, rederived: false, fallback: false };
+  }
   if (isChartFamily(cfg.type)) {
     // An explicit key mismatch means the column positions no longer carry the
     // saved roles, even if every old index remains in range (columns may have

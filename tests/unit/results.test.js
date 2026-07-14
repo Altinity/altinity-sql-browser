@@ -751,6 +751,41 @@ describe('expandDataPane', () => {
     expect(app.actions.copySnapshot.mock.calls.at(-1)[0].rows).toEqual([['Warning']]);
   });
 
+  it('Refresh gives an explicit KPI panel ownership of transport and the two-row guard', async () => {
+    const app = makeApp({ runReadInto: vi.fn(async (result) => result) });
+    app.activeTab().specParsed.panel = { cfg: { type: 'kpi' } };
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+
+    const opts = app.runReadInto.mock.calls[0][1];
+    expect(opts.format).toBe('KPI');
+    expect(opts.rowLimit).toBe(2);
+    expect(opts.params).toEqual({
+      param_level: 'Warning',
+      output_format_json_named_tuples_as_objects: 1,
+      output_format_json_quote_decimals: 1,
+    });
+  });
+
+  it('Refresh blocks authored FORMAT when an explicit KPI panel owns transport', async () => {
+    const app = makeApp({ runReadInto: vi.fn(async (result) => result) });
+    app.activeTab().specParsed.panel = { cfg: { type: 'kpi' } };
+    const result = paramResult();
+    result.source.sql += ' FORMAT CSV';
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, result);
+    const overlay = document.querySelector('.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+
+    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(overlay.querySelector('.detached-status').textContent)
+      .toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
+  });
+
   it('blocks the rerun and keeps the previous result + a status when a required value is missing', async () => {
     const app = makeApp(); // default no-op runReadInto
     expandDataPane(app, paramResult()); // level unset → missing
@@ -931,7 +966,7 @@ describe('expandDataPane', () => {
     expect(app.actions.copySnapshot.mock.calls.at(-1)[0].rows).toEqual([['NEW']]); // Copy = NEW result
   });
 
-  it('Panel: streaming chunks do not churn the chart; a successful commit destroys the old chart once and creates one replacement', async () => {
+  it('Panel: streaming chunks do not churn the chart; a successful one-row commit switches once to KPI', async () => {
     const run = deferredRun();
     const app = makeApp({ runReadInto: run.fn });
     const instances = [];
@@ -951,11 +986,12 @@ describe('expandDataPane', () => {
     run.last.chunk({ progress: { rows: 200, bytes: 0, elapsed_ns: 0 } });
     expect(chart0.destroyed).toBe(false); // not churned by chunks
     expect(instances).toHaveLength(1); // no per-chunk chart rebuild
-    // resolve successfully → one destroy + one replacement.
+    // resolve successfully → one destroy; the eligible one-row result becomes KPI.
     run.last.finish({ columns: chartResult().columns, rows: [['B6', 'E', '30', '1.1']] });
     await tick();
     expect(chart0.destroyed).toBe(true);
-    expect(instances).toHaveLength(2);
+    expect(instances).toHaveLength(1);
+    expect(overlay.querySelector('.kpi-card')).not.toBeNull();
   });
 
   it('a current-generation cancelled result never replaces the committed result and records nothing', async () => {

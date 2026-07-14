@@ -159,6 +159,7 @@ SELECT
         12.4 AS value,
         -1.7 AS delta
     ) AS cancellation_rate
+SETTINGS enable_named_columns_in_function_tuple = 1
 ```
 
 The top-level column is `cancellation_rate`. Its runtime object is:
@@ -170,11 +171,26 @@ The top-level column is `cancellation_rate`. Its runtime object is:
 }
 ```
 
-ClickHouse 24.7+ supports constructing a named tuple by aliasing tuple elements:
+ClickHouse can construct a named tuple from aliased tuple elements when the
+query enables named columns for the `tuple` function:
 
 ```sql
 (expr AS member_name, expr AS another_member) AS result_column
+SETTINGS enable_named_columns_in_function_tuple = 1
 ```
+
+Alternatively, cast a positional tuple to an explicitly named tuple type:
+
+```sql
+CAST(
+    (expr, another_expr),
+    'Tuple(member_name Float64, another_member Float64)'
+) AS result_column
+```
+
+Aliasing tuple elements without the setting does not establish the result type
+contract: ClickHouse reports a positional type such as
+`Tuple(Float64, Float64)`.
 
 Only **named** tuples are used as visual-object contracts. Positional tuples such as `(12.4, -1.7)` are ambiguous and MUST NOT be interpreted by member position.
 
@@ -527,6 +543,7 @@ SELECT
         87.2 AS value,
         2.3 AS delta
     ) AS on_time_rate
+SETTINGS enable_named_columns_in_function_tuple = 1
 ```
 
 ### Spec

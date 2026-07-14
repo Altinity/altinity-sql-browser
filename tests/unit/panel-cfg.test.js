@@ -128,6 +128,13 @@ describe('normalizePanelCfg', () => {
 });
 
 describe('autoPanel', () => {
+  it('selects KPI only for an eligible one-row result, after logs', () => {
+    expect(autoPanel({ columns: [{ name: 'n', type: 'UInt64' }], rows: [[42]] }).cfg).toEqual({ type: 'kpi' });
+    expect(autoPanel({ columns: [{ name: 'n', type: 'UInt64' }], rows: [[1], [2]] }).cfg.type).not.toBe('kpi');
+    const logs = [{ name: 'event_time', type: 'DateTime' }, { name: 'message', type: 'String' }];
+    expect(autoPanel({ columns: logs, rows: [['2026-01-01', 'x']] }).cfg.type).toBe('logs');
+    expect(autoPanel({ columns: [{ name: 't', type: 'Tuple(value UInt64)' }], rows: [['(42)']] }).cfg.type).toBe('table');
+  });
   it('log-shaped outranks chartable (thread_id would auto-chart otherwise)', () => {
     const cols = [...logCols, { name: 'thread_id', type: 'UInt64' }];
     const out = autoPanel(cols);
@@ -191,6 +198,15 @@ describe('switchPanelType', () => {
 });
 
 describe('resolvePanel', () => {
+  it('retains explicit KPI with normalized result diagnostics instead of falling back', () => {
+    const one = resolvePanel({ cfg: { type: 'kpi' }, fieldConfig: { columns: { n: { unit: '%' } } } }, { columns: [{ name: 'n', type: 'UInt64' }], rows: [[7]] });
+    expect(one).toMatchObject({ cfg: { type: 'kpi' }, fallback: false });
+    expect(one.kpi.items[0].presentation.unit).toBe('%');
+    const many = resolvePanel({ cfg: { type: 'kpi' } }, { columns: [{ name: 'n', type: 'UInt64' }], rows: [[1], [2]] });
+    expect(many.cfg.type).toBe('kpi');
+    expect(many.kpi.diagnostics[0].code).toBe('kpi-row-count');
+    expect(resolvePanel({ cfg: { type: 'kpi' } }, []).kpi).toBeNull();
+  });
   it('no saved panel → autoPanel, not a fallback', () => {
     const out = resolvePanel(undefined, chartCols);
     expect(out.cfg.type).toBe('hbar');

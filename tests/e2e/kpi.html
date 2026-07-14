@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>KPI panel harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+    .surface { width: min(760px, 100%); margin-bottom: 24px; }
+  </style>
+</head>
+<body data-theme="dark">
+  <main id="workbench" class="surface" aria-label="Workbench KPI"></main>
+  <main id="dashboard" class="surface dash-grid is-report" aria-label="Dashboard KPI">
+    <section class="dash-tile is-kpi">
+      <header class="dash-tile-head"><span class="dash-tile-name">Service KPIs</span></header>
+      <div id="dashboard-body" class="dash-tile-body"></div>
+      <footer class="dash-tile-foot">1 row</footer>
+    </section>
+  </main>
+  <script type="module">
+    import { readKpiFields } from '/src/core/kpi.js';
+    import { renderKpiPanel } from '/src/ui/kpi-panel.js';
+    const normalized = readKpiFields({
+      columns: [
+        { name: 'active_users', type: 'UInt64' },
+        { name: 'availability', type: 'Tuple(value Float64, delta Nullable(Float64))' },
+      ],
+      row: [12500, { value: 99.95, delta: 0.08 }],
+      rowCount: 1,
+      fieldConfig: { columns: {
+        active_users: { displayName: 'Active users', color: '#4f8cff' },
+        availability: { displayName: 'Availability', description: 'Current service availability', unit: '%', decimals: 2, delta: { unit: ' pp', decimals: 2, positiveIsGood: true } },
+      } },
+    });
+    document.querySelector('#workbench').append(renderKpiPanel(normalized));
+    document.querySelector('#dashboard-body').append(renderKpiPanel(normalized));
+    window.__renderDiagnostic = (rowCount) => {
+      document.querySelector('#workbench').replaceChildren(renderKpiPanel(readKpiFields({ columns: [{ name: 'n', type: 'UInt64' }], row: [1], rowCount })));
+    };
+    window.__ready = true;
+  </script>
+</body>
+</html>

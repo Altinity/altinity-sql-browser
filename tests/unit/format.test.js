@@ -169,8 +169,14 @@ describe('detectSqlFormat', () => {
   it('returns null without a trailing FORMAT clause', () => {
     expect(detectSqlFormat('SELECT 1')).toBeNull();
     expect(detectSqlFormat("SELECT 'FORMAT JSON' AS x")).toBeNull(); // FORMAT not the trailing clause
+    expect(detectSqlFormat('SELECT * FROM (SELECT 1 FORMAT JSON)')).toBeNull();
+    expect(detectSqlFormat('SELECT format(1)')).toBeNull();
     expect(detectSqlFormat('')).toBeNull();
     expect(detectSqlFormat(null)).toBeNull();
+  });
+  it('ignores comments/strings and detects only a trailing top-level FORMAT', () => {
+    expect(detectSqlFormat("SELECT 'FORMAT CSV', 1 FORMAT JSON -- note")).toBe('JSON');
+    expect(detectSqlFormat('SELECT 1 /* FORMAT TSV */ FORMAT CSV')).toBe('CSV');
   });
 });
 

@@ -75,9 +75,56 @@ export const querySpecV1Schema = {
         "source": "resultColumnIndexes"
       }
     },
+    "deltaPresentation": {
+      "title": "Delta presentation",
+      "description": "Display metadata for a runtime KPI delta value.",
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "title": "Delta label",
+          "description": "Optional visible label for the delta.",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Delta unit",
+          "description": "Display-only suffix appended to the delta.",
+          "type": "string"
+        },
+        "decimals": {
+          "title": "Delta decimal places",
+          "description": "Requested display rounding for the delta.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "default": 0,
+          "examples": [
+            1
+          ]
+        },
+        "positiveIsGood": {
+          "title": "Positive is good",
+          "description": "Whether a positive runtime delta has good semantics.",
+          "type": "boolean"
+        },
+        "show": {
+          "title": "Show delta",
+          "description": "Whether a present runtime delta is rendered.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "displayName",
+        "unit",
+        "decimals",
+        "positiveIsGood",
+        "show"
+      ]
+    },
     "fieldConfigValue": {
-      "title": "Field display configuration",
-      "description": "Known display metadata for one result column. Unknown renderer extensions are retained.",
+      "title": "Field presentation metadata",
+      "description": "Known presentation metadata for one result column. Unknown renderer extensions are retained.",
       "type": "object",
       "properties": {
         "displayName": {
@@ -89,13 +136,57 @@ export const querySpecV1Schema = {
           "title": "Decimal places",
           "description": "Requested number of decimal places for numeric display.",
           "type": "integer",
-          "default": 0
+          "minimum": 0,
+          "maximum": 20,
+          "default": 0,
+          "examples": [
+            2
+          ]
+        },
+        "description": {
+          "title": "Description",
+          "description": "Supporting display text for the field.",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Unit",
+          "description": "Display-only suffix appended to the value.",
+          "type": "string",
+          "examples": [
+            "%"
+          ]
+        },
+        "color": {
+          "title": "Color",
+          "description": "Theme token or CSS color hint interpreted by the renderer.",
+          "type": "string"
+        },
+        "noValue": {
+          "title": "No-value text",
+          "description": "Text shown for NULL or unavailable values.",
+          "type": "string",
+          "default": "—"
+        },
+        "hidden": {
+          "title": "Hidden",
+          "description": "Suppress this otherwise eligible result field.",
+          "type": "boolean",
+          "default": false
+        },
+        "delta": {
+          "$ref": "#/$defs/deltaPresentation"
         }
       },
       "additionalProperties": true,
       "x-altinity-order": [
         "displayName",
-        "decimals"
+        "description",
+        "unit",
+        "decimals",
+        "color",
+        "noValue",
+        "hidden",
+        "delta"
       ]
     },
     "fieldConfig": {
@@ -385,6 +476,26 @@ export const querySpecV1Schema = {
           ]
         },
         {
+          "title": "KPI",
+          "description": "One-row scalar and named-tuple KPI cards.",
+          "x-altinity-status": "implemented",
+          "x-altinity-snippet": {
+            "type": "kpi"
+          },
+          "properties": {
+            "type": {
+              "const": "kpi"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": true,
+          "x-altinity-order": [
+            "type"
+          ]
+        },
+        {
           "title": "Table",
           "description": "Tabular result rendering with no required panel-specific fields.",
           "x-altinity-status": "implemented",
@@ -482,6 +593,7 @@ export const querySpecV1Schema = {
                   "line",
                   "area",
                   "pie",
+                  "kpi",
                   "table",
                   "logs",
                   "text"

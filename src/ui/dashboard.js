@@ -10,11 +10,11 @@
 // through the shared panel registry (panels.js) — an explicit saved
 // `panel` wins (and never vanishes: zero-row explicit panels show an honest
 // "0 rows" state), an unconfigured result goes through the autoPanel
-// heuristic, and only unconfigured empty/single-row (future KPI) results are
-// skipped, counted in a header note. A global filter bar (D3, below) drives
+// heuristic; eligible one-row results become KPI tiles and only unconfigured
+// empty results are skipped and counted in a header note. A global filter bar drives
 // the same `{name:Type}` mechanism the SQL Browser workbench uses, fanning it
-// out across every favorite instead of one query at a time. KPI tiles,
-// per-tile overrides, and export arrive in later phases (D5–D8).
+// out across every favorite instead of one query at a time. Per-tile overrides
+// and export arrive in later phases (D7–D8).
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
@@ -34,6 +34,7 @@ import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive } from '../state.js';
 import { buildFilterBar } from './filter-bar.js';
 import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
+import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -154,7 +155,7 @@ function buildTileSlot(q) {
   const head = h('div', { class: 'dash-tile-head' },
     h('span', { class: 'dash-tile-name', title: name }, name));
   if (description) head.appendChild(h('div', { class: 'dash-tile-desc', title: description }, description));
-  const card = h('div', { class: 'dash-tile' }, head, body, foot);
+  const card = h('div', { class: `dash-tile${isKpiPanel(queryPanel(q)) ? ' is-kpi' : ''}` }, head, body, foot);
   return {
     card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
     abortController: null, loadLabel: null,
@@ -241,11 +242,10 @@ function applyTileResult(app, q, slot, r) {
     return;
   }
   const explicit = explicitPanel(q);
-  // Unconfigured results keep the skip ladder (#166: empty, and single-row
-  // until the KPI arm lands with #154). An EXPLICIT panel never vanishes —
+  // Unconfigured empty results remain skipped. An EXPLICIT panel never vanishes —
   // a zero-row one renders an honest "0 rows" state instead (visible, and
   // excluded from the header's skip tally).
-  if (!explicit && r.rows.length <= 1) {
+  if (!explicit && r.rows.length === 0) {
     slot.status = 'skip';
     slot.card.style.display = 'none';
     // Clear the previous panel's DOM (its live instance is already torn down
@@ -257,7 +257,7 @@ function applyTileResult(app, q, slot, r) {
   }
   slot.status = 'panel';
   slot.card.style.display = '';
-  if (explicit && r.rows.length === 0) {
+  if (explicit && r.rows.length === 0 && !isKpiPanel(explicit)) {
     slot.body.replaceChildren(h('div', { class: 'dash-tile-empty' }, '0 rows'));
     slot.foot.replaceChildren(...tileFooter(r.meta));
     return;
@@ -266,8 +266,9 @@ function applyTileResult(app, q, slot, r) {
   // the type and re-derive roles; impossible shapes fall back with a
   // diagnostic), an unconfigured result goes through the autoPanel ladder.
   const resolved = explicit
-    ? resolvePanel(explicit, r.columns)
-    : { ...autoPanel(r.columns), rederived: false, fallback: false };
+    ? resolvePanel(explicit, { columns: r.columns, rows: r.rows, fieldConfig: explicit.fieldConfig, serverVersion: app.state.serverVersion })
+    : { ...autoPanel({ columns: r.columns, rows: r.rows, serverVersion: app.state.serverVersion }), rederived: false, fallback: false };
+  slot.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
   // Grid state persists across refreshes/filter edits on the stable slot,
   // keyed by result schema — a schema change resets it, a re-run keeps it.
   const key = schemaKey(r.columns);
@@ -326,9 +327,14 @@ async function runSlotTile(app, q, slot, onSettled, src, generation) {
   // JSONStringsEachRowWithProgress format, so an explicit `FORMAT` clause would
   // silently corrupt the tile (an empty successful-looking result, or ignored
   // lines). Reject it with a clear error rather than mis-parse.
-  if (detectSqlFormat(execSql)) {
+  const explicit = explicitPanel(q);
+  const execution = panelExecution(explicit, execSql, {
+    format: 'Table', rowLimit: DASH_TILE_ROW_CAP + 1,
+    params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(src) },
+  });
+  if (execution.error || (!isKpiPanel(explicit) && detectSqlFormat(execSql))) {
     applyTileResult(app, q, slot, {
-      error: 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.',
+      error: execution.error || 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.',
     });
     onSettled();
     return;
@@ -340,15 +346,15 @@ async function runSlotTile(app, q, slot, onSettled, src, generation) {
   // Client row limit = CAP (newResult trims + flags `capped`); server cap =
   // CAP + 1 (the sentinel one past the client limit), so an exactly-CAP result
   // is NOT marked truncated and a >CAP result is trimmed AND flagged (#193 req 1).
-  const result = newResult('Table', DASH_TILE_ROW_CAP);
+  const result = newResult(execution.format, isKpiPanel(explicit) ? 2 : DASH_TILE_ROW_CAP);
   await app.runReadInto(result, {
     sql: execSql,
-    format: 'Table',
-    rowLimit: DASH_TILE_ROW_CAP + 1,
+    format: execution.format,
+    rowLimit: execution.rowLimit,
     // readonly:2 rejects writes server-side (a favorite containing an INSERT/DDL
     // is guarded, not executed); max_result_bytes bounds wide rows; param_<name>
     // are the wave's prepared filter args (#173).
-    params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(src) },
+    params: execution.params,
     signal: ac.signal,
     // Progress-only repaint (#193 design req 4): update the loading placeholder's
     // row count as rows stream, never classify/render mid-stream. Updates the
@@ -490,7 +496,7 @@ export function renderDashboard(app) {
     if (skipped) {
       skipNote.style.display = '';
       skipNote.textContent = skipped + ' not shown';
-      skipNote.title = skipped + ' empty or single-row (KPI) favorite(s) — KPI panels arrive in a later phase.';
+      skipNote.title = skipped + ' empty favorite(s) with no panel to render.';
     } else {
       skipNote.style.display = 'none';
     }

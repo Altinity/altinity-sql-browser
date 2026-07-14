@@ -39,6 +39,7 @@ import { generatePKCE, randomState } from '../core/pkce.js';
 import { viewportZoom } from '../core/zoom-support.js';
 import { configBase } from '../core/dashboard.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
+import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
 import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
@@ -797,10 +798,21 @@ export function createApp(env = {}) {
     // records the template (srcSql / tab.sqlDraft).
     const execSql = execStatementSql(srcSql);
 
+    const kpiExecution = panelExecution(tabPanel(tab), execSql, {
+      format: 'Table', rowLimit: app.state.resultRowLimit, params: {},
+    });
+    if (kpiExecution.error) {
+      tab.result = newResult('KPI', 2);
+      tab.result.error = kpiExecution.error;
+      app.state.resultView.value = 'panel';
+      renderResults(app);
+      return;
+    }
+
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
     // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
     // the five EXPLAIN views; everything else streams structured (Table).
-    const explicitFmt = detectSqlFormat(execSql);
+    const explicitFmt = isKpiPanel(tabPanel(tab)) ? null : detectSqlFormat(execSql);
     const parsed = explicitFmt ? null : parseExplain(execSql);
     const explainMode = !explicitFmt && (parsed != null || app.state.forceExplain);
     let runSql = execSql;
@@ -822,14 +834,14 @@ export function createApp(env = {}) {
         ? execSql
         : buildExplainQuery(inner, explainView, explainOpts);
     } else {
-      fmt = explicitFmt || 'Table';
+      fmt = isKpiPanel(tabPanel(tab)) ? kpiExecution.format : explicitFmt || 'Table';
     }
 
     // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
     // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = explainMode ? 0 : app.state.resultRowLimit;
+    const rowLimit = explainMode ? 0 : isKpiPanel(tabPanel(tab)) ? kpiExecution.rowLimit : app.state.resultRowLimit;
     const t0 = now();
     tab.result = newResult(fmt, rowLimit);
     if (explainView) tab.result.explainView = explainView;
@@ -861,7 +873,7 @@ export function createApp(env = {}) {
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
-        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src) },
+        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => renderResults(app),
       });
     } finally {
@@ -882,7 +894,7 @@ export function createApp(env = {}) {
       // renders the toolbar + its Expand affordance, which gates on
       // `result.source` — set it after and the button never appears until the
       // next paint.
-      if (!tab.result.error && !tab.result.cancelled && fmt === 'Table' && tab.result.rows.length > 0) {
+      if (!tab.result.error && !tab.result.cancelled && (fmt === 'Table' || fmt === 'KPI') && tab.result.rows.length > 0) {
         tab.result.source = buildResultSource({
           srcSql,
           tabId: tab.id,
@@ -899,7 +911,7 @@ export function createApp(env = {}) {
         // Spec completion is intentionally stable during a run and survives a
         // later failed/cancelled run. Snapshot only completed structured
         // results; never expose partially streamed metadata to the editor.
-        tab.lastSuccessfulResultColumns = fmt === 'Table'
+        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI')
           ? tab.result.columns.map((column) => ({ ...column }))
           : [];
         app.recordHistory(tab, opts && opts.sql);

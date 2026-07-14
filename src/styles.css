@@ -22,6 +22,41 @@ html { zoom: var(--zoom); }
   --vp-zoom: var(--zoom);
 }
 
+/* ------------ KPI panel ------------ */
+.kpi-panel { display: grid; gap: 10px; min-width: 0; align-content: start; }
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 280px));
+  gap: 10px;
+  align-items: stretch;
+  justify-content: start;
+}
+.kpi-card {
+  --kpi-accent: var(--accent);
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--kpi-accent);
+  border-radius: 8px;
+  background: var(--bg-modal);
+}
+.kpi-label { color: var(--fg-mute); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+.kpi-value { margin-top: 6px; font-size: clamp(24px, 4vw, 38px); font-weight: 700; line-height: 1.08; overflow-wrap: anywhere; }
+.kpi-description { margin-top: 7px; color: var(--fg-mute); font-size: 12px; line-height: 1.4; }
+.kpi-delta { margin-top: 9px; font-size: 13px; font-weight: 600; }
+.kpi-delta.is-good { color: var(--success, #238636); }
+.kpi-delta.is-bad { color: var(--danger, #cf222e); }
+.kpi-delta.is-neutral { color: var(--fg-mute); }
+.kpi-warnings { display: grid; gap: 4px; }
+.kpi-diagnostic { color: var(--fg-mute); font-size: 12px; }
+.kpi-diagnostic.is-error { color: var(--danger, #cf222e); }
+.kpi-state { min-height: 120px; display: grid; place-items: center; text-align: center; }
+.panel-authoring-hint { color: var(--fg-mute); font-size: 12px; line-height: 1.4; }
+
+@media (max-width: 520px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+}
+
 /* Fallback for engines that can't even parse `zoom` (no `@supports (zoom: 1)`):
    neutralize the factor so the `html{zoom}` no-op AND every `calc(.../var(--vp-zoom))`
    viewport panel collapse to a consistent 1× layout, instead of dividing by a
@@ -2132,6 +2167,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    consistent with the all-modes-to-one-column narrow fallback. */
 .dash-grid.is-report { grid-template-columns: 1fr; max-width: 1100px; }
 .dash-grid.is-report .dash-tile { min-height: 440px; }
+.dash-grid.is-report .dash-tile.is-kpi,
+.dash-grid.is-wide .dash-tile.is-kpi { min-height: 0; }
 /* Full width mode (#184): one tile per row filling the whole available
    dashboard content width (inside the grid's existing 20px page gutters), for
    horizontally expansive Grafana-style panels. Unlike Report it keeps the
@@ -2157,7 +2194,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; }
-.dash-tile-body > .chart-view { flex: 1; min-width: 0; }
+.dash-tile-body > .chart-view,
+.dash-tile-body > .kpi-panel { flex: 1; min-width: 0; }
 /* Table/logs tiles (#149 D9): explicit flex constraints so content scrolls
    inside the tile instead of clipping; the workbench grid's height:100% is
    overridden back to auto (flex sizes it here). */

@@ -46,6 +46,12 @@ describe('applyStreamLine', () => {
     applyStreamLine({ row: { a: '1', b: 'x' } }, r);
     expect(r.rows).toEqual([['1', 'x']]);
   });
+  it('preserves quoted Decimal tuple members exactly', () => {
+    const r = newResult('KPI');
+    applyStreamLine({ meta: [{ name: 'metric', type: 'Tuple(value Decimal(38, 2), delta Decimal(38, 2))' }] }, r);
+    applyStreamLine({ row: { metric: { value: '9007199254740993.25', delta: '-9007199254740993.25' } } }, r);
+    expect(r.rows[0][0]).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
+  });
   it('accumulates progress and pct', () => {
     const r = newResult('Table');
     applyStreamLine({ progress: { read_rows: '50', read_bytes: '500', elapsed_ns: '1000', total_rows_to_read: '100' } }, r);
