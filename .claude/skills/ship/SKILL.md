@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, implement code+tests, self-review, open a PR — and stop at the human merge gate. Invoke as `/ship <issue-number>` (e.g. /ship 69).
+description: Ship one altinity-sql-browser roadmap issue end-to-end — plan, implement code+tests, self-review, open a PR — and stop at the human merge gate. Invoke with an issue number (e.g. `/ship 69`).
 ---
 
 # /ship — drive one roadmap issue through the full cycle
@@ -16,7 +16,6 @@ Follow `CLAUDE.md` throughout (hard rules 1–5 + the Working-discipline section
 > Subagent note: any `Agent` call this skill makes — for planning, review, or analysis — is **read-only** by default, and inherits this entire file plus CLAUDE.md just by being spawned mid-run. Inheriting these steps is not the same as being told to execute them. State the boundary explicitly in the subagent's prompt (no Edit/Write, no git/gh mutating commands, no TaskCreate/TaskUpdate, no memory writes — return only the requested output), and prefer a fresh non-fork agent over `fork` for this kind of fan-out. **Steps 5–7 — reconcile, PR, and the merge gate — are performed by this session only, never delegated to a subagent.** After any batch of subagents returns, verify with `git diff`, `git log`, and `gh pr list` before trusting a self-reported summary.
 
 ## 1 — Orient & set up the workspace
-- **Collision guard (parallel safety).** Before any git op, confirm isolation: `[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ]` → true means you're in a dedicated worktree (good). If you're in the **main** working tree (the two are equal) **and** `git worktree list` shows more than one entry, 🛑 **stop** and tell me — another session may share this dir; relaunch with `claude --worktree <name>`. Main tree as the *sole* worktree is fine for a single `/ship` — note it and proceed.
 - `gh issue view <ISSUE>` — read Goal / scope / Key implementation / **Acceptance criteria** (and any "Reconciled" banner).
 - Read its place in the roadmap **#68** (which phase; what it depends on; the Parallelization section). 🛑 If a hard dependency is unfinished (e.g. this needs CM6 #21 first), stop and tell me — don't build out of order.
 - **Pick the right base.** If `<ISSUE>` is independent or builds only on *merged* work → branch off `main`: `git fetch && git checkout main && git pull`. If it builds on **unmerged** work (e.g. the signals foundation in PR #89), branch off **that** branch instead (`git checkout <dep-branch>`) or wait for it to merge — branching off `main` would build against stale code and conflict.
