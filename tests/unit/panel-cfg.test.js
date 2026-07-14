@@ -167,9 +167,9 @@ describe('switchPanelType', () => {
     expect(out.cfg).toMatchObject({ type: 'line', x: 0, y: [1] });
     expect(out.key).toBe(schemaKey(chartCols));
   });
-  it('entering the chart family on a non-chartable result yields a bare (invalid) type marker', () => {
+  it('entering the chart family on a non-chartable result keeps schema-valid placeholder roles', () => {
     const out = switchPanelType({ cfg: { type: 'table' } }, 'line', strCols);
-    expect(out.cfg).toEqual({ type: 'line' });
+    expect(out.cfg).toEqual({ type: 'line', x: 0, y: [2], series: null });
     expect(out.key).toBeNull();
   });
   it("text gains a string content (''), and content survives switches away and back", () => {
@@ -234,6 +234,17 @@ describe('resolvePanel', () => {
     expect(out.fallback).toBe(true);
     expect(out.diagnostic).toContain('nothing to plot');
     expect(out.cfg.type).toBe('table');
+  });
+  it('corrupted static chart/text shapes fall back before runtime normalization can hide them', () => {
+    for (const cfg of [
+      { type: 'line', x: 0, y: [1, 1], series: null },
+      { type: 'pie', x: 0, y: [1, 2], series: null },
+      { type: 'text', content: 42 },
+    ]) {
+      const out = resolvePanel({ cfg }, chartCols);
+      expect(out.fallback).toBe(true);
+      expect(out.diagnostic).toContain('invalid static configuration');
+    }
   });
   it('logs: explicit names resolve → as-saved; a failed lookup re-derives by convention', () => {
     const ok = resolvePanel({ cfg: { type: 'logs', msg: 'message' } }, logCols);

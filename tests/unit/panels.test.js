@@ -199,6 +199,16 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie', x: 0, y: [1] });
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
   });
+  it('a chart choice on an all-string result remains a valid draft and shows the result hint', () => {
+    const app = panelApp(noTimeNoMessageResult());
+    app.state.resultView.value = 'table';
+    renderResults(app);
+    pickType(app, 'line');
+    expect(app.activeTab().panelCfg).toEqual({ type: 'line', x: 0, y: [3], series: null });
+    expect(app.activeTab().specDiagnostics).toEqual([]);
+    expect(app.activateInvalidSpecDraft).not.toHaveBeenCalled();
+    expect(region(app).textContent).toContain('nothing to plot');
+  });
   it("the chart arm's field controls (X/Y) write back through onCfgChange + dirty; no Type select duplicate", () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1], series: null });
     app.activeTab().panelKey = 'carrier:String|flights:UInt64';

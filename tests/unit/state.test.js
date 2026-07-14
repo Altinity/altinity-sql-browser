@@ -305,6 +305,25 @@ describe('saved queries', () => {
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(save).not.toHaveBeenCalled();
   });
+  it('external writers validate the persisted entry and every linked draft before mutating', () => {
+    const s = createState(reader());
+    const tab = s.tabs.value[0];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' })];
+    tab.savedId = 's1';
+    setTabSpecDraft(tab, { ...s.savedQueries[0].spec, draftOnly: true }, { dirty: true });
+    const save = vi.fn();
+    const entryBlocked = { validate: () => [{ path: ['favorite'], severity: 'error', code: 'blocked', message: 'blocked' }] };
+    expect(toggleFavorite(s, 's1', save, entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
+    expect(queryFavorite(s.savedQueries[0])).toBe(false);
+
+    const draftBlocked = { validate: (spec) => spec.draftOnly
+      ? [{ path: ['draftOnly'], severity: 'error', code: 'blocked-draft', message: 'blocked draft' }]
+      : [] };
+    expect(toggleFavorite(s, 's1', save, draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(queryFavorite(s.savedQueries[0])).toBe(false);
+    expect(tab.specParsed.favorite).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+  });
   it('patchSpecDraft handles object/function patches and reports a missing or invalid draft', () => {
     const tab = newTabObj('t1');
     tab.specParsed.extension = { keep: true };
@@ -523,7 +542,7 @@ describe('library document', () => {
     s.tabs.value[0].savedId = 'old';                           // becomes dangling → pruned
     s.tabs.value[0].editorMode = 'spec';
     s.libraryDirty.value = true;
-    const chart = { cfg: { type: 'bar' }, key: 'k' };
+    const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
     const incoming = [
       { id: 'keep', name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' },
       { name: 'B', sql: '2', favorite: false },          // id-less → genId
@@ -571,6 +590,22 @@ describe('library document', () => {
     const s = createState(reader());
     replaceLibrary(s, [{ name: 'A', sql: '1' }], '.json', vi.fn(), vi.fn(), () => 'g');
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
+  });
+
+  it('Replace and Append reject invalid Specs before any Library mutation', () => {
+    const s = createState(reader());
+    s.savedQueries = [savedQuery({ id: 'existing', name: 'Existing', sql: 'SELECT 1' })];
+    s.libraryName.value = 'Before';
+    s.libraryDirty.value = false;
+    const save = vi.fn(), saveName = vi.fn();
+    const invalid = [savedQuery({ id: 'bad', name: 'Bad', panel: { cfg: { type: 'line', x: 0, y: [] } } })];
+    expect(() => replaceLibrary(s, invalid, 'after.json', save, saveName)).toThrow('panel.cfg.y');
+    expect(() => appendLibrary(s, invalid, save)).toThrow('panel.cfg.y');
+    expect(s.savedQueries.map((query) => query.id)).toEqual(['existing']);
+    expect(s.libraryName.value).toBe('Before');
+    expect(s.libraryDirty.value).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    expect(saveName).not.toHaveBeenCalled();
   });
 
   it('appendLibrary merges via importSaved (dedupe), returns counts, sets dirty', () => {

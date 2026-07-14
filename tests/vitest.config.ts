@@ -34,6 +34,7 @@ export default defineConfig({
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: resolve(repoRoot, 'coverage'),
       include: ['src/**/*.js'],
+      exclude: ['src/generated/query-spec-v1-*.js'],
       // Every src file must hit 100% on its own (perFile) — no global
       // aggregate hiding a weak module. Code is written to avoid
       // unreachable defensive branches so 100/100/100/100 is genuine.

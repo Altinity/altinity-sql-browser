@@ -43,21 +43,34 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **A canonical Draft 2020-12 schema and pure validation/introspection service
+  now define `query.spec`** (#220). All implemented panel branches carry
+  schema-owned documentation, snippets, status, and result-column completion
+  annotations; known fields are validated while unknown extensions and future
+  panel types remain storable. Ajv compiles the schema at build time from a dev
+  dependency into deterministic self-contained ESM, with stale generated files
+  failing tests and builds. Stable exact-path diagnostics now drive Spec editor
+  validation, synchronous atomic Save, import/Replace/Append, external Spec
+  writers, and static runtime panel checks, while the existing app-owned
+  feature-validator registry remains the layer for result/context rules.
+  Checked-in examples, generator output, templates, and authoring-guide JSON
+  are schema-validated in tests.
 - **The workbench now has independent SQL and saved-query Spec JSON editor
   modes** (#212). A visible `SQL | Spec` switch keeps separate per-tab drafts,
   undo/search state, dirty flags, and injected CodeMirror adapters. Spec mode
   adds local JSON formatting, folding, search, parse markers with line/column,
   and synchronously registered semantic validators keyed by exact path arrays;
-  known core field types are checked while unknown extension fields remain
-  valid. Linked Save atomically commits SQL plus the current valid Spec in one
+  known static structure is now owned by the canonical schema added in #220,
+  while unknown extension fields remain valid. Linked Save atomically commits SQL plus the current valid Spec in one
   Library write, with normalized Name/Description and all other fields/order
   retained; invalid Spec persists nothing. Spec is a lightweight editing mode:
   its toolbar contains only Format, Save, and the SQL | Spec switch, while Run,
   Explain, SQL Format, Export, Share, and Share’s global shortcut are SQL-only.
   Validation remains continuous through diagnostics and status. Library pencil,
   favorite, and Panel writers merge their changes into every valid open draft,
-  preserving unrelated unsaved and extension fields; invalid JSON alone blocks
-  the writer, focuses the affected Spec tab, and persists nothing. Reopening an
+  preserving unrelated unsaved and extension fields; invalid JSON or a blocking
+  schema/feature diagnostic stops the staged writer before mutation, and invalid
+  JSON focuses the affected Spec tab. Reopening an
   already-open saved query activates its existing tab. No package or lockfile
   change was needed because JSON language support landed in #213.
 - **A shared, injected read-only CodeMirror source viewer** (#213) now provides

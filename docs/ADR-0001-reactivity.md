@@ -242,8 +242,8 @@ writers use one state-level patch helper. Panel controls patch the active valid
 draft and leave it dirty. Immediately persisted Library pencil/favorite changes
 patch every valid open draft while preserving both unrelated unsaved fields and
 each draft's existing dirty state: clean stays clean; dirty stays dirty. A
-syntactically invalid JSON draft is the only block; the writer reports that tab
-before any mutation or persistence. Linked Save validates and persists SQL plus
+syntactically invalid JSON draft reports that tab; #220 extends the same staged
+guard to every blocking schema or feature diagnostic before mutation. Linked Save validates and persists SQL plus
 Spec once, atomically; a failed Save writes nothing.
 
 Spec is intentionally a lightweight editing mode rather than a second
@@ -253,3 +253,27 @@ SQL mode. Validation is continuous through diagnostics and status; there are no
 manual Validate or Revert commands. The adapter shares only the generic
 CodeMirror presentation/search base and JSON language package that had already
 landed with #213, so #212 adds no runtime dependency.
+
+## Addendum — canonical saved-query Spec schema service (#220)
+
+The small path-validator registry introduced by #212 is now the feature layer
+of one canonical validation service rather than a parallel source of static
+truth. `schemas/query-spec-v1.schema.json` owns known `query.spec` structure,
+panel discriminators, authoring annotations, and forward-compatible extension
+policy. Pure `core/spec-schema.js` normalizes compiled errors into stable exact
+path arrays and resolves local schema branches for editor tooling; it imports no
+DOM, editor, application state, fetch, or SQL code.
+
+Ajv runs only at development/build time. A deterministic generator validates
+the Draft 2020-12 document in strict mode and emits a self-contained validator
+plus schema-data module; tests and builds fail if either generated artifact is
+stale. The browser bundle contains no general JSON Schema evaluator.
+
+The app constructs one validation service and injects it through Spec editor
+diagnostics, linked Save, Library import, and external Spec writers. Static
+schema errors run first; app-owned feature validators run only when no blocking
+schema error overlaps their path and receive optional result/application
+context. External writers stage the persisted entry and every linked draft,
+validate them all, and only then mutate once. Renderer-level bounds, result
+column resolution, schema-key mismatch handling, and fallback defenses remain
+authoritative for runtime data.

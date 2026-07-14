@@ -13,6 +13,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { assertValidLibraryDocument } from './validate-library.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tmpl = (name) => readFileSync(resolve(here, 'iceberg-templates', name), 'utf8');
@@ -231,6 +232,8 @@ const doc = {
     },
   })),
 };
+
+assertValidLibraryDocument(doc);
 
 const out = resolve(here, 'iceberg-install.json');
 writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
