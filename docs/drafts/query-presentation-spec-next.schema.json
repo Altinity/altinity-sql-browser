@@ -692,15 +692,6 @@
           "properties": {
             "type": {
               "const": "kpi"
-            },
-            "layout": {
-              "type": "string",
-              "enum": [
-                "auto",
-                "row",
-                "grid"
-              ],
-              "default": "auto"
             }
           },
           "additionalProperties": true,

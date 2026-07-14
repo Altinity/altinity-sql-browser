@@ -11,6 +11,7 @@ const panels = [
   { type: 'line', x: 0, y: [1], series: null },
   { type: 'area', x: 0, y: [1], series: null },
   { type: 'pie', x: 0, y: [1], series: null },
+  { type: 'kpi' },
   { type: 'table' },
   { type: 'logs', time: 'event_time', msg: 'message', level: 'level' },
   { type: 'text' },
@@ -40,6 +41,18 @@ describe('canonical query.spec schema', () => {
       })).toEqual([]);
     }
     expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'future-gauge', custom: true } } })).toEqual([]);
+  });
+
+  it('validates the KPI presentation contract and rejects malformed known metadata', () => {
+    expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'kpi', extension: true }, fieldConfig: {
+      defaults: { displayName: 'Value', description: 'Current', unit: '%', decimals: 2, color: '#123', noValue: '—', hidden: false, delta: { displayName: 'Change', unit: ' pp', decimals: 1, positiveIsGood: true, show: true, future: true } },
+    } } })).toEqual([]);
+    expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'kpi' }, fieldConfig: { defaults: { decimals: 21, delta: { decimals: -1, show: 'yes' } } } } })
+      .map((item) => [item.path, item.code])).toEqual([
+      [['panel', 'fieldConfig', 'defaults', 'decimals'], 'schema-number-range'],
+      [['panel', 'fieldConfig', 'defaults', 'delta', 'decimals'], 'schema-number-range'],
+      [['panel', 'fieldConfig', 'defaults', 'delta', 'show'], 'schema-invalid-type'],
+    ]);
   });
 
   it('enforces known root, field, dashboard, and panel shapes without rejecting unknown fields', () => {
@@ -112,11 +125,11 @@ describe('schema lookup', () => {
   it('retains ordered candidates while a discriminator is incomplete', () => {
     const root = { panel: { cfg: {} } };
     const schema = querySpecSchemaService.schemaAtPath({ root, path: ['panel', 'cfg'] });
-    expect(schema.candidates).toHaveLength(9);
+    expect(schema.candidates).toHaveLength(10);
     expect(schema.common['x-altinity-discriminator']).toBe('type');
     const typeProperty = querySpecSchemaService.propertiesAtPath({ root, path: ['panel', 'cfg'] })[0];
     expect(typeProperty.name).toBe('type');
-    expect(typeProperty.schemas).toHaveLength(9);
+    expect(typeProperty.schemas).toHaveLength(10);
     expect(typeProperty.schemas.every((candidate) => candidate.title === 'Panel type'
       && candidate.type === 'string' && candidate.minLength === 1)).toBe(true);
     const unknown = querySpecSchemaService.annotationsAtPath({
@@ -126,7 +139,7 @@ describe('schema lookup', () => {
     expect(querySpecSchemaService.variantsAtPath({
       root: { panel: { cfg: { type: 'line' } } }, path: ['panel', 'cfg', 'type'],
     }).map((variant) => variant.value)).toEqual([
-      'bar', 'hbar', 'line', 'area', 'pie', 'table', 'logs', 'text',
+      'bar', 'hbar', 'line', 'area', 'pie', 'kpi', 'table', 'logs', 'text',
     ]);
     expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [] })).toEqual([]);
     expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [0] })).toEqual([]);

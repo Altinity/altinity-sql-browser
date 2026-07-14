@@ -126,8 +126,30 @@ export function withStatementBreak(sql) {
  * or without a following `SETTINGS …`). Pure.
  */
 export function detectSqlFormat(sql) {
-  const m = /\bFORMAT\s+([A-Za-z][A-Za-z0-9]*)\b(?:\s+SETTINGS\b[\s\S]*)?\s*;?\s*$/i.exec(String(sql || ''));
-  return m ? m[1] : null;
+  const text = String(sql || '');
+  const words = [];
+  let depth = 0;
+  for (const span of scanSpans(text)) {
+    if (span.kind !== 'code') continue;
+    const code = text.slice(span.start, span.end);
+    for (let i = 0; i < code.length;) {
+      const ch = code[i];
+      if (ch === '(') { depth++; i++; continue; }
+      if (ch === ')') { depth = Math.max(0, depth - 1); i++; continue; }
+      if (depth === 0 && /[A-Za-z_]/.test(ch)) {
+        let end = i + 1;
+        while (end < code.length && /[A-Za-z0-9_]/.test(code[end])) end++;
+        words.push(code.slice(i, end)); i = end; continue;
+      }
+      i++;
+    }
+  }
+  for (let i = words.length - 2; i >= 0; i--) {
+    if (words[i].toUpperCase() !== 'FORMAT') continue;
+    const rest = words.slice(i + 2);
+    if (rest.length === 0 || rest[0].toUpperCase() === 'SETTINGS') return words[i + 1];
+  }
+  return null;
 }
 
 /**

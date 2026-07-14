@@ -30,6 +30,7 @@ import {
   resolvePanel, resolveLogsShape, switchPanelType, isChartFamily, CHART_FAMILY, clonePanelCfg,
 } from '../core/panel-cfg.js';
 import { CHART_TYPES, schemaKey } from '../core/chart-data.js';
+import { renderKpiPanel } from './kpi-panel.js';
 
 // ── Markdown AST → DOM ───────────────────────────────────────────────────────
 
@@ -150,6 +151,10 @@ const chartArm = {
 };
 
 const PANEL_TYPES = {
+  kpi: {
+    controls: () => null,
+    renderPanel({ kpi }) { return { node: renderKpiPanel(kpi) }; },
+  },
   table: {
     controls: () => null, // no schema-bound fields; sort/widths are surface state
     renderPanel({ result, state, rerender, cap, onCell }) {
@@ -214,6 +219,7 @@ export { PANEL_TYPES };
  * result view is its workbench surface, so offering it here would duplicate
  * the adjacent Table button. */
 export const PANEL_PICKER_OPTIONS = [
+  { value: 'kpi', label: 'KPI' },
   ...CHART_TYPES,
   { value: 'logs', label: 'Logs' },
   { value: 'text', label: 'Text' },
@@ -229,7 +235,7 @@ export const PANEL_PICKER_OPTIONS = [
  */
 export function renderResolvedPanel(app, resolved, result, opts) {
   const arm = PANEL_TYPES[resolved.cfg.type];
-  const out = arm.renderPanel({ app, result, cfg: resolved.cfg, shape: resolved.shape, ...opts });
+  const out = arm.renderPanel({ app, result, cfg: resolved.cfg, shape: resolved.shape, kpi: resolved.kpi, ...opts });
   if (!resolved.diagnostic && !resolved.rederived) return out;
   // Wrap with the mismatch affordance: a small hint bar above the panel.
   const note = resolved.diagnostic
@@ -258,7 +264,10 @@ function panelContext(app, r) {
   const hasGrid = !!(r && !r.error && r.rawText == null && r.rows);
   const columns = hasGrid ? r.columns : [];
   const saved = tabPanel(tab);
-  const resolved = resolvePanel(saved, columns);
+  const resolved = resolvePanel(saved, {
+    columns, rows: hasGrid ? r.rows : null,
+    fieldConfig: saved?.fieldConfig, serverVersion: app.state.serverVersion,
+  });
   // Rescue (#192/#195): a saved Logs panel that falls back (its Time/Message
   // roles no longer resolve) still needs its Logs controls so the user can
   // repair the roles, but the fallback preview (Table OR a derived chart) is
@@ -342,7 +351,10 @@ export function renderPanelView(app, r, hooks) {
     ? [PANEL_TYPES.logs, clonePanelCfg(saved.cfg)]
     : [PANEL_TYPES[resolved.cfg.type], resolved.cfg];
   const controlsNode = controlsArm.controls({ app, result: hasGrid ? r : null, cfg: controlsCfg, onChange });
-  const bar = controlsNode ? h('div', { class: 'panel-config' }, controlsNode) : null;
+  const kpiHint = resolved.cfg.type === 'kpi'
+    ? h('div', { class: 'panel-authoring-hint' }, 'Labels, units, decimals, colors, and delta semantics are authored in Spec → panel.fieldConfig.')
+    : null;
+  const bar = controlsNode || kpiHint ? h('div', { class: 'panel-config' }, controlsNode, kpiHint) : null;
 
   const body = h('div', { class: 'panel-body' });
   const isText = resolved.cfg.type === 'text';

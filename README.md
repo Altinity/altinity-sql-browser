@@ -79,6 +79,14 @@ saved-query and Library envelopes plus the offline schema bundle. Its toolbar is
 **Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
 never persisted; unknown fields remain valid and survive Save.
 
+The implemented **KPI** panel turns an exactly-one-row result into responsive
+cards: numeric scalar columns become simple KPIs, while named ClickHouse
+`Tuple(value numeric, delta Nullable(numeric))` columns add an optional delta.
+SQL owns the values; `panel.fieldConfig` owns labels, descriptions, units,
+rounding, colors, NULL text, visibility, and delta semantics. The complete
+[`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
+**File ▾ → Open** and renders identically in the workbench and Dashboard.
+
 Panel controls and Library favorite/pencil edits merge their fields into valid
 open Spec drafts, preserving unrelated unsaved and extension fields. Syntax or
 schema/feature errors block the staged writer before any draft or Library entry

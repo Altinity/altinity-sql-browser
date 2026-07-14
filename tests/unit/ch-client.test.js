@@ -419,6 +419,18 @@ describe('loadEntityDoc (#27 — lazy hover docs)', () => {
 });
 
 describe('runQuery', () => {
+  it('uses typed progress streaming for the KPI transport alias', async () => {
+    const ctx = ctxWith(async () => streamResp([
+      '{"meta":[{"name":"metric","type":"Tuple(value Decimal(38, 2), delta Decimal(38, 2))"}]}\n',
+      '{"row":{"metric":{"value":"9007199254740993.25","delta":"-9007199254740993.25"}}}\n',
+    ]));
+    const lines = [];
+    await runQuery(ctx, 'SELECT 1', { format: 'KPI', params: { output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 }, onLine: (line) => lines.push(line) });
+    expect(ctx.fetch.mock.calls[0][0]).toContain('default_format=JSONEachRowWithProgress');
+    expect(ctx.fetch.mock.calls[0][0]).toContain('output_format_json_named_tuples_as_objects=1');
+    expect(ctx.fetch.mock.calls[0][0]).toContain('output_format_json_quote_decimals=1');
+    expect(lines[1].row.metric).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
+  });
   it('streams lines and reports an error result on !ok', async () => {
     const ctx = ctxWith(async () => textResp('{"exception":"boom"}', false, 500));
     const out = await runQuery(ctx, 'bad', { format: 'Table' });

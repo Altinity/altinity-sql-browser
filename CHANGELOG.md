@@ -49,6 +49,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **KPI panels now render one-row scalar and named-tuple results** (#154) in
+  both the workbench and Dashboard through one shared reader and renderer.
+  The canonical Presentation Spec supports exact-name field metadata, nested
+  delta display semantics, units, rounding, colors, NULL text, and visibility;
+  explicit KPI queries own typed progress streaming and reject authored
+  trailing `FORMAT` clauses before sending a request.
 - **The saved-query Spec editor now provides complete schema-driven native
   CodeMirror autocomplete** (#221). Root/nested properties, discriminated panel
   branches, constants, enums, booleans, nullable values, defaults, examples,

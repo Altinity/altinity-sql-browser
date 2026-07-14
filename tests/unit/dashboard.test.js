@@ -225,7 +225,7 @@ describe('renderDashboard', () => {
     expect(app.root.querySelector('.dash-fav').textContent).toContain('1 favorite');
   });
 
-  it('skips single-row (KPI) favorites and notes how many are not shown', async () => {
+  it('auto-renders eligible single-row favorites as KPI cards', async () => {
     const favorites = [
       { id: '1', name: 'Chart', sql: 'chart', favorite: true },
       { id: '2', name: 'Kpi', sql: 'kpi', favorite: true },
@@ -233,14 +233,12 @@ describe('renderDashboard', () => {
     const runTile = vi.fn(async (sql) => (sql === 'kpi' ? kpiResult() : chartResult()));
     const app = dashApp(favorites, runTile);
     await renderDashboard(app);
-    // Stable per-favorite slots (#149 D3): a skipped tile's card stays in the
-    // DOM (its identity is preserved for a later filter re-run) but hidden.
     const tiles = [...app.root.querySelectorAll('.dash-tile')];
     expect(tiles.length).toBe(2);
-    expect(tiles.filter((t) => t.style.display !== 'none')).toHaveLength(1);
+    expect(tiles.filter((t) => t.style.display !== 'none')).toHaveLength(2);
+    expect(tiles[1].querySelector('.kpi-value').textContent).toBe('42');
     const note = app.root.querySelector('.dash-skip');
-    expect(note.style.display).toBe('');
-    expect(note.textContent).toBe('1 not shown');
+    expect(note.style.display).toBe('none');
   });
 
   it('shows a per-tile error when the query fails', async () => {
@@ -312,15 +310,16 @@ describe('renderDashboard', () => {
     expect(charts[0].destroyed).toBe(true); // prior instance destroyed, not orphaned
   });
 
-  it('a tile that flips chart -> skip on Refresh clears its old chart DOM (no dead canvas lingers)', async () => {
+  it('a tile that flips chart -> KPI on Refresh clears its old chart DOM', async () => {
     const runTile = vi.fn(async () => chartResult());
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], runTile);
     await renderDashboard(app);
     expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
-    runTile.mockImplementation(async () => kpiResult()); // next refresh becomes a skip (KPI)
+    runTile.mockImplementation(async () => kpiResult());
     await app.root.querySelector('.dash-btn').onclick();
-    expect(app.root.querySelector('.dash-tile').style.display).toBe('none');
+    expect(app.root.querySelector('.dash-tile').style.display).toBe('');
     expect(app.root.querySelector('.dash-tile canvas')).toBeNull(); // stale chart DOM cleared, not just hidden
+    expect(app.root.querySelector('.kpi-card')).not.toBeNull();
   });
 
   it('Refresh marks every tile loading immediately (no stale content lingers beyond the concurrency window)', async () => {
@@ -526,6 +525,24 @@ describe('renderDashboard — streaming seam (#193)', () => {
     expect(result.rowLimit).toBe(DASH_TILE_ROW_CAP); // client-side trim = CAP
     expect(opts.params).toMatchObject({ readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, param_year: '2024' });
     expect(opts.signal).toBeTruthy(); // an AbortController signal → real per-tile cancellation
+  });
+
+  it('uses the same owned typed transport and two-row sentinel for an explicit KPI', async () => {
+    const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 42 AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn(async () => kpiResult()));
+    await renderDashboard(app);
+    const [result, opts] = app.runReadInto.mock.calls[0];
+    expect(result.rawFormat).toBe('KPI');
+    expect(result.rowLimit).toBe(2);
+    expect(opts).toMatchObject({ format: 'KPI', rowLimit: 2 });
+    expect(opts.params).toMatchObject({ readonly: 2, output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 });
+    expect(app.root.querySelector('.kpi-value').textContent).toBe('42');
+  });
+
+  it('uses the KPI-specific authored FORMAT diagnostic and sends no request', async () => {
+    const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 1 FORMAT CSV', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn());
+    await renderDashboard(app);
+    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.root.querySelector('.dash-tile-error').textContent).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
   });
 
   it('exactly-CAP is not truncated; CAP+1 is trimmed AND flagged (req 1, via the real applyStreamLine)', async () => {
@@ -876,22 +893,23 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull(); // fell back to the auto chart
   });
 
-  it('an explicit single-row table panel renders (only unconfigured single rows are KPI-skipped)', async () => {
+  it('an explicit single-row table panel remains a table instead of auto-selecting KPI', async () => {
     const app = oneFav(vi.fn(async () => kpiResult()), { panel: { cfg: { type: 'table' } } });
     await renderDashboard(app);
     expect(app.root.querySelector('.dash-tile').style.display).not.toBe('none');
     expect(app.root.querySelectorAll('.res-table tbody tr')).toHaveLength(1);
   });
 
-  it('a tile that flips table → skip on Refresh clears its old grid DOM', async () => {
+  it('a tile that flips table → KPI on Refresh clears its old grid DOM', async () => {
     const runTile = vi.fn(async () => tableResult());
     const app = oneFav(runTile);
     await renderDashboard(app);
     expect(app.root.querySelector('.res-table-wrap')).not.toBeNull();
-    runTile.mockImplementation(async () => kpiResult()); // next refresh becomes a skip (KPI)
+    runTile.mockImplementation(async () => kpiResult());
     await app.root.querySelector('.dash-btn').onclick();
-    expect(app.root.querySelector('.dash-tile').style.display).toBe('none');
+    expect(app.root.querySelector('.dash-tile').style.display).toBe('');
     expect(app.root.querySelector('.res-table-wrap')).toBeNull(); // stale grid DOM cleared, not just hidden
+    expect(app.root.querySelector('.kpi-card')).not.toBeNull();
   });
 
   it('grid/logs tiles cap displayed rows at DASH_TABLE_DISPLAY_CAP with the in-body footer', async () => {

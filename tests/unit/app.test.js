@@ -439,6 +439,37 @@ describe('query run', () => {
     app.renderApp();
     return { app, e };
   }
+  it('runs an explicit KPI with owned typed streaming and renders the shared cards', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT 42/.test(sql), resp({ body: streamBody([
+        '{"meta":[{"name":"users","type":"UInt64"}]}\n', '{"row":{"users":42}}\n',
+      ]) })],
+    ]);
+    const tab = app.activeTab();
+    tab.sqlDraft = 'SELECT 42 AS users';
+    tab.specParsed.panel = { cfg: { type: 'kpi' }, fieldConfig: { columns: { users: { displayName: 'Active users' } } } };
+    tab.specText = JSON.stringify(tab.specParsed);
+    app.state.resultView.value = 'panel';
+    await app.actions.run();
+    const request = app.chCtx.fetch.mock.calls.find(([, init]) => /SELECT 42/.test(init.body));
+    expect(request[0]).toContain('default_format=JSONEachRowWithProgress');
+    expect(request[0]).toContain('output_format_json_named_tuples_as_objects=1');
+    expect(request[0]).toContain('output_format_json_quote_decimals=1');
+    expect(request[0]).toContain('max_result_rows=2');
+    expect(app.dom.resultsRegion.querySelector('.kpi-label').textContent).toBe('Active users');
+    expect(app.dom.resultsRegion.querySelector('.kpi-value').textContent).toBe('42');
+  });
+  it('blocks an explicit KPI query with authored FORMAT before fetch', async () => {
+    const { app } = appForRun([]);
+    const tab = app.activeTab();
+    tab.sqlDraft = 'SELECT 1 FORMAT CSV';
+    tab.specParsed.panel = { cfg: { type: 'kpi' } };
+    tab.specText = JSON.stringify(tab.specParsed);
+    await app.actions.run();
+    expect(app.chCtx.fetch.mock.calls.some(([, init]) => init?.body === 'SELECT 1 FORMAT CSV')).toBe(false);
+    expect(tab.result.error).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
+    expect(app.state.resultView.value).toBe('panel');
+  });
   it('runs a streaming query and records history', async () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
