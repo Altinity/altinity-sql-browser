@@ -24,6 +24,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   without sacrificing reproducibility.
 
 ### Fixed
+- **Draggable pane splitters now use one quiet, consistent visual treatment**
+  (#227): sidebar, editor/results, schema/Library, schema-detail, and cell-detail
+  handles keep a generous fixed hit area around a centered 1px theme-border
+  line, then show the same 3px accent indicator on hover and throughout a drag
+  without moving adjacent panes. The former permanently thick horizontal bars
+  and horizontal-only center grip are removed.
 - **Schema search cascades through the database/table/column hierarchy instead
   of flat-filtering table and column names independently** (#208). A database
   name match now shows that database and every one of its tables; a table

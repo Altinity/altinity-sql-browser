@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>splitter visual harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; padding: 24px; background: var(--bg); color: var(--fg); }
+    .horizontal-layout { display: flex; width: 420px; height: 120px; }
+    .vertical-layout { display: flex; flex-direction: column; width: 420px; height: 180px; margin-top: 24px; }
+    .pane { flex: 1; min-width: 0; min-height: 0; background: var(--bg-side); }
+    .drawer-shell { position: relative; width: 220px; height: 80px; margin: 24px 0 0 3px; }
+    .schema-shell { position: relative; width: 420px; height: 80px; margin-top: 24px; }
+    .schema-detail-handle { width: 100%; }
+  </style>
+</head>
+<body data-theme="dark">
+  <div class="horizontal-layout">
+    <div class="pane" id="left-pane"></div>
+    <div class="col-resize" id="col-split"></div>
+    <div class="pane"></div>
+  </div>
+  <div class="vertical-layout">
+    <div class="pane" id="top-pane"></div>
+    <div class="row-resize" id="row-split"></div>
+    <div class="pane"></div>
+  </div>
+  <div class="drawer-shell cd-panel"><div class="cd-resize-h" id="drawer-split"></div></div>
+  <div class="schema-shell"><div class="schema-detail-handle" id="schema-split"></div></div>
+  <script>window.__ready = true;</script>
+</body>
+</html>

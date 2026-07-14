@@ -14,7 +14,7 @@ import { qualifyIdent } from '../core/format.js';
 import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
 import { straightEdgePoints, incidentEdges, dragDeltaToSvg, applyPositions, recordPosition, createMoveHistory } from '../core/graph-layout.js';
 import { flashToast } from './toast.js';
-import { clearSchemaSelection } from './schema-detail.js';
+import { clearSchemaSelection, closeDetailPane } from './schema-detail.js';
 import { openInDetachedTab } from './detached-view.js';
 
 const ZOOM_STEP = 1.2; // per zoom-button press
@@ -604,7 +604,7 @@ export function openSchemaView(app) {
         const pane = doc.querySelector('.schema-detail');
         if (pane) {
           if (isTab) e.stopPropagation();
-          pane.remove();
+          closeDetailPane(pane);
           clearSchemaSelection(doc);
         } else if (!isTab) {
           close();
@@ -615,7 +615,12 @@ export function openSchemaView(app) {
       // actions cluster — not here — so it lands last within that cluster
       // rather than stranded next to the title before the cluster exists.
       ctrl = makeController(app, doc, mainDoc, body, bar, closeBtn);
-      return () => { doc.removeEventListener('keydown', onKey, true); ctrl.destroy(); };
+      return () => {
+        doc.removeEventListener('keydown', onKey, true);
+        const pane = doc.querySelector('.schema-detail');
+        if (pane) closeDetailPane(pane);
+        ctrl.destroy();
+      };
     },
   });
   return { render: (g) => ctrl.render(g), fail: (m) => ctrl.fail(m) };

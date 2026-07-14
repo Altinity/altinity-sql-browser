@@ -29,7 +29,7 @@ describe('schema artifacts and examples', () => {
 
   it('validates every JSON Spec example used by the authoring documentation', () => {
     for (const name of ['saved-query-spec-json-schema.md', 'visualization-spec-authoring-guide.md']) {
-      const source = readFileSync(resolve(root, 'docs', name), 'utf8');
+      const source = readFileSync(resolve(root, 'docs/drafts', name), 'utf8');
       const snippets = [...source.matchAll(/```json\n([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));
       expect(snippets.length, name).toBeGreaterThan(0);
       for (const spec of snippets) expect(querySpecSchemaService.validate(spec), name).toEqual([]);

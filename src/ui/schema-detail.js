@@ -28,6 +28,7 @@ const MAX_COL_CODEC = 40; // a CODEC(...) chain can get long the same way; full 
 const MAX_IDX_NAME = 28;
 const MAX_IDX_EXPR = 48;
 const MAX_IDX_TYPE = 48;
+const detailDragStops = new WeakMap();
 
 // A capped `<td>` — always rendered (even empty) so every row in the columns
 // table keeps the same cell count. The full text always lands in `title`
@@ -66,13 +67,20 @@ export function openDetailPane(app, node, detail, targetDoc) {
   const panel = doc.querySelector('.graph-overlay-panel');
   if (!panel) return null; // view already closed
   const prior = panel.querySelector('.schema-detail');
-  if (prior) prior.remove(); // re-opening for another node replaces the pane
+  if (prior) closeDetailPane(prior); // re-opening for another node replaces the pane
 
   return withDocument(doc, () => {
     const pane = buildDetailPane(node, detail, panel);
     markSelected(doc, node.id); // ring the clicked card so the selection is visible
     return pane;
   });
+}
+
+// Remove a detail pane through its drag lifecycle so closing/replacing the pane
+// mid-drag cannot leave a highlighted detached handle or document listeners.
+export function closeDetailPane(pane) {
+  detailDragStops.get(pane)?.();
+  pane.remove();
 }
 
 // Find a graph card by node id (a plain scan avoids escaping ids with dots/colons
@@ -183,7 +191,7 @@ function buildDetailPane(node, detail, panel) {
   const handle = h('div', { class: 'schema-detail-handle', title: 'Drag to resize' });
   const pane = h('div', { class: 'schema-detail' },
     handle,
-    h('button', { class: 'schema-detail-close', title: 'Close', onclick: () => { pane.remove(); clearSchemaSelection(doc); } }, Icon.close()),
+    h('button', { class: 'schema-detail-close', title: 'Close', onclick: () => { closeDetailPane(pane); clearSchemaSelection(doc); } }, Icon.close()),
     h('div', { class: 'schema-detail-body' },
       h('div', { class: 'schema-detail-head' },
         h('b', null, ident), h('span', { class: 'schema-detail-kind' }, node.kind || 'table'),
@@ -191,10 +199,11 @@ function buildDetailPane(node, detail, panel) {
       body));
   panel.appendChild(pane);
 
-  // Drag the handle to resize. Listeners are added on mousedown and removed on
-  // mouseup, so nothing persists on the document between drags (or after close).
+  // Drag the handle to resize. Mouseup or any pane-close/replacement path runs
+  // the same stop function, so no highlight or document listener outlives it.
   handle.addEventListener('mousedown', (e) => {
     e.preventDefault();
+    handle.classList.add('dragging');
     // The panel is the fixed full-screen overlay — its box is stable for the drag,
     // so measure once here rather than reflowing on every mousemove.
     const r = panel.getBoundingClientRect();
@@ -203,9 +212,15 @@ function buildDetailPane(node, detail, panel) {
     // the pane grows --zoom× faster than the cursor and the handle drifts away.
     const scale = zoomScale(pane);
     const onMove = (ev) => { pane.style.flexBasis = clamp((r.bottom - ev.clientY) / scale, MIN_H, r.height / scale - TOP_MARGIN) + 'px'; };
-    const onUp = () => { doc.removeEventListener('mousemove', onMove); doc.removeEventListener('mouseup', onUp); };
+    const stop = () => {
+      handle.classList.remove('dragging');
+      doc.removeEventListener('mousemove', onMove);
+      doc.removeEventListener('mouseup', stop);
+      detailDragStops.delete(pane);
+    };
+    detailDragStops.set(pane, stop);
     doc.addEventListener('mousemove', onMove);
-    doc.addEventListener('mouseup', onUp);
+    doc.addEventListener('mouseup', stop);
   });
   return pane;
 }

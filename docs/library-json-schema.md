@@ -123,5 +123,5 @@ selected by `specVersion`. Build tests reject duplicate IDs and any draft that
 reuses a canonical ID.
 
 For the user-authored inner document, see the
-[query Spec schema notes](saved-query-spec-json-schema.md) and
-[visualization Spec authoring guide](visualization-spec-authoring-guide.md).
+[query Spec schema notes](drafts/saved-query-spec-json-schema.md) and
+[visualization Spec authoring guide](drafts/visualization-spec-authoring-guide.md).

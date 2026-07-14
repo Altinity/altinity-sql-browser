@@ -110,15 +110,30 @@ describe('openDetailPane', () => {
     const pane = openDetailPane(APP(), NODE, DETAIL);
     const handle = pane.querySelector('.schema-detail-handle');
     handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(handle.classList.contains('dragging')).toBe(true);
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 0, bubbles: true })); // tall → clamp to max
     expect(pane.style.flexBasis).toBe('500px'); // height(600) - TOP_MARGIN(100)
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 590, bubbles: true })); // short → clamp to min
     expect(pane.style.flexBasis).toBe('90px'); // MIN_H
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    expect(handle.classList.contains('dragging')).toBe(false);
     // after mouseup the move listener is gone — a stray move does nothing
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 100, bubbles: true }));
     expect(pane.style.flexBasis).toBe('90px');
     void panel;
+  });
+
+  it('closing the pane mid-drag clears the highlight and document listeners', () => {
+    mountPanel();
+    const pane = openDetailPane(APP(), NODE, DETAIL);
+    const handle = pane.querySelector('.schema-detail-handle');
+    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(handle.classList.contains('dragging')).toBe(true);
+
+    pane.querySelector('.schema-detail-close').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(handle.classList.contains('dragging')).toBe(false);
+    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 200, bubbles: true }));
+    expect(pane.style.flexBasis).toBe('');
   });
 
   it('divides the drag delta by the pane zoom scale (html{zoom} bridge)', () => {

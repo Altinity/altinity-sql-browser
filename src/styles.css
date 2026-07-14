@@ -414,29 +414,43 @@ body {
 .sidebar {
   display: flex; flex-direction: column;
   background: var(--bg-side);
-  border-right: 1px solid var(--border);
   min-height: 0; flex-shrink: 0;
 }
-.col-resize { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; z-index: 1; }
-.col-resize:hover, .col-resize.dragging { background: var(--accent); opacity: .35; }
+.col-resize, .row-resize {
+  position: relative; flex-shrink: 0; z-index: 1;
+  background: transparent;
+}
+.col-resize { width: 7px; cursor: col-resize; }
 .row-resize {
-  height: 4px; cursor: row-resize;
+  height: 7px; cursor: row-resize;
+}
+.col-resize::before, .row-resize::before,
+.schema-detail-handle::before, .cd-resize-h::before {
+  content: ''; position: absolute; pointer-events: none;
   background: var(--border);
-  flex-shrink: 0; position: relative;
+  transition: width 100ms ease, height 100ms ease, background-color 100ms ease;
 }
-.row-resize::after {
-  content: ''; position: absolute; top: 1px; bottom: 1px;
-  left: 50%; transform: translateX(-50%);
-  width: 28px; background: var(--fg-faint); opacity: .4; border-radius: 1px;
+.col-resize::before, .cd-resize-h::before {
+  top: 0; bottom: 0; left: 50%;
+  width: 1px; transform: translateX(-50%);
 }
-.row-resize:hover, .row-resize.dragging { background: var(--accent); opacity: .35; }
+.row-resize::before, .schema-detail-handle::before {
+  left: 0; right: 0; top: 50%;
+  height: 1px; transform: translateY(-50%);
+}
+.col-resize:hover::before, .col-resize.dragging::before,
+.cd-resize-h:hover::before, .cd-resize-h.dragging::before {
+  width: 3px; background: var(--accent);
+}
+.row-resize:hover::before, .row-resize.dragging::before,
+.schema-detail-handle:hover::before, .schema-detail-handle.dragging::before {
+  height: 3px; background: var(--accent);
+}
 
 .workbench { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* ------------ side panes ------------ */
 .side-pane { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.side-split.row-resize { background: var(--border); }
-.schema-pane { border-bottom: 1px solid var(--border); }
 
 /* ------------ saved + history ------------ */
 .side-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -908,12 +922,11 @@ body.detached-tab .graph-overlay-panel {
 /* ------------ schema node detail pane (fullscreen graph) ------------ */
 .schema-detail {
   flex: 0 0 280px; min-height: 90px; position: relative;
-  border-top: 1px solid var(--border); background: var(--bg-modal); overflow: auto;
+  background: var(--bg-modal); overflow: auto;
 }
 .schema-detail-handle {
-  position: sticky; top: 0; height: 7px; cursor: row-resize; background: var(--border);
+  position: sticky; top: 0; height: 7px; cursor: row-resize; background: transparent;
 }
-.schema-detail-handle:hover { background: var(--fg-faint); }
 .schema-detail-close {
   position: absolute; top: 10px; right: 10px; z-index: 1;
   display: flex; align-items: center; justify-content: center;
@@ -1715,7 +1728,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   /* width is set inline (results.js attachDrawerResize) from the persisted
      cellDrawerPx pref, clamped to [320, 92vw] — see clampDrawerWidth (#101) */
   height: 100%; position: relative;
-  background: var(--bg-panel, var(--bg-editor)); border-left: 1px solid var(--border);
+  background: var(--bg-panel, var(--bg-editor));
   box-shadow: -8px 0 28px rgba(0,0,0,.35);
   display: flex; flex-direction: column;
 }
@@ -1726,7 +1739,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   width: 6px; height: 100%;
   cursor: col-resize;
 }
-.cd-resize-h:hover, .cd-resize-h.dragging { background: var(--accent); opacity: .45; }
 .cd-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .cd-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .cd-name { font-weight: 600; color: var(--fg); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1936,6 +1948,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
      narrowest portrait phones (~360px), where the default 14px gaps alone
      still overflowed. */
   .app-header { gap: 8px; padding: 0 8px; }
+  /* The desktop drawer handle owns this boundary. Restore a structural line
+     when mobile hides that non-touch resize affordance. */
+  .cd-panel { border-left: 1px solid var(--border); }
 
   /* ---- Bottom tab nav: one full-screen panel at a time ---- */
   .mobile-nav {
