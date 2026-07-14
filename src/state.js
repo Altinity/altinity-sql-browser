@@ -6,8 +6,9 @@ import { clamp } from './core/format.js';
 import { mergeSaved, validateLibraryQueries } from './core/saved-io.js';
 import {
   SPEC_VERSION, cloneJson, patchQuerySpec, queryDescription, queryFavorite, queryName,
-  queryPanel, queryView, upgradeSavedQuery, withQuerySpec,
+  queryPanel, queryView, withQuerySpec,
 } from './core/saved-query.js';
+import { decodeStoredSavedQueries } from './core/library-codec.js';
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
 import { emptyRecentMap } from './core/recent-values.js';
@@ -104,6 +105,7 @@ export function setTabSpecDraft(tab, spec, { dirty = false, validationService = 
  */
 export function createState(read = { loadJSON, loadStr }) {
   const num = (key, dflt, lo, hi) => clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
+  const storedQueries = decodeStoredSavedQueries(read.loadJSON(KEYS.saved, []));
   return {
     nextTabId: 2,
     theme: read.loadStr(KEYS.theme, 'light'),
@@ -204,7 +206,11 @@ export function createState(read = { loadJSON, loadStr }) {
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
     // The localStorage startup ingress: v1 entries become canonical v2 in
     // memory without an eager write; future Spec versions fail closed here.
-    savedQueries: read.loadJSON(KEYS.saved, []).map(upgradeSavedQuery),
+    savedQueries: storedQueries.ok ? storedQueries.value : [],
+    // Retain startup diagnostics without deleting or rewriting the stored
+    // bytes. The next ordinary successful Library write persists canonical
+    // entries; corrupt/future storage fails closed to an empty in-memory view.
+    savedQueryLoadDiagnostics: storedQueries.diagnostics || [],
     // Which saved row (if any) is showing its inline edit form (saved-history.js).
     // Session-only, never persisted.
     editingSavedId: signal(null),
@@ -520,7 +526,7 @@ export function replaceLibrary(
   state, queries, fileName, save = saveJSON, saveName = saveStr,
   genId = () => makeId('s', Date.now()), validationService = querySpecSchemaService,
 ) {
-  const validated = validateLibraryQueries(queries, validationService);
+  const validated = validationService === false ? queries : validateLibraryQueries(queries, validationService);
   const seen = new Set();
   state.savedQueries = validated.map((q) => {
     // Mint a fresh id for a missing OR already-seen id so every saved row has a
@@ -545,7 +551,7 @@ export function replaceLibrary(
 export function appendLibrary(
   state, queries, save = saveJSON, genId = () => makeId('s', Date.now()), validationService = querySpecSchemaService,
 ) {
-  return importSaved(state, validateLibraryQueries(queries, validationService), save, genId);
+  return importSaved(state, validationService === false ? queries : validateLibraryQueries(queries, validationService), save, genId);
 }
 
 /** Mark the library as saved to a file (clears the unsaved-changes dot). */

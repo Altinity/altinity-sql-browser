@@ -11,7 +11,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('schema artifacts and examples', () => {
   it('keeps generated schema artifacts deterministic and current', () => {
-    expect(() => execFileSync(process.execPath, ['build/compile-spec-schema.mjs', '--check'], {
+    expect(() => execFileSync(process.execPath, ['build/compile-json-schemas.mjs', '--check'], {
       cwd: root, stdio: 'pipe',
     })).not.toThrow();
   });
@@ -38,10 +38,10 @@ describe('schema artifacts and examples', () => {
 
   it('makes generator validation fail before an invalid document can be written', () => {
     const valid = {
-      format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: 'T',
+      format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: '2026-07-14T00:00:00.000Z',
       queries: [{ id: 'q', sql: 'SELECT 1', specVersion: 1, spec: { panel: { cfg: { type: 'table' } } } }],
     };
-    expect(assertValidLibraryDocument(valid)).toHaveLength(1);
+    expect(assertValidLibraryDocument(valid).queries).toHaveLength(1);
     valid.queries[0].spec.panel.cfg = { type: 'pie', x: 0, y: [1, 2] };
     expect(() => assertValidLibraryDocument(valid)).toThrow('panel.cfg.y must contain at most 1 item');
   });

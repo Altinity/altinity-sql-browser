@@ -64,7 +64,9 @@ and semantic diagnostics backed by the canonical Draft 2020-12
 [`query.spec` schema](schemas/query-spec-v1.schema.json). The
 [schema-service notes](docs/saved-query-spec-json-schema.md) and
 [visualization authoring guide](docs/visualization-spec-authoring-guide.md)
-document the reusable validation and panel contracts. Its toolbar is deliberately small: **Format**,
+document the reusable validation and panel contracts. The
+[complete Library schema guide](docs/library-json-schema.md) documents the
+saved-query and Library envelopes plus the offline schema bundle. Its toolbar is deliberately small: **Format**,
 **Save**, and the **SQL | Spec** switch. Blocking errors disable Save and are
 never persisted; unknown fields remain valid and survive Save.
 
@@ -391,7 +393,9 @@ an unsaved-changes dot, managed from the header **File ▾** menu:
   `altinity-sql-browser/saved-queries` envelope. Version 2 stores each query as
   `{id, sql, specVersion, spec}`: `spec` is the complete, lossless query
   definition (`name`, `description`, `favorite`, `view`, `panel`, `dashboard`,
-  and future extension fields). The filename derives from the Library name;
+  and future extension fields). New files include a canonical `$schema` hint
+  and RFC 3339 `exportedAt` timestamp and validate against the
+  [complete Library contract](docs/library-json-schema.md). The filename derives from the Library name;
   saving clears the unsaved-changes dot. Version 1 Library files remain
   importable and are upgraded in memory; new exports always use version 2.
 - **Open… / Append…** — load a `.json` file: Open swaps the Library and
@@ -607,8 +611,9 @@ src/
   state.js   state model + pure operations
   main.js    bootstrap (OAuth callback, share-links, initial render)
   styles.css
-schemas/      canonical query.spec JSON Schema
-build/        schema compilation + esbuild → single-file dist/sql.html
+schemas/      canonical Library, saved-query, and query.spec JSON Schemas;
+              generated offline bundle + schema catalog
+build/        schema compilation/bundling + esbuild → single-file dist/sql.html
 deploy/       install.sh, uninstall.sh, http_handlers.xml, config.json.example
 deploy/k8s/   sample Deployment, Service, ConfigMap, Ingress example
 tests/        vitest + happy-dom, one spec per module

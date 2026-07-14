@@ -49,6 +49,11 @@ A canonical saved query has this application-owned envelope:
 
 The Spec editor receives only `query.spec`.
 
+The complete saved-query and Library envelopes are specified separately in the
+[Library JSON Schema guide](library-json-schema.md). Authors generating an
+importable file should validate the whole document against that contract, not
+only the inner Spec.
+
 Typical Spec:
 
 ```json

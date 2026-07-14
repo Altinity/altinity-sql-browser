@@ -49,8 +49,9 @@ all bundled — see hard rule 4). Quality is held by tests.
    `app.Dagre` / `env.Editor` / `env.SpecEditor` / `env.CodeViewer`, like the fetch/crypto seams)
    so the DOM wrapper stays fully tested rather than dropping below the coverage gate. (The CM6
    adapters are unit-tested against the real libraries under happy-dom.)
-   Ajv is a **dev dependency only**: it strictly compiles the canonical Spec
-   schema to deterministic, self-contained generated ESM. The production
+   Ajv and `ajv-formats` are **dev dependencies only**: they strictly compile
+   the canonical Library/saved-query/Spec schema graph to deterministic,
+   self-contained generated ESM. The production
    artifact ships the generated validator, never the general Ajv engine.
 5. **No UI framework; signals for state, imperative adapters for islands.** State
    reactivity is `@preact/signals-core` (`signal`/`effect`/`computed`/`batch`),

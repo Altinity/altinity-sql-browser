@@ -1,0 +1,25 @@
+{
+  "format": "altinity-sql-browser/schema-catalog",
+  "version": 1,
+  "schemas": [
+    {
+      "kind": "query-spec",
+      "version": 1,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json",
+      "path": "../query-spec-v1.schema.json"
+    },
+    {
+      "kind": "saved-query",
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json",
+      "path": "../saved-query-v2.schema.json"
+    },
+    {
+      "kind": "library",
+      "version": 2,
+      "id": "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json",
+      "path": "../library-v2.schema.json",
+      "bundlePath": "library-v2.bundle.schema.json"
+    }
+  ]
+}

@@ -56,8 +56,8 @@ async function main() {
   const styles = (await transform(stylesSrc, { loader: 'css', minify: true })).code;
   const template = await readFile(resolve(here, 'template.html'), 'utf8');
 
-  // The runtime deps (CodeMirror 6, Chart.js, dagre, @preact/signals-core) are MIT and inlined
-  // into the bundle, so the artifact must carry their notices. esbuild strips legal comments
+  // The runtime deps and generated Ajv/ajv-formats helpers are MIT and inlined into the bundle,
+  // so the artifact must carry their notices. esbuild strips legal comments
   // (legalComments: 'none'), so embed THIRD-PARTY-NOTICES.md as a leading HTML
   // comment — sanitized so its text can't close the comment early.
   const notices = (await readFile(resolve(root, 'THIRD-PARTY-NOTICES.md'), 'utf8')).replace(/--+>?/g, '-');

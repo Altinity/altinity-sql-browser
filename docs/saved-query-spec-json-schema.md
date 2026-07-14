@@ -31,7 +31,9 @@ It does not validate:
 }
 ```
 
-or the saved-query export envelope.
+or the saved-query and Library envelopes. Those application-managed contracts
+are separate canonical schemas; see the
+[complete Library schema guide](library-json-schema.md).
 
 ## Design goals
 
@@ -201,7 +203,7 @@ array-item
 
 At:
 
-```json
+```jsonc
 {
   "panel": {
     |
@@ -224,7 +226,7 @@ Do not offer a property already present in the same object unless duplicates are
 
 At:
 
-```json
+```jsonc
 {
   "panel": {
     "cfg": {
@@ -250,7 +252,7 @@ When `type` is absent, offer `type` first and offer its enum values.
 
 At:
 
-```json
+```jsonc
 {
   "view": |
 }
@@ -258,7 +260,7 @@ At:
 
 offer:
 
-```json
+```text
 "table"
 "json"
 "panel"
@@ -337,7 +339,7 @@ The schema annotates the `columns` object with:
 
 At:
 
-```json
+```jsonc
 {
   "fieldConfig": {
     "columns": {
@@ -1591,7 +1593,7 @@ Before executing a panel-owned format, inspect SQL and reject a trailing top-lev
 
 ## Example: structurally invalid Spec
 
-```json
+```jsonc
 {
   "favorite": "yes",
   "panel": {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import querySpecSchema from '../../src/generated/query-spec-v1-schema.js';
+import { querySpecV1Schema as querySpecSchema } from '../../src/generated/json-schemas.js';
 import {
   createQuerySpecValidationService, createSpecSchemaService,
   createSpecValidationService, formatSpecPath, querySpecSchemaService,
@@ -72,6 +72,7 @@ describe('canonical query.spec schema', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: {} } })).toEqual([{
       path: ['panel', 'cfg', 'type'], severity: 'error', code: 'schema-required',
       message: 'panel.cfg.type is required', keyword: 'required',
+      schemaId: 'https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json',
     }]);
     expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'line', x: -1, y: [] } } })
       .map((item) => [item.path, item.code])).toEqual([
@@ -293,6 +294,17 @@ describe('diagnostic normalization', () => {
       path: ['value', 'child'], severity: 'error', code: 'schema-required',
       message: 'value.child is required', keyword: 'required',
     }]);
+  });
+
+  it('retains non-discriminated variant diagnostics and tolerates missing compiled errors', () => {
+    const compiled = vi.fn(() => false);
+    compiled.errors = [{
+      keyword: 'oneOf', instancePath: '', schemaPath: '#/oneOf', params: {}, message: '',
+    }];
+    expect(createSpecSchemaService({ schema: { oneOf: [{ type: 'string' }, { type: 'number' }] }, validateCompiled: compiled })
+      .validate(true)[0]).toMatchObject({ path: [], code: 'schema-invalid-variant' });
+    compiled.errors = null;
+    expect(createSpecSchemaService({ schema: {}, validateCompiled: compiled }).validate(true)).toEqual([]);
   });
 });
 

@@ -43,6 +43,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **Complete canonical Library JSON contracts and a versioned codec** (#224)
+  now cover the closed Library v2 and saved-query v2 envelopes as well as the
+  independently versioned, extensible query Spec. One pure parse/validate/
+  migrate/decode/encode boundary drives Open, Replace, Append, Save JSON,
+  examples, and historical local-storage ingress; unsupported future versions,
+  duplicate IDs, malformed timestamps, and corrupt storage fail atomically with
+  exact path diagnostics. New exports include a `$schema` hint and valid
+  `exportedAt`; older v2 files without the timestamp remain readable under a
+  documented compatibility policy. A manifest-driven strict Ajv build emits
+  self-contained named validators, a schema catalog, and a single offline
+  Library bundle while excluding `/drafts/` schemas and keeping Ajv plus
+  `ajv-formats` out of the production runtime.
 - **A canonical Draft 2020-12 schema and pure validation/introspection service
   now define `query.spec`** (#220). All implemented panel branches carry
   schema-owned documentation, snippets, status, and result-column completion

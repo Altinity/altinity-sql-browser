@@ -49,6 +49,15 @@ describe('createState', () => {
     expect(queryView(s.savedQueries[1])).toBe('table');
     expect('chart' in s.savedQueries[1]).toBe(false);
   });
+  it('fails closed on future persisted Specs and retains diagnostics without rewriting input', () => {
+    const stored = [{ id: 'future', sql: 'SELECT 1', specVersion: 9, spec: { future: true } }];
+    const s = createState(reader({ [KEYS.saved]: stored }));
+    expect(s.savedQueries).toEqual([]);
+    expect(s.savedQueryLoadDiagnostics[0]).toMatchObject({
+      path: [0, 'specVersion'], code: 'spec-version-unsupported',
+    });
+    expect(stored).toEqual([{ id: 'future', sql: 'SELECT 1', specVersion: 9, spec: { future: true } }]);
+  });
   it('uses defaults', () => {
     const s = createState(reader());
     expect(s.theme).toBe('light');
@@ -58,6 +67,7 @@ describe('createState', () => {
     expect(s.cellDrawerPx).toBe(560);
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
+    expect(s.savedQueryLoadDiagnostics).toEqual([]);
     expect(s.schema.value).toBe(null);
     expect(s.schemaError.value).toBe(null);
     expect(s.schemaFilter.value).toBe('');

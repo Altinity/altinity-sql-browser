@@ -2,8 +2,9 @@
 // and compiled validator are generated at build time; this module normalizes
 // their output and exposes the stable app-facing service.
 
-import querySpecSchema from '../generated/query-spec-v1-schema.js';
-import validateQuerySpec from '../generated/query-spec-v1-validator.js';
+import { querySpecV1Schema as querySpecSchema } from '../generated/json-schemas.js';
+import { validateQuerySpecV1 as validateQuerySpec } from '../generated/json-schema-validators.js';
+import { formatJsonPath, normalizeJsonSchemaErrors } from './json-schema-validation.js';
 
 const isObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const own = (value, key) => isObject(value) && Object.hasOwn(value, key);
@@ -14,27 +15,6 @@ const ANNOTATION_KEYS = [
   'x-altinity-key-completion', 'x-altinity-snippet', 'x-altinity-order',
   'x-altinity-deprecated', 'x-altinity-status',
 ];
-
-const KEYWORD_CODES = {
-  type: 'schema-invalid-type',
-  required: 'schema-required',
-  const: 'schema-invalid-constant',
-  enum: 'schema-invalid-enum',
-  minimum: 'schema-number-range',
-  maximum: 'schema-number-range',
-  exclusiveMinimum: 'schema-number-range',
-  exclusiveMaximum: 'schema-number-range',
-  minLength: 'schema-invalid-string',
-  maxLength: 'schema-invalid-string',
-  pattern: 'schema-invalid-string',
-  minItems: 'schema-array-size',
-  maxItems: 'schema-array-size',
-  uniqueItems: 'schema-array-duplicate',
-  oneOf: 'schema-invalid-variant',
-  anyOf: 'schema-invalid-variant',
-  not: 'schema-invalid-variant',
-  '$ref': 'schema-internal-reference',
-};
 
 const pointerSegments = (pointer) => String(pointer || '').split('/').slice(1)
   .map((segment) => segment.replace(/~1/g, '/').replace(/~0/g, '~'));
@@ -54,39 +34,7 @@ const pathPrefix = (a, b) => a.length <= b.length && a.every((segment, index) =>
 const pathsOverlap = (a, b) => pathPrefix(a, b) || pathPrefix(b, a);
 
 export function formatSpecPath(path = []) {
-  if (!path.length) return 'Spec';
-  let out = '';
-  for (const segment of path) {
-    if (typeof segment === 'number') out += `[${segment}]`;
-    else if (/^[A-Za-z_$][\w$]*$/.test(segment)) out += (out ? '.' : '') + segment;
-    else out += `[${JSON.stringify(segment)}]`;
-  }
-  return out;
-}
-
-function diagnosticMessage(error, path) {
-  const at = formatSpecPath(path);
-  const params = error.params || {};
-  switch (error.keyword) {
-    case 'type': return `${at} must be ${Array.isArray(params.type) ? params.type.join(' or ') : params.type}`;
-    case 'required': return `${at} is required`;
-    case 'const': return `${at} must equal ${JSON.stringify(params.allowedValue)}`;
-    case 'enum': return `${at} must be one of ${(params.allowedValues || []).map(JSON.stringify).join(', ')}`;
-    case 'minimum': return `${at} must be at least ${params.limit}`;
-    case 'maximum': return `${at} must be at most ${params.limit}`;
-    case 'exclusiveMinimum': return `${at} must be greater than ${params.limit}`;
-    case 'exclusiveMaximum': return `${at} must be less than ${params.limit}`;
-    case 'minLength': return `${at} must contain at least ${params.limit} character${params.limit === 1 ? '' : 's'}`;
-    case 'maxLength': return `${at} must contain at most ${params.limit} characters`;
-    case 'pattern': return `${at} has an invalid string value`;
-    case 'minItems': return `${at} must contain at least ${params.limit} item${params.limit === 1 ? '' : 's'}`;
-    case 'maxItems': return `${at} must contain at most ${params.limit} item${params.limit === 1 ? '' : 's'}`;
-    case 'uniqueItems': return `${at} must not contain duplicate items`;
-    case 'oneOf': return `${at} must match exactly one allowed variant`;
-    case 'anyOf': return `${at} must match an allowed variant`;
-    case '$ref': return `${at} contains an unresolved schema reference`;
-    default: return `${at} ${error.message || 'is invalid'}`;
-  }
+  return formatJsonPath(path, 'Spec');
 }
 
 function schemaCandidatesAtPath(schemaRoot, root, path) {
@@ -124,49 +72,9 @@ function normalizeCompiledErrors(schemaRoot, root, errors = []) {
     });
   }
 
-  let diagnostics = filteredErrors.map((error) => {
-    const path = pathFromPointer(root, error.instancePath);
-    if (error.keyword === 'required' && error.params?.missingProperty != null) {
-      path.push(error.params.missingProperty);
-    } else if (error.keyword === 'uniqueItems' && Number.isInteger(error.params?.i)) {
-      path.push(error.params.i);
-    }
-    return {
-      path,
-      severity: 'error',
-      code: KEYWORD_CODES[error.keyword] || `schema-${error.keyword || 'invalid'}`,
-      message: diagnosticMessage(error, path),
-      keyword: error.keyword,
-    };
+  return normalizeJsonSchemaErrors({
+    root, errors: filteredErrors, schemaId: schemaRoot.$id, formatPath: formatSpecPath,
   });
-
-  // Ajv reports every rejected discriminated-union arm. Prefer the selected
-  // branch's actionable child errors; retain a concise variant error only for
-  // a same-path scalar union such as integer|null.
-  for (const variant of diagnostics.filter((item) => item.keyword === 'oneOf')) {
-    const related = diagnostics.filter((item) => item !== variant && pathPrefix(variant.path, item.path));
-    const actionable = related.filter((item) => !['const', 'not', 'oneOf'].includes(item.keyword));
-    const hasChild = actionable.some((item) => item.path.length > variant.path.length || item.keyword === 'required');
-    if (hasChild) {
-      diagnostics = diagnostics.filter((item) => item !== variant && !(related.includes(item) && ['const', 'not'].includes(item.keyword)));
-    } else if (actionable.length) {
-      diagnostics = diagnostics.filter((item) => item === variant || !related.includes(item));
-    }
-  }
-
-  const invalidTypePaths = diagnostics.filter((item) => item.keyword === 'type')
-    .map((item) => JSON.stringify(item.path));
-  diagnostics = diagnostics.filter((item) => item.keyword === 'type'
-    || !invalidTypePaths.includes(JSON.stringify(item.path)));
-
-  const seen = new Set();
-  return diagnostics.filter((diagnostic) => {
-    const key = JSON.stringify([diagnostic.path, diagnostic.code, diagnostic.message]);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).sort((a, b) => JSON.stringify(a.path).localeCompare(JSON.stringify(b.path))
-    || a.code.localeCompare(b.code) || a.message.localeCompare(b.message));
 }
 
 function pointerValue(root, ref) {

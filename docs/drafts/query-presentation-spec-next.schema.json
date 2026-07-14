@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json",
-  "title": "Altinity SQL Browser saved-query Spec v1",
-  "description": "Schema for the user-editable query.spec document. SQL, query id, specVersion, export envelopes, and runtime state are intentionally outside this document. Known fields are validated while unknown extension fields remain allowed.",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/drafts/query-presentation-spec-next.schema.json",
+  "title": "Experimental Altinity SQL Browser Presentation Spec",
+  "$comment": "Design draft. Not the canonical query-spec-v1 production contract.",
+  "description": "Experimental forward-looking schema for the user-editable query.spec document. It never authorizes Save or import and remains outside the production schema manifest.",
   "type": "object",
   "properties": {
     "name": {

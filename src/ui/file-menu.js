@@ -168,7 +168,11 @@ function pickerInput(app, onPick) {
 function readJsonFile(app, file, cb) {
   const reader = new (app.FileReader || globalThis.FileReader)();
   reader.onload = () => {
-    try { cb(parseImportDoc(String(reader.result), app.specValidators).queries); }
+    try {
+      cb(parseImportDoc(String(reader.result), null, {
+        nowISO: new Date(app.wallNow()).toISOString(),
+      }).queries);
+    }
     catch (e) { flashToast('✕ ' + ((e && e.message) || e), { document: app.document }); }
   };
   reader.onerror = () => flashToast('✕ Could not read file', { document: app.document });
@@ -181,7 +185,7 @@ function saveJsonAction(app) {
   const qs = app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   app.downloadFile(fileBase(app.state.libraryName.value) + '.json', 'application/json',
-    JSON.stringify(buildExportDoc(qs, new Date().toISOString()), null, 2));
+    JSON.stringify(buildExportDoc(qs, new Date(app.wallNow()).toISOString()), null, 2));
   markLibrarySaved(app.state); // clears libraryDirty → title effect drops the dot
   flashToast('Saved ' + queries(qs.length) + ' → .json', { document: app.document });
 }
@@ -203,7 +207,7 @@ function onReplaceFile(app, file) {
 }
 
 function doReplace(app, qs, fileName) {
-  replaceLibrary(app.state, qs, fileName, app.saveJSON, app.saveStr, undefined, app.specValidators);
+  replaceLibrary(app.state, qs, fileName, app.saveJSON, app.saveStr, undefined, false);
   afterLibraryChange(app);
   flashToast('Opened library · ' + queries(qs.length), { document: app.document });
 }
@@ -211,7 +215,7 @@ function doReplace(app, qs, fileName) {
 function onAppendFile(app, file) {
   readJsonFile(app, file, (qs) => {
     if (!qs.length) { flashToast('✕ No queries in file', { document: app.document }); return; }
-    const { added, updated, skipped } = appendLibrary(app.state, qs, app.saveJSON, undefined, app.specValidators);
+    const { added, updated, skipped } = appendLibrary(app.state, qs, app.saveJSON, undefined, false);
     afterLibraryChange(app);
     flashToast('Added ' + added + ' · updated ' + updated + ' · skipped ' + skipped, { document: app.document });
   });

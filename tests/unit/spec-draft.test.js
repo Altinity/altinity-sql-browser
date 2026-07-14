@@ -5,6 +5,8 @@ import {
   serializeSpec, validateSpec,
 } from '../../src/core/spec-draft.js';
 
+const SPEC_SCHEMA_ID = 'https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json';
+
 describe('Spec JSON parsing', () => {
   it('parses every JSON value and reports deterministic line/column syntax errors', () => {
     expect(parseSpecJson('{"a":[true,false,null,-1.5e+2,"x\\u0020y"]}').value)
@@ -52,7 +54,8 @@ describe('Spec semantic validation', () => {
 
   it('rejects a non-object root, wrong known types, and a blank name', () => {
     expect(validateSpec([])).toEqual([
-      { path: [], severity: 'error', code: 'schema-invalid-type', message: 'Spec must be object', keyword: 'type' },
+      { path: [], severity: 'error', code: 'schema-invalid-type', message: 'Spec must be object', keyword: 'type',
+        schemaId: SPEC_SCHEMA_ID },
     ]);
     const diagnostics = validateSpec({
       name: '  ', description: 1, favorite: 'yes', view: [], panel: null, dashboard: [],
@@ -105,7 +108,7 @@ describe('Spec draft evaluation/formatting', () => {
       parsed: { favorite: 'yes' },
       diagnostics: [{
         path: ['favorite'], severity: 'error', code: 'schema-invalid-type',
-        message: 'favorite must be boolean', keyword: 'type',
+        message: 'favorite must be boolean', keyword: 'type', schemaId: SPEC_SCHEMA_ID,
       }],
     });
     expect(evaluateSpecText('{').parsed).toBeNull();

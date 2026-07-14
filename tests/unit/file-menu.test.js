@@ -191,7 +191,12 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('My Lib.json');
     expect(mime).toBe('application/json');
-    expect(JSON.parse(content).format).toBe('altinity-sql-browser/saved-queries');
+    expect(JSON.parse(content)).toMatchObject({
+      $schema: 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json',
+      format: 'altinity-sql-browser/saved-queries',
+      version: 2,
+      exportedAt: '1970-01-01T00:00:00.000Z',
+    });
     expect(app.state.libraryDirty.value).toBe(false);
     expect(toast()).toBe('Saved 1 query → .json');
   });
@@ -305,6 +310,27 @@ describe('Open / Append (JSON only)', () => {
     Object.defineProperty(picker(0), 'files', { configurable: true, value: [{ name: 'x.json' }] });
     picker(0).dispatchEvent(new Event('change', { bubbles: true }));
     expect(toast()).toBe('✕ Could not read file');
+  });
+
+  it('rejects a complete invalid document before Open or Append can mutate state', () => {
+    const invalid = JSON.stringify({
+      format: 'altinity-sql-browser/saved-queries', version: 2,
+      queries: [
+        { id: 'same', sql: '1', specVersion: 1, spec: { name: 'A' } },
+        { id: 'same', sql: '2', specVersion: 1, spec: { name: 'B' } },
+      ],
+    });
+    const app = mount({ FileReader: fakeReader(invalid) });
+    setSaved(app, [{ id: 'keep', name: 'Keep', sql: 'SELECT 1', favorite: false }]);
+    openFileMenu(app);
+    const inputs = [picker(0), picker(1)];
+    for (const input of inputs) {
+      Object.defineProperty(input, 'files', { configurable: true, value: [{ name: 'invalid.json' }] });
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(app.state.savedQueries.map((query) => query.id)).toEqual(['keep']);
+      expect(document.querySelector('.fm-dialog-card')).toBeNull();
+      expect(toast()).toContain('duplicates');
+    }
   });
 });
 

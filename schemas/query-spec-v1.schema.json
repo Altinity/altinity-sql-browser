@@ -3,6 +3,8 @@
   "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json",
   "title": "Altinity SQL Browser saved-query Spec v1",
   "description": "The user-authored query.spec document. Saved-query envelope fields are intentionally outside this schema.",
+  "x-altinity-kind": "query-spec",
+  "x-altinity-version": 1,
   "type": "object",
   "properties": {
     "name": {

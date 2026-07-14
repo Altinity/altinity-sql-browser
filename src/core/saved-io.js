@@ -4,40 +4,17 @@
 // stays inside the complete, losslessly-cloned Spec.
 
 import {
-  SPEC_VERSION, cloneJson, cloneV2Query, isPlainObject, queryContentKey,
+  cloneJson, isPlainObject, queryContentKey,
   queryDescription, queryName, queryPanel, upgradeSavedQuery, upgradeV1Query,
   withQuerySpec,
 } from './saved-query.js';
-import { querySpecSchemaService } from './spec-schema.js';
-
-const FORMAT = 'altinity-sql-browser/saved-queries';
-const VERSION = 2;
-const MAX = 1000;
+import {
+  decodeLibraryJson, encodeLibraryDocument, throwingValue, validateSavedQueryDocument,
+} from './library-codec.js';
 
 /** Build the canonical v2 export envelope. `nowISO` is injected for tests. */
 export function buildExportDoc(queries, nowISO) {
-  return {
-    format: FORMAT,
-    version: VERSION,
-    exportedAt: nowISO,
-    queries: queries.map((query) => upgradeSavedQuery(query)),
-  };
-}
-
-function v2Error(index, message) {
-  throw new Error('Invalid version 2 query at index ' + index + ': ' + message);
-}
-
-function parseV2Query(query, index) {
-  if (!isPlainObject(query)) v2Error(index, 'query must be an object');
-  if (typeof query.id !== 'string' || !query.id.trim()) v2Error(index, 'id must be a non-empty string');
-  if (typeof query.sql !== 'string') v2Error(index, 'sql must be a string');
-  if (!Number.isInteger(query.specVersion)) v2Error(index, 'specVersion must be an integer');
-  if (query.specVersion !== SPEC_VERSION) {
-    v2Error(index, 'unsupported specVersion ' + String(query.specVersion));
-  }
-  if (!isPlainObject(query.spec)) v2Error(index, 'spec must be an object');
-  return cloneV2Query(query);
+  return throwingValue(encodeLibraryDocument(queries, { nowISO }));
 }
 
 function invalidSpecError(query, index, diagnostic) {
@@ -48,15 +25,24 @@ function invalidSpecError(query, index, diagnostic) {
 /** Validate canonical/upgraded queries before any Library mutation. */
 function validateLibraryEntries(entries, validationService) {
   return entries.map(({ raw, index }) => {
-    const query = upgradeSavedQuery(raw);
-    const diagnostic = validationService.validate(query.spec)
-      .find((item) => item.severity === 'error');
-    if (diagnostic) invalidSpecError(query, index, diagnostic);
-    return query;
+    const query = isPlainObject(raw) && ('spec' in raw || 'specVersion' in raw)
+      ? cloneJson(raw)
+      : upgradeV1Query(raw);
+    // State compatibility callers historically mint a missing id after this
+    // validation step. Portable Library decoding is strict and never uses this
+    // placeholder path.
+    const checked = query.id ? query : { ...query, id: `__compat-${index}` };
+    const structural = validateSavedQueryDocument(checked).find((item) => item.severity === 'error');
+    if (structural) throw new Error(structural.message);
+    if (validationService) {
+      const feature = validationService.validate(query.spec).find((item) => item.severity === 'error');
+      if (feature) invalidSpecError(query, index, feature);
+    }
+    return { id: query.id, sql: query.sql, specVersion: query.specVersion, spec: cloneJson(query.spec) };
   });
 }
 
-export function validateLibraryQueries(queries, validationService = querySpecSchemaService) {
+export function validateLibraryQueries(queries, validationService = null) {
   return validateLibraryEntries(queries.map((raw, index) => ({ raw, index })), validationService);
 }
 
@@ -66,25 +52,19 @@ export function validateLibraryQueries(queries, validationService = querySpecSch
  * Untitled) and upgrades every supported entry. V2 is strict: any malformed
  * item rejects the whole file with its index, preventing partial data loss.
  */
-export function parseImportDoc(text, validationService = querySpecSchemaService) {
-  let doc;
-  try {
-    doc = JSON.parse(text);
-  } catch {
-    throw new Error('Not a valid JSON file');
+export function parseImportDoc(text, validationService = null, options = {}) {
+  const decoded = throwingValue(decodeLibraryJson(text, options));
+  const queries = cloneJson(decoded.queries);
+  if (validationService) {
+    for (const [index, query] of queries.entries()) {
+      const feature = validationService.validate(query.spec).find((item) => item.severity === 'error');
+      if (feature) invalidSpecError(query, index, feature);
+    }
   }
-  if (!doc || doc.format !== FORMAT) throw new Error('Unrecognized file format');
-  if (doc.version !== 1 && doc.version !== VERSION) throw new Error('Unsupported file version');
-  if (!Array.isArray(doc.queries)) throw new Error('No queries in file');
-  if (doc.queries.length > MAX) throw new Error('Too many queries (max ' + MAX + ')');
-
-  const entries = doc.version === 1
-    ? doc.queries
-      .map((raw, index) => ({ raw, index }))
-      .filter(({ raw }) => isPlainObject(raw) && typeof raw.sql === 'string')
-      .map(({ raw, index }) => ({ raw: upgradeV1Query(raw), index }))
-    : doc.queries.map((raw, index) => ({ raw: parseV2Query(raw, index), index }));
-  return { queries: validateLibraryEntries(entries, validationService) };
+  return {
+    ...decoded,
+    queries,
+  };
 }
 
 /**

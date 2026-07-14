@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json",
+  "title": "Altinity SQL Browser Library v2",
+  "description": "A complete portable Altinity SQL Browser saved-query Library.",
+  "x-altinity-kind": "library",
+  "x-altinity-version": 2,
+  "type": "object",
+  "required": ["format", "version", "queries"],
+  "properties": {
+    "$schema": {
+      "title": "Schema identifier",
+      "description": "Optional schema hint for editors, agents, and third-party tools.",
+      "const": "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json"
+    },
+    "format": {
+      "title": "Format identifier",
+      "const": "altinity-sql-browser/saved-queries"
+    },
+    "version": {
+      "title": "Library format version",
+      "type": "integer",
+      "const": 2
+    },
+    "exportedAt": {
+      "title": "Export timestamp",
+      "description": "RFC 3339 timestamp indicating when this portable Library document was created. Optional for compatibility with previously accepted v2 files; all new exports include it.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "queries": {
+      "title": "Saved queries",
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "saved-query-v2.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

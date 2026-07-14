@@ -4,6 +4,8 @@ import {
 } from '../../src/core/saved-io.js';
 
 const FORMAT = 'altinity-sql-browser/saved-queries';
+const SCHEMA = 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json';
+const NOW = '2026-07-13T00:00:00.000Z';
 const v2 = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec });
 const envelope = (version, queries, over = {}) => JSON.stringify({ format: FORMAT, version, queries, ...over });
 const CHART = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
@@ -15,7 +17,7 @@ describe('buildExportDoc', () => {
       name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
     })], '2026-07-13T00:00:00.000Z');
     expect(doc).toEqual({
-      format: FORMAT, version: 2, exportedAt: '2026-07-13T00:00:00.000Z',
+      $schema: SCHEMA, format: FORMAT, version: 2, exportedAt: NOW,
       queries: [v2('s1', 'SELECT 1', {
         name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
       })],
@@ -27,10 +29,10 @@ describe('buildExportDoc', () => {
   });
 
   it('upgrades defensive v1 input on export and handles an empty list', () => {
-    const doc = buildExportDoc([{ id: 'old', name: 'Old', sql: '1', chart: CHART }], 'T');
+    const doc = buildExportDoc([{ id: 'old', name: 'Old', sql: '1', chart: CHART }], NOW);
     expect(doc.version).toBe(2);
     expect(doc.queries[0]).toEqual(v2('old', '1', { name: 'Old', favorite: false, panel: CHART }));
-    expect(buildExportDoc([], 'T').queries).toEqual([]);
+    expect(buildExportDoc([], NOW).queries).toEqual([]);
   });
 });
 
@@ -44,7 +46,7 @@ describe('parseImportDoc — v1 migration', () => {
     ]));
     expect(queries).toEqual([
       v2('s1', 'SELECT 1', { name: 'A', favorite: true }),
-      v2(undefined, 'SELECT 2', { name: 'Untitled', favorite: false }),
+      v2('legacy-2', 'SELECT 2', { name: 'Untitled', favorite: false }),
     ]);
   });
 
@@ -86,16 +88,16 @@ describe('parseImportDoc — v2 validation', () => {
 
   it('rejects malformed v2 rows with an index and reason', () => {
     const cases = [
-      [null, 'query must be an object'],
-      [{ id: '', sql: '', specVersion: 1, spec: {} }, 'id must be a non-empty string'],
-      [{ id: 'x', sql: 1, specVersion: 1, spec: {} }, 'sql must be a string'],
-      [{ id: 'x', sql: '', specVersion: '1', spec: {} }, 'specVersion must be an integer'],
-      [{ id: 'x', sql: '', specVersion: 2, spec: {} }, 'unsupported specVersion 2'],
-      [{ id: 'x', sql: '', specVersion: 1, spec: [] }, 'spec must be an object'],
+      [null, 'queries[1] must be object'],
+      [{ id: '', sql: '', specVersion: 1, spec: {} }, 'queries[1].id has an invalid string value'],
+      [{ id: 'x', sql: 1, specVersion: 1, spec: {} }, 'queries[1].sql must be string'],
+      [{ id: 'x', sql: '', specVersion: '1', spec: {} }, 'queries[1].specVersion must be integer'],
+      [{ id: 'x', sql: '', specVersion: 2, spec: {} }, 'queries[1].specVersion uses unsupported saved-query Spec version 2'],
+      [{ id: 'x', sql: '', specVersion: 1, spec: [] }, 'queries[1].spec must be object'],
     ];
     for (const [query, reason] of cases) {
       expect(() => parseImportDoc(envelope(2, [v2('ok', '', {}), query])))
-        .toThrow('Invalid version 2 query at index 1: ' + reason);
+        .toThrow(reason);
     }
   });
 
@@ -103,14 +105,14 @@ describe('parseImportDoc — v2 validation', () => {
     expect(() => parseImportDoc(envelope(2, [
       v2('ok', '', { panel: { cfg: { type: 'table' } } }),
       v2('latency-kpi', '', { panel: { fieldConfig: { columns: { latency: { decimals: '2' } } } } }),
-    ]))).toThrow('Query "latency-kpi": panel.fieldConfig.columns.latency.decimals must be integer.');
+    ]))).toThrow('queries[1].spec.panel.fieldConfig.columns.latency.decimals must be integer');
     expect(() => parseImportDoc(envelope(1, [
       { sql: 'SELECT 1', name: 'Legacy', chart: { cfg: { type: 'pie', x: 0, y: [1, 2] } } },
-    ]))).toThrow('Query at index 0: panel.cfg.y must contain at most 1 item.');
+    ]))).toThrow('queries[0].spec.panel.cfg.y must contain at most 1 item');
     expect(() => parseImportDoc(envelope(1, [
       null,
       { sql: 'SELECT 1', name: 'Legacy', chart: { cfg: { type: 'pie', x: 0, y: [1, 2] } } },
-    ]))).toThrow('Query at index 1: panel.cfg.y must contain at most 1 item.');
+    ]))).toThrow('queries[0].spec.panel.cfg.y must contain at most 1 item');
   });
 
   it('runs the injected feature service after structural upgrade', () => {
@@ -119,17 +121,19 @@ describe('parseImportDoc — v2 validation', () => {
       : [] };
     expect(() => parseImportDoc(envelope(2, [v2('feature', '', { forbidden: true })]), validationService))
       .toThrow('Query "feature": forbidden is unavailable.');
+    expect(parseImportDoc(envelope(2, [v2('allowed', '', {})]), validationService).queries[0].id)
+      .toBe('allowed');
   });
 
   it('throws clear envelope errors', () => {
     expect(() => parseImportDoc('{bad')).toThrow('Not a valid JSON file');
     expect(() => parseImportDoc('null')).toThrow('Unrecognized file format');
     expect(() => parseImportDoc(JSON.stringify({ format: 'other' }))).toThrow('Unrecognized file format');
-    expect(() => parseImportDoc(envelope(0, []))).toThrow('Unsupported file version');
-    expect(() => parseImportDoc(envelope(3, []))).toThrow('Unsupported file version');
-    expect(() => parseImportDoc(JSON.stringify({ format: FORMAT, version: 2, queries: 'x' }))).toThrow('No queries in file');
+    expect(() => parseImportDoc(envelope(0, []))).toThrow('Unsupported Library version 0');
+    expect(() => parseImportDoc(envelope(3, []))).toThrow('Unsupported Library version 3');
+    expect(() => parseImportDoc(JSON.stringify({ format: FORMAT, version: 2, queries: 'x' }))).toThrow('queries must be array');
     expect(() => parseImportDoc(envelope(2, Array.from({ length: 1001 }, (_, i) => v2(String(i), '', {})))))
-      .toThrow('Too many queries (max 1000)');
+      .toThrow('queries must contain at most 1000 items');
   });
 });
 

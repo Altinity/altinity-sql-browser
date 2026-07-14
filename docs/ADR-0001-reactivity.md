@@ -277,3 +277,30 @@ context. External writers stage the persisted entry and every linked draft,
 validate them all, and only then mutate once. Renderer-level bounds, result
 column resolution, schema-key mismatch handling, and fallback defenses remain
 authoritative for runtime data.
+
+## Addendum — canonical whole-Library codec and schema registry (#224)
+
+The canonical boundary now covers all three persisted layers without merging
+their ownership: Library v2, saved-query v2, and query Spec v1 remain separate
+Draft 2020-12 resources and evolve independently. Library and saved-query
+envelopes are closed because their canonicalizers cannot preserve arbitrary
+fields; the Spec retains its explicit forward-compatible namespaces. The
+production manifest is an allowlist, so documentation drafts can never become
+runtime contracts through filename discovery.
+
+Pure `core/library-codec.js` owns parsing, complete-document validation,
+encoding, and dispatch through independent Library and Spec version registries.
+Migrations are sequential one-version pure functions that validate before and
+after each step. File Open/Replace/Append, Save JSON, examples, and the dedicated
+historical local-storage decoder share this boundary. Future versions and
+corrupt storage fail closed without partially changing state or rewriting the
+original bytes. Missing `exportedAt` remains accepted for historical v2 input
+and decodes as metadata `null`; every new export requires a valid timestamp and
+includes the canonical instance `$schema` hint by default.
+
+Ajv plus `ajv-formats` remain build-time-only. One strict registry compiles the
+canonical graph and emits self-contained named validators and ID maps. The same
+manifest deterministically generates an offline compound Library bundle and
+schema catalog. Generic exact-path diagnostic normalization is shared across
+the whole Library and the focused Spec introspection service, while duplicate
+IDs and runtime/result rules remain explicit semantic validation.
