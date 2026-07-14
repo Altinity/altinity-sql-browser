@@ -13,7 +13,7 @@ describe('specJsonContext', () => {
 
   it('tracks partial property names and exact replacement ranges', () => {
     const doc = '{\n  "pan';
-    expect(context(doc)).toMatchObject({ path: [], positionKind: 'property-name', partial: 'pan', from: 5, to: 8 });
+    expect(context(doc)).toMatchObject({ path: [], positionKind: 'property-name', partial: 'pan', from: 4, to: 8 });
   });
 
   it('resolves nested value and array contexts while retaining complete siblings', () => {

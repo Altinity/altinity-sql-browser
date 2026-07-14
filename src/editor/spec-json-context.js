@@ -106,7 +106,9 @@ export function specJsonContext(state, pos) {
       const reachesCursor = token.end >= limit && !token.complete;
       if (reachesCursor) {
         partial = token.raw;
-        range = { from: i + 1, to: limit };
+        // Replace the opening quote as well: completion values are JSON
+        // literals, so retaining it would create `""value"`.
+        range = { from: i, to: limit };
         inPartialString = true;
         break;
       }

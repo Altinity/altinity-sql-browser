@@ -65,7 +65,8 @@ test.describe('Spec JSON editor', () => {
     await page.keyboard.press('Control+Space');
     await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('panel');
     await spec.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'panel' }).click();
-    await expect.poll(() => page.evaluate(() => window.__specPort.getValue())).toContain('"panel": {"cfg":{"type":""}}');
+    await expect.poll(() => page.evaluate(() => window.__specPort.getValue()))
+      .toBe('{\n  "panel": {"cfg":{"type":""}}');
 
     await page.evaluate(() => {
       window.__app.state.tabs.value[0].result = { columns: [{ name: 'message', type: 'String' }] };
@@ -75,6 +76,7 @@ test.describe('Spec JSON editor', () => {
     await page.keyboard.press('Control+Space');
     await expect(spec.locator('.cm-tooltip-autocomplete')).toContainText('message');
     await spec.locator('.cm-tooltip-autocomplete li').filter({ hasText: 'message' }).click();
-    await expect.poll(() => page.evaluate(() => window.__specPort.getValue())).toContain('"msg":"message"');
+    await expect.poll(() => page.evaluate(() => window.__specPort.getValue()))
+      .toBe('{"panel":{"cfg":{"type":"logs","msg":"message"');
   });
 });

@@ -61,7 +61,7 @@ describe('Spec editor adapter', () => {
     const source = specCompletionSourceFor(app);
     const state = EditorState.create({ doc: '{"pa', extensions: [json()] });
     const result = source({ state, pos: 4 });
-    expect(result).toMatchObject({ from: 2, to: 4, filter: false });
+    expect(result).toMatchObject({ from: 1, to: 4, filter: false });
     expect(result.options.find((item) => item.label === 'panel')).toMatchObject({ apply: '"panel": {"cfg":{"type":""}}', type: 'property' });
     expect(source({ state: EditorState.create({ doc: '{"name":1', extensions: [json()] }), pos: 9 })).toBeNull();
   });
