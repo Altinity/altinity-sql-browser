@@ -1433,7 +1433,8 @@ body.detached-tab .graph-overlay-panel {
 }
 .ed-toolbar > [hidden],
 .document-editor[hidden],
-.spec-editor-pane[hidden] { display: none !important; }
+.spec-editor-pane[hidden],
+.spec-status[hidden] { display: none !important; }
 .var-strip[hidden] { display: none !important; }
 
 .document-editor,
@@ -1448,8 +1449,7 @@ body.detached-tab .graph-overlay-panel {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .spec-status.is-error { background: var(--error-bg); color: var(--error-fg); }
-.spec-status.is-warning { background: var(--warn-bg); color: var(--warn-fg); }
-.spec-status.is-valid::before { content: '✓ '; color: var(--accent); }
+.spec-completion-info { white-space: pre-line; max-width: 36ch; }
 .spec-diagnostic {
   text-decoration-line: underline;
   text-decoration-style: wavy;
@@ -1524,7 +1524,7 @@ body.detached-tab .graph-overlay-panel {
 .cm-editor .cm-searchMatch { background: color-mix(in oklab, var(--accent) 24%, transparent); border-radius: 2px; }
 .cm-editor .cm-searchMatch-selected { background: color-mix(in oklab, var(--accent) 55%, transparent); }
 /* Tooltips: completion list, completion info, hover docs. */
-.cm-tooltip {
+body .cm-editor .cm-tooltip {
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: 8px; color: var(--fg);
   box-shadow: 0 12px 34px rgba(0, 0, 0, .4);
@@ -1532,7 +1532,7 @@ body.detached-tab .graph-overlay-panel {
 .cm-tooltip.cm-tooltip-autocomplete { font-family: var(--ui); overflow: hidden; }
 .cm-tooltip-autocomplete > ul { font-family: var(--mono); font-size: 12.5px; max-height: 248px; padding: 4px; }
 .cm-tooltip-autocomplete > ul > li { padding: 4px 8px; border-radius: 5px; display: flex; align-items: center; gap: 9px; }
-.cm-tooltip-autocomplete > ul > li[aria-selected] { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--fg); }
+body .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--fg); }
 .cm-tooltip-autocomplete .cm-completionLabel { flex-shrink: 0; }
 .cm-tooltip-autocomplete .cm-completionDetail {
   margin-left: auto; max-width: 150px; text-align: right;

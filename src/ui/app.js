@@ -45,6 +45,7 @@ import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
+import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
 import { SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
@@ -241,6 +242,7 @@ export function createApp(env = {}) {
   app.specValidators = env.specValidators && typeof env.specValidators.validate === 'function'
     ? env.specValidators
     : createSpecValidatorRegistry(env.specValidators || CORE_SPEC_VALIDATORS);
+  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources();
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));
@@ -280,6 +282,10 @@ export function createApp(env = {}) {
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.updateEditorModeUi) app.updateEditorModeUi();
+  };
+  app.revealFirstSpecError = (tab = app.activeTab()) => {
+    const index = tab.specDiagnostics?.findIndex((diagnostic) => diagnostic.severity === 'error') ?? -1;
+    if (index >= 0) app.specEditor.revealDiagnostic(index);
   };
   app.specEditor.onDocChange((value) => {
     app.evaluateSpecDraft(app.activeTab(), value);
@@ -890,6 +896,12 @@ export function createApp(env = {}) {
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
       app.state.running.value = false;
       if (!tab.result.error && !tab.result.cancelled) {
+        // Spec completion is intentionally stable during a run and survives a
+        // later failed/cancelled run. Snapshot only completed structured
+        // results; never expose partially streamed metadata to the editor.
+        tab.lastSuccessfulResultColumns = fmt === 'Table'
+          ? tab.result.columns.map((column) => ({ ...column }))
+          : [];
         app.recordHistory(tab, opts && opts.sql);
         // #171: this statement succeeded — record its bound params (exactly
         // what was actually sent; an omitted-optional-block param never
@@ -2069,7 +2081,7 @@ export function createApp(env = {}) {
     const tab = app.activeTab();
     const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
-      app.specEditor.revealDiagnostic(0);
+      app.revealFirstSpecError(tab);
       flashToast('Fix Spec errors before saving', { document: doc });
       return null;
     }
@@ -2515,11 +2527,13 @@ export function renderApp(app, helpers) {
     app.dom.specModeBtn.classList.toggle('is-disabled', !linked);
     app.dom.specModeBtn.setAttribute('aria-disabled', String(!linked));
     app.dom.specModeBtn.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
-    const diagnostic = tab.specDiagnostics && tab.specDiagnostics[0];
-    app.dom.specStatus.className = 'spec-status' + (diagnostic ? ` is-${diagnostic.severity}` : ' is-valid');
+    const errors = tab.specDiagnostics?.filter((item) => item.severity === 'error') || [];
+    const diagnostic = errors[0];
+    app.dom.specStatus.className = 'spec-status' + (diagnostic ? ' is-error' : '');
+    app.dom.specStatus.hidden = !diagnostic;
     app.dom.specStatus.textContent = diagnostic
-      ? `${diagnostic.line ? `Line ${diagnostic.line}, column ${diagnostic.column}: ` : ''}${diagnostic.message}`
-      : 'Valid Spec JSON';
+      ? `${diagnostic.line ? `Line ${diagnostic.line}, column ${diagnostic.column}: ` : ''}${diagnostic.message}${errors.length > 1 ? ` — ${errors.length} errors` : ''}`
+      : '';
     app.dom.shareBtn.disabled = app.specBlocked(tab);
     app.dom.shareBtn.title = app.specBlocked(tab) ? 'Fix blocking Spec errors before sharing' : 'Share query (copies link)';
     app.dom.varStrip.hidden = specMode;

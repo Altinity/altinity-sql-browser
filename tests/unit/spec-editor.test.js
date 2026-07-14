@@ -5,13 +5,19 @@ import { foldCode } from '@codemirror/language';
 import { undo, undoDepth } from '@codemirror/commands';
 import { openSearchPanel } from '@codemirror/search';
 import { createState, activeTab, newTabObj, setTabSpecDraft } from '../../src/state.js';
+import { createQuerySpecValidationService } from '../../src/core/spec-schema.js';
 import {
   createNoopSpecEditor, createSpecEditor, jsonPathRanges,
 } from '../../src/editor/spec-editor.js';
+import {
+  createSpecCompletionSources, specCompletionSourceFor,
+} from '../../src/editor/spec-completion-adapter.js';
 
 const makeApp = () => ({
   state: createState({ loadStr: (key, fallback) => fallback, loadJSON: (key, fallback) => fallback }),
-  dom: {},
+  dom: {}, document,
+  specValidators: createQuerySpecValidationService(),
+  specCompletionSources: createSpecCompletionSources(),
 });
 
 function mounted() {
@@ -214,5 +220,118 @@ describe('Spec editor adapter', () => {
     expect(port.hasFocus()).toBe(false);
     port.replaceDocument('{}');
     expect(changes).toEqual([]);
+  });
+
+  it('builds schema completions from current app state and applies a property in one edit', () => {
+    const { app, port, view, changes } = mounted();
+    port.replaceDocument('{\n  "pa"\n}');
+    changes.length = 0;
+    const pos = port.getValue().indexOf('pa') + 2;
+    const result = specCompletionSourceFor(app)({ state: view.state, pos, explicit: true });
+    const panel = result.options.find((option) => option.label === 'panel');
+    expect(panel.detail).toContain('object');
+    expect(panel.info().textContent).toContain('Panel configuration');
+    panel.apply(view, panel, result.from, result.to);
+    expect(port.getValue()).toBe('{\n  "panel": {}\n}');
+    expect(changes).toEqual(['{\n  "panel": {}\n}']);
+    expect(undo(view)).toBe(true);
+    expect(port.getValue()).toBe('{\n  "pa"\n}');
+  });
+
+  it('replaces only an existing key name and inserts a valid root property from an empty document', () => {
+    const { app, port, view } = mounted();
+    const source = specCompletionSourceFor(app);
+    port.replaceDocument('{"pa":{}}');
+    let result = source({ state: view.state, pos: 4, explicit: true });
+    let panel = result.options.find((option) => option.label === 'panel');
+    panel.apply(view, panel, result.from, result.to);
+    expect(port.getValue()).toBe('{"panel":{}}');
+
+    port.replaceDocument('{"pa": }');
+    result = source({ state: view.state, pos: 4, explicit: true });
+    panel = result.options.find((option) => option.label === 'panel');
+    panel.apply(view, panel, result.from, result.to);
+    expect(port.getValue()).toBe('{"panel": }');
+
+    port.replaceDocument('');
+    result = source({ state: view.state, pos: 0, explicit: true });
+    const favorite = result.options.find((option) => option.label === 'favorite');
+    favorite.apply(view, favorite, result.from, result.to);
+    expect(port.getValue()).toBe('{\n  "favorite": false\n}');
+
+    port.replaceDocument('{}');
+    view.dispatch({ selection: { anchor: 1 } });
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    view.contentDOM.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(port.getValue()).toBe('{  }');
+  });
+
+  it('applies finite values plainly and schema snippets as safe whole-object edits', () => {
+    const { app, port, view } = mounted();
+    const source = specCompletionSourceFor(app);
+    const text = '{"panel":{"cfg":{"type":"l"}}}';
+    port.replaceDocument(text);
+    const pos = text.indexOf('"l"') + 2;
+    const result = source({ state: view.state, pos, explicit: true });
+    expect(result.options.find((option) => option.label === 'line').apply).toBe('"line"');
+    const snippet = result.options.find((option) => option.label === 'Line chart skeleton');
+    snippet.apply(view, snippet, result.from, result.to);
+    expect(port.getValue()).toBe([
+      '{"panel":{"cfg":{',
+      '  "type": "line",',
+      '  "x": 0,',
+      '  "y": [',
+      '    1',
+      '  ],',
+      '  "series": null',
+      '}}}',
+    ].join('\n'));
+  });
+
+  it('keeps the completion source quiet outside valid schema contexts', () => {
+    const app = makeApp();
+    const state = EditorState.create({ doc: '{} trailing', extensions: [json()] });
+    expect(specCompletionSourceFor(app)({ state, pos: state.doc.length, explicit: true })).toBeNull();
+    expect(specCompletionSourceFor({ ...app, specValidators: {} })({
+      state: EditorState.create({ doc: '{}', extensions: [json()] }), pos: 1, explicit: true,
+    })).toBeNull();
+    const noMatch = EditorState.create({ doc: '{"view":"zzz"}', extensions: [json()] });
+    expect(specCompletionSourceFor(app)({ state: noMatch, pos: 12, explicit: true })).toBeNull();
+  });
+
+  it('reads result columns/indexes and query parameters only from cached active-tab data', () => {
+    const app = makeApp();
+    const tab = activeTab(app.state);
+    tab.lastSuccessfulResultColumns = [
+      { name: 'event_time', type: 'DateTime' }, { name: 'requests', type: 'UInt64' },
+    ];
+    tab.result = { columns: [{ name: 'partial', type: 'String' }] };
+    tab.sqlDraft = 'SELECT {year:UInt16} /*[ AND x = {origin:String} ]*/';
+    const sources = createSpecCompletionSources();
+    expect(sources.resultColumns({ context: { tab } })).toEqual([
+      expect.objectContaining({ label: 'event_time', value: 'event_time', detail: 'DateTime' }),
+      expect.objectContaining({ label: 'requests', value: 'requests', detail: 'UInt64' }),
+    ]);
+    expect(sources.resultColumnIndexes({ context: { tab } })).toEqual([
+      expect.objectContaining({ label: '0', value: 0, detail: 'event_time · DateTime' }),
+      expect.objectContaining({ label: '1', value: 1, detail: 'requests · UInt64' }),
+    ]);
+    expect(sources.queryParameters({ context: { tab } })).toEqual([
+      expect.objectContaining({ label: 'year', detail: 'UInt16' }),
+      expect.objectContaining({ label: 'origin', detail: 'String · optional' }),
+    ]);
+    expect(sources.resultColumns({ context: {} })).toEqual([]);
+    expect(sources.queryParameters({ context: {} })).toEqual([]);
+    expect(createSpecCompletionSources().resultColumns({ context: { tab: { lastSuccessfulResultColumns: [{ name: 'x' }] } } })[0])
+      .toMatchObject({ documentation: 'x' });
+    expect(createSpecCompletionSources().resultColumnIndexes({ context: { tab: { lastSuccessfulResultColumns: [{ name: 'x' }] } } })[0])
+      .toMatchObject({ detail: 'x', documentation: 'x' });
+    expect(createSpecCompletionSources().queryParameters({ context: { tab: { sqlDraft: '' } } })).toEqual([]);
+    expect(createSpecCompletionSources().queryParameters({ context: { tab: {
+      sqlDraft: 'CREATE VIEW v AS SELECT {ddl_only:String}, {mixed:String}; SELECT {mixed:UInt8}',
+    } } })).toEqual([
+      expect.objectContaining({ label: 'mixed', detail: 'UInt8' }),
+    ]);
   });
 });

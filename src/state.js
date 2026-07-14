@@ -82,7 +82,7 @@ export function newTabObj(id) {
     id, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
     specText: serializeSpec(specParsed), specParsed, specDiagnostics: [],
     editorMode: 'sql', dirtySql: false, dirtySpec: false,
-    result: null, savedId: null,
+    result: null, lastSuccessfulResultColumns: [], savedId: null,
   };
 }
 

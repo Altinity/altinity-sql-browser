@@ -8,11 +8,14 @@ import {
   bracketMatching, foldGutter, foldKeymap,
 } from '@codemirror/language';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
-import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import {
+  acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap,
+} from '@codemirror/autocomplete';
 import { json } from '@codemirror/lang-json';
 import { syntaxTree } from '@codemirror/language';
 import { activeTab } from '../state.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
+import { specCompletionSourceFor } from './spec-completion-adapter.js';
 
 const syncTx = Annotation.define();
 const setDiagnosticMarks = StateEffect.define();
@@ -101,6 +104,11 @@ const diagnosticField = StateField.define({
 const fullReplace = (state, text) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
 const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(false)];
 
+function insertTwoSpaces(view) {
+  view.dispatch(view.state.replaceSelection('  '), { userEvent: 'input', scrollIntoView: true });
+  return true;
+}
+
 export function createNoopSpecEditor() {
   return {
     mount() {}, destroy() {}, focus() {}, requestMeasure() {},
@@ -128,9 +136,12 @@ export function createSpecEditor(app) {
     foldGutter(),
     bracketMatching(),
     closeBrackets(),
+    autocompletion({ override: [specCompletionSourceFor(app)] }),
     diagnosticField,
     codeSearchKeymap,
     keymap.of([
+      { key: 'Tab', run: acceptCompletion },
+      { key: 'Tab', run: insertTwoSpaces },
       ...closeBracketsKeymap,
       ...foldKeymap,
       ...historyKeymap,

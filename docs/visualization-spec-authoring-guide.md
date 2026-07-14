@@ -94,6 +94,22 @@ The following never belong in the editable Spec:
 - run progress;
 - current filter values.
 
+### Editing with schema-driven autocomplete
+
+The workbench Spec editor derives its native CodeMirror completion popup from
+the canonical [`query.spec` schema](../schemas/query-spec-v1.schema.json).
+Typing a property or finite value opens the popup automatically; press
+`Ctrl-Space` to request it explicitly. Arrow keys navigate, Enter or Tab
+accepts, Escape closes the popup, and Tab inserts two spaces while the popup is
+closed.
+
+Known root/nested keys, panel variants, constants, enums, defaults, examples,
+and snippets are schema-owned. Result-column names and zero-based indexes appear
+only at schema-annotated positions and come from the active tab's last
+successful result. No completion action executes SQL, and the absence of result
+metadata is not an error. Unknown extension keys remain legal even though the
+popup does not enumerate them.
+
 ## 2. Normative language
 
 This document uses:

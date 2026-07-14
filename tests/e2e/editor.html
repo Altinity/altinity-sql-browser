@@ -60,13 +60,19 @@
   <script type="module">
     import { createCodeMirrorEditor } from '/src/editor/codemirror-adapter.js';
     import { createSpecEditor } from '/src/editor/spec-editor.js';
+    import { createSpecCompletionSources } from '/src/editor/spec-completion-adapter.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
     import { createState, activeTab, newTabObj } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
+    import { createQuerySpecValidationService } from '/src/core/spec-schema.js';
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
     const refData = assembleReferenceData(null);
-    const app = { state, dom: {}, document, refData, completions: buildCompletions(refData, []) };
+    const app = {
+      state, dom: {}, document, refData, completions: buildCompletions(refData, []),
+      specValidators: createQuerySpecValidationService(),
+      specCompletionSources: createSpecCompletionSources(),
+    };
     window.__app = app;
     const port = createCodeMirrorEditor(app);
     window.__port = port;

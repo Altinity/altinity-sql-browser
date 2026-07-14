@@ -158,34 +158,38 @@ gantt-cycle
 
 ## CodeMirror completion architecture
 
-The current Spec editor uses `@codemirror/lang-json`. JSON syntax support alone does not provide schema-aware property completion.
-
-Add a completion source through `@codemirror/autocomplete`.
-
-CodeMirror supports completion sources through language data or an explicit autocompletion extension. The application should keep the schema engine independent of the editor adapter so it can be unit-tested as pure logic.
-
-Suggested modules:
+The Spec editor installs an explicit native CodeMirror completion source through
+`@codemirror/autocomplete`. The implementation keeps three boundaries:
 
 ```text
 src/core/spec-schema.js
-src/core/spec-schema-completion.js
-src/core/spec-schema-validation.js
-src/editor/spec-editor.js
+src/core/spec-completion.js
+src/editor/spec-json-context.js
+src/editor/spec-completion-adapter.js
 ```
+
+The schema service resolves local refs, composition, and discriminated branches.
+The pure completion engine normalizes candidates and deterministic ranking. The
+tolerant Lezer context resolver supplies the current path, replacement range,
+completed siblings, and a best-effort root value without requiring the whole
+document to parse. The thin editor adapter owns CodeMirror objects, insertion
+transactions, the information pane, and last-successful active-tab dynamic
+sources.
+
+The best-effort value is completion-only. It is never passed to validation,
+Save, or persistence.
 
 ### Pure schema service
 
-Suggested interface:
+Implemented schema lookup interface:
 
 ```js
-createSpecSchemaService({
-  schema,
-  resultColumns
-}) -> {
+createSpecSchemaService({ schema, validateCompiled }) -> {
   validate(value),
-  completions({ value, path, positionKind }),
-  hover({ path }),
-  schemaAtPath(path)
+  schemaAtPath({ root, path }),
+  propertiesAtPath({ root, path }),
+  annotationsAtPath({ root, path }),
+  variantsAtPath({ root, path })
 }
 ```
 
@@ -215,9 +219,8 @@ offer:
 
 ```text
 cfg
+key
 fieldConfig
-transformations
-links
 ```
 
 Do not offer a property already present in the same object unless duplicates are intentionally supported.
@@ -230,17 +233,18 @@ At:
 {
   "panel": {
     "cfg": {
-      "type": "candlestick",
+      "type": "line",
       |
     }
   }
 }
 ```
 
-resolve the `candlestick` branch and offer:
+resolve the `line` branch and offer:
 
 ```text
-time
+x
+y
 series
 ```
 
@@ -266,27 +270,33 @@ offer:
 "panel"
 ```
 
-At `panel.cfg.type`, offer all implemented/schema-known panel ids.
+At `panel.cfg.type`, offer every explicit finite canonical branch. The generic
+forward-compatible branch uses a negative enum constraint and is never exposed
+as a fake finite value.
 
 #### Snippets
 
 Object-valued completions should insert useful skeletons.
 
-Example KPI skeleton:
+Example line-chart skeleton:
 
 ```json
 {
-  "type": "kpi"
+  "type": "line",
+  "x": 0,
+  "y": [1],
+  "series": null
 }
 ```
 
-Example candlestick skeleton:
+Example logs skeleton:
 
 ```json
 {
-  "type": "candlestick",
-  "time": "",
-  "series": []
+  "type": "logs",
+  "time": "event_time",
+  "msg": "message",
+  "level": "level"
 }
 ```
 
@@ -295,8 +305,6 @@ Example field metadata skeleton:
 ```json
 {
   "displayName": "",
-  "description": "",
-  "unit": "",
   "decimals": 1
 }
 ```
@@ -315,7 +323,7 @@ The schema annotates exact column-name strings with:
 }
 ```
 
-At a column-name value, offer current result columns:
+At a column-name value, offer the active tab's last successful result columns:
 
 ```text
 bucket
@@ -353,7 +361,8 @@ offer result-column names as JSON property keys.
 
 Do not offer keys already configured.
 
-When no result exists, completion may offer known keys parsed from SQL aliases if a reliable SQL-only analyzer exists. It must not issue a query.
+When no result exists, dynamic completion returns no candidates and no
+diagnostic. It never issues a query or infers result columns from unexecuted SQL.
 
 #### Completion details
 

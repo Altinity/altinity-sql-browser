@@ -43,6 +43,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   flashes its chevron shut and back open (`src/ui/schema.js`).
 
 ### Added
+- **The saved-query Spec editor now provides complete schema-driven native
+  CodeMirror autocomplete** (#221). Root/nested properties, discriminated panel
+  branches, constants, enums, booleans, nullable values, defaults, examples,
+  object/array skeletons, and schema-owned snippets all come from the canonical
+  `query.spec` schema rather than editor-owned lists. Annotated positions add
+  cached last-successful result column names/indexes and dynamic field-configuration
+  keys without executing SQL. Typing opens the same popup used by the SQL
+  editor; `Ctrl-Space`, arrows, Enter, Tab, and Escape retain native CodeMirror
+  behavior and the information pane shows schema documentation. Completion
+  works against incomplete JSON through a non-persisted tolerant Lezer model,
+  while the bottom Spec strip is now reserved for blocking errors only—warnings,
+  informational diagnostics, valid-state messages, and missing dynamic data do
+  not appear there or disable Save.
 - **Complete canonical Library JSON contracts and a versioned codec** (#224)
   now cover the closed Library v2 and saved-query v2 envelopes as well as the
   independently versioned, extensible query Spec. One pure parse/validate/

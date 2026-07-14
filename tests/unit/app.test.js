@@ -446,6 +446,7 @@ describe('query run', () => {
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(app.activeTab().result.rows).toEqual([['1']]);
+    expect(app.activeTab().lastSuccessfulResultColumns).toEqual([{ name: 'a', type: 'UInt8' }]);
     expect(app.state.history.length).toBe(1);
     // a plain SELECT needs no session, so none is opened (avoids the session race)
     expect(app.chCtx.fetch.mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
@@ -1143,9 +1144,11 @@ describe('query run', () => {
     const { app } = appForRun([
       [(u, sql) => /bad/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],
     ]);
+    app.activeTab().lastSuccessfulResultColumns = [{ name: 'previous', type: 'String' }];
     app.activeTab().sqlDraft = 'bad';
     await app.actions.run();
     expect(app.activeTab().result.error).toContain('nope');
+    expect(app.activeTab().lastSuccessfulResultColumns).toEqual([{ name: 'previous', type: 'String' }]);
     expect(app.state.history.length).toBe(0);
   });
   it('runs raw and captures the response when the SQL ends with a FORMAT clause', async () => {
@@ -2652,6 +2655,33 @@ describe('share + star + columns', () => {
     }]);
     unregister();
     expect(linked.specDiagnostics).toEqual([]);
+  });
+  it('keeps warnings/info out of the bottom Spec status and navigates the first real error', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQuery({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(app.state.savedQueries[0]);
+    app.actions.setEditorMode('spec');
+    const warning = app.registerSpecValidator([], () => [
+      { severity: 'warning', code: 'heads-up', message: 'Non-blocking warning' },
+      { severity: 'info', code: 'note', message: 'Informational note' },
+    ]);
+    expect(app.dom.specStatus.hidden).toBe(true);
+    expect(app.dom.specStatus.textContent).toBe('');
+    expect(app.specBlocked(app.activeTab())).toBe(false);
+
+    const error = app.registerSpecValidator(['runtime'], () => [
+      { severity: 'error', code: 'blocked', message: 'Blocking error' },
+      { severity: 'error', code: 'also-blocked', message: 'Second blocking error' },
+    ]);
+    expect(app.dom.specStatus.hidden).toBe(false);
+    expect(app.dom.specStatus.textContent).toBe('Blocking error — 2 errors');
+    expect(app.specBlocked(app.activeTab())).toBe(true);
+    const reveal = vi.spyOn(app.specEditor, 'revealDiagnostic');
+    app.revealFirstSpecError();
+    expect(reveal).toHaveBeenCalledWith(2);
+    error(); warning();
+    expect(app.dom.specStatus.hidden).toBe(true);
   });
   it('synchronously reruns registered blocking validation inside linked Save', () => {
     const store = { getItem: vi.fn(() => null), setItem: vi.fn() };

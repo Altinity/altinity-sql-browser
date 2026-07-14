@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+const platformModifier = (page) => page.evaluate(() => /Mac/.test(navigator.platform) ? 'Meta' : 'Control');
+
 // CM6 adapter behaviors that need a real engine (#21): keyboard-driven
 // highlighting, the ⌘↵-never-swallowed acceptance rule, per-tab undo across
 // syncFromState, and the search panel. (The old editor-alignment.spec.js
@@ -81,7 +83,7 @@ test.describe('CM6 editor', () => {
     expect(t1).toBe('one');
     await page.evaluate(`(${switchTab.toString()})('t2')`);
     await page.click('.cm-content');
-    await page.keyboard.press('Control+z');
+    await page.keyboard.press(`${await platformModifier(page)}+z`);
     const t2AfterUndo = await page.evaluate(doc);
     expect(t2AfterUndo).toBe(''); // t2's history survived the round trip
     await page.evaluate(`(${switchTab.toString()})('t1')`);
@@ -89,7 +91,7 @@ test.describe('CM6 editor', () => {
   });
 
   test('⌘F opens the app-styled search panel; Esc closes it', async ({ page }) => {
-    await page.keyboard.press('Control+f');
+    await page.keyboard.press(`${await platformModifier(page)}+f`);
     await expect(page.locator('.cm-panel.cm-search')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('.cm-panel.cm-search')).toHaveCount(0);

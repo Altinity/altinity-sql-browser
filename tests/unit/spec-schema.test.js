@@ -123,6 +123,14 @@ describe('schema lookup', () => {
       root: { panel: { cfg: { type: 'brand-new' } } }, path: ['panel', 'cfg'],
     });
     expect(unknown.candidates).toEqual([expect.objectContaining({ 'x-altinity-status': 'planned' })]);
+    expect(querySpecSchemaService.variantsAtPath({
+      root: { panel: { cfg: { type: 'line' } } }, path: ['panel', 'cfg', 'type'],
+    }).map((variant) => variant.value)).toEqual([
+      'bar', 'hbar', 'line', 'area', 'pie', 'table', 'logs', 'text',
+    ]);
+    expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [] })).toEqual([]);
+    expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [0] })).toEqual([]);
+    expect(querySpecSchemaService.variantsAtPath({ root: {}, path: ['view'] })).toEqual([]);
   });
 
   it('resolves nested refs, array items, and dynamic dotted object keys', () => {
@@ -224,6 +232,27 @@ describe('schema lookup', () => {
     expect(nestedChild.schemas).toHaveLength(1);
     expect(nestedChild.schemas[0].properties).toHaveProperty('selectedB');
     expect(service.propertiesAtPath({ root: null }).length).toBeGreaterThan(0);
+  });
+
+  it('extracts nested array discriminator variants with metadata and deduplication', () => {
+    const schema = {
+      type: 'object', properties: { items: { type: 'array', items: {
+        type: 'object', 'x-altinity-discriminator': 'kind', properties: { kind: { type: 'string' } },
+        oneOf: [
+          { description: 'First', properties: { kind: { title: 'Kind A', const: 'a' } } },
+          { title: 'Duplicate', properties: { kind: { enum: ['a', 'b'] } } },
+          { title: 'No finite discriminator', properties: { other: { type: 'string' } } },
+        ],
+      } } },
+    };
+    const service = createSpecSchemaService({ schema, validateCompiled: () => true });
+    expect(service.variantsAtPath({
+      root: { items: [{ kind: 'a' }] }, path: ['items', 0, 'kind'],
+    }).map((item) => [item.value, item.title, item.description])).toEqual([
+      ['a', 'Kind A', 'First'], ['b', 'Duplicate', undefined],
+    ]);
+    expect(service.variantsAtPath({ root: { items: [null] }, path: ['items', 0, 'kind'] }))
+      .toHaveLength(2);
   });
 
   it('rejects invalid, remote, unresolved, and cyclic lookup schemas', () => {

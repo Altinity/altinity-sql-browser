@@ -88,7 +88,8 @@ export const querySpecV1Schema = {
         "decimals": {
           "title": "Decimal places",
           "description": "Requested number of decimal places for numeric display.",
-          "type": "integer"
+          "type": "integer",
+          "default": 0
         }
       },
       "additionalProperties": true,
@@ -176,7 +177,8 @@ export const querySpecV1Schema = {
       "type": "object",
       "properties": {
         "x": {
-          "$ref": "#/$defs/resultColumnIndex"
+          "$ref": "#/$defs/resultColumnIndex",
+          "default": 0
         },
         "y": {
           "title": "Measure columns",

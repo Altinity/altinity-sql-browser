@@ -62,6 +62,15 @@ Spec mode provides JSON highlighting, line numbers, bracket matching, folding,
 local search, undoable two-space formatting, and continuous path-addressed parse
 and semantic diagnostics backed by the canonical Draft 2020-12
 [`query.spec` schema](schemas/query-spec-v1.schema.json). The
+same canonical schema drives native CodeMirror autocomplete for root and nested
+keys, panel variants, finite/default/example values, safe object/array
+skeletons, and schema-owned snippets. Annotated positions also offer cached
+columns from the active tab's last successful result; completion never runs a
+query. The popup opens while typing or with **Ctrl-Space**; arrows navigate,
+**Enter** or **Tab** accepts, **Escape** closes it, and Tab inserts two spaces
+when the popup is closed. Only blocking errors appear in the bottom Spec status
+strip—warnings and information remain non-blocking and a valid Spec shows no
+success footer. The
 [schema-service notes](docs/saved-query-spec-json-schema.md) and
 [visualization authoring guide](docs/visualization-spec-authoring-guide.md)
 document the reusable validation and panel contracts. The

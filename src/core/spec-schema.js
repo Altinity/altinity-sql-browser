@@ -289,6 +289,61 @@ export function createSpecSchemaService({ schema, validateCompiled }) {
     return { common: pick(envelope.common), candidates: envelope.candidates.map(pick) };
   };
 
+  /**
+   * Finite values for a discriminated property, with the owning branch's
+   * presentation annotations attached. The active value is deliberately
+   * removed before resolving the parent so editing an existing discriminator
+   * still offers every explicit canonical branch. Negative/fallback branches
+   * have no positive const/enum and therefore never become fake candidates.
+   */
+  const variantsAtPath = ({ root, path = [] }) => {
+    if (!path.length || typeof path.at(-1) !== 'string') return [];
+    const property = path.at(-1);
+    const parentPath = path.slice(0, -1);
+    const withoutActiveValue = (value, segments, index = 0) => {
+      if (!isObject(value) && !Array.isArray(value)) return value;
+      const copy = Array.isArray(value) ? [...value] : { ...value };
+      const segment = segments[index];
+      if (index === segments.length - 1) {
+        if (Array.isArray(copy)) copy[segment] = undefined;
+        else delete copy[segment];
+      } else if (Object.hasOwn(copy, segment)) {
+        copy[segment] = withoutActiveValue(copy[segment], segments, index + 1);
+      }
+      return copy;
+    };
+    const lookupRoot = withoutActiveValue(root, path);
+    const parent = schemaAtPath({ root: lookupRoot, path: parentPath });
+    if (parent.common['x-altinity-discriminator'] !== property) return [];
+    const out = [];
+    const seen = new Set();
+    parent.candidates.forEach((branch, branchOrder) => {
+      const raw = branch.properties?.[property];
+      if (!raw) return;
+      for (const valueSchema of expand(schema, raw, undefined)) {
+        const values = Object.hasOwn(valueSchema, 'const')
+          ? [valueSchema.const]
+          : (Array.isArray(valueSchema.enum) ? valueSchema.enum : []);
+        for (const value of values) {
+          const key = JSON.stringify(value);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push({
+            value,
+            schema: valueSchema,
+            title: branch.title || valueSchema.title,
+            description: branch.description || valueSchema.description,
+            status: branch['x-altinity-status'],
+            deprecated: branch['x-altinity-deprecated'] === true,
+            snippet: branch['x-altinity-snippet'],
+            order: branchOrder,
+          });
+        }
+      }
+    });
+    return out;
+  };
+
   return {
     schema,
     validate(value) {
@@ -297,6 +352,7 @@ export function createSpecSchemaService({ schema, validateCompiled }) {
     schemaAtPath,
     propertiesAtPath,
     annotationsAtPath,
+    variantsAtPath,
   };
 }
 

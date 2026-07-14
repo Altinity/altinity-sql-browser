@@ -28,7 +28,7 @@ describe('newTabObj', () => {
       specText: '{\n  "name": "Untitled",\n  "favorite": false\n}',
       specParsed: { name: 'Untitled', favorite: false }, specDiagnostics: [],
       editorMode: 'sql', dirtySql: false, dirtySpec: false,
-      result: null, savedId: null,
+      result: null, lastSuccessfulResultColumns: [], savedId: null,
     });
     expect(tabDirty(newTabObj('t1'))).toBe(false);
     expect(tabDirty({ dirtySpec: true })).toBe(true);
