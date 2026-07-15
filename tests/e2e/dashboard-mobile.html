@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard mobile harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body data-theme="dark">
+  <div id="root">
+    <div class="dash-page">
+      <div class="dash-topbar">
+        <div class="dash-header">
+          <a class="dash-back" href="/sql" title="Back to SQL Browser" aria-label="Back to SQL Browser">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M2 6h7.5M7 3.5 9.5 6 7 8.5" /></svg>
+            <span class="dash-back-label">SQL Browser</span>
+          </a>
+          <div class="dash-title">A deliberately long production operations Dashboard name</div>
+          <span class="dash-chip dash-fav">6 favorites</span>
+          <span class="dash-skip">1 not shown</span>
+          <div class="dash-spacer" style="flex:1"></div>
+          <span class="dash-chip dash-src"><span class="dash-dot"></span>clickhouse.example.internal</span>
+          <span class="dash-updated">Updated 12:34</span>
+          <button class="dash-icobtn" title="Toggle theme" aria-label="Toggle theme">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor"><circle cx="7" cy="7" r="2.4" /></svg>
+          </button>
+          <button class="dash-btn dash-refresh" title="Re-run all tiles" aria-label="Refresh dashboard">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor"><path d="M10.5 6a4.5 4.5 0 1 1-1.3-3.2M10.5 1.5V4H8" /></svg>
+            <span class="dash-refresh-label">Refresh</span>
+          </button>
+        </div>
+        <div class="dash-toolbar has-filters">
+          <div class="dash-layout-wrap">
+            <span class="dash-seg-label">Layout</span>
+            <div class="dash-seg dash-seg-layout" role="group" aria-label="Dashboard layout">
+              <button class="dash-seg-btn">Full width</button>
+              <button class="dash-seg-btn is-active">Report</button>
+              <button class="dash-seg-btn">2 columns</button>
+              <button class="dash-seg-btn">3 columns</button>
+            </div>
+          </div>
+          <div class="dash-filter-host"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
+        </div>
+      </div>
+      <div id="no-filter-toolbar" class="dash-toolbar">
+        <div class="dash-layout-wrap">Layout-only toolbar</div>
+      </div>
+      <main class="dash-grid is-report" aria-label="Dashboard panels">
+        <section class="dash-tile"><div class="dash-tile-head">Panel one</div></section>
+        <section class="dash-tile"><div class="dash-tile-head">Panel two</div></section>
+        <section class="dash-tile"><div class="dash-tile-head">Panel three</div></section>
+        <section class="dash-tile"><div class="dash-tile-head">Panel four</div></section>
+      </main>
+    </div>
+  </div>
+  <script type="module">
+    import { buildRecentField } from '/src/ui/recent-field.js';
+    import { wireComboInput } from '/src/ui/combobox.js';
+
+    const filters = document.querySelector('.dash-filters');
+    for (const name of ['region', 'service', 'environment', 'owner', 'status', 'version']) {
+      const field = buildRecentField({
+        document, name, type: 'String', value: '', baseTitle: `${name}: String`,
+        getRecents: (text) => ['alpha', 'beta', 'gamma'].filter((value) => value.includes(text.toLowerCase())),
+        onClearRecent: () => {}, onValueInput: () => {}, onCommit: () => {},
+      });
+      wireComboInput(field, { onValueInput: () => {}, onCommit: () => {} });
+      const label = document.createElement('label');
+      label.className = 'var-field';
+      label.innerHTML = `<span class="var-name">${name}</span>`;
+      label.append(field.el);
+      filters.append(label);
+    }
+
+    window.__prefs = { dashLayout: 'report', dashCols: 3 };
+    localStorage.setItem('asb:dashLayout', 'report');
+    localStorage.setItem('asb:dashCols', '3');
+    window.__layoutApplyCount = 0;
+    window.__setLayout = (mode) => {
+      const grid = document.querySelector('.dash-grid');
+      grid.classList.toggle('is-wide', mode === 'wide');
+      grid.classList.toggle('is-report', mode === 'report');
+      grid.style.setProperty('--dash-cols', mode === 'columns-2' ? '2' : '3');
+      window.__layoutApplyCount++;
+    };
+
+    window.__refreshCount = 0;
+    const refresh = document.querySelector('.dash-refresh');
+    refresh.addEventListener('click', () => {
+      refresh.disabled = true;
+      window.__refreshCount++;
+      setTimeout(() => { refresh.disabled = false; }, 80);
+    });
+    window.__ready = true;
+  </script>
+</body>
+</html>

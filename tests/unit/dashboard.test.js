@@ -381,9 +381,16 @@ describe('renderDashboard', () => {
     ];
     const app = dashApp(favorites, vi.fn(async () => chartResult()));
     await renderDashboard(app);
-    expect(app.root.querySelector('.dash-header')).not.toBeNull();
-    expect(app.root.querySelector('.dash-back')).not.toBeNull();
+    const header = app.root.querySelector('.dash-header');
+    const back = header.querySelector('.dash-back');
+    const refresh = header.querySelector('.dash-refresh');
+    expect(back.getAttribute('aria-label')).toBe('Back to SQL Browser');
+    expect(back.querySelector('.dash-back-label').textContent).toBe('SQL Browser');
+    expect(refresh.getAttribute('aria-label')).toBe('Refresh dashboard');
+    expect(refresh.querySelector('.dash-refresh-label').textContent).toBe('Refresh');
+    expect(header.querySelector('.dash-icobtn').getAttribute('aria-label')).toBe('Toggle theme');
     expect(app.root.querySelector('.dash-fav').textContent).toContain('2 favorites');
+    expect(app.root.querySelector('.dash-toolbar').classList.contains('has-filters')).toBe(false);
     expect(app.root.querySelectorAll('.dash-tile').length).toBe(2);
     expect(app.root.querySelector('.dash-tile canvas')).not.toBeNull();
     expect(app.root.querySelector('.dash-tile-foot').textContent).toContain('rows');
@@ -1179,6 +1186,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     const filters = app.root.querySelector('.dash-filters');
     expect(filters.style.display).toBe('none');
     expect(filters.querySelectorAll('.var-field').length).toBe(0);
+    expect(app.root.querySelector('.dash-toolbar').classList.contains('has-filters')).toBe(false);
   });
 
   it('a param declared with conflicting types across two favorites renders a plain input with a visible warning (#173 acceptance, review F1)', async () => {
@@ -1223,6 +1231,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     await renderDashboard(app);
     const filters = app.root.querySelector('.dash-filters');
     expect(filters.style.display).not.toBe('none');
+    expect(app.root.querySelector('.dash-toolbar').classList.contains('has-filters')).toBe(true);
     expect([...filters.querySelectorAll('.var-name')].map((n) => n.textContent)).toEqual(['year', 'region']);
     expect(fieldInput(app.root, 'year').value).toBe('2024');
   });

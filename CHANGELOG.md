@@ -35,6 +35,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   used `--zoom: 1` already; this only removes the now-dead compensation code.
 
 ### Added
+- **The Dashboard now has a compact mobile presentation at the canonical
+  768px breakpoint** (#248). Its sticky header stays on one line with an
+  icon-only back link and Refresh action, an ellipsized Library title, and the
+  theme action; secondary favorite/source/update metadata and the desktop
+  layout selector are hidden. Every saved desktop layout is visually
+  overridden to one normal-height full-width column without changing its
+  persisted preference. Dashboard filters stay in one horizontally scrollable
+  row with fixed-position combobox popovers, while a Dashboard with no filters
+  omits the now-empty mobile toolbar entirely. Widening the viewport restores
+  the saved desktop layout and full controls automatically.
 - **Favorited saved queries can now act as Dashboard Filter sources** (#160).
   One explicit read-only query returns exactly one row containing any number of
   `Array(T)`, `Array(Tuple(value T, label L))`, or `Map(K,V)` helpers. Exact

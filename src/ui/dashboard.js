@@ -473,18 +473,23 @@ export function renderDashboard(app) {
     h('span', null, favorites.length + (favorites.length === 1 ? ' favorite' : ' favorites')));
   const skipNote = h('span', { class: 'dash-skip', style: { display: 'none' } });
   const updated = h('span', { class: 'dash-updated' });
-  const refreshBtn = h('button', { class: 'dash-btn', title: 'Re-run all tiles' },
-    Icon.refresh(), h('span', null, 'Refresh'));
+  const refreshBtn = h('button', {
+    class: 'dash-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
+  }, Icon.refresh(), h('span', { class: 'dash-refresh-label' }, 'Refresh'));
   // Theme toggle, mirroring the workbench header: reuse app.toggleTheme (persists
   // the pref + flips data-theme), and register the button as app.dom.themeBtn so
   // that helper repaints its icon on toggle.
-  const themeBtn = h('button', { class: 'dash-icobtn', title: 'Toggle theme', onclick: () => app.toggleTheme() });
+  const themeBtn = h('button', {
+    class: 'dash-icobtn', title: 'Toggle theme', 'aria-label': 'Toggle theme', onclick: () => app.toggleTheme(),
+  });
   themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
   app.dom.themeBtn = themeBtn;
 
   const header = h('div', { class: 'dash-header' },
-    h('a', { class: 'dash-back', href: app.basePath || '/sql', title: 'Back to SQL Browser' },
-      Icon.arrow(), h('span', null, 'SQL Browser')),
+    h('a', {
+      class: 'dash-back', href: app.basePath || '/sql', title: 'Back to SQL Browser',
+      'aria-label': 'Back to SQL Browser',
+    }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
     h('div', { class: 'dash-title' }, state.libraryName.value),
     favChip,
     skipNote,
@@ -550,7 +555,9 @@ export function renderDashboard(app) {
   // The toolbar is flex-start (default), so layoutWrap + filterBar pack left as
   // the issue specifies — no trailing spacer needed now the right-aligned
   // Columns control is gone (#184).
-  const toolbar = h('div', { class: 'dash-toolbar' }, layoutWrap, filterHost);
+  const toolbar = h('div', {
+    class: 'dash-toolbar' + (controls.length ? ' has-filters' : ''),
+  }, layoutWrap, filterHost);
   apply();
 
   // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
