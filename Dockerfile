@@ -2,12 +2,13 @@ FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY build ./build
+COPY schemas ./schemas
 COPY src ./src
 COPY THIRD-PARTY-NOTICES.md ./
 
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
