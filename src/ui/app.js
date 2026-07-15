@@ -2436,8 +2436,8 @@ export function renderApp(app, helpers) {
       // hd-hide-mobile: decorative/desktop-only header items are hidden below the
       // breakpoint (#126) so the essential controls (File menu, theme, user menu)
       // fit a phone width instead of overflowing off-screen. See styles.css.
-      class: 'hd-btn hd-hide-mobile', href: 'https://github.com/Altinity/altinity-sql-browser',
-      target: '_blank', rel: 'noopener noreferrer', title: 'View source on GitHub',
+      class: 'hd-btn hd-hide-mobile', href: 'https://github.com/Altinity/altinity-sql-browser/tree/main/examples',
+      target: '_blank', rel: 'noopener noreferrer', title: 'View examples',
     }, Icon.github()),
     h('button', { class: 'hd-btn hd-hide-mobile', title: 'Keyboard shortcuts (?)', onclick: () => app.actions.openShortcuts() }, Icon.shortcuts()),
     app.dom.themeBtn,

@@ -7,7 +7,7 @@ dataset (`ontime`, ~230M rows, 1987–2025) on the Antalya demo cluster.
 - **Live demo:** **https://antalya.demo.altinity.cloud/sql**
 - **The library file:** [`examples/ontime-charts.json`](../examples/ontime-charts.json)
   ([raw download](https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/examples/ontime-charts.json))
-- **Reproduce it:** [`examples/build-ontime-charts.mjs`](../examples/build-ontime-charts.mjs)
+- **Reproduce it:** [`examples/mjs/build-ontime-charts.mjs`](../examples/mjs/build-ontime-charts.mjs)
   regenerates the JSON (it derives each chart's schema key live with
   `clickhouse-client --connection antalya`).
 

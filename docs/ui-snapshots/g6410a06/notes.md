@@ -24,7 +24,7 @@
   `.cd-*` detail drawer with the value pretty-printed; backdrop dims the workbench.
 - **21 header-longversion** — **SKIPPED / not applicable on this deployment.** The antalya
   header shows a short version chip (`ClickHouse 26.3.10`) and a short username
-  (`btyshkevich`, not the full email), so the header does not crowd. Nothing to capture.
+  (`local-user`, not the full email), so the header does not crowd. Nothing to capture.
 - **34 mobile-header** — on this build the editor action toolbar **scrolls horizontally
   instead of clipping** (the #127 mobile fix): `Share` is not truncated to "S." — it renders
   in full once the toolbar is scrolled to its end. Shot shows the toolbar scrolled to reveal

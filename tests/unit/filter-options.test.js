@@ -36,9 +36,9 @@ describe('Filter option reader', () => {
     // The query-log-explorer `user` filter: value = the full user that binds to
     // {user:String}, label = the name before '@' for display.
     const users = read([{ name: 'user', type: 'Array(Tuple(value String, label String))' }],
-      [[{ value: 'btyshkevich@altinity.com', label: 'btyshkevich' }, { value: 'default', label: 'default' }]]);
+      [[{ value: 'local-user@altinity.com', label: 'local-user' }, { value: 'default', label: 'default' }]]);
     expect(users.helpers[0].options).toEqual([
-      { value: 'btyshkevich@altinity.com', label: 'btyshkevich' }, { value: 'default', label: 'default' }]);
+      { value: 'local-user@altinity.com', label: 'local-user' }, { value: 'default', label: 'default' }]);
   });
   it('enforces the result envelope before helper parsing', () => {
     expect(readFilterOptions({ rowCount: 0 }).diagnostics[0].code).toBe('filter-row-count');

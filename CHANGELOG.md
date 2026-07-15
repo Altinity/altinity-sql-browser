@@ -219,8 +219,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `examples/iceberg-dba-dashboard.json` (DBA, with snapshot-commit and
   metadata-version **logs panels**) dashboard the views with one shared
   optional `catalog` filter on every tile. Built from
-  `examples/iceberg-templates/` by `examples/build-iceberg-install.mjs` /
-  `examples/build-iceberg-dashboards.mjs`.
+  `examples/iceberg-templates/` by `examples/mjs/build-iceberg-install.mjs` /
+  `examples/mjs/build-iceberg-dashboards.mjs`.
 
 ## [0.4.0] - 2026-07-13
 

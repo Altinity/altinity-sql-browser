@@ -7,7 +7,7 @@
 // Library file) must never be maintained by hand. This script does ONLY that
 // mechanical escaping — edit the .tmpl files, never iceberg-install.json.
 //
-// Run:  node examples/build-iceberg-install.mjs
+// Run:  node examples/mjs/build-iceberg-install.mjs
 // Out:  examples/iceberg-install.json
 
 import { readFileSync, writeFileSync } from 'node:fs';
