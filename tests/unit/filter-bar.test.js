@@ -63,4 +63,15 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(onCommit).toHaveBeenCalledWith('x');
     bar.remove();
   });
+
+  it('applies the shared is-invalid affordance to a curated field, same as a plain one', () => {
+    const app = makeApp();
+    const invalidField = () => ({ state: 'invalid', reason: 'Bad value' });
+    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, invalidField, {
+      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
+    });
+    const input = bar.querySelector('input');
+    expect(input.classList.contains('is-invalid')).toBe(true);
+    expect(input.title).toBe('Bad value');
+  });
 });

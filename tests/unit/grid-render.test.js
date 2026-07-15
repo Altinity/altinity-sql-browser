@@ -49,6 +49,13 @@ describe('renderGrid', () => {
     const cells = el.querySelectorAll('tbody tr')[1].querySelectorAll('td.cell');
     expect(cells[1].textContent).toBe(''); // null renders empty
   });
+  it('renders an object-shaped cell value (named tuple as object) as JSON, not "[object Object]"', () => {
+    const el = renderGrid(gridArgs({
+      columns: [{ name: 'db', type: 'Array(Tuple(value String, label String))' }],
+      rows: [[[{ value: 'a', label: 'A' }]]],
+    }));
+    expect(el.querySelector('td.cell').textContent).toBe('[{"value":"a","label":"A"}]');
+  });
   it('a column without a type gets an empty hover title and no num class', () => {
     const el = renderGrid(gridArgs({ columns: [{ name: 'x' }], rows: [['a']] }));
     expect(el.querySelectorAll('thead th')[1].getAttribute('title')).toBe('');

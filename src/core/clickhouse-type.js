@@ -40,6 +40,21 @@ export function parseClickHouseType(input) {
     const node = { name: token.value, args: [], members: null, raw: '' };
     if (tokens[pos]?.value === '(') {
       pos++;
+      // Enum8/Enum16 argument lists are `'name' = number, ...` pairs, not
+      // nested types — parsing them as types would reject the leading quoted
+      // member name. Enum is always a leaf scalar (isSupportedOptionScalar
+      // matches it by name only), so just skip to the matching close paren.
+      if (/^Enum(?:8|16)$/.test(node.name)) {
+        let depth = 1;
+        while (pos < tokens.length && depth > 0) {
+          if (tokens[pos].value === '(') depth++;
+          else if (tokens[pos].value === ')') depth--;
+          pos++;
+        }
+        if (depth !== 0) return null;
+        node.raw = text.slice(start, tokens[pos - 1].end);
+        return node;
+      }
       if (tokens[pos]?.value === ')') {
         node.raw = text.slice(start, tokens[pos++].end);
         return node;
@@ -83,7 +98,7 @@ export function parseClickHouseType(input) {
   const node = parseType();
   const validArity = (value) => {
     if (!value) return false;
-    if ((value.name === 'Array' || value.name === 'Nullable') && value.args.length !== 1) return false;
+    if ((value.name === 'Array' || value.name === 'Nullable' || value.name === 'LowCardinality') && value.args.length !== 1) return false;
     if (value.name === 'Map' && value.args.length !== 2) return false;
     return value.args.every(validArity) && (!value.members || value.members.every((member) => validArity(member.type)));
   };
@@ -92,7 +107,9 @@ export function parseClickHouseType(input) {
 
 export function unwrapNullable(node) {
   let current = node;
-  while (current?.name === 'Nullable' && current.args.length === 1) current = current.args[0];
+  while (current && (current.name === 'Nullable' || current.name === 'LowCardinality') && current.args.length === 1) {
+    current = current.args[0];
+  }
   return current || null;
 }
 

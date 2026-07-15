@@ -27,7 +27,7 @@ test.describe('Dashboard Filter sources', () => {
 
     await dashboard.getByRole('button', { name: 'Clear origin' }).click();
     await expect(input).toHaveValue('');
-    expect(await page.evaluate(() => window.__selection)).toEqual({ value: 'JFK', active: false, commits: 2 });
+    expect(await page.evaluate(() => window.__selection)).toEqual({ value: '', active: false, commits: 2 });
   });
 
   test('rejects arbitrary text and supports keyboard selection', async ({ page }) => {

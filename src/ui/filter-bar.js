@@ -73,6 +73,13 @@ export function buildFilterBar(app, params, onCommit, getField, options = {}) {
         onCommit: () => onCommit(p.name),
       });
       field.input.title = baseTitle;
+      if (conflictNote) field.input.classList.add('is-conflict');
+      // Same shared invalid-field affordance the plain-text branch gets below
+      // (#170/var-field.js) — a curated field's committed value can still be
+      // invalid against the prepared batch (e.g. a type conflict across
+      // favorites), and without this it silently showed none of the
+      // is-invalid class/tooltip/aria-invalid a plain filter field would.
+      applyFieldState(field.input, getField(p.name, 'execute'), baseTitle);
       return h('label', { class: 'var-field is-curated' }, h('span', { class: 'var-name' }, p.name), field.el);
     }
     const commitNow = () => {

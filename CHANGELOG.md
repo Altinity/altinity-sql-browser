@@ -22,6 +22,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and provides a completed-run-only Filter preview without changing shared
   Dashboard values.
 
+### Fixed
+- Review follow-ups on the Dashboard Filter sources work above, found in a
+  UI/UX pass on #232 before merge: a curated field's clear (×) button now
+  reports the cleared value (not the stale prior selection) to
+  `varValues`/`filterActive`, and gets an `aria-label` naming the field it
+  clears instead of an anonymous "×" (this is what the e2e suite was actually
+  catching — same bug, both assertions). The clear button is icon-based and
+  positioned inside the field like every other clear affordance, instead of
+  falling into normal flow below the input. The Dashboard's role/Filter
+  diagnostic banners (`.dash-config-diagnostic`, e.g. "Filter helper … has no
+  current Panel consumer") and the workbench Filter preview's type/diagnostic
+  text now have real styling — both referenced undefined CSS variables and
+  rendered as unstyled body text. The tab-strip/Library "Filter" role badge no
+  longer reads as a second open tab (it shared the bordered `.qtab` row with no
+  styling of its own). `Enum8`/`Enum16` and `LowCardinality(...)` columns are
+  now recognized as valid Filter/KPI scalar types (the type parser rejected
+  Enum's quoted member list and never unwrapped `LowCardinality`). A Filter or
+  KPI query's Table/JSON view no longer shows `[object Object]` for named-tuple
+  columns serialized as objects. A curated field now gets the same
+  is-invalid/conflict affordance a plain filter field does.
+
 ## [0.4.5] - 2026-07-14
 
 ### Changed

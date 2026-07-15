@@ -1,5 +1,6 @@
 import { createCombobox, idSafe } from './combobox.js';
 import { h } from './dom.js';
+import { Icon } from './icons.js';
 
 export function buildFilterOptionField({
   document: doc, name, options = [], value = '', active = false,
@@ -51,13 +52,15 @@ export function buildFilterOptionField({
   if (preview) input.setAttribute('data-preview-local', 'true');
   const clear = h('button', {
     class: 'filter-option-clear', type: 'button', title: inactiveLabel,
+    'aria-label': `Clear ${name}`,
     onclick: () => {
+      value = '';
       active = false;
       input.value = '';
       committedText = '';
       onValueChange(value, false);
       onCommit(value, false);
     },
-  }, '×');
+  }, Icon.close());
   return { el: h('div', { class: 'filter-option-control' }, input, clear, listEl, liveEl), input, destroy: combo.close };
 }

@@ -25,8 +25,11 @@ describe('strict Filter option field', () => {
     expect(onValueChange).toHaveBeenLastCalledWith('JFK', true);
     expect(onCommit).toHaveBeenLastCalledWith('JFK', true);
     expect(field.input.value).toBe('New York');
-    field.el.querySelector('.filter-option-clear').click();
-    expect(onValueChange).toHaveBeenLastCalledWith('JFK', false);
+    const clearBtn = field.el.querySelector('.filter-option-clear');
+    expect(clearBtn.getAttribute('aria-label')).toBe('Clear origin');
+    clearBtn.click();
+    expect(onValueChange).toHaveBeenLastCalledWith('', false);
+    expect(onCommit).toHaveBeenLastCalledWith('', false);
     field.destroy();
     field.el.remove();
   });

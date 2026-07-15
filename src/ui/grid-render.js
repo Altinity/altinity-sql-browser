@@ -181,7 +181,11 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
     tr.appendChild(h('td', { class: 'idx' }, String(ri + 1)));
     row.forEach((v, ci) => {
       const isNum = isNumericType(columns[ci].type);
-      const text = v == null ? '' : String(v);
+      // Named tuples/maps can arrive as plain objects (e.g. a Filter or KPI
+      // query's owned execution profile requests
+      // output_format_json_named_tuples_as_objects) — String(v) on those would
+      // read as "[object Object]" instead of the value (same fix as logs.js).
+      const text = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
       // Truncate in-cell (CSS max-width + ellipsis); click opens the full value
       // in a side drawer so one fat column (e.g. HTML blobs) can't dominate.
       // `onCell` is optional: a consumer with no cell-detail surface omits it

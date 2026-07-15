@@ -18,7 +18,7 @@ describe('ClickHouse type parser', () => {
     expect(mapTypes(parseClickHouseType('Map(String, Nullable(UInt64))')).map((n) => n.name)).toEqual(['String', 'Nullable']);
   });
   it('rejects malformed and unbalanced input', () => {
-    for (const value of ['', 'Array(', 'Array(String))', 'Map(String)', 'Tuple(name String, UInt8)']) {
+    for (const value of ['', 'Array(', 'Array(String))', 'Map(String)', 'Tuple(name String, UInt8)', "Enum8('a' = 1", 'LowCardinality(String, String)']) {
       expect(parseClickHouseType(value)).toBeNull();
     }
   });
@@ -29,5 +29,20 @@ describe('ClickHouse type parser', () => {
     expect(isSupportedOptionScalar(parseClickHouseType('Array(String)'))).toBe(false);
     expect(arrayElement(null)).toBeNull();
     expect(mapTypes(null)).toBeNull();
+  });
+  it("parses Enum8/Enum16's quoted member list as an opaque leaf scalar", () => {
+    const enum8 = parseClickHouseType("Enum8('active' = 1, 'deleted' = 2)");
+    expect(enum8.name).toBe('Enum8');
+    expect(enum8.raw).toBe("Enum8('active' = 1, 'deleted' = 2)");
+    expect(isSupportedOptionScalar(enum8)).toBe(true);
+    expect(isSupportedOptionScalar(parseClickHouseType("Nullable(Enum16('a' = 1))"))).toBe(true);
+    const arrayOfEnum = arrayElement(parseClickHouseType("Array(Enum8('a' = 1, 'b' = 2))"));
+    expect(arrayOfEnum.name).toBe('Enum8');
+  });
+  it('unwraps LowCardinality alongside Nullable, in either nesting order', () => {
+    expect(unwrapNullable(parseClickHouseType('LowCardinality(String)')).name).toBe('String');
+    expect(isSupportedOptionScalar(parseClickHouseType('LowCardinality(String)'))).toBe(true);
+    expect(isSupportedOptionScalar(parseClickHouseType('LowCardinality(Nullable(String))'))).toBe(true);
+    expect(isSupportedOptionScalar(parseClickHouseType('Nullable(LowCardinality(String))'))).toBe(true);
   });
 });
