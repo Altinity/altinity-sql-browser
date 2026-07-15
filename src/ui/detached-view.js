@@ -11,17 +11,12 @@ import { h, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 
 // Copy the theme/density data-attributes onto the child tab's <html> so its
-// CSS custom properties resolve to the same colours as the main window. Also
-// carry the opener's measured --vp-zoom (the per-engine viewport-unit divisor,
-// #70) so the tab's fullscreen panel sizes correctly; if the opener never
-// measured it, the tab keeps the CSS default (--vp-zoom: var(--zoom)).
+// CSS custom properties resolve to the same colours as the main window.
 function mirrorTheme(src, dst) {
   for (const attr of ['data-theme', 'data-density']) {
     const v = src.documentElement.getAttribute(attr);
     if (v != null) dst.documentElement.setAttribute(attr, v);
   }
-  const vp = src.documentElement.style.getPropertyValue('--vp-zoom');
-  if (vp) dst.documentElement.style.setProperty('--vp-zoom', vp);
 }
 
 // The shared chrome: a title bar + an (empty) content mount, inside a panel.

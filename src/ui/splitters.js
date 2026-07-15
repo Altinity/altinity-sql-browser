@@ -19,16 +19,12 @@ export function clampDrawerWidth(px, viewportWidth) {
  * (sidebar vertical %), 'row' (editor/results %), or 'drawer' (cell-detail /
  * rows-viewer right-hand drawer px, #101). `rect` is the bounding rect of the
  * container being split (unused for 'col'; `{ width }` — the viewport width —
- * for 'drawer'). `scale` is the page `html{zoom}` factor: `clientX` is
- * post-zoom px but the sidebar/drawer width is set in layout px, so 'col' and
- * 'drawer' divide by it or the handle drifts from the cursor. The '%'-based
- * axes derive from a (clientY-top)/(height) ratio where zoom cancels, so they
- * ignore `scale`. 'drawer' is anchored to the *right* edge, so its width
- * grows as the cursor moves left: `viewportWidth - clientX`.
+ * for 'drawer'). 'drawer' is anchored to the *right* edge, so its width grows
+ * as the cursor moves left: `viewportWidth - clientX`.
  */
-export function dragValue(axis, ev, rect, scale = 1) {
-  if (axis === 'col') return clamp(ev.clientX / scale, 180, 420);
-  if (axis === 'drawer') return clampDrawerWidth((rect.width - ev.clientX) / scale, rect.width);
+export function dragValue(axis, ev, rect) {
+  if (axis === 'col') return clamp(ev.clientX, 180, 420);
+  if (axis === 'drawer') return clampDrawerWidth(rect.width - ev.clientX, rect.width);
   const pct = clamp(((ev.clientY - rect.top) / (rect.bottom - rect.top)) * 100,
     axis === 'sideRow' ? 25 : 15, 85);
   return pct;
@@ -49,11 +45,8 @@ export function startDrag(ev, axis, ctx) {
   const handle = ev.currentTarget;
   const win = ctx.win || window;
   handle.classList.add('dragging');
-  // Page zoom is constant for the drag's lifetime, so measure it once here rather
-  // than reflowing (getBoundingClientRect/offsetWidth) on every mousemove.
-  const scale = ctx.scale ? ctx.scale(axis) : 1;
   const onMove = (move) => {
-    const value = dragValue(axis, move, ctx.rectFor(axis), scale);
+    const value = dragValue(axis, move, ctx.rectFor(axis));
     if (axis === 'col') ctx.state.sidebarPx = value;
     else if (axis === 'sideRow') ctx.state.sideSplitPct = value;
     else if (axis === 'row') ctx.state.editorPct = value;

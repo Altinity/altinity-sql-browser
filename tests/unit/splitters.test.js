@@ -16,9 +16,8 @@ describe('dragValue', () => {
     expect(dragValue('col', { clientX: 250 })).toBe(250);
     expect(dragValue('col', { clientX: 999 })).toBe(420);
   });
-  it('col divides clientX by the zoom scale before clamping', () => {
-    expect(dragValue('col', { clientX: 360 }, null, 1.2)).toBe(300); // 360 visual px → 300 layout px
-    expect(dragValue('col', { clientX: 60 }, null, 1.2)).toBe(180); // 50 layout → clamp to 180
+  it('col follows clientX directly (native coords, no scale argument)', () => {
+    expect(dragValue('col', { clientX: 300 })).toBe(300);
   });
   it('sideRow maps Y to % clamped [25,85]', () => {
     expect(dragValue('sideRow', { clientY: 200 }, rect)).toBe(50);
@@ -34,10 +33,6 @@ describe('dragValue', () => {
     expect(dragValue('drawer', { clientX: 500 }, vw)).toBe(500); // 1000-500
     expect(dragValue('drawer', { clientX: 900 }, vw)).toBe(320); // 1000-900=100 → floor
     expect(dragValue('drawer', { clientX: -100 }, vw)).toBe(920); // 1000-(-100)=1100 → 92vw cap
-  });
-  it('drawer divides (viewportWidth-clientX) by the zoom scale before clamping', () => {
-    const vw = { width: 1000 };
-    expect(dragValue('drawer', { clientX: 40 }, vw, 1.2)).toBe(800); // (1000-40)/1.2 = 800
   });
 });
 
@@ -75,7 +70,7 @@ describe('startDrag', () => {
     expect(save).toHaveBeenCalledWith('sidebarPx', 300);
     expect(win._has('mousemove')).toBe(false);
   });
-  it('col: applies ctx.scale to the dragged width', () => {
+  it('col: startDrag no longer reads ctx.scale — a stray scale is ignored, width follows clientX natively', () => {
     const win = fakeWin();
     const handle = document.createElement('div');
     const state = { sidebarPx: 0 };
@@ -83,8 +78,8 @@ describe('startDrag', () => {
     const ctx = { win, state, apply, save: vi.fn(), rectFor: () => ({}), scale: () => 1.2 };
     startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'col', ctx);
     win._fire('mousemove', { clientX: 360 });
-    expect(state.sidebarPx).toBe(300); // 360 / 1.2
-    expect(apply).toHaveBeenCalledWith('col', 300);
+    expect(state.sidebarPx).toBe(360); // native clientX, ctx.scale ignored
+    expect(apply).toHaveBeenCalledWith('col', 360);
   });
   it('sideRow: updates sideSplitPct + persists', () => {
     const { win, state, save } = harness('sideRow');

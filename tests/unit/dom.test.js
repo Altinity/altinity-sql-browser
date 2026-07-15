@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { h, s, withDocument, zoomScale, fixedAnchor, attachBackdropClose } from '../../src/ui/dom.js';
+import { h, s, withDocument, fixedAnchor, attachBackdropClose } from '../../src/ui/dom.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -37,42 +37,32 @@ describe('withDocument', () => {
   });
 });
 
-describe('zoomScale', () => {
-  const stub = (rectWidth, offsetWidth) => ({
-    getBoundingClientRect: () => ({ width: rectWidth }),
-    offsetWidth,
-  });
-  it('returns the post-zoom / layout width ratio for a laid-out element', () => {
-    expect(zoomScale(stub(120, 100))).toBe(1.2);
-  });
-  it('falls back to 1 when the element is not laid out (0/0 → NaN)', () => {
-    expect(zoomScale(stub(0, 0))).toBe(1);
-  });
-  it('falls back to 1 when offsetWidth is 0 but the rect is non-zero (Infinity)', () => {
-    expect(zoomScale(stub(800, 0))).toBe(1);
-  });
-  it('falls back to 1 for a degenerate 0-width rect (ratio 0)', () => {
-    expect(zoomScale(stub(0, 100))).toBe(1);
-  });
-});
-
 describe('fixedAnchor', () => {
-  it('left-aligns under the anchor, dividing client coords by the zoom scale', () => {
-    const a = fixedAnchor({ bottom: 40, left: 100 }, 1.2);
-    expect(a.top).toBeCloseTo(40 / 1.2 + 6); // r.bottom/scale + default 6px gap
-    expect(a.left).toBeCloseTo(100 / 1.2);
+  it('left-aligns under the anchor using native client coords with the default 6px gap', () => {
+    const a = fixedAnchor({ bottom: 40, left: 100 });
+    expect(a.top).toBe(46);
+    expect(a.left).toBe(100);
     expect(a.right).toBeUndefined();
   });
   it('right-aligns to the anchor when viewportW is given', () => {
-    const a = fixedAnchor({ bottom: 40, right: 1180 }, 1.2, { viewportW: 1200 });
-    expect(a.top).toBeCloseTo(40 / 1.2 + 6);
-    expect(a.right).toBeCloseTo((1200 - 1180) / 1.2);
+    const a = fixedAnchor({ bottom: 40, right: 1180 }, { viewportW: 1200 });
+    expect(a.top).toBe(46);
+    expect(a.right).toBe(20);
     expect(a.left).toBeUndefined();
   });
-  it('floors the side inset at `min` (default 8) and honors a custom gap', () => {
-    expect(fixedAnchor({ bottom: 0, left: 0 }, 1)).toMatchObject({ top: 6, left: 8 });
-    expect(fixedAnchor({ bottom: 0, right: 1200 }, 1, { viewportW: 1200 })).toMatchObject({ right: 8 });
-    expect(fixedAnchor({ bottom: 10, left: 50 }, 1, { gap: 0, min: 0 })).toMatchObject({ top: 10, left: 50 });
+  it('honors a custom gap', () => {
+    expect(fixedAnchor({ bottom: 40, left: 0 }, { gap: 0 }).top).toBe(40);
+    expect(fixedAnchor({ bottom: 40, left: 0 }, { gap: 12 }).top).toBe(52);
+  });
+  it('floors the side inset at `min` (default 8)', () => {
+    expect(fixedAnchor({ bottom: 0, left: 0 })).toMatchObject({ top: 6, left: 8 });
+    expect(fixedAnchor({ bottom: 0, right: 1200 }, { viewportW: 1200 })).toMatchObject({ right: 8 });
+  });
+  it('honors a custom min inset', () => {
+    expect(fixedAnchor({ bottom: 0, left: 2 }, { min: 0 }).left).toBe(2);
+  });
+  it('handles zero and fractional coordinates', () => {
+    expect(fixedAnchor({ bottom: 10.5, left: 50.25 }, { gap: 0, min: 0 })).toMatchObject({ top: 10.5, left: 50.25 });
   });
 });
 

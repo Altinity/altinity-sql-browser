@@ -9,9 +9,9 @@
 // `<li role="option">` would be an ARIA regression (a screen reader can't
 // distinguish a real recent value from a destructive action sharing its own
 // role). So this is its own small `position: fixed` element, positioned off
-// `listEl`'s own (already zoom-corrected) rect — see dom.js's fixedAnchor/
-// zoomScale, the same recipe combobox.js's own `position()` uses for `listEl`
-// itself, just anchored one box lower. `sync()` re-measures on every call
+// `listEl`'s own rect — see dom.js's fixedAnchor, the same recipe
+// combobox.js's own `position()` uses for `listEl` itself, just anchored one
+// box lower. `sync()` re-measures on every call
 // (open/keystroke/nav all resize `listEl` as options are filtered in/out), so
 // the caller must call it after every delegated combobox method — exactly
 // the composition pattern relative-time-field.js already uses for its own
@@ -21,17 +21,17 @@
 // visibility: a field with recents "somewhere" still offers Clear even while
 // a specific typed filter currently shows no matches.
 
-import { h, fixedAnchor, zoomScale } from './dom.js';
+import { h, fixedAnchor } from './dom.js';
 
 /**
  * @param {{
- *   input: HTMLInputElement, listEl: HTMLElement,
+ *   listEl: HTMLElement,
  *   combo: ReturnType<typeof import('./combobox.js').createCombobox>,
  *   hasRecents: () => boolean, onClear: () => void,
  * }} opts
  * @returns {{el: HTMLElement, sync: () => void}}
  */
-export function attachComboFooter({ input, listEl, combo, hasRecents, onClear }) {
+export function attachComboFooter({ listEl, combo, hasRecents, onClear }) {
   const btn = h('button', {
     type: 'button', class: 'var-combo-clear', tabindex: '-1',
     onmousedown: (e) => {
@@ -52,11 +52,10 @@ export function attachComboFooter({ input, listEl, combo, hasRecents, onClear })
     }
     el.hidden = false;
     const rect = listEl.getBoundingClientRect();
-    const scale = zoomScale(input);
-    const pos = fixedAnchor(rect, scale, { gap: 0 });
+    const pos = fixedAnchor(rect, { gap: 0 });
     el.style.top = pos.top + 'px';
     el.style.left = pos.left + 'px';
-    el.style.minWidth = (rect.width / scale) + 'px';
+    el.style.minWidth = rect.width + 'px';
   }
 
   return { el, sync };

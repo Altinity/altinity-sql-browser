@@ -7,7 +7,7 @@
 // (ch.loadTableDetail). Opening the pane also rings the clicked card in the
 // graph so it's clear which object the pane describes.
 
-import { h, s, withDocument, zoomScale } from './dom.js';
+import { h, s, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { clamp, formatRows, formatBytes, formatCompressionRatio, qualifyIdent, truncate } from '../core/format.js';
@@ -207,11 +207,7 @@ function buildDetailPane(node, detail, panel) {
     // The panel is the fixed full-screen overlay — its box is stable for the drag,
     // so measure once here rather than reflowing on every mousemove.
     const r = panel.getBoundingClientRect();
-    // Bridge html{zoom}: r/clientY are post-zoom px but flexBasis is layout px, so
-    // divide the drag delta (and the panel-height bound) by the zoom factor — else
-    // the pane grows --zoom× faster than the cursor and the handle drifts away.
-    const scale = zoomScale(pane);
-    const onMove = (ev) => { pane.style.flexBasis = clamp((r.bottom - ev.clientY) / scale, MIN_H, r.height / scale - TOP_MARGIN) + 'px'; };
+    const onMove = (ev) => { pane.style.flexBasis = clamp(r.bottom - ev.clientY, MIN_H, r.height - TOP_MARGIN) + 'px'; };
     const stop = () => {
       handle.classList.remove('dragging');
       doc.removeEventListener('mousemove', onMove);

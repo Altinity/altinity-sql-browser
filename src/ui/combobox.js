@@ -19,13 +19,13 @@
 // plain helper from those handlers.
 //
 // Positioning: the listbox is `position: fixed` (see styles.css), anchored
-// under the input via `fixedAnchor`/`zoomScale` (dom.js) at open time — the
-// same trick the File/user menus already use to escape an ancestor's
-// `overflow` clipping (the var-strip / dashboard filter bar both scroll
-// horizontally). Repositioning only happens on open/refresh, not continuously
-// on scroll — a known, minor v1 limitation (documented, not silently ignored).
+// under the input via `fixedAnchor` (dom.js) at open time — the same trick
+// the File/user menus already use to escape an ancestor's `overflow`
+// clipping (the var-strip / dashboard filter bar both scroll horizontally).
+// Repositioning only happens on open/refresh, not continuously on scroll —
+// a known, minor v1 limitation (documented, not silently ignored).
 
-import { fixedAnchor, zoomScale } from './dom.js';
+import { fixedAnchor } from './dom.js';
 
 // A name-derived, HTML-id-safe suffix for a field module's listbox/live-region
 // ids: variable names are scanner-restricted to identifier-shaped tokens in
@@ -87,11 +87,10 @@ export function createCombobox({ input, listEl, liveEl, document: doc, getOption
 
   function position() {
     const rect = input.getBoundingClientRect();
-    const scale = zoomScale(input);
-    const pos = fixedAnchor(rect, scale);
+    const pos = fixedAnchor(rect);
     listEl.style.top = pos.top + 'px';
     listEl.style.left = pos.left + 'px';
-    listEl.style.minWidth = (rect.width / scale) + 'px';
+    listEl.style.minWidth = rect.width + 'px';
   }
 
   function render() {

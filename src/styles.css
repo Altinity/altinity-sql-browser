@@ -1,25 +1,11 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-html { zoom: var(--zoom); }
 
 :root {
   --ui: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
   --accent: #0079AD;
   --accent-dim: #005F8A;
-  /* Page zoom. The console used to render at 1.2x via `html{zoom}` for a larger
-     default size, but `zoom:1.2` (=6/5) lands box sizes on fractional device
-     pixels, and the sub-pixel remainder made scroll containers read as
-     "scrollable by ~1px" over content that visibly fit — a phantom scrollbar
-     (and the same rounding drove the Safari viewport-unit divergence #70). So
-     the scale is now 1 (native size; users enlarge with browser zoom). This
-     puts every engine into the state the `@supports not (zoom:1)` fallback
-     below already defined and tested — the whole zoom-bridging machinery
-     (--vp-zoom measurement, Chart/menu-anchor/splitter zoom correction) stays
-     but is now dormant at divisor 1. Full teardown of that dead code is tracked
-     separately (roadmap #68 "full html{zoom} removal", gated on GraphSurface). */
-  --zoom: 1;
-  --vp-zoom: var(--zoom);
 }
 
 /* ------------ KPI panel ------------ */
@@ -55,14 +41,6 @@ html { zoom: var(--zoom); }
 
 @media (max-width: 520px) {
   .kpi-grid { grid-template-columns: 1fr; }
-}
-
-/* Fallback for engines that can't even parse `zoom` (no `@supports (zoom: 1)`):
-   neutralize the factor so the `html{zoom}` no-op AND every `calc(.../var(--vp-zoom))`
-   viewport panel collapse to a consistent 1× layout, instead of dividing by a
-   zoom that was never applied. (--vp-zoom inherits --zoom, so it follows to 1 too.) */
-@supports not (zoom: 1) {
-  :root { --zoom: 1; }
 }
 
 [data-theme='dark'] {
@@ -143,11 +121,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* height:100% (cascading html→body→#root), NOT 100vh: `vh` ignores the
-   `html { zoom: 1.2 }` above, so 100vh renders 1.2× too tall (≈120vh) and the
-   whole shell overflows the viewport — pushing the results pane's lower rows
-   below the fold with no page scroll (html is overflow:hidden). % heights scale
-   with zoom correctly. */
 #root { width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 
 /* ------------ login ------------ */
@@ -917,12 +890,11 @@ body {
   display: flex; align-items: center; justify-content: center; padding: 24px;
 }
 .graph-overlay-panel {
-  /* `.graph-overlay` is a fixed inset:0 backdrop with 24px padding. A plain
-     100% here can render --zoom times too tall (see --zoom/--vp-zoom) and spill
-     past the viewport; divide the viewport box (minus the 48px padding) by
-     --vp-zoom (the per-engine viewport divisor) so the panel fits with its
-     breathing room intact on both Chromium and Safari. */
-  width: calc((100vw - 48px) / var(--vp-zoom)); height: calc((100vh - 48px) / var(--vp-zoom));
+  /* `.graph-overlay` is a fixed inset:0 backdrop with 24px padding — its own
+     containing block — so the panel just fills it. (A detached tab's own
+     body — `body.detached-tab .graph-overlay-panel` below — reuses this
+     base rule but is sized off `body`'s own full-height cascade instead.) */
+  width: 100%; height: 100%;
   background: var(--bg-modal); border: 1px solid var(--border);
   border-radius: 11px; overflow: hidden;
   display: flex; flex-direction: column;
@@ -972,16 +944,12 @@ body {
 .graph-overlay-canvas.schema-canvas.modkey .eg-card text { cursor: move; }
 
 /* A detached view's own browser tab (schema graph, pipeline graph, Data
-   Pane): the panel fills the viewport chromelessly. Divide by --vp-zoom like
-   the panel (see --zoom/--vp-zoom) so the body is exactly one screen tall on
-   both engines (the opener mirrors its measured --vp-zoom onto this tab's
-   <html>; falls back to --zoom otherwise). */
-body.detached-tab { margin: 0; height: calc(100vh / var(--vp-zoom)); overflow: hidden; background: var(--bg-editor); }
-/* Full-bleed in its own browser tab — no backdrop padding, but still divide the
-   viewport sizing by --vp-zoom (see --zoom/--vp-zoom) so the panel fills exactly
-   one screen instead of overflowing the bottom (which hid the detail pane's DDL). */
+   Pane): the panel fills the viewport chromelessly via native full-height
+   layout — html/body already cascade height:100% (top of file). */
+body.detached-tab { margin: 0; height: 100%; overflow: hidden; background: var(--bg-editor); }
+/* Full-bleed in its own browser tab — no backdrop padding. */
 body.detached-tab .graph-overlay-panel {
-  width: calc(100vw / var(--vp-zoom)); height: calc(100vh / var(--vp-zoom));
+  width: 100%; height: 100%;
   border: none; border-radius: 0;
 }
 
@@ -1415,9 +1383,9 @@ body.detached-tab .graph-overlay-panel {
    type-to-filter control for date-like {name:Type} variables (#174 §1) —
    shared by the workbench var-strip and the Dashboard filter bar
    (relative-time-field.js on top of combobox.js's generic primitive). The
-   listbox is `position: fixed` (combobox.js positions it via fixedAnchor/
-   zoomScale at open time) so it escapes the horizontally-scrolling strip's
-   own overflow clipping — the same trick the File/user menus use. */
+   listbox is `position: fixed` (combobox.js positions it via fixedAnchor
+   at open time) so it escapes the horizontally-scrolling strip's own
+   overflow clipping — the same trick the File/user menus use. */
 .var-combo {
   grid-column: 2;
   position: relative; display: inline-flex; flex-direction: column; align-items: flex-start;
@@ -1591,10 +1559,7 @@ body.detached-tab .graph-overlay-panel {
 .cm-editor.cm-focused { outline: none; }
 /* The scroller uses the app's global styled ::-webkit-scrollbar (below), so a
    long query shows a vertical bar and a long line a horizontal one — matching
-   the results grid. #145 hid these because html{zoom} sub-pixel rounding made
-   the scroller read as scrollable over a query that visibly fit (a phantom
-   bar); with zoom removed (--zoom:1) the bars only appear for genuine
-   overflow, so the hide is no longer needed. */
+   the results grid; bars only appear for genuine overflow. */
 .cm-editor .cm-scroller { font-family: var(--mono); line-height: 22px; }
 .cm-editor .cm-content { padding: 12px 0; caret-color: var(--accent); tab-size: 2; }
 .cm-editor .cm-line { padding: 0 14px; }

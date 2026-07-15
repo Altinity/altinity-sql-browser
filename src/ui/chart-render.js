@@ -1,15 +1,15 @@
 // The chart renderer, extracted from results.js (#166 prep): the Type/X/Y/
-// Series config bar and the Chart.js instantiation with the zoom/cross-realm
-// fixes. This module never imports results.js — repaint scope (`rerender`)
+// Series config bar and the Chart.js instantiation with the cross-realm
+// resize fix. This module never imports results.js — repaint scope (`rerender`)
 // and instance ownership (`setChart`) are caller seams, so panels.js (the
 // registry, its only production caller) consumes it without a cycle. Config
 // derivation lives in core/panel-cfg.js (resolvePanel/autoPanel) — render
 // never derives into or writes tab state (#166's dirty pin).
 
-import { h, zoomScale } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
-import { chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, unzoomChartEvent, chartRowCap } from '../core/chart-data.js';
+import { chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap } from '../core/chart-data.js';
 
 /** A labelled <select> for the config bar (shared with the Panel tab's
  * pickers — one builder, one look). Exported for panels.js. */
@@ -26,23 +26,6 @@ export function chartSelect(label, value, options, onChange) {
 /** The chart/panel empty-state chip + message. Exported for panels.js. */
 export function chartEmpty(icon, msg) {
   return h('div', { class: 'chart-empty' }, h('div', { class: 'chip' }, icon), h('div', null, msg));
-}
-
-/**
- * Make a Chart.js instance hover-correct under the page's CSS `zoom`. Chart.js
- * feeds every pointer event through the controller's single `_eventHandler`
- * entry point (a late-bound `this._eventHandler` lookup, so overriding the
- * instance property intercepts it) *before* it computes hit-testing / in-area —
- * so we divide the zoomed pointer coords back to chart space there (see
- * `unzoomChartEvent`). `zoomScale(canvas)` reads the live factor each event, so
- * it tracks theme/zoom changes and is a no-op (scale 1) when unzoomed. Returns
- * the chart. Exported for tests.
- */
-export function installChartZoomFix(chart, canvas) {
-  const onEvent = chart && chart._eventHandler;
-  if (typeof onEvent !== 'function') return chart;
-  chart._eventHandler = (e, replay) => onEvent.call(chart, unzoomChartEvent(e, zoomScale(canvas)), replay);
-  return chart;
 }
 
 /**
@@ -123,9 +106,7 @@ export function renderChart(app, r, opts = {}) {
   // time series would zig-zag) and change which rows the type's row cap keeps,
   // contradicting the "first N rows" note. It would also sort up to the display
   // cap's rows just to discard all but the first `cap`.
-  const chart = installChartZoomFix(
-    new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), { hideGrid: opts.hideGrid })),
-    canvas);
+  const chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), { hideGrid: opts.hideGrid }));
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,
   // ResizeObserver) bound to the window the Chart.js module itself runs in —
@@ -140,9 +121,6 @@ export function renderChart(app, r, opts = {}) {
   // this call returns, so a rAF on the canvas's *own* window (not the bare
   // global, which would resolve to the main window's) runs after that insertion.
   canvas.ownerDocument.defaultView.requestAnimationFrame(() => {
-    // offsetWidth/Height are already pre-html{zoom} CSS px (unlike
-    // getBoundingClientRect, see zoomScale's doc comment) — exactly what
-    // chart.resize() wants, no zoom-bridging division needed.
     const wrap = canvas.parentElement;
     if (wrap && wrap.offsetWidth > 0 && wrap.offsetHeight > 0) { chart.resize(wrap.offsetWidth, wrap.offsetHeight); chart.update('resize'); }
   });

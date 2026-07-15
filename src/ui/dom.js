@@ -56,34 +56,18 @@ export function s(tag, props, ...children) {
   return apply(D().createElementNS(SVG_NS, tag), props, children);
 }
 
-// The page's CSS `zoom` factor as seen by `el`: getBoundingClientRect() is in
-// post-zoom px while layout (offsetWidth) is pre-zoom CSS px, so their ratio is
-// the zoom. The single source of truth for bridging `html{zoom}` when mapping
-// between client coords and CSS px (editor popovers, results column-resize).
-// `zoom` is a page-global html{} property, so the element measured is immaterial
-// — pass any laid-out element near the work; the ratio is the same everywhere.
-// Falls back to 1 for any non-positive/non-finite ratio — an unlaid-out element
-// gives 0/0 → NaN, and offsetWidth 0 with a non-zero rect gives Infinity; both
-// (and a degenerate 0-width) must read as "no zoom", not blow up a divisor.
-export function zoomScale(el) {
-  const s = el.getBoundingClientRect().width / el.offsetWidth;
-  return Number.isFinite(s) && s > 0 ? s : 1;
-}
-
-// Place a fixed-position popover anchored under a button, bridging `html{zoom}`:
-// getBoundingClientRect coords are post-zoom px but a fixed element's top/left/right
-// are re-scaled by zoom on paint, so divide by `scale` (from zoomScale). Returns
+// Place a fixed-position popover anchored under a button. Returns
 // `{ top, left }`, or `{ top, right }` when `viewportW` is given (right-align to
 // the anchor's right edge). `gap` is the px below the anchor; `min` floors the
 // side inset. Pure arithmetic on a DOMRect-like — the single recipe for the File
 // menu, the Save popover and the user menu.
-export function fixedAnchor(rect, scale, opts = {}) {
+export function fixedAnchor(rect, opts = {}) {
   const gap = opts.gap != null ? opts.gap : 6;
   const min = opts.min != null ? opts.min : 8;
-  const top = rect.bottom / scale + gap;
+  const top = rect.bottom + gap;
   return opts.viewportW != null
-    ? { top, right: Math.max(min, (opts.viewportW - rect.right) / scale) }
-    : { top, left: Math.max(min, rect.left / scale) };
+    ? { top, right: Math.max(min, opts.viewportW - rect.right) }
+    : { top, left: Math.max(min, rect.left) };
 }
 
 // Wire a modal backdrop's close-on-click without the false positive from a

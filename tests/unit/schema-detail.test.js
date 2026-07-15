@@ -136,21 +136,6 @@ describe('openDetailPane', () => {
     expect(pane.style.flexBasis).toBe('');
   });
 
-  it('divides the drag delta by the pane zoom scale (html{zoom} bridge)', () => {
-    mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL);
-    // zoomScale(pane) = rect.width / offsetWidth = 720 / 600 = 1.2
-    pane.getBoundingClientRect = () => ({ left: 0, top: 0, right: 720, bottom: 600, width: 720, height: 600 });
-    Object.defineProperty(pane, 'offsetWidth', { value: 600, configurable: true });
-    const handle = pane.querySelector('.schema-detail-handle');
-    handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 240, bubbles: true }));
-    expect(pane.style.flexBasis).toBe('300px'); // (600 - 240) / 1.2
-    document.dispatchEvent(new MouseEvent('mousemove', { clientY: 0, bubbles: true })); // tall → clamp to max
-    expect(pane.style.flexBasis).toBe('400px'); // (height 600 / 1.2) - TOP_MARGIN(100)
-    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-  });
-
   it('re-opening for another node replaces the pane, not stacks it', () => {
     mountPanel();
     openDetailPane(APP(), NODE, DETAIL);

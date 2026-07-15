@@ -9,6 +9,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Removed
+- **The dormant `html{zoom}` bridge and every runtime/test path that
+  compensated for it are torn out** (#148). PR #147 had already set
+  `--zoom: 1` (native page scale), leaving the whole zoom-correction layer a
+  no-op; this removes it outright: `html { zoom: var(--zoom) }`, the
+  `--zoom`/`--vp-zoom` custom properties, and the `@supports not (zoom: 1)`
+  fallback are gone from `src/styles.css`, along with the viewport-unit
+  `calc(.../var(--vp-zoom))` sizing on the fullscreen graph overlay and
+  detached-tab panels (now plain `100%`/native full-height layout).
+  `src/core/zoom-support.js` (`viewportZoom`) and `app.measureViewportZoom`/
+  `app.applyViewportZoom`/`app.vpZoom` are deleted, as is the detached-view's
+  `--vp-zoom` mirroring onto a child tab. `zoomScale()` is deleted from
+  `src/ui/dom.js`; `fixedAnchor(rect, opts)` drops its `scale` argument (all
+  File/Save/user-menu/combobox/footer callers updated to native coordinates).
+  Splitter (`dragValue`/`startDrag`), result-grid column resize
+  (`colResizeWidth`), schema-detail pane resize, and the cell-detail drawer
+  all drop their scale argument/callback and operate on native `clientX`/
+  `clientY` directly. Chart.js's `unzoomChartEvent`/`installChartZoomFix`
+  pointer-event correction is removed; the chart instantiates directly
+  (its cross-realm detached-document resize fix is unrelated and stays).
+  The synthetic `tests/e2e/zoom.html`/`zoom-support.spec.js` harness and
+  `tests/unit/zoom-support.test.js` are deleted in favor of behavior-level
+  coverage on the normal app surfaces. No behavior change intended — the app
+  used `--zoom: 1` already; this only removes the now-dead compensation code.
+
 ### Added
 - **Favorited saved queries can now act as Dashboard Filter sources** (#160).
   One explicit read-only query returns exactly one row containing any number of
