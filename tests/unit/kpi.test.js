@@ -6,6 +6,13 @@ describe('KPI ClickHouse types', () => {
     for (const type of ['Int8', 'UInt256', 'Float32', 'Float64', 'BFloat16', 'Decimal(20, 4)', 'Decimal128(2)', 'Nullable(Nullable(UInt64))']) expect(isKpiNumericType(type), type).toBe(true);
     for (const type of ['', 'String', 'Array(UInt8)', 'DateTime', 'Tuple(UInt8, UInt8)']) expect(isKpiNumericType(type), type).toBe(false);
   });
+  // #238 — KPI numeric detection is unchanged: LowCardinality is transparent
+  // for the value type here exactly as Nullable already was.
+  it('LowCardinality (and LowCardinality(Nullable(...))) unwrap the same as Nullable', () => {
+    for (const type of ['LowCardinality(UInt64)', 'LowCardinality(Nullable(Float64))', 'Nullable(LowCardinality(Decimal(10, 2)))']) {
+      expect(isKpiNumericType(type), type).toBe(true);
+    }
+  });
   it('parses named tuples with nested types and rejects positional tuples', () => {
     expect(parseKpiTupleType('Tuple(value Decimal(10, 2), delta Nullable(Float64), extra Array(UInt8))')).toEqual([
       { name: 'value', type: 'Decimal(10, 2)' }, { name: 'delta', type: 'Nullable(Float64)' }, { name: 'extra', type: 'Array(UInt8)' },

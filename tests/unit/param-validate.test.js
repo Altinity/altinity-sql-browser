@@ -148,6 +148,37 @@ describe('validateParamValue: Nullable(T) unwraps to validate against T', () => 
   });
 });
 
+// #238 — LowCardinality(T) is transparent for parameter value validation:
+// it must use exactly T's rules, recursively through Nullable too.
+describe('validateParamValue: LowCardinality(T) is transparent — validates against T', () => {
+  it('LowCardinality(UInt64) validates as UInt64', () => {
+    valid('LowCardinality(UInt64)', '18446744073709551615');
+    invalid('LowCardinality(UInt64)', '-1');
+  });
+  it('LowCardinality(Float64) validates as Float64', () => {
+    valid('LowCardinality(Float64)', '-2e-3');
+    invalid('LowCardinality(Float64)', '12,5');
+  });
+  it('LowCardinality(Bool) uses Bool behavior (never invalid/incomplete, only valid or unknown)', () => {
+    expect(validateParamValue('LowCardinality(Bool)', 'yes').status).toBe('valid');
+    expect(validateParamValue('LowCardinality(Bool)', 'enable').status).toBe('unknown');
+  });
+  it('LowCardinality(UUID) uses UUID behavior', () => {
+    valid('LowCardinality(UUID)', '61f0c404-5cb3-11e7-907b-a6006ad3dba0');
+    invalid('LowCardinality(UUID)', 'not-a-uuid!!');
+  });
+  it('LowCardinality(Enum8(...)) produces the same membership validation as the bare Enum', () => {
+    const ENUM = "LowCardinality(Enum8('active' = 1, 'deleted' = 2))";
+    valid(ENUM, 'active');
+    valid(ENUM, '2');
+    invalid(ENUM, 'nope');
+  });
+  it('LowCardinality(Nullable(T)) validates against the doubly-unwrapped T', () => {
+    valid('LowCardinality(Nullable(UInt8))', '255');
+    invalid('LowCardinality(Nullable(UInt8))', '256');
+  });
+});
+
 // #172 v1 — the declared Enum type is authoritative membership, blocking.
 describe('validateParamValue: Enum8/Enum16 (#172 v1, declared-type membership)', () => {
   const ENUM = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";

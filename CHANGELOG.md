@@ -95,6 +95,30 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and the exception-code Filter and "Errors over time" panel are removed.
 
 ### Changed
+- **`src/core/clickhouse-type.js` is now the sole ClickHouse type-expression
+  parser** (#238), replacing `param-type.js`'s independent regex parser; the
+  latter is now a thin compatibility projection deriving everything from the
+  shared AST. The parser gained numeric/string literal argument nodes
+  (`Decimal(P,S)`, `FixedString(N)`, `DateTime('tz')`, `DateTime64(P,'tz')`),
+  full `Enum8`/`Enum16` member parsing (explicit/implicit codes, escaped and
+  `$tag$…$tag$` heredoc names — the tokenizer itself is now heredoc-aware, so
+  a heredoc body may contain `(`, `)`, `,`, or a stray quote character without
+  corrupting the surrounding parse), and distinct `unwrapNullable`/
+  `unwrapLowCardinality`/`unwrapValueTransparentWrappers`/`analyzeTypeModifiers`
+  helpers — `Nullable(...)` and `LowCardinality(...)` are no longer conflated.
+  **`LowCardinality(T)` is now transparent for declared-parameter value
+  handling**: validation, serialization, relative-time resolution, and Enum
+  membership all use exactly `T`'s rules, recursively (including inside
+  `Array(LowCardinality(T))`) — previously `LowCardinality(...)`-wrapped
+  parameters fell through to permissive, unvalidated passthrough. Declaration-
+  *identity* comparison (conflict detection) moved from a whitespace-deleting
+  string compare to a canonical formatter that is whitespace-insensitive
+  outside quoted/heredoc content but wrapper-sensitive — `LowCardinality(String)`
+  is a different declaration from `String`, never treated as the same
+  conflict-free type. `LowCardinality(Array(...))`/`Nullable(LowCardinality(...))`
+  are syntactically permissive but never treated as an ordinary supported
+  scalar by the Dashboard Filter helper reader. KPI and Filter helper behavior
+  is unchanged, now backed by the shared parser. No new runtime dependency.
 - **Saved-query Library JSON now uses the version 2 canonical model** (#211):
   every entry is `{id, sql, specVersion, spec}`, with the complete Spec carried
   unchanged through local storage, tabs, panel edits, sharing, import/export,

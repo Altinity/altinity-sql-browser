@@ -85,6 +85,30 @@ describe('Filter option reader', () => {
     expect(out.helpers.map((h) => h.name)).toEqual(['good']);
     expect(out.diagnostics[0].code).toBe('filter-unsupported-helper-type');
   });
+  // #238 — LowCardinality is transparent for Filter helper scalar detection,
+  // same as Nullable already was; behavior is unchanged, just shared-parser-backed.
+  it('accepts LowCardinality-wrapped and Nullable(LowCardinality(...)) helper elements', () => {
+    const arr = read([{ name: 'id', type: 'Array(LowCardinality(UInt64))' }], [['1', '2']]);
+    expect(arr.helpers[0]).toMatchObject({ shape: 'array', options: [{ value: '1', label: '1' }, { value: '2', label: '2' }] });
+
+    const tuple = read(
+      [{ name: 'origin', type: 'Array(Tuple(value LowCardinality(String), label LowCardinality(Nullable(String))))' }],
+      [[{ value: 'ATL', label: 'Atlanta' }]],
+    );
+    expect(tuple.helpers[0]).toMatchObject({ shape: 'tuple-array', options: [{ value: 'ATL', label: 'Atlanta' }] });
+
+    const map = read([{ name: 'year', type: 'Map(LowCardinality(UInt16), LowCardinality(String))' }], [{ 2024: 'Same' }]);
+    expect(map.helpers[0]).toMatchObject({ shape: 'map', options: [{ value: '2024', label: 'Same' }] });
+  });
+
+  it('rejects a semantically invalid wrapper order (Nullable(LowCardinality(T))) even as a tuple member scalar', () => {
+    const out = read(
+      [{ name: 'x', type: 'Array(Tuple(value Nullable(LowCardinality(String)), label String))' }],
+      [[{ value: 'a', label: 'A' }]],
+    );
+    expect(out.diagnostics.map((d) => d.code)).toContain('filter-option-type');
+  });
+
   it('retains empty helpers and reports truncation', () => {
     expect(read([{ name: 'x', type: 'Array(String)' }], [[]]).helpers[0].options).toEqual([]);
     const out = read([{ name: 'x', type: 'Array(String)' }], [['a', 'b', 'c']], { optionCap: 2 });

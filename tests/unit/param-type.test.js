@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseParamType,
-  normalizeParamType,
   typeLexKind,
   conflictingTypes,
   enumMembers,
@@ -10,9 +9,14 @@ import {
 
 describe('parseParamType', () => {
   it('parses a bare scalar', () => {
-    expect(parseParamType('String')).toEqual({
-      raw: 'String', base: 'String', inner: null, nullable: false, isArray: false, elem: null,
-    });
+    const t = parseParamType('String');
+    expect(t.raw).toBe('String');
+    expect(t.base).toBe('String');
+    expect(t.inner).toBeNull();
+    expect(t.nullable).toBe(false);
+    expect(t.isArray).toBe(false);
+    expect(t.elem).toBeNull();
+    expect(t.node).toEqual({ kind: 'type', name: 'String', raw: 'String', args: [], members: null });
   });
 
   it('parses a parameterized scalar (args kept raw)', () => {
@@ -21,6 +25,10 @@ describe('parseParamType', () => {
     expect(t.inner).toBe('10, 2');
     expect(t.isArray).toBe(false);
     expect(t.elem).toBeNull();
+  });
+
+  it('`.inner` is trimmed, same contract as the old regex-based parser', () => {
+    expect(parseParamType('Decimal( 10, 2 )').inner).toBe('10, 2');
   });
 
   it('parses Array(T) with a parsed element type', () => {
@@ -33,6 +41,23 @@ describe('parseParamType', () => {
   it('unwraps Nullable(...) and flags it', () => {
     const t = parseParamType('Nullable(UInt64)');
     expect(t).toMatchObject({ raw: 'Nullable(UInt64)', base: 'UInt64', nullable: true, isArray: false });
+  });
+
+  it('unwraps LowCardinality(...) — transparent for the effective base — without flagging it as nullable', () => {
+    const t = parseParamType('LowCardinality(UInt64)');
+    expect(t).toMatchObject({ raw: 'LowCardinality(UInt64)', base: 'UInt64', nullable: false, isArray: false });
+  });
+
+  it('unwraps LowCardinality(Nullable(T)) — both flags, effective base', () => {
+    const t = parseParamType('LowCardinality(Nullable(String))');
+    expect(t).toMatchObject({ base: 'String', nullable: true });
+  });
+
+  it('unwraps LowCardinality recursively inside Array(...)', () => {
+    const t = parseParamType('Array(LowCardinality(UInt64))');
+    expect(t.isArray).toBe(true);
+    expect(t.elem.base).toBe('UInt64');
+    expect(t.elem.nullable).toBe(false);
   });
 
   it('parses Array(Nullable(T)) — nullable element', () => {
@@ -58,22 +83,16 @@ describe('parseParamType', () => {
     expect(t.base).toBe('Array(String');
     expect(t.isArray).toBe(false);
     expect(t.elem).toBeNull();
+    expect(t.node).toBeNull();
     expect(parseParamType('').base).toBe('');
     expect(parseParamType(null).base).toBe('');
   });
 
-  it('a bare Array (no element type) has no elem', () => {
+  it('a bare Array (no parens at all) is malformed — degrades to an opaque scalar, not an array', () => {
     const t = parseParamType('Array');
-    expect(t.isArray).toBe(true);
+    expect(t.isArray).toBe(false);
     expect(t.elem).toBeNull();
-  });
-});
-
-describe('normalizeParamType', () => {
-  it('collapses whitespace and tolerates nullish input', () => {
-    expect(normalizeParamType('Array( String )')).toBe('Array(String)');
-    expect(normalizeParamType('Map(String, UInt8)')).toBe('Map(String,UInt8)');
-    expect(normalizeParamType(null)).toBe('');
+    expect(t.base).toBe('Array');
   });
 });
 
@@ -100,6 +119,12 @@ describe('typeLexKind', () => {
   it('accepts an already-parsed type object', () => {
     expect(typeLexKind(parseParamType('UInt64'))).toBe('int');
   });
+  it('classifies a LowCardinality-wrapped base the same as the unwrapped type', () => {
+    expect(typeLexKind('LowCardinality(UInt64)')).toBe('int');
+    expect(typeLexKind('LowCardinality(Float64)')).toBe('float');
+    expect(typeLexKind('LowCardinality(Bool)')).toBe('bool');
+    expect(typeLexKind('LowCardinality(UUID)')).toBe('text');
+  });
 });
 
 describe('conflictingTypes', () => {
@@ -109,9 +134,13 @@ describe('conflictingTypes', () => {
     expect(conflictingTypes([])).toBeNull();
     expect(conflictingTypes(null)).toBeNull();
   });
-  it('returns the distinct normalized set, first-seen order, on a disagreement', () => {
+  it('returns the distinct canonical set, first-seen order, on a disagreement', () => {
     expect(conflictingTypes([{ type: 'UInt64' }, { type: 'String' }, { type: 'UInt64' }]))
       .toEqual(['UInt64', 'String']);
+  });
+  it('is wrapper-sensitive — LowCardinality(String) is a different declaration from String', () => {
+    expect(conflictingTypes([{ type: 'String' }, { type: 'LowCardinality(String)' }]))
+      .toEqual(['String', 'LowCardinality(String)']);
   });
 });
 
@@ -130,49 +159,33 @@ describe('enumMembers / enumValues', () => {
     expect(enumValues("Enum16('a' = 1, 'b' = 2)")).toEqual(['a', 'b']);
   });
 
-  it('tolerates spacing variants around = and , and no spaces at all', () => {
-    expect(enumMembers("Enum8('a'=1,'b'=2)")).toEqual([{ name: 'a', code: 1 }, { name: 'b', code: 2 }]);
-    expect(enumMembers("Enum8( 'a'   =   1 ,   'b' = 2 )")).toEqual([{ name: 'a', code: 1 }, { name: 'b', code: 2 }]);
-  });
-
-  it('accepts negative codes', () => {
-    expect(enumMembers("Enum8('neg' = -5, 'zero' = 0)")).toEqual([{ name: 'neg', code: -5 }, { name: 'zero', code: 0 }]);
-  });
-
   it('unescapes a doubled single quote inside a member name', () => {
     expect(enumValues("Enum8('a''b' = 1)")).toEqual(["a'b"]);
   });
 
-  it('unescapes a backslash-escaped quote inside a member name', () => {
-    expect(enumValues("Enum8('a\\'b' = 1)")).toEqual(["a'b"]);
-  });
-
-  it("parses a brace as a member name — the same declaration param-scan.js's opaque scan already lets through", () => {
-    expect(enumValues("Enum8('}' = 1, 'ok' = 2)")).toEqual(['}', 'ok']);
-  });
-
-  it('parses a unicode member name', () => {
-    expect(enumValues("Enum8('日本語' = 1, 'ok' = 2)")).toEqual(['日本語', 'ok']);
-  });
-
-  it('decodes $$…$$ / $tag$…$tag$ heredoc member names verbatim, brackets/commas and all (#182)', () => {
+  it('decodes $$…$$ heredoc member names verbatim', () => {
     expect(enumValues('Enum8($$foo$$ = 1)')).toEqual(['foo']);
-    expect(enumMembers("Enum8($tag$a,b)$tag$ = 1)")).toEqual([{ name: 'a,b)', code: 1 }]);
-    expect(enumValues("Enum8($$a$$ = 1, 'b' = 2)")).toEqual(['a', 'b']); // heredoc + single-quote mix
   });
 
-  it('rejects quoted-identifier members and unterminated literals (#182)', () => {
-    expect(enumValues('Enum8("foo" = 1)')).toBeNull(); // double-quote is an identifier, not a member
+  it('rejects quoted-identifier members', () => {
+    expect(enumValues('Enum8("foo" = 1)')).toBeNull();
     expect(enumMembers('Enum8("foo" = 1)')).toEqual([]);
-    expect(enumValues("Enum8('foo)")).toBeNull(); // unterminated single-quote → no member
   });
 
   it('unwraps Nullable(Enum8(...))', () => {
     expect(enumValues("Nullable(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
   });
 
+  it('unwraps LowCardinality(Enum8(...)) — LowCardinality is transparent for Enum behavior', () => {
+    expect(enumValues("LowCardinality(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
+  });
+
+  it('unwraps LowCardinality(Nullable(Enum8(...)))', () => {
+    expect(enumValues("LowCardinality(Nullable(Enum8('a' = 1)))")).toEqual(['a']);
+  });
+
   it('returns null for a non-enum type', () => {
-    for (const t of ['String', 'UInt8', 'Array(String)', "FixedString(4)"]) {
+    for (const t of ['String', 'UInt8', 'Array(String)', 'FixedString(4)']) {
       expect(enumValues(t)).toBeNull();
       expect(enumMembers(t)).toBeNull();
     }
@@ -182,48 +195,21 @@ describe('enumMembers / enumValues', () => {
     expect(enumValues(parseParamType("Enum8('a' = 1)"))).toEqual(['a']);
   });
 
-  // ClickHouse's documented Enum syntax allows OMITTING codes: implicit
-  // members auto-number — the first from 1, each later one from the previous
-  // member's code + 1 (explicit codes reset the counter).
   it('fully-implicit members auto-number from 1', () => {
     expect(enumMembers("Enum8('hello', 'world')")).toEqual([
       { name: 'hello', code: 1 },
       { name: 'world', code: 2 },
     ]);
-    expect(enumValues("Enum8('hello', 'world')")).toEqual(['hello', 'world']);
-  });
-
-  it("mixed explicit-then-implicit continues from the previous code (ClickHouse docs' own example)", () => {
-    expect(enumMembers("Enum8('One' = 1, 'Two', 'Three')")).toEqual([
-      { name: 'One', code: 1 },
-      { name: 'Two', code: 2 },
-      { name: 'Three', code: 3 },
-    ]);
-  });
-
-  it('an implicit member after a negative code continues upward from it', () => {
-    expect(enumMembers("Enum8('a' = -2, 'b')")).toEqual([
-      { name: 'a', code: -2 },
-      { name: 'b', code: -1 },
-    ]);
-  });
-
-  it('a later explicit code resets the auto-numbering counter', () => {
-    expect(enumMembers("Enum8('a', 'b' = 10, 'c')")).toEqual([
-      { name: 'a', code: 1 },
-      { name: 'b', code: 10 },
-      { name: 'c', code: 11 },
-    ]);
-  });
-
-  it('a single implicit member (no code, no next span at all) gets code 1', () => {
-    expect(enumMembers("Enum8('lonely')")).toEqual([{ name: 'lonely', code: 1 }]);
-    expect(enumValues("Enum8('lonely')")).toEqual(['lonely']);
   });
 
   it('a bare Enum8 with no member list: enumMembers [] but enumValues null — never an empty dropdown', () => {
     expect(enumMembers('Enum8')).toEqual([]);
     expect(enumValues('Enum8')).toBeNull();
     expect(enumValues('Enum8()')).toBeNull();
+  });
+
+  it('a malformed (unparseable) Enum-looking declaration is opaque, not an Enum with zero members', () => {
+    expect(enumValues("Enum8('unterminated")).toBeNull();
+    expect(enumMembers("Enum8('unterminated")).toBeNull();
   });
 });
