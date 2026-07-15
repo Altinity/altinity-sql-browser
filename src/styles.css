@@ -2280,6 +2280,43 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border-top: 1px solid var(--border-faint); font-family: var(--mono);
   font-size: 10.5px; color: var(--fg-faint);
 }
+/* KPI bands (#240): a full-width composition primitive, not a tile — spans
+   every Dashboard grid column regardless of the selected Full width/Report/
+   2 columns/3 columns layout, so several consecutive explicit KPI favorites
+   merge into one dense card stream instead of nested per-tile grids. */
+.dash-kpi-band { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+.dash-kpi-stream {
+  display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px;
+}
+.dash-kpi-stream .kpi-card {
+  flex: 0 1 auto; inline-size: fit-content; min-inline-size: 160px; max-inline-size: 320px;
+}
+/* A source's stable host contributes its children (cards, or a state card)
+   directly to the stream's flex-wrap — it is never itself a visible box. */
+.dash-kpi-source { display: contents; }
+.dash-kpi-state-card {
+  --kpi-accent: var(--accent);
+  min-width: 160px; max-width: 320px; padding: 14px 16px;
+  border: 1px solid var(--border); border-top: 3px solid var(--kpi-accent);
+  border-radius: 8px; background: var(--bg-modal);
+}
+.dash-kpi-state-label {
+  color: var(--fg-mute); font-size: 12px; font-weight: 600; letter-spacing: .02em;
+}
+.dash-kpi-state-message {
+  margin-top: 6px; display: flex; flex-direction: column; gap: 4px;
+  color: var(--fg); font-size: 13px; line-height: 1.4;
+}
+.dash-kpi-state-loading { display: flex; align-items: center; gap: 8px; }
+.dash-kpi-state-card[role='alert'] .dash-kpi-state-message { color: var(--error-fg); }
+.dash-kpi-warnings { display: grid; gap: 4px; }
+.dash-kpi-warning { color: var(--fg-mute); font-size: 12px; }
+@media (max-width: 520px) {
+  .dash-kpi-stream .kpi-card, .dash-kpi-state-card {
+    flex-basis: 100%; min-inline-size: 0; max-inline-size: none; inline-size: 100%;
+    min-width: 0; max-width: none; width: 100%;
+  }
+}
 @media (max-width: 640px) {
   .dash-grid { grid-template-columns: 1fr; padding: 12px; }
   .dash-header { padding: 10px 12px; gap: 8px; }

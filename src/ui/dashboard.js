@@ -23,7 +23,7 @@ import { schemaKey } from '../core/chart-data.js';
 import { resolvePanel, autoPanel } from '../core/panel-cfg.js';
 import {
   DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
-  activeDashboardView, dashboardViewSelection,
+  activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../core/dashboard.js';
 import { formatBytes, formatRows, detectSqlFormat } from '../core/format.js';
 import { newResult } from '../core/stream.js';
@@ -34,12 +34,16 @@ import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive, KEYS } from '../state.js';
 import { buildFilterBar } from './filter-bar.js';
 import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
-import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
+import { explicitPanel, isKpiPanel, panelExecution } from '../core/panel-execution.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import { filterExecution } from '../core/filter-execution.js';
 import { readFilterOptions } from '../core/filter-options.js';
 import { mergeDashboardFilterHelpers } from '../core/dashboard-filters.js';
 import { diagnostic } from '../core/diagnostics.js';
+import {
+  buildKpiBand, buildKpiSourceSlot, setKpiSourceLoading, setKpiSourceUnfilled, applyKpiSourceResult,
+  refreshBandWarnings,
+} from './dashboard-kpi-band.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -150,6 +154,9 @@ async function runPool(items, limit, worker) {
 // contract) before it's replaced; `panelState` is the slot-persistent table-tile
 // state (#166 — sort + column widths, keyed by result schema); `loadLabel` is
 // the loading placeholder's live row-count text node (streamed progress, #193).
+// An EXPLICIT KPI favorite never reaches this builder — it's routed to a KPI
+// band slot instead (#240, see partitionKpiBands) — so `is-kpi` here only ever
+// toggles on later for an AUTO-DETECTED one-row result (applyTileResult).
 function buildTileSlot(q) {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
@@ -160,9 +167,9 @@ function buildTileSlot(q) {
   const head = h('div', { class: 'dash-tile-head' },
     h('span', { class: 'dash-tile-name', title: name }, name));
   if (description) head.appendChild(h('div', { class: 'dash-tile-desc', title: description }, description));
-  const card = h('div', { class: `dash-tile${isKpiPanel(queryPanel(q)) ? ' is-kpi' : ''}` }, head, body, foot);
+  const card = h('div', { class: 'dash-tile' }, head, body, foot);
   return {
-    card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
+    kind: 'tile', card, body, foot, gen: 0, status: null, destroy: null, panelState: null,
     abortController: null, loadLabel: null,
   };
 }
@@ -183,13 +190,6 @@ function supersedeSlot(slot) {
 
 function destroySlotChart(slot) {
   if (slot.destroy) { slot.destroy(); slot.destroy = null; }
-}
-
-/** The favorite's explicit, known-typed panel payload, or null. Unknown types
- *  stay non-null-ish only through resolvePanel's diagnostic fallback below. */
-function explicitPanel(q) {
-  const panel = queryPanel(q);
-  return panel && panel.cfg && typeof panel.cfg === 'object' ? panel : null;
 }
 
 /** True for a text panel — the no-query partition (#166). */
@@ -262,7 +262,10 @@ function applyTileResult(app, q, slot, r) {
   }
   slot.status = 'panel';
   slot.card.style.display = '';
-  if (explicit && r.rows.length === 0 && !isKpiPanel(explicit)) {
+  // `explicit` here is never an explicit KPI panel — those are routed to a KPI
+  // band slot (#240) and never reach applyTileResult — so an explicit zero-row
+  // result is always a non-KPI panel's honest "0 rows" state.
+  if (explicit && r.rows.length === 0) {
     slot.body.replaceChildren(h('div', { class: 'dash-tile-empty' }, '0 rows'));
     slot.foot.replaceChildren(...tileFooter(r.meta));
     return;
@@ -296,16 +299,25 @@ function applyTileResult(app, q, slot, r) {
   slot.foot.replaceChildren(...tileFooter(r.meta));
 }
 
-// Run (or re-run) one favorite's tile into its slot, gated by its prepared
+// Run (or re-run) one favorite's source into its slot, gated by its prepared
 // source from the wave's batch (#173): unfilled OR invalid (#170) `{name:Type}`
 // values show the placeholder (never issuing a request — an invalid value left
 // to reach the server would either error confusingly or, for Int/UInt, silently
 // wrap; see param-validate.js), a per-source error (e.g. a value that can't
 // serialize for this tile's declaration) shows an error card — blocking only
-// this tile, never its siblings — otherwise stream the SQL read-only through the
-// shared `app.runReadInto` seam (#193) and classify ONCE on completion.
+// this source, never its siblings — otherwise stream the SQL read-only through
+// the shared `app.runReadInto` seam (#193) and classify ONCE on completion.
 // `onSettled()` fires after every transition (unfilled, errored or fetched) so
 // the caller can recompute the live "N not shown" count.
+//
+// Shared by an ordinary tile (`runSlotTile`) and an explicit KPI band source
+// (`runKpiSourceTile`, #240) — the two differ only in which state-transition
+// functions render each outcome, the client row cap, and whether an authored
+// `FORMAT` needs the extra `detectSqlFormat` cross-check (a KPI's authored-
+// FORMAT rejection is entirely `panelExecution`'s own); `hooks` supplies that
+// difference so the streaming/gating/generation/abort discipline itself is
+// written once (CLAUDE.md: extract a shared primitive on the second consumer
+// of a pattern rather than copy it).
 //
 // `generation` was reserved (and any prior in-flight request aborted) by
 // `supersedeSlot` at WAVE CREATION (#193 design req 3), not here: a queued
@@ -313,45 +325,44 @@ function applyTileResult(app, q, slot, r) {
 // up front without issuing, and a supersede mid-stream aborts this request and
 // makes the post-await guard drop it — so a stale wave can never overwrite a
 // newer one, even under the 6-way pool's queueing.
-async function runSlotTile(app, q, slot, onSettled, src, generation) {
-  if (slot.gen !== generation) return; // a newer wave already superseded this queued tile
+async function runFavoriteSource(app, q, slot, onSettled, src, generation, hooks) {
+  if (slot.gen !== generation) return; // a newer wave already superseded this queued source
   if (src.missing.length || src.invalid.length) {
-    setSlotUnfilled(slot, src.missing.concat(src.invalid));
+    hooks.setUnfilled(slot, src.missing.concat(src.invalid));
     onSettled();
     return;
   }
   if (src.errors.length) {
-    applyTileResult(app, q, slot, { error: src.errors[0] });
+    hooks.applyResult(slot, { error: src.errors[0] });
     onSettled();
     return;
   }
   // The wire text is the wave's materialized execution view (#165) — only when
   // the favorite actually is a template; block-free SQL keeps its exact bytes.
   const execSql = hasOptionalBlocks(q.sql) ? mergedSourceSql(src, q.sql) : q.sql;
+  const execution = panelExecution(hooks.explicit, execSql, {
+    format: 'Table', rowLimit: DASH_TILE_ROW_CAP + 1,
+    params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(src) },
+  });
   // #193 design req 5: the shared seam streams the structured
   // JSONStringsEachRowWithProgress format, so an explicit `FORMAT` clause would
   // silently corrupt the tile (an empty successful-looking result, or ignored
   // lines). Reject it with a clear error rather than mis-parse.
-  const explicit = explicitPanel(q);
-  const execution = panelExecution(explicit, execSql, {
-    format: 'Table', rowLimit: DASH_TILE_ROW_CAP + 1,
-    params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(src) },
-  });
-  if (execution.error || (!isKpiPanel(explicit) && detectSqlFormat(execSql))) {
-    applyTileResult(app, q, slot, {
+  if (execution.error || (hooks.checkFormat && detectSqlFormat(execSql))) {
+    hooks.applyResult(slot, {
       error: execution.error || 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.',
     });
     onSettled();
     return;
   }
-  const label = setSlotLoading(slot);
+  const label = hooks.setLoading(slot);
   const ac = new AbortController();
   slot.abortController = ac;
   const startedAt = app.now();
   // Client row limit = CAP (newResult trims + flags `capped`); server cap =
   // CAP + 1 (the sentinel one past the client limit), so an exactly-CAP result
   // is NOT marked truncated and a >CAP result is trimmed AND flagged (#193 req 1).
-  const result = newResult(execution.format, isKpiPanel(explicit) ? 2 : DASH_TILE_ROW_CAP);
+  const result = newResult(execution.format, hooks.rowCap);
   await app.runReadInto(result, {
     sql: execSql,
     format: execution.format,
@@ -373,13 +384,42 @@ async function runSlotTile(app, q, slot, onSettled, src, generation) {
   if (slot.gen !== generation) return;
   slot.abortController = null;
   const r = dashboardTileResult(result, startedAt, app.now());
-  applyTileResult(app, q, slot, r);
-  // #171: this tile completed (current generation) — record its bound params on
-  // success only (the exact wave's boundParams snapshot, so a param confined to
-  // an inactive optional block — never in `src.statements[*].boundParams` — is
-  // never recorded). An errored tile records nothing.
+  hooks.applyResult(slot, r);
+  // #171: this source completed (current generation) — record its bound params
+  // on success only (the exact wave's boundParams snapshot, so a param confined
+  // to an inactive optional block — never in `src.statements[*].boundParams` —
+  // is never recorded). An errored source records nothing.
   if (r.error == null) app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
   onSettled();
+}
+
+// `q` here is never an explicit KPI favorite — those run through
+// runKpiSourceTile instead (#240) — so `explicitPanel(q)` (if non-null) is
+// never `isKpiPanel`.
+function runSlotTile(app, q, slot, onSettled, src, generation) {
+  return runFavoriteSource(app, q, slot, onSettled, src, generation, {
+    explicit: explicitPanel(q), rowCap: DASH_TILE_ROW_CAP, checkFormat: true,
+    setUnfilled: setSlotUnfilled,
+    setLoading: setSlotLoading,
+    applyResult: (s, r) => applyTileResult(app, q, s, r),
+  });
+}
+
+// The KPI-source counterpart of runSlotTile (#240), sharing its gating/
+// generation/abort discipline exactly via runFavoriteSource. `explicit` is
+// always `cfg.type === 'kpi'` here (the caller only dispatches here for a
+// `kind:'kpi-source'` slot, which partitionKpiBands only ever builds from an
+// explicit KPI favorite) — so panelExecution always takes its KPI branch
+// (owned typed transport, two-row sentinel) and the authored-FORMAT rejection
+// is entirely panelExecution's own (no detectSqlFormat cross-check needed,
+// unlike the ordinary-tile path).
+function runKpiSourceTile(app, q, explicit, slot, onSettled, src, generation) {
+  return runFavoriteSource(app, q, slot, onSettled, src, generation, {
+    explicit, rowCap: 2, checkFormat: false,
+    setUnfilled: setKpiSourceUnfilled,
+    setLoading: setKpiSourceLoading,
+    applyResult: (s, r) => applyKpiSourceResult(app, explicit, s, r),
+  });
 }
 
 /** Render the dashboard into `app.root`. */
@@ -400,6 +440,13 @@ export function renderDashboard(app) {
     else if (role === 'setup') roleDiagnostics.push({ severity: 'warning', message: `${queryName(query)} uses Setup, which is not implemented yet.` });
     else roleDiagnostics.push({ severity: 'error', message: `${queryName(query)} has unknown Dashboard role "${role}".` });
   }
+
+  // KPI bands are built structurally, from the saved config alone, before any
+  // query executes (#240): an EXPLICIT `panel.cfg.type==='kpi'` favorite joins
+  // a band; an auto-detected one-row KPI result (no saved panel) never does —
+  // that distinction lives entirely in `explicitPanel`/`isKpiPanel`, never in a
+  // fetched result, so it can't drift with what a query happens to return.
+  const layoutItems = partitionKpiBands(panelFavorites.map((q) => isKpiPanel(explicitPanel(q))));
 
   // The favorites snapshot is fixed for this render, so the parameter analysis
   // (#173 phase 1 — structure only) runs once; each wave (runAll / a filter's
@@ -642,11 +689,24 @@ export function renderDashboard(app) {
     // Mark every planned slot loading up front — before the 6-way pool starts —
     // so tiles beyond TILE_CONCURRENCY's window don't linger on stale content
     // while queued. Applies to BOTH full Refresh and targeted affected waves
-    // (#193); runSlotTile re-marks its own slot loading when its worker starts
-    // (capturing the progress label), so filled tiles simply repaint identically.
-    plan.forEach(({ slot }) => setSlotLoading(slot));
+    // (#193); runSlotTile/runKpiSourceTile re-mark their own slot loading when
+    // their worker starts (capturing the progress label), so filled tiles/cards
+    // simply repaint identically. Dispatch is by `slot.kind` (#240): an explicit
+    // KPI favorite's slot always came from buildKpiSourceSlot, never buildTileSlot.
+    // setKpiSourceLoading does NOT refresh its band's shared warning area itself
+    // (that would be one O(band size) DOM rebuild PER member, back to back,
+    // synchronously, with only the last ever visible) — collect every band this
+    // plan touches and refresh each exactly once after marking the whole batch.
+    const touchedBands = new Set();
+    plan.forEach(({ slot }) => {
+      if (slot.kind === 'kpi-source') { setKpiSourceLoading(slot); touchedBands.add(slot.band); }
+      else setSlotLoading(slot);
+    });
+    touchedBands.forEach(refreshBandWarnings);
     return runPool(plan, TILE_CONCURRENCY,
-      ({ q, slot, src, generation }) => runSlotTile(app, q, slot, updateSkipNote, src, generation));
+      ({ q, slot, src, generation }) => (slot.kind === 'kpi-source'
+        ? runKpiSourceTile(app, q, slot.explicit, slot, updateSkipNote, src, generation)
+        : runSlotTile(app, q, slot, updateSkipNote, src, generation)));
   };
 
   // Re-run only the favorites whose SQL references `name` (a filter field's
@@ -679,8 +739,29 @@ export function renderDashboard(app) {
     if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
     refreshBtn.disabled = true;
     if (!slots.length) {
-      slots = panelFavorites.map((q) => buildTileSlot(q));
-      slots.forEach((s) => grid.appendChild(s.card));
+      // Build the grid from the structural layout items (#240): an ordinary
+      // tile appends its own card; a KPI band builds one full-width container
+      // and gives each of its member favorites a stable source slot inside its
+      // shared stream, in favorite order. `slots` stays flat over panelFavorites
+      // (the index space planWave/tileId/runAffected all key off), regardless
+      // of which favorites share a band.
+      slots = new Array(panelFavorites.length);
+      for (const item of layoutItems) {
+        if (item.kind === 'tile') {
+          const q = panelFavorites[item.index];
+          slots[item.index] = buildTileSlot(q);
+          grid.appendChild(slots[item.index].card);
+        } else {
+          const band = buildKpiBand();
+          for (const i of item.indices) {
+            // `explicit` is cached on the slot once, here (structural build
+            // time), so runPlan's dispatch reads `slot.explicit` on every later
+            // wave instead of re-deriving it from `q` on every Refresh/filter run.
+            slots[i] = buildKpiSourceSlot(band, explicitPanel(panelFavorites[i]), queryName(panelFavorites[i]));
+          }
+          grid.appendChild(band.el);
+        }
+      }
     }
     // Partition before execution (#166): text panels render right here —
     // synchronously, before any tile query is issued — and they never join

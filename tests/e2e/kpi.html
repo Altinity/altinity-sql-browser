@@ -11,16 +11,17 @@
 </head>
 <body data-theme="dark">
   <main id="workbench" class="surface" aria-label="Workbench KPI"></main>
+  <!-- Dashboard KPI band (#240): a full-width composition primitive, not a
+       tile — the shared stream is the flattened card row directly, with no
+       gray tile shell, name/description heading, or nested .kpi-grid. -->
   <main id="dashboard" class="surface dash-grid is-report" aria-label="Dashboard KPI">
-    <section class="dash-tile is-kpi">
-      <header class="dash-tile-head"><span class="dash-tile-name">Service KPIs</span></header>
-      <div id="dashboard-body" class="dash-tile-body"></div>
-      <footer class="dash-tile-foot">1 row</footer>
-    </section>
+    <div class="dash-kpi-band">
+      <div id="dashboard-body" class="dash-kpi-stream" role="group" aria-label="Key performance indicators"></div>
+    </div>
   </main>
   <script type="module">
     import { readKpiFields } from '/src/core/kpi.js';
-    import { renderKpiPanel } from '/src/ui/kpi-panel.js';
+    import { renderKpiPanel, renderKpiCards } from '/src/ui/kpi-panel.js';
     const normalized = readKpiFields({
       columns: [
         { name: 'active_users', type: 'UInt64' },
@@ -34,7 +35,7 @@
       } },
     });
     document.querySelector('#workbench').append(renderKpiPanel(normalized));
-    document.querySelector('#dashboard-body').append(renderKpiPanel(normalized));
+    document.querySelector('#dashboard-body').append(...renderKpiCards(normalized).cards);
     window.__renderDiagnostic = (rowCount) => {
       document.querySelector('#workbench').replaceChildren(renderKpiPanel(readKpiFields({ columns: [{ name: 'n', type: 'UInt64' }], row: [1], rowCount })));
     };

@@ -3,7 +3,7 @@ import { webcrypto } from 'node:crypto';
 import {
   isDashboardRoute, configBase,
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
-  activeDashboardView, dashboardViewSelection,
+  activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../../src/core/dashboard.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import {
@@ -88,6 +88,38 @@ describe('normalizeDashCols', () => {
     expect(normalizeDashCols(3)).toBe(3);
     expect(normalizeDashCols(4)).toBe(3);
     expect(normalizeDashCols(NaN)).toBe(3);
+  });
+});
+
+describe('partitionKpiBands (#240)', () => {
+  it('returns one tile item per favorite when none are KPI', () => {
+    expect(partitionKpiBands([false, false, false])).toEqual([
+      { kind: 'tile', index: 0 }, { kind: 'tile', index: 1 }, { kind: 'tile', index: 2 },
+    ]);
+  });
+  it('returns nothing for an empty list', () => {
+    expect(partitionKpiBands([])).toEqual([]);
+  });
+  it('merges every favorite into one band when all are KPI', () => {
+    expect(partitionKpiBands([true, true, true])).toEqual([{ kind: 'kpi-band', indices: [0, 1, 2] }]);
+  });
+  it('groups maximal consecutive KPI runs, leaving non-KPI favorites as single tiles', () => {
+    // KPI, KPI, chart, KPI, text, KPI, KPI → band(2), tile, band(1), tile, band(2)
+    const flags = [true, true, false, true, false, true, true];
+    expect(partitionKpiBands(flags)).toEqual([
+      { kind: 'kpi-band', indices: [0, 1] },
+      { kind: 'tile', index: 2 },
+      { kind: 'kpi-band', indices: [3] },
+      { kind: 'tile', index: 4 },
+      { kind: 'kpi-band', indices: [5, 6] },
+    ]);
+  });
+  it('handles a KPI run at the very start and end', () => {
+    expect(partitionKpiBands([true, false, true])).toEqual([
+      { kind: 'kpi-band', indices: [0] },
+      { kind: 'tile', index: 1 },
+      { kind: 'kpi-band', indices: [2] },
+    ]);
   });
 });
 
@@ -679,7 +711,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     expect(opts.signal).toBeTruthy(); // an AbortController signal → real per-tile cancellation
   });
 
-  it('uses the same owned typed transport and two-row sentinel for an explicit KPI', async () => {
+  it('uses the same owned typed transport and two-row sentinel for an explicit KPI, rendered in a KPI band (#240)', async () => {
     const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 42 AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn(async () => kpiResult()));
     await renderDashboard(app);
     const [result, opts] = app.runReadInto.mock.calls[0];
@@ -688,14 +720,65 @@ describe('renderDashboard — streaming seam (#193)', () => {
     expect(opts).toMatchObject({ format: 'KPI', rowLimit: 2 });
     expect(opts.params).toMatchObject({ readonly: 2, output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 });
     expect(app.root.querySelector('.kpi-value').textContent).toBe('42');
-    expect(app.root.querySelector('.dash-tile').classList.contains('is-kpi')).toBe(true);
+    // An explicit KPI favorite never gets an ordinary gray tile — it renders
+    // directly inside a full-width band's shared card stream (#240).
+    expect(app.root.querySelector('.dash-tile')).toBeNull();
+    expect(app.root.querySelector('.dash-kpi-band')).not.toBeNull();
+    expect(app.root.querySelector('.dash-kpi-stream .kpi-card')).not.toBeNull();
   });
 
-  it('uses the KPI-specific authored FORMAT diagnostic and sends no request', async () => {
+  it('uses the KPI-specific authored FORMAT diagnostic and sends no request, as an in-band state card (#240)', async () => {
     const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 1 FORMAT CSV', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn());
     await renderDashboard(app);
     expect(app.runReadInto).not.toHaveBeenCalled();
-    expect(app.root.querySelector('.dash-tile-error').textContent).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
+    const card = app.root.querySelector('.dash-kpi-state-card');
+    expect(card.getAttribute('role')).toBe('alert');
+    expect(card.querySelector('.dash-kpi-state-message').textContent)
+      .toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
+  });
+
+  it('shows an in-band unfilled state card for an explicit KPI with a missing {name:Type} value, sending no request (#240)', async () => {
+    const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT {year:UInt16} AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn());
+    await renderDashboard(app);
+    expect(app.runReadInto).not.toHaveBeenCalled();
+    const card = app.root.querySelector('.dash-kpi-state-card');
+    expect(card.getAttribute('role')).toBe('status');
+    expect(card.querySelector('.dash-kpi-state-message').textContent).toBe('Enter a value for: year');
+  });
+
+  it('per-source gating (#173/#240): a KPI source value that cannot serialize errors only its own card, not a sibling in the same band', async () => {
+    const app = dashApp([
+      { id: '1', name: 'KPI A', sql: 'SELECT {db:String} AS n', favorite: true, panel: { cfg: { type: 'kpi' } } },
+      { id: '2', name: 'KPI B', sql: 'SELECT 7 AS n', favorite: true, panel: { cfg: { type: 'kpi' } } },
+    ], vi.fn(async () => kpiResult()));
+    app.state.varValues = { db: ['not', 'scalar'] }; // array value, scalar declaration → structural error
+    await renderDashboard(app);
+    const stateCards = [...app.root.querySelectorAll('.dash-kpi-state-card')];
+    expect(stateCards).toHaveLength(1);
+    expect(stateCards[0].getAttribute('role')).toBe('alert');
+    expect(stateCards[0].querySelector('.dash-kpi-state-message').textContent).toContain('array value');
+    // The sibling KPI in the same band still rendered its card.
+    expect(app.root.querySelectorAll('.dash-kpi-stream .kpi-card')).toHaveLength(1);
+    expect(app.root.querySelectorAll('.dash-kpi-band')).toHaveLength(1); // one shared band, not two
+  });
+
+  it('a filter-triggered runAffected wave re-runs an explicit KPI favorite through its band, never the ordinary tile path (#240)', async () => {
+    const runTile = vi.fn(async () => kpiResult());
+    const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT {year:UInt16} AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], runTile);
+    app.state.varValues = { year: '2024' };
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    expect(app.root.querySelectorAll('.dash-kpi-stream .kpi-card')).toHaveLength(1);
+    const input = yearInput(app.root);
+    commit(input, '2025');
+    await flush();
+    expect(runTile).toHaveBeenCalledTimes(2);
+    expect(runTile.mock.calls[1][1]).toEqual({ param_year: '2025' });
+    // Still routed through the KPI band on the affected wave — never
+    // misrouted into the ordinary tile path (planWave/runPlan share the
+    // same slot.kind dispatch for both runAll and runAffected).
+    expect(app.root.querySelector('.dash-tile')).toBeNull();
+    expect(app.root.querySelectorAll('.dash-kpi-stream .kpi-card')).toHaveLength(1);
   });
 
   it('exactly-CAP is not truncated; CAP+1 is trimmed AND flagged (req 1, via the real applyStreamLine)', async () => {

@@ -83,9 +83,17 @@ The implemented **KPI** panel turns an exactly-one-row result into responsive
 cards: numeric scalar columns become simple KPIs, while named ClickHouse
 `Tuple(value numeric, delta Nullable(numeric))` columns add an optional delta.
 SQL owns the values; `panel.fieldConfig` owns labels, descriptions, units,
-rounding, colors, NULL text, visibility, and delta semantics. The complete
+rounding, colors, NULL text, visibility, and delta semantics. The card
+rendering itself — labels, values, deltas, colors — is identical on both
+surfaces; the surrounding composition differs by design (#240): the workbench
+Panel preview and an unconfigured Dashboard KPI tile show the cards inside the
+ordinary `.kpi-panel` grid, while a **favorited, explicitly-KPI-typed** Dashboard
+query instead joins a full-width **KPI band** — a flat, wrapping card stream
+with no per-favorite name, description, or statistics footer, spanning every
+Dashboard layout (Full width/Report/2/3 columns). Consecutive explicit KPI
+favorites merge into one shared band. The complete
 [`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
-**File ▾ → Open** and renders identically in the workbench and Dashboard.
+**File ▾ → Open** to see both.
 When constructing a named tuple from expressions, either enable alias-derived
 member names for the query:
 

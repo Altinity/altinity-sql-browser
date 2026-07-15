@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderKpiPanel } from '../../src/ui/kpi-panel.js';
+import { renderKpiCards, renderKpiPanel } from '../../src/ui/kpi-panel.js';
 
 const item = (over = {}) => ({
   columnName: 'value', value: 12.4, valueType: 'Float64', delta: null, deltaType: null,
@@ -45,5 +45,38 @@ describe('renderKpiPanel', () => {
     });
     expect(node.querySelector('.kpi-delta').textContent).toBe('↓ 9007199254740993');
     expect(node.querySelector('.kpi-delta').getAttribute('aria-label')).toContain('9007199254740993');
+  });
+});
+
+describe('renderKpiCards', () => {
+  it('returns card nodes plus warnings, with no errors, on a normal result', () => {
+    const { cards, warnings, errors } = renderKpiCards({
+      items: [item()],
+      diagnostics: [{ severity: 'warning', code: 'warn', message: 'Ignored region' }],
+    });
+    expect(cards).toHaveLength(1);
+    expect(cards[0].classList.contains('kpi-card')).toBe(true);
+    expect(warnings).toEqual([{ severity: 'warning', code: 'warn', message: 'Ignored region' }]);
+    expect(errors).toEqual([]);
+  });
+  it('returns no cards and surfaces every diagnostic when a blocking one is present', () => {
+    const diagnostics = [
+      { severity: 'warning', code: 'warn', message: 'Ignored region' },
+      { severity: 'error', code: 'kpi-row-count', message: 'Expected 1 row, got 2' },
+    ];
+    const { cards, warnings, errors } = renderKpiCards({ items: [], diagnostics });
+    expect(cards).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(errors).toBe(diagnostics);
+  });
+  it('treats the info-severity kpi-no-data diagnostic as blocking', () => {
+    const { errors } = renderKpiCards({ items: [], diagnostics: [{ severity: 'info', code: 'kpi-no-data', message: 'No data' }] });
+    expect(errors).toHaveLength(1);
+  });
+  it('tolerates a missing normalization result', () => {
+    const { cards, warnings, errors } = renderKpiCards(null);
+    expect(cards).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });
