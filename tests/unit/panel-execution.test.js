@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isKpiPanel, panelExecution } from '../../src/core/panel-execution.js';
+import { explicitPanel, isKpiPanel, panelExecution } from '../../src/core/panel-execution.js';
 
 describe('panel execution ownership', () => {
   it('leaves non-KPI execution unchanged', () => {
@@ -18,5 +18,19 @@ describe('panel execution ownership', () => {
     expect(out).toMatchObject({ format: 'Table', owned: true, params: { p: 1 } });
     expect(out.error).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
     expect(panelExecution({ cfg: { type: 'kpi' } }, 'SELECT 1 FORMAT JSON').params).toEqual({});
+  });
+});
+
+describe('explicitPanel', () => {
+  it('returns the saved panel when its cfg is a plain object', () => {
+    const query = { spec: { panel: { cfg: { type: 'kpi' } } } };
+    expect(explicitPanel(query)).toEqual({ cfg: { type: 'kpi' } });
+  });
+  it('returns null for no panel, a non-object cfg, or a missing query/spec', () => {
+    expect(explicitPanel({ spec: {} })).toBeNull();
+    expect(explicitPanel({ spec: { panel: { cfg: 'kpi' } } })).toBeNull();
+    expect(explicitPanel({ spec: { panel: {} } })).toBeNull();
+    expect(explicitPanel(null)).toBeNull();
+    expect(explicitPanel(undefined)).toBeNull();
   });
 });

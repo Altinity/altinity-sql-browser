@@ -116,3 +116,28 @@ export const DASH_TABLE_DISPLAY_CAP = 1000;
 // `fieldControls(analysis)` in param-pipeline.js replaces the old
 // `dashboardParams(favorites)` union — the analysis view also sees params
 // confined to optional blocks, which readStatementParams never could.)
+
+/**
+ * Partition the ordered Panel-role favorites into Dashboard layout items
+ * (#240): a maximal consecutive run of explicit KPI favorites becomes one
+ * `{kind:'kpi-band', indices}` (a full-width shared card stream); every other
+ * favorite is its own `{kind:'tile', index}`. `isKpiFlags[i]` is true only for
+ * an EXPLICIT `panel.cfg.type === 'kpi'` favorite — an auto-detected one-row
+ * result must never join a band, so the caller derives this from the saved
+ * cfg, never from a query's executed result. Structural only (no query
+ * results involved), so bands are fixed before any tile issues a request.
+ */
+export function partitionKpiBands(isKpiFlags) {
+  const items = [];
+  let run = null;
+  isKpiFlags.forEach((isKpi, index) => {
+    if (isKpi) {
+      if (!run) { run = { kind: 'kpi-band', indices: [] }; items.push(run); }
+      run.indices.push(index);
+    } else {
+      run = null;
+      items.push({ kind: 'tile', index });
+    }
+  });
+  return items;
+}

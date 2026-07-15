@@ -120,6 +120,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   and the exception-code Filter and "Errors over time" panel are removed.
 
 ### Changed
+- **Explicit, favorited KPI queries now render as full-width Dashboard KPI
+  bands instead of nested inside a generic gray tile** (#240). A KPI band
+  spans every Dashboard column regardless of the selected Full width/Report/
+  2-column/3-column layout; consecutive explicit `panel.cfg.type==='kpi'`
+  favorites merge into one flat, wrapping card stream (favorite order, then
+  result-column order), with no per-favorite name, description, or
+  rows/time/bytes footer. Loading, missing-parameter, and error states render
+  as compact in-stream state cards (naming the source query); one source's
+  failure never hides its band siblings; warnings render below the band,
+  each naming its query. Cards use controlled, content-driven widths
+  (160–320px desktop, full row under 520px). An auto-detected (unconfigured)
+  one-row KPI result is unaffected — it remains an ordinary tile, following
+  the selected layout, exactly as before. `src/ui/kpi-panel.js` gained a
+  lower-level `renderKpiCards()` primitive (the individual card nodes,
+  decoupled from the workbench's `.kpi-panel/.kpi-grid` wrapper) that both the
+  workbench preview and the new `src/ui/dashboard-kpi-band.js` module share;
+  `core/dashboard.js` gained the pure `partitionKpiBands()` grouping. No
+  schema change, no new runtime dependency.
 - **`src/core/clickhouse-type.js` is now the sole ClickHouse type-expression
   parser** (#238), replacing `param-type.js`'s independent regex parser; the
   latter is now a thin compatibility projection deriving everything from the

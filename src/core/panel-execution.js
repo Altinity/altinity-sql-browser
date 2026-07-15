@@ -1,7 +1,17 @@
 import { detectSqlFormat } from './format.js';
+import { queryPanel } from './saved-query.js';
 
 export function isKpiPanel(panel) {
   return panel?.cfg?.type === 'kpi';
+}
+
+/** A saved query's explicit, known-typed panel payload, or null. Unknown
+ *  panel-cfg shapes stay non-null-ish only through resolvePanel's diagnostic
+ *  fallback. Shared by the Dashboard's ordinary-tile path and its KPI-band
+ *  partitioning/execution (#240) so eligibility can never drift between them. */
+export function explicitPanel(query) {
+  const panel = queryPanel(query);
+  return panel && panel.cfg && typeof panel.cfg === 'object' ? panel : null;
 }
 
 /** Resolve the transport owned by an explicit panel without changing SQL. */
