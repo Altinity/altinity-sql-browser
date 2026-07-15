@@ -78,6 +78,71 @@ describe('renderSavedHistory', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
+  it.each(['table', 'json', 'panel'])(
+    'saved: a Filter-role query always launches into the Filter preview, independent of the current result view (was %s) (#244)',
+    (previousView) => {
+      const app = makeApp();
+      app.state.sidePanel.value = 'saved';
+      app.state.resultView.value = previousView;
+      setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
+      renderSavedHistory(app);
+      click(app.dom.savedList.querySelector('.saved-row'));
+      expect(app.actions.run).toHaveBeenCalledWith({ view: 'filter' });
+    },
+  );
+
+  it('saved: Filter role takes precedence over a dormant persisted spec.view and Panel config, without touching either (#244)', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [
+      { id: 'f1', name: 'No persisted view', sql: 'SELECT 1', dashboard: { role: 'filter' } },
+      {
+        id: 'f2', name: 'Dormant Panel view', sql: 'SELECT 1',
+        dashboard: { role: 'filter' }, view: 'panel', panel: { cfg: { type: 'kpi' } },
+      },
+    ]);
+    renderSavedHistory(app);
+    const rows = app.dom.savedList.querySelectorAll('.saved-row');
+    click(rows[0]);
+    expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' });
+    click(rows[1]);
+    expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' }); // role wins, not 'panel'
+    // launch never mutates the saved entry — dormant view/panel survive untouched
+    const dormant = app.state.savedQueries.find((q) => q.id === 'f2');
+    expect(dormant.spec.view).toBe('panel');
+    expect(dormant.spec.panel).toEqual({ cfg: { type: 'kpi' } });
+    expect(dormant.spec.dashboard).toEqual({ role: 'filter' }); // no spec.view:'filter' persisted
+    expect(app.saveJSON).not.toHaveBeenCalled();
+  });
+
+  it('saved: a Filter-role query that cannot auto-run still opens the Filter drawer instead of a dormant Panel view or nothing (#244)', () => {
+    // A Filter-role entry with empty/DDL/multi-statement SQL can't auto-run
+    // (isAutoRunnable is false) — e.g. one hand-authored, imported, or loaded
+    // from localStorage without the SQL-shape validation the Spec editor
+    // enforces. The role must still win the launch view: `SAVED_VIEWS`
+    // deliberately excludes 'filter' (it's never persisted), so this only
+    // opens correctly if the role bypasses that persisted-view check.
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    app.state.resultView.value = 'table';
+    setSaved(app, [
+      { id: 'f1', name: 'Empty Filter', sql: '', dashboard: { role: 'filter' } },
+      {
+        id: 'f2', name: 'DDL Filter with dormant Panel', sql: 'CREATE TABLE t (a Int8)',
+        dashboard: { role: 'filter' }, view: 'panel', panel: { cfg: { type: 'kpi' } },
+      },
+    ]);
+    renderSavedHistory(app);
+    const rows = app.dom.savedList.querySelectorAll('.saved-row');
+    click(rows[0]);
+    expect(app.actions.run).not.toHaveBeenCalled(); // not auto-runnable
+    expect(app.state.resultView.value).toBe('filter');
+    app.state.resultView.value = 'table'; // reset before the second row
+    click(rows[1]);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(app.state.resultView.value).toBe('filter'); // role wins, not the dormant 'panel'
+  });
+
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

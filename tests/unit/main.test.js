@@ -181,6 +181,84 @@ describe('bootstrap', () => {
     });
   });
 
+  // v2 share hash: { __asb: 2, query: { sql, specVersion, spec } } (src/core/share.js).
+  const v2Hash = (query) => '#' + btoa(unescape(encodeURIComponent(JSON.stringify({
+    __asb: 2, query: { specVersion: 1, spec: { name: 'Shared query', favorite: false }, ...query },
+  }))));
+  const v2Env = (query) => {
+    const hash = v2Hash(query);
+    return fakeEnv({ location: { href: 'https://ch/sql' + hash, origin: 'https://ch', pathname: '/sql', search: '', hash } });
+  };
+
+  it('opens Filter for a v2 share carrying Filter-role SQL, before any run is possible (#244)', async () => {
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } } });
+    await bootstrap(app, env);
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1');
+    expect(app.state.resultView.value).toBe('filter');
+  });
+
+  it('Filter role wins over a dormant persisted view:"panel" carried in a share (#244)', async () => {
+    const app = fakeApp();
+    const panelCfg = { cfg: { type: 'kpi' } };
+    const env = v2Env({
+      sql: 'SELECT 1',
+      spec: { name: 'Shared query', favorite: false, view: 'panel', dashboard: { role: 'filter' }, panel: panelCfg },
+    });
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe('filter');
+    // dormant Panel state and the persisted view survive untouched in the tab's Spec.
+    expect(app.state.tabs.value[0].specParsed.view).toBe('panel');
+    expect(app.state.tabs.value[0].specParsed.panel).toEqual(panelCfg);
+  });
+
+  it('restores a SQL-bearing shared Panel query\'s persisted view:"panel" (no role)', async () => {
+    const app = fakeApp();
+    const panelCfg = { cfg: { type: 'kpi' } };
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'panel', panel: panelCfg } });
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe('panel');
+  });
+
+  it.each(['table', 'json'])('restores a SQL-bearing shared query\'s persisted %s preference', async (view) => {
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view } });
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe(view);
+  });
+
+  it('leaves the default result view alone for a share with no role and no persisted view', async () => {
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1' });
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe('table'); // fakeApp()'s untouched default
+  });
+
+  it('restores Filter for a Filter-role share stashed through the OAuth round-trip (#244)', async () => {
+    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
+    env.sessionStorage.setItem('oauth_shared', JSON.stringify({
+      sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } },
+    }));
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe('filter');
+  });
+
+  it('maps a legacy persisted view:"chart" through the Panel compatibility path in a share', async () => {
+    const app = fakeApp();
+    const panelCfg = { cfg: { type: 'pie', x: 0, y: [1], series: null } };
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'chart', panel: panelCfg } });
+    await bootstrap(app, env);
+    expect(app.state.resultView.value).toBe('panel');
+  });
+
+  it('never persists a transient view:"filter" into the restored tab Spec (#244)', async () => {
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } } });
+    await bootstrap(app, env);
+    expect(app.state.tabs.value[0].specParsed.view).toBeUndefined();
+  });
+
   it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {
     // The hash is gone after the IdP redirect; the stash carries it through.
     const app = fakeApp({ token: valid, isSignedIn: () => true });

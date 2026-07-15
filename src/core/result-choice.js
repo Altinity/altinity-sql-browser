@@ -27,6 +27,18 @@ export function effectiveDashboardRole(spec) {
   return typeof role === 'string' && role ? role : 'panel';
 }
 
+// The transient preview a role owns on initial Library launch — never a
+// persisted `spec.view` (Filter has none to persist; #244). `null` defers to
+// the query's persisted view / the caller's other fallbacks.
+export function rolePreviewView(spec) {
+  switch (effectiveDashboardRole(spec)) {
+    case 'filter':
+      return 'filter';
+    default:
+      return null;
+  }
+}
+
 export function resultChoiceForSpec(spec) {
   if (effectiveDashboardRole(spec) === 'filter') return 'role:filter';
   const type = spec?.panel?.cfg?.type;

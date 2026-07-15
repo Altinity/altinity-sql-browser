@@ -14,6 +14,8 @@ import { exchangeCodeForTokens, bearerFromTokens } from './net/oauth.js';
 import { decodeShare } from './core/share.js';
 import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from './core/saved-query.js';
 import { isDashboardRoute } from './core/dashboard.js';
+import { rolePreviewView } from './core/result-choice.js';
+import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft } from './state.js';
 
 export async function bootstrap(app, env) {
@@ -86,11 +88,17 @@ export async function bootstrap(app, env) {
       t0.name = queryName(shared);
       t0.specVersion = shared.specVersion;
       setTabSpecDraft(t0, cloneJson(shared.spec));
-      if (panel && panel.cfg) {
-        // A panel-only link (no SQL to run) must open the Panel drawer, or
-        // the recipient lands on an empty Table view and sees nothing.
-        if (!shared.sql) app.state.resultView.value = queryView(shared) || 'panel';
-      }
+      // Restore the initial result view with the same role-aware precedence as
+      // Library activation (#244): a role-owned transient preview (Filter)
+      // wins over the persisted view, regardless of whether the share carries
+      // SQL to run — a SQL-bearing share never auto-runs here, so this only
+      // pre-selects the drawer the recipient lands on before they click Run.
+      const launchView = rolePreviewView(shared.spec) || queryView(shared);
+      if (launchView) app.state.resultView.value = launchView === 'chart' ? 'panel' : launchView;
+      // A queryless panel with no role/persisted view (no SQL to run) still
+      // needs the Panel drawer open, or the recipient lands on an empty Table
+      // view and sees nothing.
+      else if (!shared.sql && isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
       hist.replaceState(null, '', loc.pathname + loc.search);
     }
   }
