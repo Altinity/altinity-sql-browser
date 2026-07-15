@@ -53,6 +53,12 @@ export function buildFilterOptionField({
   const clear = h('button', {
     class: 'filter-option-clear', type: 'button', title: inactiveLabel,
     'aria-label': `Clear ${name}`,
+    // Commit BEFORE blur (#174 §1, same as an option's own mousedown-commit
+    // in combobox.js): without this, a real pointer click blurs the input
+    // FIRST, and the blur handler's strictCommit() re-commits whatever text
+    // is still showing (it still matches the committed option at that
+    // point) before this handler even runs — double-committing the clear.
+    onmousedown: (e) => e.preventDefault(),
     onclick: () => {
       value = '';
       active = false;

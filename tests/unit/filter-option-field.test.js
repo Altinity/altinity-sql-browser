@@ -44,6 +44,25 @@ describe('strict Filter option field', () => {
     expect(onCommit).not.toHaveBeenCalled();
     field.el.remove();
   });
+  it('prevents its own mousedown from stealing focus off the input (#174 §1 mousedown-before-blur pattern, same as an option commit)', () => {
+    const onValueChange = vi.fn();
+    const onCommit = vi.fn();
+    const field = buildFilterOptionField({ document, name: 'x', options, value: 'ATL', active: true, onValueChange, onCommit });
+    document.body.appendChild(field.el);
+    const clearBtn = field.el.querySelector('.filter-option-clear');
+    const mousedown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    // dispatchEvent returns false when a listener called preventDefault (cancelable event).
+    expect(clearBtn.dispatchEvent(mousedown)).toBe(false);
+    clearBtn.click();
+    // Exactly one commit for the clear — a real pointer click that blurred the
+    // input FIRST would otherwise re-commit the still-showing "Atlanta" value
+    // via strictCommit() before this click handler even ran.
+    expect(onValueChange).toHaveBeenCalledTimes(1);
+    expect(onValueChange).toHaveBeenCalledWith('', false);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith('', false);
+    field.el.remove();
+  });
   it('commits an exact label with Enter', () => {
     const onCommit = vi.fn();
     const field = buildFilterOptionField({ document, name: 'x', options, onCommit });
