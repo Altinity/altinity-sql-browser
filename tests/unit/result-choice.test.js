@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyResultChoice, DASHBOARD_ROLE_RESULT_CHOICES, effectiveDashboardRole,
-  PANEL_RESULT_CHOICES, resultChoiceForSpec,
+  PANEL_RESULT_CHOICES, resultChoiceForSpec, rolePreviewView,
 } from '../../src/core/result-choice.js';
 
 const query = (spec) => ({ id: 'q', sql: 'SELECT 1', specVersion: 1, spec });
@@ -42,5 +42,14 @@ describe('result choices', () => {
     const choice = PANEL_RESULT_CHOICES.find((c) => c.panelType === 'text');
     expect(applyResultChoice(source, choice).spec.dashboard).toBeUndefined();
     expect(applyResultChoice(source, null)).toBe(source);
+  });
+  it('rolePreviewView: Filter owns the transient launch preview; every other role defers (#244)', () => {
+    expect(rolePreviewView({ dashboard: { role: 'filter' } })).toBe('filter');
+    expect(rolePreviewView({})).toBeNull();
+    expect(rolePreviewView({ dashboard: { role: 'panel' } })).toBeNull();
+    expect(rolePreviewView(undefined)).toBeNull();
+    // dormant Panel state alongside the role has no bearing on the pure helper —
+    // precedence over it is the caller's job (saved-history.js).
+    expect(rolePreviewView({ dashboard: { role: 'filter' }, view: 'panel', panel: { cfg: { type: 'kpi' } } })).toBe('filter');
   });
 });

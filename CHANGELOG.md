@@ -55,6 +55,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   a Logs panel, and a Text panel explaining the demo.
 
 ### Fixed
+- **Opening a Filter-role saved or shared query now always starts in the
+  Filter preview** (#244, folds in #249). Library-row activation previously
+  restored whichever result view (Table/JSON/Panel) was already open,
+  independent of the query's Dashboard role; a Filter-role query with SQL
+  that can't auto-run (empty/DDL, reachable via an import or legacy
+  localStorage entry that bypassed SQL-shape validation) fell through to no
+  view change at all. Separately, the share-link/OAuth-handoff bootstrap path
+  only ever restored `resultView` for a *queryless* Panel link — any
+  SQL-bearing shared Filter query, or a SQL-bearing shared Panel query with a
+  persisted `spec.view`, always landed on the default Table view. Both call
+  sites now resolve the same `rolePreviewView(spec) || queryView(query)`
+  precedence (`src/core/result-choice.js`): a role-owned transient preview
+  wins over a persisted view, which wins over the queryless-Panel/default
+  fallback. The preview stays transient — no `spec.view: "filter"` is ever
+  persisted — and ordinary reruns after the query is open continue to
+  preserve the user's current Table/JSON/Filter selection.
 - Review follow-ups on the Dashboard Filter sources work above, found in a
   UI/UX pass on #232 before merge: a curated field's clear (×) button now
   reports the cleared value (not the stale prior selection) to

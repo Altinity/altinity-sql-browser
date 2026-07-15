@@ -14,7 +14,7 @@ import {
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
-import { effectiveDashboardRole } from '../core/result-choice.js';
+import { effectiveDashboardRole, rolePreviewView } from '../core/result-choice.js';
 import { filterRoleBadge } from './tabs.js';
 
 // Make a Library/History row draggable; dropping it on the editor inserts the
@@ -114,7 +114,12 @@ function renderSaved(app, list) {
     const name = queryName(q);
     const description = queryDescription(q);
     const panel = queryPanel(q);
-    const view = queryView(q);
+    // Library launch precedence (#244): a role-owned transient preview (Filter)
+    // wins over the persisted view, even when dormant Panel state persists a
+    // `spec.view` of its own — the role reflects the query's *current*
+    // intended representation, the dormant view is just preserved for later.
+    const rolePreview = rolePreviewView(q.spec);
+    const launchView = rolePreview || queryView(q);
     const star = h('button', {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: (e) => {
@@ -135,8 +140,13 @@ function renderSaved(app, list) {
     // nothing. `run({view})` handles the auto-runnable path as before.
     const open = () => {
       app.actions.loadIntoNewTab(q);
-      if (isAutoRunnable(q.sql)) app.actions.run({ view });
-      else if (SAVED_VIEWS.has(view)) app.state.resultView.value = view;
+      if (isAutoRunnable(q.sql)) app.actions.run({ view: launchView });
+      // A role-owned preview isn't in SAVED_VIEWS (it's transient, never
+      // persisted — #244) but still wins here: a Filter-role entry that can't
+      // auto-run (e.g. empty/DDL SQL from an import that skipped validation)
+      // still opens the Filter drawer, which renders its own empty state,
+      // rather than falling through to a dormant Table/JSON/Panel view.
+      else if (rolePreview || SAVED_VIEWS.has(launchView)) app.state.resultView.value = launchView;
       // A queryless panel without a remembered view (hand-authored/imported
       // file) still needs the Panel drawer open, or clicking it shows nothing.
       else if (isQuerylessPanel(panel)) app.state.resultView.value = 'panel';
