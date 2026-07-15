@@ -121,6 +121,20 @@ describe('decoding and migrations', () => {
     expect(result.value.queries[0].spec.extension).not.toBe(source.queries[0].spec.extension);
   });
 
+  it('round-trips chart style, including unsupported strings and extension metadata', () => {
+    const style = { curve: 'future-curve', points: 'hide', extension: { dense: true } };
+    const source = query('chart', { panel: {
+      cfg: { type: 'area', x: 0, y: [1], series: null, style },
+    } });
+    const encoded = encodeLibraryDocument([source], { nowISO: '2026-07-15T00:00:00.000Z' });
+    expect(encoded.ok).toBe(true);
+    const decoded = decodeLibraryDocument(encoded.value);
+    expect(decoded.ok).toBe(true);
+    expect(decoded.value.queries[0].spec.panel.cfg.style).toEqual(style);
+    expect(decoded.value.queries[0].spec.panel.cfg.style).not.toBe(style);
+    expect(decoded.value.queries[0].spec.panel.cfg.style.extension).not.toBe(style.extension);
+  });
+
   it('migrates forgiving v1 input sequentially and validates canonical output', () => {
     const source = { format: LIBRARY_FORMAT, version: 1, queries: [
       { id: 'old', name: 'Old', sql: '1', chart: { cfg: { type: 'pie', x: 0, y: [1] } } },

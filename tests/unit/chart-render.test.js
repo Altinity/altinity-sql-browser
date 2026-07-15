@@ -123,6 +123,51 @@ describe('renderChart', () => {
     expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((s) => s.textContent))
       .not.toContain('Series'); // series control hidden for pie
   });
+  it('shows Style only for Line/Area, after Type and before X', () => {
+    const app = appWithResult(chartResult(), { resultView: 'chart' });
+    paintChart(app);
+    expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent))
+      .not.toContain('Style');
+    change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
+    expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent).slice(0, 3))
+      .toEqual(['Type', 'Style', 'X']);
+    change(fieldSel(app.dom.resultsRegion, 'Type'), 'area');
+    expect(fieldSel(app.dom.resultsRegion, 'Style')).not.toBeNull();
+    change(fieldSel(app.dom.resultsRegion, 'Type'), 'pie');
+    expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent))
+      .not.toContain('Style');
+  });
+  it.each([
+    ['clean', { curve: 'linear', points: 'auto' }],
+    ['smooth', { curve: 'smooth', points: 'auto' }],
+    ['stepped', { curve: 'stepped', points: 'auto' }],
+    ['points', { curve: 'linear', points: 'show' }],
+  ])('writes the %s Style preset once and preserves extensions', (preset, expected) => {
+    const app = appWithResult(chartResult());
+    const cfg = { type: 'line', x: 0, y: [2], series: null, style: { curve: 'smooth', points: 'hide', future: 1 } };
+    const onCfgChange = vi.fn();
+    const rerender = vi.fn();
+    const el = renderChart(app, app.activeTab().result, { cfg, onCfgChange, rerender });
+    expect(fieldSel(el, 'Style').value).toBe('smooth'); // unusual smooth+hide is not normalized in storage
+    change(fieldSel(el, 'Style'), preset);
+    expect(cfg.style).toEqual({ ...expected, future: 1 });
+    expect(onCfgChange).toHaveBeenCalledTimes(1);
+    expect(onCfgChange).toHaveBeenCalledWith(cfg);
+    expect(rerender).not.toHaveBeenCalled();
+  });
+  it('preserves stored style while switching away from and back to Line', () => {
+    const app = appWithResult(chartResult(), { resultView: 'chart' });
+    app.activeTab().panelCfg = {
+      type: 'line', x: 0, y: [2], series: null, style: { curve: 'stepped', points: 'hide', future: true },
+    };
+    app.activeTab().panelKey = schemaKey(app.activeTab().result.columns);
+    paintChart(app);
+    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('stepped');
+    change(fieldSel(app.dom.resultsRegion, 'Type'), 'bar');
+    expect(app.activeTab().panelCfg.style).toEqual({ curve: 'stepped', points: 'hide', future: true });
+    change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
+    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('stepped');
+  });
   it('X and Y selects update the per-tab config', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
     paintChart(app);

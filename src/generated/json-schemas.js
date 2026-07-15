@@ -267,6 +267,54 @@ export const querySpecV1Schema = {
         "fieldConfig"
       ]
     },
+    "chartStyle": {
+      "title": "Line and Area style",
+      "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.",
+      "type": "object",
+      "properties": {
+        "curve": {
+          "title": "Line curve",
+          "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "linear",
+                "smooth",
+                "stepped"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "linear"
+        },
+        "points": {
+          "title": "Point markers",
+          "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "auto"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "curve",
+        "points"
+      ]
+    },
     "chartCfg": {
       "type": "object",
       "properties": {
@@ -308,6 +356,28 @@ export const querySpecV1Schema = {
       "additionalProperties": true,
       "x-altinity-order": [
         "type",
+        "x",
+        "y",
+        "series"
+      ]
+    },
+    "lineChartCfg": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/chartCfg"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "style": {
+              "$ref": "#/$defs/chartStyle"
+            }
+          }
+        }
+      ],
+      "x-altinity-order": [
+        "type",
+        "style",
         "x",
         "y",
         "series"
@@ -404,7 +474,7 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/chartCfg"
+              "$ref": "#/$defs/lineChartCfg"
             },
             {
               "properties": {
@@ -432,7 +502,7 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/chartCfg"
+              "$ref": "#/$defs/lineChartCfg"
             },
             {
               "properties": {

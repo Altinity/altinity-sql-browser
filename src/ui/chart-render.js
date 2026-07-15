@@ -9,7 +9,10 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
-import { chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap } from '../core/chart-data.js';
+import {
+  chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap,
+  CHART_STYLE_PRESETS, chartStylePreset, applyChartStylePreset,
+} from '../core/chart-data.js';
 
 /** A labelled <select> for the config bar (shared with the Panel tab's
  * pickers — one builder, one look). Exported for panels.js. */
@@ -17,9 +20,9 @@ export function chartSelect(label, value, options, onChange) {
   const sel = h('select', { class: 'chart-select', onchange: (e) => onChange(e.target.value) });
   for (const o of options) {
     const opt = h('option', { value: o.value }, o.label);
-    if (o.value === value) opt.selected = true;
     sel.appendChild(opt);
   }
+  sel.value = value;
   return h('label', { class: 'chart-field' }, h('span', { class: 'chart-field-label' }, label), sel);
 }
 
@@ -74,6 +77,12 @@ export function renderChart(app, r, opts = {}) {
     // rather than showing two competing type controls.
     if (opts.typeControl !== false) {
       bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; changed(cfg); }));
+    }
+    if (cfg.type === 'line' || cfg.type === 'area') {
+      bar.appendChild(chartSelect('Style', chartStylePreset(cfg.style), CHART_STYLE_PRESETS, (v) => {
+        cfg.style = applyChartStylePreset(cfg.style, v);
+        changed(cfg);
+      }));
     }
     bar.appendChild(chartSelect('X', String(cfg.x), f.xOptions, (v) => { cfg.x = Number(v); changed(cfg); }));
     bar.appendChild(chartSelect('Y', String(cfg.y[0]), f.yOptions, (v) => { cfg.y = [Number(v)]; changed(cfg); }));

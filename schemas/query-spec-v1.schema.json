@@ -146,6 +146,33 @@
       "additionalProperties": true,
       "x-altinity-order": ["cfg", "key", "fieldConfig"]
     },
+    "chartStyle": {
+      "title": "Line and Area style",
+      "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.",
+      "type": "object",
+      "properties": {
+        "curve": {
+          "title": "Line curve",
+          "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.",
+          "anyOf": [
+            { "type": "string", "enum": ["linear", "smooth", "stepped"] },
+            { "type": "string" }
+          ],
+          "default": "linear"
+        },
+        "points": {
+          "title": "Point markers",
+          "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.",
+          "anyOf": [
+            { "type": "string", "enum": ["auto", "show", "hide"] },
+            { "type": "string" }
+          ],
+          "default": "auto"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": ["curve", "points"]
+    },
     "chartCfg": {
       "type": "object",
       "properties": {
@@ -172,6 +199,18 @@
       "required": ["x", "y"],
       "additionalProperties": true,
       "x-altinity-order": ["type", "x", "y", "series"]
+    },
+    "lineChartCfg": {
+      "allOf": [
+        { "$ref": "#/$defs/chartCfg" },
+        {
+          "type": "object",
+          "properties": {
+            "style": { "$ref": "#/$defs/chartStyle" }
+          }
+        }
+      ],
+      "x-altinity-order": ["type", "style", "x", "y", "series"]
     },
     "panelCfg": {
       "title": "Panel type configuration",
@@ -216,7 +255,7 @@
           "x-altinity-status": "implemented",
           "x-altinity-snippet": { "type": "line", "x": 0, "y": [1], "series": null },
           "allOf": [
-            { "$ref": "#/$defs/chartCfg" },
+            { "$ref": "#/$defs/lineChartCfg" },
             { "properties": { "type": { "const": "line" } }, "required": ["type"] }
           ]
         },
@@ -226,7 +265,7 @@
           "x-altinity-status": "implemented",
           "x-altinity-snippet": { "type": "area", "x": 0, "y": [1], "series": null },
           "allOf": [
-            { "$ref": "#/$defs/chartCfg" },
+            { "$ref": "#/$defs/lineChartCfg" },
             { "properties": { "type": { "const": "area" } }, "required": ["type"] }
           ]
         },

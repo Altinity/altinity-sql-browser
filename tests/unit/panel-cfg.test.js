@@ -161,11 +161,16 @@ describe('switchPanelType', () => {
     expect(out.key).toBe('K');
   });
   it('leaving the chart family stashes the roles; switching back consumes them (lossless)', () => {
-    const table = switchPanelType(chartPayload, 'table', chartCols);
-    expect(table.cfg).toEqual({ type: 'table', chart: { type: 'bar', x: 0, y: [1], series: null, key: 'K' } });
+    const styled = { ...chartPayload, cfg: { ...chartPayload.cfg, style: { curve: 'smooth', points: 'hide', future: true } } };
+    const table = switchPanelType(styled, 'table', chartCols);
+    expect(table.cfg).toEqual({
+      type: 'table', style: { curve: 'smooth', points: 'hide', future: true },
+      chart: { type: 'bar', x: 0, y: [1], series: null, key: 'K' },
+    });
     expect(table.key).toBeNull();
     const back = switchPanelType(table, 'line', chartCols);
     expect(back.cfg).toMatchObject({ type: 'line', x: 0, y: [1], series: null });
+    expect(back.cfg.style).toEqual({ curve: 'smooth', points: 'hide', future: true });
     expect(back.key).toBe('K');
     expect('chart' in back.cfg).toBe(false); // stash consumed
   });
@@ -231,6 +236,15 @@ describe('resolvePanel', () => {
     expect(out.cfg.type).toBe('bar');
     expect(out.cfg).toMatchObject({ x: 0, y: [1] });
     expect(out.cfg.y).not.toEqual(saved.cfg.y);
+  });
+  it('preserves complete style while re-deriving stale chart roles', () => {
+    const style = { curve: 'banana', points: 'hide', future: { keep: true } };
+    const out = resolvePanel({
+      cfg: { type: 'line', x: 9, y: [8], series: null, style }, key: 'STALE',
+    }, chartCols);
+    expect(out).toMatchObject({ rederived: true, fallback: false });
+    expect(out.cfg.style).toEqual(style);
+    expect(out.cfg.style).not.toBe(style);
   });
   it('an invalid chart cfg retains the explicit type and re-derives axes (unknown fields kept)', () => {
     const saved = { cfg: { type: 'pie', x: 99, y: [42], series: null, futureField: 'kept' } };
