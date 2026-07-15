@@ -65,6 +65,8 @@ export const Icon = {
   history: () => svg('M2.5 5.5a3.5 3.5 0 1 1 1 2.5M2 3v2.5h2.5M6 3.5V6l1.5 1', 12, 12),
   share: () => iconEl('<circle cx="9" cy="3" r="1.5"/><circle cx="3" cy="6" r="1.5"/><circle cx="9" cy="9" r="1.5"/><path d="M4.3 5.3l3.4-1.6M4.3 6.7l3.4 1.6"/>', 12, 12),
   chart: () => svg('M2 10V7M5 10V4M8 10V6M11 10V2', 12, 12),
+  // Funnel — the Filter result view (filter-role query preview).
+  filter: () => svg('M2 3h8l-3 3.5v3l-2-1v-2z', 12, 12, { stroke: 1.4 }),
   json: () => svg('M4 1.5C2.5 1.5 2.5 3 2.5 4S2.5 5 1.5 6c1 1 1 2 1 2s0 1.5 1.5 1.5M8 1.5c1.5 0 1.5 1.5 1.5 2.5s0 1 1 2c-1 1-1 2-1 2s0 1.5-1.5 1.5', 12, 12),
   table2: () => iconEl('<rect x="1.5" y="2" width="9" height="8" rx=".5"/><path d="M1.5 4.5h9M1.5 7h9M4.5 4.5v5"/>', 12, 12),
   shortcuts: () => iconEl('<rect x="1.5" y="3" width="9" height="6" rx="1"/><path d="M3.5 5h.01M6 5h.01M8.5 5h.01M3.5 7h5"/>', 12, 12, 1.3),

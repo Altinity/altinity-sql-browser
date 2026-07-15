@@ -144,6 +144,33 @@ describe('renderResults states', () => {
     click(jsonTab);
     expect(app.state.resultView.value).toBe('json');
   });
+  it('offers a Filter view tab for a filter-role query and renders the preview on click', () => {
+    const app = appWithResult(tableResult(), { resultView: 'table' });
+    app.activeTab().specParsed = { dashboard: { role: 'filter' } };
+    app.activeTab().filterPreview = {
+      status: 'success',
+      normalized: {
+        helpers: [{ name: 'kind', options: [{ value: 'a', label: 'Alpha' }], totalOptions: 1, sourceType: 'Map(String, String)', truncated: false }],
+        diagnostics: [],
+      },
+    };
+    renderResults(app);
+    const filterTab = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab')].find((b) => b.textContent.includes('Filter'));
+    expect(filterTab).toBeTruthy(); // a plain panel query has no such tab (Table/JSON only)
+    click(filterTab);
+    expect(app.state.resultView.value).toBe('filter');
+    renderResults(app); // the live app re-renders via the resultView signal effect
+    // the results area now shows the curated-field preview, not the raw table
+    expect(app.dom.resultsRegion.querySelector('.filter-preview')).toBeTruthy();
+    expect(app.dom.resultsRegion.querySelector('.filter-select .var-input')).toBeTruthy();
+    expect(app.dom.resultsRegion.querySelector('.res-table')).toBeNull();
+  });
+  it('shows no Filter view tab for an ordinary panel query', () => {
+    const app = appWithResult(tableResult(), { resultView: 'table' });
+    renderResults(app);
+    const labels = [...app.dom.resultsRegion.querySelectorAll('.result-view-tab')].map((b) => b.textContent);
+    expect(labels.some((t) => t.includes('Filter'))).toBe(false);
+  });
 });
 
 describe('renderTable', () => {

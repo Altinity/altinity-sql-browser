@@ -77,6 +77,17 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   - Typing SQL now re-evaluates the whole Spec validator graph only for
     Filter-role tabs (whose diagnostics depend on the SQL), not on every
     keystroke of every tab.
+  - The workbench results drawer now offers a first-class **Filter** view tab
+    for a Filter-role query (alongside Table/JSON), rendering the option-bundle
+    preview exactly as the field appears on the Dashboard. Previously the
+    preview was only reachable by re-selecting "Filter" in the role picker,
+    which fires no change event when it is already the selected role — so the
+    view never switched and the drawer kept showing the raw table/JSON.
+- `examples/query-log-explorer.json` reworked: the `hours` lookback is replaced
+  by a real DateTime range — `from` (required) and `to` (optional) on
+  `event_time` — applied to every `system.query_log` panel, and `namePattern`
+  is replaced by a universal optional `search` that substring-matches the query
+  text across all panels (and the exception message in the log panel).
 
 ### Changed
 - **Saved-query Library JSON now uses the version 2 canonical model** (#211):

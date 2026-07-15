@@ -24,6 +24,7 @@ import { buildFilterBar } from './filter-bar.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
 import { panelExecution } from '../core/panel-execution.js';
 import { renderFilterPreview } from './filter-preview.js';
+import { effectiveDashboardRole } from '../core/result-choice.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -439,7 +440,14 @@ function buildToolbar(app, r) {
       h('button', { class: 'result-view-tab active' },
         r.rawFormat === 'JSON' ? Icon.json() : Icon.table2(), h('span', null, r.rawFormat)));
   } else {
-    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id; }, false);
+    // A Filter-role query gets a first-class "Filter" view tab (its option-
+    // bundle preview, exactly as the field renders on the Dashboard) alongside
+    // Table/JSON — so the preview is reachable idempotently. It cannot live only
+    // in the role picker below: that <select> already shows "Filter" for a
+    // filter-role query, so re-picking it fires no change event and the view
+    // never switches (the reported bug).
+    const isFilterRole = effectiveDashboardRole(app.activeTab().specParsed) === 'filter';
+    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id; }, false, isFilterRole);
     tabs.appendChild(renderPanelTypePicker(app, r, panelHooks(app, r)));
   }
   toolbar.appendChild(tabs);
@@ -519,13 +527,14 @@ function buildToolbar(app, r) {
  * call (never cached/shared across the two consumers' documents — an Icon
  * element inserted into a second document would just move out of the first).
  */
-function viewSwitcherTabs(current, onSelect, includePanel = true) {
+function viewSwitcherTabs(current, onSelect, includePanel = true, includeFilter = false) {
   const tabs = h('div', { class: 'result-view-tabs' });
   const views = [
     { id: 'table', label: 'Table', icon: Icon.table2() },
     { id: 'json', label: 'JSON', icon: Icon.json() },
   ];
   if (includePanel) views.push({ id: 'panel', label: 'Panel', icon: Icon.chart() });
+  if (includeFilter) views.push({ id: 'filter', label: 'Filter', icon: Icon.filter() });
   for (const v of views) {
     tabs.appendChild(h('button', {
       class: 'result-view-tab' + (current === v.id ? ' active' : ''),
