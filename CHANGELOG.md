@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-15
+
 ### Removed
 - **The dormant `html{zoom}` bridge and every runtime/test path that
   compensated for it are torn out** (#148). PR #147 had already set
@@ -1377,7 +1379,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.0...v0.4.5
 [0.4.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.2.0...v0.3.0
