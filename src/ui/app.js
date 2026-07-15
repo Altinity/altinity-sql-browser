@@ -1207,6 +1207,9 @@ export function createApp(env = {}) {
   // `resolveComparisonColumnType`), never a new query, and the declared type
   // stays String, so #170 never blocks on a non-member.
   function inferredEnumOptions(v, sql, comparisonColumns) {
+    // `.base` is value-transparent (#238): a `LowCardinality(String)` param
+    // reaches this suggestion tier too, same as plain `String` — intentional,
+    // since LowCardinality is just a storage encoding of String values.
     if (parseParamType(v.type).base !== 'String') return null;
     const cmp = comparisonColumns[v.name];
     if (!cmp) return null;

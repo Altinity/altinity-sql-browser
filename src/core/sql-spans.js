@@ -38,6 +38,8 @@
 // client treats `$foo$bar` as an open heredoc while the server may lex it as a
 // bare identifier. The trade-off keeps live editor input safe to analyze.
 
+import { scanDelimited } from './quoted-span.js';
+
 // A heredoc/identifier tag character: ASCII word char (no punctuation tags —
 // pre-25.8 punctuation/whitespace tags are intentionally unsupported).
 const isWordChar = (c) =>
@@ -50,28 +52,6 @@ function heredocOpenerEnd(s, i, n) {
   let j = i + 1;
   while (j < n && isWordChar(s[j])) j += 1;
   return s[j] === '$' ? j + 1 : -1;
-}
-
-// Scan a `'…'` string or `` `…` `` / `"…"` quoted identifier from its opening
-// delimiter at `i`. `\` consumes the next char; a doubled delimiter consumes
-// both; otherwise the delimiter closes the span. Returns `{end, closed}` — an
-// unterminated run reaches EOF with `closed: false` (a trailing `\` that would
-// overshoot is clamped to EOF).
-function scanDelimited(s, i, n, quote) {
-  let j = i + 1;
-  let closed = false;
-  while (j < n) {
-    const d = s[j];
-    if (d === '\\') { j += 2; continue; }
-    if (d === quote) {
-      if (s[j + 1] === quote) { j += 2; continue; }
-      j += 1;
-      closed = true;
-      break;
-    }
-    j += 1;
-  }
-  return { end: Math.min(j, n), closed };
 }
 
 /**
@@ -151,7 +131,7 @@ export function* scanSpans(text) {
       kind = 'comment';
     } else {
       // 'string' (single quote) and 'quoted-ident' share the delimiter scan.
-      const r = scanDelimited(s, i, n, c);
+      const r = scanDelimited(s, i, c);
       end = r.end;
       closed = r.closed;
       kind = open === 'string' ? 'string' : 'quoted-ident';

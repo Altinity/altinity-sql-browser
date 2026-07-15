@@ -181,6 +181,10 @@ describe('isDateLikeType', () => {
     expect(isDateLikeType('Nullable(DateTime)')).toBe(true);
     expect(isDateLikeType('Nullable(Date)')).toBe(true);
   });
+  it('LowCardinality(...) unwraps too (#238) — LowCardinality(DateTime64(3)) is date-like', () => {
+    expect(isDateLikeType('LowCardinality(DateTime64(3))')).toBe(true);
+    expect(isDateLikeType('LowCardinality(Nullable(DateTime))')).toBe(true);
+  });
   it('false for non-date types, including Array(DateTime)', () => {
     expect(isDateLikeType('String')).toBe(false);
     expect(isDateLikeType('UInt32')).toBe(false);
@@ -233,6 +237,11 @@ describe('resolveRelativeValue — per-type formatting', () => {
   });
   it('Nullable(Date) unwraps and formats as Date', () => {
     expect(resolveRelativeValue('now', 'Nullable(Date)', now).value).toBe('2026-07-11');
+  });
+  it('LowCardinality(DateTime64(3)) supports relative time, same as the bare type (#238)', () => {
+    const withMs = ms(2026, 6, 11, 9, 23, 45, 123);
+    const r = resolveRelativeValue('now', 'LowCardinality(DateTime64(3))', withMs);
+    expect(r).toEqual({ ok: true, value: `${Math.floor(withMs / 1000)}.123`, matched: true });
   });
   // Review finding #3: DateTime used to round, DateTime64(0) always floored —
   // the same instant could disagree by a whole second (and DateTime could

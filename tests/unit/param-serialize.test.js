@@ -59,6 +59,22 @@ describe('serializeParamValue — Array(T) literals', () => {
     expect(serializeParamValue(['-5'], 'Array(Int64)')).toEqual({ ok: true, value: '[-5]' });
   });
 
+  // #238 — LowCardinality(T) is transparent for array-element serialization,
+  // same as scalar validation: the element's lexical kind comes from T, not
+  // from the LowCardinality wrapper.
+  it('Array(LowCardinality(UInt64)): numeric elements unquoted, big values exact', () => {
+    expect(serializeParamValue(['1', '18446744073709551615'], 'Array(LowCardinality(UInt64))'))
+      .toEqual({ ok: true, value: '[1,18446744073709551615]' });
+  });
+  it('Array(LowCardinality(String)): elements quoted like plain Array(String)', () => {
+    expect(serializeParamValue(['a', 'b'], 'Array(LowCardinality(String))'))
+      .toEqual({ ok: true, value: "['a','b']" });
+  });
+  it('Array(LowCardinality(Nullable(UInt64))): still numeric, unquoted', () => {
+    expect(serializeParamValue(['1', '2'], 'Array(LowCardinality(Nullable(UInt64)))'))
+      .toEqual({ ok: true, value: '[1,2]' });
+  });
+
   it('rejects a non-integer token for an integer element type', () => {
     const r = serializeParamValue(['1', 'abc'], 'Array(UInt64)', 'ids');
     expect(r.ok).toBe(false);
@@ -109,8 +125,9 @@ describe('serializeParamValue — Array(T) literals', () => {
       .toEqual({ ok: true, value: "['2024-01-01','2024-02-01']" });
   });
 
-  it('a bare Array declaration (no element type) quotes elements as text', () => {
-    expect(serializeParamValue(['a'], 'Array')).toEqual({ ok: true, value: "['a']" });
+  it('a bare "Array" declaration (no parens — not real ClickHouse syntax) is an opaque malformed scalar, not an array declaration (#238)', () => {
+    const r = serializeParamValue(['a'], 'Array');
+    expect(r).toEqual({ ok: false, structural: true, error: '{param}: an array value cannot bind a scalar Array declaration' });
   });
 
   it('accepts a pre-parsed type object', () => {

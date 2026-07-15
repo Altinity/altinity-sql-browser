@@ -2,13 +2,13 @@
 // value; the saved-query Presentation Spec contributes display metadata only.
 
 import { cloneJson, isPlainObject } from './saved-query.js';
-import { namedTupleMembers, parseClickHouseType, unwrapNullable } from './clickhouse-type.js';
+import { namedTupleMembers, parseClickHouseType, unwrapValueTransparentWrappers } from './clickhouse-type.js';
 
 const NUMERIC = /^(?:U?Int(?:8|16|32|64|128|256)|Float(?:32|64)|BFloat16|Decimal(?:32|64|128|256)?\s*\()/;
 
 export function isKpiNumericType(type) {
   const parsed = parseClickHouseType(type);
-  return !!parsed && NUMERIC.test(unwrapNullable(parsed).raw);
+  return !!parsed && NUMERIC.test(unwrapValueTransparentWrappers(parsed).raw);
 }
 
 export function parseKpiTupleType(type) {
@@ -87,7 +87,7 @@ function compactInteger(value) {
 export function formatKpiValue({ value, clickhouseType, presentation = {} }) {
   if (value == null) return presentation.noValue ?? '—';
   const parsedType = parseClickHouseType(clickhouseType);
-  const type = parsedType ? unwrapNullable(parsedType).raw : String(clickhouseType || '');
+  const type = parsedType ? unwrapValueTransparentWrappers(parsedType).raw : String(clickhouseType || '');
   const explicit = Number.isInteger(presentation.decimals) ? presentation.decimals : null;
   let rendered;
   const integerString = /^(?:U?Int)/.test(type) && (typeof value === 'bigint' || /^[+-]?\d+$/.test(String(value).trim()));

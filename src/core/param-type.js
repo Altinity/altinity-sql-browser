@@ -1,11 +1,24 @@
-// Pure parsing + comparison of declared ClickHouse parameter types (#173).
-// `parseParamType` turns the raw type text of a `{name:Type}` declaration into
-// the small structural shape the typed serializer (param-serialize.js) and the
-// pipeline (param-pipeline.js) need: is it an array, what's the element type,
-// is it Nullable-wrapped, and which lexical family does the base belong to.
-// #170's validator and #172's enum parsing build on this module.
+// Compatibility projection of declared ClickHouse parameter types (`{name:Type}`
+// declarations) onto the shared AST parser (#238, `clickhouse-type.js`). This
+// module contains no independent parsing — every shape below is derived
+// exclusively from `parseClickHouseType()` / `analyzeTypeModifiers()`.
+//
+// `parseParamType()` turns the raw type text of a `{name:Type}` declaration
+// into the small structural shape the typed serializer (param-serialize.js)
+// and the pipeline (param-pipeline.js) need: is it an array, what's the
+// element type, and which lexical family does the base belong to. Its `base`/
+// `inner`/`elem` describe the EFFECTIVE value type — `Nullable(...)` and
+// `LowCardinality(...)` both unwrapped, recursively — so `LowCardinality(T)`
+// gets exactly `T`'s validation/serialization/relative-time/Enum behavior
+// without any of those consumers needing to know LowCardinality exists.
+// Declaration-*identity* comparison (conflict detection) is a different
+// concern — LowCardinality is transparent for VALUE handling, never for
+// declaration identity — and lives in `canonicalType()`, not here.
 
-import { scanSpans } from './sql-spans.js';
+import {
+  parseClickHouseType, analyzeTypeModifiers, canonicalType,
+  enumMembers as astEnumMembers,
+} from './clickhouse-type.js';
 
 // Integer bases. UInt64 and up (and Int64 and up) exceed Number.MAX_SAFE_INTEGER,
 // which is why the serializer never routes numeric tokens through a JS Number —
@@ -15,17 +28,67 @@ const INT_BASE = /^U?Int(8|16|32|64|128|256)$/;
 const FLOAT_BASE = /^(Float32|Float64|BFloat16|Decimal(32|64|128|256)?)$/;
 const ENUM_BASE = /^Enum(8|16)$/;
 
+// The raw text between a type's own outer parens (`'10, 2'` for
+// `Decimal(10, 2)`), or null for a bare scalar — same contract the old
+// regex-based parser exposed as `inner` (including its `.trim()`: the old
+// parser's capture group was matched loosely and always trimmed).
+function innerOf(raw) {
+  const i = raw.indexOf('(');
+  return i < 0 ? null : raw.slice(i + 1, raw.length - 1).trim();
+}
+
+// Project one AST node (already resolved to whatever nesting level a caller
+// cares about) into the compatibility shape, unwrapping Nullable/
+// LowCardinality down to the effective value type at every level — including
+// recursively into an Array's element, so `Array(LowCardinality(UInt64))`'s
+// `elem.base` is `'UInt64'`, not `'LowCardinality'`. `node` always comes from
+// a tree `parseClickHouseType` already validated in full (recursively), so an
+// `Array`-named `value` is guaranteed exactly one arg — no separate check needed.
+// Deliberately ignores `mods.valid`'s wrapper-ORDER component: parameter
+// validation/serialization only ever needs the effective value type, whatever
+// order produced it — unlike `isSupportedOptionScalar` (clickhouse-type.js),
+// which IS the authoritative "is this a supported scalar" check and does
+// reject `Nullable(LowCardinality(T))`, param declarations stay permissive
+// about ordering by design. `mods.lowCardinalityEnum` is different: no
+// ClickHouse version accepts `LowCardinality` wrapping an `Enum8`/`Enum16` at
+// all (regardless of order), so that degrades exactly like an unparseable
+// declaration — opaque passthrough, no Enum-specific behavior anywhere.
+function fromNode(node) {
+  const mods = analyzeTypeModifiers(node);
+  if (mods.lowCardinalityEnum) {
+    return { raw: node.raw, base: node.raw, inner: null, nullable: false, isArray: false, elem: null, node: null };
+  }
+  const value = mods.valueType;
+  const isArray = value.name === 'Array';
+  return {
+    raw: node.raw,
+    base: value.name,
+    inner: innerOf(value.raw),
+    nullable: mods.nullable,
+    isArray,
+    elem: isArray ? fromNode(value.args[0]) : null,
+    node: value,
+  };
+}
+
 /**
  * Parse a declared parameter type into `{ raw, base, inner, nullable, isArray,
- * elem }`:
+ * elem, node }`:
  *   - `raw`      — the trimmed declaration text, verbatim;
- *   - `base`     — the outer type name after unwrapping `Nullable(...)`
- *                  (`'String'`, `'UInt64'`, `'Array'`, `'Enum8'`, …);
- *   - `inner`    — the raw text between the base's parentheses (`'String'` for
- *                  `Array(String)`, `'10, 2'` for `Decimal(10, 2)`), or null;
- *   - `nullable` — true when wrapped in `Nullable(...)`;
- *   - `isArray`  — true when the base is `Array`;
- *   - `elem`     — the recursively parsed element type for arrays, else null.
+ *   - `base`     — the EFFECTIVE type name, after unwrapping any
+ *                  `Nullable(...)` / `LowCardinality(...)` wrappers, in
+ *                  whatever order they appear (`'String'`, `'UInt64'`,
+ *                  `'Array'`, `'Enum8'`, …);
+ *   - `inner`    — the raw text between the effective type's own parentheses
+ *                  (`'String'` for `Array(String)`, `'10, 2'` for
+ *                  `Decimal(10, 2)`), or null;
+ *   - `nullable` — true when `Nullable(...)` appears anywhere in the wrapper
+ *                  chain;
+ *   - `isArray`  — true when the effective base is `Array`;
+ *   - `elem`     — the recursively projected element type for arrays, else
+ *                  null;
+ *   - `node`     — the resolved (wrapper-stripped) AST node, for helpers that
+ *                  want it directly (`enumMembers` below) without reparsing.
  * A shape this module can't parse (unbalanced parens, exotic text) degrades to
  * an opaque scalar (`base` = the whole text) — the serializer treats opaque
  * scalars as passthrough, so an unrecognized type never blocks anything the
@@ -34,33 +97,9 @@ const ENUM_BASE = /^Enum(8|16)$/;
  */
 export function parseParamType(raw) {
   const text = String(raw || '').trim();
-  const m = /^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/.exec(text);
-  const base = m ? m[1] : text;
-  const inner = m ? m[2].trim() : null;
-  if (base === 'Nullable' && inner != null) {
-    return { ...parseParamType(inner), raw: text, nullable: true };
-  }
-  const isArray = base === 'Array';
-  return {
-    raw: text,
-    base,
-    inner,
-    nullable: false,
-    isArray,
-    elem: isArray && inner != null ? parseParamType(inner) : null,
-  };
-}
-
-/**
- * A whitespace-insensitive canonical form of a declared type, for conflict
- * comparison: `Array( String )` and `Array(String)` are the same declaration.
- * (A type whose quoted portion contains whitespace — `Enum8('a b' = 1)` —
- * compares loosely; the worst case is a missed conflict diagnostic, never a
- * wrong serialization, since serialization is per-statement by the local
- * declaration.) Pure.
- */
-export function normalizeParamType(raw) {
-  return String(raw || '').replace(/\s+/g, '');
+  const node = parseClickHouseType(text);
+  if (!node) return { raw: text, base: text, inner: null, nullable: false, isArray: false, elem: null, node: null };
+  return { ...fromNode(node), raw: text };
 }
 
 /**
@@ -84,113 +123,57 @@ export function typeLexKind(type) {
 }
 
 /**
- * The distinct normalized types among a field's declarations — `null` when
+ * The distinct canonical types among a field's declarations — `null` when
  * they all agree (no conflict), otherwise the conflicting set in first-seen
- * order. Built on the all-occurrences scan (every declaration participates,
- * including ones in non-bound statements: they are still declarations of the
- * same name, and a disagreement should surface as a diagnostic). Pure.
+ * order. Comparison is by `canonicalType()` (#238): whitespace-insensitive
+ * outside quoted content, but wrapper-sensitive — `LowCardinality(String)`
+ * is a DIFFERENT declaration from `String`, never the same conflict-free
+ * type, even though the two are interchangeable for value handling. Built on
+ * the all-occurrences scan (every declaration participates, including ones
+ * in non-bound statements: they are still declarations of the same name, and
+ * a disagreement should surface as a diagnostic). Pure.
  * @param {{type: string}[]} declarations
  * @returns {string[]|null}
  */
 export function conflictingTypes(declarations) {
   const seen = [];
   for (const d of declarations || []) {
-    const t = normalizeParamType(d.type);
+    const t = canonicalType(d.type);
     if (!seen.includes(t)) seen.push(t);
   }
   return seen.length > 1 ? seen : null;
 }
 
-// A single member's `= <code>` assignment, found in the *code* span that
-// immediately follows its quoted name (`'active' = 1` → the code span is
-// " = 1, " or " = 1" up to the closing paren). Leading/trailing text besides
-// the assignment (separators, the next member's opening quote) is ignored —
-// only the leading `= <int>` is meaningful here.
-const ENUM_CODE_RE = /^\s*=\s*(-?\d+)/;
-
-// Undo ClickHouse's single-quoted string escaping for one member name:
-// `\` escapes the following character verbatim, and a doubled quote (`''`) is
-// an escaped literal quote, not a terminator — the same two rules
-// `sql-spans.js` used to find the span's end in the first place, so a name
-// round-trips exactly (`'a''b'` → `a'b`, `'}'` → `}`).
-function unescapeEnumMember(quoted) {
-  const body = quoted.slice(1, -1);
-  let out = '';
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === '\\' && i + 1 < body.length) { out += body[i + 1]; i += 1; continue; }
-    if (c === "'" && body[i + 1] === "'") { out += "'"; i += 1; continue; }
-    out += c;
-  }
-  return out;
-}
-
-// Decode one Enum member NAME from a closed `string`-kind span (#182): a
-// single-quoted literal uses ClickHouse's backslash/doubled-quote rules
-// (unescapeEnumMember); a `$tag$…$tag$` heredoc is opaque — strip the exact
-// opener and (equal-length) closer and return the body verbatim, with no
-// unescaping. An unterminated span (`closed: false`) is not a member → null.
-// `quoted-ident` spans never reach here, so `Enum8("x" = 1)` yields no member.
-function decodeEnumMemberSpan(raw, closed) {
-  if (!closed) return null;
-  if (raw[0] === "'") return unescapeEnumMember(raw);
-  const openLen = raw.indexOf('$', 1) + 1; // past the opener's closing `$`
-  return raw.slice(openLen, raw.length - openLen);
-}
-
 /**
  * Parse an `Enum8`/`Enum16` declared type's members into `{name, code}`
- * pairs (in declaration order), or `null` when `type`'s base isn't
- * `Enum8`/`Enum16` (`Nullable(...)` already unwrapped by `parseParamType`).
- * Reuses the shared string-span scanner (`sql-spans.js`, also behind
- * `param-scan.js`'s brace matching) to find each member name, so escaped
- * quotes (`'a''b'`), braces (`'}'`), backslash escapes, spacing variants, and
- * unicode names all parse exactly like ClickHouse's own string literal grammar.
- * Member names may be single-quoted strings or `$tag$…$tag$` heredocs (whose
- * body — commas, brackets and all — is opaque and taken verbatim); double-
- * quoted / backtick forms are quoted identifiers, not Enum members, and an
- * unterminated literal produces no member (#182). ClickHouse allows OMITTING
- * the `= <code>`
- * assignment — `Enum8('hello', 'world')` auto-numbers from 1, and an implicit
- * member after an explicit code continues from it (`Enum8('One' = 1, 'Two',
- * 'Three')` → Two=2, Three=3; `Enum8('a' = -2, 'b')` → b=-1) — matched here
- * with the same previous-code+1 rule. Pure.
+ * pairs (in declaration order), unwrapping `Nullable(...)` first, or `null`
+ * when the effective type isn't `Enum8`/`Enum16` — including a
+ * `LowCardinality`-wrapped Enum in any nesting order, which `fromNode`
+ * already degrades to an opaque shape (`base` is the raw declaration text,
+ * `node: null`) because no ClickHouse version accepts that combination.
+ * Delegates to the shared AST's `enumMembers()` — see `clickhouse-type.js`
+ * for the escaping/heredoc/explicit-code/implicit-code grammar and the
+ * `LowCardinality`-Enum invalidity rule. `t.base` can only equal
+ * `'Enum8'`/`'Enum16'` when `t.node` resolved to a real, already
+ * value-transparent-unwrapped Enum node, so once the base check passes this
+ * always gets a real member array (possibly empty) back, never `null`. Pure.
  * @param {string|ReturnType<typeof parseParamType>} type
  * @returns {{name: string, code: number}[]|null}
  */
 export function enumMembers(type) {
   const t = typeof type === 'string' ? parseParamType(type) : type;
   if (!ENUM_BASE.test(t.base)) return null;
-  const text = t.inner || '';
-  const spans = [...scanSpans(text)];
-  const members = [];
-  // ClickHouse's auto-numbering counter: the first implicit member is 1, each
-  // later implicit member is the previous member's code + 1 (explicit codes
-  // reset the counter, including negative ones).
-  let nextCode = 1;
-  for (let i = 0; i < spans.length; i++) {
-    const sp = spans[i];
-    if (sp.kind !== 'string') continue; // quoted-ident / comment / code aren't members
-    const name = decodeEnumMemberSpan(text.slice(sp.start, sp.end), sp.closed);
-    if (name == null) continue; // an unterminated literal is not a member
-    const next = spans[i + 1];
-    const m = next && next.kind === 'code' ? ENUM_CODE_RE.exec(text.slice(next.start, next.end)) : null;
-    const code = m ? Number(m[1]) : nextCode;
-    members.push({ name, code });
-    nextCode = code + 1;
-  }
-  return members;
+  return astEnumMembers(t.node);
 }
 
 /**
  * The member NAMES of an `Enum8`/`Enum16` declared type, in declaration
  * order — the dropdown-option list #172 v1 (declared type) and v2
- * (schema-cache inference) both render — or `null` for any other type
- * (`Nullable(...)` unwrapped) AND for an enum whose member list yields
- * nothing (a bare `Enum8`, an empty/unparseable list): null, never `[]`, so
- * every truthiness-checking consumer (the field builders in app.js /
- * dashboard.js) falls back to the plain input instead of rendering an empty
- * dropdown. Pure.
+ * (schema-cache inference) both render — or `null` for any other type AND
+ * for an enum whose member list yields nothing (a bare `Enum8`, an
+ * empty/unparseable list): null, never `[]`, so every truthiness-checking
+ * consumer (the field builders in app.js / dashboard.js) falls back to the
+ * plain input instead of rendering an empty dropdown. Pure.
  * @param {string|ReturnType<typeof parseParamType>} type
  * @returns {string[]|null}
  */

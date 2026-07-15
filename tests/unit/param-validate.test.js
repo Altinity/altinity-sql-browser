@@ -148,6 +148,40 @@ describe('validateParamValue: Nullable(T) unwraps to validate against T', () => 
   });
 });
 
+// #238 — LowCardinality(T) is transparent for parameter value validation:
+// it must use exactly T's rules, recursively through Nullable too.
+describe('validateParamValue: LowCardinality(T) is transparent — validates against T', () => {
+  it('LowCardinality(UInt64) validates as UInt64', () => {
+    valid('LowCardinality(UInt64)', '18446744073709551615');
+    invalid('LowCardinality(UInt64)', '-1');
+  });
+  it('LowCardinality(Float64) validates as Float64', () => {
+    valid('LowCardinality(Float64)', '-2e-3');
+    invalid('LowCardinality(Float64)', '12,5');
+  });
+  it('LowCardinality(Bool) uses Bool behavior (never invalid/incomplete, only valid or unknown)', () => {
+    expect(validateParamValue('LowCardinality(Bool)', 'yes').status).toBe('valid');
+    expect(validateParamValue('LowCardinality(Bool)', 'enable').status).toBe('unknown');
+  });
+  it('LowCardinality(UUID) uses UUID behavior', () => {
+    valid('LowCardinality(UUID)', '61f0c404-5cb3-11e7-907b-a6006ad3dba0');
+    invalid('LowCardinality(UUID)', 'not-a-uuid!!');
+  });
+  it('LowCardinality(Nullable(T)) validates against the doubly-unwrapped T', () => {
+    valid('LowCardinality(Nullable(UInt8))', '255');
+    invalid('LowCardinality(Nullable(UInt8))', '256');
+  });
+  // No ClickHouse version accepts LowCardinality wrapping an Enum at all
+  // (live-verified 26.3.13: ILLEGAL_TYPE_OF_ARGUMENT) — this degrades to
+  // opaque passthrough, same as any other unsupported/malformed type; it
+  // must NOT get Enum membership validation.
+  it('LowCardinality(Enum8(...)) is opaque passthrough — never Enum membership validation, in any nesting order', () => {
+    unknown("LowCardinality(Enum8('active' = 1, 'deleted' = 2))", 'active');
+    unknown("LowCardinality(Enum8('active' = 1, 'deleted' = 2))", 'nope');
+    unknown("Nullable(LowCardinality(Enum8('active' = 1)))", 'active');
+  });
+});
+
 // #172 v1 — the declared Enum type is authoritative membership, blocking.
 describe('validateParamValue: Enum8/Enum16 (#172 v1, declared-type membership)', () => {
   const ENUM = "Enum8('active' = 1, 'deleted' = 2, 'banned' = 3)";
