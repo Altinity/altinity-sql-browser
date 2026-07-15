@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { assertValidLibraryDocument } from '../../examples/validate-library.mjs';
 import { parseImportDoc } from '../../src/core/saved-io.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
+import { filterExecution } from '../../src/core/filter-execution.js';
+import { effectiveDashboardRole } from '../../src/core/result-choice.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -25,6 +27,17 @@ describe('schema artifacts and examples', () => {
     const template = readFileSync(resolve(examples, 'iceberg-templates/ice_meta_drilldown.json.tmpl'), 'utf8')
       .replaceAll('__CATALOG__', 'demo');
     expect(parseImportDoc(template).queries.length).toBeGreaterThan(0);
+  });
+
+  it('every Filter-role example query is a valid Filter source (single row-returning statement, no params/FORMAT)', () => {
+    const examples = resolve(root, 'examples');
+    for (const name of readdirSync(examples).filter((item) => item.endsWith('.json'))) {
+      const { queries } = parseImportDoc(readFileSync(resolve(examples, name), 'utf8'));
+      for (const q of queries) {
+        if (effectiveDashboardRole(q.spec) !== 'filter') continue;
+        expect(filterExecution(q.sql).diagnostics, `${name}:${q.id}`).toEqual([]);
+      }
+    }
   });
 
   it('validates every JSON Spec example used by the authoring documentation', () => {

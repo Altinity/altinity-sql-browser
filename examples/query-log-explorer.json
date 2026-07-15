@@ -5,12 +5,12 @@
   "queries": [
     {
       "id": "qle-filter",
-      "sql": "SELECT arraySort()(groupUniqArray(user)) as user,\n       arraySort()(groupUniqArray(query_kind)) as query_kind\nFROM system.query_log WHERE query_log.user != ''\nSETTINGS enable_named_columns_in_function_tuple = 1",
+      "sql": "SELECT\n  arraySort(item -> item.label, groupUniqArray((user AS value, splitByChar('@', user)[1] AS label))) AS user,\n  arraySort(groupUniqArray(query_kind)) AS query_kind\nFROM system.query_log WHERE user != ''\nSETTINGS enable_named_columns_in_function_tuple = 1",
       "specVersion": 1,
       "spec": {
         "name": "Filter",
         "favorite": true,
-        "description": "Single Dashboard Filter source: the distinct `user` and `query_kind` values seen in system.query_log, each returned as a plain Array(String). Upgrades any Panel's {user:String} and {query_kind:String} parameters to searchable single-select dropdowns.",
+        "description": "Single Dashboard Filter source. `user` is a value/label bundle (Array(Tuple(value, label)) — #160): the value is the full user that binds to a Panel's {user:String}, the label is the name before '@' for display. `query_kind` is a plain Array(String). Upgrades any Panel's {user:String} and {query_kind:String} parameters to searchable single-select dropdowns.",
         "dashboard": {
           "role": "filter"
         }

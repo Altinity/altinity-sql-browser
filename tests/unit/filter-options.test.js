@@ -21,6 +21,25 @@ describe('Filter option reader', () => {
       { value: '2022', label: 'Earlier' }, { value: '2023', label: 'Same' }, { value: '2024', label: 'Same' },
     ]);
   });
+  it('normalizes the two #160-documented value/label shapes (named tuple array, and Map)', () => {
+    // Array(Tuple(value, label)) — e.g.
+    //   arraySort(x -> x.label, groupUniqArray((Origin AS value, OriginCityName AS label)))
+    // (emitted as {value,label} objects via output_format_json_named_tuples_as_objects).
+    const tuple = read([{ name: 'origin', type: 'Array(Tuple(value String, label String))' }],
+      [[{ value: 'ATL', label: 'Atlanta' }, { value: 'JFK', label: 'New York' }]]);
+    expect(tuple.helpers[0]).toMatchObject({ shape: 'tuple-array',
+      options: [{ value: 'ATL', label: 'Atlanta' }, { value: 'JFK', label: 'New York' }] });
+    // Map(K, V) — e.g. mapFromArrays(groupArray(Origin), groupArray(OriginCityName)).
+    const map = read([{ name: 'origin', type: 'Map(String, String)' }], [{ ATL: 'Atlanta', JFK: 'New York' }]);
+    expect(map.helpers[0]).toMatchObject({ shape: 'map',
+      options: [{ value: 'ATL', label: 'Atlanta' }, { value: 'JFK', label: 'New York' }] });
+    // The query-log-explorer `user` filter: value = the full user that binds to
+    // {user:String}, label = the name before '@' for display.
+    const users = read([{ name: 'user', type: 'Array(Tuple(value String, label String))' }],
+      [[{ value: 'btyshkevich@altinity.com', label: 'btyshkevich' }, { value: 'default', label: 'default' }]]);
+    expect(users.helpers[0].options).toEqual([
+      { value: 'btyshkevich@altinity.com', label: 'btyshkevich' }, { value: 'default', label: 'default' }]);
+  });
   it('enforces the result envelope before helper parsing', () => {
     expect(readFilterOptions({ rowCount: 0 }).diagnostics[0].code).toBe('filter-row-count');
     expect(readFilterOptions({ rowCount: 2 }).diagnostics[0].code).toBe('filter-row-count');
