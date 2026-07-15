@@ -8,10 +8,15 @@ test.describe('Dashboard Filter sources', () => {
 
   test('renders the workbench option preview with its helper contract', async ({ page }) => {
     const preview = page.getByRole('main', { name: 'Workbench Filter preview' });
-    await expect(preview.locator('.filter-preview-helper strong')).toHaveText('origin');
-    await expect(preview.locator('.filter-preview-type')).toHaveText('Array(Tuple(value String, label String))');
-    await expect(preview).toContainText('3 options');
+    // A result-grid (consistent with the Table view): # · name · options · type · example.
+    await expect(preview.locator('table.res-table thead th')).toHaveText(['#', 'name', 'options', 'type', 'example']);
+    const cells = preview.locator('table.res-table tbody tr td.cell');
+    await expect(cells.nth(0)).toHaveText('origin');
+    await expect(cells.nth(1)).toHaveText('3');
+    await expect(cells.nth(2)).toHaveText('Array(Tuple(value String, label String))');
+    // The interactive combobox lives in the example cell — no clear × in the preview.
     await expect(preview.getByRole('combobox')).toHaveAttribute('placeholder', 'All');
+    await expect(preview.getByRole('button', { name: 'Clear origin' })).toHaveCount(0);
   });
 
   test('searches labels and commits only an exact returned value', async ({ page }) => {
