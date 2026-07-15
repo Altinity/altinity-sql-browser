@@ -35,6 +35,10 @@ import { effectiveFilterActive } from '../state.js';
 import { buildFilterBar } from './filter-bar.js';
 import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
 import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
+import { effectiveDashboardRole } from '../core/result-choice.js';
+import { filterExecution } from '../core/filter-execution.js';
+import { readFilterOptions } from '../core/filter-options.js';
+import { mergeDashboardFilterHelpers } from '../core/dashboard-filters.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -385,17 +389,29 @@ export function renderDashboard(app) {
   app.dom = {};
 
   const favorites = state.savedQueries.filter(queryFavorite);
+  const panelFavorites = [];
+  const filterFavorites = [];
+  const roleDiagnostics = [];
+  for (const query of favorites) {
+    const role = effectiveDashboardRole(query.spec);
+    if (role === 'panel') panelFavorites.push(query);
+    else if (role === 'filter') filterFavorites.push(query);
+    else if (role === 'setup') roleDiagnostics.push({ severity: 'warning', message: `${queryName(query)} uses Setup, which is not implemented yet.` });
+    else roleDiagnostics.push({ severity: 'error', message: `${queryName(query)} has unknown Dashboard role "${role}".` });
+  }
 
   // The favorites snapshot is fixed for this render, so the parameter analysis
   // (#173 phase 1 — structure only) runs once; each wave (runAll / a filter's
   // runAffected) prepares it against the current varValues with one wall-clock
   // read, and every tile gate + fetch of that wave reads the same batch.
-  const tileId = (i) => 'tile:' + i;
-  const analysis = analyzeParameterizedSources(favorites.map((q, i) => ({
+  const tileId = (i) => 'tile:' + (panelFavorites[i].id || i);
+  const analysis = analyzeParameterizedSources(panelFavorites.map((q, i) => ({
     id: tileId(i), label: queryName(q), kind: 'tile', sql: isTextFav(q) ? '' : q.sql, bindPolicy: 'row-returning',
   })));
   const prepareBatch = (validationMode = 'execute') => prepareParameterizedBatch(analysis, {
-    values: app.state.varValues,
+    values: Object.fromEntries(Object.entries(app.state.varValues).map(([name, value]) => [
+      name, curatedFields?.[name] && !app.state.filterActive[name] ? '' : value,
+    ])),
     active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
     wallNowMs: app.wallNow(), validationMode,
   });
@@ -472,24 +488,129 @@ export function renderDashboard(app) {
   }, 'Dashboard layout');
   const layoutWrap = h('div', { class: 'dash-layout-wrap' },
     h('span', { class: 'dash-seg-label' }, 'Layout'), layoutSeg.el);
-  const filterBar = buildFilterBar(app, fieldControls(analysis), (name) => runAffected(name), getFilterField);
+  const controls = fieldControls(analysis);
+  let curatedFields = {};
+  const filterHost = h('div', { class: 'dash-filter-host' });
+  const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
+  const renderFilterBar = () => filterHost.replaceChildren(buildFilterBar(
+    app, controls, (name) => runAffected(name), getFilterField, { curatedFields },
+  ));
+  renderFilterBar();
   // The toolbar is flex-start (default), so layoutWrap + filterBar pack left as
   // the issue specifies — no trailing spacer needed now the right-aligned
   // Columns control is gone (#184).
-  const toolbar = h('div', { class: 'dash-toolbar' }, layoutWrap, filterBar);
+  const toolbar = h('div', { class: 'dash-toolbar' }, layoutWrap, filterHost);
   apply();
 
   // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
   // dashboard needs its own scroll container — otherwise a tall grid clips with
   // no vertical scroll. The header + toolbar share one sticky top bar inside it.
   app.root.replaceChildren(h('div', { class: 'dash-page' },
-    h('div', { class: 'dash-topbar' }, header, toolbar), empty, grid));
+    h('div', { class: 'dash-topbar' }, header, toolbar),
+    ...roleDiagnostics.map((item) => h('div', { class: `dash-config-diagnostic is-${item.severity}` }, item.message)),
+    filterDiagnosticsHost, empty, grid));
 
   // One stable slot per favorite (favorite order), built lazily on the first
   // successful run (below) and reused for the tab's lifetime — a filter edit
   // or Refresh updates a slot's contents/visibility in place rather than
   // inserting/removing grid children (see buildTileSlot).
   let slots = [];
+  const filterSlots = new Map(filterFavorites.map((query) => [query.id, {
+    generation: 0, abortController: null, status: 'idle', lastProvider: null,
+  }]));
+
+  const supersedeFilter = (slot) => {
+    const generation = ++slot.generation;
+    slot.abortController?.abort();
+    slot.abortController = null;
+    return generation;
+  };
+
+  async function runFilterSource(query, slot, generation) {
+    const execution = filterExecution(query.sql);
+    if (execution.error) {
+      const provider = {
+        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: execution.diagnostics,
+      };
+      if (slot.generation !== generation) return null;
+      slot.status = 'error';
+      slot.lastProvider = provider;
+      return provider;
+    }
+    if (slot.generation !== generation) return null;
+    slot.status = 'loading';
+    const result = newResult(execution.format, execution.rowLimit);
+    const ac = new AbortController();
+    slot.abortController = ac;
+    await app.runReadInto(result, {
+      sql: query.sql, format: execution.format, rowLimit: execution.rowLimit,
+      params: execution.params, signal: ac.signal,
+    });
+    if (slot.generation !== generation) return null;
+    slot.abortController = null;
+    let provider;
+    if (result.error || result.cancelled) {
+      provider = {
+        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: [{
+          severity: 'error', code: 'filter-query-failed', sourceId: query.id,
+          message: `${queryName(query)}: ${result.error || 'Filter query was cancelled.'}`,
+        }],
+      };
+      slot.status = 'error';
+    } else {
+      const normalized = readFilterOptions({
+        columns: result.columns, row: result.rows[0], rowCount: result.rows.length,
+      });
+      provider = { sourceId: query.id, sourceName: queryName(query), ...normalized };
+      slot.status = normalized.helpers.length ? 'success' : 'error';
+    }
+    slot.lastProvider = provider;
+    return provider;
+  }
+
+  const renderFilterDiagnostics = (diagnostics) => {
+    filterDiagnosticsHost.replaceChildren(...diagnostics.map((item) => {
+      const retry = item.code === 'filter-query-failed' && item.sourceId
+        ? h('button', { type: 'button', onclick: () => retryFilter(item.sourceId) }, 'Retry')
+        : null;
+      return h('div', { class: `dash-config-diagnostic is-${item.severity}` }, item.message, retry);
+    }));
+  };
+
+  const applyFilterProviders = (providers) => {
+    const merged = mergeDashboardFilterHelpers({
+      providers: providers.filter(Boolean), controls,
+      values: state.varValues, active: effectiveFilterActive(state.varValues, state.filterActive),
+    });
+    curatedFields = merged.fields;
+    if (merged.changed.length) {
+      state.filterActive = merged.active;
+      app.saveFilterActive();
+    }
+    renderFilterBar();
+    renderFilterDiagnostics(merged.diagnostics);
+    return merged;
+  };
+
+  async function runFilterWave() {
+    const plan = filterFavorites.map((query) => {
+      const slot = filterSlots.get(query.id);
+      return { query, slot, generation: supersedeFilter(slot) };
+    });
+    const providers = await runPool(plan, TILE_CONCURRENCY,
+      ({ query, slot, generation }) => runFilterSource(query, slot, generation));
+    return applyFilterProviders(providers);
+  }
+
+  async function retryFilter(sourceId) {
+    const query = filterFavorites.find((item) => item.id === sourceId);
+    const slot = filterSlots.get(sourceId);
+    if (!query || !slot) return;
+    if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
+    await runFilterSource(query, slot, supersedeFilter(slot));
+    const merged = applyFilterProviders(filterFavorites.map((item) => filterSlots.get(item.id).lastProvider));
+    for (const name of merged.changed) await runAffected(name);
+  }
 
   const updateSkipNote = () => {
     const skipped = slots.filter((s) => s.status === 'skip').length;
@@ -509,8 +630,8 @@ export function renderDashboard(app) {
   // closes the stale-wave race: a queued older worker sees `slot.gen !==
   // generation` and discards itself instead of superseding a newer wave.
   const planWave = (indices, wave) => indices
-    .filter((i) => !isTextFav(favorites[i]))
-    .map((i) => ({ q: favorites[i], slot: slots[i], src: wave[i], generation: supersedeSlot(slots[i]) }));
+    .filter((i) => !isTextFav(panelFavorites[i]))
+    .map((i) => ({ index: i, q: panelFavorites[i], slot: slots[i], src: wave[i], generation: supersedeSlot(slots[i]) }));
 
   const runPlan = (plan) => {
     // Mark every planned slot loading up front — before the 6-way pool starts —
@@ -540,7 +661,7 @@ export function renderDashboard(app) {
     const f = analysis.fields[name]; // the filter bar only renders analyzed params
     const affected = new Set(f.requiredIn.concat(f.optionalIn));
     const wave = prepareWave();
-    const targets = favorites.map((q, i) => i).filter((i) => affected.has(tileId(i)));
+    const targets = panelFavorites.map((q, i) => i).filter((i) => affected.has(tileId(i)));
     // Same 6-way pool as full Refresh (#193 design req 7): a wide filter change
     // is bounded to TILE_CONCURRENCY concurrent reads, not an unbounded fan-out.
     return runPlan(planWave(targets, wave));
@@ -553,23 +674,25 @@ export function renderDashboard(app) {
     if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
     refreshBtn.disabled = true;
     if (!slots.length) {
-      slots = favorites.map((q) => buildTileSlot(q));
+      slots = panelFavorites.map((q) => buildTileSlot(q));
       slots.forEach((s) => grid.appendChild(s.card));
     }
     // Partition before execution (#166): text panels render right here —
     // synchronously, before any tile query is issued — and they never join
     // the wave below (zero queries for a text favorite).
-    slots.forEach((s, i) => { if (isTextFav(favorites[i])) renderTextSlot(app, favorites[i], s); });
+    slots.forEach((s, i) => { if (isTextFav(panelFavorites[i])) renderTextSlot(app, panelFavorites[i], s); });
     // One prepared batch (and one wall-clock read) for the whole refresh wave;
     // reserve every query-backed slot's generation NOW (planWave), before the
     // pool starts, so a queued worker from an older Refresh discards itself.
     // runPlan marks every planned slot loading up front (queued tiles included).
-    const plan = planWave(favorites.map((q, i) => i), prepareWave());
+    const reservedPlan = planWave(panelFavorites.map((q, i) => i), []);
     // try/finally so the button always re-enables and the timestamp always
     // updates — even if a tile render unexpectedly throws (runSlotTile itself
     // is total, so this is belt-and-suspenders against the pool rejecting).
     try {
-      await runPlan(plan);
+      await runFilterWave();
+      const wave = prepareWave();
+      await runPlan(reservedPlan.map((item) => ({ ...item, src: wave[item.index] })));
     } finally {
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       refreshBtn.disabled = false;

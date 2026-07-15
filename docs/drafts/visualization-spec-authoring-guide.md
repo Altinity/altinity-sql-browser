@@ -1669,3 +1669,13 @@ A build that does not implement a future panel type should preserve it and rende
 - Named tuples as JSON objects: <https://clickhouse.com/docs/operations/settings/formats#output_format_json_named_tuples_as_objects>
 - JSON Schema 2020-12: <https://json-schema.org/draft/2020-12/>
 - CodeMirror autocompletion reference: <https://codemirror.net/docs/ref/#autocomplete>
+## Dashboard Filter sources
+
+Use `dashboard.role: "filter"` on a favorited query to replace matching
+Dashboard parameter fields with strict curated option controls. The query must
+return one row; each top-level result-column name is the exact target parameter
+name. Supported values are `Array(T)`,
+`Array(Tuple(value T, label L))`, and `Map(K,V)`. Arrays keep source order;
+Maps sort by label and then value. Filter is never a `panel.cfg.type`, creates no
+tile, preserves any dormant `panel` object, and does not persist its workbench
+preview as `spec.view`.

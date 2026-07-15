@@ -35,7 +35,7 @@ function validateLibraryEntries(entries, validationService) {
     const structural = validateSavedQueryDocument(checked).find((item) => item.severity === 'error');
     if (structural) throw new Error(structural.message);
     if (validationService) {
-      const feature = validationService.validate(query.spec).find((item) => item.severity === 'error');
+      const feature = validationService.validate(query.spec, { sql: query.sql, query }).find((item) => item.severity === 'error');
       if (feature) invalidSpecError(query, index, feature);
     }
     return { id: query.id, sql: query.sql, specVersion: query.specVersion, spec: cloneJson(query.spec) };
@@ -57,7 +57,7 @@ export function parseImportDoc(text, validationService = null, options = {}) {
   const queries = cloneJson(decoded.queries);
   if (validationService) {
     for (const [index, query] of queries.entries()) {
-      const feature = validationService.validate(query.spec).find((item) => item.severity === 'error');
+      const feature = validationService.validate(query.spec, { sql: query.sql, query }).find((item) => item.severity === 'error');
       if (feature) invalidSpecError(query, index, feature);
     }
   }

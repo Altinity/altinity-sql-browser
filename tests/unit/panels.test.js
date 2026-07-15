@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { renderMarkdown, renderResolvedPanel, PANEL_TYPES, PANEL_PICKER_OPTIONS } from '../../src/ui/panels.js';
+import { renderMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/panels.js';
 import { renderResults } from '../../src/ui/results.js';
 import { parseMarkdown } from '../../src/core/markdown-lite.js';
 import { resolvePanel } from '../../src/core/panel-cfg.js';
 import { newResult } from '../../src/core/stream.js';
 import { makeApp } from '../helpers/fake-app.js';
+import { DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES } from '../../src/core/result-choice.js';
 
 const md = (text) => renderMarkdown(parseMarkdown(text));
 
@@ -110,7 +111,7 @@ function panelApp(result, panelCfg = null, over = {}) {
 const region = (app) => app.dom.resultsRegion;
 const pickType = (app, type) => {
   const sel = region(app).querySelector('.result-panel-select');
-  sel.value = type;
+  sel.value = type.includes(':') ? type : `panel:${type}`;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
@@ -144,9 +145,11 @@ describe('Panel drawer tab', () => {
     const app = panelApp(chartResult());
     renderResults(app);
     const sel = region(app).querySelector('.result-panel-select');
-    expect([...sel.options].map((o) => o.value)).toEqual(['', ...PANEL_PICKER_OPTIONS.map((o) => o.value)]);
+    expect([...sel.options].map((o) => o.value)).toEqual([
+      'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
+    ]);
     expect([...sel.options].map((o) => o.value)).not.toContain('table');
-    expect(sel.value).toBe('hbar'); // autoPanel's pick for a categorical result
+    expect(sel.value).toBe('panel:auto');
     expect(region(app).querySelectorAll('.result-view-tab')).toHaveLength(2); // Table + JSON; no fixed Panel button
     expect(region(app).querySelector('.panel-config')).toBeNull(); // no separate picker row
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
@@ -163,6 +166,30 @@ describe('Panel drawer tab', () => {
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
     expect(region(app).querySelector('.chart-view')).not.toBeNull();
+  });
+  it('selects Filter as a role, preserves Panel configuration, and never runs SQL', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], future: true });
+    app.activeTab().specParsed.dashboard = { role: 'panel', future: { keep: true } };
+    renderResults(app);
+    pickType(app, 'role:filter');
+    expect(app.activeTab().specParsed.dashboard).toEqual({ role: 'filter', future: { keep: true } });
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'line', future: true });
+    expect(app.state.resultView.value).toBe('filter');
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    renderResults(app);
+    expect(region(app).textContent).toContain('Run the query to preview Filter options.');
+  });
+  it('switches a Filter query back to Panel without rewriting unrelated Spec fields', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] });
+    app.activeTab().specParsed.dashboard = { role: 'filter', future: 1 };
+    app.activeTab().specParsed.keep = true;
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activeTab().specParsed.dashboard).toEqual({ role: 'panel', future: 1 });
+    expect(app.activeTab().specParsed.keep).toBe(true);
+    expect(app.activeTab().panelCfg.type).toBe('pie');
+    expect(app.state.resultView.value).toBe('panel');
   });
   it('a panel control merges into a linked dirty valid Spec draft', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
@@ -189,6 +216,20 @@ describe('Panel drawer tab', () => {
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
     expect(tab.specText).toBe('{"panel":');
     expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
+  });
+  it('an already-rendered chart field focuses a Spec draft that becomes invalid', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    renderResults(app);
+    const xSelect = [...region(app).querySelectorAll('.chart-field')]
+      .find((field) => field.querySelector('.chart-field-label').textContent === 'X').querySelector('select');
+    tab.specText = '{';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.dirtySpec = true;
+    xSelect.value = '1';
+    xSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
   });
   it('the toolbar selector activates Panel view from the ordinary Table view', () => {
     const app = panelApp(chartResult());
@@ -287,7 +328,7 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.kpi-card')).not.toBeNull();
     expect(region(app).querySelector('.res-table')).toBeNull();
     // ...the toolbar picker still reads Logs, the authoring type...
-    expect(region(app).querySelector('.result-panel-select').value).toBe('logs');
+    expect(region(app).querySelector('.result-panel-select').value).toBe('panel:logs');
     // ...the three Logs role selectors are the rescue controls...
     const configRows = region(app).querySelectorAll('.panel-config .chart-config');
     expect(configRows).toHaveLength(1);

@@ -439,6 +439,43 @@ describe('query run', () => {
     app.renderApp();
     return { app, e };
   }
+  it('runs Filter SQL with owned structured transport and commits only the completed preview', async () => {
+    const { app } = appForRun([
+      [(u, sql) => /SELECT \['ATL'\]/.test(sql), resp({ body: streamBody([
+        '{"meta":[{"name":"origin","type":"Array(String)"}]}\n',
+        '{"row":{"origin":["ATL","JFK"]}}\n',
+      ]) })],
+    ]);
+    const tab = app.activeTab();
+    tab.sqlDraft = "SELECT ['ATL'] AS origin";
+    tab.specParsed.dashboard = { role: 'filter' };
+    tab.specText = JSON.stringify(tab.specParsed);
+    app.state.resultView.value = 'filter';
+    await app.actions.run();
+    const request = app.chCtx.fetch.mock.calls.find(([, init]) => /SELECT \['ATL'\]/.test(init.body));
+    expect(request[0]).toContain('default_format=JSONEachRowWithProgress');
+    expect(request[0]).toContain('max_result_rows=2');
+    expect(request[0]).toContain('readonly=2');
+    expect(request[0]).toContain('output_format_json_quote_64bit_integers=1');
+    expect(tab.filterPreview.status).toBe('success');
+    expect(tab.filterPreview.normalized.helpers[0].options).toEqual([
+      { value: 'ATL', label: 'ATL' }, { value: 'JFK', label: 'JFK' },
+    ]);
+    expect(app.dom.resultsRegion.textContent).toContain('origin');
+    expect(app.state.resultView.value).toBe('filter');
+  });
+  it('blocks invalid Filter SQL before auth/network, including multi-statement and parameters', async () => {
+    const { app } = appForRun([]);
+    const tab = app.activeTab();
+    tab.specParsed.dashboard = { role: 'filter' };
+    tab.specText = JSON.stringify(tab.specParsed);
+    tab.sqlDraft = 'SELECT {x:String}; SELECT 2';
+    await app.actions.run();
+    expect(app.chCtx.fetch.mock.calls.some(([, init]) => init?.body === tab.sqlDraft)).toBe(false);
+    expect(tab.result.error).toContain('exactly one statement');
+    expect(tab.filterPreview.status).toBe('error');
+    expect(app.state.resultView.value).toBe('filter');
+  });
   it('runs an explicit KPI with owned typed streaming and renders the shared cards', async () => {
     const { app } = appForRun([
       [(u, sql) => /SELECT 42/.test(sql), resp({ body: streamBody([

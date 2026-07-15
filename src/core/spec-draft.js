@@ -4,6 +4,7 @@
 
 import { cloneJson } from './saved-query.js';
 import { createQuerySpecValidationService, querySpecSchemaService } from './spec-schema.js';
+import { filterSqlDiagnostics } from './filter-execution.js';
 
 const isDigit = (ch) => ch >= '0' && ch <= '9';
 const isHex = (ch) => /[0-9a-f]/i.test(ch);
@@ -147,14 +148,19 @@ export function parseSpecJson(text) {
 
 // Compatibility name for feature validators that predate the canonical
 // schema. Known static fields now live exclusively in query-spec-v1.schema.json.
-export const CORE_SPEC_VALIDATORS = Object.freeze([]);
+export const CORE_SPEC_VALIDATORS = Object.freeze([{
+  path: ['dashboard', 'role'],
+  validate: ({ value, context }) => value === 'filter' ? filterSqlDiagnostics(context.sql) : [],
+}]);
+
+export const defaultSpecValidationService = createQuerySpecValidationService(CORE_SPEC_VALIDATORS);
 
 /** Validate a parsed Spec through the canonical schema plus feature rules. */
-export function validateSpec(spec, validators = querySpecSchemaService) {
+export function validateSpec(spec, validators = defaultSpecValidationService, context) {
   const service = Array.isArray(validators)
     ? createQuerySpecValidationService(validators)
     : validators;
-  return service.validate(spec);
+  return service.validate(spec, context);
 }
 
 /**
@@ -167,7 +173,7 @@ export function createSpecValidatorRegistry(initial = CORE_SPEC_VALIDATORS) {
 }
 
 /** Parse and synchronously run semantic validation. */
-export function evaluateSpecText(text, validators = querySpecSchemaService, context) {
+export function evaluateSpecText(text, validators = defaultSpecValidationService, context) {
   const parsed = parseSpecJson(text);
   if (parsed.diagnostic) return { parsed: null, diagnostics: [parsed.diagnostic] };
   const diagnostics = validators && typeof validators.validate === 'function'

@@ -40,6 +40,17 @@ describe('renderTabs', () => {
     close.dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t2']);
   });
+  it('opens a Filter tab badge directly in Spec at the role', () => {
+    const app = makeApp();
+    const tab = app.activeTab();
+    app.specEditor.revealOffset = vi.fn();
+    tab.specParsed.dashboard = { role: 'filter' };
+    tab.specText = '{"dashboard":{"role":"filter"}}';
+    renderTabs(app);
+    app.dom.qtabsInner.querySelector('.query-role-badge').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.actions.setEditorMode).toHaveBeenCalledWith('spec');
+    expect(app.specEditor.revealOffset).toHaveBeenCalledWith(tab.specText.indexOf('"role"'));
+  });
 });
 
 // tabs.js is now pure state-mutation over the tab signals; the repaint on a tab

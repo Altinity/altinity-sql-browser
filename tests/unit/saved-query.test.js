@@ -1,13 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import {
   SPEC_VERSION, cloneJson, queryName, queryDescription, queryFavorite, queryView,
-  queryPanel, queryDashboard, withQuerySpec, patchQuerySpec, patchQueryPanel,
+  queryPanel, queryDashboard, withQuerySpec, patchQuerySpec, patchQueryPanel, patchQueryDashboard,
   upgradeV1Query, cloneV2Query, upgradeSavedQuery, queryContentKey, isPlainObject,
 } from '../../src/core/saved-query.js';
 
 const v2 = (spec = {}) => ({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec });
 
 describe('saved-query model', () => {
+  it('patches dashboard fields without aliases and supports field/object removal', () => {
+    const query = v2({ dashboard: { role: 'filter', future: { values: [1] } }, panel: { cfg: { type: 'line' } } });
+    const changed = patchQueryDashboard(query, { role: 'panel', future2: { ok: true } });
+    expect(changed.spec.dashboard).toEqual({ role: 'panel', future: { values: [1] }, future2: { ok: true } });
+    changed.spec.dashboard.future.values.push(2);
+    expect(query.spec.dashboard.future.values).toEqual([1]);
+    expect(patchQueryDashboard(changed, { role: undefined }).spec.dashboard.role).toBeUndefined();
+    expect(patchQueryDashboard(changed, null).spec.dashboard).toBeUndefined();
+  });
   it('recognizes plain objects and deep-clones unknown JSON objects/arrays', () => {
     expect(isPlainObject({})).toBe(true);
     expect(isPlainObject([])).toBe(false);

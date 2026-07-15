@@ -585,12 +585,12 @@ export async function exportQuery(ctx, sql, { queryId, signal, format, params } 
  */
 export async function runQuery(ctx, sql, o = {}) {
   const fmt = o.format || 'Table';
-  const isStreaming = fmt === 'Table' || fmt === 'KPI';
+  const isStreaming = fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter';
   // Streaming gets the progress-bearing JSON; raw mode sends the requested format
   // verbatim as default_format (a real ClickHouse format name from a FORMAT clause
   // or an implicit EXPLAIN). 'TSV' keeps its with-names-and-types expansion.
   const fmtParam = isStreaming
-    ? (fmt === 'KPI' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
+    ? (fmt === 'KPI' || fmt === 'Filter' ? 'JSONEachRowWithProgress' : 'JSONStringsEachRowWithProgress')
     : fmt === 'TSV'
       ? 'TabSeparatedWithNamesAndTypes'
       : fmt;

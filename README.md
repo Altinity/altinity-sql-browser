@@ -449,6 +449,26 @@ separately from the queries. The **•** dot appears after any change that hasn'
 been written to a file yet (save/rename/delete/favorite/append/rename) and clears
 on Save JSON / Open / New.
 
+### Dashboard Filter sources
+
+A favorited query whose Spec contains `"dashboard": { "role": "filter" }`
+provides curated options instead of a tile. Its SQL must be one parameter-free,
+row-returning statement with no trailing `FORMAT`, and must return exactly one
+row. Each result column targets the Dashboard parameter with the same
+case-sensitive name and may contain an ordered `Array(T)`, an ordered
+`Array(Tuple(value T, label L))`, or a `Map(K,V)` (sorted by label then value).
+The client preserves large integers and Decimals as strings, rejects NULL or
+nested option values, limits each helper to 1,000 options, and falls back to the
+ordinary parameter field when a source, consumer type, or provider conflicts.
+Filter sources run and reconcile saved values before any Panel query starts.
+
+```sql
+SELECT
+  arraySort(groupUniqArray(toString(Origin))) AS origin,
+  arraySort(groupUniqArray(toString(Dest))) AS destination
+FROM ontime
+```
+
 ## Quick start (development)
 
 ```bash

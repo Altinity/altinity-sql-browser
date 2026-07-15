@@ -2,65 +2,19 @@
 // value; the saved-query Presentation Spec contributes display metadata only.
 
 import { cloneJson, isPlainObject } from './saved-query.js';
+import { namedTupleMembers, parseClickHouseType, unwrapNullable } from './clickhouse-type.js';
 
 const NUMERIC = /^(?:U?Int(?:8|16|32|64|128|256)|Float(?:32|64)|BFloat16|Decimal(?:32|64|128|256)?\s*\()/;
 
-function unwrapNullable(type) {
-  let value = String(type || '').trim();
-  let nullable = false;
-  while (/^Nullable\s*\(/.test(value) && value.endsWith(')')) {
-    nullable = true;
-    value = value.slice(value.indexOf('(') + 1, -1).trim();
-  }
-  return { type: value, nullable };
-}
-
 export function isKpiNumericType(type) {
-  return NUMERIC.test(unwrapNullable(type).type);
-}
-
-function splitTopLevel(text) {
-  const parts = [];
-  let depth = 0; let quote = ''; let start = 0;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === quote && text[i - 1] !== '\\') quote = '';
-    } else if (ch === '`' || ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-    else if (ch === ',' && depth === 0) { parts.push(text.slice(start, i).trim()); start = i + 1; }
-  }
-  parts.push(text.slice(start).trim());
-  return parts.filter(Boolean);
-}
-
-function tupleMember(part) {
-  let depth = 0; let quote = '';
-  for (let i = 0; i < part.length; i++) {
-    const ch = part[i];
-    if (quote) {
-      if (ch === quote && part[i - 1] !== '\\') quote = '';
-    } else if (ch === '`' || ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-    else if (/\s/.test(ch) && depth === 0) {
-      const rawName = part.slice(0, i).trim();
-      const type = part.slice(i).trim();
-      const name = /^([`"']).*\1$/.test(rawName) ? rawName.slice(1, -1) : rawName;
-      return name && type ? { name, type } : null;
-    }
-  }
-  return null;
+  const parsed = parseClickHouseType(type);
+  return !!parsed && NUMERIC.test(unwrapNullable(parsed).raw);
 }
 
 export function parseKpiTupleType(type) {
-  const unwrapped = unwrapNullable(type).type;
-  if (!/^Tuple\s*\(/.test(unwrapped) || !unwrapped.endsWith(')')) return null;
-  const body = unwrapped.slice(unwrapped.indexOf('(') + 1, -1);
-  const members = splitTopLevel(body).map(tupleMember);
-  if (!members.length || members.some((member) => member == null)) return null;
-  return members;
+  const parsed = parseClickHouseType(type);
+  const members = parsed && namedTupleMembers(parsed);
+  return members ? members.map((member) => ({ name: member.name, type: member.type.raw })) : null;
 }
 
 export function resolveKpiPresentation({ fieldConfig, columnName }) {
@@ -132,7 +86,8 @@ function compactInteger(value) {
 
 export function formatKpiValue({ value, clickhouseType, presentation = {} }) {
   if (value == null) return presentation.noValue ?? '—';
-  const type = unwrapNullable(clickhouseType).type;
+  const parsedType = parseClickHouseType(clickhouseType);
+  const type = parsedType ? unwrapNullable(parsedType).raw : String(clickhouseType || '');
   const explicit = Number.isInteger(presentation.decimals) ? presentation.decimals : null;
   let rendered;
   const integerString = /^(?:U?Int)/.test(type) && (typeof value === 'bigint' || /^[+-]?\d+$/.test(String(value).trim()));

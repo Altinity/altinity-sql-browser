@@ -97,6 +97,20 @@ export function patchQueryPanel(query, patch) {
   return patchQuerySpec(query, { panel });
 }
 
+/**
+ * Patch the complete `spec.dashboard` object while retaining extension fields.
+ * `null` removes the object; an undefined patch value removes only that field.
+ */
+export function patchQueryDashboard(query, patch) {
+  if (patch === null) return patchQuerySpec(query, { dashboard: undefined });
+  const dashboard = cloneJson(queryDashboard(query) || {});
+  for (const [key, value] of Object.entries(isPlainObject(patch) ? patch : {})) {
+    if (value === undefined) delete dashboard[key];
+    else defineJsonField(dashboard, key, cloneJson(value));
+  }
+  return patchQuerySpec(query, { dashboard });
+}
+
 const cleanLegacyPanel = (value) =>
   (isPlainObject(value) && isPlainObject(value.cfg) ? cloneJson(value) : undefined);
 const cleanLegacyChart = cleanLegacyPanel;

@@ -225,15 +225,18 @@
           "type": "object",
           "properties": {
             "role": {
-              "title": "Dashboard role",
-              "description": "How the saved query participates in a dashboard.",
+              "title": "Dashboard role (Panel, Filter, or Setup)",
+              "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.",
               "type": "string",
               "enum": [
                 "panel",
                 "filter",
                 "setup"
               ],
-              "default": "panel"
+              "default": "panel",
+              "examples": [
+                "filter"
+              ]
             }
           },
           "additionalProperties": true,

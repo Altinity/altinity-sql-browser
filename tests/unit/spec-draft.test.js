@@ -49,7 +49,7 @@ describe('Spec semantic validation', () => {
       'key.with.dots': [{ anything: true }],
     };
     expect(validateSpec(spec)).toEqual([]);
-    expect(CORE_SPEC_VALIDATORS).toEqual([]);
+    expect(CORE_SPEC_VALIDATORS).toHaveLength(1);
   });
 
   it('rejects a non-object root, wrong known types, and a blank name', () => {

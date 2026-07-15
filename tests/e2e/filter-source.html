@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Filter source harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+    .surface { width: min(640px, 100%); margin-bottom: 32px; }
+  </style>
+</head>
+<body data-theme="dark">
+  <main id="preview" class="surface" aria-label="Workbench Filter preview"></main>
+  <main id="dashboard" class="surface" aria-label="Dashboard curated filter"></main>
+  <script type="module">
+    import { renderFilterPreview } from '/src/ui/filter-preview.js';
+    import { buildFilterOptionField } from '/src/ui/filter-option-field.js';
+
+    const options = [
+      { value: '', label: '(empty)' },
+      { value: 'ATL', label: 'Atlanta' },
+      { value: 'JFK', label: 'New York' },
+    ];
+    const preview = {
+      status: 'success',
+      normalized: {
+        helpers: [{ name: 'origin', sourceType: 'Array(Tuple(value String, label String))', options, totalOptions: 3, truncated: false }],
+        diagnostics: [],
+      },
+    };
+    document.querySelector('#preview').append(renderFilterPreview({ document, activeTab: () => ({ filterPreview: preview }) }));
+
+    window.__selection = { value: '', active: false, commits: 0 };
+    const field = buildFilterOptionField({
+      document, name: 'origin', options, inactiveLabel: 'All',
+      onValueChange: (value, active) => Object.assign(window.__selection, { value, active }),
+      onCommit: () => { window.__selection.commits++; },
+    });
+    document.querySelector('#dashboard').append(field.el);
+    window.__ready = true;
+  </script>
+</body>
+</html>

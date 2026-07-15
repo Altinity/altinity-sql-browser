@@ -40,8 +40,8 @@ export function isKnownPanelType(type) {
 
 // Panel types that need no query result at all — the one per-arm capability
 // every layer keys the "no SQL required / no query issued" behavior on (save
-// guard, share gate, dashboard partition, drawer preview). The filter arm
-// (#160) and setup arm (#175) will join this set when they land.
+// guard, share gate, dashboard partition, drawer preview). Dashboard roles
+// such as Filter/Setup are deliberately not panel arms and never join it.
 const QUERYLESS_TYPES = new Set(['text']);
 
 /** True when a panel payload's type renders without a query result (#166). */

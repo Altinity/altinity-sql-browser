@@ -62,6 +62,22 @@ describe('renderSavedHistory', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
+  it('saved: opens a Filter badge directly in Spec at the role', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
+    const loaded = app.activeTab();
+    app.specEditor.revealOffset = vi.fn();
+    loaded.specText = '{"dashboard":{"role":"filter"}}';
+    app.actions.loadIntoNewTab.mockReturnValue(loaded);
+    renderSavedHistory(app);
+    click(app.dom.savedList.querySelector('.query-role-badge'));
+    expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
+    expect(app.actions.setEditorMode).toHaveBeenCalledWith('spec');
+    expect(app.specEditor.revealOffset).toHaveBeenCalledWith(loaded.specText.indexOf('"role"'));
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';

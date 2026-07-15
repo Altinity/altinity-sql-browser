@@ -21,7 +21,7 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart } from './chart-render.js';
-import { patchSpecDraft, tabPanel } from '../state.js';
+import { patchSpecDraft, setTabSpecDraft, tabPanel } from '../state.js';
 import { patchQueryPanel } from '../core/saved-query.js';
 import { renderGridView, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs } from './logs.js';
@@ -31,6 +31,9 @@ import {
 } from '../core/panel-cfg.js';
 import { CHART_TYPES, schemaKey } from '../core/chart-data.js';
 import { renderKpiPanel } from './kpi-panel.js';
+import {
+  applyResultChoice, DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES, resultChoiceForSpec,
+} from '../core/result-choice.js';
 
 // ── Markdown AST → DOM ───────────────────────────────────────────────────────
 
@@ -304,31 +307,51 @@ function writePanel(app, hooks, payload, activate = false) {
 export function renderPanelTypePicker(app, r, hooks) {
   const { hasGrid, columns, saved, resolved, rescueLogs } = panelContext(app, r);
   const select = h('select', {
-    class: 'result-panel-select' + (app.state.resultView.value === 'panel' ? ' active' : ''),
-    'aria-label': 'Panel type',
-    title: 'Choose a panel visualization',
+    class: 'result-panel-select' + (['panel', 'filter'].includes(app.state.resultView.value) ? ' active' : ''),
+    'aria-label': 'Result presentation',
+    title: 'Choose a panel visualization or Dashboard role',
     onchange: (e) => {
-      const type = e.target.value;
-      if (!type) return;
-      const base = saved && !resolved.rederived
-        ? saved
-        : { cfg: resolved.cfg, key: hasGrid && isChartFamily(resolved.cfg.type) ? schemaKey(columns) : null };
-      const next = switchPanelType(base, type, columns);
-      if (hasGrid && isChartFamily(next.cfg.type)) next.key = schemaKey(columns);
-      writePanel(app, hooks, next, true);
+      const selectedId = e.target.value.includes(':') ? e.target.value : `panel:${e.target.value}`;
+      const choice = [...PANEL_RESULT_CHOICES, ...DASHBOARD_ROLE_RESULT_CHOICES]
+        .find((item) => item.id === selectedId);
+      if (!choice) return;
+      const tab = app.activeTab();
+      const apply = (spec) => {
+        let query = { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec };
+        if (choice.kind === 'panel') {
+          const base = saved && !resolved.rederived
+            ? saved
+            : { cfg: resolved.cfg, key: hasGrid && isChartFamily(resolved.cfg.type) ? schemaKey(columns) : null };
+          query = patchQueryPanel(query, { cfg: base.cfg, key: base.key ?? undefined });
+        }
+        return applyResultChoice(query, choice, columns).spec;
+      };
+      let result;
+      if (choice.kind === 'role' && !tab.specDiagnostics?.some((item) => item.code === 'invalid-json')) {
+        setTabSpecDraft(tab, apply(tab.specParsed), { dirty: true, validationService: app.specValidators });
+        result = { ok: true, invalidTab: null };
+      } else {
+        result = patchSpecDraft(tab, apply, { dirty: true, validationService: app.specValidators });
+      }
+      if (!result.ok) { app.activateInvalidSpecDraft(result.invalidTab); return; }
+      app.revalidateSpecDrafts();
+      app.specEditor.syncFromState();
+      app.state.resultView.value = choice.kind === 'role' ? 'filter' : 'panel';
+      hooks.markDirty();
+      hooks.rerender();
     },
   });
-  const prompt = h('option', { value: '' }, 'Panel…');
-  prompt.disabled = true;
-  select.appendChild(prompt);
-  for (const option of PANEL_PICKER_OPTIONS) {
-    const el = h('option', { value: option.value }, option.label);
-    select.appendChild(el);
+  const panelGroup = h('optgroup', { label: 'Panel' });
+  if (resultChoiceForSpec(app.activeTab().specParsed) === 'panel:auto') {
+    const auto = h('option', { value: 'panel:auto' }, '(auto)');
+    auto.disabled = true;
+    panelGroup.appendChild(auto);
   }
-  // The authoring type, even while rescueLogs means the preview below is a
-  // temporary fallback chart/table rather than the saved Logs config.
-  const authoringType = rescueLogs ? 'logs' : resolved.cfg.type !== 'table' ? resolved.cfg.type : '';
-  select.value = app.state.resultView.value === 'panel' ? authoringType : '';
+  for (const option of PANEL_RESULT_CHOICES) panelGroup.appendChild(h('option', { value: option.id }, option.label));
+  const roleGroup = h('optgroup', { label: 'Dashboard role' });
+  for (const option of DASHBOARD_ROLE_RESULT_CHOICES) roleGroup.appendChild(h('option', { value: option.id }, option.label));
+  select.append(panelGroup, roleGroup);
+  select.value = resultChoiceForSpec(app.activeTab().specParsed);
   return select;
 }
 

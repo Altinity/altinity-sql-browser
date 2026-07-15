@@ -191,6 +191,137 @@ function dashApp(favorites, runTile) {
 const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
 
 describe('renderDashboard', () => {
+  it('runs Filter sources before Panels, creates no Filter tile, and upgrades the matching field', async () => {
+    const calls = [];
+    const runTile = vi.fn(async (sql, params) => {
+      calls.push(sql);
+      if (sql === 'SELECT filter_options') return {
+        columns: [{ name: 'origin', type: 'Array(String)' }], rows: [[['ATL', 'JFK']]], meta: { rows: 1, bytes: 10 },
+      };
+      expect(params).toEqual({ param_origin: 'ATL' });
+      return chartResult();
+    });
+    const app = dashApp([
+      { id: 'f', name: 'Airport options', sql: 'SELECT filter_options', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Flights', sql: 'SELECT * FROM flights WHERE origin={origin:String}', favorite: true },
+    ], runTile);
+    app.state.varValues.origin = 'ATL';
+    app.state.filterActive.origin = true;
+    await renderDashboard(app);
+    expect(calls).toEqual(['SELECT filter_options', 'SELECT * FROM flights WHERE origin={origin:String}']);
+    expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
+    const curated = app.root.querySelector('.filter-option-input');
+    expect(curated).not.toBeNull();
+    expect(curated.value).toBe('ATL');
+    expect(app.root.textContent).not.toContain('Airport optionsLoading');
+  });
+
+  it('deactivates a stale curated value without replacing it and gates a required Panel', async () => {
+    const runTile = vi.fn(async (sql) => sql === 'SELECT filter_options'
+      ? { columns: [{ name: 'origin', type: 'Array(String)' }], rows: [[['JFK']]], meta: { rows: 1, bytes: 1 } }
+      : chartResult());
+    const app = dashApp([
+      { id: 'f', name: 'Options', sql: 'SELECT filter_options', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT * FROM t WHERE origin={origin:String}', favorite: true },
+    ], runTile);
+    app.state.varValues.origin = 'ATL';
+    app.state.filterActive.origin = true;
+    await renderDashboard(app);
+    expect(app.state.varValues.origin).toBe('ATL');
+    expect(app.state.filterActive.origin).toBe(false);
+    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(runTile.mock.calls.map(([sql]) => sql)).toEqual(['SELECT filter_options']);
+    expect(app.root.querySelector('.dash-tile-unfilled').textContent).toContain('origin');
+    expect(app.root.querySelector('.filter-option-input').placeholder).toBe('Not set');
+  });
+
+  it('falls back per target on duplicate providers and still runs Panels', async () => {
+    const runTile = vi.fn(async (sql) => sql.includes('filter_')
+      ? { columns: [{ name: 'x', type: 'Array(String)' }], rows: [[['a']]], meta: { rows: 1, bytes: 1 } }
+      : chartResult());
+    const app = dashApp([
+      { id: 'f1', name: 'One', sql: 'SELECT filter_one', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'f2', name: 'Two', sql: 'SELECT filter_two', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT {x:String}', favorite: true },
+    ], runTile);
+    app.state.varValues.x = 'a';
+    app.state.filterActive.x = true;
+    await renderDashboard(app);
+    expect(app.root.querySelector('.filter-option-input')).toBeNull();
+    expect(app.root.querySelector('.dash-filter-diagnostics').textContent).toContain('Multiple Filter queries provide "x": One, Two');
+    expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
+    expect(runTile).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses ordinary fallback controls on a failed Filter request and exposes source Retry', async () => {
+    const runTile = vi.fn(async (sql) => sql === 'SELECT filter_options' ? { error: 'boom' } : chartResult());
+    const app = dashApp([
+      { id: 'f', name: 'Options', sql: 'SELECT filter_options', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT {x:String}', favorite: true },
+    ], runTile);
+    app.state.varValues.x = 'a';
+    app.state.filterActive.x = true;
+    await renderDashboard(app);
+    expect(app.root.querySelector('.filter-option-input')).toBeNull();
+    expect(app.root.querySelector('.dash-filter-diagnostics').textContent).toContain('Options: boom');
+    expect(app.root.querySelector('.dash-filter-diagnostics button').textContent).toBe('Retry');
+    expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
+  });
+
+  it('reports an invalid Filter source without sending it and still runs Panels', async () => {
+    const runTile = vi.fn(async () => chartResult());
+    const app = dashApp([
+      { id: 'f', name: 'Bad options', sql: 'SELECT 1 FORMAT CSV', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT 1', favorite: true },
+    ], runTile);
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(1);
+    expect(runTile).toHaveBeenCalledWith('SELECT 1', {});
+    expect(app.root.querySelector('.dash-filter-diagnostics').textContent).toContain('cannot include a trailing FORMAT');
+    expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
+  });
+
+  it('keeps Setup and unknown future roles out of Panel execution with diagnostics', async () => {
+    const runTile = vi.fn();
+    const app = dashApp([
+      { id: 's', name: 'Prepare', sql: 'CREATE TABLE t', favorite: true, dashboard: { role: 'setup' } },
+      { id: 'u', name: 'Future', sql: 'SELECT 1', favorite: true, dashboard: { role: 'future-role' } },
+    ], runTile);
+    await renderDashboard(app);
+    expect(runTile).not.toHaveBeenCalled();
+    expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(0);
+    expect(app.root.textContent).toContain('Prepare uses Setup, which is not implemented yet.');
+    expect(app.root.textContent).toContain('Future has unknown Dashboard role "future-role".');
+  });
+
+  it('retries only the failed Filter source and re-runs Panels affected by reconciliation', async () => {
+    let filterAttempt = 0;
+    const runTile = vi.fn(async (sql) => {
+      if (sql === 'SELECT filter_options') {
+        filterAttempt++;
+        if (filterAttempt === 1) return { error: 'temporary' };
+        return { columns: [{ name: 'x', type: 'Array(String)' }], rows: [[['new']]], meta: { rows: 1, bytes: 1 } };
+      }
+      return chartResult();
+    });
+    const app = dashApp([
+      { id: 'f', name: 'Options', sql: 'SELECT filter_options', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT {x:String}', favorite: true },
+    ], runTile);
+    app.state.varValues.x = 'stale';
+    app.state.filterActive.x = true;
+    await renderDashboard(app);
+    expect(runTile).toHaveBeenCalledTimes(2);
+    app.root.querySelector('.dash-filter-diagnostics button').dispatchEvent(new Event('click', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(app.ensureFreshToken).toHaveBeenCalledTimes(3);
+    expect(filterAttempt).toBe(2);
+    expect(app.state.filterActive.x).toBe(false);
+    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(runTile).toHaveBeenCalledTimes(3);
+    expect(app.root.querySelector('.filter-option-input')).not.toBeNull();
+  });
   it('renders a header + a chart tile per chartable favorite', async () => {
     const favorites = [
       { id: '1', name: 'Chart A', sql: 'chartA', favorite: true },

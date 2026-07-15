@@ -6,6 +6,7 @@ import { Icon } from './icons.js';
 import { activeTab, allocTabId, newTabObj, setTabSpecDraft, tabDirty } from '../state.js';
 import { cloneJson, queryName, upgradeSavedQuery } from '../core/saved-query.js';
 import { batch } from '@preact/signals-core';
+import { effectiveDashboardRole } from '../core/result-choice.js';
 
 /** Paint the tab strip into app.dom.qtabsInner. */
 export function renderTabs(app) {
@@ -15,6 +16,17 @@ export function renderTabs(app) {
     const isActive = t.id === app.state.activeTabId.value;
     return h('div', { class: 'qtab' + (isActive ? ' active' : ''), onclick: () => selectTab(app, t.id) },
       h('span', { class: 'name' }, t.name),
+      effectiveDashboardRole(t.specParsed) === 'filter'
+        ? h('button', {
+            class: 'query-role-badge', title: 'Open Filter role in Spec',
+            onclick: (event) => {
+              event.stopPropagation();
+              selectTab(app, t.id);
+              app.actions.setEditorMode('spec');
+              app.specEditor.revealOffset(t.specText.indexOf('"role"'));
+            },
+          }, 'Filter')
+        : null,
       tabDirty(t) ? h('span', { class: 'dirty' }) : null,
       app.state.tabs.value.length > 1
         ? h('button', {

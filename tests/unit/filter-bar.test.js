@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { analyzeParameterizedSources, fieldControls } from '../../src/core/param-pipeline.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from '../../src/ui/filter-bar.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -45,5 +45,22 @@ describe('buildFilterBar (shared filter row)', () => {
 
   it('exposes the shared debounce constant', () => {
     expect(FILTER_DEBOUNCE_MS).toBe(500);
+  });
+
+  it('persists and commits curated selections', () => {
+    const app = makeApp();
+    const onCommit = vi.fn();
+    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, {
+      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
+    });
+    document.body.appendChild(bar);
+    bar.querySelector('input').dispatchEvent(new Event('focus'));
+    bar.querySelector('[role="option"]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    expect(app.state.varValues.x).toBe('a');
+    expect(app.state.filterActive.x).toBe(true);
+    expect(app.saveVarValues).toHaveBeenCalled();
+    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(onCommit).toHaveBeenCalledWith('x');
+    bar.remove();
   });
 });

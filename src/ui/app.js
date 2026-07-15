@@ -30,6 +30,9 @@ import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '.
 import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
 import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
+import { effectiveDashboardRole } from '../core/result-choice.js';
+import { filterExecution } from '../core/filter-execution.js';
+import { readFilterOptions } from '../core/filter-options.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
   hasBlockingSpecErrors,
@@ -253,12 +256,14 @@ export function createApp(env = {}) {
     const tab = app.activeTab();
     tab.sqlDraft = value;
     tab.dirtySql = true;
+    applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
+    app.specEditor.setDiagnostics(tab.specDiagnostics);
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
   });
   const applySpecEvaluation = (tab, text, { dirty = true } = {}) => {
-    const evaluated = evaluateSpecText(text, app.specValidators);
+    const evaluated = evaluateSpecText(text, app.specValidators, { sql: tab.sqlDraft, tab });
     tab.specText = text;
     tab.specParsed = evaluated.parsed;
     tab.specDiagnostics = evaluated.diagnostics;
@@ -771,8 +776,18 @@ export function createApp(env = {}) {
     // trailing `;`, history).
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
     if (!srcSql.trim()) return;
+    const isFilter = effectiveDashboardRole(tab.specParsed) === 'filter';
+    const filterRun = isFilter ? filterExecution(srcSql) : null;
+    if (filterRun?.error) {
+      tab.result = newResult('Filter', filterRun.rowLimit);
+      tab.result.error = filterRun.error;
+      tab.filterPreview = { status: 'error', error: filterRun.error };
+      app.state.resultView.value = 'filter';
+      renderResults(app);
+      return;
+    }
     const waveMs = wallNow(); // one wall clock for this run wave: gate + args see the same instant
-    if (varGateBlocked(waveMs)) return; // block a run (incl. Explain / row-limit re-run) with unfilled variables
+    if (!isFilter && varGateBlocked(waveMs)) return; // Filter parameters fail statically above
     // One prepared source for the whole run wave (#173), captured NOW —
     // synchronously with the gate check above, BEFORE the auth awaits below
     // (review F6 invariant, shared with runScript/exportDirect/exportScript):
@@ -796,11 +811,12 @@ export function createApp(env = {}) {
     // execution view (#165): inactive optional blocks removed, markers
     // stripped — byte-identical to srcSql for SQL without blocks. History still
     // records the template (srcSql / tab.sqlDraft).
-    const execSql = execStatementSql(srcSql);
+    const execSql = isFilter ? srcSql : execStatementSql(srcSql);
 
-    const kpiExecution = panelExecution(tabPanel(tab), execSql, {
+    const kpiExecution = isFilter ? { format: 'Table', rowLimit: app.state.resultRowLimit, params: {}, error: null }
+      : panelExecution(tabPanel(tab), execSql, {
       format: 'Table', rowLimit: app.state.resultRowLimit, params: {},
-    });
+      });
     if (kpiExecution.error) {
       tab.result = newResult('KPI', 2);
       tab.result.error = kpiExecution.error;
@@ -812,13 +828,16 @@ export function createApp(env = {}) {
     // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
     // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
     // the five EXPLAIN views; everything else streams structured (Table).
-    const explicitFmt = isKpiPanel(tabPanel(tab)) ? null : detectSqlFormat(execSql);
-    const parsed = explicitFmt ? null : parseExplain(execSql);
-    const explainMode = !explicitFmt && (parsed != null || app.state.forceExplain);
+    const panelIsKpi = !isFilter && isKpiPanel(tabPanel(tab));
+    const explicitFmt = isFilter || panelIsKpi ? null : detectSqlFormat(execSql);
+    const parsed = isFilter || explicitFmt ? null : parseExplain(execSql);
+    const explainMode = !isFilter && !explicitFmt && (parsed != null || app.state.forceExplain);
     let runSql = execSql;
     let fmt;
     let explainView = null;
-    if (explainMode) {
+    if (isFilter) {
+      fmt = filterRun.format;
+    } else if (explainMode) {
       // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
       // is honored exactly (canonical match → its rich view, else the verbatim
       // Explain view); the button-forced path falls through to Explain. We never
@@ -834,16 +853,17 @@ export function createApp(env = {}) {
         ? execSql
         : buildExplainQuery(inner, explainView, explainOpts);
     } else {
-      fmt = isKpiPanel(tabPanel(tab)) ? kpiExecution.format : explicitFmt || 'Table';
+      fmt = panelIsKpi ? kpiExecution.format : explicitFmt || 'Table';
     }
 
     // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
     // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = explainMode ? 0 : isKpiPanel(tabPanel(tab)) ? kpiExecution.rowLimit : app.state.resultRowLimit;
+    const rowLimit = isFilter ? filterRun.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit : app.state.resultRowLimit;
     const t0 = now();
     tab.result = newResult(fmt, rowLimit);
+    if (isFilter) tab.filterPreview = { status: 'running' };
     if (explainView) tab.result.explainView = explainView;
     app.state.resultSort = { col: null, dir: 'asc' };
     app.state.runT0 = t0;
@@ -859,7 +879,7 @@ export function createApp(env = {}) {
     // already be set. (The old explicit setRunBtn(true)/renderResults are now
     // those effects' job.)
     batch(() => {
-      app.state.resultView.value = ['table', 'json', 'panel'].includes(view) ? view : app.state.resultView.value;
+      app.state.resultView.value = ['table', 'json', 'panel', 'filter'].includes(view) ? view : app.state.resultView.value;
       app.state.running.value = true;
     });
 
@@ -873,7 +893,9 @@ export function createApp(env = {}) {
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
-        params: { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
+        params: isFilter
+          ? filterRun.params
+          : { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => renderResults(app),
       });
     } finally {
@@ -883,6 +905,18 @@ export function createApp(env = {}) {
       app.state.runQueryId = null;
       app.state.runT0 = null;
       tab.result.progress.elapsed_ns = (now() - t0) * 1e6;
+      if (isFilter) {
+        tab.filterPreview = tab.result.error || tab.result.cancelled
+          ? { status: 'error', error: tab.result.error || 'Filter query was cancelled.' }
+          : {
+              status: 'success',
+              normalized: readFilterOptions({
+                columns: tab.result.columns,
+                row: tab.result.rows[0],
+                rowCount: tab.result.rows.length,
+              }),
+            };
+      }
       // #185: capture the source that produced a normal, row-returning
       // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
       // empty results stay ineligible), so the Data Pane's Expand can open an
@@ -911,7 +945,7 @@ export function createApp(env = {}) {
         // Spec completion is intentionally stable during a run and survives a
         // later failed/cancelled run. Snapshot only completed structured
         // results; never expose partially streamed metadata to the editor.
-        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI')
+        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter')
           ? tab.result.columns.map((column) => ({ ...column }))
           : [];
         app.recordHistory(tab, opts && opts.sql);
@@ -1070,6 +1104,9 @@ export function createApp(env = {}) {
     // Mobile (#126): a run jumps the bottom-nav to the Results panel so the data
     // the user just asked for is what they see next.
     if (app.state.isMobile.value) app.state.mobileView.value = 'results';
+    if (effectiveDashboardRole(app.activeTab().specParsed) === 'filter') {
+      return run(hasSel ? { ...opts, sql: input } : opts);
+    }
     // >1 statement → script grid (a remembered single-result view doesn't apply).
     if (statements.length > 1) return runScript(statements, input);
     // 1 statement → today's rich path. Forward opts (e.g. a saved query's

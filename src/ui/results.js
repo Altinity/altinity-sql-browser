@@ -23,6 +23,7 @@ import { openInDetachedTab } from './detached-view.js';
 import { buildFilterBar } from './filter-bar.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
 import { panelExecution } from '../core/panel-execution.js';
+import { renderFilterPreview } from './filter-preview.js';
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
@@ -71,14 +72,16 @@ export function renderResults(app) {
   }
   const view = app.state.resultView.value;
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
-  if (streamingBlank) {
+  if (streamingBlank && view !== 'filter') {
     inner.appendChild(loadingPlaceholder('Starting query…'));
-  } else if (!r && view !== 'panel') {
+  } else if (!r && view !== 'panel' && view !== 'filter') {
     // The Panel tab renders even with no result at all (#166): a text panel
     // needs none, and query-backed types show their own empty-preview hint.
     inner.appendChild(h('div', { class: 'empty-results' },
       h('div', { class: 'chip' }, Icon.play()),
       h('div', null, 'Press ', h('kbd', null, '⌘↵'), ' to run query')));
+  } else if (view === 'filter') {
+    inner.appendChild(renderFilterPreview(app));
   } else if (r && r.error) {
     inner.appendChild(h('div', { class: 'results-error' }, r.error));
   } else if (r && r.schemaGraph) {

@@ -737,6 +737,15 @@ body {
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
 }
 
+.filter-preview { display: grid; gap: 12px; padding: 14px; overflow: auto; }
+.filter-preview-helper { display: grid; gap: 6px; max-width: 560px; }
+.filter-preview-head { display: flex; justify-content: space-between; gap: 16px; }
+.filter-preview-type, .filter-preview-note, .filter-preview-diagnostic { color: var(--muted); font-size: 12px; }
+.filter-preview-diagnostic.is-error, .filter-preview-message.is-error { color: var(--danger); }
+.filter-preview-message { padding: 24px; color: var(--muted); }
+.filter-option-control { position: relative; }
+.filter-option-input { width: 100%; }
+
 /* ------------ json view ------------ */
 /* height:100% (not flex:1) — .res-body is a relatively-positioned block, not a
    flex container, so flex had no effect and the pane grew to content height with

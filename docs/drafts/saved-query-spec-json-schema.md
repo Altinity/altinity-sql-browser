@@ -432,6 +432,16 @@ A `required` error should point to the containing object or to a synthetic child
 
 ## Schema/version lifecycle
 
+### Dashboard Filter role
+
+`dashboard.role` is an extensible participation discriminator, not a panel
+type. Missing means `panel`; `filter` selects the one-row, multi-helper option
+source contract; `setup` remains schema-valid for the later shared-session
+phase. Filter SQL semantics are app-owned feature validation because they
+depend on the saved query's separate SQL document. Those diagnostics are
+recomputed on either SQL or Spec edits and block atomic Save without changing
+the canonical schema or `specVersion`.
+
 ### Spec version
 
 The schema `$id` identifies query Spec version 1.

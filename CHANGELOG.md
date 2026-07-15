@@ -9,6 +9,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Favorited saved queries can now act as Dashboard Filter sources** (#160).
+  One explicit read-only query returns exactly one row containing any number of
+  `Array(T)`, `Array(Tuple(value T, label L))`, or `Map(K,V)` helpers. Exact
+  result-column names upgrade matching Dashboard parameters to strict,
+  searchable single-select controls; invalid sources and provider conflicts
+  fall back per field without delaying or removing unrelated panels. Filter
+  requests run and reconcile persisted activation before Panel requests start,
+  with bounded concurrency, cancellation generations, Refresh, and source Retry.
+  The workbench result selector is role-aware, preserves dormant Panel config,
+  and provides a completed-run-only Filter preview without changing shared
+  Dashboard values.
+
 ## [0.4.5] - 2026-07-14
 
 ### Changed
