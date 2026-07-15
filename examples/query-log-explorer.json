@@ -4,39 +4,13 @@
   "exportedAt": "2026-07-15T00:00:00.000Z",
   "queries": [
     {
-      "id": "qle-filter-user",
-      "sql": "SELECT groupArray(CAST((user, user) AS Tuple(value String, label String))) AS user\nFROM (SELECT DISTINCT user FROM system.query_log WHERE user != '' ORDER BY user)",
+      "id": "qle-filter",
+      "sql": "SELECT arraySort()(groupUniqArray(user)) as user,\n       arraySort()(groupUniqArray(query_kind)) as query_kind\nFROM system.query_log WHERE query_log.user != ''\nSETTINGS enable_named_columns_in_function_tuple = 1",
       "specVersion": 1,
       "spec": {
-        "name": "Filter · Users",
+        "name": "Filter",
         "favorite": true,
-        "description": "Curated Dashboard Filter source (Array(Tuple(value, label)) shape): every distinct user seen in system.query_log, as a searchable single-select. Upgrades any Panel's {user:String} parameter from a plain text box to this dropdown.",
-        "dashboard": {
-          "role": "filter"
-        }
-      }
-    },
-    {
-      "id": "qle-filter-kind",
-      "sql": "SELECT CAST(map(\n  'Select', 'SELECT queries',\n  'Insert', 'INSERT queries',\n  'Show', 'SHOW / metadata queries',\n  'Explain', 'EXPLAIN queries',\n  'Describe', 'DESCRIBE queries',\n  'KillQuery', 'KILL QUERY commands'\n) AS Map(String, String)) AS kind",
-      "specVersion": 1,
-      "spec": {
-        "name": "Filter · Query kind",
-        "favorite": true,
-        "description": "Curated Dashboard Filter source (Map(String, String) shape): a fixed map of real query_kind values to human-friendly labels. Upgrades any Panel's {kind:String} parameter to this dropdown — the label is shown, the map's key (the real query_kind) is what's bound to the parameter.",
-        "dashboard": {
-          "role": "filter"
-        }
-      }
-    },
-    {
-      "id": "qle-filter-errcode",
-      "sql": "SELECT groupArray(toString(exception_code)) AS errcode\nFROM (SELECT DISTINCT exception_code FROM system.query_log WHERE exception_code != 0 ORDER BY exception_code)",
-      "specVersion": 1,
-      "spec": {
-        "name": "Filter · Exception codes",
-        "favorite": true,
-        "description": "Curated Dashboard Filter source (plain Array(T) shape — value and label are the same string): every distinct ClickHouse exception code actually seen in this cluster's query_log. Upgrades any Panel's {errcode:String} parameter to this dropdown.",
+        "description": "Single Dashboard Filter source: the distinct `user` and `query_kind` values seen in system.query_log, each returned as a plain Array(String). Upgrades any Panel's {user:String} and {query_kind:String} parameters to searchable single-select dropdowns.",
         "dashboard": {
           "role": "filter"
         }
@@ -98,7 +72,7 @@
         "panel": {
           "cfg": {
             "type": "text",
-            "content": "# Dashboard Filter sources demo\n\nEvery favorite below is a Panel, except three **Filter**-role sources (#160) that populate the filter bar above with option lists queried live from `system.query_log` on the **otel** demo cluster.\n\n**Shared filters** — plain, type-detected controls (no Filter source), declared by every data Panel:\n\n- `from` — **required** window start (`DateTime`); type an absolute time or a relative expression like `-24h`, `-7d`, `now`\n- `to` — optional window end (`DateTime`); blank means \"up to now\"\n- `search` — optional case-insensitive substring search over the query text (and, in the log panel, the exception message)\n- `minDurationMs` — optional minimum query-duration threshold, in ms (slowest-queries panel)\n\n**Curated filters** — sourced from a favorited Filter-role query, one per option shape:\n\n- `user` — real ClickHouse users, from an `Array(Tuple(value, label))` source\n- `kind` — friendly query-kind labels, from a `Map(String, String)` source\n- `errcode` — exception codes actually seen on this cluster, from a plain `Array(String)` source\n\nAnalytical panels are adapted from the Altinity KB page [\"Handy queries for system.query_log\"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/)."
+            "content": "# Dashboard Filter sources demo\n\nEvery favorite below is a Panel, except one **Filter**-role source (#160) that populates the filter bar above with `user` and `query_kind` option lists queried live from `system.query_log` on the **otel** demo cluster.\n\n**Shared filters** — plain, type-detected controls (no Filter source), declared by the data Panels:\n\n- `from` — **required** window start (`DateTime`); type an absolute time or a relative expression like `-24h`, `-7d`, `now`\n- `to` — optional window end (`DateTime`); blank means \"up to now\"\n- `search` — optional case-insensitive substring search over the query text (and, in the log panel, the exception message)\n- `minDurationMs` — optional minimum query-duration threshold, in ms (slowest-queries panel)\n\n**Curated filters** — sourced from the single favorited **Filter** query, upgrading matching Panel parameters to searchable dropdowns:\n\n- `user` — real ClickHouse users seen in the query log\n- `query_kind` — the query kinds seen in the query log (Select, Insert, …)\n\nAnalytical panels are adapted from the Altinity KB page [\"Handy queries for system.query_log\"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/)."
           }
         }
       }
@@ -110,7 +84,7 @@
       "spec": {
         "name": "Slowest SELECT queries",
         "favorite": true,
-        "description": "Adapted from the Altinity KB's \"Most resource-intensive queries\" — the highest-latency completed SELECTs, with duration/memory/rows-read to spot what's actually expensive. Demonstrates the shared time range ({from:DateTime} required, {to:DateTime} optional) plus the CURATED {user:String} dropdown (Filter · Users), the AUTO {minDurationMs:UInt32} numeric threshold, and the universal {search:String} query-text search.",
+        "description": "Adapted from the Altinity KB's \"Most resource-intensive queries\" — the highest-latency completed SELECTs, with duration/memory/rows-read to spot what's actually expensive. Demonstrates the shared time range ({from:DateTime} required, {to:DateTime} optional), the CURATED {user:String} dropdown (from the Filter source), the AUTO {minDurationMs:UInt32} numeric threshold, and the universal {search:String} query-text search.",
         "view": "panel",
         "panel": {
           "cfg": {
@@ -121,12 +95,12 @@
     },
     {
       "id": "qle-columns",
-      "sql": "SELECT arrayJoin(columns) AS column, count() AS hits\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND event_time >= {from:DateTime}\n  AND notEmpty(columns)\n/*[ AND event_time <= {to:DateTime} ]*/\n/*[ AND query_kind = {kind:String} ]*/\n/*[ AND positionCaseInsensitive(query, {search:String}) > 0 ]*/\nGROUP BY column\nORDER BY hits DESC\nLIMIT 20",
+      "sql": "SELECT arrayJoin(columns) AS column, count() AS hits\nFROM system.query_log\nWHERE type = 'QueryFinish'\n  AND event_time >= {from:DateTime}\n  AND notEmpty(columns)\n/*[ AND event_time <= {to:DateTime} ]*/\n/*[ AND query_kind = {query_kind:String} ]*/\n/*[ AND positionCaseInsensitive(query, {search:String}) > 0 ]*/\nGROUP BY column\nORDER BY hits DESC\nLIMIT 20",
       "specVersion": 1,
       "spec": {
         "name": "Most-selected columns",
         "favorite": true,
-        "description": "Adapted from the Altinity KB's \"Most-selected columns\" — which columns have been referenced most often. Demonstrates the CURATED {kind:String} dropdown (Filter · Query kind, Map-shaped) alongside the shared time range ({from:DateTime} required, {to:DateTime} optional) and the universal {search:String} search.",
+        "description": "Adapted from the Altinity KB's \"Most-selected columns\" — which columns have been referenced most often. Demonstrates the CURATED {query_kind:String} dropdown (from the Filter source) alongside the shared time range ({from:DateTime} required, {to:DateTime} optional) and the universal {search:String} search.",
         "view": "panel",
         "panel": {
           "cfg": {
@@ -162,34 +136,13 @@
       }
     },
     {
-      "id": "qle-errors-over-time",
-      "sql": "SELECT toDate(event_time) AS day, count() AS errors\nFROM system.query_log\nWHERE exception_code != 0\n  AND event_time >= {from:DateTime}\n/*[ AND event_time <= {to:DateTime} ]*/\n/*[ AND toString(exception_code) = {errcode:String} ]*/\n/*[ AND positionCaseInsensitive(query, {search:String}) > 0 ]*/\nGROUP BY day\nORDER BY day",
-      "specVersion": 1,
-      "spec": {
-        "name": "Errors over time",
-        "favorite": true,
-        "description": "Daily count of failed queries (any exception_code != 0). Demonstrates the CURATED {errcode:String} dropdown (Filter · Exception codes, plain Array(T) shape — value and label are identical) alongside the shared time range ({from:DateTime} required, {to:DateTime} optional) and the universal {search:String} search.",
-        "view": "panel",
-        "panel": {
-          "cfg": {
-            "type": "area",
-            "x": 0,
-            "y": [
-              1
-            ],
-            "series": null
-          }
-        }
-      }
-    },
-    {
       "id": "qle-logs",
       "sql": "SELECT\n  event_time,\n  multiIf(exception_code != 0, 'error', query_duration_ms > 1000, 'warn', 'info') AS level,\n  if(exception_code != 0, exception, query) AS message,\n  user,\n  query_kind,\n  query_duration_ms,\n  formatReadableSize(memory_usage) AS memory\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing')\n  AND query_kind NOT IN ('Insert', 'AsyncInsertFlush')\n  AND event_time >= {from:DateTime}\n/*[ AND event_time <= {to:DateTime} ]*/\n/*[ AND user = {user:String} ]*/\n/*[ AND (positionCaseInsensitive(query, {search:String}) > 0 OR positionCaseInsensitive(exception, {search:String}) > 0) ]*/\nORDER BY event_time DESC\nLIMIT 300",
       "specVersion": 1,
       "spec": {
         "name": "Recent query activity (log)",
         "favorite": true,
-        "description": "Raw query_log rows as a Logs view, level-colored by outcome (error/slow/info) and excluding the noisy internal Insert/AsyncInsertFlush firehose so the feed reads as actual query activity. Uses the shared time range ({from:DateTime} required, {to:DateTime} optional), the CURATED {user:String} dropdown, and the universal {search:String} search — which here matches both the query text and the exception message.",
+        "description": "Raw query_log rows as a Logs view, level-colored by outcome (error/slow/info) and excluding the noisy internal Insert/AsyncInsertFlush firehose so the feed reads as actual query activity. Uses the shared time range ({from:DateTime} required, {to:DateTime} optional), the CURATED {user:String} dropdown (from the Filter source), and the universal {search:String} search — which here matches both the query text and the exception message.",
         "view": "panel",
         "panel": {
           "cfg": {

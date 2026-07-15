@@ -737,10 +737,11 @@ body {
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
 }
 
-.filter-preview { display: grid; gap: 12px; padding: 14px; overflow: auto; }
-.filter-preview-helper { display: grid; gap: 6px; max-width: 560px; }
-.filter-preview-head { display: flex; justify-content: space-between; gap: 16px; }
-.filter-preview-type, .filter-preview-note, .filter-preview-diagnostic { color: var(--fg-mute); font-size: 12px; }
+.filter-preview { display: flex; flex-direction: column; gap: 10px; padding: 12px; overflow: auto; }
+/* The `example` cell hosts a live combobox, not truncatable text — opt it out of
+   the grid's cell cursor/pointer affordance. */
+.filter-preview table.res-table td.cell.filter-example { cursor: default; }
+.filter-preview-diagnostic { color: var(--fg-mute); font-size: 12px; }
 .filter-preview-diagnostic.is-warning { color: var(--warn-fg); }
 .filter-preview-diagnostic.is-error, .filter-preview-message.is-error { color: var(--error-fg); }
 .filter-preview-message { padding: 24px; color: var(--fg-mute); }

@@ -77,17 +77,22 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   - Typing SQL now re-evaluates the whole Spec validator graph only for
     Filter-role tabs (whose diagnostics depend on the SQL), not on every
     keystroke of every tab.
-  - The workbench results drawer now offers a first-class **Filter** view tab
-    for a Filter-role query (alongside Table/JSON), rendering the option-bundle
-    preview exactly as the field appears on the Dashboard. Previously the
-    preview was only reachable by re-selecting "Filter" in the role picker,
-    which fires no change event when it is already the selected role — so the
-    view never switched and the drawer kept showing the raw table/JSON.
+  - The result-presentation `<select>` now switches the drawer to a preview
+    **consistently**: it shows a `Preview…` placeholder while on Table/JSON, so
+    picking *any* entry (a chart, Logs, KPI, Text, or the Filter role) — even the
+    query's current one — is a real `change` that switches to that preview.
+    Previously it reflected the current type/role, so re-picking it fired no
+    event and the view never switched.
+  - The Filter drawer preview is now a **result-grid** consistent with the
+    Table/JSON views — columns `name · options · type · example`, with the
+    interactive per-helper combobox in the `example` cell (no clear ×).
 - `examples/query-log-explorer.json` reworked: the `hours` lookback is replaced
   by a real DateTime range — `from` (required) and `to` (optional) on
-  `event_time` — applied to every `system.query_log` panel, and `namePattern`
-  is replaced by a universal optional `search` that substring-matches the query
-  text across all panels (and the exception message in the log panel).
+  `event_time` — applied to every `system.query_log` panel; `namePattern` is
+  replaced by a universal optional `search` over the query text (and the
+  exception message in the log panel); the three per-shape Filter favorites are
+  consolidated into a **single** `Filter` source returning `user` + `query_kind`,
+  and the exception-code Filter and "Errors over time" panel are removed.
 
 ### Changed
 - **Saved-query Library JSON now uses the version 2 canonical model** (#211):

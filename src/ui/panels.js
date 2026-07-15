@@ -341,6 +341,14 @@ export function renderPanelTypePicker(app, r, hooks) {
       hooks.rerender();
     },
   });
+  // A disabled placeholder shown whenever the drawer is on Table/JSON (not a
+  // preview). Selecting it is impossible, so picking ANY real entry — even the
+  // query's current type/role — is a genuine `change` that switches the view to
+  // that preview. Without it, `select.value` would already equal the current
+  // choice and re-picking it would fire no event (the view would never switch).
+  const prompt = h('option', { value: '' }, 'Preview…');
+  prompt.disabled = true;
+  select.appendChild(prompt);
   const panelGroup = h('optgroup', { label: 'Panel' });
   if (resultChoiceForSpec(app.activeTab().specParsed) === 'panel:auto') {
     const auto = h('option', { value: 'panel:auto' }, '(auto)');
@@ -351,7 +359,11 @@ export function renderPanelTypePicker(app, r, hooks) {
   const roleGroup = h('optgroup', { label: 'Dashboard role' });
   for (const option of DASHBOARD_ROLE_RESULT_CHOICES) roleGroup.appendChild(h('option', { value: option.id }, option.label));
   select.append(panelGroup, roleGroup);
-  select.value = resultChoiceForSpec(app.activeTab().specParsed);
+  // Reflect the current choice only while a preview is showing; on Table/JSON
+  // the placeholder is selected so any pick is a real change (see above).
+  select.value = ['panel', 'filter'].includes(app.state.resultView.value)
+    ? resultChoiceForSpec(app.activeTab().specParsed)
+    : '';
   return select;
 }
 

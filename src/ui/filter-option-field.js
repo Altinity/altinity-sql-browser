@@ -84,7 +84,10 @@ export function buildFilterOptionField({
   wireComboInput({ input, ...combo }, { onValueInput: () => {}, onCommit: strictCommit });
   if (preview) input.setAttribute('data-preview-local', 'true');
 
-  const clear = h('button', {
+  // The inline clear (×) resets to the inactive "All" state. Omitted in the
+  // read-only drawer preview (`preview`), where the field is a demonstration in
+  // a grid cell, not a live dashboard filter — the user asked for no × there.
+  const clear = preview ? null : h('button', {
     class: 'var-combo-clear-inline', type: 'button', title: inactiveLabel,
     'aria-label': `Clear ${name}`,
     // Commit BEFORE blur (#174 §1, same as an option's own mousedown-commit in

@@ -146,10 +146,10 @@ describe('Panel drawer tab', () => {
     renderResults(app);
     const sel = region(app).querySelector('.result-panel-select');
     expect([...sel.options].map((o) => o.value)).toEqual([
-      'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
+      '', 'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
     ]);
     expect([...sel.options].map((o) => o.value)).not.toContain('table');
-    expect(sel.value).toBe('panel:auto');
+    expect(sel.value).toBe('panel:auto'); // reflects the current choice while the panel preview shows
     expect(region(app).querySelectorAll('.result-view-tab')).toHaveLength(2); // Table + JSON; no fixed Panel button
     expect(region(app).querySelector('.panel-config')).toBeNull(); // no separate picker row
     expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
@@ -190,6 +190,17 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().specParsed.keep).toBe(true);
     expect(app.activeTab().panelCfg.type).toBe('pie');
     expect(app.state.resultView.value).toBe('panel');
+  });
+  it('shows the placeholder on Table/JSON and switches to the preview when the current type is re-picked', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] }, { resultView: 'table' });
+    renderResults(app);
+    const sel = region(app).querySelector('.result-panel-select');
+    expect(sel.value).toBe(''); // placeholder while viewing the raw Table
+    // Re-picking the query's CURRENT type still switches to its preview — the
+    // placeholder makes it a genuine change event (the reported inconsistency).
+    pickType(app, 'line');
+    expect(app.state.resultView.value).toBe('panel');
+    expect(region(app).querySelector('.chart-view')).not.toBeNull();
   });
   it('a panel control merges into a linked dirty valid Spec draft', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
