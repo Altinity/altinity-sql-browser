@@ -2185,7 +2185,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   max-width: 1560px; margin: 0 auto;
 }
 @media (max-width: 1100px) { .dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .dash-grid { grid-template-columns: 1fr; } }
 /* Report mode (#149 D2): one centered column (1100px) with taller tiles. The
    .is-report/.is-wide selectors outweigh the responsive `.dash-grid` rules
    above (class+class > single class), so both stay one column at every width —
@@ -2311,13 +2310,55 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-kpi-state-card[role='alert'] .dash-kpi-state-message { color: var(--error-fg); }
 .dash-kpi-warnings { display: grid; gap: 4px; }
 .dash-kpi-warning { color: var(--fg-mute); font-size: 12px; }
+/* The canonical app mobile breakpoint: keep only the primary Dashboard
+   actions in one header row, visually normalize every saved desktop layout,
+   and let the shared filter controls scroll horizontally without clipping
+   their fixed-position popovers. These are CSS-only overrides, so widening
+   restores the persisted desktop layout without writing preferences. */
+@media (max-width: 768px) {
+  .dash-header {
+    flex-wrap: nowrap; gap: 8px; padding: 8px 10px;
+  }
+  .dash-back {
+    width: 30px; height: 30px; padding: 0; justify-content: center; flex-shrink: 0;
+  }
+  .dash-back-label,
+  .dash-fav,
+  .dash-skip,
+  .dash-src,
+  .dash-updated,
+  .dash-spacer,
+  .dash-refresh-label,
+  .dash-layout-wrap { display: none; }
+  .dash-title {
+    flex: 1; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dash-icobtn,
+  .dash-refresh { width: 30px; height: 30px; flex-shrink: 0; }
+  .dash-refresh { padding: 0; justify-content: center; }
+
+  .dash-toolbar { flex-wrap: nowrap; padding: 6px 10px; }
+  .dash-toolbar:not(.has-filters) { display: none; }
+  .dash-filter-host { width: 100%; min-width: 0; overflow: hidden; }
+  .dash-filters {
+    width: 100%; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .dash-filters::-webkit-scrollbar { display: none; }
+  .dash-filters > .var-field { flex-shrink: 0; }
+
+  .dash-grid,
+  .dash-grid.is-wide,
+  .dash-grid.is-report {
+    grid-template-columns: 1fr; max-width: none; width: 100%; margin: 0; padding: 12px;
+  }
+  .dash-grid.is-report .dash-tile { min-height: 300px; }
+}
 @media (max-width: 520px) {
   .dash-kpi-stream .kpi-card, .dash-kpi-state-card {
     flex-basis: 100%; min-inline-size: 0; max-inline-size: none; inline-size: 100%;
     min-width: 0; max-width: none; width: 100%;
   }
-}
-@media (max-width: 640px) {
-  .dash-grid { grid-template-columns: 1fr; padding: 12px; }
-  .dash-header { padding: 10px 12px; gap: 8px; }
 }
