@@ -2,8 +2,7 @@ import {
   arrayElement, isSupportedOptionScalar, mapTypes, namedTupleMembers, parseClickHouseType,
 } from './clickhouse-type.js';
 import { FILTER_HELPER_CAP, FILTER_OPTION_CAP } from './filter-execution.js';
-
-const diag = (severity, code, message, extra = {}) => ({ severity, code, message, ...extra });
+import { diagnostic as diag } from './diagnostics.js';
 const scalar = (value) => (
   value !== null && value !== undefined && !Array.isArray(value) && typeof value !== 'object'
     ? String(value)

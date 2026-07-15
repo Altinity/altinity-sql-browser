@@ -661,6 +661,17 @@ describe('query run', () => {
     // the tab strip re-rendered with the dirty marker
     expect(app.dom.qtabsInner.querySelector('.dirty')).not.toBeNull();
   });
+  it('re-evaluates a Filter-role Spec live as its SQL is typed (audit #2 gate)', () => {
+    const { app } = appForRun([]);
+    const tab = app.activeTab();
+    tab.specParsed = { dashboard: { role: 'filter' } };
+    tab.specText = JSON.stringify(tab.specParsed);
+    const view = app.dom.sqlEditorView;
+    // A Filter source must be a single statement — typing two makes the Spec's
+    // SQL-dependent diagnostic appear without touching the Spec editor.
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT 1; SELECT 2' } });
+    expect(tab.specDiagnostics.some((d) => /exactly one statement/.test(d.message))).toBe(true);
+  });
   it('query variables (#134): renders an input per detected {name:Type}, hides when none', () => {
     const { app } = appForRun([]);
     app.activeTab().sqlDraft = 'SELECT {database:String}, {table:String}';

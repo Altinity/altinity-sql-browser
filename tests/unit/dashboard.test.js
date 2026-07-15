@@ -210,10 +210,30 @@ describe('renderDashboard', () => {
     await renderDashboard(app);
     expect(calls).toEqual(['SELECT filter_options', 'SELECT * FROM flights WHERE origin={origin:String}']);
     expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
-    const curated = app.root.querySelector('.filter-option-input');
+    const curated = app.root.querySelector('.filter-select .var-input');
     expect(curated).not.toBeNull();
     expect(curated.value).toBe('ATL');
     expect(app.root.textContent).not.toContain('Airport optionsLoading');
+  });
+
+  it('seeds curated fields from the persisted cache for an immediate combobox and re-persists the live bundle (#234)', async () => {
+    const runTile = vi.fn(async (sql) => (sql === 'SELECT filter_options'
+      ? { columns: [{ name: 'origin', type: 'Array(String)' }], rows: [[['ATL', 'JFK']]], meta: { rows: 1, bytes: 1 } }
+      : chartResult()));
+    const app = dashApp([
+      { id: 'f', name: 'Options', sql: 'SELECT filter_options', favorite: true, dashboard: { role: 'filter' } },
+      { id: 'p', name: 'Panel', sql: 'SELECT * FROM t WHERE origin={origin:String}', favorite: true },
+    ], runTile);
+    app.state.filterCurated = { origin: { options: [{ value: 'ATL', label: 'ATL' }], sourceType: 'Array(String)' } };
+    // The first synchronous paint (before the async Filter wave resolves) must
+    // already show the curated combobox from cache — not a plain-text field.
+    const pending = renderDashboard(app);
+    expect(app.root.querySelector('.filter-select .var-input')).not.toBeNull();
+    await pending;
+    // …and the live wave persists its own bundle for the next load.
+    expect(app.saveJSON).toHaveBeenCalledWith('asb:filterCurated', expect.objectContaining({
+      origin: expect.objectContaining({ options: [{ value: 'ATL', label: 'ATL' }, { value: 'JFK', label: 'JFK' }] }),
+    }));
   });
 
   it('deactivates a stale curated value without replacing it and gates a required Panel', async () => {
@@ -232,7 +252,7 @@ describe('renderDashboard', () => {
     expect(app.saveFilterActive).toHaveBeenCalled();
     expect(runTile.mock.calls.map(([sql]) => sql)).toEqual(['SELECT filter_options']);
     expect(app.root.querySelector('.dash-tile-unfilled').textContent).toContain('origin');
-    expect(app.root.querySelector('.filter-option-input').placeholder).toBe('Not set');
+    expect(app.root.querySelector('.filter-select .var-input').placeholder).toBe('Not set');
   });
 
   it('falls back per target on duplicate providers and still runs Panels', async () => {
@@ -247,7 +267,7 @@ describe('renderDashboard', () => {
     app.state.varValues.x = 'a';
     app.state.filterActive.x = true;
     await renderDashboard(app);
-    expect(app.root.querySelector('.filter-option-input')).toBeNull();
+    expect(app.root.querySelector('.filter-select .var-input')).toBeNull();
     expect(app.root.querySelector('.dash-filter-diagnostics').textContent).toContain('Multiple Filter queries provide "x": One, Two');
     expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
     expect(runTile).toHaveBeenCalledTimes(3);
@@ -262,7 +282,7 @@ describe('renderDashboard', () => {
     app.state.varValues.x = 'a';
     app.state.filterActive.x = true;
     await renderDashboard(app);
-    expect(app.root.querySelector('.filter-option-input')).toBeNull();
+    expect(app.root.querySelector('.filter-select .var-input')).toBeNull();
     expect(app.root.querySelector('.dash-filter-diagnostics').textContent).toContain('Options: boom');
     expect(app.root.querySelector('.dash-filter-diagnostics button').textContent).toBe('Retry');
     expect(app.root.querySelectorAll('.dash-tile')).toHaveLength(1);
@@ -320,7 +340,7 @@ describe('renderDashboard', () => {
     expect(app.state.filterActive.x).toBe(false);
     expect(app.saveFilterActive).toHaveBeenCalled();
     expect(runTile).toHaveBeenCalledTimes(3);
-    expect(app.root.querySelector('.filter-option-input')).not.toBeNull();
+    expect(app.root.querySelector('.filter-select .var-input')).not.toBeNull();
   });
   it('renders a header + a chart tile per chartable favorite', async () => {
     const favorites = [

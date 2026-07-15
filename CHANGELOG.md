@@ -54,8 +54,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `preventDefault` pattern `combobox.js` already uses for option commits. A
   curated field never got the `is-optional` CSS class, so it always showed
   the required-field asterisk even when its param was genuinely optional.
-
-## [0.4.5] - 2026-07-14
+- A second pre-merge cleanup pass on #232 removing invented primitives and
+  duplication, and fixing bugs found alongside them:
+  - The curated Filter field (Dashboard filter bar **and** the bottom-drawer
+    Filter preview) is rewritten to reuse the shared `var-combo` combobox
+    primitive (`combobox.js`'s `createCombobox`/`wireComboInput`, the same
+    `.var-combo`/`.var-input`/`.var-combo-list` clothes the enum/recent/
+    relative-time fields wear). It previously hand-rolled its own listbox with
+    CSS classes that did not exist, so the dropdown rendered as an unstyled
+    inline bulleted list that pushed the clear (×) button out of place.
+  - The `{severity, code, message, …}` diagnostic factory duplicated across
+    three Filter modules is now one shared `core/diagnostics.js` helper (#236).
+  - Filter sources reuse the tile wave's generation/abort guard
+    (`supersedeSlot`/`slot.gen`) instead of a parallel re-implementation (#237).
+  - Curated Filter fields are seeded from a persisted last-known bundle
+    (`asb:filterCurated`) so they paint as the searchable dropdown immediately
+    instead of flashing a plain text input for one frame on each load (#234).
+  - The result-presentation picker no longer breaks for a `table`-typed panel:
+    it mapped to a `panel:table` value that matched no option, leaving the
+    select blank with no way back to Table — a table panel now resolves to the
+    `(auto)` entry (Table's surface remains the adjacent Table view).
+  - Typing SQL now re-evaluates the whole Spec validator graph only for
+    Filter-role tabs (whose diagnostics depend on the SQL), not on every
+    keystroke of every tab.
 
 ### Changed
 - **Saved-query Library JSON now uses the version 2 canonical model** (#211):

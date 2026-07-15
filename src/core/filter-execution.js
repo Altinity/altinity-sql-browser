@@ -2,13 +2,16 @@ import { detectSqlFormat } from './format.js';
 import { analysisView } from './param-pipeline.js';
 import { scanParamDeclarations } from './param-scan.js';
 import { isRowReturning, splitStatements } from './sql-split.js';
+import { diagnostic as makeDiagnostic } from './diagnostics.js';
 
 export const FILTER_TOP_LEVEL_ROW_LIMIT = 2;
 export const FILTER_OPTION_CAP = 1000;
 export const FILTER_HELPER_CAP = 50;
 export const FILTER_RESULT_BYTE_CAP = 10_000_000;
 
-const diagnostic = (code, message) => ({ severity: 'error', code, message, path: ['dashboard', 'role'] });
+// Filter-SQL diagnostics are always errors anchored at the Spec's dashboard.role
+// path — the narrow shape over the shared factory (#236).
+const diagnostic = (code, message) => makeDiagnostic('error', code, message, { path: ['dashboard', 'role'] });
 
 export function filterSqlDiagnostics(sql) {
   const text = String(sql || '');

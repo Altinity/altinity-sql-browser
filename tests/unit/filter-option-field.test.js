@@ -13,6 +13,12 @@ describe('strict Filter option field', () => {
     const onCommit = vi.fn();
     const field = buildFilterOptionField({ document, name: 'origin', options, inactiveLabel: 'All', onValueChange, onCommit });
     document.body.appendChild(field.el);
+    // Wears the shared var-combo clothes (regression: it used to hand-roll its
+    // own unstyled listbox classes) — same wrapper/input/list every combobox
+    // field uses, so it renders identically next to a plain filter field.
+    expect(field.el.classList.contains('var-combo')).toBe(true);
+    expect(field.input.classList.contains('var-input')).toBe(true);
+    expect(field.el.querySelector('ul.var-combo-list')).toBeTruthy();
     expect(field.input.value).toBe('');
     expect(field.input.placeholder).toBe('All');
     field.input.dispatchEvent(new Event('focus'));
@@ -25,7 +31,7 @@ describe('strict Filter option field', () => {
     expect(onValueChange).toHaveBeenLastCalledWith('JFK', true);
     expect(onCommit).toHaveBeenLastCalledWith('JFK', true);
     expect(field.input.value).toBe('New York');
-    const clearBtn = field.el.querySelector('.filter-option-clear');
+    const clearBtn = field.el.querySelector('.var-combo-clear-inline');
     expect(clearBtn.getAttribute('aria-label')).toBe('Clear origin');
     clearBtn.click();
     expect(onValueChange).toHaveBeenLastCalledWith('', false);
@@ -49,7 +55,7 @@ describe('strict Filter option field', () => {
     const onCommit = vi.fn();
     const field = buildFilterOptionField({ document, name: 'x', options, value: 'ATL', active: true, onValueChange, onCommit });
     document.body.appendChild(field.el);
-    const clearBtn = field.el.querySelector('.filter-option-clear');
+    const clearBtn = field.el.querySelector('.var-combo-clear-inline');
     const mousedown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     // dispatchEvent returns false when a listener called preventDefault (cancelable event).
     expect(clearBtn.dispatchEvent(mousedown)).toBe(false);
@@ -61,6 +67,25 @@ describe('strict Filter option field', () => {
     expect(onValueChange).toHaveBeenCalledWith('', false);
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith('', false);
+    field.el.remove();
+  });
+  it('matches by option value (not just label) and commits with default callbacks', () => {
+    // No onValueChange/onCommit passed — the defaults must be safe to call.
+    const field = buildFilterOptionField({ document, name: 'x', options });
+    document.body.appendChild(field.el);
+    field.input.dispatchEvent(new Event('focus'));
+    field.input.value = 'atl'; // matches the ATL *value*, not the "Atlanta" label
+    field.input.dispatchEvent(new Event('input'));
+    const optionEls = field.el.querySelectorAll('[role="option"]');
+    expect(optionEls).toHaveLength(1);
+    expect(optionEls[0].textContent).toBe('Atlanta');
+    expect(() => optionEls[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))).not.toThrow();
+    expect(field.input.value).toBe('Atlanta');
+    field.el.remove();
+  });
+  it('shows a raw active value when it matches no known option label', () => {
+    const field = buildFilterOptionField({ document, name: 'x', options, value: 'ZZZ', active: true });
+    expect(field.input.value).toBe('ZZZ');
     field.el.remove();
   });
   it('commits an exact label with Enter', () => {

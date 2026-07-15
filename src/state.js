@@ -44,6 +44,7 @@ export const KEYS = {
   resultRowLimit: 'asb:resultRowLimit',
   varValues: 'asb:varValues',
   filterActive: 'asb:filterActive',
+  filterCurated: 'asb:filterCurated',
   dashLayout: 'asb:dashLayout',
   dashCols: 'asb:dashCols',
   varRecent: 'asb:varRecent',
@@ -192,6 +193,13 @@ export function createState(read = { loadJSON, loadStr }) {
     // activation from the stored value (effectiveFilterActive below), so
     // pre-#165 persisted values keep working on first load.
     filterActive: read.loadJSON(KEYS.filterActive, {}),
+    // Last-known curated Dashboard Filter fields (#234), keyed by param name —
+    // the merged `{options, sourceType, …}` bundle each Filter favorite last
+    // produced. Seeded synchronously at the top of renderDashboard so a curated
+    // field paints as the searchable-combobox shape immediately (with
+    // possibly-stale options) instead of flashing a plain text input for one
+    // frame; the live Filter wave replaces it silently on completion.
+    filterCurated: read.loadJSON(KEYS.filterCurated, {}),
     // Per-variable MRU recent-value history (#171): recorded from a
     // successful statement's `boundParams` (#173's immutable snapshots) —
     // never from a keystroke — keyed by variable name and shared/persisted

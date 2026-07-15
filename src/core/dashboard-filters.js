@@ -1,7 +1,6 @@
 import { serializeParamValue } from './param-serialize.js';
 import { validateParamValue } from './param-validate.js';
-
-const diagnostic = (severity, code, message, extra = {}) => ({ severity, code, message, ...extra });
+import { diagnostic } from './diagnostics.js';
 
 export function mergeDashboardFilterHelpers({ providers = [], controls = [], values = {}, active = {} } = {}) {
   const diagnostics = providers.flatMap((provider) => provider.diagnostics || []);

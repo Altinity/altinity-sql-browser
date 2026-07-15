@@ -61,7 +61,7 @@ export function buildFilterBar(app, params, onCommit, getField, options = {}) {
     const curated = options.curatedFields?.[p.name];
     if (curated) {
       const field = buildFilterOptionField({
-        document, name: p.name, declaredType: p.type, options: curated.options,
+        document, name: p.name, options: curated.options,
         value: app.state.varValues[p.name] ?? '', active: !!app.state.filterActive[p.name],
         inactiveLabel: p.optional ? 'All' : 'Not set',
         onValueChange: (value, active) => {

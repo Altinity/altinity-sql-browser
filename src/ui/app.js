@@ -256,8 +256,15 @@ export function createApp(env = {}) {
     const tab = app.activeTab();
     tab.sqlDraft = value;
     tab.dirtySql = true;
-    applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
-    app.specEditor.setDiagnostics(tab.specDiagnostics);
+    // Only a Filter-role Spec's diagnostics depend on the SQL text (the Filter
+    // source SQL must be a single row-returning statement, no params/FORMAT —
+    // filter-execution.js). For every other tab the Spec is independent of the
+    // SQL, so re-evaluating the whole validator graph on each keystroke is
+    // wasted work — gate it to filter tabs.
+    if (effectiveDashboardRole(tab.specParsed) === 'filter') {
+      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
+      app.specEditor.setDiagnostics(tab.specDiagnostics);
+    }
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();

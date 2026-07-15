@@ -744,15 +744,19 @@ body {
 .filter-preview-diagnostic.is-warning { color: var(--warn-fg); }
 .filter-preview-diagnostic.is-error, .filter-preview-message.is-error { color: var(--error-fg); }
 .filter-preview-message { padding: 24px; color: var(--fg-mute); }
-.filter-option-control { position: relative; }
-.filter-option-input { width: 100%; padding-right: 28px; }
-.filter-option-clear {
-  position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
-  width: 20px; height: 20px; border-radius: 4px; padding: 0;
+/* Curated Filter field (#160, filter-option-field.js): the strict single-select
+   is the same `.var-combo`/`.var-input`/`.var-combo-list` control every other
+   combobox field uses — it only adds an inline clear (×) button for its "All"/
+   inactive state, so the input reserves room on the right and the button sits
+   over that gap (the `.var-combo` wrapper is already position:relative). */
+.filter-select .var-input { padding-right: 26px; }
+.var-combo-clear-inline {
+  position: absolute; top: 0; right: 3px; height: 24px;
+  width: 20px; border-radius: 4px; padding: 0;
   border: none; background: transparent; color: var(--fg-faint); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
-.filter-option-clear:hover { background: var(--bg-hover); color: var(--fg); }
+.var-combo-clear-inline:hover { background: var(--bg-hover); color: var(--fg); }
 
 /* Dashboard/Filter role diagnostics (#160) — the "role" banner above the tile
    grid (unknown/setup role, or a Filter source with no Panel consumer) and the

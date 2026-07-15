@@ -31,7 +31,7 @@ import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
-import { effectiveFilterActive } from '../state.js';
+import { effectiveFilterActive, KEYS } from '../state.js';
 import { buildFilterBar } from './filter-bar.js';
 import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
 import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
@@ -39,6 +39,7 @@ import { effectiveDashboardRole } from '../core/result-choice.js';
 import { filterExecution } from '../core/filter-execution.js';
 import { readFilterOptions } from '../core/filter-options.js';
 import { mergeDashboardFilterHelpers } from '../core/dashboard-filters.js';
+import { diagnostic } from '../core/diagnostics.js';
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
@@ -489,7 +490,10 @@ export function renderDashboard(app) {
   const layoutWrap = h('div', { class: 'dash-layout-wrap' },
     h('span', { class: 'dash-seg-label' }, 'Layout'), layoutSeg.el);
   const controls = fieldControls(analysis);
-  let curatedFields = {};
+  // Seed from the persisted last-known bundle (#234) so a curated field paints
+  // as the combobox immediately instead of flashing plain text for one frame
+  // before the first Filter wave resolves; the live wave replaces it below.
+  let curatedFields = state.filterCurated || {};
   const filterHost = h('div', { class: 'dash-filter-host' });
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
   const renderFilterBar = () => filterHost.replaceChildren(buildFilterBar(
@@ -515,16 +519,14 @@ export function renderDashboard(app) {
   // or Refresh updates a slot's contents/visibility in place rather than
   // inserting/removing grid children (see buildTileSlot).
   let slots = [];
+  // Filter sources reuse the SAME generation/abort guard tile slots use
+  // (supersedeSlot / `slot.gen`, #237) — a second consumer of the stale-wave
+  // pattern gets the existing primitive, not a re-implementation. `gen` is
+  // reserved at wave-creation time (see runFilterWave), so a queued worker from
+  // an older wave sees `slot.gen !== generation` and discards itself.
   const filterSlots = new Map(filterFavorites.map((query) => [query.id, {
-    generation: 0, abortController: null, status: 'idle', lastProvider: null,
+    gen: 0, abortController: null, status: 'idle', lastProvider: null,
   }]));
-
-  const supersedeFilter = (slot) => {
-    const generation = ++slot.generation;
-    slot.abortController?.abort();
-    slot.abortController = null;
-    return generation;
-  };
 
   async function runFilterSource(query, slot, generation) {
     const execution = filterExecution(query.sql);
@@ -532,12 +534,12 @@ export function renderDashboard(app) {
       const provider = {
         sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: execution.diagnostics,
       };
-      if (slot.generation !== generation) return null;
+      if (slot.gen !== generation) return null;
       slot.status = 'error';
       slot.lastProvider = provider;
       return provider;
     }
-    if (slot.generation !== generation) return null;
+    if (slot.gen !== generation) return null;
     slot.status = 'loading';
     const result = newResult(execution.format, execution.rowLimit);
     const ac = new AbortController();
@@ -546,15 +548,15 @@ export function renderDashboard(app) {
       sql: query.sql, format: execution.format, rowLimit: execution.rowLimit,
       params: execution.params, signal: ac.signal,
     });
-    if (slot.generation !== generation) return null;
+    if (slot.gen !== generation) return null;
     slot.abortController = null;
     let provider;
     if (result.error || result.cancelled) {
       provider = {
-        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: [{
-          severity: 'error', code: 'filter-query-failed', sourceId: query.id,
-          message: `${queryName(query)}: ${result.error || 'Filter query was cancelled.'}`,
-        }],
+        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: [diagnostic(
+          'error', 'filter-query-failed',
+          `${queryName(query)}: ${result.error || 'Filter query was cancelled.'}`, { sourceId: query.id },
+        )],
       };
       slot.status = 'error';
     } else {
@@ -583,6 +585,9 @@ export function renderDashboard(app) {
       values: state.varValues, active: effectiveFilterActive(state.varValues, state.filterActive),
     });
     curatedFields = merged.fields;
+    // Persist the live bundle so the next dashboard load can seed it (#234).
+    state.filterCurated = merged.fields;
+    app.saveJSON(KEYS.filterCurated, merged.fields);
     if (merged.changed.length) {
       state.filterActive = merged.active;
       app.saveFilterActive();
@@ -595,7 +600,7 @@ export function renderDashboard(app) {
   async function runFilterWave() {
     const plan = filterFavorites.map((query) => {
       const slot = filterSlots.get(query.id);
-      return { query, slot, generation: supersedeFilter(slot) };
+      return { query, slot, generation: supersedeSlot(slot) };
     });
     const providers = await runPool(plan, TILE_CONCURRENCY,
       ({ query, slot, generation }) => runFilterSource(query, slot, generation));
@@ -607,7 +612,7 @@ export function renderDashboard(app) {
     const slot = filterSlots.get(sourceId);
     if (!query || !slot) return;
     if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
-    await runFilterSource(query, slot, supersedeFilter(slot));
+    await runFilterSource(query, slot, supersedeSlot(slot));
     const merged = applyFilterProviders(filterFavorites.map((item) => filterSlots.get(item.id).lastProvider));
     for (const name of merged.changed) await runAffected(name);
   }

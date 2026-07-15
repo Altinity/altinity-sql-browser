@@ -14,6 +14,14 @@ describe('result choices', () => {
     expect(PANEL_RESULT_CHOICES.some((c) => c.id === 'panel:kpi')).toBe(true);
     expect(DASHBOARD_ROLE_RESULT_CHOICES).toEqual([{ id: 'role:filter', kind: 'role', role: 'filter', label: 'Filter' }]);
   });
+  it('maps a table (or unknown) panel to panel:auto, since Table is not a picker option', () => {
+    // Regression: a table-typed panel used to yield 'panel:table', which matches
+    // no <option>, leaving the picker blank with no way back to Table.
+    expect(resultChoiceForSpec({ panel: { cfg: { type: 'table' } } })).toBe('panel:auto');
+    expect(resultChoiceForSpec({ panel: { cfg: { type: 'future-viz' } } })).toBe('panel:auto');
+    expect(resultChoiceForSpec({ panel: { cfg: { type: 'line' } } })).toBe('panel:line');
+    expect(PANEL_RESULT_CHOICES.some((c) => c.panelType === 'table')).toBe(false);
+  });
   it('selects Filter by patching only the role', () => {
     const source = query({ dashboard: { role: 'panel', future: { x: 1 } }, panel: { cfg: { type: 'line', x: 0, y: [1] }, future: true }, keep: 1 });
     const out = applyResultChoice(source, DASHBOARD_ROLE_RESULT_CHOICES[0]);
