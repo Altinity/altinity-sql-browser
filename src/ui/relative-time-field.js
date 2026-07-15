@@ -190,7 +190,7 @@ export function buildRelativeTimeField({
   // DOM node) when the caller hasn't wired recents at all.
   footer = getRecents
     ? attachComboFooter({
-      input, listEl, combo,
+      listEl, combo,
       hasRecents: () => getRecents('').length > 0,
       // Review F4: after clearing, rebuild the OPEN list too — the footer
       // hides itself, but the already-rendered Recent options would otherwise

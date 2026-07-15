@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderChart, installChartZoomFix } from '../../src/ui/chart-render.js';
+import { renderChart } from '../../src/ui/chart-render.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import { autoChart, chartCfgValid, schemaKey, chartRowCap } from '../../src/core/chart-data.js';
@@ -252,25 +252,5 @@ describe('renderChart', () => {
     await new Promise((resolve) => window.requestAnimationFrame(resolve)); // offsetWidth/Height are 0 in happy-dom by default
     expect(chart.lastResize).toBeUndefined();
     expect(chart.lastUpdateMode).toBeUndefined();
-  });
-});
-
-describe('installChartZoomFix', () => {
-  it('undoes the page CSS zoom on pointer events before Chart.js hit-tests them', () => {
-    const app = appWithResult(tableResult(), { resultView: 'chart' });
-    paintChart(app);
-    const canvas = app.chart.canvas;
-    // Simulate html{zoom:1.2}: rect (zoomed) is 1.2× the layout offsetWidth.
-    canvas.getBoundingClientRect = () => ({ width: 120, height: 60, left: 0, top: 0, right: 120, bottom: 60 });
-    Object.defineProperty(canvas, 'offsetWidth', { value: 100, configurable: true });
-    app.chart._eventHandler({ x: 120, y: 60 }, false); // right edge in zoomed px
-    expect(app.chart.lastEvent.x).toBeCloseTo(100); // mapped back into 0..100 chart space
-    expect(app.chart.lastEvent.y).toBeCloseTo(50);
-    expect(app.chart.lastReplay).toBe(false);
-  });
-  it('returns the instance untouched when it has no event handler (or is nullish)', () => {
-    const chart = { config: {} }; // no _eventHandler
-    expect(installChartZoomFix(chart, document.createElement('canvas'))).toBe(chart);
-    expect(installChartZoomFix(null, null)).toBeNull();
   });
 });

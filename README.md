@@ -689,25 +689,15 @@ docs/         ARCHITECTURE.md, DEPLOYMENT.md, ASSET-DISTRIBUTION.md,
 ## Supported browsers
 
 Current **desktop** engines — Chromium (Chrome/Edge), Firefox, and **Safari
-(WebKit)** — are all supported. The whole layout and the pointer/caret/drag math
-ride on `html { zoom: var(--zoom) }`. The pointer/caret/drag corrections
-self-calibrate (they divide by the live `getBoundingClientRect`/`offsetWidth`
-ratio — the zoom factor on Chromium, `1` on Safari — both correct), so those work
-across engines.
-
-Engines do diverge on one thing — **viewport units under `zoom`**: Chromium's
-`vw`/`vh` ignore it, Safari's track it. The fullscreen graph panels size off
-`vw`/`vh`, so the divisor they apply is **measured at runtime** and published as
-`--vp-zoom` (~`--zoom` on Chromium, ~`1` on Safari), letting them fit one screen
-on both (#70). An engine that can't parse `zoom` at all falls back via
-`@supports not (zoom: 1)` to a consistent 1× layout.
+(WebKit)** — are all supported. The app uses one coordinate system — native
+browser CSS pixels — for layout, pointer/caret/drag math, popover anchoring,
+and the fullscreen graph panels; no application-level page-zoom compensation
+(#148). Browser-native page zoom (⌘+/⌘-) remains supported by the browser and
+requires no application handling.
 
 CI exercises the editor (CM6 behaviors + insertion paths), schema-graph and
 EXPLAIN-pipeline specs on all three engines (`webkit` added in #69), plus a
-panel-sizing spec. **Caveat:** Playwright's WebKit applies `zoom` to
-`getBoundingClientRect`/viewport units like Chromium, *not* like real Safari, so
-it is not a faithful Safari proxy for that specific behavior — the real-Safari
-viewport-unit path is verified manually (tracked in the #71 matrix).
+panel-sizing spec.
 
 > The app targets **desktop** browsers, plus a **best-effort mobile mode**
 > (#126): below a 768px viewport the shell becomes a bottom-tab-nav workbench — a
@@ -747,8 +737,8 @@ suite needs no mocking libraries.
 happy-dom has no real layout or scrollbars, so render-layer bugs (keyboard
 routing through the real engine, completion popup timing, drop-point geometry)
 can't be caught by the unit suite. A small Playwright harness mounts the real
-`src/` modules in **Chromium, Firefox and WebKit** for those cases — WebKit is the Safari proxy and the engine most likely to diverge
-on the `html{zoom}`-based layout (see [Supported browsers](#supported-browsers)).
+`src/` modules in **Chromium, Firefox and WebKit** for those cases — WebKit is
+the Safari proxy (see [Supported browsers](#supported-browsers)).
 
 ```bash
 npx playwright install chromium firefox webkit   # once per machine

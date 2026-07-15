@@ -280,28 +280,6 @@ export function buildChartData(columns, rows, cfg) {
   return { labels: cats.map(chartLabel), datasets };
 }
 
-/**
- * Correct a Chart.js pointer event for the page's CSS `zoom`. Chart.js resolves
- * pointer hits from the event's `offsetX/offsetY`, which the browser reports in
- * *zoomed* pixels, whereas the chart draws in an unzoomed coordinate system — so
- * under `html { zoom: S }` every hover lands S× too far along the axis (long bars
- * read past their end; short bars near the origin never register, and the tooltip
- * caret drifts right). Dividing the resolved x/y by the live zoom scale realigns
- * them, fixing bar/column/pie alike. No-op when S is 1 (unzoomed) or the event
- * carries no numeric coordinates. Mutates and returns `e` (the normalized event
- * object Chart.js hands to its controller). Pure: no DOM access — the caller
- * supplies `scale` (from `zoomScale(canvas)`).
- */
-export function unzoomChartEvent(e, scale) {
-  if (e && typeof e.x === 'number' && typeof e.y === 'number' && scale && scale !== 1) {
-    e.x /= scale;
-    e.y /= scale;
-    e.offsetX = e.x;
-    e.offsetY = e.y;
-  }
-  return e;
-}
-
 const withAlpha = (hex, frac) => {
   // #RRGGBB → rgba(...) at `frac` opacity. Non-hex passes through unchanged.
   const m = /^#([0-9a-fA-F]{6})$/.exec(hex);

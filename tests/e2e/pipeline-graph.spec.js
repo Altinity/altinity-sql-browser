@@ -61,6 +61,16 @@ test.describe('EXPLAIN PIPELINE graph (antalya ontime fact/dim join)', () => {
     await page.evaluate((dot) => window.__openFullscreen(dot), DOT);
     const overlay = page.locator('.graph-overlay');
     await expect(overlay).toBeVisible();
+
+    // The panel fills its padded containing block natively (no CSS zoom/vw-vh
+    // divisor bridge, #148) — assert it against the real viewport, not just
+    // that the overlay is visible.
+    const viewport = page.viewportSize();
+    const panelBox = await page.locator('.graph-overlay-panel').boundingBox();
+    // .graph-overlay: 24px padding each side; allow normal browser layout rounding.
+    expect(Math.abs(panelBox.width - (viewport.width - 48))).toBeLessThan(2);
+    expect(Math.abs(panelBox.height - (viewport.height - 48))).toBeLessThan(2);
+
     const svg = page.locator('.graph-overlay-canvas svg.explain-graph');
     const vb = () => svg.getAttribute('viewBox').then((s) => s.split(' ').map(Number));
 

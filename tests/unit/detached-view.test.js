@@ -22,13 +22,11 @@ describe('openInDetachedTab — real browser tab', () => {
     document.body.innerHTML = '';
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.removeAttribute('data-density');
-    document.documentElement.style.removeProperty('--vp-zoom');
   });
 
   it('mirrors CSS + theme, sets body/title, focuses the tab, and calls mount() with the child doc', () => {
     document.documentElement.setAttribute('data-theme', 'dark');
     document.documentElement.setAttribute('data-density', 'compact');
-    document.documentElement.style.setProperty('--vp-zoom', '2');
     const win = makeWin();
     const app = { document, stylesText: 'body{color:red}', faviconHref: 'data:image/svg+xml;base64,AA', openWindow: () => win, state: detachedState() };
     const mount = vi.fn();
@@ -37,7 +35,6 @@ describe('openInDetachedTab — real browser tab', () => {
     expect(win.document.querySelector('link[rel="icon"]').getAttribute('href')).toBe('data:image/svg+xml;base64,AA');
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.documentElement.getAttribute('data-density')).toBe('compact');
-    expect(win.document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('2');
     expect(win.document.title).toBe('Widget');
     expect(win.document.body.className).toBe('detached-tab');
     expect(win.focus).toHaveBeenCalled();
@@ -62,11 +59,10 @@ describe('openInDetachedTab — real browser tab', () => {
     expect(win.document.querySelector('style').textContent).toBe('');
   });
 
-  it('skips theme mirroring for unset attributes (no data-theme/data-density/--vp-zoom on the opener)', () => {
+  it('skips theme mirroring for unset attributes (no data-theme/data-density on the opener)', () => {
     const win = makeWin();
     openInDetachedTab({ document, openWindow: () => win, state: detachedState() }, { title: 'X', mode: 'graph', mount: () => {} });
     expect(win.document.documentElement.getAttribute('data-theme')).toBeNull();
-    expect(win.document.documentElement.style.getPropertyValue('--vp-zoom')).toBe('');
   });
 
   it('picks the grid body class for mode:"grid" and graph for mode:"graph"', () => {

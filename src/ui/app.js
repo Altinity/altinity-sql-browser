@@ -4,7 +4,7 @@
 // window, location, fetch, crypto, sessionStorage) is injected so the whole
 // controller is testable under happy-dom with stubs.
 
-import { h, zoomScale, fixedAnchor } from './dom.js';
+import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
   createState, activeTab, KEYS, recordHistory, recordScriptHistory,
@@ -39,7 +39,6 @@ import {
 } from '../core/spec-draft.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
-import { viewportZoom } from '../core/zoom-support.js';
 import { configBase } from '../core/dashboard.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
@@ -566,30 +565,6 @@ export function createApp(env = {}) {
     );
   }
   app.updateBanner = updateBanner;
-  // Measure the engine's viewport-unit overshoot under html{zoom} (#70): a
-  // `height:100vh` probe against the `height:100%`-sized #root (reliably one
-  // screen on every engine). Returns the divisor (~--zoom on Chromium, ~1 on
-  // WebKit/Safari) or null when there's no layout to measure (happy-dom).
-  // Injected so the controller stays testable without a real layout engine.
-  app.measureViewportZoom = env.measureViewportZoom || (() => {
-    const probe = doc.createElement('div');
-    probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:100vh;visibility:hidden;pointer-events:none';
-    doc.body.appendChild(probe);
-    const vp = viewportZoom(probe.getBoundingClientRect().height, app.root.getBoundingClientRect().height);
-    probe.remove();
-    return vp;
-  });
-  // Publish the measured divisor as --vp-zoom, which the fullscreen graph panels
-  // divide their vw/vh sizing by. Leaves the CSS default (--vp-zoom: var(--zoom),
-  // the Chromium-correct value) untouched when unmeasurable, so behavior never
-  // regresses. app.vpZoom is mirrored onto the schema graph's child tab.
-  function applyViewportZoom() {
-    const vp = app.measureViewportZoom();
-    if (vp == null) return;
-    app.vpZoom = vp;
-    doc.documentElement.style.setProperty('--vp-zoom', String(vp));
-  }
-  app.applyViewportZoom = applyViewportZoom;
   // Lazily load a table's columns into the schema signal by REFERENCE (no
   // in-place mutation): replace the target table object with `{...tb, columns}`.
   // 'loading' is written synchronously (before the await) so the schema effect
@@ -2116,8 +2091,8 @@ export function createApp(env = {}) {
     };
     app.dom[refKey] = node;
     const r = anchorEl.getBoundingClientRect();
-    // Right-align under the button, bridging html{zoom} (see fixedAnchor / zoomScale).
-    const a = fixedAnchor(r, zoomScale(anchorEl), { viewportW: win.innerWidth || 0 });
+    // Right-align under the button.
+    const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 });
     node.style.position = 'fixed';
     node.style.top = a.top + 'px';
     if (app.state.isMobile.value) {
@@ -2468,10 +2443,6 @@ export function renderApp(app, helpers) {
   const dragCtx = {
     state,
     rectFor,
-    // The px-based 'col' axis divides clientX by the page zoom; the '%' axes use a
-    // zoom-cancelling ratio and ignore `scale` (dragValue's default), so we needn't
-    // special-case the axis here — just report the page zoom from the sidebar.
-    scale: () => zoomScale(sidebar),
     apply: (axis, value) => {
       if (axis === 'col') sidebar.style.width = value + 'px';
       else if (axis === 'sideRow') schemaPane.style.height = value + '%';
@@ -2696,10 +2667,6 @@ export function renderApp(app, helpers) {
       ? '●'
       : (r && r.rawText == null && r.progress ? formatRows(r.progress.rows) : '');
   });
-  // The shell is mounted (and laid out in a real engine), so the viewport-unit
-  // overshoot is measurable now — publish --vp-zoom before any fullscreen graph
-  // panel can open, so it sizes correctly on this engine (#70).
-  app.applyViewportZoom();
   app.loadVersion();
   app.loadSchema();
   app.loadReference();

@@ -5,7 +5,7 @@
 // module owns no state and never imports from results.js — sort/width
 // holders, repaint scope, and cell-detail handling are all caller seams.
 
-import { h, zoomScale } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { isNumericType, truncate } from '../core/format.js';
 import { sortRows } from '../core/sort.js';
@@ -35,12 +35,11 @@ export function truncationFooter(hidden) {
 }
 
 /**
- * New width (px) for a column dragged by `dx` client px. `scale` converts client
- * px → CSS px under the page `zoom` (computed per element); 0/NaN falls back to
- * 1. Clamped to MIN_COL. Pure — exported for tests.
+ * New width (px) for a column dragged by `dx` native client px. Clamped to
+ * MIN_COL. Pure — exported for tests.
  */
-export function colResizeWidth(startW, dx, scale) {
-  return Math.max(MIN_COL, Math.round(startW + dx / (scale || 1)));
+export function colResizeWidth(startW, dx) {
+  return Math.max(MIN_COL, Math.round(startW + dx));
 }
 
 // Map a header cell index to its `widths` key. The data grid's first cell is
@@ -92,12 +91,11 @@ function startColumnResize(widths, th, ev, keyOf) {
   }
   applyFixedWidths(table, widths, keyOf);
   const win = th.ownerDocument.defaultView;
-  const scale = zoomScale(th);
   const startX = ev.clientX;
   const startW = widths[colIndex];
   const pairW = nextKey != null ? startW + widths[nextKey] : 0; // combined width of the pair
   const onMove = (m) => {
-    let w = colResizeWidth(startW, m.clientX - startX, scale);
+    let w = colResizeWidth(startW, m.clientX - startX);
     if (nextKey != null) {
       // Keep the pair's combined width constant; both stay ≥ MIN_COL (a pair
       // narrower than 2·MIN_COL can't satisfy both — the floor wins over total).

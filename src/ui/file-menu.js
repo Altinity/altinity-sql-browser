@@ -5,7 +5,7 @@
 // effect goes through an injected seam (app.saveJSON / app.saveStr /
 // app.downloadFile / app.FileReader / app.document), so it is fully testable.
 
-import { h, zoomScale, fixedAnchor, attachBackdropClose } from './dom.js';
+import { h, fixedAnchor, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -145,8 +145,8 @@ export function openFileMenu(app) {
   app.dom.fileMenu = menu;
   doc.body.appendChild(overlay);
   const r = app.dom.fileBtn.getBoundingClientRect();
-  // Anchor under the button, bridging html{zoom} (see fixedAnchor / zoomScale).
-  const a = fixedAnchor(r, zoomScale(app.dom.fileBtn));
+  // Anchor under the button.
+  const a = fixedAnchor(r);
   menu.style.position = 'fixed';
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';

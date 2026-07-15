@@ -22,10 +22,8 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:5599',
   },
   // Render-layer + DOM-API bugs are engine-specific (e.g. Firefox's
-  // execCommand('insertText') on <textarea>, WebKit's handling of
-  // `html{zoom}` × getBoundingClientRect), so the suite runs on all three
-  // engines — WebKit is the Safari proxy and the one most likely to diverge on
-  // the zoom-based layout (see README "Supported browsers").
+  // execCommand('insertText') on <textarea>), so the suite runs on all three
+  // engines — WebKit is the Safari proxy (see README "Supported browsers").
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
     { name: 'firefox', use: { browserName: 'firefox' } },

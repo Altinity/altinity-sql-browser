@@ -63,7 +63,7 @@ export function buildRecentField({ document: doc, name, type, value, baseTitle, 
   });
 
   footer = attachComboFooter({
-    input, listEl, combo,
+    listEl, combo,
     hasRecents: () => getRecents('').length > 0,
     // Review F4: after clearing, rebuild the OPEN list too — the footer hides
     // itself, but the already-rendered Recent options would otherwise stay

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   chartStripType, chartRole, autoChart, schemaKey, CHART_TYPES, chartFieldOptions,
   chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
-  cloneChartCfg, chartCfgValid, normalizeChartCfg, unzoomChartEvent, chartRowCap,
+  cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
 } from '../../src/core/chart-data.js';
 
 describe('chartStripType', () => {
@@ -369,30 +369,5 @@ describe('chartCfgValid', () => {
   });
   it('treats missing columns as zero-length (nothing in range)', () => {
     expect(chartCfgValid({ type: 'bar', x: 0, y: [0], series: null })).toBe(false);
-  });
-});
-
-describe('unzoomChartEvent', () => {
-  it('divides zoomed pointer coords back to chart space under CSS zoom', () => {
-    const e = { x: 120, y: 60, offsetX: 120, offsetY: 60 };
-    expect(unzoomChartEvent(e, 1.2)).toBe(e); // mutates and returns the same object
-    expect(e.x).toBeCloseTo(100);
-    expect(e.y).toBeCloseTo(50);
-    expect(e.offsetX).toBeCloseTo(100); // offsetX/Y kept in sync with x/y
-    expect(e.offsetY).toBeCloseTo(50);
-  });
-  it('is a no-op at scale 1 (unzoomed) or a missing/zero scale', () => {
-    const e = { x: 120, y: 60 };
-    expect(unzoomChartEvent(e, 1).x).toBe(120);
-    expect(unzoomChartEvent(e, 0).x).toBe(120); // 0 → falsy → untouched
-    expect(unzoomChartEvent(e, undefined).x).toBe(120);
-  });
-  it('ignores events without numeric coordinates (resize/attach, null)', () => {
-    expect(unzoomChartEvent(null, 1.2)).toBeNull();
-    const e = { type: 'resize' };
-    expect(unzoomChartEvent(e, 1.2)).toBe(e);
-    expect(e.x).toBeUndefined();
-    const partial = { x: 10 }; // y missing → not a pointer position
-    expect(unzoomChartEvent(partial, 1.2).x).toBe(10);
   });
 });

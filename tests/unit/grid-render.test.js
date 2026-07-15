@@ -27,12 +27,14 @@ describe('truncationFooter', () => {
 });
 
 describe('colResizeWidth', () => {
-  it('converts client px via scale and clamps to the floor', () => {
-    expect(colResizeWidth(100, 50, 1)).toBe(150);
-    expect(colResizeWidth(100, -90, 1)).toBe(48);    // floored at MIN_COL
-    expect(colResizeWidth(100, 120, 1.2)).toBe(200); // zoom: 100 + 120/1.2
-    expect(colResizeWidth(100, 0, 0)).toBe(100);     // scale 0 → /1
-    expect(colResizeWidth(100, 0, NaN)).toBe(100);   // NaN → /1
+  it('adds a positive native delta directly', () => {
+    expect(colResizeWidth(100, 50)).toBe(150);
+  });
+  it('adds a negative native delta directly', () => {
+    expect(colResizeWidth(100, -20)).toBe(80);
+  });
+  it('floors at MIN_COL (48) for a delta that would go below it', () => {
+    expect(colResizeWidth(100, -90)).toBe(48);
   });
 });
 

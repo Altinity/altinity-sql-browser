@@ -3,7 +3,7 @@
 // selection, the panel-cfg union) lives in core/ and is reused here; the
 // panel registry + drawer tab live in panels.js (#166).
 
-import { h, zoomScale, withDocument, attachBackdropClose } from './dom.js';
+import { h, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes } from '../core/format.js';
@@ -894,7 +894,6 @@ function attachDrawerResize(app, panel, doc) {
         win,
         state: app.state,
         rectFor: () => ({ width: win.innerWidth }),
-        scale: () => zoomScale(panel),
         apply: (_axis, value) => { panel.style.width = value + 'px'; },
         save: (name, value) => app.savePref(name, value),
       });
