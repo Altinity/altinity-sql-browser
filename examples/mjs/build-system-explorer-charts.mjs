@@ -30,7 +30,7 @@
 // `--param_from`/`--param_to` purely to derive column types — the *shipped*
 // SQL keeps the placeholders unbound for the browser to fill in.
 //
-// Run:  node examples/build-system-explorer-charts.mjs [connection-name]
+// Run:  node examples/mjs/build-system-explorer-charts.mjs [connection-name]
 // Needs a `clickhouse-client` connection with SELECT on system.* — NOT the
 // narrow "demo" fixture user some clusters expose by default (it can't read
 // system.processes/query_log/etc). Defaults to `github-admin`; this file was

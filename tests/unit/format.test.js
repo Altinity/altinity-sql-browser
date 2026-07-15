@@ -320,7 +320,7 @@ describe('supportsExplainPretty', () => {
 
 describe('userShortName', () => {
   it('returns the email local-part', () => {
-    expect(userShortName('btyshkevich@altinity.com')).toBe('btyshkevich');
+    expect(userShortName('local-user@altinity.com')).toBe('local-user');
   });
   it('falls back to the whole string with no @, and "" for empty/nullish', () => {
     expect(userShortName('justname')).toBe('justname');

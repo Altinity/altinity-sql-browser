@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertValidLibraryDocument } from '../../examples/validate-library.mjs';
+import { assertValidLibraryDocument } from '../../examples/mjs/validate-library.mjs';
 import { parseImportDoc } from '../../src/core/saved-io.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
 import { filterExecution } from '../../src/core/filter-execution.js';

@@ -12,8 +12,8 @@ scanned, so every tile is cheap except where marked.
 | [`examples/iceberg-catalog-dashboard.json`](../examples/iceberg-catalog-dashboard.json) | **BI dashboard** — rows/storage/files per table, growth curves, commit cadence, warehouse census, schema width. |
 | [`examples/iceberg-dba-dashboard.json`](../examples/iceberg-dba-dashboard.json) | **DBA dashboard** — snapshot-expiry backlog, manifest fragmentation, MOR delete manifests, metadata bloat, object census, plus two **log panels** (snapshot commit timeline, metadata-version timeline) and non-favorited detail tables. |
 | [`examples/iceberg-templates/`](../examples/iceberg-templates/) | The tokenized SQL/JSON templates embedded into the install file. |
-| [`examples/build-iceberg-install.mjs`](../examples/build-iceberg-install.mjs) | Rebuilds `iceberg-install.json` from the templates (mechanical escaping only — edit templates, never the JSON). |
-| [`examples/build-iceberg-dashboards.mjs`](../examples/build-iceberg-dashboards.mjs) | Rebuilds both dashboard files, deriving each chart's `panel.key` live from a real cluster. |
+| [`examples/mjs/build-iceberg-install.mjs`](../examples/mjs/build-iceberg-install.mjs) | Rebuilds `iceberg-install.json` from the templates (mechanical escaping only — edit templates, never the JSON). |
+| [`examples/mjs/build-iceberg-dashboards.mjs`](../examples/mjs/build-iceberg-dashboards.mjs) | Rebuilds both dashboard files, deriving each chart's `panel.key` live from a real cluster. |
 
 ## Precondition
 
@@ -104,8 +104,8 @@ whole dashboard (blank = all catalogs).
 ## Reproduce / rebuild
 
 ```sh
-node examples/build-iceberg-install.mjs
-node examples/build-iceberg-dashboards.mjs   # ICE_CH_CMD overrides the client command
+node examples/mjs/build-iceberg-install.mjs
+node examples/mjs/build-iceberg-dashboards.mjs   # ICE_CH_CMD overrides the client command
 ```
 
 Authored and e2e-tested against the `cw-metrics` dev cluster (ClickHouse

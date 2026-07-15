@@ -21,7 +21,7 @@ a new range — one filter, six charts.
 - **Live demo:** **https://github.demo.altinity.cloud/sql**
 - **The library file:** [`examples/system-explorer-charts.json`](../examples/system-explorer-charts.json)
   ([raw download](https://raw.githubusercontent.com/Altinity/altinity-sql-browser/main/examples/system-explorer-charts.json))
-- **Reproduce it:** [`examples/build-system-explorer-charts.mjs`](../examples/build-system-explorer-charts.mjs)
+- **Reproduce it:** [`examples/mjs/build-system-explorer-charts.mjs`](../examples/mjs/build-system-explorer-charts.mjs)
   regenerates the JSON (it derives each chart's schema key live via `DESCRIBE`-
   equivalent `FORMAT JSON`, with throwaway `--param_from`/`--param_to` values
   bound just so ClickHouse can resolve column types — the shipped SQL keeps

@@ -8,7 +8,7 @@
 // Hand-writing those type strings is error-prone, so we derive each key live
 // from `DESCRIBE (<query>)` against the real cluster.
 //
-// Run:  node examples/build-ontime-charts.mjs   (needs `clickhouse-client --connection antalya`)
+// Run:  node examples/mjs/build-ontime-charts.mjs   (needs `clickhouse-client --connection antalya`)
 // Out:  examples/ontime-charts.json
 
 import { execFileSync } from 'node:child_process';

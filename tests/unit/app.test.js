@@ -269,7 +269,7 @@ describe('renderApp shell', () => {
     await new Promise((r) => setTimeout(r));
     expect(document.activeElement).toBe(menu.querySelector('.um-item.danger'));
   });
-  it('user menu closes on Escape and outside-click; header has a GitHub source link', () => {
+  it('user menu closes on Escape and outside-click; header has an examples link', () => {
     const { app } = rendered();
     app.dom.userBtn.dispatchEvent(new Event('click'));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
@@ -279,11 +279,11 @@ describe('renderApp shell', () => {
     expect(document.querySelectorAll('.user-menu')).toHaveLength(1);
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(document.querySelector('.user-menu')).toBeNull();
-    const gh = app.root.querySelector('a.hd-btn[href*="github.com"]');
-    expect(gh).not.toBeNull();
-    expect(gh.getAttribute('target')).toBe('_blank');
-    expect(gh.getAttribute('rel')).toContain('noopener');
-    expect(gh.querySelector('svg')).not.toBeNull();
+    const examplesLink = app.root.querySelector('a.hd-btn[href*="/examples"]');
+    expect(examplesLink).not.toBeNull();
+    expect(examplesLink.getAttribute('target')).toBe('_blank');
+    expect(examplesLink.getAttribute('rel')).toContain('noopener');
+    expect(examplesLink.querySelector('svg')).not.toBeNull();
   });
   it('setTokens clears the one-shot pkce verifier and csrf state', () => {
     const e = env({ sessionStorage: memSession({ oauth_verifier: 'v', oauth_state: 's' }) });

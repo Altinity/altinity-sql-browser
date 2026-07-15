@@ -328,7 +328,7 @@ body {
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   border-radius: 5px;
-  text-decoration: none; /* also used as an <a> (GitHub source link) */
+  text-decoration: none; /* also used as an <a> (external header link) */
 }
 .hd-btn:hover { background: var(--bg-hover); color: var(--fg); }
 .hd-btn.text { width: auto; padding: 0 10px; font-size: 11.5px; font-family: inherit; border: 1px solid var(--border); }
@@ -2033,8 +2033,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
   .logo-name, .env-chip, .app-header .hd-divider, .conn-status, .hd-hide-mobile { display: none; }
-  /* Cap the user-menu label so a long local-part (`btyshkevich ▾`) can't widen
-     the header back past the viewport. */
+  /* Cap the user-menu label so a long local-part (`user ▾`) can't widen the
+     header back past the viewport. */
   .hd-btn.user-btn .user-short { max-width: 90px; }
 }
 
