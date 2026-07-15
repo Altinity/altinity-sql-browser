@@ -55,10 +55,46 @@ describe('parseClickHouseType — parser', () => {
     expect(dt.args[0]).toEqual({ kind: 'string', value: "it's", raw: "'it\\'s'" });
   });
 
+  // #241 — DateTime('...') and DateTime64(N, '...') string-literal arguments
+  // share the same delimiter scanning as everything else; an even backslash
+  // run before the closing quote must close correctly, and later arguments
+  // (DateTime64's precision) must stay structural, not get absorbed.
+  it('closes a string-literal argument correctly after an even backslash run, leaving later arguments structural', () => {
+    const dt = parseClickHouseType("DateTime('Zone\\\\')");
+    expect(dt.args[0]).toEqual({ kind: 'string', value: 'Zone\\', raw: "'Zone\\\\'" });
+    const dt64 = parseClickHouseType("DateTime64(3, 'Zone\\\\')");
+    expect(dt64.args).toEqual([
+      { kind: 'number', value: '3', raw: '3' },
+      { kind: 'string', value: 'Zone\\', raw: "'Zone\\\\'" },
+    ]);
+  });
+
   it('parses positional and named Tuple members', () => {
     expect(parseClickHouseType('Tuple(String, UInt64)').args.map((a) => a.name)).toEqual(['String', 'UInt64']);
     const named = parseClickHouseType('Tuple(value String, count UInt64)');
     expect(named.members.map((m) => [m.name, m.type.name])).toEqual([['value', 'String'], ['count', 'UInt64']]);
+  });
+
+  // #241 — quoted Tuple member names (backtick or double-quote identifiers)
+  // decode both ClickHouse escaping mechanisms: a doubled delimiter is a
+  // literal delimiter character, and `\` escapes the next character verbatim.
+  it('decodes doubled-delimiter and backslash-escaped quoted Tuple member names', () => {
+    expect(parseClickHouseType('Tuple(`a``b` String)').members).toEqual([
+      { name: 'a`b', type: { kind: 'type', name: 'String', raw: 'String', args: [], members: null } },
+    ]);
+    expect(parseClickHouseType('Tuple("a""b" String)').members[0].name).toBe('a"b');
+    expect(parseClickHouseType('Tuple(`name\\\\` String)').members[0].name).toBe('name\\');
+    expect(parseClickHouseType('Tuple("name\\\\" String)').members[0].name).toBe('name\\');
+  });
+
+  // #241 review — `unquote()` now shares `decodeQuoted` with Enum-member
+  // decoding, which already treated `\` as escaping ANY following character
+  // verbatim (#182), not just a delimiter/backslash. Consolidating removes a
+  // pre-existing inconsistency (Tuple/quoted-identifier names previously used
+  // a narrower regex); pin the now-shared behavior explicitly.
+  it('backslash escapes the next character verbatim, not just a delimiter or another backslash', () => {
+    expect(parseClickHouseType('Tuple(`a\\xb` String)').members[0].name).toBe('axb');
+    expect(parseClickHouseType("DateTime('a\\xb')").args[0].value).toBe('axb');
   });
 
   it('rejects a Tuple mixing named and positional members', () => {
@@ -95,9 +131,15 @@ describe('parseClickHouseType — parser', () => {
     expect(parseClickHouseType('Tuple(`x`')).toBeNull();
   });
 
-  it('rejects unterminated quotes', () => {
+  it('rejects unterminated quotes — every delimiter, never crashes', () => {
     expect(parseClickHouseType("DateTime('UTC)")).toBeNull();
     expect(parseClickHouseType('Tuple(`unterminated String)')).toBeNull();
+    expect(parseClickHouseType('Tuple("unterminated String)')).toBeNull();
+    // A trailing unmatched backslash leaves the token unclosed.
+    expect(parseClickHouseType("DateTime('UTC\\")).toBeNull();
+    // An escaped delimiter (odd backslash run) with no later terminator at
+    // all is unclosed too, not silently treated as closed.
+    expect(parseClickHouseType("DateTime('UTC\\'")).toBeNull();
   });
 
   it('rejects wrong arity for Array/Nullable/LowCardinality/Map', () => {
@@ -187,18 +229,31 @@ describe('parseClickHouseType — parser', () => {
       expect(parseClickHouseType('Enum8($tag$abc = 1)')).toBeNull();
     });
 
-    it('drops a member whose quote is truncated by the tokenizer finding an earlier close paren than scanSpans would (pathological backslash-run divergence, #238 review)', () => {
-      // The tokenizer's naive single-char backslash lookback disagrees with
-      // scanSpans' proper escape-pair counting on an EVEN backslash run
-      // before a quote: `'a\\'` is one complete escaped-backslash-then-real-
-      // close per scanSpans, but the naive tokenizer thinks the close is
-      // itself escaped and keeps scanning — here it accidentally closes
-      // against the SECOND member's opening quote, swallowing the real `)`
-      // into that span and leaving the second member's quote genuinely
-      // unterminated within the (now wrongly bounded) member-list text. The
-      // first member still parses correctly; the truncated second is dropped,
-      // not fabricated from leftover text.
-      expect(parseClickHouseType("Enum8('a\\\\' = 1, 'b)").enumMembers).toEqual([{ name: 'a\\', code: 1 }]);
+    // #241 — the tokenizer used to close a quoted token on a one-character
+    // backslash lookback, which is wrong for an EVEN-length backslash run: a
+    // trailing `\\` is one complete escaped backslash, so the quote right
+    // after it is a REAL, unescaped terminator. It now shares `scanDelimited`
+    // (proper backslash-pair counting) with `sql-spans.js`, so this parses
+    // correctly instead of degrading.
+    it('an even backslash run before the closing quote: the member name ends in one literal backslash', () => {
+      const node = parseClickHouseType("Enum8('a\\\\' = 1)");
+      expect(node.enumMembers).toEqual([{ name: 'a\\', code: 1 }]);
+    });
+
+    it('structural text after a member ending in an even backslash run is preserved, not absorbed', () => {
+      const node = parseClickHouseType("Enum8('a\\\\' = 1, 'b' = 2)");
+      expect(node.enumMembers).toEqual([{ name: 'a\\', code: 1 }, { name: 'b', code: 2 }]);
+      expect(node.raw).toBe("Enum8('a\\\\' = 1, 'b' = 2)");
+    });
+
+    it('an odd backslash run before a quote still escapes it (scanning continues to the next real terminator), and no code or member is fabricated', () => {
+      // 'a\' = 1, 'b' = 2)  -- the first quote's closer is escaped by the
+      // single backslash, so it isn't the true end of the member name; the
+      // member name absorbs everything up to the next unescaped quote. This
+      // is intentionally weird input, but it must decode deterministically —
+      // not crash, and never invent a code or member that isn't there.
+      const node = parseClickHouseType("Enum8('a\\' = 1, 'b' = 2)");
+      expect(node.enumMembers).toEqual([{ name: "a' = 1, ", code: 1 }]);
     });
 
     it('rejects quoted-identifier members and unterminated literals as members, without failing the parse', () => {
@@ -253,15 +308,36 @@ describe('wrapper helpers', () => {
 
   it('analyzeTypeModifiers reports the effective type, flags, order, and validity', () => {
     expect(analyzeTypeModifiers(parseClickHouseType('String'))).toEqual({
-      valueType: parseClickHouseType('String'), nullable: false, lowCardinality: false, wrapperOrder: [], valid: true,
+      valueType: parseClickHouseType('String'), nullable: false, lowCardinality: false,
+      wrapperOrder: [], lowCardinalityEnum: false, valid: true,
     });
     expect(analyzeTypeModifiers(parseClickHouseType('LowCardinality(Nullable(String))'))).toMatchObject({
-      nullable: true, lowCardinality: true, wrapperOrder: ['LowCardinality', 'Nullable'], valid: true,
+      nullable: true, lowCardinality: true, wrapperOrder: ['LowCardinality', 'Nullable'], lowCardinalityEnum: false, valid: true,
     });
     expect(analyzeTypeModifiers(parseClickHouseType('Nullable(LowCardinality(String))'))).toMatchObject({
-      nullable: true, lowCardinality: true, wrapperOrder: ['Nullable', 'LowCardinality'], valid: false,
+      nullable: true, lowCardinality: true, wrapperOrder: ['Nullable', 'LowCardinality'], lowCardinalityEnum: false, valid: false,
     });
     expect(analyzeTypeModifiers(null).valueType).toBeNull();
+  });
+
+  // No ClickHouse version accepts LowCardinality wrapping an Enum at all
+  // (live-verified 26.3.13: ILLEGAL_TYPE_OF_ARGUMENT) — unlike wrapper
+  // order, this is invalid regardless of nesting order, so it folds into
+  // the same `valid` flag rather than needing correct order to redeem it.
+  it('analyzeTypeModifiers flags LowCardinality wrapping an Enum as invalid, regardless of nesting order', () => {
+    expect(analyzeTypeModifiers(parseClickHouseType("LowCardinality(Enum8('a' = 1))"))).toMatchObject({
+      lowCardinality: true, lowCardinalityEnum: true, valid: false,
+    });
+    expect(analyzeTypeModifiers(parseClickHouseType("Nullable(LowCardinality(Enum8('a' = 1)))"))).toMatchObject({
+      lowCardinality: true, lowCardinalityEnum: true, valid: false,
+    });
+    expect(analyzeTypeModifiers(parseClickHouseType("LowCardinality(Nullable(Enum8('a' = 1)))"))).toMatchObject({
+      lowCardinality: true, lowCardinalityEnum: true, valid: false,
+    });
+    // Plain Nullable(Enum8(...)) — no LowCardinality at all — stays valid.
+    expect(analyzeTypeModifiers(parseClickHouseType("Nullable(Enum8('a' = 1))"))).toMatchObject({
+      lowCardinality: false, lowCardinalityEnum: false, valid: true,
+    });
   });
 });
 
@@ -283,13 +359,18 @@ describe('structural queries', () => {
     expect(namedTupleMembers(parseClickHouseType('String'))).toBeNull();
   });
 
-  it('enumMembers/enumValues unwrap Nullable and LowCardinality, in either order', () => {
+  it('enumMembers/enumValues unwrap Nullable (never LowCardinality — LowCardinality can never wrap an Enum)', () => {
     expect(enumValues(parseClickHouseType("Enum8('a' = 1, 'b' = 2)"))).toEqual(['a', 'b']);
     expect(enumValues(parseClickHouseType("Nullable(Enum8('a' = 1, 'b' = 2))"))).toEqual(['a', 'b']);
-    expect(enumValues(parseClickHouseType("LowCardinality(Enum8('a' = 1, 'b' = 2))"))).toEqual(['a', 'b']);
-    expect(enumValues(parseClickHouseType("LowCardinality(Nullable(Enum8('a' = 1)))"))).toEqual(['a']);
     expect(enumMembers(parseClickHouseType('String'))).toBeNull();
     expect(enumValues(parseClickHouseType('String'))).toBeNull();
+  });
+
+  it('enumMembers/enumValues reject LowCardinality-wrapped Enum in any nesting order — no Enum behavior for a type no ClickHouse version accepts', () => {
+    expect(enumMembers(parseClickHouseType("LowCardinality(Enum8('a' = 1, 'b' = 2))"))).toBeNull();
+    expect(enumValues(parseClickHouseType("LowCardinality(Enum8('a' = 1, 'b' = 2))"))).toBeNull();
+    expect(enumValues(parseClickHouseType("LowCardinality(Nullable(Enum8('a' = 1)))"))).toBeNull();
+    expect(enumValues(parseClickHouseType("Nullable(LowCardinality(Enum8('a' = 1)))"))).toBeNull();
   });
 
   it('enumValues is null (never []) for an enum whose member list yields nothing', () => {
@@ -299,11 +380,19 @@ describe('structural queries', () => {
 
 describe('isSupportedOptionScalar', () => {
   it('classifies supported scalars through Nullable/LowCardinality in valid orders', () => {
-    for (const value of ['String', 'FixedString(3)', 'UUID', 'UInt256', 'Int8', 'Decimal(20, 4)', 'Float64', 'Bool', 'Date32', 'DateTime64(3)', "Enum8('a' = 1)"]) {
+    for (const value of ['String', 'FixedString(3)', 'UUID', 'UInt256', 'Int8', 'Decimal(20, 4)', 'Float64', 'Bool', 'Date32', 'DateTime64(3)']) {
       expect(isSupportedOptionScalar(parseClickHouseType(`Nullable(${value})`))).toBe(true);
       expect(isSupportedOptionScalar(parseClickHouseType(`LowCardinality(${value})`))).toBe(true);
       expect(isSupportedOptionScalar(parseClickHouseType(`LowCardinality(Nullable(${value}))`))).toBe(true);
     }
+  });
+
+  it('classifies a bare or Nullable-wrapped Enum as a supported scalar, but never LowCardinality-wrapped', () => {
+    expect(isSupportedOptionScalar(parseClickHouseType("Enum8('a' = 1)"))).toBe(true);
+    expect(isSupportedOptionScalar(parseClickHouseType("Nullable(Enum8('a' = 1))"))).toBe(true);
+    expect(isSupportedOptionScalar(parseClickHouseType("LowCardinality(Enum8('a' = 1))"))).toBe(false);
+    expect(isSupportedOptionScalar(parseClickHouseType("LowCardinality(Nullable(Enum8('a' = 1)))"))).toBe(false);
+    expect(isSupportedOptionScalar(parseClickHouseType("Nullable(LowCardinality(Enum8('a' = 1)))"))).toBe(false);
   });
 
   it('rejects a semantically invalid wrapper order even though the inner type is a supported scalar', () => {

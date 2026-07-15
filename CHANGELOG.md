@@ -117,8 +117,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   is a different declaration from `String`, never treated as the same
   conflict-free type. `LowCardinality(Array(...))`/`Nullable(LowCardinality(...))`
   are syntactically permissive but never treated as an ordinary supported
-  scalar by the Dashboard Filter helper reader. KPI and Filter helper behavior
-  is unchanged, now backed by the shared parser. No new runtime dependency.
+  scalar by the Dashboard Filter helper reader; **`LowCardinality` wrapping an
+  `Enum8`/`Enum16` (any nesting order) is now rejected everywhere** — no
+  ClickHouse version accepts it (live-verified: `ILLEGAL_TYPE_OF_ARGUMENT`), so
+  it degrades to opaque passthrough for parameters and is never a supported
+  Filter/KPI scalar, instead of offering Enum dropdown/membership behavior for
+  a declaration that can never bind on a real server. KPI and Filter helper
+  behavior is otherwise unchanged, now backed by the shared parser. No new
+  runtime dependency.
+- **Quote-delimited token scanning is now one shared primitive** (#241):
+  `src/core/quoted-span.js`'s `scanDelimited()` is the single authoritative
+  backslash/doubled-delimiter rule for `'…'`, `` `…` ``, and `"…"` spans,
+  consumed by both `sql-spans.js` (unchanged behavior) and
+  `clickhouse-type.js`'s tokenizer, which previously used a one-character
+  backslash lookback that misclassified an EVEN-length backslash run before a
+  closing quote as escaping it (`Enum8('label\\' = 1)` — a member name ending
+  in one literal backslash — could drop the member, degrade the whole type to
+  opaque/pass-through, or in one case throw). Also fixed: quoted Tuple member
+  names (backtick/double-quote identifiers) now correctly decode a *doubled*
+  delimiter (`` `a``b` `` / `"a""b"` → `` a`b ``/`a"b`), not just backslash
+  escapes.
 - **Saved-query Library JSON now uses the version 2 canonical model** (#211):
   every entry is `{id, sql, specVersion, spec}`, with the complete Spec carried
   unchanged through local storage, tabs, panel edits, sharing, import/export,

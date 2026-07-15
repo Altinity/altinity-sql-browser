@@ -167,15 +167,18 @@ describe('validateParamValue: LowCardinality(T) is transparent — validates aga
     valid('LowCardinality(UUID)', '61f0c404-5cb3-11e7-907b-a6006ad3dba0');
     invalid('LowCardinality(UUID)', 'not-a-uuid!!');
   });
-  it('LowCardinality(Enum8(...)) produces the same membership validation as the bare Enum', () => {
-    const ENUM = "LowCardinality(Enum8('active' = 1, 'deleted' = 2))";
-    valid(ENUM, 'active');
-    valid(ENUM, '2');
-    invalid(ENUM, 'nope');
-  });
   it('LowCardinality(Nullable(T)) validates against the doubly-unwrapped T', () => {
     valid('LowCardinality(Nullable(UInt8))', '255');
     invalid('LowCardinality(Nullable(UInt8))', '256');
+  });
+  // No ClickHouse version accepts LowCardinality wrapping an Enum at all
+  // (live-verified 26.3.13: ILLEGAL_TYPE_OF_ARGUMENT) — this degrades to
+  // opaque passthrough, same as any other unsupported/malformed type; it
+  // must NOT get Enum membership validation.
+  it('LowCardinality(Enum8(...)) is opaque passthrough — never Enum membership validation, in any nesting order', () => {
+    unknown("LowCardinality(Enum8('active' = 1, 'deleted' = 2))", 'active');
+    unknown("LowCardinality(Enum8('active' = 1, 'deleted' = 2))", 'nope');
+    unknown("Nullable(LowCardinality(Enum8('active' = 1)))", 'active');
   });
 });
 

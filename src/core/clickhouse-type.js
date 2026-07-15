@@ -19,15 +19,44 @@
 // *order* is semantically significant — `LowCardinality(Nullable(T))` is the
 // only valid combined form; `Nullable(LowCardinality(T))` parses (syntax is
 // permissive) but `analyzeTypeModifiers` marks it invalid — see there.
+// `LowCardinality` wrapping an `Enum8`/`Enum16` is invalid regardless of
+// nesting order (no ClickHouse version accepts it at all) — also flagged by
+// `analyzeTypeModifiers`, not a separate special case in each consumer.
 //
 // Enum member parsing (escaped/heredoc names, explicit/implicit codes) is
 // ported from the pre-#238 `param-type.js` implementation, itself built on
 // `sql-spans.js`'s `scanSpans` — the same lexical scanner used for canonical
-// formatting below.
+// formatting below. Quoted-token boundary scanning (single quotes, backticks,
+// double quotes, in the tokenizer below) shares `quoted-span.js`'s
+// `scanDelimited` with `sql-spans.js` (#241) — one authoritative backslash
+// and doubled-delimiter rule, never two independent implementations.
 
 import { scanSpans } from './sql-spans.js';
+import { scanDelimited } from './quoted-span.js';
 
-const unquote = (token) => token.quoted ? token.value.slice(1, -1).replace(/\\([\\`"'])/g, '$1') : token.value;
+// Undo one quoted token's escaping (#241): `\` consumes the next character
+// verbatim (whatever it is, not just the delimiter or another backslash —
+// same "escapes the following character verbatim" rule #182 already
+// established for Enum member names, now shared instead of Tuple/quoted-
+// identifier names using a narrower backslash-only-before-a-delimiter rule),
+// and a DOUBLED delimiter (`''`, `` `` ``, `""`) is a literal delimiter
+// character, not a terminator — the same two rules `scanDelimited` used to
+// find the token's boundary in the first place, so a name round-trips
+// exactly regardless of which of the three delimiters it used
+// (`` `a``b` `` / `"a""b"` / `'a''b'` → `` a`b ``/`a"b`/`a'b`).
+function decodeQuoted(raw, quote) {
+  const body = raw.slice(1, -1);
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '\\' && i + 1 < body.length) { out += body[i + 1]; i += 1; continue; }
+    if (c === quote && body[i + 1] === quote) { out += quote; i += 1; continue; }
+    out += c;
+  }
+  return out;
+}
+
+const unquote = (token) => token.quoted ? decodeQuoted(token.value, token.value[0]) : token.value;
 
 const isWordChar = (c) => /[A-Za-z0-9_]/.test(c);
 
@@ -48,12 +77,10 @@ function tokenize(text) {
     if ('(),'.includes(text[i])) { tokens.push({ value: text[i], start: i, end: ++i }); continue; }
     if ('`"\''.includes(text[i])) {
       const quote = text[i];
-      const start = i++;
-      while (i < text.length) {
-        if (text[i] === quote && text[i - 1] !== '\\') { i++; break; }
-        i++;
-      }
-      if (text[i - 1] !== quote) return null;
+      const start = i;
+      const { end, closed } = scanDelimited(text, start, quote);
+      if (!closed) return null;
+      i = end;
       tokens.push({ value: text.slice(start, i), start, end: i, quoted: true });
       continue;
     }
@@ -94,34 +121,19 @@ const ENUM_NAME_RE = /^Enum(?:8|16)$/;
 // only the leading `= <int>` is meaningful here.
 const ENUM_CODE_RE = /^\s*=\s*(-?\d+)/;
 
-// Undo ClickHouse's single-quoted string escaping for one member name:
-// `\` escapes the following character verbatim, and a doubled quote (`''`) is
-// an escaped literal quote, not a terminator.
-function unescapeEnumMember(quoted) {
-  const body = quoted.slice(1, -1);
-  let out = '';
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === '\\' && i + 1 < body.length) { out += body[i + 1]; i += 1; continue; }
-    if (c === "'" && body[i + 1] === "'") { out += "'"; i += 1; continue; }
-    out += c;
-  }
-  return out;
-}
-
 // Decode one Enum member NAME from a `string`-kind span (#182): a
 // single-quoted literal uses ClickHouse's backslash/doubled-quote rules
-// (unescapeEnumMember); a `$tag$…$tag$` heredoc is opaque — strip the exact
-// opener and (equal-length) closer and return the body verbatim, with no
-// unescaping. An unterminated span (`closed: false`) is not a member → null:
-// the member-list TEXT this scans is bounded by the tokenizer's own (naive,
-// backslash-run-unaware) close-paren finding, which can disagree with this
-// scan's own escaping rules on pathological input and cut the text short
-// mid-quote — never trust it's already closed. `quoted-ident` spans never
-// reach here, so `Enum8("x" = 1)` yields no member.
+// (the shared `decodeQuoted`); a `$tag$…$tag$` heredoc is opaque — strip the
+// exact opener and (equal-length) closer and return the body verbatim, with
+// no unescaping. An unterminated span (`closed: false`) is not a member →
+// null — defensive: the tokenizer (#241) and this module's own `scanSpans`
+// re-scan now share one escaping rule via `scanDelimited`, so in practice
+// every span reaching here is already closed, but never assume it without
+// checking. `quoted-ident` spans never reach here, so `Enum8("x" = 1)`
+// yields no member.
 function decodeEnumMemberSpan(raw, closed) {
   if (!closed) return null;
-  if (raw[0] === "'") return unescapeEnumMember(raw);
+  if (raw[0] === "'") return decodeQuoted(raw, "'");
   const openLen = raw.indexOf('$', 1) + 1; // past the opener's closing `$`
   return raw.slice(openLen, raw.length - openLen);
 }
@@ -309,7 +321,15 @@ export function unwrapValueTransparentWrappers(node) {
  * parses (the parser stays permissive about syntax) but is flagged invalid
  * here — callers that need to tell "an ordinary supported scalar" apart from
  * this malformed order (`isSupportedOptionScalar` below) must check `valid`,
- * not just the unwrapped type's name. Pure.
+ * not just the unwrapped type's name.
+ *
+ * `LowCardinality` wrapping an `Enum8`/`Enum16` is ALSO always invalid,
+ * regardless of nesting order — live-verified against ClickHouse 26.3.13:
+ * `DataTypeLowCardinality is supported only for numbers, strings, Date or
+ * DateTime, but got Enum8(...)`. This is not an ordering mistake like
+ * `Nullable(LowCardinality(T))`; no ClickHouse version accepts
+ * `LowCardinality` around an Enum at all, so it folds into the same `valid`
+ * flag rather than a separate one. Pure.
  */
 export function analyzeTypeModifiers(node) {
   let current = node;
@@ -318,14 +338,21 @@ export function analyzeTypeModifiers(node) {
     wrapperOrder.push(current.name);
     current = current.args[0];
   }
-  const valid = wrapperOrder.length <= 1
+  const lowCardinality = wrapperOrder.includes('LowCardinality');
+  const orderValid = wrapperOrder.length <= 1
     || (wrapperOrder.length === 2 && wrapperOrder[0] === 'LowCardinality' && wrapperOrder[1] === 'Nullable');
+  // Exposed separately from `valid` (rather than folded in silently) because
+  // callers that stay deliberately permissive about wrapper ORDER (param-type.js)
+  // must NOT stay permissive about this — no ClickHouse version accepts it,
+  // so it isn't an ordering nuance to shrug off, it's an unsupported type.
+  const lowCardinalityEnum = lowCardinality && current?.kind === 'type' && ENUM_NAME_RE.test(current.name);
   return {
     valueType: current || null,
     nullable: wrapperOrder.includes('Nullable'),
-    lowCardinality: wrapperOrder.includes('LowCardinality'),
+    lowCardinality,
     wrapperOrder,
-    valid,
+    lowCardinalityEnum,
+    valid: orderValid && !lowCardinalityEnum,
   };
 }
 
@@ -353,12 +380,17 @@ export function namedTupleMembers(node) {
 }
 
 /**
- * An Enum8/Enum16 declaration's members, unwrapping Nullable/LowCardinality
- * first (`LowCardinality(Enum8(...))` gets Enum behavior) — `{name, code}`
- * pairs in declaration order, or `null` for any non-Enum type. Pure.
+ * An Enum8/Enum16 declaration's members, unwrapping `Nullable(...)` first —
+ * `{name, code}` pairs in declaration order, or `null` for any non-Enum type
+ * AND for a semantically invalid wrapper combination (`analyzeTypeModifiers`
+ * — most notably `LowCardinality` wrapping the Enum, which no ClickHouse
+ * version supports: no Enum dropdown/membership behavior for a declaration
+ * that can never bind on a real server). Pure.
  */
 export function enumMembers(node) {
-  const value = unwrapValueTransparentWrappers(node);
+  const mods = analyzeTypeModifiers(node);
+  if (!mods.valid) return null;
+  const value = mods.valueType;
   return value && ENUM_NAME_RE.test(value.name) ? (value.enumMembers ?? []) : null;
 }
 

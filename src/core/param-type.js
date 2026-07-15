@@ -44,14 +44,20 @@ function innerOf(raw) {
 // `elem.base` is `'UInt64'`, not `'LowCardinality'`. `node` always comes from
 // a tree `parseClickHouseType` already validated in full (recursively), so an
 // `Array`-named `value` is guaranteed exactly one arg — no separate check needed.
-// Deliberately ignores `mods.valid`: parameter validation/serialization only
-// ever needs the effective value type, whatever wrapper order produced it —
-// unlike `isSupportedOptionScalar` (clickhouse-type.js), which IS the
-// authoritative "is this a supported scalar" check and does reject
-// `Nullable(LowCardinality(T))`, param declarations stay permissive here by
-// design (no consumer of this shape has a rule against that order).
+// Deliberately ignores `mods.valid`'s wrapper-ORDER component: parameter
+// validation/serialization only ever needs the effective value type, whatever
+// order produced it — unlike `isSupportedOptionScalar` (clickhouse-type.js),
+// which IS the authoritative "is this a supported scalar" check and does
+// reject `Nullable(LowCardinality(T))`, param declarations stay permissive
+// about ordering by design. `mods.lowCardinalityEnum` is different: no
+// ClickHouse version accepts `LowCardinality` wrapping an `Enum8`/`Enum16` at
+// all (regardless of order), so that degrades exactly like an unparseable
+// declaration — opaque passthrough, no Enum-specific behavior anywhere.
 function fromNode(node) {
   const mods = analyzeTypeModifiers(node);
+  if (mods.lowCardinalityEnum) {
+    return { raw: node.raw, base: node.raw, inner: null, nullable: false, isArray: false, elem: null, node: null };
+  }
   const value = mods.valueType;
   const isArray = value.name === 'Array';
   return {
@@ -140,15 +146,17 @@ export function conflictingTypes(declarations) {
 
 /**
  * Parse an `Enum8`/`Enum16` declared type's members into `{name, code}`
- * pairs (in declaration order), unwrapping `Nullable(...)` /
- * `LowCardinality(...)` first (so `LowCardinality(Enum8(...))` gets Enum
- * behavior too), or `null` when the effective type isn't `Enum8`/`Enum16`.
+ * pairs (in declaration order), unwrapping `Nullable(...)` first, or `null`
+ * when the effective type isn't `Enum8`/`Enum16` — including a
+ * `LowCardinality`-wrapped Enum in any nesting order, which `fromNode`
+ * already degrades to an opaque shape (`base` is the raw declaration text,
+ * `node: null`) because no ClickHouse version accepts that combination.
  * Delegates to the shared AST's `enumMembers()` — see `clickhouse-type.js`
- * for the escaping/heredoc/explicit-code/implicit-code grammar. `t.base` can
- * only equal `'Enum8'`/`'Enum16'` when `t.node` resolved to a real, already
- * value-transparent-unwrapped Enum node (an unparseable declaration's `base`
- * is the raw text, never exactly one of these two names), so this always
- * gets a real member array (possibly empty) back, never `null`. Pure.
+ * for the escaping/heredoc/explicit-code/implicit-code grammar and the
+ * `LowCardinality`-Enum invalidity rule. `t.base` can only equal
+ * `'Enum8'`/`'Enum16'` when `t.node` resolved to a real, already
+ * value-transparent-unwrapped Enum node, so once the base check passes this
+ * always gets a real member array (possibly empty) back, never `null`. Pure.
  * @param {string|ReturnType<typeof parseParamType>} type
  * @returns {{name: string, code: number}[]|null}
  */

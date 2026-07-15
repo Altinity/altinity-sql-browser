@@ -94,6 +94,22 @@ describe('parseParamType', () => {
     expect(t.elem).toBeNull();
     expect(t.base).toBe('Array');
   });
+
+  // No ClickHouse version accepts LowCardinality wrapping an Enum — degrades
+  // exactly like an unparseable declaration: opaque passthrough, `base` is
+  // the whole raw declaration text, no Enum-specific behavior anywhere.
+  it('LowCardinality(Enum8(...)) degrades to an opaque scalar, in any nesting order', () => {
+    const t = parseParamType("LowCardinality(Enum8('a' = 1))");
+    expect(t.base).toBe("LowCardinality(Enum8('a' = 1))");
+    expect(t.node).toBeNull();
+    expect(t.isArray).toBe(false);
+    const nested = parseParamType("Nullable(LowCardinality(Enum8('a' = 1)))");
+    expect(nested.node).toBeNull();
+    const inArray = parseParamType("Array(LowCardinality(Enum8('a' = 1)))");
+    expect(inArray.isArray).toBe(true);
+    expect(inArray.elem.node).toBeNull();
+    expect(inArray.elem.base).toBe("LowCardinality(Enum8('a' = 1))");
+  });
 });
 
 describe('typeLexKind', () => {
@@ -176,12 +192,14 @@ describe('enumMembers / enumValues', () => {
     expect(enumValues("Nullable(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
   });
 
-  it('unwraps LowCardinality(Enum8(...)) — LowCardinality is transparent for Enum behavior', () => {
-    expect(enumValues("LowCardinality(Enum8('a' = 1, 'b' = 2))")).toEqual(['a', 'b']);
-  });
-
-  it('unwraps LowCardinality(Nullable(Enum8(...)))', () => {
-    expect(enumValues("LowCardinality(Nullable(Enum8('a' = 1)))")).toEqual(['a']);
+  // No ClickHouse version accepts LowCardinality wrapping an Enum at all
+  // (live-verified 26.3.13: ILLEGAL_TYPE_OF_ARGUMENT) — unlike Nullable
+  // ordering, parameter handling does NOT stay permissive about this one;
+  // it degrades exactly like an unparseable declaration.
+  it('rejects LowCardinality(Enum8(...)) in any nesting order — no Enum behavior for a type no server accepts', () => {
+    expect(enumValues("LowCardinality(Enum8('a' = 1, 'b' = 2))")).toBeNull();
+    expect(enumValues("LowCardinality(Nullable(Enum8('a' = 1)))")).toBeNull();
+    expect(enumValues("Nullable(LowCardinality(Enum8('a' = 1)))")).toBeNull();
   });
 
   it('returns null for a non-enum type', () => {
