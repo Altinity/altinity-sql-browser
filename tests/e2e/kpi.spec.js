@@ -26,11 +26,19 @@ test.describe('KPI panel', () => {
     expect(boxes[0].width).toBeGreaterThanOrEqual(160);
     expect(boxes[0].width).toBeLessThanOrEqual(320);
     expect(Math.abs(boxes[1].height - boxes[0].height)).toBeLessThan(1); // equal height within the line
-    // The band spans the Dashboard grid's full content width (grid-column: 1/-1),
-    // independent of the Report/Full width/2-3 column tile layout.
-    const bandWidth = await page.locator('#dashboard .dash-kpi-band').evaluate((node) => node.getBoundingClientRect().width);
-    const gridWidth = await page.locator('#dashboard').evaluate((node) => node.getBoundingClientRect().width);
-    expect(Math.abs(bandWidth - gridWidth)).toBeLessThan(2);
+    // The band spans the Dashboard grid's full CONTENT width (grid-column:
+    // 1/-1), independent of the Report/Full width/2-3 column tile layout —
+    // compare against the grid's content box (clientWidth minus its own
+    // horizontal padding), not its outer rect (which includes that padding).
+    const { bandWidth, contentWidth } = await page.locator('#dashboard').evaluate((grid) => {
+      const band = grid.querySelector('.dash-kpi-band');
+      const cs = getComputedStyle(grid);
+      return {
+        bandWidth: band.getBoundingClientRect().width,
+        contentWidth: grid.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+      };
+    });
+    expect(Math.abs(bandWidth - contentWidth)).toBeLessThan(2);
   });
 
   test('wraps to one card per row on a narrow mobile viewport, on both surfaces', async ({ page }) => {
