@@ -1,0 +1,143 @@
+{
+  "format": "altinity-sql-browser/saved-queries",
+  "version": 2,
+  "exportedAt": "2026-07-15T00:00:00.000Z",
+  "queries": [
+    {
+      "id": "qle-filter-user",
+      "sql": "SELECT groupArray(CAST((user, user) AS Tuple(value String, label String))) AS user\nFROM (SELECT DISTINCT user FROM system.query_log WHERE user != '' ORDER BY user)",
+      "specVersion": 1,
+      "spec": {
+        "name": "Filter · Users",
+        "favorite": true,
+        "description": "Curated Dashboard Filter source (Array(Tuple(value, label)) shape): every distinct user seen in system.query_log, as a searchable single-select. Upgrades any Panel's {user:String} parameter from a plain text box to this dropdown.",
+        "dashboard": { "role": "filter" }
+      }
+    },
+    {
+      "id": "qle-filter-kind",
+      "sql": "SELECT CAST(map(\n  'Select', 'SELECT queries',\n  'Insert', 'INSERT queries',\n  'Show', 'SHOW / metadata queries',\n  'Explain', 'EXPLAIN queries',\n  'Describe', 'DESCRIBE queries',\n  'KillQuery', 'KILL QUERY commands'\n) AS Map(String, String)) AS kind",
+      "specVersion": 1,
+      "spec": {
+        "name": "Filter · Query kind",
+        "favorite": true,
+        "description": "Curated Dashboard Filter source (Map(String, String) shape): a fixed map of real query_kind values to human-friendly labels. Upgrades any Panel's {kind:String} parameter to this dropdown — the label is shown, the map's key (the real query_kind) is what's bound to the parameter.",
+        "dashboard": { "role": "filter" }
+      }
+    },
+    {
+      "id": "qle-filter-errcode",
+      "sql": "SELECT groupArray(toString(exception_code)) AS errcode\nFROM (SELECT DISTINCT exception_code FROM system.query_log WHERE exception_code != 0 ORDER BY exception_code)",
+      "specVersion": 1,
+      "spec": {
+        "name": "Filter · Exception codes",
+        "favorite": true,
+        "description": "Curated Dashboard Filter source (plain Array(T) shape — value and label are the same string): every distinct ClickHouse exception code actually seen in this cluster's query_log. Upgrades any Panel's {errcode:String} parameter to this dropdown.",
+        "dashboard": { "role": "filter" }
+      }
+    },
+    {
+      "id": "qle-kpi",
+      "sql": "SELECT\n  count() AS total_queries,\n  countIf(exception_code != 0) AS errors,\n  round(100 * countIf(exception_code != 0) / count(), 2) AS error_rate_pct,\n  round(avg(query_duration_ms), 1) AS avg_duration_ms,\n  round(quantile(0.99)(query_duration_ms), 1) AS p99_duration_ms,\n  uniqExact(user) AS active_users\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing') AND query_kind = 'Select'\n/*[ AND event_time >= now() - toIntervalHour({hours:UInt32}) ]*/",
+      "specVersion": 1,
+      "spec": {
+        "name": "Query log health (KPI)",
+        "favorite": true,
+        "description": "Top-line SELECT-query health for this cluster: volume, error rate, and latency. {hours:UInt32} is an AUTO filter — a plain optional numeric field with no Filter source; blank means \"all time\" (this cluster's whole query_log history), filled in narrows the window. Every other Panel below that also declares {hours:UInt32} shares this exact same field.",
+        "view": "panel",
+        "panel": {
+          "cfg": { "type": "kpi" },
+          "fieldConfig": {
+            "columns": {
+              "total_queries": { "displayName": "SELECT queries" },
+              "errors": { "displayName": "Errors" },
+              "error_rate_pct": { "displayName": "Error rate", "unit": "%", "decimals": 2 },
+              "avg_duration_ms": { "displayName": "Avg duration", "unit": " ms", "decimals": 1 },
+              "p99_duration_ms": { "displayName": "P99 duration", "unit": " ms", "decimals": 1 },
+              "active_users": { "displayName": "Active users" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "qle-text",
+      "sql": "",
+      "specVersion": 1,
+      "spec": {
+        "name": "About this demo",
+        "favorite": true,
+        "description": "Static Text panel explaining the dashboard.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "text",
+            "content": "# Dashboard Filter sources demo\n\nEvery favorite below is a Panel, except three **Filter**-role sources (#160) that populate the filter bar above with option lists queried live from `system.query_log` on the **otel** demo cluster.\n\n**Auto filters** — plain, type-detected controls with no Filter source:\n\n- `hours` — optional lookback window in hours; blank means all time\n- `minDurationMs` — optional minimum query-duration threshold, in ms\n- `namePattern` — optional case-insensitive substring search over the query text\n\n**Curated filters** — sourced from a favorited Filter-role query, one per option shape:\n\n- `user` — real ClickHouse users, from an `Array(Tuple(value, label))` source\n- `kind` — friendly query-kind labels, from a `Map(String, String)` source\n- `errcode` — exception codes actually seen on this cluster, from a plain `Array(String)` source\n\nAnalytical panels are adapted from the Altinity KB page [\"Handy queries for system.query_log\"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/)."
+          }
+        }
+      }
+    },
+    {
+      "id": "qle-slowest",
+      "sql": "SELECT\n  event_time,\n  user,\n  round(query_duration_ms) AS duration_ms,\n  formatReadableSize(memory_usage) AS memory,\n  read_rows,\n  substring(query, 1, 100) AS query_preview\nFROM system.query_log\nWHERE type = 'QueryFinish' AND query_kind = 'Select'\n/*[ AND user = {user:String} ]*/\n/*[ AND query_duration_ms >= {minDurationMs:UInt32} ]*/\n/*[ AND positionCaseInsensitive(query, {namePattern:String}) > 0 ]*/\nORDER BY query_duration_ms DESC\nLIMIT 50",
+      "specVersion": 1,
+      "spec": {
+        "name": "Slowest SELECT queries",
+        "favorite": true,
+        "description": "Adapted from the Altinity KB's \"Most resource-intensive queries\" — the highest-latency completed SELECTs, with duration/memory/rows-read to spot what's actually expensive. Demonstrates three filters together: the CURATED {user:String} dropdown (Filter · Users) plus two AUTO fields, {minDurationMs:UInt32} (numeric threshold) and {namePattern:String} (free-text substring search) — all three optional.",
+        "view": "panel",
+        "panel": { "cfg": { "type": "table" } }
+      }
+    },
+    {
+      "id": "qle-columns",
+      "sql": "SELECT arrayJoin(columns) AS column, count() AS hits\nFROM system.query_log\nWHERE type = 'QueryFinish'\n/*[ AND query_kind = {kind:String} ]*/\n  AND notEmpty(columns)\nGROUP BY column\nORDER BY hits DESC\nLIMIT 20",
+      "specVersion": 1,
+      "spec": {
+        "name": "Most-selected columns",
+        "favorite": true,
+        "description": "Adapted from the Altinity KB's \"Most-selected columns\" — which columns have been referenced most often. Demonstrates the CURATED {kind:String} dropdown (Filter · Query kind, Map-shaped): blank shows every query kind's columns, choosing a kind narrows to it.",
+        "view": "panel",
+        "panel": { "cfg": { "type": "hbar", "x": 0, "y": [1], "series": null } }
+      }
+    },
+    {
+      "id": "qle-functions",
+      "sql": "SELECT arrayJoin(used_functions) AS function, count() AS hits\nFROM system.query_log\nWHERE type = 'QueryFinish'\n/*[ AND event_time >= now() - toIntervalHour({hours:UInt32}) ]*/\n  AND notEmpty(used_functions)\nGROUP BY function\nORDER BY hits DESC\nLIMIT 20",
+      "specVersion": 1,
+      "spec": {
+        "name": "Most-used functions",
+        "favorite": true,
+        "description": "Adapted from the Altinity KB's \"Most-used functions\" — which SQL functions appear most often across executed queries. Reuses the same AUTO {hours:UInt32} field as the KPI panel above (one field, shared by every Panel that declares it).",
+        "view": "panel",
+        "panel": { "cfg": { "type": "hbar", "x": 0, "y": [1], "series": null } }
+      }
+    },
+    {
+      "id": "qle-errors-over-time",
+      "sql": "SELECT toDate(event_time) AS day, count() AS errors\nFROM system.query_log\nWHERE exception_code != 0\n/*[ AND toString(exception_code) = {errcode:String} ]*/\nGROUP BY day\nORDER BY day",
+      "specVersion": 1,
+      "spec": {
+        "name": "Errors over time",
+        "favorite": true,
+        "description": "Daily count of failed queries (any exception_code != 0). Demonstrates the CURATED {errcode:String} dropdown (Filter · Exception codes, plain Array(T) shape — value and label are identical): blank shows every error, choosing a code narrows the trend to just that failure.",
+        "view": "panel",
+        "panel": { "cfg": { "type": "area", "x": 0, "y": [1], "series": null } }
+      }
+    },
+    {
+      "id": "qle-logs",
+      "sql": "SELECT\n  event_time,\n  multiIf(exception_code != 0, 'error', query_duration_ms > 1000, 'warn', 'info') AS level,\n  if(exception_code != 0, exception, query) AS message,\n  user,\n  query_kind,\n  query_duration_ms,\n  formatReadableSize(memory_usage) AS memory\nFROM system.query_log\nWHERE type IN ('QueryFinish', 'ExceptionWhileProcessing')\n  AND query_kind NOT IN ('Insert', 'AsyncInsertFlush')\n/*[ AND event_time >= now() - toIntervalHour({hours:UInt32}) ]*/\n/*[ AND user = {user:String} ]*/\nORDER BY event_time DESC\nLIMIT 300",
+      "specVersion": 1,
+      "spec": {
+        "name": "Recent query activity (log)",
+        "favorite": true,
+        "description": "Raw query_log rows as a Logs view, level-colored by outcome (error/slow/info) and excluding the noisy internal Insert/AsyncInsertFlush firehose so the feed reads as actual query activity. Reuses BOTH the AUTO {hours:UInt32} field and the CURATED {user:String} dropdown from the panels above.",
+        "view": "panel",
+        "panel": {
+          "cfg": { "type": "logs", "time": "event_time", "msg": "message", "level": "level" }
+        }
+      }
+    }
+  ]
+}

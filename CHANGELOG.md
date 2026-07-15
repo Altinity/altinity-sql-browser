@@ -21,6 +21,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   The workbench result selector is role-aware, preserves dormant Panel config,
   and provides a completed-run-only Filter preview without changing shared
   Dashboard values.
+- `examples/query-log-explorer.json` — a worked Dashboard Filter sources demo
+  against `system.query_log` on any cluster: one Filter source per option
+  shape (`Array(Tuple(value, label))`, `Map(String, String)`, plain
+  `Array(T)`), plain auto-detected fields alongside them, a KPI panel, four
+  analytical Panels adapted from the Altinity KB's ["Handy queries for
+  system.query_log"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/),
+  a Logs panel, and a Text panel explaining the demo.
 
 ### Fixed
 - Review follow-ups on the Dashboard Filter sources work above, found in a
@@ -41,7 +48,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Enum's quoted member list and never unwrapped `LowCardinality`). A Filter or
   KPI query's Table/JSON view no longer shows `[object Object]` for named-tuple
   columns serialized as objects. A curated field now gets the same
-  is-invalid/conflict affordance a plain filter field does.
+  is-invalid/conflict affordance a plain filter field does. A real pointer
+  click on the clear button double-committed (mousedown blurred the input
+  before the click handler ran); fixed with the same commit-before-blur
+  `preventDefault` pattern `combobox.js` already uses for option commits. A
+  curated field never got the `is-optional` CSS class, so it always showed
+  the required-field asterisk even when its param was genuinely optional.
 
 ## [0.4.5] - 2026-07-14
 

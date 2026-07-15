@@ -462,6 +462,15 @@ nested option values, limits each helper to 1,000 options, and falls back to the
 ordinary parameter field when a source, consumer type, or provider conflicts.
 Filter sources run and reconcile saved values before any Panel query starts.
 
+The complete [`query-log-explorer.json`](examples/query-log-explorer.json)
+Library example (load via **File ▾ → Append**) demonstrates every filter
+variant against `system.query_log` on any cluster: three Filter sources, one
+per option shape (`Array(Tuple(value, label))`, `Map(String, String)`, plain
+`Array(T)`), alongside plain auto-detected numeric/text fields — a KPI panel,
+four analytical Panels adapted from the Altinity KB's ["Handy queries for
+system.query_log"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/),
+a Logs panel, and a Text panel explaining the demo.
+
 ```sql
 SELECT
   arraySort(groupUniqArray(toString(Origin))) AS origin,
