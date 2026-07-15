@@ -64,6 +64,20 @@ describe('buildFilterBar (shared filter row)', () => {
     bar.remove();
   });
 
+  it('marks a curated field is-optional when its param is optional, same as a plain field', () => {
+    const app = makeApp();
+    const bar = buildFilterBar(
+      app,
+      paramsFor('SELECT {y:String} FROM t /*[ AND x = {x:String} ]*/'),
+      () => {}, okField,
+      { curatedFields: { y: { options: [{ value: 'a', label: 'Alpha' }] }, x: { options: [{ value: 'b', label: 'Beta' }] } } },
+    );
+    const fields = [...bar.querySelectorAll('.var-field')];
+    expect(fields.map((f) => f.querySelector('.var-name').textContent)).toEqual(['y', 'x']);
+    expect(fields.map((f) => f.classList.contains('is-optional'))).toEqual([false, true]);
+    expect(fields.every((f) => f.classList.contains('is-curated'))).toBe(true);
+  });
+
   it('applies the shared is-invalid affordance to a curated field, same as a plain one', () => {
     const app = makeApp();
     const invalidField = () => ({ state: 'invalid', reason: 'Bad value' });

@@ -80,7 +80,8 @@ export function buildFilterBar(app, params, onCommit, getField, options = {}) {
       // favorites), and without this it silently showed none of the
       // is-invalid class/tooltip/aria-invalid a plain filter field would.
       applyFieldState(field.input, getField(p.name, 'execute'), baseTitle);
-      return h('label', { class: 'var-field is-curated' }, h('span', { class: 'var-name' }, p.name), field.el);
+      return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
+        h('span', { class: 'var-name' }, p.name), field.el);
     }
     const commitNow = () => {
       if (timer == null) return;
