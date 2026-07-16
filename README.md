@@ -497,37 +497,62 @@ npm run dev            # build + serve dist/ at http://localhost:8900
 
 ### Run in Docker
 
-The Docker image packages the existing zero-dependency Python runner, so the
-container keeps the same behavior as the local app: it serves `/sql`,
-generates `/config.json`, reads ClickHouse connections from
-`~/.clickhouse-client`, and optionally probes which hosts are reachable.
+The production image is a static **nginx** server for the single-file SPA — no
+application backend. It serves `/sql` (and the `/sql/dashboard` client route),
+serves a `config.json` you provide at `/sql/config.json`, and answers `/healthz`
+for probes. Queries are **not** proxied: the browser POSTs them straight to the
+chosen ClickHouse cluster, exactly like the on-cluster deployment.
+
+Pull the published multi-arch image (`linux/amd64` + `linux/arm64`):
 
 ```bash
-docker compose up --build
+docker run --rm -p 8900:8080 \
+  -v "$PWD/config.json:/config/config.json:ro" \
+  ghcr.io/altinity/altinity-sql-browser:latest
 ```
 
-Then open `http://localhost:8900/sql`.
+Then open `http://localhost:8900/sql`. Tags: `latest` and `X.Y.Z` (releases),
+`edge` (main), `sha-<commit>`.
 
-By default `docker-compose.yaml` bind-mounts your host `~/.clickhouse-client` directory
-into the container read-only and disables the startup reachability probe. That is
-intentional: the probe runs inside the container, while the browser connects to
-ClickHouse directly from your host, so host-only names like `localhost` or
-entries resolved via your host `/etc/hosts` can be valid in the browser but fail
-when probed from Docker. Useful overrides:
+The container listens on **8080** (non-root nginx). Provide your OAuth/host
+config as a `config.json` (see [`deploy/config.json.example`](deploy/config.json.example)
+and [docs/LOGIN-SCREEN.md](docs/LOGIN-SCREEN.md)) mounted at
+`/config/config.json`. **With no mount** the image serves a built-in demo config
+for the public Altinity clusters (antalya + github.demo), each offered as a
+`demo:demo` credentials entry and a Google-SSO entry — so a bare
+`docker run -p 8900:8080 ghcr.io/altinity/altinity-sql-browser:latest` is
+immediately usable.
+
+Set **`CONNECT_SRC`** to the space-separated origins the browser must reach —
+your IdP endpoints plus every ClickHouse cluster origin in your `config.json`;
+it fills the CSP `connect-src` (same-origin `'self'` is always included):
 
 ```bash
-SQL_BROWSER_PROBE=1 docker compose up --build   # re-enable container-side /ping checks
-PORT=9000 docker compose up --build             # publish on another local port
+docker run --rm -p 8900:8080 \
+  -v "$PWD/config.json:/config/config.json:ro" \
+  -e CONNECT_SRC="https://accounts.google.com https://oauth2.googleapis.com https://clickhouse.example.com" \
+  ghcr.io/altinity/altinity-sql-browser:latest
 ```
 
-You can also build and run the image directly:
+Or with Compose (builds locally, mounts the demo config, publishes on `$PORT`):
 
 ```bash
-docker build -t altinity-sql-browser:local .
-docker run --rm -p 8900:8900 \
-  -v "$HOME/.clickhouse-client:/home/asb/.clickhouse-client:ro" \
-  altinity-sql-browser:local
+docker compose up --build          # → http://localhost:8900/sql
+PORT=9000 docker compose up --build
 ```
+
+Two caveats for the baked demo config:
+
+- **OAuth from `localhost` won't complete** — the demo clusters' Google clients
+  register redirect URIs on their own hosts, not `http://localhost:8900/sql`. Use
+  the `demo:demo` credentials entries locally; the SSO entries work once the app
+  is served from a registered origin.
+- **Cross-origin queries need CORS** on the target cluster. ClickHouse's HTTP
+  interface sends `Access-Control-Allow-Origin` for requests carrying an `Origin`
+  by default, so the public demos work out of the box.
+
+Kubernetes manifests (Deployment + Service, non-root `securityContext`,
+config via ConfigMap) are in [`deploy/k8s/`](deploy/k8s/).
 
 ### Run locally against your own ClickHouse
 
@@ -578,18 +603,9 @@ by default, so a stock server works. For an **OAuth** connection you also regist
 `http://localhost:8900/sql` as a redirect URI with the IdP. Override the serve port
 with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
 
-**From Docker** (no Node on the host, same runner behavior):
-
-```bash
-docker compose up --build
-```
-
-The container exposes `http://localhost:8900/sql` and reads saved connections
-from a read-only mount of `~/.clickhouse-client` into `/home/asb/.clickhouse-client`.
-Docker Compose disables `SQL_BROWSER_PROBE` by default because the probe runs in
-the container and may incorrectly drop host-only aliases such as `localhost` or
-names resolved through your host `/etc/hosts`. Re-enable it with
-`SQL_BROWSER_PROBE=1` if your saved hosts are reachable from inside Docker too.
+**From Docker** — the container is a static nginx server that takes an explicit
+`config.json` rather than reading `~/.clickhouse-client`. See
+[Run in Docker](#run-in-docker) above.
 
 ## Installing on any ClickHouse cluster
 

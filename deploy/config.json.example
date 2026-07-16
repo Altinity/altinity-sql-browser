@@ -2,10 +2,25 @@
   "basic_login": true,
   "idps": [
     {
-      "id": "google",
-      "label": "Google",
+      "id": "google-antalya",
+      "label": "Google (Antalya)",
       "issuer": "https://accounts.google.com",
-      "client_id": "REPLACE_WITH_OAUTH_CLIENT_ID"
+      "client_id": "925653064731-tpj128lp5qm5vkqn4llgbl96udvt3lsf.apps.googleusercontent.com",
+      "client_secret": "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"
+    },
+    {
+      "id": "google-github",
+      "label": "Google (github.demo)",
+      "issuer": "https://accounts.google.com",
+      "client_id": "925653064731-vsep3e0vjq74q16svj5jshgvdlm6uptm.apps.googleusercontent.com",
+      "client_secret": "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",
+      "ch_auth": "basic"
     }
+  ],
+  "hosts": [
+    { "label": "Antalya (demo:demo)", "url": "https://antalya.demo.altinity.cloud", "auth": "basic", "user": "demo", "password": "demo" },
+    { "label": "Antalya (Google SSO)", "url": "https://antalya.demo.altinity.cloud", "auth": "oauth", "idp": "google-antalya" },
+    { "label": "github.demo (demo:demo)", "url": "https://github.demo.altinity.cloud", "auth": "basic", "user": "demo", "password": "demo" },
+    { "label": "github.demo (Google SSO)", "url": "https://github.demo.altinity.cloud", "auth": "oauth", "idp": "google-github" }
   ]
 }

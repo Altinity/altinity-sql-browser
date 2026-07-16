@@ -9,6 +9,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Production container + GHCR image.** The Docker image is now a static
+  **nginx** server for the single-file SPA (replacing the containerized Python
+  runner): it serves `/sql`, `/sql/dashboard`, a mounted `config.json` at
+  `/sql/config.json`, and `/healthz`, runs non-root on port 8080, and carries the
+  same security headers/CSP as the on-cluster deployment (`CONNECT_SRC` env fills
+  the CSP `connect-src`). A new `.github/workflows/docker.yml` publishes a
+  multi-arch (`amd64`+`arm64`) image to `ghcr.io/altinity/altinity-sql-browser`
+  — `edge` on `main`, `X.Y.Z`+`latest` on release tags — so the image ships as
+  part of every release. `deploy/config.json.example` now carries a runnable demo
+  (antalya + github.demo, each in `demo:demo` and Google-SSO modes) and is baked
+  in as the default served config. `deploy/k8s/` and `docker-compose.yaml`
+  updated to the nginx model (config via ConfigMap/mount, `securityContext`,
+  `/healthz` + `/sql/config.json` probes).
+
 ### Changed
 - **Chart style internals consolidated (post-#258 review).** The per-chart-type
   style surface (which fields each type owns, their accepted values, and their
