@@ -20,7 +20,7 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { schemaKey } from '../core/chart-data.js';
-import { resolvePanel, autoPanel } from '../core/panel-cfg.js';
+import { resolvePanel } from '../core/panel-cfg.js';
 import {
   DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
@@ -246,6 +246,7 @@ function applyTileResult(app, q, slot, r) {
     slot.foot.replaceChildren();
     return;
   }
+  const savedPanel = queryPanel(q);
   const explicit = explicitPanel(q);
   // Unconfigured empty results remain skipped. An EXPLICIT panel never vanishes —
   // a zero-row one renders an honest "0 rows" state instead (visible, and
@@ -270,12 +271,16 @@ function applyTileResult(app, q, slot, r) {
     slot.foot.replaceChildren(...tileFooter(r.meta));
     return;
   }
-  // The one shared resolution (#166): the saved panel wins (mismatches retain
-  // the type and re-derive roles; impossible shapes fall back with a
-  // diagnostic), an unconfigured result goes through the autoPanel ladder.
-  const resolved = explicit
-    ? resolvePanel(explicit, { columns: r.columns, rows: r.rows, fieldConfig: explicit.fieldConfig, serverVersion: app.state.serverVersion })
-    : { ...autoPanel({ columns: r.columns, rows: r.rows, serverVersion: app.state.serverVersion }), rederived: false, fallback: false };
+  // The one shared resolution (#166/#254): queryPanel retains fieldConfig even
+  // when cfg is absent, so auto-derived Dashboard panels receive the same
+  // presentation metadata as the workbench. `explicit` remains separate above
+  // because only cfg-bearing panels own zero-row and transport semantics.
+  const resolved = resolvePanel(savedPanel, {
+    columns: r.columns,
+    rows: r.rows,
+    fieldConfig: savedPanel?.fieldConfig,
+    serverVersion: app.state.serverVersion,
+  });
   slot.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
   // Grid state persists across refreshes/filter edits on the stable slot,
   // keyed by result schema — a schema change resets it, a re-run keeps it.

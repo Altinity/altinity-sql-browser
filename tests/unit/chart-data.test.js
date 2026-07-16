@@ -337,7 +337,7 @@ describe('buildChartData', () => {
 });
 
 describe('formatChartValue', () => {
-  it('uses exact decimals and authored units, and distinguishes no-value from zero', () => {
+  it('uses exact decimals and authored units, with a safe non-finite fallback', () => {
     const presentation = { decimals: 1, unit: '%', noValue: 'n/a' };
     expect(formatChartValue(68.234, presentation)).toBe('68.2%');
     expect(formatChartValue(0, presentation)).toBe('0.0%');
@@ -386,6 +386,14 @@ describe('chartJsConfig', () => {
   });
   it('retains Chart.js legacy tooltip value formatting when fieldConfig has no value format', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+    expect(cfg.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1500, formattedValue: '1,500',
+    })).toBe('flights: 1,500');
+  });
+  it('does not change valid tooltip formatting when only noValue is authored', () => {
+    const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, {
+      fieldConfig: { columns: { flights: { noValue: 'n/a' } } },
+    });
     expect(cfg.options.plugins.tooltip.callbacks.label({
       datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1500, formattedValue: '1,500',
     })).toBe('flights: 1,500');
@@ -468,7 +476,7 @@ describe('chartJsConfig', () => {
     expect(cfg.options.scales.y.ticks.callback(68.234)).toBe('68.2%');
     const callbacks = cfg.options.plugins.tooltip.callbacks;
     expect(callbacks.label({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 68.234 })).toBe('Flights: 68.2%');
-    expect(callbacks.label({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: null })).toBe('Delay: n/a');
+    expect(callbacks.label({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: 6.25 })).toBe('Delay: 6.3%');
     expect(callbacks.afterLabel({ datasetIndex: 0 })).toBe('Completed flights.');
     expect(callbacks.afterLabel({ datasetIndex: 1 })).toBe('');
   });

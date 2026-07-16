@@ -52,7 +52,7 @@ describe('hasFieldValueFormat', () => {
     expect(hasFieldValueFormat({ defaults: { unit: '' }, columns: [] }, 'value')).toBe(false);
     expect(hasFieldValueFormat({ defaults: { decimals: 2 } }, 'value')).toBe(true);
     expect(hasFieldValueFormat({ columns: { value: { unit: '%' } } }, 'value')).toBe(true);
-    expect(hasFieldValueFormat({ columns: { value: { noValue: 'n/a' } } }, 'value')).toBe(true);
+    expect(hasFieldValueFormat({ columns: { value: { noValue: 'n/a' } } }, 'value')).toBe(false);
     expect(hasFieldValueFormat({ columns: { Value: { unit: '%' }, value: 2 } }, 'value')).toBe(false);
     expect(hasFieldValueFormat({ defaults: { decimals: 21 } }, 'value')).toBe(false);
   });

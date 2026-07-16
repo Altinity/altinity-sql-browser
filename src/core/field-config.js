@@ -18,7 +18,6 @@ export function hasFieldValueFormat(fieldConfig, columnName) {
   return [defaults, column].some((layer) => (
     (typeof layer.unit === 'string' && layer.unit !== '')
     || validDecimals(layer.decimals)
-    || typeof layer.noValue === 'string'
   ));
 }
 
