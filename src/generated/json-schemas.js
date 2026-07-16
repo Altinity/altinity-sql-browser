@@ -307,131 +307,7 @@ export const querySpecV1Schema = {
             }
           ],
           "default": "auto"
-        }
-      },
-      "additionalProperties": true,
-      "x-altinity-order": [
-        "curve",
-        "points"
-      ]
-    },
-    "areaChartStyle": {
-      "title": "Area style",
-      "description": "Curve, marker, and additive stacking presentation for Area charts.",
-      "allOf": [
-        {
-          "$ref": "#/$defs/lineChartStyle"
         },
-        {
-          "type": "object",
-          "properties": {
-            "stack": {
-              "title": "Area stacking",
-              "description": "overlay draws series independently; stacked uses one shared additive stack without normalization.",
-              "anyOf": [
-                {
-                  "type": "string",
-                  "enum": [
-                    "overlay",
-                    "stacked"
-                  ]
-                },
-                {
-                  "type": "string"
-                }
-              ],
-              "default": "overlay"
-            }
-          },
-          "additionalProperties": true
-        }
-      ],
-      "x-altinity-order": [
-        "curve",
-        "points",
-        "stack"
-      ]
-    },
-    "barChartStyle": {
-      "title": "Bar and Column style",
-      "description": "Grouping and category-spacing presentation shared by horizontal Bar and vertical Column charts.",
-      "type": "object",
-      "properties": {
-        "mode": {
-          "title": "Bar grouping",
-          "description": "grouped draws measures side by side; stacked adds them on one shared value stack.",
-          "anyOf": [
-            {
-              "type": "string",
-              "enum": [
-                "grouped",
-                "stacked"
-              ]
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "default": "grouped"
-        },
-        "density": {
-          "title": "Category spacing",
-          "description": "normal uses standard spacing, compact reduces gaps, and joined removes category gaps.",
-          "anyOf": [
-            {
-              "type": "string",
-              "enum": [
-                "normal",
-                "compact",
-                "joined"
-              ]
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "default": "normal"
-        }
-      },
-      "additionalProperties": true,
-      "x-altinity-order": [
-        "mode",
-        "density"
-      ]
-    },
-    "pieChartStyle": {
-      "title": "Pie style",
-      "description": "Pie or Donut shape presentation.",
-      "type": "object",
-      "properties": {
-        "shape": {
-          "title": "Pie shape",
-          "description": "pie fills the center; donut uses a fixed 60% cutout.",
-          "anyOf": [
-            {
-              "type": "string",
-              "enum": [
-                "pie",
-                "donut"
-              ]
-            },
-            {
-              "type": "string"
-            }
-          ],
-          "default": "pie"
-        }
-      },
-      "additionalProperties": true,
-      "x-altinity-order": [
-        "shape"
-      ]
-    },
-    "chartDisplay": {
-      "title": "Chart display",
-      "description": "Shared chart scale and presentation chrome. Renderers read only fields relevant to their current type.",
-      "type": "object",
-      "properties": {
         "scale": {
           "title": "Value scale",
           "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.",
@@ -502,6 +378,220 @@ export const querySpecV1Schema = {
             }
           ],
           "default": "show"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "curve",
+        "points",
+        "scale",
+        "legend",
+        "grid",
+        "axes"
+      ]
+    },
+    "areaChartStyle": {
+      "title": "Area style",
+      "description": "Curve, marker, and additive stacking presentation for Area charts.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/lineChartStyle"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stack": {
+              "title": "Area stacking",
+              "description": "overlay draws series independently; stacked uses one shared additive stack without normalization.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "overlay",
+                    "stacked"
+                  ]
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "default": "overlay"
+            }
+          },
+          "additionalProperties": true
+        }
+      ],
+      "x-altinity-order": [
+        "curve",
+        "points",
+        "stack",
+        "scale",
+        "legend",
+        "grid",
+        "axes"
+      ]
+    },
+    "barChartStyle": {
+      "title": "Bar and Column style",
+      "description": "Grouping and category-spacing presentation shared by horizontal Bar and vertical Column charts.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "title": "Bar grouping",
+          "description": "grouped draws measures side by side; stacked adds them on one shared value stack.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "grouped",
+                "stacked"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "grouped"
+        },
+        "density": {
+          "title": "Category spacing",
+          "description": "normal uses standard spacing, compact reduces gaps, and joined removes category gaps.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "normal",
+                "compact",
+                "joined"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "normal"
+        },
+        "scale": {
+          "title": "Value scale",
+          "description": "zero and auto anchor Bar/Column at zero; data uses the data range.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "zero",
+                "data"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "zero"
+        },
+        "legend": {
+          "title": "Legend visibility",
+          "description": "auto shows the legend for multiple datasets; show and hide override that behavior.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "auto"
+        },
+        "grid": {
+          "title": "Grid visibility",
+          "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "auto"
+        },
+        "axes": {
+          "title": "Axis visibility",
+          "description": "show renders both axes; hide removes both axes while retaining chart interaction.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "show"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "mode",
+        "density",
+        "scale",
+        "legend",
+        "grid",
+        "axes"
+      ]
+    },
+    "pieChartStyle": {
+      "title": "Pie style",
+      "description": "Pie or Donut shape presentation.",
+      "type": "object",
+      "properties": {
+        "shape": {
+          "title": "Pie shape",
+          "description": "pie fills the center; donut uses a fixed 60% cutout.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "pie",
+                "donut"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "pie"
+        },
+        "legend": {
+          "title": "Legend visibility",
+          "description": "show renders the slice legend; hide relies on tooltips.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "show"
         },
         "frame": {
           "title": "Chart frame",
@@ -523,19 +613,14 @@ export const querySpecV1Schema = {
       },
       "additionalProperties": true,
       "x-altinity-order": [
-        "scale",
+        "shape",
         "legend",
-        "grid",
-        "axes",
         "frame"
       ]
     },
     "chartCfg": {
       "type": "object",
       "properties": {
-        "display": {
-          "$ref": "#/$defs/chartDisplay"
-        },
         "x": {
           "$ref": "#/$defs/resultColumnIndex",
           "default": 0
@@ -574,7 +659,6 @@ export const querySpecV1Schema = {
       "additionalProperties": true,
       "x-altinity-order": [
         "type",
-        "display",
         "x",
         "y",
         "series"
@@ -597,7 +681,6 @@ export const querySpecV1Schema = {
       "x-altinity-order": [
         "type",
         "style",
-        "display",
         "x",
         "y",
         "series"

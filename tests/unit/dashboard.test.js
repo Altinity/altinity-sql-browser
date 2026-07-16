@@ -1031,8 +1031,8 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     const charts = [];
     const app = oneFav(vi.fn(async () => chartResult()), { panel: { cfg: {
       type: 'area', x: 0, y: [1], series: null,
-      style: { curve: 'smooth', points: 'hide', stack: 'stacked' },
-      display: { scale: 'zero', legend: 'show', grid: 'show', axes: 'hide' },
+      style: { curve: 'smooth', points: 'hide', stack: 'stacked',
+        scale: 'zero', legend: 'show', grid: 'show', axes: 'hide' },
     } } });
     const Base = app.Chart;
     app.Chart = class extends Base { constructor(...args) { super(...args); charts.push(this); } };

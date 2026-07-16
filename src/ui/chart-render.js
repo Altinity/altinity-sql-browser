@@ -11,7 +11,7 @@ import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
 import {
   chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap,
-  chartStylePresets, chartStylePreset, applyChartStylePreset, normalizeChartDisplay, visibleChartMeasures,
+  chartStylePresets, chartStylePreset, applyChartStylePreset, normalizeChartStyle, visibleChartMeasures,
 } from '../core/chart-data.js';
 
 /** A labelled <select> for the config bar (shared with the Panel tab's
@@ -82,14 +82,12 @@ export function renderChart(app, r, opts = {}) {
     }
     const presets = chartStylePresets(cfg.type);
     if (presets.length) {
-      const preset = chartStylePreset(cfg.style, cfg.display, cfg.type);
+      const preset = chartStylePreset(cfg.style, cfg.type);
       const styleOptions = preset === 'custom'
         ? [...presets, { value: 'custom', label: 'Custom', disabled: true }]
         : presets;
       bar.appendChild(chartSelect('Style', preset, styleOptions, (v) => {
-        const applied = applyChartStylePreset(cfg.style, cfg.display, v, cfg.type);
-        cfg.style = applied.style;
-        cfg.display = applied.display;
+        cfg.style = applyChartStylePreset(cfg.style, v, cfg.type);
         changed(cfg);
       }));
     }
@@ -151,7 +149,7 @@ export function renderChart(app, r, opts = {}) {
     if (wrap && wrap.offsetWidth > 0 && wrap.offsetHeight > 0) { chart.resize(wrap.offsetWidth, wrap.offsetHeight); chart.update('resize'); }
   });
 
-  const compactFrame = cfg.type === 'pie' && normalizeChartDisplay(cfg.display, cfg.type).frame === 'compact';
+  const compactFrame = cfg.type === 'pie' && normalizeChartStyle(cfg.style, cfg.type).frame === 'compact';
   return h('div', { class: 'chart-view' }, bar,
     h('div', { class: 'chart-canvas-wrap' + (compactFrame ? ' is-compact' : '') }, canvas));
 }

@@ -24,21 +24,18 @@ describe('share encode/decode', () => {
     expect(raw.panel).toBeUndefined();
   });
 
-  it('round-trips chart style/display and extension metadata without aliasing', () => {
+  it('round-trips chart style and extension metadata without aliasing', () => {
     const style = {
-      curve: 'future-curve', points: 'hide', extension: { dense: true },
+      curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
+      extension: { dense: true },
     };
-    const display = { scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide', extension: { frame: true } };
     const query = savedQuery({ sql: 'SELECT k, v FROM t', panel: {
-      cfg: { type: 'line', x: 0, y: [1], series: null, style, display },
+      cfg: { type: 'line', x: 0, y: [1], series: null, style },
     } });
     const decoded = decodeShare(encodeShare(query));
     expect(decoded.spec.panel.cfg.style).toEqual(style);
     expect(decoded.spec.panel.cfg.style).not.toBe(style);
     expect(decoded.spec.panel.cfg.style.extension).not.toBe(style.extension);
-    expect(decoded.spec.panel.cfg.display).toEqual(display);
-    expect(decoded.spec.panel.cfg.display).not.toBe(display);
-    expect(decoded.spec.panel.cfg.display.extension).not.toBe(display.extension);
   });
 
   it('retains the compatibility sql/panel encode call but writes v2', () => {

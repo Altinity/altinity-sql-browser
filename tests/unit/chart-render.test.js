@@ -141,9 +141,9 @@ describe('renderChart', () => {
   it.each([
     ...Object.entries(CHART_STYLE_PRESETS).flatMap(([type, presets]) => (
       // Bar/Column share the same frozen contract; one application test per internal type is intentional.
-      presets.map((preset) => [type, preset.value, preset.style, preset.display])
+      presets.map((preset) => [type, preset.value, preset.style])
     )),
-  ])('writes the %s %s Style preset once and preserves extensions', (type, preset, expectedStyle, expectedDisplay) => {
+  ])('writes the %s %s Style preset once and preserves extensions', (type, preset, expectedStyle) => {
     const app = appWithResult(chartResult());
     const sourceStyle = {
       ...(type === 'pie' ? { shape: 'future-shape' }
@@ -151,8 +151,7 @@ describe('renderChart', () => {
           : { curve: 'future-curve' }),
       future: 1,
     };
-    const sourceDisplay = { future: 2 };
-    const cfg = { type, x: 0, y: [2], series: null, style: sourceStyle, display: sourceDisplay };
+    const cfg = { type, x: 0, y: [2], series: null, style: sourceStyle };
     const onCfgChange = vi.fn();
     const rerender = vi.fn();
     const el = renderChart(app, app.activeTab().result, { cfg, onCfgChange, rerender });
@@ -161,42 +160,39 @@ describe('renderChart', () => {
     expect(custom.disabled).toBe(true);
     change(fieldSel(el, 'Style'), preset);
     expect(cfg.style).toEqual({ ...sourceStyle, ...expectedStyle });
-    expect(cfg.display).toEqual({ ...sourceDisplay, ...expectedDisplay });
     expect(onCfgChange).toHaveBeenCalledTimes(1);
     expect(onCfgChange).toHaveBeenCalledWith(cfg);
     expect(rerender).not.toHaveBeenCalled();
   });
-  it('preserves complete dormant style/display while switching types', () => {
+  it('preserves complete dormant style while switching types', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
     app.activeTab().panelCfg = {
       type: 'line', x: 0, y: [2], series: null,
-      style: { curve: 'stepped', points: 'hide', mode: 'stacked', density: 'compact', shape: 'donut', future: true },
-      display: { scale: 'data', legend: 'hide', grid: 'hide', axes: 'show', frame: 'compact', future: true },
+      style: { curve: 'stepped', points: 'hide', mode: 'stacked', density: 'compact', shape: 'donut',
+        scale: 'data', legend: 'hide', grid: 'hide', axes: 'show', frame: 'compact', future: true },
     };
     app.activeTab().panelKey = schemaKey(app.activeTab().result.columns);
     paintChart(app);
     expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
     const savedStyle = structuredClone(app.activeTab().panelCfg.style);
-    const savedDisplay = structuredClone(app.activeTab().panelCfg.display);
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'bar');
     expect(app.activeTab().panelCfg.style).toEqual(savedStyle);
-    expect(app.activeTab().panelCfg.display).toEqual(savedDisplay);
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
     expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
-    expect(app.activeTab().panelCfg).toMatchObject({ style: savedStyle, display: savedDisplay });
+    expect(app.activeTab().panelCfg).toMatchObject({ style: savedStyle });
   });
   it('uses reduced canvas padding only for Compact Pie', () => {
     const app = appWithResult(chartResult());
     const compact = renderChart(app, app.activeTab().result, {
-      cfg: { type: 'pie', x: 0, y: [2], series: null, display: { frame: 'compact' } }, rerender: vi.fn(),
+      cfg: { type: 'pie', x: 0, y: [2], series: null, style: { frame: 'compact' } }, rerender: vi.fn(),
     });
     expect(compact.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(true);
     const normal = renderChart(app, app.activeTab().result, {
-      cfg: { type: 'pie', x: 0, y: [2], series: null, display: { frame: 'normal' } }, rerender: vi.fn(),
+      cfg: { type: 'pie', x: 0, y: [2], series: null, style: { frame: 'normal' } }, rerender: vi.fn(),
     });
     expect(normal.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(false);
     const dormant = renderChart(app, app.activeTab().result, {
-      cfg: { type: 'line', x: 0, y: [2], series: null, display: { frame: 'compact' } }, rerender: vi.fn(),
+      cfg: { type: 'line', x: 0, y: [2], series: null, style: { frame: 'compact' } }, rerender: vi.fn(),
     });
     expect(dormant.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(false);
   });
