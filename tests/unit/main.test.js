@@ -263,7 +263,10 @@ describe('bootstrap', () => {
     // The hash is gone after the IdP redirect; the stash carries it through.
     const app = fakeApp({ token: valid, isSignedIn: () => true });
     const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
-    const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
+    const chart = { cfg: {
+      type: 'line', x: 0, y: [1], series: null,
+      style: { curve: 'smooth', points: 'hide', extension: { dense: true } },
+    }, key: 'k' };
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({ sql: 'SELECT 42', chart }));
     await bootstrap(app, env);
     expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 42');

@@ -101,6 +101,24 @@ describe('canonical query.spec schema', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: { type: 'text', content: 1 } } })[0])
       .toMatchObject({ path: ['panel', 'cfg', 'content'], code: 'schema-invalid-type' });
   });
+
+  it('documents chart styles while retaining unsupported string values for forward compatibility', () => {
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'line', x: 0, y: [1], style: { curve: 'smooth', points: 'hide', future: true },
+    } } })).toEqual([]);
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'area', x: 0, y: [1], style: { curve: 'future-curve', points: 'future-points' },
+    } } })).toEqual([]);
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'line', x: 0, y: [1], style: { curve: 42, points: false },
+    } } }).map((item) => [item.path, item.code])).toEqual([
+      [['panel', 'cfg', 'style', 'curve'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'points'], 'schema-invalid-type'],
+    ]);
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'line', x: 0, y: [1], style: [],
+    } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'style'], code: 'schema-invalid-type' });
+  });
 });
 
 describe('schema lookup', () => {
@@ -152,6 +170,11 @@ describe('schema lookup', () => {
       .toMatchObject({ type: 'integer', minimum: 0, 'x-altinity-completion': { source: 'resultColumnIndexes' } });
     expect(querySpecSchemaService.schemaAtPath({ root: chart, path: ['panel', 'cfg', 'y', 0] }).common)
       .toMatchObject({ type: 'integer', minimum: 0, 'x-altinity-completion': { source: 'resultColumnIndexes' } });
+    expect(querySpecSchemaService.propertiesAtPath({ root: chart, path: ['panel', 'cfg'] })
+      .map((item) => item.name)).toEqual(['type', 'style', 'x', 'y', 'series']);
+    expect(querySpecSchemaService.propertiesAtPath({
+      root: chart, path: ['panel', 'cfg', 'style'],
+    }).map((item) => item.name)).toEqual(['curve', 'points']);
     const fields = { panel: { fieldConfig: { columns: { 'latency.p95': { decimals: 2 } } } } };
     expect(querySpecSchemaService.schemaAtPath({
       root: fields, path: ['panel', 'fieldConfig', 'columns', 'latency.p95', 'decimals'],

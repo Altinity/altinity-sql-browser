@@ -83,6 +83,45 @@ export const CHART_TYPES = [
   { value: 'pie', label: 'Pie' },
 ];
 
+export const CHART_STYLE_PRESETS = [
+  { value: 'clean', label: 'Clean', style: { curve: 'linear', points: 'auto' } },
+  { value: 'smooth', label: 'Smooth', style: { curve: 'smooth', points: 'auto' } },
+  { value: 'stepped', label: 'Stepped', style: { curve: 'stepped', points: 'auto' } },
+  { value: 'points', label: 'Points', style: { curve: 'linear', points: 'show' } },
+];
+
+const CHART_CURVES = new Set(['linear', 'smooth', 'stepped']);
+const CHART_POINTS = new Set(['auto', 'show', 'hide']);
+
+/** Resolve renderer-independent Line/Area style without mutating imported data. */
+export function normalizeChartStyle(style) {
+  const value = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  return {
+    curve: CHART_CURVES.has(value.curve) ? value.curve : 'linear',
+    points: CHART_POINTS.has(value.points) ? value.points : 'auto',
+  };
+}
+
+/** Pick the closest compact UI preset without rewriting unusual stored combinations. */
+export function chartStylePreset(style) {
+  const value = normalizeChartStyle(style);
+  if (value.curve === 'smooth') return 'smooth';
+  if (value.curve === 'stepped') return 'stepped';
+  return value.points === 'show' ? 'points' : 'clean';
+}
+
+/** Apply one UI preset while retaining unknown style extensions. */
+export function applyChartStylePreset(style, preset) {
+  const base = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  const picked = CHART_STYLE_PRESETS.find((item) => item.value === preset) || CHART_STYLE_PRESETS[0];
+  return { ...base, ...picked.style };
+}
+
+/** Deterministic marker density rule over the final rendered labels/datasets. */
+export function shouldShowChartPoints(labels, datasets) {
+  return (labels || []).length <= 60 && (datasets || []).length <= 4;
+}
+
 const CHART_TYPE_SET = new Set(CHART_TYPES.map((t) => t.value));
 
 /**
@@ -91,7 +130,12 @@ const CHART_TYPE_SET = new Set(CHART_TYPES.map((t) => t.value));
  * restored chart must not mutate the saved entry. null → null.
  */
 export function cloneChartCfg(cfg) {
-  return cfg ? { type: cfg.type, x: cfg.x, y: [...(cfg.y || [])], series: cfg.series ?? null } : null;
+  if (!cfg) return null;
+  const out = { ...cfg, y: [...(cfg.y || [])], series: cfg.series ?? null };
+  if (cfg.style && typeof cfg.style === 'object') {
+    out.style = JSON.parse(JSON.stringify(cfg.style));
+  }
+  return out;
 }
 
 /**
@@ -304,6 +348,17 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const isArea = cfg.type === 'area';
   const isLine = cfg.type === 'line' || isArea;
   const chartType = horizontal || cfg.type === 'bar' ? 'bar' : isLine ? 'line' : 'pie';
+  const style = normalizeChartStyle(cfg.style);
+  const pointsVisible = style.points === 'show'
+    || (style.points === 'auto' && shouldShowChartPoints(labels, datasets));
+  const curveStyle = style.curve === 'smooth'
+    ? { tension: 0, stepped: false, cubicInterpolationMode: 'monotone' }
+    : style.curve === 'stepped'
+      ? { tension: 0, stepped: 'after' }
+      : { tension: 0, stepped: false, cubicInterpolationMode: 'default' };
+  const pointStyle = pointsVisible
+    ? { pointRadius: 2, pointHoverRadius: 4, pointHitRadius: 8 }
+    : { pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8 };
 
   const styled = datasets.map((ds, i) => {
     const color = pal[i % pal.length];
@@ -311,7 +366,10 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
       return { ...ds, backgroundColor: ds.data.map((_, j) => pal[j % pal.length]), borderColor: colors.bgModal, borderWidth: 1.5 };
     }
     if (isLine) {
-      return { ...ds, borderColor: color, backgroundColor: isArea ? withAlpha(color, 0.14) : color, fill: isArea, tension: 0.25, pointRadius: 2, borderWidth: 2 };
+      return {
+        ...ds, borderColor: color, backgroundColor: isArea ? withAlpha(color, 0.14) : color,
+        fill: isArea, borderWidth: 1.5, ...curveStyle, ...pointStyle,
+      };
     }
     return { ...ds, backgroundColor: color, borderRadius: 2, borderWidth: 0 };
   });

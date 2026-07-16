@@ -9,6 +9,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Line and Area panels now have compact style presets for dense time series**
+  (#252). Clean, Smooth, Stepped, and Points controls map to explicit Chart.js
+  curve and point settings, with automatic point visibility based on the final
+  rendered label and dataset counts. Style metadata persists across panel type
+  switches, shares, OAuth handoff, and Library import/export, while unsupported
+  future string values remain lossless and render with safe defaults.
+
 ## [0.5.0] - 2026-07-15
 
 ### Removed

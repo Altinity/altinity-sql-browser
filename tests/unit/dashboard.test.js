@@ -1027,6 +1027,23 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.panel-note').textContent).toContain('re-detected');
   });
 
+  it('applies saved line style through the shared renderer while keeping dashboard grid policy', async () => {
+    const charts = [];
+    const app = oneFav(vi.fn(async () => chartResult()), { panel: { cfg: {
+      type: 'line', x: 0, y: [1], series: null,
+      style: { curve: 'smooth', points: 'hide' },
+    } } });
+    const Base = app.Chart;
+    app.Chart = class extends Base { constructor(...args) { super(...args); charts.push(this); } };
+    await renderDashboard(app);
+    expect(charts).toHaveLength(1);
+    expect(charts[0].config.data.datasets[0]).toMatchObject({
+      tension: 0, stepped: false, cubicInterpolationMode: 'monotone',
+      pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8,
+    });
+    expect(charts[0].config.options.scales.y.grid.display).toBe(false);
+  });
+
   it('a header click sorts locally — no re-query — and a cell click is a harmless no-op', async () => {
     const runTile = vi.fn(async () => tableResult());
     const app = oneFav(runTile);

@@ -3,6 +3,7 @@ import {
   chartStripType, chartRole, autoChart, schemaKey, CHART_TYPES, chartFieldOptions,
   chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
+  normalizeChartStyle, chartStylePreset, applyChartStylePreset, shouldShowChartPoints,
 } from '../../src/core/chart-data.js';
 
 describe('chartStripType', () => {
@@ -210,6 +211,45 @@ describe('chartRowCap', () => {
   });
 });
 
+describe('chart style', () => {
+  it('normalizes missing/non-object/empty style to the monitoring defaults', () => {
+    for (const value of [undefined, null, [], 'nope', {}]) {
+      expect(normalizeChartStyle(value)).toEqual({ curve: 'linear', points: 'auto' });
+    }
+  });
+  it.each(['linear', 'smooth', 'stepped'])('accepts the %s curve', (curve) => {
+    expect(normalizeChartStyle({ curve }).curve).toBe(curve);
+  });
+  it.each(['auto', 'show', 'hide'])('accepts the %s point mode', (points) => {
+    expect(normalizeChartStyle({ points }).points).toBe(points);
+  });
+  it('falls back invalid fields independently, ignores extras, and never mutates input', () => {
+    const source = { curve: 'banana', points: 'hide', future: { keep: true } };
+    expect(normalizeChartStyle(source)).toEqual({ curve: 'linear', points: 'hide' });
+    expect(source).toEqual({ curve: 'banana', points: 'hide', future: { keep: true } });
+    expect(normalizeChartStyle({ curve: 'smooth', points: 'huge' }))
+      .toEqual({ curve: 'smooth', points: 'auto' });
+  });
+  it('maps unusual combinations to a display preset without changing stored data', () => {
+    const style = { curve: 'smooth', points: 'hide', future: true };
+    expect(chartStylePreset(style)).toBe('smooth');
+    expect(chartStylePreset({ curve: 'linear', points: 'show' })).toBe('points');
+    expect(chartStylePreset({ curve: 'linear', points: 'hide' })).toBe('clean');
+    expect(style).toEqual({ curve: 'smooth', points: 'hide', future: true });
+  });
+  it('applies presets while preserving unknown fields and safely defaults an unknown preset', () => {
+    expect(applyChartStylePreset({ curve: 'banana', points: 'hide', future: 1 }, 'stepped'))
+      .toEqual({ curve: 'stepped', points: 'auto', future: 1 });
+    expect(applyChartStylePreset(null, 'missing')).toEqual({ curve: 'linear', points: 'auto' });
+  });
+  it('shows automatic markers only at or below both final-data thresholds', () => {
+    expect(shouldShowChartPoints(Array(60), Array(4))).toBe(true);
+    expect(shouldShowChartPoints(Array(61), Array(4))).toBe(false);
+    expect(shouldShowChartPoints(Array(60), Array(5))).toBe(false);
+    expect(shouldShowChartPoints()).toBe(true);
+  });
+});
+
 describe('buildChartData', () => {
   const cols = [
     { name: 'carrier', type: 'String' },
@@ -316,6 +356,47 @@ describe('chartJsConfig', () => {
     expect(area.data.datasets[0].fill).toBe(true);
     expect(area.data.datasets[0].backgroundColor).toMatch(/^rgba\(/);
   });
+  it('maps linear/smooth/stepped curves and visible/hidden interactive points', () => {
+    const linear = chartJsConfig(cols, rows, {
+      type: 'line', x: 0, y: [1], series: null, style: { curve: 'linear', points: 'show' },
+    }, colors).data.datasets[0];
+    expect(linear).toMatchObject({
+      tension: 0, stepped: false, cubicInterpolationMode: 'default',
+      pointRadius: 2, pointHoverRadius: 4, pointHitRadius: 8, borderWidth: 1.5, fill: false,
+    });
+    const smooth = chartJsConfig(cols, rows, {
+      type: 'area', x: 0, y: [1], series: null, style: { curve: 'smooth', points: 'hide' },
+    }, colors).data.datasets[0];
+    expect(smooth).toMatchObject({
+      tension: 0, stepped: false, cubicInterpolationMode: 'monotone',
+      pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8, fill: true,
+    });
+    const stepped = chartJsConfig(cols, rows, {
+      type: 'line', x: 0, y: [1], series: null, style: { curve: 'stepped', points: 'show' },
+    }, colors).data.datasets[0];
+    expect(stepped).toMatchObject({ tension: 0, stepped: 'after', pointRadius: 2 });
+  });
+  it('uses final aggregated/pivoted chart density for automatic points', () => {
+    const manyRawRows = Array.from({ length: 100 }, (_, i) => ['same', String(i), '1']);
+    const aggregated = chartJsConfig(cols, manyRawRows, {
+      type: 'line', x: 0, y: [1], series: null,
+    }, colors);
+    expect(aggregated.data.labels).toHaveLength(1);
+    expect(aggregated.data.datasets[0].pointRadius).toBe(2); // raw rows do not decide density
+
+    const seriesCols = [{ name: 'x', type: 'String' }, { name: 'y', type: 'UInt64' }, { name: 's', type: 'String' }];
+    const pivoted = chartJsConfig(seriesCols, ['a', 'b', 'c', 'd', 'e'].map((s) => ['x', 1, s]), {
+      type: 'line', x: 0, y: [1], series: 2,
+    }, colors);
+    expect(pivoted.data.datasets).toHaveLength(5);
+    expect(pivoted.data.datasets.every((dataset) => dataset.pointRadius === 0)).toBe(true);
+  });
+  it('changes automatic markers deterministically across the final label threshold', () => {
+    const make = (count) => Array.from({ length: count }, (_, i) => ['x' + i, i, 0]);
+    const cfg = { type: 'line', x: 0, y: [1], series: null };
+    expect(chartJsConfig(cols, make(60), cfg, colors).data.datasets[0].pointRadius).toBe(2);
+    expect(chartJsConfig(cols, make(61), cfg, colors).data.datasets[0].pointRadius).toBe(0);
+  });
   it('area leaves a non-hex accent color untouched (withAlpha passthrough)', () => {
     const c = { ...colors, palette: ['rgb(1,2,3)', '#22C55E'] };
     const area = chartJsConfig(cols, rows, { type: 'area', x: 0, y: [1], series: null }, c);
@@ -338,12 +419,14 @@ describe('chartJsConfig', () => {
 });
 
 describe('cloneChartCfg', () => {
-  it('deep-copies cfg so y is not shared with the source', () => {
-    const src = { type: 'bar', x: 0, y: [1, 2], series: 3 };
+  it('copies known/unknown fields and deep-copies y + the complete style object', () => {
+    const src = { type: 'bar', x: 0, y: [1, 2], series: 3, style: { curve: 'smooth', future: { x: 1 } }, future: true };
     const c = cloneChartCfg(src);
     expect(c).toEqual(src);
     expect(c).not.toBe(src);
     expect(c.y).not.toBe(src.y);
+    expect(c.style).not.toBe(src.style);
+    expect(c.style.future).not.toBe(src.style.future);
   });
   it('null → null and defaults a missing y/series', () => {
     expect(cloneChartCfg(null)).toBeNull();

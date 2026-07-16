@@ -27,6 +27,9 @@ describe('pure Spec completion', () => {
     }).map((item) => item.label)).toEqual(['type']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'line' } } }, path: ['panel', 'cfg'],
+    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'series']);
+    expect(complete({
+      rootValue: { panel: { cfg: { type: 'bar' } } }, path: ['panel', 'cfg'],
     }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'series']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'logs' } } }, path: ['panel', 'cfg'],
@@ -43,6 +46,19 @@ describe('pure Spec completion', () => {
     ]);
     expect(items.map((item) => item.label)).not.toContain('future-panel');
     expect(items.find((item) => item.label === 'line').documentation).toContain('Line series');
+  });
+
+  it('offers the documented chart style keys and supported string values', () => {
+    const rootValue = { panel: { cfg: { type: 'line', style: {} } } };
+    expect(complete({
+      rootValue, path: ['panel', 'cfg', 'style'],
+    }).map((item) => item.label)).toEqual(['curve', 'points']);
+    expect(complete({
+      rootValue, path: ['panel', 'cfg', 'style', 'curve'], positionKind: 'property-value',
+    }).map((item) => item.insert)).toEqual(['"linear"', '"smooth"', '"stepped"']);
+    expect(complete({
+      rootValue, path: ['panel', 'cfg', 'style', 'points'], positionKind: 'property-value',
+    }).map((item) => item.insert)).toEqual(['"auto"', '"show"', '"hide"']);
   });
 
   it('discovers a synthetic future branch and ranks planned/deprecated variants last', () => {

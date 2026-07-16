@@ -275,6 +275,21 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
     expect(app.activeTab().dirtySpec).toBe(true);
   });
+  it('the Panel drawer exposes one Line Style selector and persists its preset', () => {
+    const app = panelApp(chartResult(), {
+      type: 'line', x: 0, y: [1], series: null, style: { curve: 'linear', points: 'auto', future: true },
+    });
+    app.activeTab().panelKey = 'carrier:String|flights:UInt64';
+    renderResults(app);
+    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((el) => el.textContent);
+    expect(labels).toEqual(['Style', 'X', 'Y']);
+    const style = [...region(app).querySelectorAll('.chart-field')]
+      .find((field) => field.querySelector('.chart-field-label').textContent === 'Style').querySelector('select');
+    style.value = 'stepped';
+    style.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.activeTab().panelCfg.style).toEqual({ curve: 'stepped', points: 'auto', future: true });
+    expect(app.activeTab().dirtySpec).toBe(true);
+  });
   it('adopting an auto-derived chart records the current schema key', () => {
     const app = panelApp(chartResult());
     renderResults(app);
