@@ -304,3 +304,37 @@ manifest deterministically generates an offline compound Library bundle and
 schema catalog. Generic exact-path diagnostic normalization is shared across
 the whole Library and the focused Spec introspection service, while duplicate
 IDs and runtime/result rules remain explicit semantic validation.
+
+## Addendum — re-evaluated at the dashboard milestone (2026-07): decision stands, trigger sharpened
+
+The project's stated ambition grew to full-scale ClickHouse-only dashboarding
+comparable to Superset/Grafana, which prompted a fresh look at the "no
+framework" line. The decision **stands**. The dashboard surface (#149 tracks:
+layout modes, filter bar, KPI band, panel execution, chart presets, mobile
+presentation) shipped entirely under signals + imperative islands — the
+strongest evidence yet that the need was invalidation, not a component model.
+Three further observations:
+
+- A framework would not own the hard parts anyway: CodeMirror, Chart.js, the
+  dagre graphs, and grid resize/sort stay imperative islands under any render
+  model. It would only own the chrome *between* islands, while forcing a
+  rewrite of ~9 k LOC of `src/ui/` and its 100%-covered tests.
+- Grafana/Superset use React for reasons this project does not have — a
+  third-party plugin ecosystem and a very large contributor surface. This
+  project's differentiator is the opposite: one self-contained file, zero
+  third-party requests.
+- ADR-0002 (incremental strict TypeScript) further reduces the framework pull:
+  a typed `h()` hyperscript and a typed `app` controller surface recover much
+  of the edit-time DX people reach for a framework to get.
+
+The original vague trigger ("several complex, interdependent, rich-local-state
+panels") is **replaced** by three concrete conditions, any one of which
+re-opens the decision via a fresh spike:
+
+1. a third-party panel/plugin ecosystem becomes a real requirement;
+2. a genuine virtualized large-list render need appears;
+3. the invalidation-bug rate in dashboard edit mode measurably rises despite
+   signals.
+
+If re-opened, the candidate is **Preact** (`spike/preact-schema` stands as
+evidence, +6.8 KB gzip), never React (+45 KB).
