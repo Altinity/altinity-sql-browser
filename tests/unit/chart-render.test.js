@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderChart } from '../../src/ui/chart-render.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
-import { autoChart, chartCfgValid, schemaKey, chartRowCap } from '../../src/core/chart-data.js';
+import {
+  autoChart, chartCfgValid, schemaKey, chartRowCap, CHART_STYLE_PRESETS,
+} from '../../src/core/chart-data.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
 
@@ -131,24 +133,26 @@ describe('renderChart', () => {
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
     expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent).slice(0, 3))
       .toEqual(['Type', 'Style', 'X']);
+    expect([...fieldSel(app.dom.resultsRegion, 'Style').options].map((option) => option.textContent))
+      .toEqual(['Clean', 'Smooth', 'Stepped', 'Points', 'Zero-based', 'Minimal', 'Sparkline']);
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'area');
-    expect(fieldSel(app.dom.resultsRegion, 'Style')).not.toBeNull();
+    expect([...fieldSel(app.dom.resultsRegion, 'Style').options].map((option) => option.value))
+      .toEqual(CHART_STYLE_PRESETS.map((preset) => preset.value));
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'pie');
     expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent))
       .not.toContain('Style');
   });
   it.each([
-    ['clean', { curve: 'linear', points: 'auto' }],
-    ['smooth', { curve: 'smooth', points: 'auto' }],
-    ['stepped', { curve: 'stepped', points: 'auto' }],
-    ['points', { curve: 'linear', points: 'show' }],
+    ...CHART_STYLE_PRESETS.map((preset) => [preset.value, preset.style]),
   ])('writes the %s Style preset once and preserves extensions', (preset, expected) => {
     const app = appWithResult(chartResult());
     const cfg = { type: 'line', x: 0, y: [2], series: null, style: { curve: 'smooth', points: 'hide', future: 1 } };
     const onCfgChange = vi.fn();
     const rerender = vi.fn();
     const el = renderChart(app, app.activeTab().result, { cfg, onCfgChange, rerender });
-    expect(fieldSel(el, 'Style').value).toBe('smooth'); // unusual smooth+hide is not normalized in storage
+    const custom = fieldSel(el, 'Style').selectedOptions[0];
+    expect(custom.value).toBe('custom');
+    expect(custom.disabled).toBe(true);
     change(fieldSel(el, 'Style'), preset);
     expect(cfg.style).toEqual({ ...expected, future: 1 });
     expect(onCfgChange).toHaveBeenCalledTimes(1);
@@ -162,11 +166,11 @@ describe('renderChart', () => {
     };
     app.activeTab().panelKey = schemaKey(app.activeTab().result.columns);
     paintChart(app);
-    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('stepped');
+    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'bar');
     expect(app.activeTab().panelCfg.style).toEqual({ curve: 'stepped', points: 'hide', future: true });
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
-    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('stepped');
+    expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
   });
   it('X and Y selects update the per-tab config', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });

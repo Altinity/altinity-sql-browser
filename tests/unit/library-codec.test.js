@@ -122,7 +122,10 @@ describe('decoding and migrations', () => {
   });
 
   it('round-trips chart style, including unsupported strings and extension metadata', () => {
-    const style = { curve: 'future-curve', points: 'hide', extension: { dense: true } };
+    const style = {
+      curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
+      extension: { dense: true },
+    };
     const source = query('chart', { panel: {
       cfg: { type: 'area', x: 0, y: [1], series: null, style },
     } });

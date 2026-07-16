@@ -85,14 +85,29 @@ export const CHART_TYPES = [
 ];
 
 export const CHART_STYLE_PRESETS = [
-  { value: 'clean', label: 'Clean', style: { curve: 'linear', points: 'auto' } },
-  { value: 'smooth', label: 'Smooth', style: { curve: 'smooth', points: 'auto' } },
-  { value: 'stepped', label: 'Stepped', style: { curve: 'stepped', points: 'auto' } },
-  { value: 'points', label: 'Points', style: { curve: 'linear', points: 'show' } },
+  { value: 'clean', label: 'Clean', style: { curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
+  { value: 'smooth', label: 'Smooth', style: { curve: 'smooth', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
+  { value: 'stepped', label: 'Stepped', style: { curve: 'stepped', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
+  { value: 'points', label: 'Points', style: { curve: 'linear', points: 'show', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
+  { value: 'zero', label: 'Zero-based', style: { curve: 'linear', points: 'auto', scale: 'zero', legend: 'auto', grid: 'auto', axes: 'show' } },
+  { value: 'minimal', label: 'Minimal', style: { curve: 'linear', points: 'hide', scale: 'data', legend: 'hide', grid: 'hide', axes: 'show' } },
+  { value: 'sparkline', label: 'Sparkline', style: { curve: 'linear', points: 'hide', scale: 'data', legend: 'hide', grid: 'hide', axes: 'hide' } },
 ];
 
 const CHART_CURVES = new Set(['linear', 'smooth', 'stepped']);
 const CHART_POINTS = new Set(['auto', 'show', 'hide']);
+const CHART_SCALES = new Set(['auto', 'zero', 'data']);
+const CHART_VISIBILITY = new Set(['auto', 'show', 'hide']);
+const CHART_AXES = new Set(['show', 'hide']);
+const CHART_STYLE_FIELDS = {
+  curve: CHART_CURVES,
+  points: CHART_POINTS,
+  scale: CHART_SCALES,
+  legend: CHART_VISIBILITY,
+  grid: CHART_VISIBILITY,
+  axes: CHART_AXES,
+};
+const CHART_STYLE_DEFAULTS = CHART_STYLE_PRESETS[0].style;
 
 /** Resolve renderer-independent Line/Area style without mutating imported data. */
 export function normalizeChartStyle(style) {
@@ -100,19 +115,29 @@ export function normalizeChartStyle(style) {
   return {
     curve: CHART_CURVES.has(value.curve) ? value.curve : 'linear',
     points: CHART_POINTS.has(value.points) ? value.points : 'auto',
+    scale: CHART_SCALES.has(value.scale) ? value.scale : 'data',
+    legend: CHART_VISIBILITY.has(value.legend) ? value.legend : 'auto',
+    grid: CHART_VISIBILITY.has(value.grid) ? value.grid : 'auto',
+    axes: CHART_AXES.has(value.axes) ? value.axes : 'show',
   };
 }
 
-/** Pick the closest compact UI preset without rewriting unusual stored combinations. */
-export function chartStylePreset(style) {
+/** Match every preset-owned field exactly; unusual advanced combinations stay Custom. */
+export function chartStylePreset(style, type) {
+  void type; // Line and Area intentionally share one complete preset table.
+  const source = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  if (Object.entries(CHART_STYLE_FIELDS)
+    .some(([field, supported]) => field in source && !supported.has(source[field]))) return 'custom';
   const value = normalizeChartStyle(style);
-  if (value.curve === 'smooth') return 'smooth';
-  if (value.curve === 'stepped') return 'stepped';
-  return value.points === 'show' ? 'points' : 'clean';
+  const matched = CHART_STYLE_PRESETS.find((preset) => (
+    Object.keys(CHART_STYLE_DEFAULTS).every((field) => value[field] === preset.style[field])
+  ));
+  return matched ? matched.value : 'custom';
 }
 
 /** Apply one UI preset while retaining unknown style extensions. */
-export function applyChartStylePreset(style, preset) {
+export function applyChartStylePreset(style, preset, type) {
+  void type; // Reserved for type-specific presets without changing callers later.
   const base = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
   const picked = CHART_STYLE_PRESETS.find((item) => item.value === preset) || CHART_STYLE_PRESETS[0];
   return { ...base, ...picked.style };
@@ -374,9 +399,9 @@ const withAlpha = (hex, frac) => {
  * Build a complete Chart.js config object (type + data + themed options) from a
  * result and the user's `cfg`. Pure: returns a plain object (Chart.js draws it).
  * `colors` is a resolved token bundle from `chartColors`. `opts.hideGrid`
- * suppresses the value-axis gridlines (dashboard tiles draw on the panel
- * background where a light gridline reads as noise — #149; the tick labels
- * stay), keeping the chart body clean like the design's tiles.
+ * supplies the surface default for `style.grid:'auto'` (dashboard tiles draw
+ * on the panel background where a light gridline reads as noise — #149);
+ * explicit `show`/`hide` style values override it.
  */
 export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const fieldConfig = opts.fieldConfig || {};
@@ -415,7 +440,10 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   });
 
   const multi = datasets.length > 1;
-  const grid = { color: colors.borderFaint, drawBorder: false, display: !opts.hideGrid };
+  const gridVisible = isLine
+    ? style.grid === 'show' || (style.grid === 'auto' && !opts.hideGrid)
+    : !opts.hideGrid;
+  const grid = { color: colors.borderFaint, drawBorder: false, display: gridVisible };
   const ticks = { color: colors.fgMute, font: { family: colors.mono, size: 10 } };
   const valueTicks = { ...ticks, callback: (v) => chartNumFmt(typeof v === 'number' ? v : Number(v)) };
   const compatible = measures.length > 0 && measures.every(({ presentation }) => (
@@ -437,7 +465,9 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
     animation: { duration: 300 },
     plugins: {
       legend: {
-        display: multi || isPie,
+        display: isLine
+          ? style.legend === 'show' || (style.legend === 'auto' && multi)
+          : multi || isPie,
         position: isPie ? 'right' : 'top',
         align: 'start',
         labels: { color: colors.fgMute, boxWidth: 10, boxHeight: 10, font: { family: colors.mono, size: 11 } },
@@ -469,8 +499,14 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
     // The value axis carries humanized number ticks; the category axis carries
     // the X labels. indexAxis:'y' flips them for the horizontal-bar default.
     options.indexAxis = horizontal ? 'y' : 'x';
-    const valueAxis = { grid, ticks: valueTicks, beginAtZero: true };
-    const catAxis = { grid: { ...grid, display: false }, ticks };
+    const axesVisible = !isLine || style.axes === 'show';
+    const valueAxis = {
+      display: axesVisible,
+      grid,
+      ticks: valueTicks,
+      beginAtZero: isLine ? style.scale === 'zero' : true,
+    };
+    const catAxis = { display: axesVisible, grid: { ...grid, display: false }, ticks };
     options.scales = horizontal ? { x: valueAxis, y: catAxis } : { x: catAxis, y: valueAxis };
   }
 

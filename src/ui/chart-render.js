@@ -19,7 +19,7 @@ import {
 export function chartSelect(label, value, options, onChange) {
   const sel = h('select', { class: 'chart-select', onchange: (e) => onChange(e.target.value) });
   for (const o of options) {
-    const opt = h('option', { value: o.value }, o.label);
+    const opt = h('option', { value: o.value, disabled: o.disabled }, o.label);
     sel.appendChild(opt);
   }
   const selected = options.some((option) => String(option.value) === String(value));
@@ -47,8 +47,8 @@ export function chartEmpty(icon, msg) {
  * slot instead, or closing one view's chart would tear down another's).
  * `opts.controls === false` omits the Type/X/Y config bar (read-only tiles);
  * `opts.typeControl === false` omits just the Type select (the Panel tab's
- * picker owns type). `opts.hideGrid` suppresses the value-axis gridlines
- * (dashboard tiles — #149). `opts.fieldConfig` is the saved panel metadata;
+ * picker owns type). `opts.hideGrid` supplies the value-grid default for
+ * `style.grid:'auto'` (dashboard tiles — #149). `opts.fieldConfig` is the saved panel metadata;
  * the pure chart layer resolves it without reading application state.
  */
 export function renderChart(app, r, opts = {}) {
@@ -81,8 +81,12 @@ export function renderChart(app, r, opts = {}) {
       bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; changed(cfg); }));
     }
     if (cfg.type === 'line' || cfg.type === 'area') {
-      bar.appendChild(chartSelect('Style', chartStylePreset(cfg.style), CHART_STYLE_PRESETS, (v) => {
-        cfg.style = applyChartStylePreset(cfg.style, v);
+      const preset = chartStylePreset(cfg.style, cfg.type);
+      const styleOptions = preset === 'custom'
+        ? [...CHART_STYLE_PRESETS, { value: 'custom', label: 'Custom', disabled: true }]
+        : CHART_STYLE_PRESETS;
+      bar.appendChild(chartSelect('Style', preset, styleOptions, (v) => {
+        cfg.style = applyChartStylePreset(cfg.style, v, cfg.type);
         changed(cfg);
       }));
     }

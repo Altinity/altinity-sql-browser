@@ -265,7 +265,10 @@ describe('bootstrap', () => {
     const env = fakeEnv({ location: { href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' } });
     const chart = { cfg: {
       type: 'line', x: 0, y: [1], series: null,
-      style: { curve: 'smooth', points: 'hide', extension: { dense: true } },
+      style: {
+        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
+        extension: { dense: true },
+      },
     }, key: 'k' };
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({ sql: 'SELECT 42', chart }));
     await bootstrap(app, env);
