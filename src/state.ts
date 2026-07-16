@@ -149,7 +149,10 @@ export interface QueryTab {
   result: Record<string, unknown> | null;
   /** Opaque Filter-role preview result — owned by ui/results.js (#244). */
   filterPreview: Record<string, unknown> | null;
-  lastSuccessfulResultColumns: string[];
+  /** Snapshot of the last successful run's column descriptors (`{name, type}`
+   *  spreads — see app.js's post-run assignment); read by the Spec completion
+   *  adapter's dynamic sources. */
+  lastSuccessfulResultColumns: { name: string; type?: string }[];
   savedId: string | null;
   /** Set post-construction (app.js) once a query has run on this tab. */
   chSession?: unknown;
