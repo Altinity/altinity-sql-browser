@@ -1,0 +1,64 @@
+# Altinity SQL Browser — nginx server for the container image.
+#
+# Rendered at container start by the nginx entrypoint's envsubst pass
+# (${CONNECT_SRC} → the CSP connect-src host list). Serves the single-file SPA
+# and a config.json; query execution is NOT proxied — the browser talks to the
+# chosen ClickHouse cluster cross-origin. Mirrors deploy/http_handlers.xml.
+
+server {
+    listen 8080;
+    server_name _;
+
+    # Emit relative redirects (Location: /sql, not http://host:8080/sql) so the
+    # internal 8080 never leaks into a redirect seen behind a proxy / published
+    # on another port.
+    absolute_redirect off;
+
+    # The SPA is ~1 MB of inlined JS/CSS; gzip is a big win on the wire. nginx
+    # gzips text/html by default when gzip is on; add JSON for config.json.
+    gzip on;
+    gzip_types application/json;
+
+    # Liveness/readiness: cheap, unauthenticated, no dependencies.
+    location = /healthz {
+        default_type text/plain;
+        add_header Cache-Control "no-store" always;
+        return 200 "ok\n";
+    }
+
+    # Convenience: bare / → the workbench.
+    location = / {
+        return 302 /sql;
+    }
+
+    # The workbench (/sql) and the client-side dashboard route (/sql/dashboard)
+    # are the SAME single-file SPA. alias to a file (no captured path appended
+    # inside a regex location). The CSP's connect-src bounds where the
+    # sessionStorage tokens can be sent; script-src/style-src need
+    # 'unsafe-inline' because the JS+CSS are inlined into this one HTML file.
+    location ~ ^/sql(/dashboard)?/?$ {
+        alias /app/sql.html;
+        # NB: set the charset via the `charset` directive, NOT inside
+        # default_type — a "text/html; charset=…" content_type string defeats
+        # nginx's implicit text/html gzip match, leaving the ~1 MB SPA
+        # uncompressed. This way the response is still `text/html; charset=utf-8`
+        # AND it gzips.
+        default_type text/html;
+        charset utf-8;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header Content-Security-Policy "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src 'self'; frame-src 'self'; connect-src 'self' ${CONNECT_SRC}; base-uri 'none'; frame-ancestors 'none'" always;
+    }
+
+    # The deployment's OAuth/host config. Baked default at /config/config.json;
+    # mount your own over it. The SPA fetches <basePath>/config.json, i.e.
+    # /sql/config.json when mounted at /sql.
+    location = /sql/config.json {
+        alias /config/config.json;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+}

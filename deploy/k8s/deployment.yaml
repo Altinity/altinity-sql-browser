@@ -1,21 +1,27 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: sql-browser-connections
+  name: sql-browser-config
 data:
-  config.xml: |
-    <clickhouse>
-      <connections_credentials>
-        <connection>
-          <name>replace-me</name>
-          <hostname>clickhouse.example.com</hostname>
-          <secure>1</secure>
-          <http_port>8443</http_port>
-          <user>default</user>
-          <password>replace-me</password>
-        </connection>
-      </connections_credentials>
-    </clickhouse>
+  # The deployment's OAuth/host config, served at /sql/config.json. Replace with
+  # your own IdP + cluster entries (see deploy/config.json.example). NOTE: if the
+  # config carries non-public OAuth client secrets, use a Secret instead of a
+  # ConfigMap and mount it the same way.
+  config.json: |
+    {
+      "basic_login": true,
+      "idps": [
+        {
+          "id": "google",
+          "label": "Google",
+          "issuer": "https://accounts.google.com",
+          "client_id": "REPLACE_WITH_OAUTH_CLIENT_ID"
+        }
+      ],
+      "hosts": [
+        { "label": "my-cluster", "url": "https://clickhouse.example.com", "auth": "oauth", "idp": "google" }
+      ]
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -31,37 +37,54 @@ spec:
       labels:
         app: altinity-sql-browser
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101          # nginx-unprivileged
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: sql-browser
-          image: altinity-sql-browser:local
+          image: ghcr.io/altinity/altinity-sql-browser:latest
           imagePullPolicy: IfNotPresent
+          # CSP connect-src: IdP endpoints + the ClickHouse cluster origins the
+          # browser POSTs to cross-origin. Must match your config.json hosts.
           env:
-            - name: HOST
-              value: "0.0.0.0"
-            - name: PORT
-              value: "8900"
-            - name: SQL_BROWSER_PROBE
-              value: "0"
+            - name: CONNECT_SRC
+              value: "https://accounts.google.com https://oauth2.googleapis.com https://clickhouse.example.com"
           ports:
             - name: http
-              containerPort: 8900
+              containerPort: 8080
           readinessProbe:
             httpGet:
-              path: /config.json
+              path: /sql/config.json
               port: http
           livenessProbe:
             httpGet:
-              path: /sql
+              path: /healthz
               port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
           volumeMounts:
-            - name: clickhouse-config
-              mountPath: /home/asb/.clickhouse-client/config.xml
-              subPath: config.xml
+            - name: config
+              mountPath: /config/config.json
+              subPath: config.json
               readOnly: true
       volumes:
-        - name: clickhouse-config
+        - name: config
           configMap:
-            name: sql-browser-connections
+            name: sql-browser-config
+# Optional hardening: set readOnlyRootFilesystem: true on the container and add
+# emptyDir mounts for /tmp, /var/cache/nginx, /var/run, and /etc/nginx/conf.d
+# (the nginx entrypoint writes the envsubst-rendered config there at startup).
 ---
 apiVersion: v1
 kind: Service
@@ -72,5 +95,5 @@ spec:
     app: altinity-sql-browser
   ports:
     - name: http
-      port: 8900
+      port: 8080
       targetPort: http

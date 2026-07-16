@@ -3,12 +3,14 @@ services:
     image: altinity-sql-browser:local
     build:
       context: .
+    # Container listens on 8080 (non-root nginx); publish it on $PORT locally.
     ports:
-      - "${PORT:-8900}:8900"
-    environment:
-      HOST: 0.0.0.0
-      PORT: 8900
-      SQL_BROWSER_PROBE: "${SQL_BROWSER_PROBE:-0}"
-      SQL_BROWSER_PROBE_TIMEOUT: "${SQL_BROWSER_PROBE_TIMEOUT:-4}"
+      - "${PORT:-8900}:8080"
+    # Serve your own OAuth/host config. The baked default is the public-demo
+    # config.json.example; mount a real config.json over it in production.
     volumes:
-      - "${HOME}/.clickhouse-client:/home/asb/.clickhouse-client:ro"
+      - "./deploy/config.json.example:/config/config.json:ro"
+    # CSP connect-src: the IdP endpoints + the ClickHouse cluster origins the
+    # browser POSTs to cross-origin. Override to match your config.json.
+    # environment:
+    #   CONNECT_SRC: "https://accounts.google.com https://oauth2.googleapis.com https://clickhouse.example.com"
