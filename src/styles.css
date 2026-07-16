@@ -1067,6 +1067,7 @@ body.detached-tab .graph-overlay-panel {
    min-height floor keeps it visible (and lets .chart-view scroll) when a tall
    wrapped config bar would otherwise leave it 0px. */
 .chart-canvas-wrap { flex: 1; min-height: 180px; position: relative; padding: 12px 14px; }
+.chart-canvas-wrap.is-compact { padding: 4px; }
 .chart-empty {
   height: 100%; background: var(--bg-table);
   display: flex; flex-direction: column; align-items: center; justify-content: center;

@@ -161,9 +161,8 @@ describe('switchPanelType', () => {
     expect(out.key).toBe('K');
   });
   it('leaving the chart family stashes the roles; switching back consumes them (lossless)', () => {
-    const style = {
-      curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide', future: true,
-    };
+    const style = { curve: 'smooth', points: 'hide', mode: 'stacked', density: 'compact', shape: 'donut',
+      scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide', frame: 'compact', future: true };
     const styled = { ...chartPayload, cfg: { ...chartPayload.cfg, style } };
     const table = switchPanelType(styled, 'table', chartCols);
     expect(table.cfg).toEqual({
@@ -241,10 +240,8 @@ describe('resolvePanel', () => {
     expect(out.cfg.y).not.toEqual(saved.cfg.y);
   });
   it('preserves complete style while re-deriving stale chart roles', () => {
-    const style = {
-      curve: 'banana', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
-      future: { keep: true },
-    };
+    const style = { curve: 'banana', points: 'hide', stack: 'stacked', scale: 'zero', legend: 'show',
+      grid: 'hide', axes: 'hide', future: { keep: true } };
     const out = resolvePanel({
       cfg: { type: 'line', x: 9, y: [8], series: null, style }, key: 'STALE',
     }, chartCols);

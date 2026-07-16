@@ -102,7 +102,7 @@ describe('canonical query.spec schema', () => {
       .toMatchObject({ path: ['panel', 'cfg', 'content'], code: 'schema-invalid-type' });
   });
 
-  it('documents chart styles while retaining unsupported string values for forward compatibility', () => {
+  it('documents type-specific chart style while retaining future string values', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'line', x: 0, y: [1], style: {
         curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'show', future: true,
@@ -110,22 +110,31 @@ describe('canonical query.spec schema', () => {
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'area', x: 0, y: [1], style: {
-        curve: 'future-curve', points: 'future-points', scale: 'future-scale',
-        legend: 'future-legend', grid: 'future-grid', axes: 'future-axes',
+        curve: 'future-curve', points: 'future-points', stack: 'future-stack', scale: 'future-scale',
+        legend: 'future-legend', grid: 'future-grid', axes: 'future-axes', future: true,
       },
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
-      type: 'line', x: 0, y: [1], style: {
-        curve: 42, points: false, scale: 0, legend: null, grid: [], axes: {},
+      type: 'area', x: 0, y: [1], style: {
+        curve: 42, points: false, stack: [], scale: 0, legend: null, grid: [], axes: {},
       },
-    } } }).map((item) => [item.path, item.code])).toEqual([
-      [['panel', 'cfg', 'style', 'axes'], 'schema-invalid-type'],
+    } } }).map((item) => [item.path, item.code])).toEqual(expect.arrayContaining([
       [['panel', 'cfg', 'style', 'curve'], 'schema-invalid-type'],
-      [['panel', 'cfg', 'style', 'grid'], 'schema-invalid-type'],
-      [['panel', 'cfg', 'style', 'legend'], 'schema-invalid-type'],
       [['panel', 'cfg', 'style', 'points'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'stack'], 'schema-invalid-type'],
       [['panel', 'cfg', 'style', 'scale'], 'schema-invalid-type'],
-    ]);
+      [['panel', 'cfg', 'style', 'legend'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'grid'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'axes'], 'schema-invalid-type'],
+    ]));
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'bar', x: 0, y: [1], style: { mode: false, density: 1 },
+    } } }).map((item) => item.path)).toEqual(expect.arrayContaining([
+      ['panel', 'cfg', 'style', 'mode'], ['panel', 'cfg', 'style', 'density'],
+    ]));
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'pie', x: 0, y: [1], style: { shape: null },
+    } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'style', 'shape'], code: 'schema-invalid-type' });
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'line', x: 0, y: [1], style: [],
     } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'style'], code: 'schema-invalid-type' });

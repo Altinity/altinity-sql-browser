@@ -3,7 +3,7 @@ import { renderChart } from '../../src/ui/chart-render.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { newResult } from '../../src/core/stream.js';
 import {
-  autoChart, chartCfgValid, schemaKey, chartRowCap, CHART_STYLE_PRESETS,
+  autoChart, chartCfgValid, schemaKey, chartRowCap, CHART_STYLE_PRESETS, chartStylePresets,
 } from '../../src/core/chart-data.js';
 
 const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
@@ -125,28 +125,33 @@ describe('renderChart', () => {
     expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((s) => s.textContent))
       .not.toContain('Series'); // series control hidden for pie
   });
-  it('shows Style only for Line/Area, after Type and before X', () => {
+  it('shows one type-specific Style selector after Type and before X', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
     paintChart(app);
-    expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent))
-      .not.toContain('Style');
-    change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
     expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent).slice(0, 3))
       .toEqual(['Type', 'Style', 'X']);
+    for (const type of ['hbar', 'bar', 'line', 'area', 'pie']) {
+      change(fieldSel(app.dom.resultsRegion, 'Type'), type);
+      expect([...fieldSel(app.dom.resultsRegion, 'Style').options].map((option) => option.textContent))
+        .toEqual(chartStylePresets(type).map((preset) => preset.label));
+    }
     expect([...fieldSel(app.dom.resultsRegion, 'Style').options].map((option) => option.textContent))
-      .toEqual(['Clean', 'Smooth', 'Stepped', 'Points', 'Zero-based', 'Minimal', 'Sparkline']);
-    change(fieldSel(app.dom.resultsRegion, 'Type'), 'area');
-    expect([...fieldSel(app.dom.resultsRegion, 'Style').options].map((option) => option.value))
-      .toEqual(CHART_STYLE_PRESETS.map((preset) => preset.value));
-    change(fieldSel(app.dom.resultsRegion, 'Type'), 'pie');
-    expect([...app.dom.resultsRegion.querySelectorAll('.chart-field-label')].map((el) => el.textContent))
-      .not.toContain('Style');
+      .toEqual(['Pie', 'Donut', 'Compact']);
   });
   it.each([
-    ...CHART_STYLE_PRESETS.map((preset) => [preset.value, preset.style]),
-  ])('writes the %s Style preset once and preserves extensions', (preset, expected) => {
+    ...Object.entries(CHART_STYLE_PRESETS).flatMap(([type, presets]) => (
+      // Bar/Column share the same frozen contract; one application test per internal type is intentional.
+      presets.map((preset) => [type, preset.value, preset.style])
+    )),
+  ])('writes the %s %s Style preset once and preserves extensions', (type, preset, expectedStyle) => {
     const app = appWithResult(chartResult());
-    const cfg = { type: 'line', x: 0, y: [2], series: null, style: { curve: 'smooth', points: 'hide', future: 1 } };
+    const sourceStyle = {
+      ...(type === 'pie' ? { shape: 'future-shape' }
+        : type === 'bar' || type === 'hbar' ? { mode: 'future-mode' }
+          : { curve: 'future-curve' }),
+      future: 1,
+    };
+    const cfg = { type, x: 0, y: [2], series: null, style: sourceStyle };
     const onCfgChange = vi.fn();
     const rerender = vi.fn();
     const el = renderChart(app, app.activeTab().result, { cfg, onCfgChange, rerender });
@@ -154,23 +159,42 @@ describe('renderChart', () => {
     expect(custom.value).toBe('custom');
     expect(custom.disabled).toBe(true);
     change(fieldSel(el, 'Style'), preset);
-    expect(cfg.style).toEqual({ ...expected, future: 1 });
+    expect(cfg.style).toEqual({ ...sourceStyle, ...expectedStyle });
     expect(onCfgChange).toHaveBeenCalledTimes(1);
     expect(onCfgChange).toHaveBeenCalledWith(cfg);
     expect(rerender).not.toHaveBeenCalled();
   });
-  it('preserves stored style while switching away from and back to Line', () => {
+  it('preserves complete dormant style while switching types', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
     app.activeTab().panelCfg = {
-      type: 'line', x: 0, y: [2], series: null, style: { curve: 'stepped', points: 'hide', future: true },
+      type: 'line', x: 0, y: [2], series: null,
+      style: { curve: 'stepped', points: 'hide', mode: 'stacked', density: 'compact', shape: 'donut',
+        scale: 'data', legend: 'hide', grid: 'hide', axes: 'show', frame: 'compact', future: true },
     };
     app.activeTab().panelKey = schemaKey(app.activeTab().result.columns);
     paintChart(app);
     expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
+    const savedStyle = structuredClone(app.activeTab().panelCfg.style);
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'bar');
-    expect(app.activeTab().panelCfg.style).toEqual({ curve: 'stepped', points: 'hide', future: true });
+    expect(app.activeTab().panelCfg.style).toEqual(savedStyle);
     change(fieldSel(app.dom.resultsRegion, 'Type'), 'line');
     expect(fieldSel(app.dom.resultsRegion, 'Style').value).toBe('custom');
+    expect(app.activeTab().panelCfg).toMatchObject({ style: savedStyle });
+  });
+  it('uses reduced canvas padding only for Compact Pie', () => {
+    const app = appWithResult(chartResult());
+    const compact = renderChart(app, app.activeTab().result, {
+      cfg: { type: 'pie', x: 0, y: [2], series: null, style: { frame: 'compact' } }, rerender: vi.fn(),
+    });
+    expect(compact.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(true);
+    const normal = renderChart(app, app.activeTab().result, {
+      cfg: { type: 'pie', x: 0, y: [2], series: null, style: { frame: 'normal' } }, rerender: vi.fn(),
+    });
+    expect(normal.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(false);
+    const dormant = renderChart(app, app.activeTab().result, {
+      cfg: { type: 'line', x: 0, y: [2], series: null, style: { frame: 'compact' } }, rerender: vi.fn(),
+    });
+    expect(dormant.querySelector('.chart-canvas-wrap').classList.contains('is-compact')).toBe(false);
   });
   it('X and Y selects update the per-tab config', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });

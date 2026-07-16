@@ -11,7 +11,7 @@ import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
 import {
   chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap,
-  CHART_STYLE_PRESETS, chartStylePreset, applyChartStylePreset, visibleChartMeasures,
+  chartStylePresets, chartStylePreset, applyChartStylePreset, normalizeChartStyle, visibleChartMeasures,
 } from '../core/chart-data.js';
 
 /** A labelled <select> for the config bar (shared with the Panel tab's
@@ -80,11 +80,12 @@ export function renderChart(app, r, opts = {}) {
     if (opts.typeControl !== false) {
       bar.appendChild(chartSelect('Type', cfg.type, f.typeOptions, (v) => { cfg.type = v; changed(cfg); }));
     }
-    if (cfg.type === 'line' || cfg.type === 'area') {
+    const presets = chartStylePresets(cfg.type);
+    if (presets.length) {
       const preset = chartStylePreset(cfg.style, cfg.type);
       const styleOptions = preset === 'custom'
-        ? [...CHART_STYLE_PRESETS, { value: 'custom', label: 'Custom', disabled: true }]
-        : CHART_STYLE_PRESETS;
+        ? [...presets, { value: 'custom', label: 'Custom', disabled: true }]
+        : presets;
       bar.appendChild(chartSelect('Style', preset, styleOptions, (v) => {
         cfg.style = applyChartStylePreset(cfg.style, v, cfg.type);
         changed(cfg);
@@ -148,5 +149,7 @@ export function renderChart(app, r, opts = {}) {
     if (wrap && wrap.offsetWidth > 0 && wrap.offsetHeight > 0) { chart.resize(wrap.offsetWidth, wrap.offsetHeight); chart.update('resize'); }
   });
 
-  return h('div', { class: 'chart-view' }, bar, h('div', { class: 'chart-canvas-wrap' }, canvas));
+  const compactFrame = cfg.type === 'pie' && normalizeChartStyle(cfg.style, cfg.type).frame === 'compact';
+  return h('div', { class: 'chart-view' }, bar,
+    h('div', { class: 'chart-canvas-wrap' + (compactFrame ? ' is-compact' : '') }, canvas));
 }

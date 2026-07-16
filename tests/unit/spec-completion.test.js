@@ -30,7 +30,7 @@ describe('pure Spec completion', () => {
     }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'series']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'bar' } } }, path: ['panel', 'cfg'],
-    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'series']);
+    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'series']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'logs' } } }, path: ['panel', 'cfg'],
     }).map((item) => item.label)).toEqual(['type', 'time', 'msg', 'level']);
@@ -48,20 +48,29 @@ describe('pure Spec completion', () => {
     expect(items.find((item) => item.label === 'line').documentation).toContain('Line series');
   });
 
-  it('offers the documented chart style keys and supported string values', () => {
-    const rootValue = { panel: { cfg: { type: 'line', style: {} } } };
-    expect(complete({
-      rootValue, path: ['panel', 'cfg', 'style'],
-    }).map((item) => item.label)).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
-    const values = (field) => complete({
-      rootValue, path: ['panel', 'cfg', 'style', field], positionKind: 'property-value',
+  it('offers complete type-specific style keys and values', () => {
+    const keys = (type) => complete({
+      rootValue: { panel: { cfg: { type, style: {} } } }, path: ['panel', 'cfg', 'style'],
+    }).map((item) => item.label);
+    expect(keys('line')).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
+    expect(keys('area')).toEqual(['curve', 'points', 'stack', 'scale', 'legend', 'grid', 'axes']);
+    expect(keys('bar')).toEqual(['mode', 'density', 'scale', 'legend', 'grid', 'axes']);
+    expect(keys('hbar')).toEqual(['mode', 'density', 'scale', 'legend', 'grid', 'axes']);
+    expect(keys('pie')).toEqual(['shape', 'legend', 'frame']);
+    const values = (type, field) => complete({
+      rootValue: { panel: { cfg: { type, style: {} } } }, path: ['panel', 'cfg', 'style', field], positionKind: 'property-value',
     }).map((item) => item.insert);
-    expect(values('curve')).toEqual(['"linear"', '"smooth"', '"stepped"']);
-    expect(values('points')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('scale')).toEqual(['"auto"', '"zero"', '"data"']);
-    expect(values('legend')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('grid')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('axes')).toEqual(['"show"', '"hide"']);
+    expect(values('line', 'curve')).toEqual(['"linear"', '"smooth"', '"stepped"']);
+    expect(values('line', 'points')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('area', 'stack')).toEqual(['"overlay"', '"stacked"']);
+    expect(values('bar', 'mode')).toEqual(['"grouped"', '"stacked"']);
+    expect(values('bar', 'density')).toEqual(['"normal"', '"compact"', '"joined"']);
+    expect(values('pie', 'shape')).toEqual(['"pie"', '"donut"']);
+    expect(values('line', 'scale')).toEqual(['"auto"', '"zero"', '"data"']);
+    expect(values('line', 'legend')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('line', 'grid')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('line', 'axes')).toEqual(['"show"', '"hide"']);
+    expect(values('pie', 'frame')).toEqual(['"normal"', '"compact"']);
   });
 
   it('discovers a synthetic future branch and ranks planned/deprecated variants last', () => {

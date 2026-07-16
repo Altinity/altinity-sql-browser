@@ -24,7 +24,7 @@ describe('share encode/decode', () => {
     expect(raw.panel).toBeUndefined();
   });
 
-  it('round-trips chart style and extension metadata without aliasing it', () => {
+  it('round-trips chart style and extension metadata without aliasing', () => {
     const style = {
       curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
       extension: { dense: true },

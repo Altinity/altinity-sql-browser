@@ -121,10 +121,10 @@ describe('decoding and migrations', () => {
     expect(result.value.queries[0].spec.extension).not.toBe(source.queries[0].spec.extension);
   });
 
-  it('round-trips chart style, including unsupported strings and extension metadata', () => {
+  it('round-trips chart style, including unsupported strings and extensions', () => {
     const style = {
-      curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
-      extension: { dense: true },
+      curve: 'future-curve', points: 'hide', stack: 'future-stack', scale: 'zero', legend: 'show',
+      grid: 'hide', axes: 'hide', extension: { dense: true },
     };
     const source = query('chart', { panel: {
       cfg: { type: 'area', x: 0, y: [1], series: null, style },

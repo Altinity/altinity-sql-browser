@@ -1027,13 +1027,12 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.panel-note').textContent).toContain('re-detected');
   });
 
-  it('applies complete saved line style through the shared Dashboard renderer', async () => {
+  it('applies complete saved stacked Area presentation through the shared Dashboard renderer', async () => {
     const charts = [];
     const app = oneFav(vi.fn(async () => chartResult()), { panel: { cfg: {
-      type: 'line', x: 0, y: [1], series: null,
-      style: {
-        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'show', axes: 'hide',
-      },
+      type: 'area', x: 0, y: [1], series: null,
+      style: { curve: 'smooth', points: 'hide', stack: 'stacked',
+        scale: 'zero', legend: 'show', grid: 'show', axes: 'hide' },
     } } });
     const Base = app.Chart;
     app.Chart = class extends Base { constructor(...args) { super(...args); charts.push(this); } };
@@ -1041,11 +1040,11 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(charts).toHaveLength(1);
     expect(charts[0].config.data.datasets[0]).toMatchObject({
       tension: 0, stepped: false, cubicInterpolationMode: 'monotone',
-      pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8,
+      pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8, fill: true, stack: 'chart',
     });
     expect(charts[0].config.options.plugins.legend.display).toBe(true);
     expect(charts[0].config.options.scales.y).toMatchObject({
-      display: false, beginAtZero: true, grid: { display: true },
+      display: false, beginAtZero: true, grid: { display: true }, stacked: true,
     });
   });
 

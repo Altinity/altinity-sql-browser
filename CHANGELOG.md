@@ -10,6 +10,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Bar, Column, Area, and Pie now share type-specific presentation presets**
+  (#258) through the same compact Style selector. Bar/Column add Grouped,
+  Stacked, Compact, Joined, Minimal, and Data range; Area adds additive
+  Stacked to its Line-family variants; Pie adds Donut and a genuinely compact
+  frame. Presets update one type-specific `panel.cfg.style` object, match that
+  object before claiming a named state, preserve dormant
+  fields and unknown extensions across type switches, and render identically
+  in the workbench and Dashboard. The canonical Spec schema and completion now
+  document the complete type-specific style branches.
 - **Line and Area Style now offers seven complete presentation presets**
   (#256). Clean, Smooth, Stepped, Points, Zero-based, Minimal, and Sparkline
   write the full renderer-independent `panel.cfg.style` object through the
