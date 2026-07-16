@@ -3,8 +3,9 @@ import {
   chartStripType, chartRole, autoChart, schemaKey, CHART_TYPES, chartFieldOptions,
   chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
-  normalizeChartStyle, chartStylePreset, applyChartStylePreset, shouldShowChartPoints,
-  formatChartValue, visibleChartMeasures, CHART_STYLE_PRESETS,
+  normalizeChartStyle, normalizeChartDisplay, chartStylePresets, chartStylePreset,
+  applyChartStylePreset, shouldShowChartPoints, formatChartValue, visibleChartMeasures,
+  CHART_STYLE_PRESETS,
 } from '../../src/core/chart-data.js';
 
 describe('chartStripType', () => {
@@ -162,6 +163,18 @@ describe('normalizeChartCfg', () => {
     expect(normalizeChartCfg({ type: 'bar', x: 0, y: [1], series: 2 }))
       .toEqual({ type: 'bar', x: 0, y: [1], series: 2 });
   });
+  it('folds legacy display fields out of style while preserving extensions and canonical overrides', () => {
+    expect(normalizeChartCfg({
+      type: 'line', x: 0, y: [1], series: null,
+      style: { curve: 'smooth', scale: 'zero', legend: 'hide', grid: 'show', axes: 'hide', future: true },
+      display: { legend: 'show', future: true },
+    })).toEqual({
+      type: 'line', x: 0, y: [1], series: null,
+      style: { curve: 'smooth', scale: 'zero', legend: 'hide', grid: 'show', axes: 'hide', future: true },
+      display: { scale: 'zero', legend: 'show', grid: 'show', axes: 'hide', future: true },
+    });
+    expect(normalizeChartCfg({ type: 'line', x: 0, y: [1], series: null, style: [] }).display).toBeUndefined();
+  });
   it('forces pie to a single measure and no series', () => {
     expect(normalizeChartCfg({ type: 'pie', x: 0, y: [1, 2], series: 3 }))
       .toEqual({ type: 'pie', x: 0, y: [1], series: null });
@@ -213,55 +226,81 @@ describe('chartRowCap', () => {
 });
 
 describe('chart style', () => {
-  const clean = {
-    curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show',
-  };
-  it('normalizes missing/non-object/empty style to the monitoring defaults', () => {
+  it('normalizes missing/non-object style and display to type-specific defaults', () => {
     for (const value of [undefined, null, [], 'nope', {}]) {
-      expect(normalizeChartStyle(value)).toEqual(clean);
+      expect(normalizeChartStyle(value, 'line')).toEqual({ curve: 'linear', points: 'auto' });
+      expect(normalizeChartStyle(value, 'area')).toEqual({ curve: 'linear', points: 'auto', stack: 'overlay' });
+      expect(normalizeChartStyle(value, 'bar')).toEqual({ mode: 'grouped', density: 'normal' });
+      expect(normalizeChartStyle(value, 'pie')).toEqual({ shape: 'pie' });
+      expect(normalizeChartDisplay(value, 'line')).toEqual({ scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' });
+      expect(normalizeChartDisplay(value, 'bar')).toEqual({ scale: 'zero', legend: 'auto', grid: 'auto', axes: 'show' });
+      expect(normalizeChartDisplay(value, 'pie')).toEqual({ legend: 'show', frame: 'normal' });
     }
   });
   it.each([
-    ['curve', ['linear', 'smooth', 'stepped']],
-    ['points', ['auto', 'show', 'hide']],
+    ['line', 'curve', ['linear', 'smooth', 'stepped']],
+    ['line', 'points', ['auto', 'show', 'hide']],
+    ['area', 'stack', ['overlay', 'stacked']],
+    ['bar', 'mode', ['grouped', 'stacked']],
+    ['hbar', 'density', ['normal', 'compact', 'joined']],
+    ['pie', 'shape', ['pie', 'donut']],
+  ])('accepts every supported %s %s value', (type, field, values) => {
+    for (const value of values) expect(normalizeChartStyle({ [field]: value }, type)[field]).toBe(value);
+  });
+  it.each([
     ['scale', ['auto', 'zero', 'data']],
     ['legend', ['auto', 'show', 'hide']],
     ['grid', ['auto', 'show', 'hide']],
     ['axes', ['show', 'hide']],
-  ])('accepts every supported %s value', (field, values) => {
-    for (const value of values) expect(normalizeChartStyle({ [field]: value })[field]).toBe(value);
+  ])('accepts every supported display %s value', (field, values) => {
+    for (const value of values) expect(normalizeChartDisplay({ [field]: value }, 'line')[field]).toBe(value);
   });
-  it('falls back invalid fields independently, ignores extras, and never mutates input', () => {
-    const source = {
-      curve: 'banana', points: 'hide', scale: 'near', legend: 'show', grid: false, axes: 'gone', future: { keep: true },
-    };
-    expect(normalizeChartStyle(source)).toEqual({
-      curve: 'linear', points: 'hide', scale: 'data', legend: 'show', grid: 'auto', axes: 'show',
-    });
-    expect(source).toEqual({
-      curve: 'banana', points: 'hide', scale: 'near', legend: 'show', grid: false, axes: 'gone', future: { keep: true },
-    });
+  it('accepts Pie frame values and independently defaults invalid fields without mutation', () => {
+    expect(normalizeChartDisplay({ frame: 'compact' }, 'pie').frame).toBe('compact');
+    const style = { curve: 'banana', points: 'hide', stack: 'future', future: true };
+    const display = { scale: 'near', legend: 'show', grid: false, axes: 'gone' };
+    expect(normalizeChartStyle(style, 'area')).toEqual({ curve: 'linear', points: 'hide', stack: 'overlay' });
+    expect(normalizeChartDisplay(display, 'area')).toEqual({ scale: 'data', legend: 'show', grid: 'auto', axes: 'show' });
+    expect(normalizeChartDisplay({ legend: false, frame: 'wide' }, 'pie')).toEqual({ legend: 'show', frame: 'normal' });
+    expect(style).toEqual({ curve: 'banana', points: 'hide', stack: 'future', future: true });
+    expect(display).toEqual({ scale: 'near', legend: 'show', grid: false, axes: 'gone' });
   });
-  it('matches every complete preset exactly after filling missing defaults', () => {
-    for (const preset of CHART_STYLE_PRESETS) {
-      expect(chartStylePreset(preset.style, 'line')).toBe(preset.value);
+  it('matches every exact type-specific preset and defaults omitted values', () => {
+    for (const type of ['hbar', 'bar', 'line', 'area', 'pie']) {
+      for (const preset of chartStylePresets(type)) {
+        expect(chartStylePreset(preset.style, preset.display, type)).toBe(preset.value);
+      }
     }
-    expect(chartStylePreset(undefined, 'area')).toBe('clean');
-    expect(chartStylePreset({ future: true }, 'line')).toBe('clean');
+    expect(chartStylePreset(undefined, undefined, 'area')).toBe('clean');
+    expect(chartStylePreset({ future: true }, { future: true }, 'line')).toBe('clean');
+    expect(chartStylePresets('future')).toEqual([]);
   });
-  it('returns Custom for one-field differences and unsupported known values without mutating input', () => {
-    const style = { ...CHART_STYLE_PRESETS[1].style, points: 'hide', future: true };
-    expect(chartStylePreset(style, 'line')).toBe('custom');
-    expect(chartStylePreset({ ...clean, curve: 'future-curve' }, 'area')).toBe('custom');
-    expect(style).toEqual({ ...CHART_STYLE_PRESETS[1].style, points: 'hide', future: true });
+  it('returns Custom for unmatched or unsupported relevant values while ignoring dormant fields', () => {
+    expect(chartStylePreset({ mode: 'stacked', density: 'joined' }, { scale: 'zero' }, 'bar')).toBe('custom');
+    expect(chartStylePreset({ curve: 'smooth', points: 'hide', stack: 'stacked' }, {
+      scale: 'data', legend: 'show', grid: 'hide', axes: 'show',
+    }, 'area')).toBe('custom');
+    expect(chartStylePreset({ shape: 'donut' }, { legend: 'hide', frame: 'normal' }, 'pie')).toBe('custom');
+    expect(chartStylePreset({ curve: 'future', mode: 'stacked' }, undefined, 'line')).toBe('custom');
+    expect(chartStylePreset({ curve: 'linear', mode: 'future' }, undefined, 'line')).toBe('clean');
+    expect(chartStylePreset(undefined, { scale: 'future' }, 'line')).toBe('custom');
   });
-  it('applies complete presets while preserving unknown fields and safely defaults an unknown preset', () => {
-    const source = { curve: 'banana', points: 'hide', future: { keep: true } };
-    const applied = applyChartStylePreset(source, 'sparkline', 'area');
-    expect(applied).toEqual({ ...CHART_STYLE_PRESETS[6].style, future: { keep: true } });
-    expect(applied).not.toBe(source);
-    expect(source).toEqual({ curve: 'banana', points: 'hide', future: { keep: true } });
-    expect(applyChartStylePreset(null, 'missing', 'line')).toEqual(clean);
+  it('applies presets to both objects while preserving unknown/dormant fields and source objects', () => {
+    const style = { curve: 'banana', mode: 'stacked', future: { keep: true } };
+    const display = { scale: 'zero', frame: 'compact', future: true };
+    const applied = applyChartStylePreset(style, display, 'sparkline', 'area');
+    expect(applied).toEqual({
+      style: { curve: 'linear', points: 'hide', stack: 'overlay', mode: 'stacked', future: { keep: true } },
+      display: { scale: 'data', legend: 'hide', grid: 'hide', axes: 'hide', frame: 'compact', future: true },
+    });
+    expect(style).toEqual({ curve: 'banana', mode: 'stacked', future: { keep: true } });
+    expect(display).toEqual({ scale: 'zero', frame: 'compact', future: true });
+    expect(applyChartStylePreset(null, null, 'missing', 'pie')).toEqual({
+      style: { shape: 'pie' }, display: { legend: 'show', frame: 'normal' },
+    });
+    expect(applyChartStylePreset({ future: 1 }, { future: 2 }, 'x', 'future')).toEqual({
+      style: { future: 1 }, display: { future: 2 },
+    });
   });
   it('shows automatic markers only at or below both final-data thresholds', () => {
     expect(shouldShowChartPoints(Array(60), Array(4))).toBe(true);
@@ -446,9 +485,39 @@ describe('chartJsConfig', () => {
     }, colors).data.datasets[0];
     expect(stepped).toMatchObject({ tension: 0, stepped: 'after', pointRadius: 2 });
   });
+  it('maps grouped/stacked Bar and Column plus compact/joined density exactly', () => {
+    const config = (type, style, display) => chartJsConfig(cols, rows, {
+      type, x: 0, y: [1, 2], series: null, style, display,
+    }, colors);
+    const grouped = config('hbar', { mode: 'grouped', density: 'normal' }, { scale: 'zero' });
+    expect(grouped.options.indexAxis).toBe('y');
+    expect(grouped.options.scales).toMatchObject({ x: { stacked: false }, y: { stacked: false } });
+    expect(grouped.data.datasets[0]).not.toHaveProperty('categoryPercentage');
+    const stacked = config('bar', { mode: 'stacked', density: 'normal' }, { scale: 'zero' });
+    expect(stacked.options.indexAxis).toBe('x');
+    expect(stacked.options.scales).toMatchObject({ x: { stacked: true }, y: { stacked: true } });
+    const compact = config('bar', { density: 'compact' }, { scale: 'zero' }).data.datasets[0];
+    expect(compact).toMatchObject({ categoryPercentage: 0.9, barPercentage: 0.95, borderRadius: 2 });
+    const joined = config('bar', { density: 'joined' }, { scale: 'zero' }).data.datasets[0];
+    expect(joined).toMatchObject({ categoryPercentage: 1, barPercentage: 1, borderRadius: 0 });
+  });
+  it('maps additive stacked Area without changing dataset values', () => {
+    const cfg = chartJsConfig(cols, rows, {
+      type: 'area', x: 0, y: [1, 2], series: null,
+      style: { curve: 'smooth', points: 'hide', stack: 'stacked' }, display: { scale: 'data' },
+    }, colors);
+    expect(cfg.data.datasets.map((dataset) => dataset.stack)).toEqual(['chart', 'chart']);
+    expect(cfg.options.scales).toMatchObject({ x: { stacked: false }, y: { stacked: true, beginAtZero: false } });
+    expect(cfg.data.datasets.map((dataset) => dataset.data)).toEqual([[null, 20], [5, 6]]);
+    const overlay = chartJsConfig(cols, rows, {
+      type: 'area', x: 0, y: [1], series: null, style: { stack: 'overlay' },
+    }, colors);
+    expect(overlay.data.datasets[0]).not.toHaveProperty('stack');
+    expect(overlay.options.scales.y.stacked).toBe(false);
+  });
   it('maps Line/Area scale, legend, grid, and axes independently', () => {
-    const config = (style, opts) => chartJsConfig(cols, rows, {
-      type: 'line', x: 0, y: [1, 2], series: null, style,
+    const config = (display, opts) => chartJsConfig(cols, rows, {
+      type: 'line', x: 0, y: [1, 2], series: null, display,
     }, colors, opts);
 
     expect(config({ scale: 'zero' }).options.scales.y.beginAtZero).toBe(true);
@@ -458,7 +527,7 @@ describe('chartJsConfig', () => {
     expect(config({ legend: 'hide' }).options.plugins.legend.display).toBe(false);
     expect(config({ legend: 'auto' }).options.plugins.legend.display).toBe(true);
     expect(chartJsConfig(cols, rows, {
-      type: 'area', x: 0, y: [1], series: null, style: { legend: 'auto' },
+      type: 'area', x: 0, y: [1], series: null, display: { legend: 'auto' },
     }, colors).options.plugins.legend.display).toBe(false);
     expect(config({ grid: 'show' }, { hideGrid: true }).options.scales.y.grid.display).toBe(true);
     expect(config({ grid: 'hide' }).options.scales.y.grid.display).toBe(false);
@@ -468,8 +537,9 @@ describe('chartJsConfig', () => {
     expect(config({ axes: 'show' }).options.scales).toMatchObject({ x: { display: true }, y: { display: true } });
   });
   it('keeps Sparkline interaction and data while hiding presentation chrome', () => {
+    const preset = CHART_STYLE_PRESETS.line.find((item) => item.value === 'sparkline');
     const cfg = chartJsConfig(cols, rows, {
-      type: 'line', x: 0, y: [1], series: null, style: CHART_STYLE_PRESETS[6].style,
+      type: 'line', x: 0, y: [1], series: null, style: preset.style, display: preset.display,
     }, colors, { hideGrid: false });
     expect(cfg.data.labels).toHaveLength(2);
     expect(cfg.data.datasets[0]).toMatchObject({
@@ -509,13 +579,27 @@ describe('chartJsConfig', () => {
     const area = chartJsConfig(cols, rows, { type: 'area', x: 0, y: [1], series: null }, c);
     expect(area.data.datasets[0].backgroundColor).toBe('rgb(1,2,3)');
   });
-  it('pie has no scales, per-slice colors, and a right-positioned legend', () => {
+  it('maps Pie, Donut, and Compact Pie without scales or disabled tooltips', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'pie', x: 0, y: [1], series: null }, colors);
     expect(cfg.type).toBe('pie');
+    expect(cfg.options.cutout).toBe(0);
     expect(cfg.options.scales).toBeUndefined();
     expect(Array.isArray(cfg.data.datasets[0].backgroundColor)).toBe(true);
     expect(cfg.options.plugins.legend.display).toBe(true);
     expect(cfg.options.plugins.legend.position).toBe('right');
+    const donut = chartJsConfig(cols, rows, {
+      type: 'pie', x: 0, y: [1], series: null,
+      style: { shape: 'donut' }, display: { legend: 'show', frame: 'normal', scale: 'zero', axes: 'hide' },
+    }, colors);
+    expect(donut.options.cutout).toBe('60%');
+    expect(donut.options.layout).toBeUndefined();
+    const compact = chartJsConfig(cols, rows, {
+      type: 'pie', x: 0, y: [1], series: null,
+      style: { shape: 'donut' }, display: { legend: 'hide', frame: 'compact' },
+    }, colors);
+    expect(compact.options).toMatchObject({ cutout: '60%', layout: { padding: 0, autoPadding: false } });
+    expect(compact.options.plugins.legend.display).toBe(false);
+    expect(compact.options.plugins.tooltip).toBeDefined();
   });
   it('multi-series shows a top legend', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1, 2], series: null }, colors);
@@ -566,13 +650,11 @@ describe('chartJsConfig', () => {
 });
 
 describe('cloneChartCfg', () => {
-  it('copies known/unknown fields and deep-copies y + the complete style object', () => {
+  it('copies known/unknown fields and deep-copies y + complete presentation objects', () => {
     const src = {
       type: 'bar', x: 0, y: [1, 2], series: 3,
-      style: {
-        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
-        future: { x: 1 },
-      },
+      style: { mode: 'stacked', density: 'compact', future: { x: 1 } },
+      display: { scale: 'zero', legend: 'show', future: { y: 2 } },
       future: true,
     };
     const c = cloneChartCfg(src);
@@ -581,6 +663,8 @@ describe('cloneChartCfg', () => {
     expect(c.y).not.toBe(src.y);
     expect(c.style).not.toBe(src.style);
     expect(c.style.future).not.toBe(src.style.future);
+    expect(c.display).not.toBe(src.display);
+    expect(c.display.future).not.toBe(src.display.future);
   });
   it('null → null and defaults a missing y/series', () => {
     expect(cloneChartCfg(null)).toBeNull();

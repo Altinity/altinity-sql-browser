@@ -102,33 +102,46 @@ describe('canonical query.spec schema', () => {
       .toMatchObject({ path: ['panel', 'cfg', 'content'], code: 'schema-invalid-type' });
   });
 
-  it('documents chart styles while retaining unsupported string values for forward compatibility', () => {
+  it('documents type-specific chart style/display while retaining future string values', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'line', x: 0, y: [1], style: {
-        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'show', future: true,
-      },
+        curve: 'smooth', points: 'hide', future: true,
+      }, display: { scale: 'zero', legend: 'show', grid: 'hide', axes: 'show', frame: 'normal', future: true },
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'area', x: 0, y: [1], style: {
-        curve: 'future-curve', points: 'future-points', scale: 'future-scale',
-        legend: 'future-legend', grid: 'future-grid', axes: 'future-axes',
+        curve: 'future-curve', points: 'future-points', stack: 'future-stack',
+      }, display: {
+        scale: 'future-scale', legend: 'future-legend', grid: 'future-grid', axes: 'future-axes', frame: 'future-frame',
       },
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
-      type: 'line', x: 0, y: [1], style: {
-        curve: 42, points: false, scale: 0, legend: null, grid: [], axes: {},
-      },
-    } } }).map((item) => [item.path, item.code])).toEqual([
-      [['panel', 'cfg', 'style', 'axes'], 'schema-invalid-type'],
+      type: 'area', x: 0, y: [1], style: { curve: 42, points: false, stack: [] },
+      display: { scale: 0, legend: null, grid: [], axes: {}, frame: false },
+    } } }).map((item) => [item.path, item.code])).toEqual(expect.arrayContaining([
       [['panel', 'cfg', 'style', 'curve'], 'schema-invalid-type'],
-      [['panel', 'cfg', 'style', 'grid'], 'schema-invalid-type'],
-      [['panel', 'cfg', 'style', 'legend'], 'schema-invalid-type'],
       [['panel', 'cfg', 'style', 'points'], 'schema-invalid-type'],
-      [['panel', 'cfg', 'style', 'scale'], 'schema-invalid-type'],
-    ]);
+      [['panel', 'cfg', 'style', 'stack'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'display', 'scale'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'display', 'legend'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'display', 'grid'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'display', 'axes'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'display', 'frame'], 'schema-invalid-type'],
+    ]));
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'bar', x: 0, y: [1], style: { mode: false, density: 1 },
+    } } }).map((item) => item.path)).toEqual(expect.arrayContaining([
+      ['panel', 'cfg', 'style', 'mode'], ['panel', 'cfg', 'style', 'density'],
+    ]));
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'pie', x: 0, y: [1], style: { shape: null },
+    } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'style', 'shape'], code: 'schema-invalid-type' });
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'line', x: 0, y: [1], style: [],
     } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'style'], code: 'schema-invalid-type' });
+    expect(querySpecSchemaService.validate({ panel: { cfg: {
+      type: 'line', x: 0, y: [1], display: [],
+    } } })[0]).toMatchObject({ path: ['panel', 'cfg', 'display'], code: 'schema-invalid-type' });
   });
 });
 
@@ -182,10 +195,13 @@ describe('schema lookup', () => {
     expect(querySpecSchemaService.schemaAtPath({ root: chart, path: ['panel', 'cfg', 'y', 0] }).common)
       .toMatchObject({ type: 'integer', minimum: 0, 'x-altinity-completion': { source: 'resultColumnIndexes' } });
     expect(querySpecSchemaService.propertiesAtPath({ root: chart, path: ['panel', 'cfg'] })
-      .map((item) => item.name)).toEqual(['type', 'style', 'x', 'y', 'series']);
+      .map((item) => item.name)).toEqual(['type', 'style', 'display', 'x', 'y', 'series']);
     expect(querySpecSchemaService.propertiesAtPath({
       root: chart, path: ['panel', 'cfg', 'style'],
-    }).map((item) => item.name)).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
+    }).map((item) => item.name)).toEqual(['curve', 'points']);
+    expect(querySpecSchemaService.propertiesAtPath({
+      root: chart, path: ['panel', 'cfg', 'display'],
+    }).map((item) => item.name)).toEqual(['scale', 'legend', 'grid', 'axes', 'frame']);
     const fields = { panel: { fieldConfig: { columns: { 'latency.p95': { decimals: 2 } } } } };
     expect(querySpecSchemaService.schemaAtPath({
       root: fields, path: ['panel', 'fieldConfig', 'columns', 'latency.p95', 'decimals'],

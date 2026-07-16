@@ -10,12 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Bar, Column, Area, and Pie now share type-specific presentation presets**
+  (#258) through the same compact Style selector. Bar/Column add Grouped,
+  Stacked, Compact, Joined, Minimal, and Data range; Area adds additive
+  Stacked to its Line-family variants; Pie adds Donut and a genuinely compact
+  frame. Presets update separate `panel.cfg.style` and `panel.cfg.display`
+  objects, match both objects before claiming a named state, preserve dormant
+  fields and unknown extensions across type switches, and render identically
+  in the workbench and Dashboard. The canonical Spec schema and completion now
+  document type-specific style keys plus shared display chrome; legacy #256
+  display fields stored inside `style` are folded forward without data loss.
 - **Line and Area Style now offers seven complete presentation presets**
   (#256). Clean, Smooth, Stepped, Points, Zero-based, Minimal, and Sparkline
-  write the full renderer-independent `panel.cfg.style` object through the
+  write the full renderer-independent `panel.cfg.style` and
+  `panel.cfg.display` objects through the
   existing compact selector; exact advanced combinations that match none of
   them remain visible as a disabled Custom selection. Scale, legend, grid, and
-  axes settings join curve and point controls in the canonical Spec schema and
+  axes settings complement curve and point controls in the canonical Spec schema and
   completion surface, preserve unknown extensions, and render consistently in
   the workbench, detached views, and Dashboard. Sparkline removes axes, grid,
   legend, and normal markers while retaining hover targets, tooltips, data,

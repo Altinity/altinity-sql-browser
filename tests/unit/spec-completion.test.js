@@ -27,10 +27,10 @@ describe('pure Spec completion', () => {
     }).map((item) => item.label)).toEqual(['type']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'line' } } }, path: ['panel', 'cfg'],
-    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'series']);
+    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'display', 'series']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'bar' } } }, path: ['panel', 'cfg'],
-    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'series']);
+    }).map((item) => item.label)).toEqual(['type', 'x', 'y', 'style', 'display', 'series']);
     expect(complete({
       rootValue: { panel: { cfg: { type: 'logs' } } }, path: ['panel', 'cfg'],
     }).map((item) => item.label)).toEqual(['type', 'time', 'msg', 'level']);
@@ -48,20 +48,30 @@ describe('pure Spec completion', () => {
     expect(items.find((item) => item.label === 'line').documentation).toContain('Line series');
   });
 
-  it('offers the documented chart style keys and supported string values', () => {
-    const rootValue = { panel: { cfg: { type: 'line', style: {} } } };
-    expect(complete({
-      rootValue, path: ['panel', 'cfg', 'style'],
-    }).map((item) => item.label)).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
-    const values = (field) => complete({
-      rootValue, path: ['panel', 'cfg', 'style', field], positionKind: 'property-value',
+  it('offers type-specific style keys plus shared display keys and values', () => {
+    const keys = (type, object) => complete({
+      rootValue: { panel: { cfg: { type, [object]: {} } } }, path: ['panel', 'cfg', object],
+    }).map((item) => item.label);
+    expect(keys('line', 'style')).toEqual(['curve', 'points']);
+    expect(keys('area', 'style')).toEqual(['curve', 'points', 'stack']);
+    expect(keys('bar', 'style')).toEqual(['mode', 'density']);
+    expect(keys('hbar', 'style')).toEqual(['mode', 'density']);
+    expect(keys('pie', 'style')).toEqual(['shape']);
+    expect(keys('pie', 'display')).toEqual(['scale', 'legend', 'grid', 'axes', 'frame']);
+    const values = (type, object, field) => complete({
+      rootValue: { panel: { cfg: { type, [object]: {} } } }, path: ['panel', 'cfg', object, field], positionKind: 'property-value',
     }).map((item) => item.insert);
-    expect(values('curve')).toEqual(['"linear"', '"smooth"', '"stepped"']);
-    expect(values('points')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('scale')).toEqual(['"auto"', '"zero"', '"data"']);
-    expect(values('legend')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('grid')).toEqual(['"auto"', '"show"', '"hide"']);
-    expect(values('axes')).toEqual(['"show"', '"hide"']);
+    expect(values('line', 'style', 'curve')).toEqual(['"linear"', '"smooth"', '"stepped"']);
+    expect(values('line', 'style', 'points')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('area', 'style', 'stack')).toEqual(['"overlay"', '"stacked"']);
+    expect(values('bar', 'style', 'mode')).toEqual(['"grouped"', '"stacked"']);
+    expect(values('bar', 'style', 'density')).toEqual(['"normal"', '"compact"', '"joined"']);
+    expect(values('pie', 'style', 'shape')).toEqual(['"pie"', '"donut"']);
+    expect(values('line', 'display', 'scale')).toEqual(['"auto"', '"zero"', '"data"']);
+    expect(values('line', 'display', 'legend')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('line', 'display', 'grid')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('line', 'display', 'axes')).toEqual(['"show"', '"hide"']);
+    expect(values('pie', 'display', 'frame')).toEqual(['"normal"', '"compact"']);
   });
 
   it('discovers a synthetic future branch and ranks planned/deprecated variants last', () => {

@@ -121,13 +121,13 @@ describe('decoding and migrations', () => {
     expect(result.value.queries[0].spec.extension).not.toBe(source.queries[0].spec.extension);
   });
 
-  it('round-trips chart style, including unsupported strings and extension metadata', () => {
+  it('round-trips chart style/display, including unsupported strings and extensions', () => {
     const style = {
-      curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
-      extension: { dense: true },
+      curve: 'future-curve', points: 'hide', stack: 'future-stack', extension: { dense: true },
     };
+    const display = { scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide', extension: { frame: true } };
     const source = query('chart', { panel: {
-      cfg: { type: 'area', x: 0, y: [1], series: null, style },
+      cfg: { type: 'area', x: 0, y: [1], series: null, style, display },
     } });
     const encoded = encodeLibraryDocument([source], { nowISO: '2026-07-15T00:00:00.000Z' });
     expect(encoded.ok).toBe(true);
@@ -136,6 +136,9 @@ describe('decoding and migrations', () => {
     expect(decoded.value.queries[0].spec.panel.cfg.style).toEqual(style);
     expect(decoded.value.queries[0].spec.panel.cfg.style).not.toBe(style);
     expect(decoded.value.queries[0].spec.panel.cfg.style.extension).not.toBe(style.extension);
+    expect(decoded.value.queries[0].spec.panel.cfg.display).toEqual(display);
+    expect(decoded.value.queries[0].spec.panel.cfg.display).not.toBe(display);
+    expect(decoded.value.queries[0].spec.panel.cfg.display.extension).not.toBe(display.extension);
   });
 
   it('migrates forgiving v1 input sequentially and validates canonical output', () => {

@@ -278,8 +278,8 @@ describe('Panel drawer tab', () => {
   it('the Panel drawer exposes one Line Style selector and persists its preset', () => {
     const app = panelApp(chartResult(), {
       type: 'line', x: 0, y: [1], series: null, style: {
-        curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
-      },
+        curve: 'linear', points: 'auto', future: true,
+      }, display: { scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true },
     });
     app.activeTab().panelKey = 'carrier:String|flights:UInt64';
     renderResults(app);
@@ -290,7 +290,10 @@ describe('Panel drawer tab', () => {
     style.value = 'stepped';
     style.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.activeTab().panelCfg.style).toEqual({
-      curve: 'stepped', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
+      curve: 'stepped', points: 'auto', future: true,
+    });
+    expect(app.activeTab().panelCfg.display).toEqual({
+      scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
     });
     expect(app.activeTab().dirtySpec).toBe(true);
   });

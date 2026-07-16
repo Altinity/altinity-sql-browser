@@ -84,63 +84,137 @@ export const CHART_TYPES = [
   { value: 'pie', label: 'Pie' },
 ];
 
-export const CHART_STYLE_PRESETS = [
-  { value: 'clean', label: 'Clean', style: { curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
-  { value: 'smooth', label: 'Smooth', style: { curve: 'smooth', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
-  { value: 'stepped', label: 'Stepped', style: { curve: 'stepped', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
-  { value: 'points', label: 'Points', style: { curve: 'linear', points: 'show', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' } },
-  { value: 'zero', label: 'Zero-based', style: { curve: 'linear', points: 'auto', scale: 'zero', legend: 'auto', grid: 'auto', axes: 'show' } },
-  { value: 'minimal', label: 'Minimal', style: { curve: 'linear', points: 'hide', scale: 'data', legend: 'hide', grid: 'hide', axes: 'show' } },
-  { value: 'sparkline', label: 'Sparkline', style: { curve: 'linear', points: 'hide', scale: 'data', legend: 'hide', grid: 'hide', axes: 'hide' } },
+const display = (scale, legend = 'auto', grid = 'auto', axes = 'show') => ({ scale, legend, grid, axes });
+
+const LINE_STYLE_PRESETS = [
+  { value: 'clean', label: 'Clean', style: { curve: 'linear', points: 'auto' }, display: display('data') },
+  { value: 'smooth', label: 'Smooth', style: { curve: 'smooth', points: 'auto' }, display: display('data') },
+  { value: 'stepped', label: 'Stepped', style: { curve: 'stepped', points: 'auto' }, display: display('data') },
+  { value: 'points', label: 'Points', style: { curve: 'linear', points: 'show' }, display: display('data') },
+  { value: 'zero', label: 'Zero-based', style: { curve: 'linear', points: 'auto' }, display: display('zero') },
+  { value: 'minimal', label: 'Minimal', style: { curve: 'linear', points: 'hide' }, display: display('data', 'hide', 'hide') },
+  { value: 'sparkline', label: 'Sparkline', style: { curve: 'linear', points: 'hide' }, display: display('data', 'hide', 'hide', 'hide') },
 ];
+
+const AREA_STYLE_PRESETS = [
+  ...LINE_STYLE_PRESETS.slice(0, 4).map((preset) => ({
+    ...preset, style: { ...preset.style, stack: 'overlay' }, display: { ...preset.display },
+  })),
+  { value: 'stacked', label: 'Stacked', style: { curve: 'linear', points: 'auto', stack: 'stacked' }, display: display('data') },
+  ...LINE_STYLE_PRESETS.slice(4).map((preset) => ({
+    ...preset, style: { ...preset.style, stack: 'overlay' }, display: { ...preset.display },
+  })),
+];
+
+const BAR_STYLE_PRESETS = [
+  { value: 'grouped', label: 'Grouped', style: { mode: 'grouped', density: 'normal' }, display: display('zero') },
+  { value: 'stacked', label: 'Stacked', style: { mode: 'stacked', density: 'normal' }, display: display('zero') },
+  { value: 'compact', label: 'Compact', style: { mode: 'grouped', density: 'compact' }, display: display('zero') },
+  { value: 'joined', label: 'Joined', style: { mode: 'grouped', density: 'joined' }, display: display('zero') },
+  { value: 'minimal', label: 'Minimal', style: { mode: 'grouped', density: 'compact' }, display: display('zero', 'hide', 'hide') },
+  { value: 'data', label: 'Data range', style: { mode: 'grouped', density: 'normal' }, display: display('data') },
+];
+
+const PIE_STYLE_PRESETS = [
+  { value: 'pie', label: 'Pie', style: { shape: 'pie' }, display: { legend: 'show', frame: 'normal' } },
+  { value: 'donut', label: 'Donut', style: { shape: 'donut' }, display: { legend: 'show', frame: 'normal' } },
+  { value: 'compact', label: 'Compact', style: { shape: 'donut' }, display: { legend: 'hide', frame: 'compact' } },
+];
+
+/** Complete Style-selector presets by chart type (`hbar` is the Bar label). */
+export const CHART_STYLE_PRESETS = {
+  hbar: BAR_STYLE_PRESETS,
+  bar: BAR_STYLE_PRESETS,
+  line: LINE_STYLE_PRESETS,
+  area: AREA_STYLE_PRESETS,
+  pie: PIE_STYLE_PRESETS,
+};
+
+export function chartStylePresets(type) {
+  return CHART_STYLE_PRESETS[type] || [];
+}
 
 const CHART_CURVES = new Set(['linear', 'smooth', 'stepped']);
 const CHART_POINTS = new Set(['auto', 'show', 'hide']);
+const CHART_STACKS = new Set(['overlay', 'stacked']);
+const CHART_BAR_MODES = new Set(['grouped', 'stacked']);
+const CHART_BAR_DENSITIES = new Set(['normal', 'compact', 'joined']);
+const CHART_PIE_SHAPES = new Set(['pie', 'donut']);
 const CHART_SCALES = new Set(['auto', 'zero', 'data']);
 const CHART_VISIBILITY = new Set(['auto', 'show', 'hide']);
 const CHART_AXES = new Set(['show', 'hide']);
+const CHART_FRAMES = new Set(['normal', 'compact']);
 const CHART_STYLE_FIELDS = {
-  curve: CHART_CURVES,
-  points: CHART_POINTS,
-  scale: CHART_SCALES,
-  legend: CHART_VISIBILITY,
-  grid: CHART_VISIBILITY,
-  axes: CHART_AXES,
+  hbar: { mode: CHART_BAR_MODES, density: CHART_BAR_DENSITIES },
+  bar: { mode: CHART_BAR_MODES, density: CHART_BAR_DENSITIES },
+  line: { curve: CHART_CURVES, points: CHART_POINTS },
+  area: { curve: CHART_CURVES, points: CHART_POINTS, stack: CHART_STACKS },
+  pie: { shape: CHART_PIE_SHAPES },
 };
-const CHART_STYLE_DEFAULTS = CHART_STYLE_PRESETS[0].style;
+const CHART_DISPLAY_FIELDS = {
+  hbar: { scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
+  bar: { scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
+  line: { scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
+  area: { scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
+  pie: { legend: CHART_VISIBILITY, frame: CHART_FRAMES },
+};
 
-/** Resolve renderer-independent Line/Area style without mutating imported data. */
-export function normalizeChartStyle(style) {
+/** Resolve renderer-independent, type-specific style without mutating imported data. */
+export function normalizeChartStyle(style, type = 'line') {
   const value = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  if (type === 'hbar' || type === 'bar') return {
+    mode: CHART_BAR_MODES.has(value.mode) ? value.mode : 'grouped',
+    density: CHART_BAR_DENSITIES.has(value.density) ? value.density : 'normal',
+  };
+  if (type === 'pie') return { shape: CHART_PIE_SHAPES.has(value.shape) ? value.shape : 'pie' };
   return {
     curve: CHART_CURVES.has(value.curve) ? value.curve : 'linear',
     points: CHART_POINTS.has(value.points) ? value.points : 'auto',
-    scale: CHART_SCALES.has(value.scale) ? value.scale : 'data',
-    legend: CHART_VISIBILITY.has(value.legend) ? value.legend : 'auto',
-    grid: CHART_VISIBILITY.has(value.grid) ? value.grid : 'auto',
-    axes: CHART_AXES.has(value.axes) ? value.axes : 'show',
+    ...(type === 'area' ? { stack: CHART_STACKS.has(value.stack) ? value.stack : 'overlay' } : {}),
+  };
+}
+
+/** Resolve renderer-independent display chrome relevant to the current type. */
+export function normalizeChartDisplay(value, type = 'line') {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  if (type === 'pie') return {
+    legend: CHART_VISIBILITY.has(source.legend) ? source.legend : 'show',
+    frame: CHART_FRAMES.has(source.frame) ? source.frame : 'normal',
+  };
+  return {
+    scale: CHART_SCALES.has(source.scale) ? source.scale : type === 'hbar' || type === 'bar' ? 'zero' : 'data',
+    legend: CHART_VISIBILITY.has(source.legend) ? source.legend : 'auto',
+    grid: CHART_VISIBILITY.has(source.grid) ? source.grid : 'auto',
+    axes: CHART_AXES.has(source.axes) ? source.axes : 'show',
   };
 }
 
 /** Match every preset-owned field exactly; unusual advanced combinations stay Custom. */
-export function chartStylePreset(style, type) {
-  void type; // Line and Area intentionally share one complete preset table.
-  const source = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
-  if (Object.entries(CHART_STYLE_FIELDS)
-    .some(([field, supported]) => field in source && !supported.has(source[field]))) return 'custom';
-  const value = normalizeChartStyle(style);
-  const matched = CHART_STYLE_PRESETS.find((preset) => (
-    Object.keys(CHART_STYLE_DEFAULTS).every((field) => value[field] === preset.style[field])
+export function chartStylePreset(style, displayValue, type) {
+  const styleSource = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  const displaySource = displayValue && typeof displayValue === 'object' && !Array.isArray(displayValue) ? displayValue : {};
+  if (Object.entries(CHART_STYLE_FIELDS[type] || {})
+    .some(([field, supported]) => field in styleSource && !supported.has(styleSource[field]))) return 'custom';
+  if (Object.entries(CHART_DISPLAY_FIELDS[type] || {})
+    .some(([field, supported]) => field in displaySource && !supported.has(displaySource[field]))) return 'custom';
+  const normalizedStyle = normalizeChartStyle(style, type);
+  const normalizedDisplay = normalizeChartDisplay(displayValue, type);
+  const matched = chartStylePresets(type).find((preset) => (
+    Object.keys(preset.style).every((field) => normalizedStyle[field] === preset.style[field])
+      && Object.keys(preset.display).every((field) => normalizedDisplay[field] === preset.display[field])
   ));
   return matched ? matched.value : 'custom';
 }
 
-/** Apply one UI preset while retaining unknown style extensions. */
-export function applyChartStylePreset(style, preset, type) {
-  void type; // Reserved for type-specific presets without changing callers later.
-  const base = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
-  const picked = CHART_STYLE_PRESETS.find((item) => item.value === preset) || CHART_STYLE_PRESETS[0];
-  return { ...base, ...picked.style };
+/** Apply one UI preset while retaining unknown and dormant extensions. */
+export function applyChartStylePreset(style, displayValue, preset, type) {
+  const styleBase = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
+  const displayBase = displayValue && typeof displayValue === 'object' && !Array.isArray(displayValue) ? displayValue : {};
+  const presets = chartStylePresets(type);
+  const picked = presets.find((item) => item.value === preset) || presets[0];
+  return picked
+    ? { style: { ...styleBase, ...picked.style }, display: { ...displayBase, ...picked.display } }
+    : { style: { ...styleBase }, display: { ...displayBase } };
 }
 
 /** Deterministic marker density rule over the final rendered labels/datasets. */
@@ -160,6 +234,9 @@ export function cloneChartCfg(cfg) {
   const out = { ...cfg, y: [...(cfg.y || [])], series: cfg.series ?? null };
   if (cfg.style && typeof cfg.style === 'object') {
     out.style = JSON.parse(JSON.stringify(cfg.style));
+  }
+  if (cfg.display && typeof cfg.display === 'object') {
+    out.display = JSON.parse(JSON.stringify(cfg.display));
   }
   return out;
 }
@@ -262,6 +339,15 @@ export function chartLabel(v) {
  */
 export function normalizeChartCfg(cfg) {
   if (!cfg) return cfg;
+  // #256 briefly stored display fields inside `style`. Fold those values into
+  // the canonical object on read without deleting the original extensions.
+  if (cfg.style && typeof cfg.style === 'object' && !Array.isArray(cfg.style)) {
+    const legacyFields = ['scale', 'legend', 'grid', 'axes'];
+    const legacy = Object.fromEntries(legacyFields
+      .filter((field) => cfg.style[field] !== undefined)
+      .map((field) => [field, cfg.style[field]]));
+    if (Object.keys(legacy).length) cfg.display = { ...legacy, ...(cfg.display || {}) };
+  }
   if (cfg.series != null && cfg.series === cfg.x) cfg.series = null;
   if (cfg.type === 'pie') {
     cfg.series = null;
@@ -399,9 +485,9 @@ const withAlpha = (hex, frac) => {
  * Build a complete Chart.js config object (type + data + themed options) from a
  * result and the user's `cfg`. Pure: returns a plain object (Chart.js draws it).
  * `colors` is a resolved token bundle from `chartColors`. `opts.hideGrid`
- * supplies the surface default for `style.grid:'auto'` (dashboard tiles draw
+ * supplies the surface default for `display.grid:'auto'` (dashboard tiles draw
  * on the panel background where a light gridline reads as noise — #149);
- * explicit `show`/`hide` style values override it.
+ * explicit `show`/`hide` display values override it.
  */
 export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const fieldConfig = opts.fieldConfig || {};
@@ -413,7 +499,8 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const isArea = cfg.type === 'area';
   const isLine = cfg.type === 'line' || isArea;
   const chartType = horizontal || cfg.type === 'bar' ? 'bar' : isLine ? 'line' : 'pie';
-  const style = normalizeChartStyle(cfg.style);
+  const style = normalizeChartStyle(cfg.style, cfg.type);
+  const chartDisplay = normalizeChartDisplay(cfg.display, cfg.type);
   const pointsVisible = style.points === 'show'
     || (style.points === 'auto' && shouldShowChartPoints(labels, datasets));
   const curveStyle = style.curve === 'smooth'
@@ -433,16 +520,22 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
     if (isLine) {
       return {
         ...ds, borderColor: color, backgroundColor: isArea ? withAlpha(color, 0.14) : color,
-        fill: isArea, borderWidth: 1.5, ...curveStyle, ...pointStyle,
+        fill: isArea, borderWidth: 1.5,
+        ...(isArea && style.stack === 'stacked' ? { stack: 'chart' } : {}),
+        ...curveStyle, ...pointStyle,
       };
     }
-    return { ...ds, backgroundColor: color, borderRadius: 2, borderWidth: 0 };
+    const density = style.density === 'compact'
+      ? { categoryPercentage: 0.9, barPercentage: 0.95 }
+      : style.density === 'joined'
+        ? { categoryPercentage: 1, barPercentage: 1, borderRadius: 0 }
+        : {};
+    return { ...ds, backgroundColor: color, borderRadius: 2, borderWidth: 0, ...density };
   });
 
   const multi = datasets.length > 1;
-  const gridVisible = isLine
-    ? style.grid === 'show' || (style.grid === 'auto' && !opts.hideGrid)
-    : !opts.hideGrid;
+  const gridVisible = !isPie && (chartDisplay.grid === 'show'
+    || (chartDisplay.grid === 'auto' && !opts.hideGrid));
   const grid = { color: colors.borderFaint, drawBorder: false, display: gridVisible };
   const ticks = { color: colors.fgMute, font: { family: colors.mono, size: 10 } };
   const valueTicks = { ...ticks, callback: (v) => chartNumFmt(typeof v === 'number' ? v : Number(v)) };
@@ -465,9 +558,8 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
     animation: { duration: 300 },
     plugins: {
       legend: {
-        display: isLine
-          ? style.legend === 'show' || (style.legend === 'auto' && multi)
-          : multi || isPie,
+        display: chartDisplay.legend === 'show'
+          || (chartDisplay.legend === 'auto' && (multi || isPie)),
         position: isPie ? 'right' : 'top',
         align: 'start',
         labels: { color: colors.fgMute, boxWidth: 10, boxHeight: 10, font: { family: colors.mono, size: 11 } },
@@ -495,19 +587,28 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
     },
   };
 
+  if (isPie) {
+    options.cutout = style.shape === 'donut' ? '60%' : 0;
+    if (chartDisplay.frame === 'compact') options.layout = { padding: 0, autoPadding: false };
+  }
+
   if (!isPie) {
     // The value axis carries humanized number ticks; the category axis carries
     // the X labels. indexAxis:'y' flips them for the horizontal-bar default.
     options.indexAxis = horizontal ? 'y' : 'x';
-    const axesVisible = !isLine || style.axes === 'show';
+    const axesVisible = chartDisplay.axes === 'show';
     const valueAxis = {
       display: axesVisible,
       grid,
       ticks: valueTicks,
-      beginAtZero: isLine ? style.scale === 'zero' : true,
+      beginAtZero: chartDisplay.scale === 'zero',
     };
     const catAxis = { display: axesVisible, grid: { ...grid, display: false }, ticks };
     options.scales = horizontal ? { x: valueAxis, y: catAxis } : { x: catAxis, y: valueAxis };
+    const barsStacked = (horizontal || cfg.type === 'bar') && style.mode === 'stacked';
+    const areaStacked = isArea && style.stack === 'stacked';
+    options.scales.x.stacked = barsStacked;
+    options.scales.y.stacked = barsStacked || areaStacked;
   }
 
   return { type: chartType, data: { labels, datasets: styled }, options };

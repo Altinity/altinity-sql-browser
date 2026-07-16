@@ -267,8 +267,8 @@ export const querySpecV1Schema = {
         "fieldConfig"
       ]
     },
-    "chartStyle": {
-      "title": "Line and Area style",
+    "lineChartStyle": {
+      "title": "Line style",
       "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.",
       "type": "object",
       "properties": {
@@ -307,7 +307,131 @@ export const querySpecV1Schema = {
             }
           ],
           "default": "auto"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "curve",
+        "points"
+      ]
+    },
+    "areaChartStyle": {
+      "title": "Area style",
+      "description": "Curve, marker, and additive stacking presentation for Area charts.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/lineChartStyle"
         },
+        {
+          "type": "object",
+          "properties": {
+            "stack": {
+              "title": "Area stacking",
+              "description": "overlay draws series independently; stacked uses one shared additive stack without normalization.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "overlay",
+                    "stacked"
+                  ]
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "default": "overlay"
+            }
+          },
+          "additionalProperties": true
+        }
+      ],
+      "x-altinity-order": [
+        "curve",
+        "points",
+        "stack"
+      ]
+    },
+    "barChartStyle": {
+      "title": "Bar and Column style",
+      "description": "Grouping and category-spacing presentation shared by horizontal Bar and vertical Column charts.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "title": "Bar grouping",
+          "description": "grouped draws measures side by side; stacked adds them on one shared value stack.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "grouped",
+                "stacked"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "grouped"
+        },
+        "density": {
+          "title": "Category spacing",
+          "description": "normal uses standard spacing, compact reduces gaps, and joined removes category gaps.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "normal",
+                "compact",
+                "joined"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "normal"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "mode",
+        "density"
+      ]
+    },
+    "pieChartStyle": {
+      "title": "Pie style",
+      "description": "Pie or Donut shape presentation.",
+      "type": "object",
+      "properties": {
+        "shape": {
+          "title": "Pie shape",
+          "description": "pie fills the center; donut uses a fixed 60% cutout.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "pie",
+                "donut"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "pie"
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "shape"
+      ]
+    },
+    "chartDisplay": {
+      "title": "Chart display",
+      "description": "Shared chart scale and presentation chrome. Renderers read only fields relevant to their current type.",
+      "type": "object",
+      "properties": {
         "scale": {
           "title": "Value scale",
           "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.",
@@ -378,21 +502,40 @@ export const querySpecV1Schema = {
             }
           ],
           "default": "show"
+        },
+        "frame": {
+          "title": "Chart frame",
+          "description": "compact reduces Pie layout padding; normal retains the standard frame.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "normal",
+                "compact"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "normal"
         }
       },
       "additionalProperties": true,
       "x-altinity-order": [
-        "curve",
-        "points",
         "scale",
         "legend",
         "grid",
-        "axes"
+        "axes",
+        "frame"
       ]
     },
     "chartCfg": {
       "type": "object",
       "properties": {
+        "display": {
+          "$ref": "#/$defs/chartDisplay"
+        },
         "x": {
           "$ref": "#/$defs/resultColumnIndex",
           "default": 0
@@ -431,12 +574,13 @@ export const querySpecV1Schema = {
       "additionalProperties": true,
       "x-altinity-order": [
         "type",
+        "display",
         "x",
         "y",
         "series"
       ]
     },
-    "lineChartCfg": {
+    "styledChartCfg": {
       "allOf": [
         {
           "$ref": "#/$defs/chartCfg"
@@ -445,7 +589,7 @@ export const querySpecV1Schema = {
           "type": "object",
           "properties": {
             "style": {
-              "$ref": "#/$defs/chartStyle"
+              "type": "object"
             }
           }
         }
@@ -453,6 +597,7 @@ export const querySpecV1Schema = {
       "x-altinity-order": [
         "type",
         "style",
+        "display",
         "x",
         "y",
         "series"
@@ -493,7 +638,14 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/chartCfg"
+              "$ref": "#/$defs/styledChartCfg"
+            },
+            {
+              "properties": {
+                "style": {
+                  "$ref": "#/$defs/barChartStyle"
+                }
+              }
             },
             {
               "properties": {
@@ -521,7 +673,14 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/chartCfg"
+              "$ref": "#/$defs/styledChartCfg"
+            },
+            {
+              "properties": {
+                "style": {
+                  "$ref": "#/$defs/barChartStyle"
+                }
+              }
             },
             {
               "properties": {
@@ -549,7 +708,14 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/lineChartCfg"
+              "$ref": "#/$defs/styledChartCfg"
+            },
+            {
+              "properties": {
+                "style": {
+                  "$ref": "#/$defs/lineChartStyle"
+                }
+              }
             },
             {
               "properties": {
@@ -577,7 +743,14 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/lineChartCfg"
+              "$ref": "#/$defs/styledChartCfg"
+            },
+            {
+              "properties": {
+                "style": {
+                  "$ref": "#/$defs/areaChartStyle"
+                }
+              }
             },
             {
               "properties": {
@@ -605,7 +778,14 @@ export const querySpecV1Schema = {
           },
           "allOf": [
             {
-              "$ref": "#/$defs/chartCfg"
+              "$ref": "#/$defs/styledChartCfg"
+            },
+            {
+              "properties": {
+                "style": {
+                  "$ref": "#/$defs/pieChartStyle"
+                }
+              }
             },
             {
               "properties": {
