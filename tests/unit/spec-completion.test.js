@@ -52,13 +52,16 @@ describe('pure Spec completion', () => {
     const rootValue = { panel: { cfg: { type: 'line', style: {} } } };
     expect(complete({
       rootValue, path: ['panel', 'cfg', 'style'],
-    }).map((item) => item.label)).toEqual(['curve', 'points']);
-    expect(complete({
-      rootValue, path: ['panel', 'cfg', 'style', 'curve'], positionKind: 'property-value',
-    }).map((item) => item.insert)).toEqual(['"linear"', '"smooth"', '"stepped"']);
-    expect(complete({
-      rootValue, path: ['panel', 'cfg', 'style', 'points'], positionKind: 'property-value',
-    }).map((item) => item.insert)).toEqual(['"auto"', '"show"', '"hide"']);
+    }).map((item) => item.label)).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
+    const values = (field) => complete({
+      rootValue, path: ['panel', 'cfg', 'style', field], positionKind: 'property-value',
+    }).map((item) => item.insert);
+    expect(values('curve')).toEqual(['"linear"', '"smooth"', '"stepped"']);
+    expect(values('points')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('scale')).toEqual(['"auto"', '"zero"', '"data"']);
+    expect(values('legend')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('grid')).toEqual(['"auto"', '"show"', '"hide"']);
+    expect(values('axes')).toEqual(['"show"', '"hide"']);
   });
 
   it('discovers a synthetic future branch and ranks planned/deprecated variants last', () => {

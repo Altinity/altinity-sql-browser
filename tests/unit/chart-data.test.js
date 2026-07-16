@@ -4,7 +4,7 @@ import {
   chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
   normalizeChartStyle, chartStylePreset, applyChartStylePreset, shouldShowChartPoints,
-  formatChartValue, visibleChartMeasures,
+  formatChartValue, visibleChartMeasures, CHART_STYLE_PRESETS,
 } from '../../src/core/chart-data.js';
 
 describe('chartStripType', () => {
@@ -213,35 +213,55 @@ describe('chartRowCap', () => {
 });
 
 describe('chart style', () => {
+  const clean = {
+    curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show',
+  };
   it('normalizes missing/non-object/empty style to the monitoring defaults', () => {
     for (const value of [undefined, null, [], 'nope', {}]) {
-      expect(normalizeChartStyle(value)).toEqual({ curve: 'linear', points: 'auto' });
+      expect(normalizeChartStyle(value)).toEqual(clean);
     }
   });
-  it.each(['linear', 'smooth', 'stepped'])('accepts the %s curve', (curve) => {
-    expect(normalizeChartStyle({ curve }).curve).toBe(curve);
-  });
-  it.each(['auto', 'show', 'hide'])('accepts the %s point mode', (points) => {
-    expect(normalizeChartStyle({ points }).points).toBe(points);
+  it.each([
+    ['curve', ['linear', 'smooth', 'stepped']],
+    ['points', ['auto', 'show', 'hide']],
+    ['scale', ['auto', 'zero', 'data']],
+    ['legend', ['auto', 'show', 'hide']],
+    ['grid', ['auto', 'show', 'hide']],
+    ['axes', ['show', 'hide']],
+  ])('accepts every supported %s value', (field, values) => {
+    for (const value of values) expect(normalizeChartStyle({ [field]: value })[field]).toBe(value);
   });
   it('falls back invalid fields independently, ignores extras, and never mutates input', () => {
+    const source = {
+      curve: 'banana', points: 'hide', scale: 'near', legend: 'show', grid: false, axes: 'gone', future: { keep: true },
+    };
+    expect(normalizeChartStyle(source)).toEqual({
+      curve: 'linear', points: 'hide', scale: 'data', legend: 'show', grid: 'auto', axes: 'show',
+    });
+    expect(source).toEqual({
+      curve: 'banana', points: 'hide', scale: 'near', legend: 'show', grid: false, axes: 'gone', future: { keep: true },
+    });
+  });
+  it('matches every complete preset exactly after filling missing defaults', () => {
+    for (const preset of CHART_STYLE_PRESETS) {
+      expect(chartStylePreset(preset.style, 'line')).toBe(preset.value);
+    }
+    expect(chartStylePreset(undefined, 'area')).toBe('clean');
+    expect(chartStylePreset({ future: true }, 'line')).toBe('clean');
+  });
+  it('returns Custom for one-field differences and unsupported known values without mutating input', () => {
+    const style = { ...CHART_STYLE_PRESETS[1].style, points: 'hide', future: true };
+    expect(chartStylePreset(style, 'line')).toBe('custom');
+    expect(chartStylePreset({ ...clean, curve: 'future-curve' }, 'area')).toBe('custom');
+    expect(style).toEqual({ ...CHART_STYLE_PRESETS[1].style, points: 'hide', future: true });
+  });
+  it('applies complete presets while preserving unknown fields and safely defaults an unknown preset', () => {
     const source = { curve: 'banana', points: 'hide', future: { keep: true } };
-    expect(normalizeChartStyle(source)).toEqual({ curve: 'linear', points: 'hide' });
+    const applied = applyChartStylePreset(source, 'sparkline', 'area');
+    expect(applied).toEqual({ ...CHART_STYLE_PRESETS[6].style, future: { keep: true } });
+    expect(applied).not.toBe(source);
     expect(source).toEqual({ curve: 'banana', points: 'hide', future: { keep: true } });
-    expect(normalizeChartStyle({ curve: 'smooth', points: 'huge' }))
-      .toEqual({ curve: 'smooth', points: 'auto' });
-  });
-  it('maps unusual combinations to a display preset without changing stored data', () => {
-    const style = { curve: 'smooth', points: 'hide', future: true };
-    expect(chartStylePreset(style)).toBe('smooth');
-    expect(chartStylePreset({ curve: 'linear', points: 'show' })).toBe('points');
-    expect(chartStylePreset({ curve: 'linear', points: 'hide' })).toBe('clean');
-    expect(style).toEqual({ curve: 'smooth', points: 'hide', future: true });
-  });
-  it('applies presets while preserving unknown fields and safely defaults an unknown preset', () => {
-    expect(applyChartStylePreset({ curve: 'banana', points: 'hide', future: 1 }, 'stepped'))
-      .toEqual({ curve: 'stepped', points: 'auto', future: 1 });
-    expect(applyChartStylePreset(null, 'missing')).toEqual({ curve: 'linear', points: 'auto' });
+    expect(applyChartStylePreset(null, 'missing', 'line')).toEqual(clean);
   });
   it('shows automatic markers only at or below both final-data thresholds', () => {
     expect(shouldShowChartPoints(Array(60), Array(4))).toBe(true);
@@ -426,6 +446,43 @@ describe('chartJsConfig', () => {
     }, colors).data.datasets[0];
     expect(stepped).toMatchObject({ tension: 0, stepped: 'after', pointRadius: 2 });
   });
+  it('maps Line/Area scale, legend, grid, and axes independently', () => {
+    const config = (style, opts) => chartJsConfig(cols, rows, {
+      type: 'line', x: 0, y: [1, 2], series: null, style,
+    }, colors, opts);
+
+    expect(config({ scale: 'zero' }).options.scales.y.beginAtZero).toBe(true);
+    expect(config({ scale: 'data' }).options.scales.y.beginAtZero).toBe(false);
+    expect(config({ scale: 'auto' }).options.scales.y.beginAtZero).toBe(false);
+    expect(config({ legend: 'show' }).options.plugins.legend.display).toBe(true);
+    expect(config({ legend: 'hide' }).options.plugins.legend.display).toBe(false);
+    expect(config({ legend: 'auto' }).options.plugins.legend.display).toBe(true);
+    expect(chartJsConfig(cols, rows, {
+      type: 'area', x: 0, y: [1], series: null, style: { legend: 'auto' },
+    }, colors).options.plugins.legend.display).toBe(false);
+    expect(config({ grid: 'show' }, { hideGrid: true }).options.scales.y.grid.display).toBe(true);
+    expect(config({ grid: 'hide' }).options.scales.y.grid.display).toBe(false);
+    expect(config({ grid: 'auto' }).options.scales.y.grid.display).toBe(true);
+    expect(config({ grid: 'auto' }, { hideGrid: true }).options.scales.y.grid.display).toBe(false);
+    expect(config({ axes: 'hide' }).options.scales).toMatchObject({ x: { display: false }, y: { display: false } });
+    expect(config({ axes: 'show' }).options.scales).toMatchObject({ x: { display: true }, y: { display: true } });
+  });
+  it('keeps Sparkline interaction and data while hiding presentation chrome', () => {
+    const cfg = chartJsConfig(cols, rows, {
+      type: 'line', x: 0, y: [1], series: null, style: CHART_STYLE_PRESETS[6].style,
+    }, colors, { hideGrid: false });
+    expect(cfg.data.labels).toHaveLength(2);
+    expect(cfg.data.datasets[0]).toMatchObject({
+      pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8,
+    });
+    expect(cfg.options.plugins.legend.display).toBe(false);
+    expect(cfg.options.plugins.tooltip).toBeDefined();
+    expect(cfg.options.responsive).toBe(true);
+    expect(cfg.options.scales).toMatchObject({
+      x: { display: false, grid: { display: false } },
+      y: { display: false, grid: { display: false } },
+    });
+  });
   it('uses final aggregated/pivoted chart density for automatic points', () => {
     const manyRawRows = Array.from({ length: 100 }, (_, i) => ['same', String(i), '1']);
     const aggregated = chartJsConfig(cols, manyRawRows, {
@@ -510,7 +567,14 @@ describe('chartJsConfig', () => {
 
 describe('cloneChartCfg', () => {
   it('copies known/unknown fields and deep-copies y + the complete style object', () => {
-    const src = { type: 'bar', x: 0, y: [1, 2], series: 3, style: { curve: 'smooth', future: { x: 1 } }, future: true };
+    const src = {
+      type: 'bar', x: 0, y: [1, 2], series: 3,
+      style: {
+        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
+        future: { x: 1 },
+      },
+      future: true,
+    };
     const c = cloneChartCfg(src);
     expect(c).toEqual(src);
     expect(c).not.toBe(src);

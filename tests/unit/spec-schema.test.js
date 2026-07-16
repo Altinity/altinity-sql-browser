@@ -104,16 +104,27 @@ describe('canonical query.spec schema', () => {
 
   it('documents chart styles while retaining unsupported string values for forward compatibility', () => {
     expect(querySpecSchemaService.validate({ panel: { cfg: {
-      type: 'line', x: 0, y: [1], style: { curve: 'smooth', points: 'hide', future: true },
+      type: 'line', x: 0, y: [1], style: {
+        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'show', future: true,
+      },
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
-      type: 'area', x: 0, y: [1], style: { curve: 'future-curve', points: 'future-points' },
+      type: 'area', x: 0, y: [1], style: {
+        curve: 'future-curve', points: 'future-points', scale: 'future-scale',
+        legend: 'future-legend', grid: 'future-grid', axes: 'future-axes',
+      },
     } } })).toEqual([]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
-      type: 'line', x: 0, y: [1], style: { curve: 42, points: false },
+      type: 'line', x: 0, y: [1], style: {
+        curve: 42, points: false, scale: 0, legend: null, grid: [], axes: {},
+      },
     } } }).map((item) => [item.path, item.code])).toEqual([
+      [['panel', 'cfg', 'style', 'axes'], 'schema-invalid-type'],
       [['panel', 'cfg', 'style', 'curve'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'grid'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'legend'], 'schema-invalid-type'],
       [['panel', 'cfg', 'style', 'points'], 'schema-invalid-type'],
+      [['panel', 'cfg', 'style', 'scale'], 'schema-invalid-type'],
     ]);
     expect(querySpecSchemaService.validate({ panel: { cfg: {
       type: 'line', x: 0, y: [1], style: [],
@@ -174,7 +185,7 @@ describe('schema lookup', () => {
       .map((item) => item.name)).toEqual(['type', 'style', 'x', 'y', 'series']);
     expect(querySpecSchemaService.propertiesAtPath({
       root: chart, path: ['panel', 'cfg', 'style'],
-    }).map((item) => item.name)).toEqual(['curve', 'points']);
+    }).map((item) => item.name)).toEqual(['curve', 'points', 'scale', 'legend', 'grid', 'axes']);
     const fields = { panel: { fieldConfig: { columns: { 'latency.p95': { decimals: 2 } } } } };
     expect(querySpecSchemaService.schemaAtPath({
       root: fields, path: ['panel', 'fieldConfig', 'columns', 'latency.p95', 'decimals'],

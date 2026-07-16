@@ -285,7 +285,7 @@ var require_formats = __commonJS({
 
 // json-schema-standalone.js
 var validateQuerySpecV1 = validate20;
-var schema31 = { "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json", "title": "Altinity SQL Browser saved-query Spec v1", "description": "The user-authored query.spec document. Saved-query envelope fields are intentionally outside this schema.", "x-altinity-kind": "query-spec", "x-altinity-version": 1, "type": "object", "properties": { "name": { "title": "Name", "description": "Panel, tile, and Library title.", "type": "string", "minLength": 1, "pattern": "\\S", "examples": ["Revenue by country"] }, "description": { "title": "Description", "description": "Optional authoring note shown with the saved query.", "type": "string" }, "favorite": { "title": "Favorite", "description": "Whether the query is included in favorite-driven surfaces.", "type": "boolean", "default": false }, "view": { "title": "Preferred result view", "description": "The result representation restored when the saved query opens.", "type": "string", "enum": ["table", "json", "panel"], "default": "table" }, "panel": { "$ref": "#/$defs/panel" }, "dashboard": { "$ref": "#/$defs/dashboard" } }, "additionalProperties": true, "x-altinity-order": ["name", "description", "favorite", "view", "panel", "dashboard"], "$defs": { "columnName": { "title": "Result column", "description": "Exact top-level ClickHouse result-column name.", "type": "string", "minLength": 1, "x-altinity-completion": { "source": "resultColumns" } }, "resultColumnIndex": { "title": "Result column index", "description": "Zero-based index of a ClickHouse result column.", "type": "integer", "minimum": 0, "x-altinity-completion": { "source": "resultColumnIndexes" } }, "deltaPresentation": { "title": "Delta presentation", "description": "Display metadata for a runtime KPI delta value.", "type": "object", "properties": { "displayName": { "title": "Delta label", "description": "Optional visible label for the delta.", "type": "string" }, "unit": { "title": "Delta unit", "description": "Display-only suffix appended to the delta.", "type": "string" }, "decimals": { "title": "Delta decimal places", "description": "Requested display rounding for the delta.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [1] }, "positiveIsGood": { "title": "Positive is good", "description": "Whether a positive runtime delta has good semantics.", "type": "boolean" }, "show": { "title": "Show delta", "description": "Whether a present runtime delta is rendered.", "type": "boolean", "default": true } }, "additionalProperties": true, "x-altinity-order": ["displayName", "unit", "decimals", "positiveIsGood", "show"] }, "fieldConfigValue": { "title": "Field presentation metadata", "description": "Known presentation metadata for one result column. Unknown renderer extensions are retained.", "type": "object", "properties": { "displayName": { "title": "Display name", "description": "Rendered label for the field.", "type": "string" }, "decimals": { "title": "Decimal places", "description": "Requested number of decimal places for numeric display.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [2] }, "description": { "title": "Description", "description": "Supporting display text for the field.", "type": "string" }, "unit": { "title": "Unit", "description": "Display-only suffix appended to the value.", "type": "string", "examples": ["%"] }, "color": { "title": "Color", "description": "Theme token or CSS color hint interpreted by the renderer.", "type": "string" }, "noValue": { "title": "No-value text", "description": "Text shown for NULL or unavailable values.", "type": "string", "default": "\u2014" }, "hidden": { "title": "Hidden", "description": "Suppress this otherwise eligible result field.", "type": "boolean", "default": false }, "delta": { "$ref": "#/$defs/deltaPresentation" } }, "additionalProperties": true, "x-altinity-order": ["displayName", "description", "unit", "decimals", "color", "noValue", "hidden", "delta"] }, "fieldConfig": { "title": "Panel field configuration", "description": "Default and per-column display metadata.", "type": "object", "properties": { "defaults": { "$ref": "#/$defs/fieldConfigValue" }, "columns": { "title": "Column overrides", "description": "Display metadata keyed by exact result-column name.", "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldConfigValue" }, "x-altinity-key-completion": { "source": "resultColumns" } } }, "additionalProperties": true, "x-altinity-order": ["defaults", "columns"] }, "dashboard": { "title": "Dashboard configuration", "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] } }, "additionalProperties": true, "x-altinity-order": ["role"] }, "panel": { "title": "Panel configuration", "description": "Visualization and field metadata for the saved query.", "type": "object", "properties": { "cfg": { "$ref": "#/$defs/panelCfg" }, "key": { "title": "Result schema key", "description": "Saved result-column signature used to detect stale positional roles.", "type": ["string", "null"] }, "fieldConfig": { "$ref": "#/$defs/fieldConfig" } }, "additionalProperties": true, "x-altinity-order": ["cfg", "key", "fieldConfig"] }, "chartStyle": { "title": "Line and Area style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points"] }, "chartCfg": { "type": "object", "properties": { "x": { "$ref": "#/$defs/resultColumnIndex", "default": 0 }, "y": { "title": "Measure columns", "description": "One or more zero-based result-column indexes used as measures.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/resultColumnIndex" } }, "series": { "title": "Series column", "description": "Optional zero-based result-column index used to split series.", "oneOf": [{ "$ref": "#/$defs/resultColumnIndex" }, { "type": "null" }], "default": null, "x-altinity-completion": { "source": "resultColumnIndexes" } } }, "required": ["x", "y"], "additionalProperties": true, "x-altinity-order": ["type", "x", "y", "series"] }, "lineChartCfg": { "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "type": "object", "properties": { "style": { "$ref": "#/$defs/chartStyle" } } }], "x-altinity-order": ["type", "style", "x", "y", "series"] }, "panelCfg": { "title": "Panel type configuration", "description": "Discriminated visualization configuration. Unknown types remain storable for forward compatibility.", "type": "object", "required": ["type"], "properties": { "type": { "title": "Panel type", "description": "Visualization renderer identifier.", "type": "string", "minLength": 1 } }, "additionalProperties": true, "x-altinity-discriminator": "type", "x-altinity-order": ["type"], "oneOf": [{ "title": "Column chart", "description": "Vertical columns using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "bar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "bar" } }, "required": ["type"] }] }, { "title": "Horizontal bar chart", "description": "Horizontal bars using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "hbar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "hbar" } }, "required": ["type"] }] }, { "title": "Line chart", "description": "Line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "line", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/lineChartCfg" }, { "properties": { "type": { "const": "line" } }, "required": ["type"] }] }, { "title": "Area chart", "description": "Filled line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "area", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/lineChartCfg" }, { "properties": { "type": { "const": "area" } }, "required": ["type"] }] }, { "title": "Pie chart", "description": "Pie slices using one positional measure role.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "pie", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "pie" }, "y": { "type": "array", "maxItems": 1 } }, "required": ["type"] }] }, { "title": "KPI", "description": "One-row scalar and named-tuple KPI cards.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "kpi" }, "properties": { "type": { "const": "kpi" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type"] }, { "title": "Table", "description": "Tabular result rendering with no required panel-specific fields.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "table" }, "properties": { "type": { "const": "table" } }, "required": ["type"], "additionalProperties": true }, { "title": "Logs", "description": "Timestamped log messages with optional explicit result-column roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "logs", "time": "event_time", "msg": "message", "level": "level" }, "properties": { "type": { "const": "logs" }, "time": { "$ref": "#/$defs/columnName" }, "msg": { "$ref": "#/$defs/columnName" }, "level": { "$ref": "#/$defs/columnName" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "time", "msg", "level"] }, { "title": "Markdown text", "description": "Safe Markdown content that does not require a SQL result.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "text", "content": "# Heading\n\nMarkdown content." }, "properties": { "type": { "const": "text" }, "content": { "title": "Markdown content", "description": "Source text for the safe Markdown renderer.", "type": "string", "default": "" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "content"] }, { "title": "Future panel type", "description": "Forward-compatible storage branch for a type implemented by a newer build.", "x-altinity-status": "planned", "x-altinity-snippet": { "type": "future-panel" }, "properties": { "type": { "type": "string", "minLength": 1, "not": { "enum": ["bar", "hbar", "line", "area", "pie", "kpi", "table", "logs", "text"] } } }, "required": ["type"], "additionalProperties": true }] } } };
+var schema31 = { "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json", "title": "Altinity SQL Browser saved-query Spec v1", "description": "The user-authored query.spec document. Saved-query envelope fields are intentionally outside this schema.", "x-altinity-kind": "query-spec", "x-altinity-version": 1, "type": "object", "properties": { "name": { "title": "Name", "description": "Panel, tile, and Library title.", "type": "string", "minLength": 1, "pattern": "\\S", "examples": ["Revenue by country"] }, "description": { "title": "Description", "description": "Optional authoring note shown with the saved query.", "type": "string" }, "favorite": { "title": "Favorite", "description": "Whether the query is included in favorite-driven surfaces.", "type": "boolean", "default": false }, "view": { "title": "Preferred result view", "description": "The result representation restored when the saved query opens.", "type": "string", "enum": ["table", "json", "panel"], "default": "table" }, "panel": { "$ref": "#/$defs/panel" }, "dashboard": { "$ref": "#/$defs/dashboard" } }, "additionalProperties": true, "x-altinity-order": ["name", "description", "favorite", "view", "panel", "dashboard"], "$defs": { "columnName": { "title": "Result column", "description": "Exact top-level ClickHouse result-column name.", "type": "string", "minLength": 1, "x-altinity-completion": { "source": "resultColumns" } }, "resultColumnIndex": { "title": "Result column index", "description": "Zero-based index of a ClickHouse result column.", "type": "integer", "minimum": 0, "x-altinity-completion": { "source": "resultColumnIndexes" } }, "deltaPresentation": { "title": "Delta presentation", "description": "Display metadata for a runtime KPI delta value.", "type": "object", "properties": { "displayName": { "title": "Delta label", "description": "Optional visible label for the delta.", "type": "string" }, "unit": { "title": "Delta unit", "description": "Display-only suffix appended to the delta.", "type": "string" }, "decimals": { "title": "Delta decimal places", "description": "Requested display rounding for the delta.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [1] }, "positiveIsGood": { "title": "Positive is good", "description": "Whether a positive runtime delta has good semantics.", "type": "boolean" }, "show": { "title": "Show delta", "description": "Whether a present runtime delta is rendered.", "type": "boolean", "default": true } }, "additionalProperties": true, "x-altinity-order": ["displayName", "unit", "decimals", "positiveIsGood", "show"] }, "fieldConfigValue": { "title": "Field presentation metadata", "description": "Known presentation metadata for one result column. Unknown renderer extensions are retained.", "type": "object", "properties": { "displayName": { "title": "Display name", "description": "Rendered label for the field.", "type": "string" }, "decimals": { "title": "Decimal places", "description": "Requested number of decimal places for numeric display.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [2] }, "description": { "title": "Description", "description": "Supporting display text for the field.", "type": "string" }, "unit": { "title": "Unit", "description": "Display-only suffix appended to the value.", "type": "string", "examples": ["%"] }, "color": { "title": "Color", "description": "Theme token or CSS color hint interpreted by the renderer.", "type": "string" }, "noValue": { "title": "No-value text", "description": "Text shown for NULL or unavailable values.", "type": "string", "default": "\u2014" }, "hidden": { "title": "Hidden", "description": "Suppress this otherwise eligible result field.", "type": "boolean", "default": false }, "delta": { "$ref": "#/$defs/deltaPresentation" } }, "additionalProperties": true, "x-altinity-order": ["displayName", "description", "unit", "decimals", "color", "noValue", "hidden", "delta"] }, "fieldConfig": { "title": "Panel field configuration", "description": "Default and per-column display metadata.", "type": "object", "properties": { "defaults": { "$ref": "#/$defs/fieldConfigValue" }, "columns": { "title": "Column overrides", "description": "Display metadata keyed by exact result-column name.", "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldConfigValue" }, "x-altinity-key-completion": { "source": "resultColumns" } } }, "additionalProperties": true, "x-altinity-order": ["defaults", "columns"] }, "dashboard": { "title": "Dashboard configuration", "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] } }, "additionalProperties": true, "x-altinity-order": ["role"] }, "panel": { "title": "Panel configuration", "description": "Visualization and field metadata for the saved query.", "type": "object", "properties": { "cfg": { "$ref": "#/$defs/panelCfg" }, "key": { "title": "Result schema key", "description": "Saved result-column signature used to detect stale positional roles.", "type": ["string", "null"] }, "fieldConfig": { "$ref": "#/$defs/fieldConfig" } }, "additionalProperties": true, "x-altinity-order": ["cfg", "key", "fieldConfig"] }, "chartStyle": { "title": "Line and Area style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "scale": { "title": "Value scale", "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "data" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points", "scale", "legend", "grid", "axes"] }, "chartCfg": { "type": "object", "properties": { "x": { "$ref": "#/$defs/resultColumnIndex", "default": 0 }, "y": { "title": "Measure columns", "description": "One or more zero-based result-column indexes used as measures.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/resultColumnIndex" } }, "series": { "title": "Series column", "description": "Optional zero-based result-column index used to split series.", "oneOf": [{ "$ref": "#/$defs/resultColumnIndex" }, { "type": "null" }], "default": null, "x-altinity-completion": { "source": "resultColumnIndexes" } } }, "required": ["x", "y"], "additionalProperties": true, "x-altinity-order": ["type", "x", "y", "series"] }, "lineChartCfg": { "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "type": "object", "properties": { "style": { "$ref": "#/$defs/chartStyle" } } }], "x-altinity-order": ["type", "style", "x", "y", "series"] }, "panelCfg": { "title": "Panel type configuration", "description": "Discriminated visualization configuration. Unknown types remain storable for forward compatibility.", "type": "object", "required": ["type"], "properties": { "type": { "title": "Panel type", "description": "Visualization renderer identifier.", "type": "string", "minLength": 1 } }, "additionalProperties": true, "x-altinity-discriminator": "type", "x-altinity-order": ["type"], "oneOf": [{ "title": "Column chart", "description": "Vertical columns using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "bar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "bar" } }, "required": ["type"] }] }, { "title": "Horizontal bar chart", "description": "Horizontal bars using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "hbar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "hbar" } }, "required": ["type"] }] }, { "title": "Line chart", "description": "Line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "line", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/lineChartCfg" }, { "properties": { "type": { "const": "line" } }, "required": ["type"] }] }, { "title": "Area chart", "description": "Filled line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "area", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/lineChartCfg" }, { "properties": { "type": { "const": "area" } }, "required": ["type"] }] }, { "title": "Pie chart", "description": "Pie slices using one positional measure role.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "pie", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "properties": { "type": { "const": "pie" }, "y": { "type": "array", "maxItems": 1 } }, "required": ["type"] }] }, { "title": "KPI", "description": "One-row scalar and named-tuple KPI cards.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "kpi" }, "properties": { "type": { "const": "kpi" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type"] }, { "title": "Table", "description": "Tabular result rendering with no required panel-specific fields.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "table" }, "properties": { "type": { "const": "table" } }, "required": ["type"], "additionalProperties": true }, { "title": "Logs", "description": "Timestamped log messages with optional explicit result-column roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "logs", "time": "event_time", "msg": "message", "level": "level" }, "properties": { "type": { "const": "logs" }, "time": { "$ref": "#/$defs/columnName" }, "msg": { "$ref": "#/$defs/columnName" }, "level": { "$ref": "#/$defs/columnName" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "time", "msg", "level"] }, { "title": "Markdown text", "description": "Safe Markdown content that does not require a SQL result.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "text", "content": "# Heading\n\nMarkdown content." }, "properties": { "type": { "const": "text" }, "content": { "title": "Markdown content", "description": "Source text for the safe Markdown renderer.", "type": "string", "default": "" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "content"] }, { "title": "Future panel type", "description": "Forward-compatible storage branch for a type implemented by a newer build.", "x-altinity-status": "planned", "x-altinity-snippet": { "type": "future-panel" }, "properties": { "type": { "type": "string", "minLength": 1, "not": { "enum": ["bar", "hbar", "line", "area", "pie", "kpi", "table", "logs", "text"] } } }, "required": ["type"], "additionalProperties": true }] } } };
 var schema46 = { "title": "Dashboard configuration", "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] } }, "additionalProperties": true, "x-altinity-order": ["role"] };
 var func1 = require_ucs2length().default;
 var pattern4 = new RegExp("\\S", "u");
@@ -490,7 +490,7 @@ function validate23(data, { instancePath = "", parentData, parentDataProperty, r
   return errors === 0;
 }
 validate23.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var schema39 = { "title": "Line and Area style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points"] };
+var schema39 = { "title": "Line and Area style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "scale": { "title": "Value scale", "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "data" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points", "scale", "legend", "grid", "axes"] };
 function validate26(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
@@ -621,22 +621,246 @@ function validate26(data, { instancePath = "", parentData, parentDataProperty, r
             }
           }
         }
+        if (data0.scale !== void 0) {
+          let data3 = data0.scale;
+          const _errs20 = errors;
+          let valid6 = false;
+          const _errs21 = errors;
+          if (typeof data3 !== "string") {
+            const err8 = { instancePath: instancePath + "/style/scale", schemaPath: "#/$defs/chartStyle/properties/scale/anyOf/0/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err8];
+            } else {
+              vErrors.push(err8);
+            }
+            errors++;
+          }
+          if (!(data3 === "auto" || data3 === "zero" || data3 === "data")) {
+            const err9 = { instancePath: instancePath + "/style/scale", schemaPath: "#/$defs/chartStyle/properties/scale/anyOf/0/enum", keyword: "enum", params: { allowedValues: schema39.properties.scale.anyOf[0].enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err9];
+            } else {
+              vErrors.push(err9);
+            }
+            errors++;
+          }
+          var _valid2 = _errs21 === errors;
+          valid6 = valid6 || _valid2;
+          const _errs23 = errors;
+          if (typeof data3 !== "string") {
+            const err10 = { instancePath: instancePath + "/style/scale", schemaPath: "#/$defs/chartStyle/properties/scale/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err10];
+            } else {
+              vErrors.push(err10);
+            }
+            errors++;
+          }
+          var _valid2 = _errs23 === errors;
+          valid6 = valid6 || _valid2;
+          if (!valid6) {
+            const err11 = { instancePath: instancePath + "/style/scale", schemaPath: "#/$defs/chartStyle/properties/scale/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+            if (vErrors === null) {
+              vErrors = [err11];
+            } else {
+              vErrors.push(err11);
+            }
+            errors++;
+          } else {
+            errors = _errs20;
+            if (vErrors !== null) {
+              if (_errs20) {
+                vErrors.length = _errs20;
+              } else {
+                vErrors = null;
+              }
+            }
+          }
+        }
+        if (data0.legend !== void 0) {
+          let data4 = data0.legend;
+          const _errs26 = errors;
+          let valid7 = false;
+          const _errs27 = errors;
+          if (typeof data4 !== "string") {
+            const err12 = { instancePath: instancePath + "/style/legend", schemaPath: "#/$defs/chartStyle/properties/legend/anyOf/0/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err12];
+            } else {
+              vErrors.push(err12);
+            }
+            errors++;
+          }
+          if (!(data4 === "auto" || data4 === "show" || data4 === "hide")) {
+            const err13 = { instancePath: instancePath + "/style/legend", schemaPath: "#/$defs/chartStyle/properties/legend/anyOf/0/enum", keyword: "enum", params: { allowedValues: schema39.properties.legend.anyOf[0].enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err13];
+            } else {
+              vErrors.push(err13);
+            }
+            errors++;
+          }
+          var _valid3 = _errs27 === errors;
+          valid7 = valid7 || _valid3;
+          const _errs29 = errors;
+          if (typeof data4 !== "string") {
+            const err14 = { instancePath: instancePath + "/style/legend", schemaPath: "#/$defs/chartStyle/properties/legend/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+          var _valid3 = _errs29 === errors;
+          valid7 = valid7 || _valid3;
+          if (!valid7) {
+            const err15 = { instancePath: instancePath + "/style/legend", schemaPath: "#/$defs/chartStyle/properties/legend/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+            if (vErrors === null) {
+              vErrors = [err15];
+            } else {
+              vErrors.push(err15);
+            }
+            errors++;
+          } else {
+            errors = _errs26;
+            if (vErrors !== null) {
+              if (_errs26) {
+                vErrors.length = _errs26;
+              } else {
+                vErrors = null;
+              }
+            }
+          }
+        }
+        if (data0.grid !== void 0) {
+          let data5 = data0.grid;
+          const _errs32 = errors;
+          let valid8 = false;
+          const _errs33 = errors;
+          if (typeof data5 !== "string") {
+            const err16 = { instancePath: instancePath + "/style/grid", schemaPath: "#/$defs/chartStyle/properties/grid/anyOf/0/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err16];
+            } else {
+              vErrors.push(err16);
+            }
+            errors++;
+          }
+          if (!(data5 === "auto" || data5 === "show" || data5 === "hide")) {
+            const err17 = { instancePath: instancePath + "/style/grid", schemaPath: "#/$defs/chartStyle/properties/grid/anyOf/0/enum", keyword: "enum", params: { allowedValues: schema39.properties.grid.anyOf[0].enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err17];
+            } else {
+              vErrors.push(err17);
+            }
+            errors++;
+          }
+          var _valid4 = _errs33 === errors;
+          valid8 = valid8 || _valid4;
+          const _errs35 = errors;
+          if (typeof data5 !== "string") {
+            const err18 = { instancePath: instancePath + "/style/grid", schemaPath: "#/$defs/chartStyle/properties/grid/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err18];
+            } else {
+              vErrors.push(err18);
+            }
+            errors++;
+          }
+          var _valid4 = _errs35 === errors;
+          valid8 = valid8 || _valid4;
+          if (!valid8) {
+            const err19 = { instancePath: instancePath + "/style/grid", schemaPath: "#/$defs/chartStyle/properties/grid/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+            if (vErrors === null) {
+              vErrors = [err19];
+            } else {
+              vErrors.push(err19);
+            }
+            errors++;
+          } else {
+            errors = _errs32;
+            if (vErrors !== null) {
+              if (_errs32) {
+                vErrors.length = _errs32;
+              } else {
+                vErrors = null;
+              }
+            }
+          }
+        }
+        if (data0.axes !== void 0) {
+          let data6 = data0.axes;
+          const _errs38 = errors;
+          let valid9 = false;
+          const _errs39 = errors;
+          if (typeof data6 !== "string") {
+            const err20 = { instancePath: instancePath + "/style/axes", schemaPath: "#/$defs/chartStyle/properties/axes/anyOf/0/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err20];
+            } else {
+              vErrors.push(err20);
+            }
+            errors++;
+          }
+          if (!(data6 === "show" || data6 === "hide")) {
+            const err21 = { instancePath: instancePath + "/style/axes", schemaPath: "#/$defs/chartStyle/properties/axes/anyOf/0/enum", keyword: "enum", params: { allowedValues: schema39.properties.axes.anyOf[0].enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err21];
+            } else {
+              vErrors.push(err21);
+            }
+            errors++;
+          }
+          var _valid5 = _errs39 === errors;
+          valid9 = valid9 || _valid5;
+          const _errs41 = errors;
+          if (typeof data6 !== "string") {
+            const err22 = { instancePath: instancePath + "/style/axes", schemaPath: "#/$defs/chartStyle/properties/axes/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err22];
+            } else {
+              vErrors.push(err22);
+            }
+            errors++;
+          }
+          var _valid5 = _errs41 === errors;
+          valid9 = valid9 || _valid5;
+          if (!valid9) {
+            const err23 = { instancePath: instancePath + "/style/axes", schemaPath: "#/$defs/chartStyle/properties/axes/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+            if (vErrors === null) {
+              vErrors = [err23];
+            } else {
+              vErrors.push(err23);
+            }
+            errors++;
+          } else {
+            errors = _errs38;
+            if (vErrors !== null) {
+              if (_errs38) {
+                vErrors.length = _errs38;
+              } else {
+                vErrors = null;
+              }
+            }
+          }
+        }
       } else {
-        const err8 = { instancePath: instancePath + "/style", schemaPath: "#/$defs/chartStyle/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        const err24 = { instancePath: instancePath + "/style", schemaPath: "#/$defs/chartStyle/type", keyword: "type", params: { type: "object" }, message: "must be object" };
         if (vErrors === null) {
-          vErrors = [err8];
+          vErrors = [err24];
         } else {
-          vErrors.push(err8);
+          vErrors.push(err24);
         }
         errors++;
       }
     }
   } else {
-    const err9 = { instancePath, schemaPath: "#/allOf/1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    const err25 = { instancePath, schemaPath: "#/allOf/1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
     if (vErrors === null) {
-      vErrors = [err9];
+      vErrors = [err25];
     } else {
-      vErrors.push(err9);
+      vErrors.push(err25);
     }
     errors++;
   }

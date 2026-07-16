@@ -25,7 +25,10 @@ describe('share encode/decode', () => {
   });
 
   it('round-trips chart style and extension metadata without aliasing it', () => {
-    const style = { curve: 'future-curve', points: 'hide', extension: { dense: true } };
+    const style = {
+      curve: 'future-curve', points: 'hide', scale: 'zero', legend: 'show', grid: 'hide', axes: 'hide',
+      extension: { dense: true },
+    };
     const query = savedQuery({ sql: 'SELECT k, v FROM t', panel: {
       cfg: { type: 'line', x: 0, y: [1], series: null, style },
     } });

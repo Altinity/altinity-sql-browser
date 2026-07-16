@@ -1027,11 +1027,13 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(app.root.querySelector('.panel-note').textContent).toContain('re-detected');
   });
 
-  it('applies saved line style through the shared renderer while keeping dashboard grid policy', async () => {
+  it('applies complete saved line style through the shared Dashboard renderer', async () => {
     const charts = [];
     const app = oneFav(vi.fn(async () => chartResult()), { panel: { cfg: {
       type: 'line', x: 0, y: [1], series: null,
-      style: { curve: 'smooth', points: 'hide' },
+      style: {
+        curve: 'smooth', points: 'hide', scale: 'zero', legend: 'show', grid: 'show', axes: 'hide',
+      },
     } } });
     const Base = app.Chart;
     app.Chart = class extends Base { constructor(...args) { super(...args); charts.push(this); } };
@@ -1041,7 +1043,10 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
       tension: 0, stepped: false, cubicInterpolationMode: 'monotone',
       pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8,
     });
-    expect(charts[0].config.options.scales.y.grid.display).toBe(false);
+    expect(charts[0].config.options.plugins.legend.display).toBe(true);
+    expect(charts[0].config.options.scales.y).toMatchObject({
+      display: false, beginAtZero: true, grid: { display: true },
+    });
   });
 
   it('applies the same saved chart field metadata on Dashboard tiles', async () => {

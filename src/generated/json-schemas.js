@@ -307,12 +307,87 @@ export const querySpecV1Schema = {
             }
           ],
           "default": "auto"
+        },
+        "scale": {
+          "title": "Value scale",
+          "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "zero",
+                "data"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "data"
+        },
+        "legend": {
+          "title": "Legend visibility",
+          "description": "auto shows the legend for multiple datasets; show and hide override that behavior.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "auto"
+        },
+        "grid": {
+          "title": "Grid visibility",
+          "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "auto"
+        },
+        "axes": {
+          "title": "Axis visibility",
+          "description": "show renders both axes; hide removes both axes while retaining chart interaction.",
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "show",
+                "hide"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "show"
         }
       },
       "additionalProperties": true,
       "x-altinity-order": [
         "curve",
-        "points"
+        "points",
+        "scale",
+        "legend",
+        "grid",
+        "axes"
       ]
     },
     "chartCfg": {

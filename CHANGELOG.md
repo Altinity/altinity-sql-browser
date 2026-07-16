@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Line and Area Style now offers seven complete presentation presets**
+  (#256). Clean, Smooth, Stepped, Points, Zero-based, Minimal, and Sparkline
+  write the full renderer-independent `panel.cfg.style` object through the
+  existing compact selector; exact advanced combinations that match none of
+  them remain visible as a disabled Custom selection. Scale, legend, grid, and
+  axes settings join curve and point controls in the canonical Spec schema and
+  completion surface, preserve unknown extensions, and render consistently in
+  the workbench, detached views, and Dashboard. Sparkline removes axes, grid,
+  legend, and normal markers while retaining hover targets, tooltips, data,
+  colors, and responsive sizing.
 - **Chart panels now apply saved `panel.fieldConfig` metadata consistently**
   (#254). Exact result-column overrides merge over defaults to drive legend
   display names, per-measure tooltip units/decimals and descriptions, and
