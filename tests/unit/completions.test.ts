@@ -3,6 +3,7 @@ import {
   assembleReferenceData, buildCompletions, completionContext, rankCompletions,
   resolveScopeAlias, wordAt,
 } from '../../src/core/completions.js';
+import type { CompletionItem, CompletionSourceData } from '../../src/core/completions.js';
 import { SQL_KEYWORDS, SQL_FUNCS } from '../../src/core/sql-reference.js';
 
 describe('assembleReferenceData', () => {
@@ -44,7 +45,7 @@ describe('wordAt', () => {
 });
 
 describe('buildCompletions', () => {
-  const ref = {
+  const ref: CompletionSourceData = {
     keywords: ['SELECT'],
     functions: {
       count: { kind: 'agg', sig: 'count([x])', ret: 'UInt64', desc: 'counts' },
@@ -173,7 +174,7 @@ describe('completionContext', () => {
 });
 
 describe('rankCompletions', () => {
-  const items = [
+  const items: CompletionItem[] = [
     { label: 'SELECT', kind: 'keyword' },
     { label: 'sum', kind: 'agg' },
     { label: 'substring', kind: 'fn' },
@@ -225,7 +226,7 @@ describe('resolveScopeAlias', () => {
 });
 
 describe('FROM-scoped rankCompletions (#84)', () => {
-  const items = [
+  const items: CompletionItem[] = [
     { label: 'SELECT', kind: 'keyword' },
     { label: 'events', kind: 'table', parent: 'app' },
     { label: 'users', kind: 'table', parent: 'app' },

@@ -7,11 +7,71 @@ import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
 import { compactType, INLINE_TYPE_MAX } from '../core/type-display.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from './dnd-mime.js';
+import type { AppState } from '../state.js';
+import type { AppDom, ActionsRegistry } from './app.types.js';
+
+// ── The app slice this module reads ─────────────────────────────────────────
+// The narrow slice of the real `app` controller this module reads — not the
+// full ~50-member `App` contract (app.types.ts). A real `App` satisfies this
+// directly, and so does tests/helpers/fake-app.js's minimal `makeApp()`
+// fixture — no cast needed on either side (same convention as tabs.ts's
+// `TabsApp`).
+export interface SchemaApp {
+  dom: Pick<AppDom, 'schemaList'>;
+  state: AppState;
+  actions: Pick<ActionsRegistry, 'insertCreate' | 'insertAtCursor' | 'loadIntoNewTab' | 'loadColumns' | 'openCreateInNewTab'> & {
+    /** `ActionsRegistry.showSchemaGraph`'s own `SchemaFocus` type covers only
+     *  `{db, name?}` (the shape `openNodeDetail`'s node needs) — the real
+     *  runtime payload for a schema-graph draw always carries `kind` too
+     *  (app.js only reads `focus.db` and forwards `focus` verbatim to
+     *  ch.loadSchemaLineage/loadLineageTransitive; this module — the only
+     *  production caller, below — always sends `{kind, db}`). Widened locally
+     *  rather than touching the shared app.types.ts contract. */
+    showSchemaGraph(focus: { kind: string; db: string }): Promise<void> | void;
+  };
+  /** Same-row double-click tracking (see `isDoubleClick` below) — own,
+   *  module-private mutable state stashed on the app instance (per instance →
+   *  tests stay isolated) rather than a dedicated signal. */
+  _schemaClick?: { key: string; at: number } | null;
+}
+
+// ── The schema-tree cache shape (`app.state.schema.value`) ──────────────────
+// `state.ts` keeps `schema: Signal<unknown[] | null>` deliberately loose (the
+// shape is decided by ch-client.ts's `loadSchema`/`loadColumns`, still .js);
+// this pins exactly the fields this tree reads/writes. Mirrors
+// core/from-scope.ts's own (looser) `SchemaDb`/`SchemaTable`/`SchemaColumn` —
+// the completion cache's view of the same signal.
+
+/** One column loaded for an expanded table (a system.columns row, as cached
+ *  by ch-client.js's loadColumns — still .js). */
+interface SchemaColumnEntry {
+  name: string;
+  type?: string;
+  comment?: string;
+  [k: string]: unknown;
+}
+
+/** One table entry as cached in `app.state.schema`: ch-client.ts's
+ *  `loadSchema()` seeds `columns: null`; `loadColumns()` (app.js) sets it to
+ *  `'loading'` mid-fetch, then a real array once resolved. */
+interface SchemaTableEntry {
+  name: string;
+  total_rows: number | string;
+  comment: string;
+  columns: SchemaColumnEntry[] | 'loading' | null;
+}
+
+/** One database group, as `app.state.schema.value` holds it. */
+interface SchemaDbEntry {
+  db: string;
+  comment: string;
+  tables: SchemaTableEntry[];
+}
 
 // Copy-on-write expand toggle: returns a new Set with `key` added or removed, so
 // assigning it to the `expanded` signal triggers the repaint effect (signals
 // react to reference changes, never in-place Set mutation).
-const toggleKey = (set, key) => {
+const toggleKey = (set: Set<string>, key: string): Set<string> => {
   const next = new Set(set);
   if (!next.delete(key)) next.add(key);
   return next;
@@ -22,24 +82,33 @@ const toggleKey = (set, key) => {
 // row. `stopPropagation` keeps an ancestor row from also contributing a
 // payload for the same gesture (db/table rows use `lineageDrag` below
 // instead, since they carry more than one MIME on the row itself).
-const dragTextProps = (mime, text) => ({
+const dragTextProps = (mime: string, text: string): { draggable: string; ondragstart: (e: DragEvent) => void } => ({
   draggable: 'true',
-  ondragstart: (e) => {
+  ondragstart: (e: DragEvent) => {
     e.stopPropagation();
-    e.dataTransfer.setData(mime, text);
-    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer!.setData(mime, text);
+    e.dataTransfer!.effectAllowed = 'copy';
   },
 });
 
 // Database/table rows carry BOTH the identifier (for an editor drop) and a
 // schema-graph payload (for a results-pane drop → lineage graph).
-const lineageDrag = (ident, payload) => ({
+const lineageDrag = (
+  ident: string, payload: Record<string, unknown>,
+): { draggable: string; ondragstart: (e: DragEvent) => void } => ({
   draggable: 'true',
-  ondragstart: (e) => {
-    e.dataTransfer.setData(IDENT_MIME, ident);
-    e.dataTransfer.setData(SCHEMA_GRAPH_MIME, JSON.stringify(payload));
+  ondragstart: (e: DragEvent) => {
+    e.dataTransfer!.setData(IDENT_MIME, ident);
+    e.dataTransfer!.setData(SCHEMA_GRAPH_MIME, JSON.stringify(payload));
   },
 });
+
+// formatRows takes `number | null | undefined`; a total_rows value carried as
+// a numeric string (some JSON shapes) is coerced the same way the old bare
+// arithmetic-free pass-through effectively was — this never changes which
+// values are accepted, only satisfies the stricter parameter type. `Number()`
+// on an already-numeric value is a no-op, so this needs no branch.
+const numberish = (v: number | string): number => Number(v);
 
 const OPEN_ROTATE = 'rotate(0deg)';
 const CLOSED_ROTATE = 'rotate(-90deg)';
@@ -47,11 +116,19 @@ const CLOSED_ROTATE = 'rotate(-90deg)';
 // Merge a base class ('label'/'meta') with an optional extra-props object that
 // may itself carry a `class` (e.g. the column drag classes) — keeping the base
 // class rather than letting the spread silently replace it.
-const spanProps = (base, extra) => {
+const spanProps = (base: string, extra?: Record<string, unknown>): Record<string, unknown> => {
   if (!extra) return { class: base };
   const { class: extraClass, ...rest } = extra;
-  return { class: extraClass ? base + ' ' + extraClass : base, ...rest };
+  return { class: extraClass ? base + ' ' + String(extraClass) : base, ...rest };
 };
+
+/** `treeRow`'s options bag. */
+interface TreeRowOpts {
+  expanded?: boolean | null;
+  iconColor?: string;
+  labelProps?: Record<string, unknown>;
+  metaProps?: Record<string, unknown>;
+}
 
 // The four spans every tree row shares: chevron, icon, label, meta. `expanded`
 // null → an empty chevron (column rows); true/false → the same down-pointing
@@ -60,7 +137,10 @@ const spanProps = (base, extra) => {
 // `labelProps`/`metaProps` let a caller (column rows, #186) turn either span
 // into its own independent drag target without every row duplicating this
 // structure — db/table callers pass neither and get the plain spans as before.
-const treeRow = (icon, label, meta, { expanded, iconColor, labelProps, metaProps } = {}) => [
+const treeRow = (
+  icon: Node, label: string, meta: string,
+  { expanded, iconColor, labelProps, metaProps }: TreeRowOpts = {},
+): HTMLSpanElement[] => [
   h('span', {
     class: 'chev',
     style: expanded == null ? null : { transform: expanded ? OPEN_ROTATE : CLOSED_ROTATE },
@@ -78,9 +158,9 @@ const treeRow = (icon, label, meta, { expanded, iconColor, labelProps, metaProps
 // pre-toggle rotation and force a layout read so the browser commits that
 // paint before restoring the target rotation, giving the transition an actual
 // two-frame change to animate across.
-function flipChevron(list, key, wasOpen) {
-  const row = Array.from(list.children).find((el) => el.dataset.key === key);
-  const chev = row.querySelector('.chev');
+function flipChevron(list: HTMLElement, key: string, wasOpen: boolean): void {
+  const row = (Array.from(list.children) as HTMLElement[]).find((el) => el.dataset.key === key)!;
+  const chev = row.querySelector<HTMLElement>('.chev')!;
   chev.style.transform = wasOpen ? OPEN_ROTATE : CLOSED_ROTATE;
   void chev.offsetHeight; // force layout so the "from" rotation actually commits
   chev.style.transform = wasOpen ? CLOSED_ROTATE : OPEN_ROTATE;
@@ -95,7 +175,7 @@ function flipChevron(list, key, wasOpen) {
 // on the same row as the double. Single click stays instant; the double runs in
 // addition to that first click's expand.
 const DBLCLICK_MS = 300;
-function isDoubleClick(app, key) {
+function isDoubleClick(app: SchemaApp, key: string): boolean {
   const now = Date.now();
   const last = app._schemaClick;
   const dbl = !!last && last.key === key && now - last.at < DBLCLICK_MS;
@@ -103,13 +183,13 @@ function isDoubleClick(app, key) {
   return dbl;
 }
 
-export function renderSchema(app) {
+export function renderSchema(app: SchemaApp): void {
   const list = app.dom.schemaList;
   if (!list) return;
   list.replaceChildren();
   const state = app.state;
   const schemaError = state.schemaError.value;
-  const schema = state.schema.value;
+  const schema = state.schema.value as SchemaDbEntry[] | null;
 
   if (schemaError) {
     list.appendChild(h('div', { class: 'schema-empty', style: { color: 'var(--error-fg)' } },
@@ -131,11 +211,11 @@ export function renderSchema(app) {
   // leaving only the tap-native click/double-tap behaviour. The schema effect
   // in app.js reads isMobile too, so crossing the breakpoint repaints the tree.
   const mobile = state.isMobile.value;
-  const dragAttrs = (props) => (mobile ? {} : props);
-  const hoverTitle = (text) => (mobile ? {} : { title: text });
+  const dragAttrs = (props: Record<string, unknown>): Record<string, unknown> => (mobile ? {} : props);
+  const hoverTitle = (text: string): Record<string, unknown> => (mobile ? {} : { title: text });
 
   const filter = state.schemaFilter.value.trim().toLowerCase();
-  const matches = (s) => !filter || s.toLowerCase().includes(filter);
+  const matches = (s: string): boolean => !filter || s.toLowerCase().includes(filter);
 
   // Search cascades through the db → table → column hierarchy (#208): a
   // direct match at one level pulls in its ancestors for context and, for a
@@ -180,7 +260,7 @@ export function renderSchema(app) {
       class: 'tree-row bold' + (filter && dbMatch ? ' match' : ''),
       'data-key': dbKey,
       ...hoverTitle(db.comment || 'Click to expand · double-click to insert · shift-click for SHOW CREATE · drag to Data for Schema'),
-      onclick: (e) => {
+      onclick: (e: MouseEvent) => {
         if (e.shiftKey) { app.actions.insertCreate('DATABASE ' + qdb); return; }
         if (isDoubleClick(app, dbKey)) { app.actions.insertAtCursor(qdb); return; }
         state.expanded.value = toggleKey(state.expanded.value, dbKey);
@@ -208,7 +288,7 @@ export function renderSchema(app) {
       const isOpen = state.expanded.value.has(tbKey);
       const tbComment = (tb.comment || '').trim();
       const title = tbComment
-        ? tbComment + ' · ' + formatRows(tb.total_rows) + ' rows'
+        ? tbComment + ' · ' + formatRows(numberish(tb.total_rows)) + ' rows'
         : 'Click to expand · double-click SELECT * in new tab · shift-click SHOW CREATE in new tab · drag to insert name';
       // Unlike the db case above, this table's own forcing term isn't always
       // true just because a search is active — a table only included via its
@@ -222,7 +302,7 @@ export function renderSchema(app) {
         'data-key': tbKey,
         ...hoverTitle(title),
         ...dragAttrs(lineageDrag(qname, { kind: 'table', db: db.db, table: tb.name })),
-        onclick: (e) => {
+        onclick: (e: MouseEvent) => {
           if (e.shiftKey) { app.actions.openCreateInNewTab(qname, key); return; }
           if (isDoubleClick(app, tbKey)) { app.actions.loadIntoNewTab(key, 'SELECT * FROM ' + qname + ' LIMIT 100'); return; }
           const willOpen = !state.expanded.value.has(tbKey);
@@ -239,7 +319,7 @@ export function renderSchema(app) {
           if (!tableCascadeForced) flipChevron(list, tbKey, isOpen);
         },
       },
-        ...treeRow(Icon.table(), tb.name, formatRows(tb.total_rows), { expanded: tableShownOpen, iconColor: 'var(--accent)' }),
+        ...treeRow(Icon.table(), tb.name, formatRows(numberish(tb.total_rows)), { expanded: tableShownOpen, iconColor: 'var(--accent)' }),
       ));
 
       if (!tableShownOpen) continue;
@@ -267,7 +347,7 @@ export function renderSchema(app) {
           // compacted summary (#177) — followed by the comment or usage hints.
           ...hoverTitle((c.type ? c.type + '\n' : '') + ((c.comment && c.comment.trim())
             || ('Double-click or drag to insert ' + c.name + ' · shift-click for ' + c.name + '::type'))),
-          onclick: (e) => {
+          onclick: (e: MouseEvent) => {
             e.stopPropagation();
             if (e.shiftKey) { app.actions.insertAtCursor(quoteIdent(c.name) + '::' + c.type); return; }
             if (isDoubleClick(app, 'col:' + key + '.' + c.name)) app.actions.insertAtCursor(quoteIdent(c.name));

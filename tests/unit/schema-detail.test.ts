@@ -1,20 +1,21 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { openDetailPane } from '../../src/ui/schema-detail.js';
+import type { SchemaDetailApp, DetailNode, NodeDetail } from '../../src/ui/schema-detail.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
 
 // openDetailPane mounts into the live overlay panel — create a stand-in.
-function mountPanel() {
+function mountPanel(): HTMLDivElement {
   const p = document.createElement('div');
   p.className = 'graph-overlay-panel';
-  p.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 });
+  p.getBoundingClientRect = () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect);
   document.body.appendChild(p);
   return p;
 }
 // A graph card stand-in (the rich full-view nodes carry data-node-id + a rect).
 const SVG_NS = 'http://www.w3.org/2000/svg';
-function mountCard(id, { rect = true } = {}) {
-  const g = document.createElementNS(SVG_NS, 'g');
+function mountCard(id: string, { rect = true }: { rect?: boolean } = {}): SVGGElement {
+  const g = document.createElementNS(SVG_NS, 'g') as SVGGElement;
   g.setAttribute('class', 'eg-card');
   g.setAttribute('data-node-id', id);
   if (rect) {
@@ -26,9 +27,9 @@ function mountCard(id, { rect = true } = {}) {
   document.body.appendChild(g);
   return g;
 }
-const APP = (over = {}) => ({ document, actions: {}, ...over });
-const NODE = { id: 'a.t', db: 'a', name: 't', kind: 'table' };
-const DETAIL = {
+const APP = (over: Partial<SchemaDetailApp> = {}): SchemaDetailApp => ({ document, ...over });
+const NODE: DetailNode = { id: 'a.t', db: 'a', name: 't', kind: 'table' };
+const DETAIL: NodeDetail = {
   columns: [
     { name: 'id', type: 'UInt64', codec: 'LZ4', is_in_primary_key: 1, compressed: 1024, uncompressed: 4096 },
     { name: 'v', type: 'String', compressed: 50, uncompressed: 100 },
@@ -40,7 +41,7 @@ const DETAIL = {
 describe('openDetailPane', () => {
   it('mounts a pane with columns + key roles, partitions, and DDL', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL);
+    const pane = openDetailPane(APP(), NODE, DETAIL)!;
     expect(pane).not.toBeNull();
     expect(document.querySelector('.schema-detail')).not.toBeNull();
     const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
@@ -51,12 +52,12 @@ describe('openDetailPane', () => {
     const roleCells = [...pane.querySelectorAll('.schema-detail-roles')].map((e) => e.textContent);
     expect(roleCells[0]).toBe('PK');
     expect(roleCells[1]).toBe('');
-    expect(pane.querySelector('.schema-detail-ddl').textContent).toContain('CREATE TABLE');
+    expect(pane.querySelector('.schema-detail-ddl')!.textContent).toContain('CREATE TABLE');
   });
 
   it('has no action button in the head (just the ident + kind)', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL);
+    const pane = openDetailPane(APP(), NODE, DETAIL)!;
     // the only button is the ✕ close affordance — no "Insert SHOW CREATE" etc.
     const labels = [...pane.querySelectorAll('.schema-detail-head button')];
     expect(labels).toHaveLength(0);
@@ -70,8 +71,8 @@ describe('openDetailPane', () => {
     const ring = card.querySelector('.eg-card-ring');
     expect(ring).not.toBeNull();
     expect(card.firstChild).toBe(ring);            // drawn behind the card content
-    expect(ring.getAttribute('x')).toBe('7');      // node x 10 − 3
-    expect(ring.getAttribute('width')).toBe('106'); // node w 100 + 6
+    expect(ring!.getAttribute('x')).toBe('7');      // node x 10 − 3
+    expect(ring!.getAttribute('width')).toBe('106'); // node w 100 + 6
   });
 
   it('moves the ring to the new card when another node is opened', () => {
@@ -98,8 +99,8 @@ describe('openDetailPane', () => {
   it('the ✕ button removes just the pane and clears the selection ring', () => {
     mountPanel();
     const card = mountCard('a.t');
-    const pane = openDetailPane(APP(), NODE, DETAIL);
-    pane.querySelector('.schema-detail-close').dispatchEvent(new Event('click', { bubbles: true }));
+    const pane = openDetailPane(APP(), NODE, DETAIL)!;
+    pane.querySelector('.schema-detail-close')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.querySelector('.schema-detail')).toBeNull();
     expect(card.classList.contains('eg-card--selected')).toBe(false);
     expect(card.querySelector('.eg-card-ring')).toBeNull();
@@ -107,33 +108,33 @@ describe('openDetailPane', () => {
 
   it('dragging the handle resizes the pane, clamped to both bounds', () => {
     const panel = mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL);
-    const handle = pane.querySelector('.schema-detail-handle');
+    const pane = openDetailPane(APP(), NODE, DETAIL)!;
+    const handle = pane.querySelector('.schema-detail-handle')!;
     handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(handle.classList.contains('dragging')).toBe(true);
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 0, bubbles: true })); // tall → clamp to max
-    expect(pane.style.flexBasis).toBe('500px'); // height(600) - TOP_MARGIN(100)
+    expect((pane as HTMLElement).style.flexBasis).toBe('500px'); // height(600) - TOP_MARGIN(100)
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 590, bubbles: true })); // short → clamp to min
-    expect(pane.style.flexBasis).toBe('90px'); // MIN_H
+    expect((pane as HTMLElement).style.flexBasis).toBe('90px'); // MIN_H
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     expect(handle.classList.contains('dragging')).toBe(false);
     // after mouseup the move listener is gone — a stray move does nothing
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 100, bubbles: true }));
-    expect(pane.style.flexBasis).toBe('90px');
+    expect((pane as HTMLElement).style.flexBasis).toBe('90px');
     void panel;
   });
 
   it('closing the pane mid-drag clears the highlight and document listeners', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL);
-    const handle = pane.querySelector('.schema-detail-handle');
+    const pane = openDetailPane(APP(), NODE, DETAIL)!;
+    const handle = pane.querySelector('.schema-detail-handle')!;
     handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(handle.classList.contains('dragging')).toBe(true);
 
-    pane.querySelector('.schema-detail-close').dispatchEvent(new Event('click', { bubbles: true }));
+    pane.querySelector('.schema-detail-close')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(handle.classList.contains('dragging')).toBe(false);
     document.dispatchEvent(new MouseEvent('mousemove', { clientY: 200, bubbles: true }));
-    expect(pane.style.flexBasis).toBe('');
+    expect((pane as HTMLElement).style.flexBasis).toBe('');
   });
 
   it('re-opening for another node replaces the pane, not stacks it', () => {
@@ -145,11 +146,11 @@ describe('openDetailPane', () => {
 
   it('omits the partitions and DDL sections when absent; tolerates a kind-less node', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), { id: 'a.v', db: 'a', name: 'v' }, { columns: [], partitions: [], ddl: '' });
+    const pane = openDetailPane(APP(), { id: 'a.v', db: 'a', name: 'v' }, { columns: [], partitions: [], ddl: '' })!;
     const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
     expect(heads).toEqual(['Columns (0)']); // no Partitions / DDL headings
     expect(pane.querySelector('.schema-detail-ddl')).toBeNull();
-    expect(pane.querySelector('.schema-detail-kind').textContent).toBe('table'); // kind fallback
+    expect(pane.querySelector('.schema-detail-kind')!.textContent).toBe('table'); // kind fallback
   });
 
   it('mounts into the passed targetDoc (the schema tab) when given', () => {
@@ -157,7 +158,7 @@ describe('openDetailPane', () => {
     const panel = childDoc.createElement('div');
     panel.className = 'graph-overlay-panel';
     childDoc.body.appendChild(panel);
-    const pane = openDetailPane({ document, actions: {} }, NODE, DETAIL, childDoc);
+    const pane = openDetailPane({ document }, NODE, DETAIL, childDoc)!;
     expect(pane.ownerDocument).toBe(childDoc); // built in the child tab's document
     expect(childDoc.querySelector('.schema-detail')).not.toBeNull();
     expect(document.querySelector('.schema-detail')).toBeNull(); // not in the main document
@@ -165,20 +166,20 @@ describe('openDetailPane', () => {
 
   it('falls back to the global document and tolerates missing columns/partitions', () => {
     mountPanel();
-    const pane = openDetailPane({ actions: {} }, NODE, { ddl: '' }); // no document/detailDocument
+    const pane = openDetailPane({}, NODE, { ddl: '' })!; // no document/detailDocument
     expect(pane).not.toBeNull();
     expect([...pane.querySelectorAll('h4')].map((e) => e.textContent)).toEqual(['Columns (0)']);
   });
 
   it('shows the loading spinner placeholder for a columns:"loading" sentinel, no columns/partitions/DDL', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, { columns: 'loading' });
+    const pane = openDetailPane(APP(), NODE, { columns: 'loading' })!;
     expect(pane.querySelector('.placeholder.starting')).not.toBeNull();
-    expect(pane.querySelector('.placeholder.starting').textContent).toContain('Loading table…');
+    expect(pane.querySelector('.placeholder.starting')!.textContent).toContain('Loading table…');
     expect(pane.querySelector('.schema-detail-cols')).toBeNull();
     expect(pane.querySelectorAll('h4')).toHaveLength(0);
     // the head (ident + kind) still shows immediately
-    expect(pane.querySelector('.schema-detail-head').textContent).toContain('a.t');
+    expect(pane.querySelector('.schema-detail-head')!.textContent).toContain('a.t');
   });
 
   it('returns null when no overlay is open', () => {
@@ -187,7 +188,7 @@ describe('openDetailPane', () => {
 
   it('shows the table comment next to the kind badge, and each column\'s comment + % of original size remaining', () => {
     mountPanel();
-    const detail = {
+    const detail: NodeDetail = {
       ...DETAIL,
       comment: 'raw ingest table',
       columns: [
@@ -195,37 +196,37 @@ describe('openDetailPane', () => {
         { name: 'v', type: 'String', compressed: 50, uncompressed: 100 }, // no comment
       ],
     };
-    const pane = openDetailPane(APP(), NODE, detail);
-    expect(pane.querySelector('.schema-detail-head .schema-detail-comment').textContent).toBe('raw ingest table');
+    const pane = openDetailPane(APP(), NODE, detail)!;
+    expect(pane.querySelector('.schema-detail-head .schema-detail-comment')!.textContent).toBe('raw ingest table');
     const commentCells = [...pane.querySelectorAll('.schema-detail-cols .schema-detail-comment')];
     expect(commentCells).toHaveLength(1); // only the commented column gets the class
     expect(commentCells[0].textContent).toBe('the primary key');
     expect(commentCells[0].getAttribute('title')).toBe('the primary key');
     // "size %" is how much of the ORIGINAL (uncompressed) size is left, not how much was saved
-    const ratioCells = [...pane.querySelectorAll('.schema-detail-cols td.num')].filter((td) => td.textContent.endsWith('%'));
+    const ratioCells = [...pane.querySelectorAll('.schema-detail-cols td.num')].filter((td) => td.textContent!.endsWith('%'));
     expect(ratioCells.map((td) => td.textContent)).toEqual(['25%', '50%']);
   });
 
   it('omits the header comment span entirely when the table has none (no stray flex gap)', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL); // DETAIL carries no `comment`
+    const pane = openDetailPane(APP(), NODE, DETAIL)!; // DETAIL carries no `comment`
     expect(pane.querySelector('.schema-detail-head .schema-detail-comment')).toBeNull();
   });
 
   it('renders an empty (but present) comment cell for a column with none, and caps a long comment with a full-text tooltip', () => {
     mountPanel();
     const longComment = 'a '.repeat(60).trim(); // well over MAX_COL_COMMENT
-    const detail = {
+    const detail: NodeDetail = {
       ...DETAIL,
       columns: [
         { name: 'v', type: 'String', comment: longComment, compressed: 50, uncompressed: 100 },
         { name: 'w', type: 'String', compressed: 50, uncompressed: 100 }, // no comment at all
       ],
     };
-    const pane = openDetailPane(APP(), NODE, detail);
-    const cell = pane.querySelector('.schema-detail-cols .schema-detail-comment');
-    expect(cell.textContent.length).toBeLessThan(longComment.length);
-    expect(cell.textContent.endsWith('…')).toBe(true);
+    const pane = openDetailPane(APP(), NODE, detail)!;
+    const cell = pane.querySelector('.schema-detail-cols .schema-detail-comment')!;
+    expect(cell.textContent!.length).toBeLessThan(longComment.length);
+    expect(cell.textContent!.endsWith('…')).toBe(true);
     expect(cell.getAttribute('title')).toBe(longComment); // full text always on hover
     // every row still gets a <td> for the comment column, even with nothing to show
     const rows = [...pane.querySelectorAll('.schema-detail-cols tbody tr')];
@@ -236,14 +237,14 @@ describe('openDetailPane', () => {
 
   it('shows a Data-skipping indexes (N) section with every index and the required fields, type_full preferred (#179)', () => {
     mountPanel();
-    const detail = {
+    const detail: NodeDetail = {
       ...DETAIL,
       indexes: [
         { name: 'event_time_index', expr: 'event_time', type: 'minmax', granularity: 1, compressed: 128 }, // no type_full → falls back to type
         { name: 'query_id_index', expr: 'query_id', type: 'bloom_filter', type_full: 'bloom_filter(0.01)', granularity: 4, compressed: 4096 },
       ],
     };
-    const pane = openDetailPane(APP(), NODE, detail);
+    const pane = openDetailPane(APP(), NODE, detail)!;
     const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
     expect(heads).toContain('Data-skipping indexes (2)');
     // the section lives right after Columns, before Partitions
@@ -267,54 +268,54 @@ describe('openDetailPane', () => {
     mountPanel();
     const longExpr = 'multiIf(' + 'x = 1, '.repeat(20) + '0)';
     const longType = 'tokenbf_v1(' + '10240, '.repeat(10) + '3, 0)';
-    const detail = {
+    const detail: NodeDetail = {
       ...DETAIL,
       indexes: [
         { name: 'a_rather_long_data_skipping_index_name_here', expr: longExpr, type: 'tokenbf_v1', type_full: longType }, // no granularity
       ],
     };
-    const pane = openDetailPane(APP(), NODE, detail);
+    const pane = openDetailPane(APP(), NODE, detail)!;
     const idxTable = pane.querySelectorAll('.schema-detail-cols')[1];
-    const [nameCell, exprCell, typeCell, granCell] = idxTable.querySelector('tbody tr').children;
-    expect(nameCell.textContent.endsWith('…')).toBe(true);
+    const [nameCell, exprCell, typeCell, granCell] = idxTable.querySelector('tbody tr')!.children;
+    expect(nameCell.textContent!.endsWith('…')).toBe(true);
     expect(nameCell.getAttribute('title')).toBe('a_rather_long_data_skipping_index_name_here');
-    expect(exprCell.textContent.endsWith('…')).toBe(true);
+    expect(exprCell.textContent!.endsWith('…')).toBe(true);
     expect(exprCell.getAttribute('title')).toBe(longExpr);
-    expect(typeCell.textContent.endsWith('…')).toBe(true);
+    expect(typeCell.textContent!.endsWith('…')).toBe(true);
     expect(typeCell.getAttribute('title')).toBe(longType);
     expect(granCell.textContent).toBe(''); // missing granularity degrades to empty, not "undefined"
   });
 
   it('omits the index section entirely for a table with no data-skipping indexes (#179)', () => {
     mountPanel();
-    const pane = openDetailPane(APP(), NODE, DETAIL); // DETAIL has no `indexes`
+    const pane = openDetailPane(APP(), NODE, DETAIL)!; // DETAIL has no `indexes`
     const heads = [...pane.querySelectorAll('h4')].map((e) => e.textContent);
-    expect(heads.some((t) => t.startsWith('Data-skipping indexes'))).toBe(false);
+    expect(heads.some((t) => t!.startsWith('Data-skipping indexes'))).toBe(false);
     // only Columns + Partitions tables — no index table between them
     expect(pane.querySelectorAll('.schema-detail-cols')).toHaveLength(2);
     // an explicitly empty index list is treated the same as none
-    const paneEmpty = openDetailPane(APP(), NODE, { ...DETAIL, indexes: [] });
-    expect([...paneEmpty.querySelectorAll('h4')].map((e) => e.textContent).some((t) => t.startsWith('Data-skipping indexes'))).toBe(false);
+    const paneEmpty = openDetailPane(APP(), NODE, { ...DETAIL, indexes: [] })!;
+    expect([...paneEmpty.querySelectorAll('h4')].map((e) => e.textContent).some((t) => t!.startsWith('Data-skipping indexes'))).toBe(false);
   });
 
   it('compacts an unbounded column type and caps a long codec, full text on each cell title (#177)', () => {
     mountPanel();
     const enumType = "Enum16('queued' = 1, 'started' = 2, 'running' = 3, 'done' = 4, 'failed' = 5, 'cancelled' = 6)";
     const longCodec = 'CODEC(Delta(8), Gorilla, LZ4HC(9), ZSTD(22), DoubleDelta, T64)';
-    const detail = {
+    const detail: NodeDetail = {
       ...DETAIL,
       columns: [
         { name: 'state', type: enumType, codec: longCodec, compressed: 1, uncompressed: 2 },
         { name: 'id', type: 'UInt64', compressed: 1, uncompressed: 2 }, // short type, no codec
       ],
     };
-    const pane = openDetailPane(APP(), NODE, detail);
+    const pane = openDetailPane(APP(), NODE, detail)!;
     const rows = [...pane.querySelectorAll('.schema-detail-cols tbody tr')];
     const [, typeCell, codecCell] = rows[0].children;
     expect(typeCell.textContent).toBe('Enum16(6 values)'); // summary, never partial member text
     expect(typeCell.getAttribute('title')).toBe(enumType); // full declared type on hover
-    expect(codecCell.textContent.endsWith('…')).toBe(true);
-    expect(codecCell.textContent.length).toBeLessThan(longCodec.length);
+    expect(codecCell.textContent!.endsWith('…')).toBe(true);
+    expect(codecCell.textContent!.length).toBeLessThan(longCodec.length);
     expect(codecCell.getAttribute('title')).toBe(longCodec);
     // a short type passes through; an absent codec still renders its (empty) cell
     expect(rows[1].children[1].textContent).toBe('UInt64');

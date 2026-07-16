@@ -6,6 +6,15 @@
 import { h } from './dom.js';
 import { truncationFooter } from './grid-render.js';
 import { logRowDisplay } from '../core/logs.js';
+import type { LogColumn, LogsShape } from '../core/logs.js';
+
+/** `renderLogs`'s argument bag. */
+export interface RenderLogsArgs {
+  columns: LogColumn[];
+  rows: unknown[][];
+  shape: LogsShape;
+  cap: number;
+}
 
 /**
  * Render a `.dash-logs` element: one `div.log-row.log-<levelClass>` per row
@@ -15,7 +24,7 @@ import { logRowDisplay } from '../core/logs.js';
  * (omitted when a row has none). When `rows.length > cap`, appends the same
  * in-body "+N more rows truncated for display" footer as renderGrid.
  */
-export function renderLogs({ columns, rows, shape, cap }) {
+export function renderLogs({ columns, rows, shape, cap }: RenderLogsArgs): HTMLDivElement {
   const box = h('div', { class: 'dash-logs' });
   rows.slice(0, cap).forEach((row) => {
     const d = logRowDisplay(columns, row, shape);

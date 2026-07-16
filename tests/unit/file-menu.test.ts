@@ -3,26 +3,210 @@ import { libraryControls, renderLibraryTitle, openFileMenu } from '../../src/ui/
 import { queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { AppState } from '../../src/state.js';
+import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
-const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
-const key = (el, k, mods = {}) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...mods }));
-const item = (re) => [...document.querySelectorAll('.fm-item')].find((b) => re.test(b.textContent));
-const toast = () => document.querySelector('.share-toast').textContent;
-const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
+// ── Typed test-app scaffolding ───────────────────────────────────────────────
+// tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
+// double that predates ADR-0002's `App` contract (app.types.ts) — it
+// implements the handful of members this file's render path actually reads,
+// not the whole ~50-member interface (out of scope here — fake-app.js isn't
+// one of this change's files; same convention as saved-history.test.ts /
+// dashboard.test.ts / panels.test.ts). `appDefaults` fills every member
+// `makeApp()` doesn't provide with an inert placeholder (never read by the
+// paths this file exercises); spreading `...app` OVER those defaults (not
+// `Object.assign`'s `T & U` intersection) lets a later key's REAL, often
+// Mock-typed, shape win on both value AND type.
+type FakeApp = ReturnType<typeof makeApp>;
+
+const appDefaults: App = {
+  state: {} as AppState,
+  dom: {},
+  root: null,
+  document,
+  token: null,
+  refreshToken: null,
+  sqlEditor: {} as App['sqlEditor'],
+  specEditor: {} as App['specEditor'],
+  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
+  specValidators: { validate: () => [] },
+  specCompletionSources: [],
+  Chart: undefined,
+  cssVar: () => '',
+  Dagre: undefined,
+  openWindow: () => null,
+  stylesText: '',
+  faviconHref: '',
+  toggleTheme: () => {},
+  chart: undefined,
+  host: () => '',
+  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
+  isSignedIn: () => true,
+  email: () => '',
+  chUsername: () => '',
+  authMode: 'basic',
+  chAuth: 'basic',
+  basicUserClaim: 'sub',
+  idpId: null,
+  hostHint: '',
+  basePath: '',
+  setTokens: () => {},
+  loadConfig: async () => ({}),
+  loadIdps: async () => ({ idps: [] }),
+  selectIdp: () => {},
+  ensureConfig: async () => null,
+  ensureFreshToken: async () => true,
+  chCtx: {
+    fetch, origin: '', authConfirmed: true,
+    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
+  },
+  showLogin: () => {},
+  signOut: () => {},
+  receiveAuthHandoff: async () => false,
+  canExport: () => false,
+  canExportScript: () => false,
+  showSaveFilePicker: null,
+  showDirectoryPicker: null,
+  isSecureContext: true,
+  FileReader: globalThis.FileReader,
+  saveJSON: () => {},
+  saveStr: () => {},
+  savePref: () => {},
+  saveVarValues: () => {},
+  saveFilterActive: () => {},
+  saveVarRecent: () => {},
+  saveVarRecentDisabled: () => {},
+  recordBoundParams: () => {},
+  clearVarRecent: () => {},
+  clearAllVarRecent: () => {},
+  recordHistory: () => {},
+  downloadFile: () => {},
+  editingLibrary: false,
+  loadVersion: async () => {},
+  loadSchema: async () => {},
+  loadReference: async () => {},
+  refData: { functions: {}, keywordDocs: {} },
+  completions: {},
+  rebuildCompletions: () => {},
+  docCache: new Map(),
+  entityDoc: async () => null,
+  updateBanner: () => {},
+  wallNow: () => 0,
+  now: () => 0,
+  elapsedMs: () => 0,
+  tickElapsed: () => {},
+  runReadInto: async (result) => result,
+  setRunBtn: () => {},
+  renderVarStrip: () => {},
+  setExportBtn: () => {},
+  specBlocked: () => false,
+  updateSaveBtn: () => {},
+  evaluateSpecDraft: () => ({}),
+  revalidateSpecDrafts: () => {},
+  revealFirstSpecError: () => {},
+  registerSpecValidator: () => () => {},
+  activateInvalidSpecDraft: () => {},
+  openSavePopover: () => {},
+  openUserMenu: () => {},
+  renderApp: () => {},
+  renderDashboard: () => {},
+  openDashboard: () => {},
+  actions: {} as ActionsRegistry,
+};
+
+/** A `FakeApp` fixture, widened to satisfy `App` for this file's render path
+ *  while keeping every concrete `makeApp()` mock directly readable/spyable
+ *  off the SAME object (same convention as saved-history.test.ts). */
+function withApp(base: FakeApp) {
+  const merged = {
+    ...appDefaults, ...base, chart: base.chart ?? undefined,
+    dom: base.dom as App['dom'],
+    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
+    // fake-app.js's own `actions` predates ActionsRegistry's `openDashboard` —
+    // same "keep the rest, let fake-app.js's real spies win" merge; every
+    // test that clicks "Open as dashboard" overrides it with its own vi.fn().
+    actions: { ...appDefaults.actions, ...base.actions },
+  };
+  const check: App = merged;
+  void check;
+  return merged;
+}
+
+// tests/helpers/saved-query.js is plain JS with no default for its `id`
+// param; TS's inference over its destructured signature therefore omits `id`
+// from the parameter type it derives, rejecting every fixture literal below
+// with an excess-property error. Pin the honest fixture shape it accepts
+// (same convention as saved-history.test.ts).
+interface SavedQueryFixture {
+  id: string;
+  sql?: string;
+  name?: string;
+  favorite?: boolean;
+  description?: string;
+  view?: string;
+  panel?: unknown;
+  dashboard?: unknown;
+  spec?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+const savedQueryFixture = savedQuery as (fixture: SavedQueryFixture) => SavedQueryV2;
+
+const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
+const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, ...mods }));
+const item = (re: RegExp): HTMLElement | undefined =>
+  [...document.querySelectorAll<HTMLElement>('.fm-item')].find((b) => re.test(b.textContent || ''));
+const toast = (): string | null => document.querySelector('.share-toast')!.textContent;
+const setSaved = (app: ReturnType<typeof withApp>, queries: SavedQueryFixture[]): void => {
+  app.state.savedQueries = queries.map(savedQueryFixture);
+};
 
 // A FileReader stub: readAsText resolves synchronously with `content` (or errors).
-const fakeReader = (content, fail) => class {
-  readAsText() { this.result = content; if (fail) this.onerror && this.onerror(); else this.onload && this.onload(); }
+// Implements the full (mostly-unused) `FileReader` interface honestly — rather
+// than casting a partial shape — so the only member this file actually
+// exercises, `readAsText`, is genuinely type-safe to call from file-menu.ts's
+// `new (app.FileReader || globalThis.FileReader)()`.
+const fakeReader = (content: string, fail?: boolean): typeof FileReader => class {
+  static readonly EMPTY = 0 as const;
+  static readonly LOADING = 1 as const;
+  static readonly DONE = 2 as const;
+  readonly EMPTY = 0 as const;
+  readonly LOADING = 1 as const;
+  readonly DONE = 2 as const;
+  readonly error: DOMException | null = null;
+  onabort: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onload: (() => void) | null = null;
+  onloadend: (() => void) | null = null;
+  onloadstart: (() => void) | null = null;
+  onprogress: (() => void) | null = null;
+  readonly readyState: 0 | 1 | 2 = 0;
+  result: string | ArrayBuffer | null = null;
+  abort(): void {}
+  readAsArrayBuffer(): void {}
+  readAsBinaryString(): void {}
+  readAsDataURL(): void {}
+  readAsText(): void { this.result = content; if (fail) this.onerror?.(); else this.onload?.(); }
+  addEventListener(): void {}
+  removeEventListener(): void {}
+  dispatchEvent(): boolean { return true; }
 };
-const envFile = (queries) => JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
+const envFile = (queries: unknown[]): string => JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
 
 // Build an app with the header controls mounted (File button + title slot in the DOM).
-function mount(over = {}) {
-  const app = makeApp(over);
+// `FileReader` isn't one of fake-app.js's own named defaults (out of scope —
+// not one of this change's files), so `makeApp()`'s inferred `over` parameter
+// type doesn't recognize it as an override key; split it out and assign it
+// directly onto the (fully `App`-shaped, post-`withApp`) result instead.
+function mount(over: Partial<FakeApp> & { FileReader?: typeof FileReader } = {}) {
+  const { FileReader: fileReader, ...rest } = over;
+  const app = withApp(makeApp(rest));
+  if (fileReader) app.FileReader = fileReader;
   for (const node of libraryControls(app)) document.body.appendChild(node);
   return app;
 }
-const picker = (i) => document.querySelectorAll('.file-menu input[type=file]')[i];
+const picker = (i: number): HTMLInputElement => document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[i];
 
 afterEach(() => document.body.replaceChildren());
 
@@ -32,7 +216,7 @@ describe('open as dashboard', () => {
     app.actions.openDashboard = vi.fn();
     setSaved(app, [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: true }]);
     openFileMenu(app);
-    const btn = item(/Open as dashboard/);
+    const btn = item(/Open as dashboard/)!;
     expect(btn).toBeTruthy();
     click(btn);
     expect(app.actions.openDashboard).toHaveBeenCalled();
@@ -43,7 +227,7 @@ describe('open as dashboard', () => {
     app.actions.openDashboard = vi.fn();
     setSaved(app, [{ id: '1', name: 'Q', sql: 'SELECT 1', favorite: false }]);
     openFileMenu(app);
-    const btn = item(/Open as dashboard/);
+    const btn = item(/Open as dashboard/)!;
     expect(btn.textContent).toContain('no favorites');
     click(btn);
     expect(app.actions.openDashboard).not.toHaveBeenCalled();
@@ -56,7 +240,7 @@ describe('variable history (#171)', () => {
     const app = mount();
     app.state.varRecentDisabled = false;
     openFileMenu(app);
-    const checkbox = document.querySelector('.fm-checkbox');
+    const checkbox = document.querySelector<HTMLInputElement>('.fm-checkbox')!;
     expect(checkbox.checked).toBe(true); // recording ON ⇒ box checked
     checkbox.checked = false;
     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
@@ -67,12 +251,12 @@ describe('variable history (#171)', () => {
     const app = mount();
     app.state.varRecentDisabled = true;
     openFileMenu(app);
-    expect(document.querySelector('.fm-checkbox').checked).toBe(false);
+    expect(document.querySelector<HTMLInputElement>('.fm-checkbox')!.checked).toBe(false);
   });
   it('"Clear all recent values" calls app.clearAllVarRecent and toasts', () => {
     const app = mount();
     openFileMenu(app);
-    click(item(/Clear all recent values/));
+    click(item(/Clear all recent values/)!);
     expect(app.clearAllVarRecent).toHaveBeenCalled();
     expect(toast()).toContain('Cleared recent variable values');
   });
@@ -84,11 +268,11 @@ describe('library title', () => {
     app.state.libraryName.value = 'My queries';
     app.state.libraryDirty.value = true;
     renderLibraryTitle(app);
-    expect(app.dom.libraryTitle.querySelector('.lib-name-text').textContent).toBe('My queries');
-    expect(app.dom.libraryTitle.querySelector('.lib-dirty')).not.toBeNull();
-    click(app.dom.libraryTitle.querySelector('.lib-name'));
+    expect(app.dom.libraryTitle!.querySelector('.lib-name-text')!.textContent).toBe('My queries');
+    expect(app.dom.libraryTitle!.querySelector('.lib-dirty')).not.toBeNull();
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
     expect(app.editingLibrary).toBe(true);
-    const input = app.dom.libraryTitle.querySelector('.lib-name-input');
+    const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     expect(input.value).toBe('My queries');
     input.value = 'Renamed';
     key(input, 'Enter');
@@ -97,7 +281,7 @@ describe('library title', () => {
     expect(app.saveStr).toHaveBeenCalled();
     app.state.libraryDirty.value = false;
     renderLibraryTitle(app);
-    expect(app.dom.libraryTitle.querySelector('.lib-dirty')).toBeNull();
+    expect(app.dom.libraryTitle!.querySelector('.lib-dirty')).toBeNull();
   });
 
   it('inline rename: Escape cancels, blur commits, empty commit is a no-op, double-fire guarded', () => {
@@ -105,20 +289,20 @@ describe('library title', () => {
     app.state.libraryName.value = 'Orig';
     renderLibraryTitle(app);
     // Escape cancels
-    click(app.dom.libraryTitle.querySelector('.lib-name'));
-    let input = app.dom.libraryTitle.querySelector('.lib-name-input');
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    let input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     input.value = 'X';
     key(input, 'Escape');
     expect(app.state.libraryName.value).toBe('Orig');
     // empty name commit → no rename
-    click(app.dom.libraryTitle.querySelector('.lib-name'));
-    input = app.dom.libraryTitle.querySelector('.lib-name-input');
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     input.value = '   ';
     key(input, 'Enter');
     expect(app.state.libraryName.value).toBe('Orig');
     // blur commits, then a second event on the detached input is guarded
-    click(app.dom.libraryTitle.querySelector('.lib-name'));
-    input = app.dom.libraryTitle.querySelector('.lib-name-input');
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     input.value = 'Blurred';
     input.dispatchEvent(new Event('blur'));
     expect(app.state.libraryName.value).toBe('Blurred');
@@ -127,7 +311,7 @@ describe('library title', () => {
   });
 
   it('renderLibraryTitle no-ops without a slot', () => {
-    expect(() => renderLibraryTitle(makeApp())).not.toThrow();
+    expect(() => renderLibraryTitle(withApp(makeApp()))).not.toThrow();
   });
 });
 
@@ -145,7 +329,7 @@ describe('file menu', () => {
     ]);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
       ['Dashboard', 'Variable history', 'Save library', 'Load from file', 'Share / publish']);
-    expect(document.querySelector('.fm-count').textContent).toBe('2 queries in Library');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in Library');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
   });
@@ -160,7 +344,7 @@ describe('file menu', () => {
   it('footer shows the empty state when there are no queries', () => {
     const app = mount();
     openFileMenu(app);
-    expect(document.querySelector('.fm-count').textContent).toBe('Library is empty');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('Library is empty');
   });
 
   it('closes on overlay click and on Escape (ignores other keys)', () => {
@@ -168,7 +352,7 @@ describe('file menu', () => {
     openFileMenu(app);
     key(document, 'a'); // not Escape → stays open
     expect(document.querySelector('.file-menu')).not.toBeNull();
-    click(document.querySelector('.fm-overlay'));
+    click(document.querySelector('.fm-overlay')!);
     expect(document.querySelector('.file-menu')).toBeNull();
     openFileMenu(app);
     key(document, 'Escape');
@@ -180,18 +364,18 @@ describe('Save JSON / Markdown / SQL downloads', () => {
   it('Save JSON: empty → toast; non-empty → download envelope, clear dirty', () => {
     const app = mount();
     openFileMenu(app);
-    click(item(/Save JSON/));
+    click(item(/Save JSON/)!);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: true }]);
     app.state.libraryName.value = 'My Lib';
     app.state.libraryDirty.value = true;
     openFileMenu(app);
-    click(item(/Save JSON/));
+    click(item(/Save JSON/)!);
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('My Lib.json');
     expect(mime).toBe('application/json');
-    expect(JSON.parse(content)).toMatchObject({
+    expect(JSON.parse(content as string)).toMatchObject({
       $schema: 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json',
       format: 'altinity-sql-browser/saved-queries',
       version: 2,
@@ -204,26 +388,26 @@ describe('Save JSON / Markdown / SQL downloads', () => {
   it('Download Markdown + SQL: empty → toast; non-empty → files named from the library', () => {
     const app = mount();
     openFileMenu(app);
-    click(item(/Download Markdown/));
+    click(item(/Download Markdown/)!);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('Nothing to save');
     setSaved(app, [{ id: 's1', name: 'A', sql: 'SELECT 1', favorite: false, description: 'd' }]);
     app.state.libraryName.value = 'Lib';
     openFileMenu(app);
-    click(item(/Download Markdown/));
-    expect(app.downloadFile.mock.calls.at(-1).slice(0, 2)).toEqual(['Lib.md', 'text/markdown']);
+    click(item(/Download Markdown/)!);
+    expect(app.downloadFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['Lib.md', 'text/markdown']);
     openFileMenu(app);
-    click(item(/Download SQL/));
-    expect(app.downloadFile.mock.calls.at(-1).slice(0, 2)).toEqual(['Lib.sql', 'application/sql']);
+    click(item(/Download SQL/)!);
+    expect(app.downloadFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['Lib.sql', 'application/sql']);
     // an unnamed / whitespace-only library name falls back to "queries"
     app.state.libraryName.value = '';
     openFileMenu(app);
-    click(item(/Download Markdown/));
-    expect(app.downloadFile.mock.calls.at(-1)[0]).toBe('queries.md');
+    click(item(/Download Markdown/)!);
+    expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.md');
     app.state.libraryName.value = '   ';
     openFileMenu(app);
-    click(item(/Download SQL/));
-    expect(app.downloadFile.mock.calls.at(-1)[0]).toBe('queries.sql');
+    click(item(/Download SQL/)!);
+    expect(app.downloadFile.mock.calls.at(-1)![0]).toBe('queries.sql');
   });
 });
 
@@ -237,17 +421,17 @@ describe('Open / Append (JSON only)', () => {
     openFileMenu(app);
     const replaceInput = picker(0);
     replaceInput.click = vi.fn();
-    click(item(/Open…/));
+    click(item(/Open…/)!);
     expect(document.querySelector('.file-menu')).toBeNull(); // menu closed
     expect(replaceInput.click).toHaveBeenCalled();
     // user picks a file → confirm dialog (current library non-empty, plural copy)
     Object.defineProperty(replaceInput, 'files', { configurable: true, value: [{ name: 'team.json' }] });
     replaceInput.dispatchEvent(new Event('change', { bubbles: true }));
-    const dialog = document.querySelector('.fm-dialog-card');
+    const dialog = document.querySelector('.fm-dialog-card')!;
     expect(dialog.textContent).toContain('Open and replace current library?');
     expect(dialog.textContent).toContain('contains 2 queries');
     expect(dialog.textContent).toContain('current 2 saved queries');
-    click(document.querySelector('.fm-dialog-confirm'));
+    click(document.querySelector('.fm-dialog-confirm')!);
     expect(app.state.savedQueries.map(queryName)).toEqual(['New', 'New2']);
     expect(app.state.libraryName.value).toBe('team');
     expect(app.updateSaveBtn).toHaveBeenCalled();
@@ -277,7 +461,7 @@ describe('Open / Append (JSON only)', () => {
     openFileMenu(app);
     const appendInput = picker(1);
     appendInput.click = vi.fn();
-    click(item(/Append/));
+    click(item(/Append/)!);
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(appendInput.click).toHaveBeenCalled();
     Object.defineProperty(appendInput, 'files', { configurable: true, value: [{ name: 'more.json' }] });
@@ -338,16 +522,16 @@ describe('New Library + confirm dialogs', () => {
   it('New Library: empty → clears directly; non-empty → confirm → New resets to the default', () => {
     const app = mount();
     openFileMenu(app);
-    click(item(/New Library/));
+    click(item(/New Library/)!);
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(toast()).toBe('Started a new library');
     expect(app.updateEditorModeUi).toHaveBeenCalled();
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     app.state.libraryName.value = 'Old';
     openFileMenu(app);
-    click(item(/New Library/));
-    expect(document.querySelector('.fm-dialog-card').textContent).toContain('Start a new library?');
-    click(document.querySelector('.fm-dialog-confirm'));
+    click(item(/New Library/)!);
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new library?');
+    click(document.querySelector('.fm-dialog-confirm')!);
     expect(app.state.savedQueries).toEqual([]);
     expect(app.state.libraryName.value).toBe('SQL Library');
   });
@@ -358,21 +542,21 @@ describe('New Library + confirm dialogs', () => {
       { id: 's1', name: 'A', sql: '1', favorite: false },
       { id: 's2', name: 'B', sql: '2', favorite: false },
     ]);
-    const openNew = () => { openFileMenu(app); click(item(/New Library/)); };
+    const openNew = (): void => { openFileMenu(app); click(item(/New Library/)!); };
     // Cancel
     openNew();
-    click(document.querySelector('.fm-dialog-cancel'));
+    click(document.querySelector('.fm-dialog-cancel')!);
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(app.state.savedQueries).toHaveLength(2);
     // backdrop click
     openNew();
-    const backdrop = document.querySelector('.fm-dialog-backdrop');
+    const backdrop = document.querySelector('.fm-dialog-backdrop')!;
     backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     click(backdrop);
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     // card click keeps it open; Escape closes it
     openNew();
-    click(document.querySelector('.fm-dialog-card'));
+    click(document.querySelector('.fm-dialog-card')!);
     expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
     key(document, 'Escape');
     expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
@@ -383,9 +567,9 @@ describe('New Library + confirm dialogs', () => {
     const app = mount();
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     openFileMenu(app);
-    click(item(/New Library/));
-    const backdrop = document.querySelector('.fm-dialog-backdrop');
-    const card = document.querySelector('.fm-dialog-card');
+    click(item(/New Library/)!);
+    const backdrop = document.querySelector('.fm-dialog-backdrop')!;
+    const card = document.querySelector('.fm-dialog-card')!;
     card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     backdrop.dispatchEvent(new Event('click', { bubbles: true })); // click's target is the backdrop
     expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();

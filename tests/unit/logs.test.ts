@@ -196,10 +196,10 @@ describe('renderLogs', () => {
     expect(rows[0].className).toBe('log-row log-error');
     expect(rows[1].className).toBe('log-row log-warn');
     expect(rows[2].className).toBe('log-row'); // unknown level → no color class
-    expect(rows[0].querySelector('.log-time').textContent).toBe('2026-07-10 12:00:00');
-    expect(rows[0].querySelector('.log-level').textContent).toBe('Error');
-    expect(rows[0].querySelector('.log-msg').textContent).toBe('boom');
-    expect(rows[0].querySelector('.log-extras').textContent).toBe('host=web-1');
+    expect(rows[0].querySelector('.log-time')!.textContent).toBe('2026-07-10 12:00:00');
+    expect(rows[0].querySelector('.log-level')!.textContent).toBe('Error');
+    expect(rows[0].querySelector('.log-msg')!.textContent).toBe('boom');
+    expect(rows[0].querySelector('.log-extras')!.textContent).toBe('host=web-1');
     expect(rows[1].querySelector('.log-extras')).toBeNull(); // no extras → span omitted
   });
   it('omits the .log-level span entirely when the shape has no level column', () => {
@@ -210,7 +210,7 @@ describe('renderLogs', () => {
       cap: 100,
     });
     expect(el.querySelector('.log-level')).toBeNull();
-    expect(el.querySelector('.log-msg').textContent).toBe('m');
+    expect(el.querySelector('.log-msg')!.textContent).toBe('m');
   });
   it('preserves query order verbatim (no sorting)', () => {
     const el = renderLogs({

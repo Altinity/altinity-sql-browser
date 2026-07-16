@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { buildCardModel, cardSize, columnRoles, buildCardGraph, CARD } from '../../src/core/schema-cards.js';
+import {
+  buildCardModel, cardSize, columnRoles, buildCardGraph, CARD,
+} from '../../src/core/schema-cards.js';
+import type { CardModel, SchemaCardColumnRow } from '../../src/core/schema-cards.js';
+
+// A card model probed for a bygone `skipLine` field (#179): buildCardModel
+// never sets it, but the type itself has no such property — this widened
+// alias lets the "ignored legacy field" assertions read it without lying
+// about what the real return shape carries.
+type CardModelWithLegacyProbe = CardModel & { skipLine?: unknown };
 
 describe('columnRoles', () => {
   it('maps every key-role flag, in display order', () => {
@@ -20,7 +29,7 @@ describe('columnRoles', () => {
 
 describe('buildCardModel', () => {
   it('builds the engine/rows/bytes summary, top-16 columns + overflow', () => {
-    const cols = Array.from({ length: 17 }, (_, i) => ({ name: 'c' + i, type: 'UInt64', position: i }));
+    const cols: SchemaCardColumnRow[] = Array.from({ length: 17 }, (_, i) => ({ name: 'c' + i, type: 'UInt64', position: i }));
     cols[0].is_in_primary_key = 1;
     const m = buildCardModel(
       { label: 'db.t', kind: 'mv' },
@@ -35,14 +44,14 @@ describe('buildCardModel', () => {
     expect(m.overflow).toBe(1);
   });
   it('never carries a data-skipping-index line — indexes live in the detail drawer, not the card (#179)', () => {
-    const cols = [{ name: 'id', type: 'UInt64', position: 1 }];
+    const cols: SchemaCardColumnRow[] = [{ name: 'id', type: 'UInt64', position: 1 }];
     const bare = buildCardModel({ label: 'db.t', kind: 'table' }, {}, cols);
-    expect(bare.skipLine).toBeUndefined();
+    expect((bare as CardModelWithLegacyProbe).skipLine).toBeUndefined();
     // Passing legacy skip-index rows (a heavily-indexed table) is ignored: the
     // model — and therefore the card geometry — is byte-identical either way.
     const idx = Array.from({ length: 20 }, (_, i) => ({ name: 'a_very_long_skip_index_name_' + i, type: 'bloom_filter(0.01)' }));
     const withIdx = buildCardModel({ label: 'db.t', kind: 'table' }, {}, cols, idx);
-    expect(withIdx.skipLine).toBeUndefined();
+    expect((withIdx as CardModelWithLegacyProbe).skipLine).toBeUndefined();
     expect(withIdx).toEqual(bare);
     expect(cardSize(withIdx)).toEqual(cardSize(bare));
   });
@@ -51,7 +60,7 @@ describe('buildCardModel', () => {
     expect(leaf.summary).toBe('external · — rows · —'); // engine falls back to kind
     expect(leaf.cols).toEqual([]);
     expect(leaf.overflow).toBe(0);
-    expect(leaf.skipLine).toBeUndefined();
+    expect((leaf as CardModelWithLegacyProbe).skipLine).toBeUndefined();
     expect(leaf.comment).toBe('');
   });
   it('trims the table comment, untruncated (it\'s a hover-only tooltip on the card, never a drawn row)', () => {
@@ -101,7 +110,7 @@ describe('cardSize', () => {
     expect(cardSize({ title: '', summary: '', cols: [], overflow: 0 }).w).toBe(CARD.MIN_W);
   });
   it('grows with the widest line and counts role badges into the width', () => {
-    const long = (roles) => ({ title: 't', summary: 's', cols: [{ name: 'x'.repeat(40), type: 'String', roles }], overflow: 0 });
+    const long = (roles: string[]) => ({ title: 't', summary: 's', cols: [{ name: 'x'.repeat(40), type: 'String', roles }], overflow: 0 });
     expect(cardSize(long([])).w).toBeGreaterThan(CARD.MIN_W);
     expect(cardSize(long(['PK', 'SK'])).w).toBeGreaterThan(cardSize(long([])).w); // badges add width
   });

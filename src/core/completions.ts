@@ -8,16 +8,18 @@
 
 import { SQL_KEYWORDS, SQL_FUNCS } from './sql-reference.js';
 import { lexSql, tokenText, unquoteIdent } from './sql-lex.js';
+import type { Token } from './sql-lex.js';
 import { quoteIdent } from './format.js';
 import { compactType, INLINE_TYPE_MAX } from './type-display.js';
+import type { SchemaDb, TableRef } from './from-scope.js';
 
-const BUILTIN_KEYWORDS = [...SQL_KEYWORDS];
-const BUILTIN_FUNCS = [...SQL_FUNCS];
+const BUILTIN_KEYWORDS: string[] = [...SQL_KEYWORDS];
+const BUILTIN_FUNCS: string[] = [...SQL_FUNCS];
 
 // Common ClickHouse output formats — the fallback for FORMAT-clause completion
 // when system.formats isn't available (offline / old server / denied). The live
 // set (all is_output formats) replaces this once a connection loads.
-const BUILTIN_FORMATS = [
+const BUILTIN_FORMATS: string[] = [
   'CSV', 'CSVWithNames', 'JSON', 'JSONCompact', 'JSONEachRow', 'Markdown', 'Null',
   'Parquet', 'Pretty', 'PrettyCompact', 'TabSeparated', 'TabSeparatedWithNames',
   'TSV', 'TSVWithNames', 'Values', 'Vertical', 'XML',
@@ -33,7 +35,7 @@ const PREFER_KEYWORD = new Set(['FORMAT']);
 // Built-in hover docs for a few ClickHouse-specific keywords (#27). There's no
 // server table for keyword docs, so this static set covers the high-value ones;
 // function docs come from system.functions (loaded per connection).
-const KEYWORD_DOCS = {
+const KEYWORD_DOCS: Record<string, string> = {
   PREWHERE: 'ClickHouse filter applied before reading other columns — an optimization over WHERE for selective predicates.',
   FINAL: 'Merges rows with the same key at read time (ReplacingMergeTree etc.). Expensive; avoid on hot paths.',
   SAMPLE: 'Reads a deterministic fraction of data for approximate results. Requires a SAMPLE BY key on the table.',
@@ -41,6 +43,39 @@ const KEYWORD_DOCS = {
   SETTINGS: 'Per-query settings override, e.g. SETTINGS max_threads = 4.',
   FORMAT: 'Sets the output format of the query, e.g. FORMAT JSONEachRow.',
 };
+
+/** One function-reference entry, as this module reads it from either the
+ *  server-loaded set (net/ch-client.ts's `loadReferenceData`, kind 'agg'|'fn'
+ *  only in practice) or a synthesized/offline entry — 'cast' is a third kind
+ *  this module's own kind-mapping already anticipates (`buildCompletions`
+ *  below). */
+export interface CompletionFunctionEntry {
+  kind?: 'agg' | 'cast' | 'fn';
+  sig?: string;
+  ret?: string;
+  desc?: string;
+}
+
+/** A loaded reference payload (or a partial/offline substitute) —
+ *  `assembleReferenceData`'s input. Every field may be absent/empty/null; a
+ *  missing/empty field falls back to the built-in set for that piece. */
+export interface LoadedReferenceData {
+  keywords?: string[] | null;
+  functions?: Record<string, CompletionFunctionEntry> | null;
+  formats?: string[] | null;
+}
+
+/** `assembleReferenceData`'s return shape — the editor's in-memory reference
+ *  data (keywords/functions/formats resolved with built-in fallbacks) plus the
+ *  lookup sets the tokenizer/hover paths use. */
+export interface AssembledReference {
+  keywords: string[];
+  functions: Record<string, CompletionFunctionEntry>;
+  formats: string[];
+  keywordDocs: Record<string, string>;
+  keywordSet: Set<string>;
+  funcSet: Set<string>;
+}
 
 /**
  * Turn a loaded reference payload (or null) into the editor's in-memory shape:
@@ -53,14 +88,17 @@ const KEYWORD_DOCS = {
  * Missing pieces fall back to the built-in sets so highlighting + keyword/
  * function/format completion still work offline / on older ClickHouse.
  */
-export function assembleReferenceData(loaded) {
-  const keywords = loaded && loaded.keywords && loaded.keywords.length
+export function assembleReferenceData(loaded?: LoadedReferenceData | null): AssembledReference {
+  const keywords: string[] = loaded && loaded.keywords && loaded.keywords.length
     ? loaded.keywords
     : BUILTIN_KEYWORDS;
-  const functions = loaded && loaded.functions && Object.keys(loaded.functions).length
+  const builtinFunctionEntries: Record<string, CompletionFunctionEntry> = Object.fromEntries(
+    BUILTIN_FUNCS.map((name): [string, CompletionFunctionEntry] => [name, { kind: 'fn', sig: name + '()', ret: '', desc: '' }]),
+  );
+  const functions: Record<string, CompletionFunctionEntry> = loaded && loaded.functions && Object.keys(loaded.functions).length
     ? loaded.functions
-    : Object.fromEntries(BUILTIN_FUNCS.map((name) => [name, { kind: 'fn', sig: name + '()', ret: '', desc: '' }]));
-  const formats = loaded && loaded.formats && loaded.formats.length ? loaded.formats : BUILTIN_FORMATS;
+    : builtinFunctionEntries;
+  const formats: string[] = loaded && loaded.formats && loaded.formats.length ? loaded.formats : BUILTIN_FORMATS;
   return {
     keywords,
     functions,
@@ -71,19 +109,52 @@ export function assembleReferenceData(loaded) {
   };
 }
 
+/** The candidate kinds `buildCompletions` ever produces — drives the editor's
+ *  glyph/chip choice and `rankCompletions`' scoring branches. */
+export type CompletionKind = 'keyword' | 'fn' | 'agg' | 'cast' | 'format' | 'db' | 'table' | 'column';
+
+/** One completion candidate. Only `label`/`kind` are load-bearing for ranking
+ *  (`rankCompletions`); the rest are populated by `buildCompletions` for the
+ *  editor's own use (accept/insert, detail column, hover info) and stay
+ *  optional here so a bare test fixture (or a qualifier-scope entry) never
+ *  needs to fake them. */
+export interface CompletionItem {
+  label: string;
+  kind: CompletionKind;
+  insert?: string;
+  detail?: string;
+  doc?: string;
+  ret?: string;
+  caretBack?: number;
+  parent?: string;
+  fullType?: string;
+}
+
+/** `buildCompletions`'s reference-data input — the fields it actually reads.
+ *  `AssembledReference` (above) satisfies this too (its extra
+ *  keywordDocs/keywordSet/funcSet fields go unused here). */
+export interface CompletionSourceData {
+  keywords: string[];
+  functions: Record<string, CompletionFunctionEntry>;
+  formats?: string[];
+}
+
 /**
  * Build the flat completion candidate list from reference data + the in-memory
  * schema. Schema is the repo shape ([{db, tables:[{name, columns}]}]); only
  * already-loaded columns are included (`tb.columns` is an array, not null /
  * 'loading') — no on-demand column fetch from the completion path (#25/#26).
  */
-export function buildCompletions(ref, schema) {
-  const items = [];
+export function buildCompletions(
+  ref: CompletionSourceData,
+  schema?: SchemaDb[] | null,
+): CompletionItem[] {
+  const items: CompletionItem[] = [];
   for (const k of ref.keywords) {
     items.push({ label: k, kind: 'keyword', insert: k, detail: 'keyword' });
   }
   for (const [name, m] of Object.entries(ref.functions)) {
-    const kind = m.kind === 'agg' ? 'agg' : m.kind === 'cast' ? 'cast' : 'fn';
+    const kind: CompletionKind = m.kind === 'agg' ? 'agg' : m.kind === 'cast' ? 'cast' : 'fn';
     // The label already shows the function name, so the detail column shows only
     // the parenthesised params — `(s, offset[, …])`, not `substring(s, …)` (#26).
     const sig = m.sig || name + '()';
@@ -113,6 +184,20 @@ export function buildCompletions(ref, schema) {
   return items;
 }
 
+/** `completionContext`'s return shape — see its doc comment below for what
+ *  each field means. `scope` is never set by `completionContext` itself; the
+ *  editor adapter attaches it afterwards (`fromScopeAt`'s real `TableRef[]`,
+ *  #84) before handing the context to `rankCompletions`. */
+export interface CompletionContext {
+  word: string;
+  from: number;
+  to: number;
+  qualified: boolean;
+  parent: string | null;
+  afterFormat: boolean;
+  scope?: TableRef[];
+}
+
 /**
  * The word being typed at the caret, whether it is qualified (after a dot —
  * `table.` → that table's columns), and whether it sits inside a FORMAT clause
@@ -121,7 +206,7 @@ export function buildCompletions(ref, schema) {
  * supplies a pre-computed `lexSql(value)` so the completion path (which also
  * runs from-scope) lexes the caret prefix once, not twice.
  */
-export function completionContext(value, pos, toks) {
+export function completionContext(value: string, pos: number, toks?: Token[]): CompletionContext {
   const list = toks || lexSql(value);
   // The word being typed is either inside an OPEN backtick-quoted identifier (a
   // `non-bare-name… still being typed) or a bare [A-Za-z0-9_] run. We use the
@@ -130,8 +215,8 @@ export function completionContext(value, pos, toks) {
   // an accepted candidate replaces to — the opening backtick in the quoted case,
   // so accepting never doubles the backtick.
   const open = openBacktickStart(value, pos, list);
-  let from;
-  let word;
+  let from: number;
+  let word: string;
   if (open >= 0) {
     from = open;
     word = value.slice(from + 1, pos); // partial name, unquoted
@@ -162,7 +247,7 @@ export function completionContext(value, pos, toks) {
 //   3. `closed: false`, caret within/at the token end   → open.
 // Uses lexSql tokens so a backtick inside a string/comment isn't mistaken for an
 // identifier quote, and escaped/doubled backticks never desync detection.
-function openBacktickStart(value, pos, toks) {
+function openBacktickStart(value: string, pos: number, toks?: Token[]): number {
   for (const t of toks || lexSql(value)) {
     if (t.kind !== 'quoted-ident' || value[t.start] !== '`') continue;
     if (pos <= t.start || pos > t.end) continue; // caret not inside this token
@@ -176,13 +261,24 @@ function openBacktickStart(value, pos, toks) {
 // identifier token (bare `word` or `quoted-ident`) must end exactly at that dot
 // token's start. A quoted parent is decoded via unquoteIdent; a bare parent is
 // its verbatim source text.
-function qualifierBefore(value, from, toks) {
+function qualifierBefore(value: string, from: number, toks?: Token[]): string | null {
   const list = toks || lexSql(value);
   const dot = list.find((t) => t.kind === 'punct' && value[t.start] === '.' && t.end === from);
   if (!dot) return null;
   const id = list.find((t) => (t.kind === 'word' || t.kind === 'quoted-ident') && t.end === dot.start);
   if (!id) return null;
   return id.kind === 'quoted-ident' ? unquoteIdent(value, id) : tokenText(value, id);
+}
+
+/** The shape a FROM/JOIN scope entry needs for this module's own purposes —
+ *  looser than core/from-scope.ts's own `TableRef` (whose `table` is always a
+ *  real string once resolved): a scope entry that carries no resolvable table
+ *  name here behaves the same as "not in scope", rather than being excluded
+ *  from the type entirely. */
+export interface ScopeRef {
+  db?: string | null;
+  table: string | null;
+  alias?: string | null;
 }
 
 /**
@@ -192,7 +288,7 @@ function qualifierBefore(value, from, toks) {
  * `events.` keeps working with no scope. Pure — `scope` is the
  * `{db, table, alias}[]` from core/from-scope.js (#84), or absent.
  */
-export function resolveScopeAlias(parent, scope) {
+export function resolveScopeAlias(parent: string | null, scope?: ScopeRef[] | null): string | null {
   if (!scope || parent == null) return parent;
   for (const r of scope) if (r.alias === parent) return r.table;
   return parent;
@@ -200,11 +296,26 @@ export function resolveScopeAlias(parent, scope) {
 
 // The set of in-scope table names (for unqualified column scoping), or null when
 // there is no FROM scope — null means "keep today's global behavior".
-function scopeTableSet(scope) {
+function scopeTableSet(scope?: ScopeRef[] | null): Set<string> | null {
   if (!scope || !scope.length) return null;
-  const s = new Set();
+  const s = new Set<string>();
   for (const r of scope) if (r.table) s.add(r.table);
   return s.size ? s : null;
+}
+
+/** `rankCompletions`'s query — a `completionContext` result (with its
+ *  adapter-attached `scope`, #84) satisfies this (every field there is a
+ *  concrete value, and `TableRef` is assignable into the looser `ScopeRef`
+ *  below), but only `word` is actually required here: a caller (or test) may
+ *  supply just the fields relevant to the branch it's exercising. */
+export interface RankQuery {
+  word: string;
+  from?: number;
+  to?: number;
+  qualified?: boolean;
+  parent?: string | null;
+  afterFormat?: boolean;
+  scope?: ScopeRef[];
 }
 
 /**
@@ -216,10 +327,10 @@ function scopeTableSet(scope) {
  * the global pool is used unchanged. Empty word (and not qualified) → keywords +
  * tables only. Capped for a tight dropdown.
  */
-export function rankCompletions(items, ctx) {
+export function rankCompletions(items: CompletionItem[], ctx: RankQuery): CompletionItem[] {
   const w = ctx.word.toLowerCase();
   if (ctx.qualified) {
-    const target = resolveScopeAlias(ctx.parent, ctx.scope);
+    const target = resolveScopeAlias(ctx.parent ?? null, ctx.scope);
     const cols = items.filter((it) => it.kind === 'column' && it.parent === target);
     return (w ? cols.filter((c) => c.label.toLowerCase().includes(w)) : cols).slice(0, 50);
   }
@@ -233,12 +344,12 @@ export function rankCompletions(items, ctx) {
     return items.filter((it) => it.kind === 'keyword' || it.kind === 'table').slice(0, 40);
   }
   const scopeTables = scopeTableSet(ctx.scope);
-  const scored = [];
+  const scored: { it: CompletionItem; score: number }[] = [];
   for (const it of items) {
     if (it.kind === 'format') continue; // formats only inside a FORMAT clause
     // FROM-scoped: only columns of the statement's tables compete unqualified;
     // an unrelated loaded table's columns aren't suggested (#84). No scope → all.
-    if (it.kind === 'column' && scopeTables && !scopeTables.has(it.parent)) continue;
+    if (it.kind === 'column' && scopeTables && !scopeTables.has(it.parent ?? '')) continue;
     const l = it.label.toLowerCase();
     const idx = l.indexOf(w);
     if (idx === -1) continue;
@@ -263,7 +374,7 @@ export function rankCompletions(items, ctx) {
  * hover docs (#27) to find the token under the mouse. Returns {word, from, to}
  * or null when `pos` isn't inside a word.
  */
-export function wordAt(value, pos) {
+export function wordAt(value: string, pos: number): { word: string; from: number; to: number } | null {
   let s = pos;
   let e = pos;
   while (s > 0 && /[A-Za-z0-9_]/.test(value[s - 1])) s--;

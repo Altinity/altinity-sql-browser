@@ -9,6 +9,15 @@
 import { chartStripType } from './chart-data.js';
 import { truncate } from './format.js';
 
+/** A ClickHouse result column, as this module's detectors/renderer read it —
+ *  the same shape core/panel-cfg.ts's own `Column` pins for `detectLogsView`'s
+ *  wrapper cast (extra metadata may ride along on the live streaming result). */
+export interface LogColumn {
+  name: string;
+  type: string;
+  [k: string]: unknown;
+}
+
 // Stripped-type gates. Time requires a time-of-day, so plain `Date` is
 // excluded; the `(\(|$)` tail accepts parameterized forms — `DateTime('UTC')`,
 // `DateTime64(9, 'UTC')` — without matching an unrelated `DateTime...` name.
@@ -25,16 +34,27 @@ const LEVEL_NAMES = new Set(['level', 'severity', 'log_level', 'loglevel', 'seve
 // Per-role convention scanners (first match by position, -1 when absent).
 // Exported so panel-cfg's name-based logs arm (#166) can fall back per role —
 // an explicit `msg` name may pair with a convention-detected time column.
-export function findTimeColumn(columns) {
+export function findTimeColumn(columns?: LogColumn[] | null): number {
   return (columns || []).findIndex((c) => TIME_TYPE_RE.test(chartStripType(c.type)));
 }
-export function findMsgColumn(columns) {
+export function findMsgColumn(columns?: LogColumn[] | null): number {
   return (columns || []).findIndex((c) =>
     MSG_NAMES.has(String(c.name).toLowerCase()) && MSG_TYPE_RE.test(chartStripType(c.type)));
 }
-export function findLevelColumn(columns) {
+export function findLevelColumn(columns?: LogColumn[] | null): number {
   return (columns || []).findIndex((c) =>
     LEVEL_NAMES.has(String(c.name).toLowerCase()) && LEVEL_TYPE_RE.test(chartStripType(c.type)));
+}
+
+/** The `{time,msg,level|null,extras}` column-index shape this module and
+ *  ui/logs.js's renderLogs consume — mirrors core/panel-cfg.ts's own
+ *  `LogsShape` (its `resolveLogsShape`/`detectLogsView` wrapper casts pin this
+ *  same shape). */
+export interface LogsShape {
+  time: number;
+  msg: number;
+  level: number | null;
+  extras: number[];
 }
 
 /**
@@ -46,7 +66,7 @@ export function findLevelColumn(columns) {
  * Returns `{time, msg, level|null, extras: idx[]}` or null when either
  * required part (time, message) is missing.
  */
-export function detectLogsView(columns) {
+export function detectLogsView(columns?: LogColumn[] | null): LogsShape | null {
   const cols = columns || [];
   const time = findTimeColumn(cols);
   if (time < 0) return null;
@@ -61,7 +81,7 @@ export function detectLogsView(columns) {
 // Level aliases → the six color classes. Covers ClickHouse's own text_log
 // Enum ('Fatal'..'Test'), syslog names (emerg/alert/crit/err/notice), and the
 // common warn/info/verbose shorthands.
-const LEVEL_ALIASES = {
+const LEVEL_ALIASES: Record<string, string> = {
   fatal: 'fatal', critical: 'fatal', crit: 'fatal', emerg: 'fatal', emergency: 'fatal', alert: 'fatal',
   error: 'error', err: 'error',
   warning: 'warn', warn: 'warn',
@@ -77,7 +97,7 @@ const LEVEL_ALIASES = {
  * data, and a bare index would leak inherited Object.prototype members
  * ('constructor', '__proto__') into the row's class list.
  */
-export function logLevelClass(value) {
+export function logLevelClass(value: unknown): string {
   const key = value == null ? '' : String(value).toLowerCase();
   return Object.hasOwn(LEVEL_ALIASES, key) ? LEVEL_ALIASES[key] : '';
 }
@@ -86,8 +106,17 @@ export function logLevelClass(value) {
  * Compact a log timestamp for display: fractional seconds trimmed to ms
  * (`DateTime64(9)`'s nanoseconds are noise at reading density). Null-safe → ''.
  */
-export function formatLogTime(v) {
+export function formatLogTime(v: unknown): string {
   return v == null ? '' : String(v).replace(/(\.\d{3})\d+$/, '$1');
+}
+
+/** One row shaped for the logs renderer — `logRowDisplay`'s return shape. */
+export interface LogRowDisplay {
+  time: string;
+  level: string;
+  levelClass: string;
+  msg: string;
+  extras: { name: string; value: string }[];
 }
 
 /**
@@ -98,9 +127,9 @@ export function formatLogTime(v) {
  * get compact `JSON.stringify` — `String(v)` would yield `[object Object]` —
  * then everything is truncated to 80 chars.
  */
-export function logRowDisplay(columns, row, shape) {
+export function logRowDisplay(columns: LogColumn[], row: unknown[], shape: LogsShape): LogRowDisplay {
   const rawLevel = shape.level == null ? null : row[shape.level];
-  const extras = [];
+  const extras: { name: string; value: string }[] = [];
   for (const i of shape.extras) {
     const v = row[i];
     if (v == null || v === '') continue;

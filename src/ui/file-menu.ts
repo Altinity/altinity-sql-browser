@@ -12,14 +12,15 @@ import { renderSavedHistory } from './saved-history.js';
 import { buildExportDoc, parseImportDoc, buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
 import { queryFavorite } from '../core/saved-query.js';
 import { newLibrary, replaceLibrary, appendLibrary, renameLibrary, markLibrarySaved } from '../state.js';
+import type { App } from './app.types.js';
 
 /** Library name → safe file base (strips path/illegal chars, collapses spaces). */
-const fileBase = (name) => (name || 'queries').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'queries';
-const queries = (n) => n + (n === 1 ? ' query' : ' queries');
+const fileBase = (name: unknown): string => (String(name || '')).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'queries';
+const queries = (n: number): string => n + (n === 1 ? ' query' : ' queries');
 
 /** Build the header File button + editable library title; returns the nodes to
  *  splice into the app header (after the connection chip). */
-export function libraryControls(app) {
+export function libraryControls(app: App): HTMLElement[] {
   app.dom.fileBtn = h('button', {
     class: 'hd-file-btn', title: 'File — save or load your library',
     onclick: () => openFileMenu(app),
@@ -31,7 +32,7 @@ export function libraryControls(app) {
 
 /** (Re)render the library title into its slot: a click-to-rename name button
  *  with an unsaved-changes dot, or an inline rename input while editing. */
-export function renderLibraryTitle(app) {
+export function renderLibraryTitle(app: App): void {
   const slot = app.dom.libraryTitle;
   if (!slot) return;
   const state = app.state;
@@ -41,7 +42,7 @@ export function renderLibraryTitle(app) {
     let done = false;
     // Enter/blur commit; Escape cancels. The guard stops the blur fired by the
     // re-render teardown from undoing a cancel (same pattern as saved rename).
-    const finish = (commit) => {
+    const finish = (commit: boolean): void => {
       if (done) return;
       done = true;
       // Leave edit mode first, so the renameLibrary write below repaints the
@@ -67,23 +68,23 @@ export function renderLibraryTitle(app) {
 }
 
 /** Open the File dropdown anchored under the File button (Esc / outside-click close). */
-export function openFileMenu(app) {
+export function openFileMenu(app: App): void {
   if (app.dom.fileMenu) return;
   const doc = app.document;
   const list = app.state.savedQueries;
-  const close = () => {
+  const close = (): void => {
     doc.removeEventListener('keydown', onKey, true);
-    if (app.dom.fileMenu) { app.dom.fileMenu.remove(); app.dom.fileMenu = null; }
-    if (app.dom.fileMenuOverlay) { app.dom.fileMenuOverlay.remove(); app.dom.fileMenuOverlay = null; }
+    if (app.dom.fileMenu) { app.dom.fileMenu.remove(); app.dom.fileMenu = undefined; }
+    if (app.dom.fileMenuOverlay) { app.dom.fileMenuOverlay.remove(); app.dom.fileMenuOverlay = undefined; }
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
 
   const replaceInput = pickerInput(app, (f) => onReplaceFile(app, f));
   const appendInput = pickerInput(app, (f) => onAppendFile(app, f));
-  const item = (icon, label, meta, onClick) => h('button', { class: 'fm-item', onclick: onClick },
+  const item = (icon: Node, label: string, meta: string | null, onClick: () => void): HTMLButtonElement => h('button', { class: 'fm-item', onclick: onClick },
     h('span', { class: 'fm-icon' }, icon), h('span', { class: 'fm-label' }, label),
     meta ? h('span', { class: 'fm-meta' }, meta) : null);
-  const sep = () => h('div', { class: 'fm-sep' });
+  const sep = (): HTMLDivElement => h('div', { class: 'fm-sep' });
   const empty = list.length === 0;
   const hasFav = list.some(queryFavorite);
 
@@ -106,8 +107,8 @@ export function openFileMenu(app) {
     h('input', {
       type: 'checkbox', class: 'fm-checkbox',
       checked: !app.state.varRecentDisabled,
-      onchange: (e) => {
-        app.state.varRecentDisabled = !e.target.checked;
+      onchange: (e: Event) => {
+        app.state.varRecentDisabled = !(e.target as HTMLInputElement).checked;
         app.saveVarRecentDisabled();
       },
     }),
@@ -144,9 +145,12 @@ export function openFileMenu(app) {
   app.dom.fileMenuOverlay = overlay;
   app.dom.fileMenu = menu;
   doc.body.appendChild(overlay);
-  const r = app.dom.fileBtn.getBoundingClientRect();
-  // Anchor under the button.
-  const a = fixedAnchor(r);
+  const r = app.dom.fileBtn!.getBoundingClientRect();
+  // Anchor under the button. fixedAnchor's return type is a `{top,left}` /
+  // `{top,right}` union (the right-align branch only fires when a
+  // `viewportW` option is passed); this call site never passes one, so it's
+  // always the `{top,left}` shape.
+  const a = fixedAnchor(r) as { top: number; left: number };
   menu.style.position = 'fixed';
   menu.style.top = a.top + 'px';
   menu.style.left = a.left + 'px';
@@ -157,15 +161,20 @@ export function openFileMenu(app) {
 
 // ── file pickers + JSON read ────────────────────────────────────────────────
 
-function pickerInput(app, onPick) {
+function pickerInput(app: App, onPick: (file: File) => void): HTMLInputElement {
   return h('input', {
     type: 'file', accept: '.json,application/json', style: { display: 'none' },
-    onchange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) onPick(f); },
+    onchange: (e: Event) => {
+      const target = e.target as HTMLInputElement;
+      const f = target.files && target.files[0];
+      target.value = '';
+      if (f) onPick(f);
+    },
   });
 }
 
 /** Read + parse a JSON library file, then `cb(queries)`. Bad files toast. */
-function readJsonFile(app, file, cb) {
+function readJsonFile(app: App, file: File, cb: (queries: unknown[]) => void): void {
   const reader = new (app.FileReader || globalThis.FileReader)();
   reader.onload = () => {
     try {
@@ -173,7 +182,7 @@ function readJsonFile(app, file, cb) {
         nowISO: new Date(app.wallNow()).toISOString(),
       }).queries);
     }
-    catch (e) { flashToast('✕ ' + ((e && e.message) || e), { document: app.document }); }
+    catch (e) { flashToast('✕ ' + ((e && (e as Error).message) || e), { document: app.document }); }
   };
   reader.onerror = () => flashToast('✕ Could not read file', { document: app.document });
   reader.readAsText(file);
@@ -181,7 +190,7 @@ function readJsonFile(app, file, cb) {
 
 // ── actions ─────────────────────────────────────────────────────────────────
 
-function saveJsonAction(app) {
+function saveJsonAction(app: App): void {
   const qs = app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   app.downloadFile(fileBase(app.state.libraryName.value) + '.json', 'application/json',
@@ -190,7 +199,7 @@ function saveJsonAction(app) {
   flashToast('Saved ' + queries(qs.length) + ' → .json', { document: app.document });
 }
 
-function downloadAction(app, fmt) {
+function downloadAction(app: App, fmt: 'md' | 'sql'): void {
   const qs = app.state.savedQueries;
   if (!qs.length) { flashToast('Nothing to save', { document: app.document }); return; }
   if (fmt === 'md') app.downloadFile(fileBase(app.state.libraryName.value) + '.md', 'text/markdown', buildMarkdownDoc(qs));
@@ -198,7 +207,7 @@ function downloadAction(app, fmt) {
   flashToast('Saved ' + queries(qs.length) + ' → .' + fmt, { document: app.document });
 }
 
-function onReplaceFile(app, file) {
+function onReplaceFile(app: App, file: File): void {
   readJsonFile(app, file, (qs) => {
     if (!qs.length) { flashToast('✕ No queries in file', { document: app.document }); return; }
     if (app.state.savedQueries.length) confirmReplace(app, file.name, qs);
@@ -206,27 +215,27 @@ function onReplaceFile(app, file) {
   });
 }
 
-function doReplace(app, qs, fileName) {
-  replaceLibrary(app.state, qs, fileName, app.saveJSON, app.saveStr, undefined, false);
+function doReplace(app: App, qs: unknown[], fileName: string): void {
+  replaceLibrary(app.state, qs as Record<string, unknown>[], fileName, app.saveJSON, app.saveStr, undefined, false);
   afterLibraryChange(app);
   flashToast('Opened library · ' + queries(qs.length), { document: app.document });
 }
 
-function onAppendFile(app, file) {
+function onAppendFile(app: App, file: File): void {
   readJsonFile(app, file, (qs) => {
     if (!qs.length) { flashToast('✕ No queries in file', { document: app.document }); return; }
-    const { added, updated, skipped } = appendLibrary(app.state, qs, app.saveJSON, undefined, false);
+    const { added, updated, skipped } = appendLibrary(app.state, qs as Record<string, unknown>[], app.saveJSON, undefined, false);
     afterLibraryChange(app);
     flashToast('Added ' + added + ' · updated ' + updated + ' · skipped ' + skipped, { document: app.document });
   });
 }
 
-function newLibraryAction(app) {
+function newLibraryAction(app: App): void {
   if (app.state.savedQueries.length) { confirmNew(app); return; }
   doNew(app);
 }
 
-function doNew(app) {
+function doNew(app: App): void {
   newLibrary(app.state, app.saveJSON, app.saveStr);
   afterLibraryChange(app);
   flashToast('Started a new library', { document: app.document });
@@ -235,15 +244,18 @@ function doNew(app) {
 /** Re-sync the surfaces a library change touches: Save button (tab links may be
  *  pruned) and the saved list (count + rows). The title (name + dirty dot)
  *  repaints itself via the libraryName/libraryDirty effect in createApp. */
-function afterLibraryChange(app) {
+function afterLibraryChange(app: App): void {
   app.updateSaveBtn();
-  app.updateEditorModeUi();
+  // Always defined by the time a library action can run (post-boot,
+  // post-first-renderApp()) — app.types.ts only marks it optional because it's
+  // absent before that first render.
+  app.updateEditorModeUi!();
   renderSavedHistory(app);
 }
 
 // ── confirm dialogs (reuse the modal-backdrop/card visual language) ──────────
 
-function confirmReplace(app, fileName, qs) {
+function confirmReplace(app: App, fileName: string, qs: unknown[]): void {
   const cur = app.state.savedQueries.length;
   openConfirm(app, {
     title: 'Open and replace current library?',
@@ -256,7 +268,7 @@ function confirmReplace(app, fileName, qs) {
   });
 }
 
-function confirmNew(app) {
+function confirmNew(app: App): void {
   const cur = app.state.savedQueries.length;
   openConfirm(app, {
     title: 'Start a new library?',
@@ -267,14 +279,21 @@ function confirmNew(app) {
   });
 }
 
-function openConfirm(app, { title, body, confirmLabel, onConfirm }) {
+interface ConfirmOpts {
+  title: string;
+  body: unknown[];
+  confirmLabel: string;
+  onConfirm: () => void;
+}
+
+function openConfirm(app: App, { title, body, confirmLabel, onConfirm }: ConfirmOpts): void {
   const doc = app.document;
-  const close = () => {
+  const close = (): void => {
     doc.removeEventListener('keydown', onKey, true);
     detachBackdrop();
-    if (app.dom.fileDialog) { app.dom.fileDialog.remove(); app.dom.fileDialog = null; }
+    if (app.dom.fileDialog) { app.dom.fileDialog.remove(); app.dom.fileDialog = undefined; }
   };
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
   const card = h('div', { class: 'fm-dialog-card' },
     h('div', { class: 'fm-dialog-title' }, title),
     h('div', { class: 'fm-dialog-body' }, body),

@@ -14,20 +14,134 @@
 // measurement (`coordsAtPos`/`posAtCoords`) makes event-driven coverage
 // unreliable.
 
+import type { Extension } from '@codemirror/state';
 import { EditorState, Compartment, Annotation, Transaction, Prec } from '@codemirror/state';
+import type { Tooltip } from '@codemirror/view';
 import { EditorView, keymap, dropCursor, hoverTooltip } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxTree } from '@codemirror/language';
 import { sql, SQLDialect } from '@codemirror/lang-sql';
+import type { Completion, CompletionResult } from '@codemirror/autocomplete';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { h } from '../ui/dom.js';
 import { completionContext, rankCompletions, wordAt } from '../core/completions.js';
+import type {
+  AssembledReference, CompletionContext as CoreCompletionContext,
+  CompletionFunctionEntry, CompletionItem as CoreCompletionItem,
+} from '../core/completions.js';
 import { fromScopeAt, pendingColumnLoads } from '../core/from-scope.js';
+import type { PendingLoadDb } from '../core/from-scope.js';
 import { lexSql } from '../core/sql-lex.js';
 import { toSubquery, clamp } from '../core/format.js';
 import { activeTab } from '../state.js';
+import type { AppState } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
+import type { EditorPort, EditorSelection } from './editor-port.types.js';
+
+// ── Local typed contracts ───────────────────────────────────────────────────
+// core/completions.js's own `AssembledReference`/`CompletionContext` shapes
+// are imported directly (below) — this adapter's `app.refData` and the
+// completion-context plumbing match them exactly. `app.completions` keeps its
+// OWN wider local `CompletionItem` (kind: string, not the closed
+// `CompletionKind` union): this adapter renders an unrecognized `kind` as a
+// bare CSS chip rather than rejecting it (see `completionSourceFor`'s
+// `type: it.kind` below), so its own candidate contract is deliberately more
+// permissive than `core/completions.ts`'s closed one.
+
+/** The `applyFor`-relevant subset of a completion candidate — a caller (this
+ *  suite's tests included) may omit `insert`/`caretBack`/other fields; only
+ *  `label`/`insert`/`caretBack` drive how accepting the candidate edits the
+ *  doc. `insert` stays optional to match `core/completions.ts`'s own
+ *  `CompletionItem` (a bare test fixture there never needs to fake it
+ *  either) — `buildCompletions` always sets it in practice. */
+interface ApplyItem {
+  label: string;
+  insert?: string;
+  caretBack?: number;
+}
+
+/** The `infoFor`-relevant subset — the candidate's kind (which doc source to
+ *  use), its label, and the two optional fields a column candidate carries
+ *  when its `detail` is a compacted type summary (#177). */
+interface InfoItem {
+  kind: string;
+  label: string;
+  detail?: string;
+  fullType?: string;
+}
+
+/** The complete completion-candidate shape `app.completions` holds (built by
+ *  core/completions.js's `buildCompletions`, which in practice never emits
+ *  anything outside `CompletionKind` — but this adapter's own contract stays
+ *  open on `kind`, see above). `completionSourceFor` reads every field;
+ *  `rankCompletions`/`resolveScopeAlias` (core/completions.js) read `parent`. */
+interface CompletionItem extends ApplyItem, InfoItem {
+  parent?: string;
+}
+
+/**
+ * The subset of CM6's `CompletionContext` this source reads — `state`,
+ * `pos`, `explicit` — rather than the full class (which also demands
+ * `view`/`tokenBefore`/`matchBefore`/`aborted`/`addEventListener`). The real
+ * class satisfies this shape, so the returned function is still assignable
+ * wherever a real `CompletionSource` is expected (`autocompletion({ override
+ * })` below); tests can also call it directly with a plain
+ * `{ state, pos, explicit }` object, as `CompletionContext`'s own docs
+ * recommend for test code.
+ */
+export interface SqlCompletionContext {
+  state: EditorState;
+  pos: number;
+  explicit: boolean;
+}
+
+/** `langExtensionFor`'s own narrow app slice — just the reference data (or
+ *  its absence — no connection yet). Declared `unknown` (not
+ *  `AssembledReference` directly) so the real, injected `app` controller's
+ *  own placeholder type (`App.refData` in `ui/app.types.ts`, kept loose
+ *  there since nothing else reads its actual shape) is assignable here too —
+ *  `createCodeMirrorEditor` must stay assignable to `env.types.ts`'s
+ *  `Editor?: (app: App) => EditorPort` seam. This adapter is the one real
+ *  consumer of the precise shape, so it narrows with a local `as` at each
+ *  read site instead. */
+interface DialectApp {
+  refData?: unknown;
+}
+
+/** `hoverSourceFor`/`infoFor`'s own narrow app slice: the reference data plus
+ *  the lazily-fetched entity-doc loader — independent of the fuller
+ *  `CodeMirrorEditorApp` the port itself needs (tests call these two
+ *  directly with exactly this shape). */
+interface ReferenceApp extends DialectApp {
+  entityDoc?: (name: string) => Promise<string | null>;
+}
+
+/** The subset of a DOM drag event `handleDrop` reads — real `DragEvent`s (the
+ *  view's own drop listener passes them straight through) and the plain
+ *  fixture objects tests construct both satisfy it. */
+export interface DropEvent {
+  dataTransfer: { getData(type: string): string } | null;
+  clientX: number;
+  clientY: number;
+  preventDefault(): void;
+}
+
+/** The injected app controller's slice this adapter reads/writes: the
+ *  reference/completion data assembled from core/completions.js, the
+ *  lazily-fetched entity-doc loader, the `dom.sqlEditorView` handoff other
+ *  app code reads (e2e/debug only — the app itself talks through the port),
+ *  the tab/schema state this port syncs against, and the FROM-scope column
+ *  loader (#84). */
+export interface CodeMirrorEditorApp extends ReferenceApp {
+  state: AppState;
+  dom: { sqlEditorView?: EditorView };
+  /** `unknown` for the same reason as `DialectApp.refData` above (matches
+   *  `App.completions`'s own loose `Json` placeholder); narrowed with a
+   *  local `as` in `completionSourceFor`. */
+  completions?: unknown;
+  actions: { loadColumns(db: string, table: string): Promise<void> };
+}
 
 // Programmatic state syncs (tab switch, external tab.sqlDraft reconcile) must not
 // reach onDocChange subscribers — the app-level subscriber writes tab.sqlDraft +
@@ -35,11 +149,11 @@ import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.
 // and port edits (insertAtCursor/replaceDocument/drop) DO emit, matching the
 // textarea adapter's input-event semantics. Sync transactions also stay out
 // of the undo history: ⌘Z must not resurrect a doc the app already replaced.
-export const syncTx = Annotation.define(); // exported for the mixed-update emit spec
+export const syncTx = Annotation.define<boolean>(); // exported for the mixed-update emit spec
 const syncAnnotations = () => [syncTx.of(true), Transaction.addToHistory.of(false)];
 // The whole-document change spec — shared by replaceDocument and both
 // syncFromState reconcile paths so their shapes can't drift.
-const fullReplace = (state, text) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
+const fullReplace = (state: EditorState, text: string) => ({ changes: { from: 0, to: state.doc.length, insert: text } });
 
 // String/comment/backtick-ident syntax nodes — the contexts where bracket
 // auto-close and hover docs must stay quiet (the old adapter's maskLiterals
@@ -56,8 +170,10 @@ const LITERAL_NODE = /String|Comment|QuotedIdentifier/;
  * the three quotes (parity with the deleted core/editor-brackets.js) — `{`
  * deliberately doesn't pair (it would fight the #134 `{name:Type}` variables).
  */
-export function langExtensionFor(app) {
-  const ref = app.refData;
+export function langExtensionFor(app: DialectApp): Extension[] {
+  // `as`: `app.refData` is `unknown` here (see `DialectApp`'s doc comment) —
+  // this adapter is the one real consumer of its actual shape.
+  const ref = app.refData as AssembledReference | null | undefined;
   const dialect = SQLDialect.define({
     keywords: (ref ? ref.keywords : []).join(' ').toLowerCase(),
     builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
@@ -99,7 +215,7 @@ const STEP_OVER = new Set([')', ']', "'", '"', '`']);
  * composition, and only act when the reported range IS the selection (a
  * browser-generated correction elsewhere must not be re-anchored to it).
  */
-export function inputGuards(view, from, to, text) {
+export function inputGuards(view: EditorView, from: number, to: number, text: string): boolean {
   if (text.length !== 1) return false;
   if (view.compositionStarted || view.state.readOnly) return false;
   const sel = view.state.selection.main;
@@ -127,7 +243,7 @@ export function inputGuards(view, from, to, text) {
  * schema/reference updates need no reconfigure. Never queries — `info` resolves
  * through app.entityDoc's lazy cache, and only for the row the user rests on.
  */
-export function completionSourceFor(app) {
+export function completionSourceFor(app: CodeMirrorEditorApp): (ctx: SqlCompletionContext) => CompletionResult | null {
   return (ctx) => {
     // completionContext reads at most to the end of the caret's token — slice
     // to the line end instead of serializing the whole rope per keystroke
@@ -137,20 +253,27 @@ export function completionSourceFor(app) {
     // Lex the caret prefix once and share it: both completionContext (open-
     // backtick detection) and fromScopeAt need the same token stream.
     const toks = lexSql(doc);
-    const c = completionContext(doc, ctx.pos, toks);
+    const c: CoreCompletionContext = completionContext(doc, ctx.pos, toks);
     if (!c.qualified && c.word.length < 1 && !ctx.explicit) return null;
     // FROM-aware ranking (#84): resolve `e.` → events, and scope unqualified
     // columns to the statement's FROM/JOIN tables. The slice already covers the
     // lines before the caret, so a FROM above the caret is in view; a FROM below
     // it degrades gracefully to the global pool (no scope).
     c.scope = fromScopeAt(doc, ctx.pos, toks);
-    const items = rankCompletions(app.completions || [], c);
+    // `as`: `app.completions` is `unknown` here (see `CodeMirrorEditorApp`'s
+    // doc comment). Real values are always core/completions.ts's own
+    // `buildCompletions` output (`CompletionKind`-typed); this adapter's own
+    // `CompletionItem` deliberately keeps `kind: string` open for its
+    // pass-through rendering (see the top-of-file note), and
+    // `rankCompletions` only ever compares `kind` against its own known
+    // literals, so the cast is behaviorally safe either way.
+    const items = rankCompletions((app.completions as CompletionItem[] | undefined || []) as CoreCompletionItem[], c);
     if (!items.length) return null;
     return {
       from: c.from,
       to: c.to,
       filter: false,
-      options: items.map((it) => ({
+      options: items.map((it): Completion => ({
         label: it.label,
         detail: it.detail || undefined,
         type: it.kind, // chip glyph via .cm-completionIcon-<kind>; unknown kinds get the base '·'
@@ -164,30 +287,48 @@ export function completionSourceFor(app) {
 // How accepting a candidate edits the doc. Functions insert `name()` with the
 // caret pulled between the parens (`caretBack`), so it needs a custom apply —
 // a plain string apply would land the caret after the `)`.
-export function applyFor(it) {
+export function applyFor(it: ApplyItem): Completion['apply'] {
   if (!it.caretBack) return it.insert === it.label ? undefined : it.insert;
+  const caretBack = it.caretBack;
+  // `!`: a `caretBack` candidate always pairs with `insert` in practice
+  // (buildCompletions' only caretBack-producing branch sets both together).
+  const insert = it.insert!;
   return (view, _completion, from, to) => {
     view.dispatch({
-      changes: { from, to, insert: it.insert },
-      selection: { anchor: from + it.insert.length - it.caretBack },
+      changes: { from, to, insert },
+      selection: { anchor: from + insert.length - caretBack },
       userEvent: 'input.complete',
     });
   };
 }
+
+/** The `() => Node` (or async-resolving) shape CM6's `Completion.info` /
+ *  `Tooltip.create` info functions must return — a bare string is only legal
+ *  when `info` itself IS the string; CM6's addInfoPane appendChild()s the
+ *  result, so a FUNCTION must yield a real DOM node. */
+type InfoFn = () => Node | null | Promise<Node | null>;
 
 // The active row's description: static keyword docs immediately, function
 // docs lazily via app.entityDoc (cached, one query per name ever — #27).
 // CM6 shows it as a side tooltip (the old dropdown used a footer). An `info`
 // FUNCTION must yield a DOM node (a bare string is only legal when `info`
 // itself is the string) — CM6's addInfoPane appendChild()s the result.
-export function infoFor(app, it) {
-  const doc = (text) => (text ? h('div', null, text) : null);
+export function infoFor(app: ReferenceApp, it: InfoItem): InfoFn | undefined {
+  const doc = (text: string | null | undefined): Node | null => (text ? h('div', null, text) : null);
   if (it.kind === 'keyword') {
-    return () => doc(app.refData && app.refData.keywordDocs[it.label.toUpperCase()]);
+    // `as`: `app.refData` is `unknown` (see `DialectApp`'s doc comment); read
+    // fresh on every call (not hoisted) — CM6 may invoke this `info` callback
+    // well after refData has since changed (#25 load lands mid-session).
+    return () => {
+      const refData = app.refData as AssembledReference | null | undefined;
+      return doc(refData && refData.keywordDocs[it.label.toUpperCase()]);
+    };
   }
   if (it.kind === 'fn' || it.kind === 'agg' || it.kind === 'cast') {
     if (!app.entityDoc) return undefined;
-    return () => Promise.resolve(app.entityDoc(it.label)).then(doc);
+    // `!`: just checked above; a deferred closure doesn't retain that
+    // narrowing across the function boundary, but the guard already ran.
+    return () => Promise.resolve(app.entityDoc!(it.label)).then(doc);
   }
   // A column whose `detail` is a compacted type summary (#177) exposes the full
   // declared type here — CM6's detail column has no native title fallback.
@@ -202,8 +343,9 @@ export function infoFor(app, it) {
 // then lower (server keys are mostly canonical-lowercase), then UPPER. Own
 // properties only: a column named `constructor` must not hover a phantom card
 // off Object.prototype.
-const own = (m, k) => (Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined);
-const lookupFn = (functions, word) =>
+const own = <T>(m: Record<string, T>, k: string): T | undefined =>
+  (Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined);
+const lookupFn = (functions: Record<string, CompletionFunctionEntry>, word: string): CompletionFunctionEntry | undefined =>
   own(functions, word) || own(functions, word.toLowerCase()) || own(functions, word.toUpperCase());
 
 /**
@@ -213,16 +355,18 @@ const lookupFn = (functions, word) =>
  * Signature help (the caret-following arg highlighter) is dropped in v0 —
  * #60 rebuilds docs properly on this foundation.
  */
-export function hoverSourceFor(app) {
+export function hoverSourceFor(app: ReferenceApp): (view: EditorView, pos: number) => Tooltip | null {
   return (view, pos) => {
-    if (!app.refData) return null;
+    // `as`: `app.refData` is `unknown` here (see `DialectApp`'s doc comment).
+    const refData = app.refData as AssembledReference | null | undefined;
+    if (!refData) return null;
     if (LITERAL_NODE.test(syntaxTree(view.state).resolveInner(pos, 0).name)) return null;
     // Identifiers can't span lines — scan the line, not the whole doc.
     const line = view.state.doc.lineAt(pos);
     const w = wordAt(line.text, pos - line.from);
     if (!w) return null;
-    const kwDoc = app.refData.keywordDocs[w.word.toUpperCase()];
-    const fn = lookupFn(app.refData.functions, w.word);
+    const kwDoc = refData.keywordDocs[w.word.toUpperCase()];
+    const fn = lookupFn(refData.functions, w.word);
     if (!kwDoc && !fn) return null;
     return {
       pos: line.from + w.from,
@@ -257,10 +401,10 @@ export function hoverSourceFor(app) {
  * text drop can't double-insert). Exported for direct tests — happy-dom's
  * posAtCoords can't exercise the coordinate fallback via real events.
  */
-export function handleDrop(app, view, e) {
+export function handleDrop(app: CodeMirrorEditorApp, view: EditorView, e: DropEvent): boolean {
   const dt = e.dataTransfer;
   if (!dt) return false;
-  const insertAt = (text) => {
+  const insertAt = (text: string): boolean => {
     const at = view.posAtCoords({ x: e.clientX, y: e.clientY });
     const pos = at == null ? view.state.selection.main.head : at;
     e.preventDefault();
@@ -288,7 +432,7 @@ export function handleDrop(app, view, e) {
 
 // Tab inserts two literal spaces (parity with the textarea editor — no indent
 // magic); an open completion's Tab-accept is bound ahead of it.
-export function insertTwoSpaces(view) {
+export function insertTwoSpaces(view: EditorView): boolean {
   view.dispatch(view.state.replaceSelection('  '), { userEvent: 'input.type', scrollIntoView: true });
   return true;
 }
@@ -308,9 +452,13 @@ const COLUMN_LOAD_DELAY_MS = 300;
  * open dropdown only after re-checking the view is still live (destroy race).
  * Exported for direct tests (timer-free).
  */
-export function loadScopeColumns(app, view) {
+export function loadScopeColumns(app: CodeMirrorEditorApp, view: EditorView): Promise<boolean> {
   const scope = fromScopeAt(view.state.doc.toString(), view.state.selection.main.head);
-  const pending = pendingColumnLoads(scope, app.state.schema.value);
+  // `as`: `state.ts`'s schema signal is intentionally kept as `unknown[] |
+  // null` (the schema shape is owned by other modules, not state.ts);
+  // `pendingColumnLoads` only ever reads the `{db, tables:[{name, columns}]}`
+  // shape it declares itself as `PendingLoadDb`.
+  const pending = pendingColumnLoads(scope, app.state.schema.value as PendingLoadDb[] | null);
   if (!pending.length) return Promise.resolve(false);
   return Promise.all(pending.map((p) => app.actions.loadColumns(p.db, p.table))).then(() => true);
 }
@@ -321,20 +469,19 @@ export function loadScopeColumns(app, view) {
  * renderApp re-run (e.g. sign-out → sign-in) passes a fresh container and the
  * live view.dom is reparented into it — same view, same subscriptions, no
  * zombies. destroy() is terminal (see editor-port.js).
- * @returns {import('./editor-port.js').EditorPort}
  */
-export function createCodeMirrorEditor(app) {
-  const subs = new Set();
-  const emit = (value) => { for (const cb of subs) cb(value); };
+export function createCodeMirrorEditor(app: CodeMirrorEditorApp): EditorPort {
+  const subs = new Set<(value: string) => void>();
+  const emit = (value: string): void => { for (const cb of subs) cb(value); };
   const langCompartment = new Compartment();
-  const tabStates = new Map(); // tabId → parked EditorState (per-tab undo)
+  const tabStates = new Map<string, EditorState>(); // tabId → parked EditorState (per-tab undo)
   // Resolved lazily at first mount, NOT at factory time: createApp constructs
   // the port before it assembles the built-in fallback refData, and an eager
   // snapshot here would mount an empty dialect (no keywords at all).
-  let langExt = null;
-  let view = null;
-  let shownTabId = null;
-  let colTimer = null; // debounce handle for the FROM-scope column prefetch (#84)
+  let langExt: Extension[] | null = null;
+  let view: EditorView | null = null;
+  let shownTabId: string | null = null;
+  let colTimer: ReturnType<typeof setTimeout> | null = null; // debounce handle for the FROM-scope column prefetch (#84)
 
   // Schedule the debounced idle-tick column load (#84). Coalesces a typing
   // burst into one tick; cleared on destroy so a torn-down view never fires.
@@ -342,7 +489,7 @@ export function createCodeMirrorEditor(app) {
   // idiom) before touching the view: a destroy() between tick and resolve nulls
   // `view`, and re-running the completion source on a torn-down view would
   // throw. Refresh a live, open completion so freshly-loaded columns appear.
-  const scheduleColumnLoad = () => {
+  const scheduleColumnLoad = (): void => {
     if (colTimer) clearTimeout(colTimer);
     colTimer = setTimeout(() => {
       colTimer = null;
@@ -354,14 +501,16 @@ export function createCodeMirrorEditor(app) {
     }, COLUMN_LOAD_DELAY_MS);
   };
 
-  const extensions = () => [
+  const extensions = (): Extension[] => [
     ...codePresentationExtensions(),
     history(),
     dropCursor(),
     bracketMatching(),
     Prec.high(EditorView.inputHandler.of(inputGuards)),
     closeBrackets(),
-    langCompartment.of(langExt),
+    // `!`: freshState (the only caller of extensions()) always resolves
+    // langExt before building the extension set.
+    langCompartment.of(langExt!),
     autocompletion({ override: [completionSourceFor(app)] }),
     hoverTooltip(hoverSourceFor(app)),
     codeSearchKeymap,
@@ -391,13 +540,13 @@ export function createCodeMirrorEditor(app) {
     }),
   ];
 
-  const freshState = (doc) => {
+  const freshState = (doc: string): EditorState => {
     if (!langExt) langExt = langExtensionFor(app);
     return EditorState.create({ doc, extensions: extensions() });
   };
 
   return {
-    mount: (container) => {
+    mount: (container: Element) => {
       if (!view) {
         const tab = activeTab(app.state); // state guarantees ≥1 tab
         shownTabId = tab.id;
@@ -418,17 +567,17 @@ export function createCodeMirrorEditor(app) {
     focus: () => { if (view) view.focus(); },
     hasFocus: () => !!view && view.hasFocus,
     getValue: () => (view ? view.state.doc.toString() : ''),
-    getSelection: () => {
+    getSelection: (): EditorSelection => {
       if (!view) return { start: 0, end: 0, text: '' };
       const { from, to } = view.state.selection.main;
       return { start: from, end: to, text: view.state.sliceDoc(from, to) };
     },
-    insertAtCursor: (text) => {
+    insertAtCursor: (text: string) => {
       if (!view) return;
       view.dispatch(view.state.replaceSelection(text), { userEvent: 'input.paste', scrollIntoView: true });
       view.focus();
     },
-    replaceDocument: (text) => {
+    replaceDocument: (text: string) => {
       if (!view) return;
       if (view.state.doc.length === text.length && view.state.doc.toString() === text) return; // idempotent Format re-run
       view.dispatch({
@@ -444,7 +593,7 @@ export function createCodeMirrorEditor(app) {
       const v = view;
       queueMicrotask(() => { if (view === v) v.focus(); });
     },
-    revealOffset: (pos) => {
+    revealOffset: (pos: number) => {
       if (!view) return;
       view.dispatch({ selection: { anchor: clamp(pos | 0, 0, view.state.doc.length) }, scrollIntoView: true });
       view.focus();
@@ -464,13 +613,15 @@ export function createCodeMirrorEditor(app) {
         }
         return;
       }
-      if (ids.has(shownTabId)) tabStates.set(shownTabId, view.state); // park the outgoing tab (undo intact); a just-closed tab isn't kept
+      // `!`: shownTabId is set alongside `view` in mount() (both null before
+      // the first mount), so once `view` is live it is always a real tab id.
+      if (ids.has(shownTabId!)) tabStates.set(shownTabId!, view.state); // park the outgoing tab (undo intact); a just-closed tab isn't kept
       let next = tabStates.get(tab.id) || null;
       if (next) {
         // A parked state may predate a refData arrival or an external tab.sqlDraft
         // write — re-apply the current language and reconcile the doc via
         // detached updates (undo history survives; no view listener fires).
-        next = next.update({ effects: langCompartment.reconfigure(langExt) }).state;
+        next = next.update({ effects: langCompartment.reconfigure(langExt!) }).state;
         if (next.doc.length !== tab.sqlDraft.length || next.doc.toString() !== tab.sqlDraft) {
           next = next.update({ ...fullReplace(next, tab.sqlDraft), annotations: syncAnnotations() }).state;
         }
@@ -492,6 +643,6 @@ export function createCodeMirrorEditor(app) {
       langExt = langExtensionFor(app);
       if (view) view.dispatch({ effects: langCompartment.reconfigure(langExt) });
     },
-    onDocChange: (cb) => { subs.add(cb); return () => subs.delete(cb); },
+    onDocChange: (cb: (value: string) => void) => { subs.add(cb); return () => subs.delete(cb); },
   };
 }

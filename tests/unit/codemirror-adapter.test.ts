@@ -7,35 +7,41 @@ import {
   infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, inputGuards, syncTx,
   loadScopeColumns,
 } from '../../src/editor/codemirror-adapter.js';
+import type { CodeMirrorEditorApp, DropEvent, SqlCompletionContext } from '../../src/editor/codemirror-adapter.js';
 import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { syntaxTree } from '@codemirror/language';
-import { activeTab, newTabObj } from '../../src/state.js';
+import { createState, activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
-import { makeApp as baseApp } from '../helpers/fake-app.js';
 
 // The CM6 adapter runs against the REAL CodeMirror under happy-dom — no fake
 // editor. Construction, dispatch, undo, and keymaps all work headless; only
 // coordinate measurement doesn't, which is why the inner sources/handlers are
 // exported and invoked directly where needed.
 
-// The shared fake-app, narrowed to what the adapter reads: a fresh dom bag
-// (mount registers editorView into it), reference data, and NO entityDoc by
-// default (infoFor treats a missing loader as "no info").
-const makeApp = (over = {}) => baseApp({
+// A minimal `app` controller stub, narrowed to what the adapter reads: fresh
+// state + a fresh dom bag (mount registers editorView into it), built-in
+// reference data, and NO entityDoc by default (infoFor treats a missing
+// loader as "no info"). Self-contained (not tests/helpers/fake-app.js, which
+// isn't one of this change's files and doesn't statically declare the
+// refData/completions members this adapter needs) — mirrors
+// spec-editor.test.ts's own minimal `makeApp` for the same editor/* seam.
+const makeApp = (over: Partial<CodeMirrorEditorApp> = {}): CodeMirrorEditorApp => ({
+  state: createState({ loadStr: (key, fallback) => fallback, loadJSON: (key, fallback) => fallback }),
   dom: {},
   refData: assembleReferenceData(null),
   completions: [],
   entityDoc: undefined,
+  actions: { loadColumns: vi.fn() },
   ...over,
 });
 
 // Mount a fresh port + view; subscribe like app.js does (#143) so tab.sqlDraft
 // tracks the view.
-function mounted(over = {}) {
+function mounted(over: Partial<CodeMirrorEditorApp> = {}) {
   const app = makeApp(over);
   const port = createCodeMirrorEditor(app);
-  const changes = [];
+  const changes: string[] = [];
   port.onDocChange((v) => {
     changes.push(v);
     const tab = activeTab(app.state);
@@ -45,7 +51,8 @@ function mounted(over = {}) {
   const host = document.createElement('div');
   document.body.appendChild(host);
   port.mount(host);
-  return { app, port, host, changes, view: app.dom.sqlEditorView };
+  // `!`: `mount()` above always assigns a live view synchronously.
+  return { app, port, host, changes, view: app.dom.sqlEditorView! };
 }
 
 describe('EditorPort surface (pre-mount tolerance)', () => {
@@ -69,11 +76,11 @@ describe('mount / re-mount / destroy', () => {
     const app = makeApp();
     activeTab(app.state).sqlDraft = 'SELECT 1';
     const port = createCodeMirrorEditor(app);
-    const seen = [];
+    const seen: string[] = [];
     port.onDocChange((v) => seen.push(v));
     const a = document.createElement('div');
     port.mount(a);
-    const view = app.dom.sqlEditorView;
+    const view = app.dom.sqlEditorView!;
     expect(a.querySelector('.cm-editor')).toBe(view.dom);
     expect(port.getValue()).toBe('SELECT 1');
     // renderApp re-run (sign-out → sign-in): new container, same live view.
@@ -197,7 +204,7 @@ describe('global-chord bubbling (the ⌘↵ acceptance rule)', () => {
 });
 
 describe('per-tab EditorState (syncFromState)', () => {
-  const addTab = (app, id, sqlText) => {
+  const addTab = (app: CodeMirrorEditorApp, id: string, sqlText: string) => {
     const t = newTabObj(id);
     t.sqlDraft = sqlText;
     app.state.tabs.value = [...app.state.tabs.value, t];
@@ -253,7 +260,8 @@ describe('per-tab EditorState (syncFromState)', () => {
     port.syncFromState();
     app.state.activeTabId.value = 't1';
     port.syncFromState();
-    app.state.tabs.value.find((t) => t.id === 't2').sqlDraft = 'two rewritten';
+    // `!`: 't2' was just added above.
+    app.state.tabs.value.find((t) => t.id === 't2')!.sqlDraft = 'two rewritten';
     const emitted = changes.length;
     app.state.activeTabId.value = 't2';
     port.syncFromState();
@@ -301,8 +309,9 @@ describe('per-tab EditorState (syncFromState)', () => {
   it('refreshReference() reconfigures the live view and parked states on restore', () => {
     const { port, app } = mounted();
     port.replaceDocument('select magicword from t');
+    // t2's own SQL is irrelevant to this test — only used as a vehicle to
+    // switch away from and back to t1 (no assertion ever reads t2's content).
     const t2 = newTabObj('t2');
-    t2.sql = 'select 2';
     app.state.tabs.value = [...app.state.tabs.value, t2];
     app.state.activeTabId.value = 't2';
     port.syncFromState(); // t1 parked with the OLD dialect
@@ -315,7 +324,7 @@ describe('per-tab EditorState (syncFromState)', () => {
     app.state.activeTabId.value = 't1';
     port.syncFromState(); // restore re-applies the current dialect to the parked state
     expect(port.getValue()).toBe('select magicword from t');
-    const kw = app.dom.sqlEditorView.dom.querySelectorAll('.sql-keyword');
+    const kw = app.dom.sqlEditorView!.dom.querySelectorAll('.sql-keyword');
     const texts = [...kw].map((n) => n.textContent);
     expect(texts).toContain('magicword'); // the new server keyword set took effect
   });
@@ -332,13 +341,13 @@ describe('langExtensionFor', () => {
 
 describe('langExtensionFor — ClickHouse dialect flags (#182)', () => {
   const ext = langExtensionFor({ refData: assembleReferenceData(null) });
-  const nodesOf = (doc) => {
+  const nodesOf = (doc: string): { name: string; from: number; to: number }[] => {
     const st = EditorState.create({ doc, extensions: ext });
-    const out = [];
-    syntaxTree(st).iterate({ enter: (n) => out.push({ name: n.name, from: n.from, to: n.to }) });
+    const out: { name: string; from: number; to: number }[] = [];
+    syntaxTree(st).iterate({ enter: (n) => { out.push({ name: n.name, from: n.from, to: n.to }); } });
     return out;
   };
-  const has = (doc, name) => nodesOf(doc).some((n) => n.name === name);
+  const has = (doc: string, name: string) => nodesOf(doc).some((n) => n.name === name);
 
   // The core scanner (sql-spans.js) is authoritative; these lock the CM6
   // editor behavior that is actually available, not exact parity.
@@ -389,7 +398,7 @@ describe('completionSourceFor', () => {
     refData: ref,
   });
   const src = completionSourceFor(app);
-  const ctx = (doc, pos, explicit = false) => ({ state: EditorState.create({ doc }), pos, explicit });
+  const ctx = (doc: string, pos: number, explicit = false): SqlCompletionContext => ({ state: EditorState.create({ doc }), pos, explicit });
 
   it('returns null before the first character unless explicit', () => {
     expect(src(ctx('', 0))).toBe(null);
@@ -397,7 +406,7 @@ describe('completionSourceFor', () => {
   });
 
   it('serves the core ranking unfiltered with our from/to', () => {
-    const r = src(ctx('sel', 3));
+    const r = src(ctx('sel', 3))!;
     expect(r.filter).toBe(false);
     expect(r.from).toBe(0);
     expect(r.to).toBe(3);
@@ -407,14 +416,14 @@ describe('completionSourceFor', () => {
   });
 
   it('passes the kind through as the icon type and omits missing detail', () => {
-    const r = src(ctx('odd', 3));
-    const o = r.options.find((x) => x.label === 'odd');
+    const r = src(ctx('odd', 3))!;
+    const o = r.options.find((x) => x.label === 'odd')!;
     expect(o.type).toBe('mystery'); // unknown kinds render the base '·' chip via CSS
     expect(o.detail).toBeUndefined();
   });
 
   it('qualified table.column completion', () => {
-    const r = src(ctx('SELECT trips.f', 14));
+    const r = src(ctx('SELECT trips.f', 14))!;
     expect(r.options.map((o) => o.label)).toEqual(['fare']);
   });
 
@@ -441,7 +450,7 @@ describe('completionSourceFor', () => {
     });
     const s = completionSourceFor(scoped);
     // `e.` with `FROM events e` on the same line → events' columns, not unrelated
-    const r = s(ctx('SELECT e. FROM events e', 9));
+    const r = s(ctx('SELECT e. FROM events e', 9))!;
     expect(r.options.map((o) => o.label)).toEqual(['ts']);
   });
 });
@@ -456,7 +465,10 @@ describe('applyFor', () => {
     const { view } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'su' }, selection: { anchor: 2 } });
     const apply = applyFor({ label: 'sum', insert: 'sum()', caretBack: 1 });
-    apply(view, null, 0, 2);
+    if (typeof apply !== 'function') throw new Error('expected a function apply');
+    // `null!`: this suite's own `_completion` arg is never read by applyFor's
+    // returned function — see spec-editor.test.ts's identical convention.
+    apply(view, null!, 0, 2);
     expect(view.state.doc.toString()).toBe('sum()');
     expect(view.state.selection.main.head).toBe(4); // between the parens
   });
@@ -466,18 +478,18 @@ describe('infoFor', () => {
   const ref = assembleReferenceData(null);
   it('keywords resolve the static doc as a DOM node (CM6 appendChild()s an info fn result)', () => {
     const app = makeApp({ refData: ref });
-    const node = infoFor(app, { kind: 'keyword', label: 'FORMAT' })();
+    const node = infoFor(app, { kind: 'keyword', label: 'FORMAT' })!() as Node;
     expect(node.nodeType).toBe(1); // a bare string would throw in CM6's addInfoPane
     expect(node.textContent).toMatch(/output format/);
-    expect(infoFor(app, { kind: 'keyword', label: 'ZZZ' })()).toBe(null);
-    expect(infoFor(makeApp({ refData: null }), { kind: 'keyword', label: 'FORMAT' })()).toBe(null);
+    expect(infoFor(app, { kind: 'keyword', label: 'ZZZ' })!()).toBe(null);
+    expect(infoFor(makeApp({ refData: null }), { kind: 'keyword', label: 'FORMAT' })!()).toBe(null);
   });
   it('functions fetch lazily through app.entityDoc; empty doc → null', async () => {
-    const app = makeApp({ entityDoc: vi.fn(async (n) => (n === 'sum' ? 'adds things' : '')) });
-    const node = await infoFor(app, { kind: 'agg', label: 'sum' })();
+    const app = makeApp({ entityDoc: vi.fn(async (n: string) => (n === 'sum' ? 'adds things' : '')) });
+    const node = (await infoFor(app, { kind: 'agg', label: 'sum' })!()) as Node;
     expect(node.nodeType).toBe(1);
     expect(node.textContent).toBe('adds things');
-    await expect(infoFor(app, { kind: 'fn', label: 'nope' })()).resolves.toBe(null);
+    await expect(infoFor(app, { kind: 'fn', label: 'nope' })!() as Promise<Node | null>).resolves.toBe(null);
   });
   it('no entityDoc / other kinds → no info', () => {
     expect(infoFor(makeApp(), { kind: 'fn', label: 'sum' })).toBeUndefined();
@@ -485,7 +497,7 @@ describe('infoFor', () => {
   });
   it('a column with a compacted type exposes the full declared type; an unchanged one stays quiet (#177)', () => {
     const full = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
-    const node = infoFor(makeApp(), { kind: 'column', label: 'state', detail: 'Enum8(4 values)', fullType: full })();
+    const node = infoFor(makeApp(), { kind: 'column', label: 'state', detail: 'Enum8(4 values)', fullType: full })!() as Node;
     expect(node.nodeType).toBe(1); // a DOM node, as CM6's addInfoPane requires
     expect(node.textContent).toBe(full);
     // detail === fullType (nothing was hidden) → no info pane noise
@@ -519,10 +531,10 @@ describe('hoverSourceFor', () => {
     // Line 3 — pins the line.from offset arithmetic (word lookup AND tooltip range)
     view.dispatch({ changes: { from: 0, to: 0, insert: '\n\nmystery PREWHERE' } });
     expect(hover(view, 4)).toBe(null);
-    const tip = hover(view, 12);
+    const tip = hover(view, 12)!;
     expect(tip.pos).toBe(10);
     expect(tip.end).toBe(18);
-    expect(tip.create().dom.textContent).toMatch(/before reading other columns/);
+    expect(tip.create(view).dom.textContent).toMatch(/before reading other columns/);
   });
 
   it('functions show sig → ret + description; missing desc fetches via entityDoc', async () => {
@@ -530,31 +542,45 @@ describe('hoverSourceFor', () => {
     const { view } = mounted({ refData: ref });
     const hover = hoverSourceFor({ refData: ref, entityDoc });
     view.dispatch({ changes: { from: 0, to: 0, insert: 'described bare' } });
-    const rich = hover(view, 3).create().dom;
+    const rich = hover(view, 3)!.create(view).dom;
     expect(rich.textContent).toContain('described(x)');
     expect(rich.textContent).toContain('→ UInt8');
     expect(rich.textContent).toContain('has a doc');
     expect(entityDoc).not.toHaveBeenCalled(); // desc already known — no fetch
-    const lazy = hover(view, 12).create().dom;
+    const lazy = hover(view, 12)!.create(view).dom;
     expect(lazy.textContent).toContain('bare()'); // sig fallback
     await Promise.resolve();
-    expect(lazy.querySelector('.hover-doc').textContent).toBe('fetched doc');
+    expect(lazy.querySelector('.hover-doc')!.textContent).toBe('fetched doc');
     // no entityDoc injected → the empty desc just stays empty
-    const noFetch = hoverSourceFor({ refData: ref })(view, 12).create().dom;
-    expect(noFetch.querySelector('.hover-doc').textContent).toBe('');
+    const noFetch = hoverSourceFor({ refData: ref })(view, 12)!.create(view).dom;
+    expect(noFetch.querySelector('.hover-doc')!.textContent).toBe('');
   });
 });
 
 describe('handleDrop', () => {
-  const evt = (data, coords = { clientX: 0, clientY: 0 }) => ({
-    dataTransfer: { getData: (t) => data[t] || '' },
+  const evt = (data: Record<string, string>, coords: { clientX: number; clientY: number } = { clientX: 0, clientY: 0 }): DropEvent => ({
+    dataTransfer: { getData: (t: string) => data[t] || '' },
     preventDefault: vi.fn(),
     ...coords,
   });
 
+  /** A `posAtCoords` stub honoring CM6's real overloaded signature (its
+   *  `precise: false` call form promises a non-null `number`; this suite
+   *  never exercises that form, only the single-argument one that may
+   *  return `null`) — simulates a pointer position, including "no position
+   *  found" (`null`) for the coordinate-fallback tests. */
+  function stubPosAtCoords(pos: number | null): EditorView['posAtCoords'] {
+    function stub(coords: { x: number; y: number }, precise: false): number;
+    function stub(coords: { x: number; y: number }): number | null;
+    function stub(): number | null {
+      return pos;
+    }
+    return stub;
+  }
+
   it('ignores events without dataTransfer or without our MIME types', () => {
     const { view, app } = mounted();
-    expect(handleDrop(app, view, { dataTransfer: null })).toBe(false);
+    expect(handleDrop(app, view, { dataTransfer: null } as DropEvent)).toBe(false);
     const e = evt({ 'text/plain': 'hi' });
     expect(handleDrop(app, view, e)).toBe(false);
     expect(e.preventDefault).not.toHaveBeenCalled();
@@ -563,7 +589,7 @@ describe('handleDrop', () => {
   it('inserts a schema identifier at the pointer position (what dropCursor promised)', () => {
     const { view, app, changes } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT  FROM t' }, selection: { anchor: 0 } });
-    view.posAtCoords = () => 7; // the pointer, not the parked caret
+    view.posAtCoords = stubPosAtCoords(7); // the pointer, not the parked caret
     const e = evt({ [IDENT_MIME]: 'fare' });
     expect(handleDrop(app, view, e)).toBe(true);
     expect(e.preventDefault).toHaveBeenCalled();
@@ -575,7 +601,7 @@ describe('handleDrop', () => {
   it('falls back to the caret when the identifier drop point maps to no position', () => {
     const { view, app } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'ab' }, selection: { anchor: 1 } });
-    view.posAtCoords = () => null;
+    view.posAtCoords = stubPosAtCoords(null);
     expect(handleDrop(app, view, evt({ [IDENT_MIME]: 'X' }))).toBe(true);
     expect(view.state.doc.toString()).toBe('aXb');
   });
@@ -583,7 +609,7 @@ describe('handleDrop', () => {
   it('inserts a column type at the pointer position, focuses the editor, and consumes the event once', () => {
     const { view, app, changes } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: '{operation:}' }, selection: { anchor: 0 } });
-    view.posAtCoords = () => 11; // between the ':' and the closing '}'
+    view.posAtCoords = stubPosAtCoords(11); // between the ':' and the closing '}'
     const e = evt({ [COLUMN_TYPE_MIME]: "Enum16('Close' = -11, 'Error' = -1)" });
     expect(handleDrop(app, view, e)).toBe(true);
     expect(e.preventDefault).toHaveBeenCalledTimes(1);
@@ -595,7 +621,7 @@ describe('handleDrop', () => {
   it('falls back to the caret when a type-drop coordinate maps to no position', () => {
     const { view, app } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'ab' }, selection: { anchor: 1 } });
-    view.posAtCoords = () => null;
+    view.posAtCoords = stubPosAtCoords(null);
     expect(handleDrop(app, view, evt({ [COLUMN_TYPE_MIME]: 'UInt64' }))).toBe(true);
     expect(view.state.doc.toString()).toBe('aUInt64b');
   });
@@ -607,7 +633,7 @@ describe('handleDrop', () => {
 
   it('identifier precedence wins when both IDENT_MIME and COLUMN_TYPE_MIME are present', () => {
     const { view, app } = mounted();
-    view.posAtCoords = () => 0;
+    view.posAtCoords = stubPosAtCoords(0);
     const e = evt({ [IDENT_MIME]: 'col1', [COLUMN_TYPE_MIME]: 'UInt64' });
     expect(handleDrop(app, view, e)).toBe(true);
     expect(view.state.doc.toString()).toBe('col1');
@@ -616,7 +642,7 @@ describe('handleDrop', () => {
   it('drops a saved query as a subquery at the pointer position', () => {
     const { view, app } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'xx' }, selection: { anchor: 0 } });
-    view.posAtCoords = () => 2; // pointer maps past the caret
+    view.posAtCoords = stubPosAtCoords(2); // pointer maps past the caret
     const e = evt({ [SUBQUERY_MIME]: 'SELECT 1' });
     expect(handleDrop(app, view, e)).toBe(true);
     expect(view.state.doc.toString()).toBe('xx(\nSELECT 1\n)');
@@ -629,7 +655,7 @@ describe('handleDrop', () => {
     view.contentDOM.dispatchEvent(over);
     expect(over.defaultPrevented).toBe(true); // dragover accepts the drop target
     const drop = new Event('drop', { bubbles: true, cancelable: true });
-    Object.defineProperty(drop, 'dataTransfer', { value: { getData: (t) => (t === IDENT_MIME ? 'col1' : '') } });
+    Object.defineProperty(drop, 'dataTransfer', { value: { getData: (t: string) => (t === IDENT_MIME ? 'col1' : '') } });
     Object.defineProperty(drop, 'clientX', { value: 0 });
     Object.defineProperty(drop, 'clientY', { value: 0 });
     view.contentDOM.dispatchEvent(drop);
@@ -639,7 +665,7 @@ describe('handleDrop', () => {
   it('falls back to the caret when the pointer maps to no position, and rejects an empty subquery', () => {
     const { view, app } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'ab' }, selection: { anchor: 1 } });
-    view.posAtCoords = () => null;
+    view.posAtCoords = stubPosAtCoords(null);
     expect(handleDrop(app, view, evt({ [SUBQUERY_MIME]: 'SELECT 2' }))).toBe(true);
     expect(view.state.doc.toString()).toBe('a(\nSELECT 2\n)b');
     expect(handleDrop(app, view, evt({ [SUBQUERY_MIME]: '   ' }))).toBe(false);
@@ -655,7 +681,7 @@ describe('reference-data lifecycle', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
     port.mount(host);
-    const kw = [...app.dom.sqlEditorView.dom.querySelectorAll('.sql-keyword')].map((n) => n.textContent);
+    const kw = [...app.dom.sqlEditorView!.dom.querySelectorAll('.sql-keyword')].map((n) => n.textContent);
     expect(kw).toContain('select'); // NOT an empty dialect at first paint
   });
 
@@ -672,7 +698,7 @@ describe('reference-data lifecycle', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
     port.mount(host);
-    const fns = [...app.dom.sqlEditorView.dom.querySelectorAll('.sql-func')].map((n) => n.textContent);
+    const fns = [...app.dom.sqlEditorView!.dom.querySelectorAll('.sql-func')].map((n) => n.textContent);
     expect(fns).toContain('toDateTime'); // lang-sql looks words up lowercased
   });
 });
@@ -725,7 +751,7 @@ describe('input guards (the old editor-brackets.js role)', () => {
     view.dispatch({ changes: { from: 0, to: 0, insert: "'ab'" }, selection: { anchor: 2 } });
     expect(inputGuards(view, 2, 2, '((')).toBe(false); // multi-char
     expect(inputGuards(view, 1, 1, '(')).toBe(false);  // range ≠ selection (browser-generated correction)
-    const ro = new (view.constructor)({ state: EditorState.create({ doc: "'a'", extensions: [EditorState.readOnly.of(true)] }) });
+    const ro = new EditorView({ state: EditorState.create({ doc: "'a'", extensions: [EditorState.readOnly.of(true)] }) });
     expect(inputGuards(ro, 1, 1, '(')).toBe(false);    // readOnly
     ro.destroy();
   });
@@ -751,18 +777,18 @@ describe('input guards (the old editor-brackets.js role)', () => {
     view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT SUM(x)' } });
     const tip = hoverSourceFor({ refData: ref })(view, 9);
     expect(tip).not.toBe(null);
-    expect(tip.create().dom.textContent).toContain('sum(x)');
+    expect(tip!.create(view).dom.textContent).toContain('sum(x)');
   });
 });
 
 describe('FROM-scope column loading (#84)', () => {
   // A schema with one FROM-able table whose columns aren't loaded yet.
-  const withSchema = (over = {}) => {
+  const withSchema = (over: Partial<CodeMirrorEditorApp> = {}) => {
     const app = makeApp(over);
     app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
     return app;
   };
-  const setDoc = (view, text) => view.dispatch({
+  const setDoc = (view: EditorView, text: string) => view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: text },
     selection: { anchor: text.length },
   });
@@ -794,7 +820,7 @@ describe('FROM-scope column loading (#84)', () => {
       const host = document.createElement('div');
       document.body.appendChild(host);
       port.mount(host);
-      const view = app.dom.sqlEditorView;
+      const view = app.dom.sqlEditorView!;
       // A user edit schedules the tick; an open completion is the refresh target.
       view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT t FROM events' }, selection: { anchor: 8 } });
       startCompletion(view);

@@ -12,7 +12,67 @@ import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { clamp, formatRows, formatBytes, formatCompressionRatio, qualifyIdent, truncate } from '../core/format.js';
 import { columnRoles } from '../core/schema-cards.js';
+import type { ColumnRoleFlags } from '../core/schema-cards.js';
 import { compactType } from '../core/type-display.js';
+
+/** The clicked graph node `openDetailPane` describes — the schema-graph node
+ *  shape (core/schema-graph.ts's `SchemaGraphNode`, read loosely here since
+ *  only `id`/`db`/`name`/`kind` are used). */
+export interface DetailNode {
+  id: string;
+  db: string;
+  name: string;
+  kind?: string;
+}
+
+/** One system.columns row as `ch.loadTableDetail` (still .js) returns it —
+ *  extends schema-cards.ts's `ColumnRoleFlags` (the key-role badge flags) with
+ *  the rest of the fields this pane's columns table renders. */
+export interface DetailColumn extends ColumnRoleFlags {
+  name: string;
+  type?: string;
+  codec?: string;
+  comment?: string;
+  compressed?: number;
+  uncompressed?: number;
+}
+
+/** One data-skipping index row (#179). */
+export interface DetailIndex {
+  name?: string;
+  expr?: string;
+  type?: string;
+  type_full?: string;
+  granularity?: number;
+  compressed?: number;
+}
+
+/** One partition summary row. */
+export interface DetailPartition {
+  partition?: string;
+  parts?: number;
+  rows?: number;
+  bytes?: number;
+}
+
+/** `openDetailPane`'s `detail` argument: `ch.loadTableDetail`'s resolved shape,
+ *  or the `{columns:'loading'}` sentinel it mounts before that fetch settles. */
+export interface NodeDetail {
+  columns?: DetailColumn[] | 'loading';
+  indexes?: DetailIndex[];
+  partitions?: DetailPartition[];
+  ddl?: string;
+  comment?: string;
+}
+
+/** The narrow slice of the real `app` controller this module reads — just
+ *  `document`, and even that is optional: `openDetailPane` deliberately
+ *  tolerates a null/undefined/minimal `app` (falling back to the global
+ *  `document`), since some callers (tests, a bare schema-tab window) don't
+ *  have a full controller to hand it. */
+export interface SchemaDetailApp {
+  document?: Document;
+}
 
 const MIN_H = 90; // smallest pane height; max is panel height - this margin
 const TOP_MARGIN = 100;
@@ -28,27 +88,27 @@ const MAX_COL_CODEC = 40; // a CODEC(...) chain can get long the same way; full 
 const MAX_IDX_NAME = 28;
 const MAX_IDX_EXPR = 48;
 const MAX_IDX_TYPE = 48;
-const detailDragStops = new WeakMap();
+const detailDragStops = new WeakMap<HTMLElement, () => void>();
 
 // A capped `<td>` — always rendered (even empty) so every row in the columns
 // table keeps the same cell count. The full text always lands in `title`
 // (native hover tooltip) so truncation never actually loses information.
-const cappedCell = (text, max, cls) => {
+const cappedCell = (text: string | undefined, max: number, cls?: string): HTMLTableCellElement => {
   const t = (text || '').trim();
   return t ? h('td', { class: cls || null, title: t }, truncate(t, max)) : h('td');
 };
-const commentCell = (text) => cappedCell(text, MAX_COL_COMMENT, 'schema-detail-comment');
+const commentCell = (text: string | undefined): HTMLTableCellElement => cappedCell(text, MAX_COL_COMMENT, 'schema-detail-comment');
 // A long CODEC(Delta, ZSTD(...)) chain is the same class of layout hazard (#177).
-const codecCell = (text) => cappedCell(text, MAX_COL_CODEC);
+const codecCell = (text: string | undefined): HTMLTableCellElement => cappedCell(text, MAX_COL_CODEC);
 
 // The type cell: compact display form (#177), full declared type in the native
 // hover tooltip so compaction never actually loses information.
-const typeCell = (type) => h('td', { title: type }, compactType(type, MAX_COL_TYPE));
+const typeCell = (type: string | undefined): HTMLTableCellElement => h('td', { title: type }, compactType(type, MAX_COL_TYPE));
 
 // The table's own comment, next to the kind badge in the pane header — omitted
 // entirely (not just empty) when there is none, so the flex row's gap doesn't
 // reserve space for nothing.
-const headComment = (text) => {
+const headComment = (text: string | undefined): HTMLElement | null => {
   const t = (text || '').trim();
   return t ? h('span', { class: 'schema-detail-comment', title: t }, truncate(t, MAX_HEAD_COMMENT)) : null;
 };
@@ -60,14 +120,16 @@ const headComment = (text) => {
  * and clear the card's selection ring (Esc is wired in explain-graph.js via the
  * exported clearSchemaSelection); a further Esc / backdrop click closes the view.
  */
-export function openDetailPane(app, node, detail, targetDoc) {
+export function openDetailPane(
+  app: SchemaDetailApp | null | undefined, node: DetailNode, detail: NodeDetail, targetDoc?: Document,
+): HTMLElement | null {
   // `targetDoc` is the view's own document (a schema tab, or the overlay's host);
   // fall back to the main document. Both host a .graph-overlay-panel.
   const doc = targetDoc || (app && app.document) || document;
   const panel = doc.querySelector('.graph-overlay-panel');
   if (!panel) return null; // view already closed
   const prior = panel.querySelector('.schema-detail');
-  if (prior) closeDetailPane(prior); // re-opening for another node replaces the pane
+  if (prior) closeDetailPane(prior as HTMLElement); // re-opening for another node replaces the pane
 
   return withDocument(doc, () => {
     const pane = buildDetailPane(node, detail, panel);
@@ -78,22 +140,22 @@ export function openDetailPane(app, node, detail, targetDoc) {
 
 // Remove a detail pane through its drag lifecycle so closing/replacing the pane
 // mid-drag cannot leave a highlighted detached handle or document listeners.
-export function closeDetailPane(pane) {
+export function closeDetailPane(pane: HTMLElement): void {
   detailDragStops.get(pane)?.();
   pane.remove();
 }
 
 // Find a graph card by node id (a plain scan avoids escaping ids with dots/colons
 // for an attribute selector). Only the rich full-view cards carry data-node-id.
-function findCard(doc, nodeId) {
-  return [...doc.querySelectorAll('.eg-card[data-node-id]')].find((g) => g.getAttribute('data-node-id') === nodeId) || null;
+function findCard(doc: Document, nodeId: string): SVGElement | null {
+  return [...doc.querySelectorAll<SVGElement>('.eg-card[data-node-id]')].find((g) => g.getAttribute('data-node-id') === nodeId) || null;
 }
 
 // Clear the selection highlight in `doc`: drop the marker class and its ring rect
 // from the selected card (the ring is always a child of that card). Exported so the
 // graph's other pane-close paths — Esc in the schema tab / in-app overlay, in
 // explain-graph.js — clear it too, not only the pane's own ✕ button.
-export function clearSchemaSelection(doc) {
+export function clearSchemaSelection(doc: Document): void {
   doc.querySelectorAll('.eg-card--selected').forEach((g) => {
     g.classList.remove('eg-card--selected');
     const ring = g.querySelector('.eg-card-ring');
@@ -105,23 +167,23 @@ export function clearSchemaSelection(doc) {
 // "double border" alongside the card's own kind-coloured stroke) plus a class the
 // CSS keys off. Replaces any prior selection. No-op when the card isn't drawn
 // (e.g. the pane opened over a view without that card, or in a test harness).
-function markSelected(doc, nodeId) {
+function markSelected(doc: Document, nodeId: string): void {
   clearSchemaSelection(doc);
   const card = findCard(doc, nodeId);
   if (!card) return;
   card.classList.add('eg-card--selected');
   const rect = card.querySelector('rect');
   if (!rect) return;
-  const x = parseFloat(rect.getAttribute('x')) - 3;
-  const y = parseFloat(rect.getAttribute('y')) - 3;
-  const width = parseFloat(rect.getAttribute('width')) + 6;
-  const height = parseFloat(rect.getAttribute('height')) + 6;
+  const x = parseFloat(rect.getAttribute('x')!) - 3;
+  const y = parseFloat(rect.getAttribute('y')!) - 3;
+  const width = parseFloat(rect.getAttribute('width')!) + 6;
+  const height = parseFloat(rect.getAttribute('height')!) + 6;
   // Behind the card content so the title/columns stay legible over the ring.
   card.insertBefore(s('rect', { class: 'eg-card-ring', x, y, width, height, rx: '7' }), card.firstChild);
 }
 
 // Build + mount the pane (created in the active document via withDocument).
-function buildDetailPane(node, detail, panel) {
+function buildDetailPane(node: DetailNode, detail: NodeDetail, panel: Element): HTMLElement {
   const doc = panel.ownerDocument;
   const ident = qualifyIdent(node.db, node.name);
   // `columns === 'loading'` is the sentinel openNodeDetail mounts before the
@@ -129,11 +191,13 @@ function buildDetailPane(node, detail, panel) {
   // a table's lazy column load.
   const loading = detail.columns === 'loading';
 
-  let body;
+  let body: HTMLElement;
   if (loading) {
     body = loadingPlaceholder('Loading table…');
   } else {
-    const cols = detail.columns || [];
+    // `loading` is false here, so `detail.columns` can only be the resolved
+    // array (or absent) — never the `'loading'` sentinel.
+    const cols = (detail.columns as DetailColumn[] | undefined) || [];
     const indexes = detail.indexes || [];
     const parts = detail.partitions || [];
 
@@ -207,8 +271,8 @@ function buildDetailPane(node, detail, panel) {
     // The panel is the fixed full-screen overlay — its box is stable for the drag,
     // so measure once here rather than reflowing on every mousemove.
     const r = panel.getBoundingClientRect();
-    const onMove = (ev) => { pane.style.flexBasis = clamp(r.bottom - ev.clientY, MIN_H, r.height - TOP_MARGIN) + 'px'; };
-    const stop = () => {
+    const onMove = (ev: MouseEvent): void => { pane.style.flexBasis = clamp(r.bottom - ev.clientY, MIN_H, r.height - TOP_MARGIN) + 'px'; };
+    const stop = (): void => {
       handle.classList.remove('dragging');
       doc.removeEventListener('mousemove', onMove);
       doc.removeEventListener('mouseup', stop);
