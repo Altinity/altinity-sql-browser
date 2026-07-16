@@ -4,28 +4,46 @@
 import { isPlainObject } from './saved-query.js';
 import { namedTupleMembers, parseClickHouseType, unwrapValueTransparentWrappers } from './clickhouse-type.js';
 import { resolveFieldConfig } from './field-config.js';
+import type { FieldPresentation } from './field-config.js';
+import type { DeltaPresentation, FieldConfig } from '../generated/json-schema.types.js';
 
 const NUMERIC = /^(?:U?Int(?:8|16|32|64|128|256)|Float(?:32|64)|BFloat16|Decimal(?:32|64|128|256)?\s*\()/;
 
-export function isKpiNumericType(type) {
+export function isKpiNumericType(type?: string | null): boolean {
   const parsed = parseClickHouseType(type);
-  return !!parsed && NUMERIC.test(unwrapValueTransparentWrappers(parsed).raw);
+  if (!parsed) return false;
+  // `!`: unwrapValueTransparentWrappers only ever returns null for a falsy
+  // input node (see clickhouse-type.ts) — `parsed` is truthy here, so the
+  // unwrap always resolves to a real TypeNode.
+  return NUMERIC.test(unwrapValueTransparentWrappers(parsed)!.raw);
 }
 
-export function parseKpiTupleType(type) {
+/** One member of a `Tuple(name Type, …)` KPI value, as `readKpiFields` reads it. */
+export interface KpiTupleMember {
+  name: string;
+  type: string;
+}
+
+export function parseKpiTupleType(type?: string | null): KpiTupleMember[] | null {
   const parsed = parseClickHouseType(type);
-  const members = parsed && namedTupleMembers(parsed);
+  const members = parsed ? namedTupleMembers(parsed) : null;
   return members ? members.map((member) => ({ name: member.name, type: member.type.raw })) : null;
 }
 
-export function resolveKpiPresentation({ fieldConfig, columnName }) {
+export function resolveKpiPresentation(
+  { fieldConfig, columnName }: { fieldConfig: unknown; columnName: string },
+): FieldPresentation {
   const presentation = resolveFieldConfig(fieldConfig, columnName);
   const delta = isPlainObject(presentation.delta) ? presentation.delta : {};
-  presentation.delta = delta;
+  // `as`: `isPlainObject`'s predicate narrows to a bare `Record<string,
+  // unknown>`, which structurally satisfies `DeltaPresentation` (itself just
+  // named optional fields plus an `unknown`-valued index signature) but isn't
+  // proven to TS field-by-field — the single cast documents that overlap.
+  presentation.delta = delta as DeltaPresentation;
   return presentation;
 }
 
-function numericValue(value) {
+function numericValue(value: unknown): number | null {
   if (typeof value === 'bigint') return Number(value);
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'string' && value.trim() !== '') {
@@ -35,11 +53,11 @@ function numericValue(value) {
   return null;
 }
 
-function trimFixed(value, places) {
+function trimFixed(value: number, places: number): string {
   return value.toFixed(places).replace(/(?:\.0+|(\.\d*?)0+)$/, '$1');
 }
 
-function decimalString(value, places, trim) {
+function decimalString(value: unknown, places: number, trim: boolean): string | null {
   const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(String(value).trim());
   if (!match) return null;
   const fraction = match[3] || '';
@@ -55,12 +73,12 @@ function decimalString(value, places, trim) {
   return trim ? rendered.replace(/(?:\.0+|(\.\d*?)0+)$/, '$1') : rendered;
 }
 
-function compactInteger(value) {
+function compactInteger(value: unknown): string {
   const integer = typeof value === 'bigint' ? value : BigInt(String(value).trim());
   const negative = integer < 0n;
   const absolute = negative ? -integer : integer;
   if (absolute < 1000n) return String(integer);
-  const bands = [[1_000_000_000n, 'B'], [1_000_000n, 'M'], [1000n, 'K']];
+  const bands: [bigint, string][] = [[1_000_000_000n, 'B'], [1_000_000n, 'M'], [1000n, 'K']];
   let bandIndex = bands.findIndex(([limit]) => absolute >= limit);
   let [size, suffix] = bands[bandIndex];
   let places = absolute < size * 10n ? 1 : 0;
@@ -77,17 +95,38 @@ function compactInteger(value) {
   return (negative ? '-' : '') + whole + fraction + suffix;
 }
 
-export function formatKpiValue({ value, clickhouseType, presentation = {} }) {
+/** The presentation fields `formatKpiValue` itself reads — a subset of the
+ *  full `FieldPresentation` (real callers pass the whole thing; the extra
+ *  fields just ride along unread). No index signature: kpi-panel.ts's own
+ *  narrower local presentation type must keep satisfying this parameter
+ *  without also declaring one. */
+interface KpiValuePresentation {
+  decimals?: number | null;
+  unit?: string;
+  noValue?: string;
+}
+
+export function formatKpiValue(
+  { value, clickhouseType, presentation = {} }:
+  { value: unknown; clickhouseType?: string | null; presentation?: KpiValuePresentation },
+): string {
   if (value == null) return presentation.noValue ?? '—';
   const parsedType = parseClickHouseType(clickhouseType);
-  const type = parsedType ? unwrapValueTransparentWrappers(parsedType).raw : String(clickhouseType || '');
-  const explicit = Number.isInteger(presentation.decimals) ? presentation.decimals : null;
-  let rendered;
+  // `!`: see isKpiNumericType above — a truthy `parsedType` always unwraps to
+  // a real TypeNode.
+  const type = parsedType ? unwrapValueTransparentWrappers(parsedType)!.raw : String(clickhouseType || '');
+  const explicit = Number.isInteger(presentation.decimals) ? (presentation.decimals as number) : null;
+  let rendered: string;
   const integerString = /^(?:U?Int)/.test(type) && (typeof value === 'bigint' || /^[+-]?\d+$/.test(String(value).trim()));
   const exactDecimal = typeof value === 'string' && /^[+-]?\d+(?:\.\d*)?$/.test(value.trim());
-  if (integerString && explicit != null) rendered = decimalString(value, explicit, false);
+  // `!` (both calls below): `decimalString` only returns null when its
+  // `/^([+-]?)(\d+)(?:\.(\d*))?$/` regex fails to match — `integerString`
+  // (bigint stringifies the same digits-only shape) and `exactDecimal` are
+  // each already a proof that `String(value).trim()` matches that same shape,
+  // so the call can never actually return null on either branch.
+  if (integerString && explicit != null) rendered = decimalString(value, explicit, false)!;
   else if (integerString) rendered = compactInteger(value);
-  else if (exactDecimal) rendered = decimalString(value, explicit ?? 2, explicit == null);
+  else if (exactDecimal) rendered = decimalString(value, explicit ?? 2, explicit == null)!;
   else {
     const number = numericValue(value);
     if (number == null) return presentation.noValue ?? '—';
@@ -97,15 +136,63 @@ export function formatKpiValue({ value, clickhouseType, presentation = {} }) {
   return rendered + (typeof presentation.unit === 'string' ? presentation.unit : '');
 }
 
-const diagnostic = (severity, code, message, columnName) => ({
+/** One diagnostic as `readKpiFields`/kpi-panel.js's `renderKpiCards` produce it. */
+export interface KpiDiagnostic {
+  severity: 'info' | 'warning' | 'error';
+  code: string;
+  message: string;
+  columnName?: string;
+}
+
+const diagnostic = (
+  severity: KpiDiagnostic['severity'], code: string, message: string, columnName?: string,
+): KpiDiagnostic => ({
   severity, code, message, ...(columnName == null ? {} : { columnName }),
 });
 
-export function readKpiFields({ columns = [], row, rowCount = row ? 1 : 0, fieldConfig = {}, serverVersion } = {}) {
+/** A ClickHouse result column as `readKpiFields` reads it. */
+export interface KpiColumn {
+  name: string;
+  type: string;
+  [k: string]: unknown;
+}
+
+/** One `{name:Type}` runtime row as ClickHouse's structured streaming formats
+ *  return it: positional (an array, indexed by `columnIndex`) or keyed (an
+ *  object, indexed by `column.name`) — `readKpiFields` accepts either. */
+export type KpiRow = unknown[] | Record<string, unknown> | null;
+
+/** One eligible KPI field `readKpiFields` read out of the row. */
+export interface KpiItem {
+  columnName: string;
+  columnIndex: number;
+  sourceType: string;
+  kind: 'scalar' | 'tuple';
+  value: unknown;
+  valueType: string;
+  delta: unknown;
+  deltaType: string | null;
+  presentation: FieldPresentation;
+}
+
+/** `readKpiFields`'s result: the eligible fields plus every diagnostic raised
+ *  while reading them. */
+export interface KpiReadout {
+  items: KpiItem[];
+  diagnostics: KpiDiagnostic[];
+}
+
+export function readKpiFields(
+  { columns = [], row, rowCount = row ? 1 : 0, fieldConfig = {}, serverVersion }:
+  {
+    columns?: KpiColumn[]; row?: KpiRow; rowCount?: number;
+    fieldConfig?: FieldConfig; serverVersion?: string | null;
+  } = {},
+): KpiReadout {
   if (rowCount === 0) return { items: [], diagnostics: [diagnostic('info', 'kpi-no-data', 'No data')] };
   if (rowCount !== 1) return { items: [], diagnostics: [diagnostic('error', 'kpi-row-count', `Expected 1 row, got ${rowCount}`)] };
-  const diagnostics = [];
-  const items = [];
+  const diagnostics: KpiDiagnostic[] = [];
+  const items: KpiItem[] = [];
   const names = new Set(columns.map((column) => column.name));
   const metadataColumns = isPlainObject(fieldConfig) && isPlainObject(fieldConfig.columns) ? fieldConfig.columns : {};
   for (const name of Object.keys(metadataColumns)) {
@@ -114,7 +201,7 @@ export function readKpiFields({ columns = [], row, rowCount = row ? 1 : 0, field
   columns.forEach((column, columnIndex) => {
     const presentation = resolveKpiPresentation({ fieldConfig, columnName: column.name });
     if (presentation.hidden === true) return;
-    const value = Array.isArray(row) ? row[columnIndex] : row?.[column.name];
+    const value: unknown = Array.isArray(row) ? row[columnIndex] : row?.[column.name];
     const members = parseKpiTupleType(column.type);
     if (members) {
       if (value != null && !isPlainObject(value)) {
@@ -122,14 +209,20 @@ export function readKpiFields({ columns = [], row, rowCount = row ? 1 : 0, field
         diagnostics.push(diagnostic('warning', 'kpi-server-named-tuple-unsupported', `Column ${column.name} was not returned as a named tuple object${suffix}`, column.name));
         return;
       }
+      // `as`: the guard above returned already for a non-null, non-plain-object
+      // value, so `value` is now either nullish or a plain tuple object.
+      const tupleValue = value as Record<string, unknown> | null | undefined;
       const valueMember = members.find((member) => member.name === 'value');
       const deltaMember = members.find((member) => member.name === 'delta');
       if (!valueMember) { diagnostics.push(diagnostic('warning', 'kpi-missing-tuple-value', `Column ${column.name} has no value tuple member`, column.name)); return; }
       if (!isKpiNumericType(valueMember.type)) { diagnostics.push(diagnostic('warning', 'kpi-nonnumeric-tuple-value', `Column ${column.name} has non-numeric value type ${valueMember.type}`, column.name)); return; }
-      let delta = null; let deltaType = null;
+      let delta: unknown = null; let deltaType: string | null = null;
       if (deltaMember && !isKpiNumericType(deltaMember.type)) diagnostics.push(diagnostic('warning', 'kpi-nonnumeric-delta', `Column ${column.name} has non-numeric delta type ${deltaMember.type}`, column.name));
-      else if (deltaMember) { delta = value?.delta ?? null; deltaType = deltaMember.type; }
-      items.push({ columnName: column.name, columnIndex, sourceType: column.type, kind: 'tuple', value: value?.value ?? null, valueType: valueMember.type, delta, deltaType, presentation });
+      else if (deltaMember) { delta = tupleValue?.delta ?? null; deltaType = deltaMember.type; }
+      items.push({
+        columnName: column.name, columnIndex, sourceType: column.type, kind: 'tuple',
+        value: tupleValue?.value ?? null, valueType: valueMember.type, delta, deltaType, presentation,
+      });
       return;
     }
     if (!isKpiNumericType(column.type)) {
@@ -142,7 +235,25 @@ export function readKpiFields({ columns = [], row, rowCount = row ? 1 : 0, field
   return { items, diagnostics };
 }
 
-export function kpiDeltaState(item) {
+/** The minimal shape `kpiDeltaState` reads — real callers pass a full `KpiItem`.
+ *  Deliberately narrower than `DeltaPresentation` (no index signature): a
+ *  caller's own local presentation type (e.g. kpi-panel.ts's, which mirrors
+ *  only the fields it reads) must keep satisfying this without also
+ *  declaring one. */
+interface KpiDeltaSource {
+  delta: unknown;
+  presentation: { delta?: { show?: boolean; positiveIsGood?: boolean } };
+}
+
+/** `kpiDeltaState`'s verdict: the raw delta value, its direction, and whether
+ *  that direction reads as good/bad/neutral given the field's `positiveIsGood`. */
+export interface KpiDeltaState {
+  value: unknown;
+  direction: 'up' | 'down' | 'flat';
+  semantic: 'good' | 'bad' | 'neutral';
+}
+
+export function kpiDeltaState(item: KpiDeltaSource): KpiDeltaState | null {
   if (item.delta == null || item.presentation.delta?.show === false) return null;
   const numeric = numericValue(item.delta);
   if (numeric == null) return null;

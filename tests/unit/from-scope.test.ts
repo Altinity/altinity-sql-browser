@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { fromScopeAt, pendingColumnLoads, resolveComparisonColumnType } from '../../src/core/from-scope.js';
+import type { PendingLoadDb, SchemaColumn } from '../../src/core/from-scope.js';
 
 // Caret at the end of the text unless a position is given — from-scope reads the
 // whole statement, so the caret only selects which statement (not which clause).
-const scope = (sql, pos = sql.length) => fromScopeAt(sql, pos);
+const scope = (sql: string, pos: number = sql.length) => fromScopeAt(sql, pos);
 
 describe('fromScopeAt — table references', () => {
   it('db.table', () => {
@@ -166,7 +167,7 @@ describe('fromScopeAt — edges', () => {
 });
 
 describe('pendingColumnLoads', () => {
-  const schema = [
+  const schema: PendingLoadDb[] = [
     { db: 'app', tables: [
       { name: 'events', columns: null },            // needs load
       { name: 'users', columns: [{ name: 'id' }] }, // already loaded
@@ -218,7 +219,7 @@ describe('pendingColumnLoads', () => {
 // enum suggestion can show up.
 describe('resolveComparisonColumnType', () => {
   const ENUM_STATUS = "Enum8('active' = 1, 'deleted' = 2)";
-  const schemaWith = (columns) => [
+  const schemaWith = (columns: SchemaColumn[] | 'loading' | null) => [
     { db: 'app', tables: [{ name: 'events', columns }] },
   ];
 
@@ -314,7 +315,7 @@ describe('resolveComparisonColumnType', () => {
   // param-comparison.js now defers those instead of calling CONFLICT on raw
   // qualifier inequality) match only when every ref resolves to the SAME table.
   describe('multi-ref (refs) resolved-identity comparison (review F3)', () => {
-    const refsFor = (sql, quals) => ({
+    const refsFor = (sql: string, quals: (string | null)[]) => ({
       qualifier: quals[0], column: 'status', pos: sql.indexOf('{s:'),
       refs: quals.map((q, i) => ({
         qualifier: q, column: 'status',

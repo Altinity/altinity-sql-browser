@@ -24,7 +24,9 @@
 // than mis-resolving; not exercised by any known caller today.
 
 import { lexSql, unquoteIdent } from './sql-lex.js';
+import type { Token } from './sql-lex.js';
 import { scanParamOccurrences } from './param-scan.js';
+import type { ParamOccurrence } from './param-scan.js';
 
 // The structural lexer emits each comparison operator as its own single-char
 // `op` token — relied on below only implicitly: requiring the ident (or
@@ -33,15 +35,26 @@ import { scanParamOccurrences } from './param-scan.js';
 // `)` (between the inner column and the outer `=`) fail to match, with no
 // separate check needed.
 
+// One `{name:Type}` occurrence collapsed into a single synthetic token (see
+// `significantTokensWithParams`) — carries only what this module needs (no
+// `closed` flag, unlike a real lexer `Token`).
+interface ParamToken {
+  kind: 'param';
+  name: string;
+  start: number;
+  end: number;
+}
+type SigToken = Token | ParamToken;
+
 // Lex `text` into significant (non-comment) tokens, each param occurrence
 // collapsed into ONE synthetic `{kind:'param', name, start, end}` token so its
 // own internal tokens (an Enum's `'a' = 1` — a real `=` op inside the type
 // text) can never be mistaken for a comparison in the outer SQL. Strings,
 // heredocs and quoted identifiers stay as single opaque tokens, so an internal
 // `=` never counts as an outer comparison. Every other token keeps its offsets.
-function significantTokensWithParams(text, occurrences) {
+function significantTokensWithParams(text: string, occurrences: ParamOccurrence[]): SigToken[] {
   const toks = lexSql(text);
-  const out = [];
+  const out: SigToken[] = [];
   let oi = 0;
   let i = 0;
   while (i < toks.length) {
@@ -59,25 +72,34 @@ function significantTokensWithParams(text, occurrences) {
   return out;
 }
 
-const isOp = (s, t, ch) => !!t && t.kind === 'op' && s[t.start] === ch;
-const isPunct = (s, t, ch) => !!t && t.kind === 'punct' && s[t.start] === ch;
-const isIdent = (t) => !!t && (t.kind === 'word' || t.kind === 'quoted-ident');
-const isParam = (t) => !!t && t.kind === 'param';
+const isOp = (s: string, t: SigToken | undefined, ch: string): boolean => !!t && t.kind === 'op' && s[t.start] === ch;
+const isPunct = (s: string, t: SigToken | undefined, ch: string): boolean => !!t && t.kind === 'punct' && s[t.start] === ch;
+const isIdent = (t: SigToken | undefined): t is Token => !!t && (t.kind === 'word' || t.kind === 'quoted-ident');
+const isParam = (t: SigToken | undefined): t is ParamToken => !!t && t.kind === 'param';
+
+/** One column reference `parseColumnRefForward`/`parseColumnRefBackward` parse
+ *  out — the raw (possibly backtick-quoted) qualifier/column text, decoded. */
+interface ColumnRef {
+  qualifier: string | null;
+  column: string;
+}
 
 // A bare column reference starting at `sig[idx]`: an identifier (`word` or
 // `quoted-ident`) or `ident '.' ident` (qualifier.column). Rejects when the ref
 // would immediately continue into a function call (`col(` — a call, not a
 // value). Returns `{qualifier, column, next}` (`next` = the index just past
 // what was consumed) or `null`. `s` is the source text (for token decoding).
-function parseColumnRefForward(s, sig, idx) {
+function parseColumnRefForward(s: string, sig: SigToken[], idx: number): (ColumnRef & { next: number }) | null {
   const a = sig[idx];
   if (!isIdent(a)) return null;
-  let qualifier = null;
-  let columnTok = a;
+  let qualifier: string | null = null;
+  let columnTok: Token = a;
   let next = idx + 1;
-  if (isPunct(s, sig[next], '.') && isIdent(sig[next + 1])) {
+  const dotTok = sig[next];
+  const afterDot = sig[next + 1];
+  if (isPunct(s, dotTok, '.') && isIdent(afterDot)) {
     qualifier = unquoteIdent(s, a);
-    columnTok = sig[next + 1];
+    columnTok = afterDot;
     next += 2;
   }
   if (isPunct(s, sig[next], '(')) return null; // a function call, not a bare column
@@ -86,14 +108,31 @@ function parseColumnRefForward(s, sig, idx) {
 
 // The mirror of `parseColumnRefForward`, ending exactly at `sig[idx]` (the
 // token immediately before a comparison `=`): identifier or `ident '.' ident`.
-function parseColumnRefBackward(s, sig, idx) {
+function parseColumnRefBackward(s: string, sig: SigToken[], idx: number): ColumnRef | null {
   const c = sig[idx];
   if (!isIdent(c)) return null;
-  let qualifier = null;
-  if (isPunct(s, sig[idx - 1], '.') && isIdent(sig[idx - 2])) {
-    qualifier = unquoteIdent(s, sig[idx - 2]);
+  let qualifier: string | null = null;
+  const dotTok = sig[idx - 1];
+  const beforeDot = sig[idx - 2];
+  if (isPunct(s, dotTok, '.') && isIdent(beforeDot)) {
+    qualifier = unquoteIdent(s, beforeDot);
   }
   return { qualifier, column: unquoteIdent(s, c) };
+}
+
+/** One `{name:Type}` param's resolved comparison reference — see
+ *  `paramComparisonColumns`'s doc for `refs`. */
+export interface ParamComparisonRef {
+  qualifier: string | null;
+  column: string;
+  pos: number;
+}
+
+/** `paramComparisonColumns`'s per-param entry: the first reference's fields at
+ *  the top level (back-compat single-ref shape), plus every distinct
+ *  qualifier-spelling reference in `refs` when there's more than one. */
+export interface ParamComparisonEntry extends ParamComparisonRef {
+  refs?: ParamComparisonRef[];
 }
 
 /**
@@ -115,28 +154,27 @@ function parseColumnRefBackward(s, sig, idx) {
  * The top-level `qualifier`/`column`/`pos` stay the first reference's, and
  * `refs` is omitted for the single-reference common case, so consumers of the
  * simple shape are unchanged. Pure.
- * @param {string} sql
- * @returns {Object<string, {qualifier: string|null, column: string, pos: number,
- *                           refs?: {qualifier: string|null, column: string, pos: number}[]}>}
  */
-export function paramComparisonColumns(sql) {
+export function paramComparisonColumns(sql?: string | null): Record<string, ParamComparisonEntry> {
   const text = String(sql || '');
   const occurrences = scanParamOccurrences(text);
   if (!occurrences.length) return {};
   const sig = significantTokensWithParams(text, occurrences);
-  const found = {}; // name -> ref | 'CONFLICT'
+  const found: Record<string, ParamComparisonRef[] | 'CONFLICT'> = {}; // name -> refs | 'CONFLICT'
   for (let k = 0; k < sig.length; k++) {
     if (!isOp(text, sig[k], '=')) continue;
-    if (isParam(sig[k - 1])) {
+    const left = sig[k - 1];
+    const right = sig[k + 1];
+    if (isParam(left)) {
       const ref = parseColumnRefForward(text, sig, k + 1);
-      if (ref) record(found, sig[k - 1].name, { qualifier: ref.qualifier, column: ref.column, pos: sig[k - 1].start });
+      if (ref) record(found, left.name, { qualifier: ref.qualifier, column: ref.column, pos: left.start });
     }
-    if (isParam(sig[k + 1])) {
+    if (isParam(right)) {
       const ref = parseColumnRefBackward(text, sig, k - 1);
-      if (ref) record(found, sig[k + 1].name, { qualifier: ref.qualifier, column: ref.column, pos: sig[k + 1].start });
+      if (ref) record(found, right.name, { qualifier: ref.qualifier, column: ref.column, pos: right.start });
     }
   }
-  const out = {};
+  const out: Record<string, ParamComparisonEntry> = {};
   for (const [name, v] of Object.entries(found)) {
     if (v === 'CONFLICT') continue;
     out[name] = v.length === 1 ? v[0] : { ...v[0], refs: v };
@@ -149,7 +187,7 @@ export function paramComparisonColumns(sql) {
 // columns are genuinely different columns, whatever they resolve to);
 // qualifier-text disagreement over the same column name is kept as a second
 // ref for the resolution step to adjudicate (see paramComparisonColumns's doc).
-function record(found, name, ref) {
+function record(found: Record<string, ParamComparisonRef[] | 'CONFLICT'>, name: string, ref: ParamComparisonRef): void {
   const cur = found[name];
   if (cur === 'CONFLICT') return;
   if (!cur) { found[name] = [ref]; return; }

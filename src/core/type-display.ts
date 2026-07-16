@@ -29,18 +29,31 @@ import { scanSpans } from './sql-spans.js';
 export const INLINE_TYPE_MAX = 30;
 
 // Heads whose declaration body is an unbounded list → collapse to a count.
-const COUNT_HEADS = { Enum8: 'values', Enum16: 'values', Enum: 'values', Tuple: 'fields', Nested: 'fields', Variant: 'types' };
+const COUNT_HEADS: Record<string, string> = { Enum8: 'values', Enum16: 'values', Enum: 'values', Tuple: 'fields', Nested: 'fields', Variant: 'types' };
 // Heads whose arguments are themselves types → keep the structure, recurse.
-const WRAP_HEADS = new Set(['Nullable', 'LowCardinality', 'Array', 'Map']);
+const WRAP_HEADS: Set<string> = new Set(['Nullable', 'LowCardinality', 'Array', 'Map']);
 // Wrapper nesting deeper than any sane declared type — beyond it, give up and
 // let the generic truncation handle it (bounds re-scanning to a constant
 // number of passes, keeping the whole scan effectively linear).
 const MAX_DEPTH = 8;
 
-const isWordChar = (ch) => {
+const isWordChar = (ch: string): boolean => {
   const c = ch.charCodeAt(0);
   return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95;
 };
+
+/** A top-level argument (or type) range within a scanned string, `s[from..to)`. */
+interface Range {
+  from: number;
+  to: number;
+}
+
+/** `scanBody`'s result: the top-level argument ranges plus the index just past
+ *  the closing `)`. */
+interface Body {
+  args: Range[];
+  end: number;
+}
 
 // A per-character opacity mask for `s`: 1 where the character lies inside an
 // opaque literal (string / heredoc / quoted identifier) and 0 in code, so the
@@ -48,7 +61,7 @@ const isWordChar = (ch) => {
 // scanSpans() pass (#182); an unterminated literal marks its (partial) span
 // opaque too, and the walk then simply never finds its closer → null → the
 // caller falls back to truncate().
-function opacityMask(s) {
+function opacityMask(s: string): Uint8Array {
   const mask = new Uint8Array(s.length);
   for (const { kind, start, end } of scanSpans(s)) {
     if (kind !== 'code') mask.fill(1, start, end);
@@ -63,8 +76,8 @@ function opacityMask(s) {
 // `opaque` masks literal characters (built once by the caller). Returns
 // { args, end } with `end` just past the ')', or null when the body is
 // unbalanced / a literal in it is unterminated (no closer is ever reached).
-function scanBody(s, open, opaque) {
-  const args = [];
+function scanBody(s: string, open: number, opaque: Uint8Array): Body | null {
+  const args: Range[] = [];
   let depth = 1;
   let argStart = open + 1;
   let i = open + 1;
@@ -94,8 +107,8 @@ function scanBody(s, open, opaque) {
 }
 
 // Trim a range to its non-whitespace extent; from >= to means it was blank.
-const isSpace = (c) => c === ' ' || c === '\n' || c === '\t' || c === '\r';
-function trimRange(s, r) {
+const isSpace = (c: string): boolean => c === ' ' || c === '\n' || c === '\t' || c === '\r';
+function trimRange(s: string, r: Range): Range {
   let f = r.from;
   let t = r.to;
   while (f < t && isSpace(s[f])) f += 1;
@@ -106,7 +119,7 @@ function trimRange(s, r) {
 // The top-level entry count of a declaration body, or null when it can't be
 // counted confidently (a blank entry — `Enum8('a'=1,,)` — means the split
 // doesn't reflect real members). `()` counts as 0.
-function countArgs(s, args) {
+function countArgs(s: string, args: Range[]): number | null {
   const first = trimRange(s, args[0]);
   if (args.length === 1 && first.from >= first.to) return 0;
   for (const r of args) {
@@ -120,7 +133,7 @@ function countArgs(s, args) {
 // literal mask for `s`. Returns the compact display string, or null when the
 // slice isn't a recognizable type shape (the caller then falls back to generic
 // truncation of the raw string).
-function compactOne(s, from, to, depth, opaque) {
+function compactOne(s: string, from: number, to: number, depth: number, opaque: Uint8Array): string | null {
   let i = from;
   while (i < to && isWordChar(s[i])) i += 1;
   const head = s.slice(from, i);
@@ -153,7 +166,7 @@ function compactOne(s, from, to, depth, opaque) {
   }
   if (head === 'JSON') return 'JSON(configured)';
   if (WRAP_HEADS.has(head) && depth < MAX_DEPTH) {
-    const parts = [];
+    const parts: string[] = [];
     for (const r of body.args) {
       const t = trimRange(s, r);
       const inner = compactOne(s, t.from, t.to, depth + 1, opaque);
@@ -177,11 +190,10 @@ function compactOne(s, from, to, depth, opaque) {
  * (`Array(Tuple(12 fields))`). Malformed input — or a compacted form still
  * over budget — degrades to format.js truncate(). Display-only: never use the
  * result in SQL; the caller keeps the original type for that.
- * @param {*} type - the declared ClickHouse type (nullish → '')
- * @param {number} maxLen - the display budget in characters
- * @returns {string}
+ * @param type - the declared ClickHouse type (nullish → '')
+ * @param maxLen - the display budget in characters
  */
-export function compactType(type, maxLen) {
+export function compactType(type: unknown, maxLen: number): string {
   const s = type == null ? '' : String(type);
   if (s.length <= maxLen) return s;
   const compacted = compactOne(s, 0, s.length, 0, opacityMask(s));

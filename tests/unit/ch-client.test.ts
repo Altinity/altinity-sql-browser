@@ -1,11 +1,27 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
+import type { ChCtx } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
+import type { StreamLine } from '../../src/core/stream.js';
 
 // --- Response stubs -------------------------------------------------------
-function jsonResp(body, ok = true, status = ok ? 200 : 500) {
+
+/** The subset of a real `Response` ch-client.ts's fetch-consuming code reads —
+ *  `Response` structurally satisfies this, so `asFetch` casts a mock cleanly
+ *  to `typeof fetch` without an `unknown` bridge (same pattern as
+ *  dashboard.test.ts's `asFetch`). */
+interface FakeResponse {
+  ok: boolean;
+  status: number;
+  json?(): Promise<unknown>;
+  text(): Promise<string>;
+  clone(): FakeResponse;
+  body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }> } };
+}
+function jsonResp(body: unknown, ok = true, status = ok ? 200 : 500): FakeResponse {
   return {
     ok, status,
     json: async () => body,
@@ -13,10 +29,10 @@ function jsonResp(body, ok = true, status = ok ? 200 : 500) {
     clone() { return this; },
   };
 }
-function textResp(text, ok = true, status = ok ? 200 : 500) {
+function textResp(text: string, ok = true, status = ok ? 200 : 500): FakeResponse {
   return { ok, status, text: async () => text, clone() { return this; } };
 }
-function streamResp(chunks, ok = true) {
+function streamResp(chunks: string[], ok = true): FakeResponse {
   let i = 0;
   return {
     ok, status: ok ? 200 : 500,
@@ -33,11 +49,33 @@ function streamResp(chunks, ok = true) {
   };
 }
 
-function ctxWith(fetchImpl, over = {}) {
+/** The init object every fetch call in ch-client.ts sends: always these keys
+ *  (`signal` may be `undefined` when the caller didn't pass one). */
+interface FetchInit {
+  method: string;
+  body: string;
+  headers: { Authorization: string };
+  signal?: AbortSignal;
+}
+type FetchImpl = (url: string, init: FetchInit) => FakeResponse | Promise<FakeResponse>;
+
+// A stub-object bridge to `typeof fetch`: `object` is a supertype of every
+// function type, so this is a single-level `as`, not an `unknown` bridge —
+// same pattern as dashboard.test.ts's `asFetch`.
+const asFetch = (v: object): typeof fetch => v as typeof fetch;
+
+// `ctxWith` returns the real `ChCtx` (so it's directly usable everywhere a
+// function under test wants one) PLUS `fetchMock` — the underlying `vi.fn`
+// mock, kept accessible with its real call-recording type (`ctx.fetch` itself
+// can't expose `.mock`: it's bridged to `typeof fetch` via `asFetch` above so
+// it matches ChCtx's injected-fetch contract exactly, matching production).
+function ctxWith(fetchImpl: FetchImpl, over: Partial<ChCtx> = {}) {
+  const fetchMock = vi.fn(fetchImpl);
   return {
-    fetch: vi.fn(fetchImpl),
+    fetch: asFetch(fetchMock),
+    fetchMock,
     origin: 'https://ch.example',
-    getToken: vi.fn(async () => 'tok'),
+    getToken: vi.fn(async (): Promise<string | null> => 'tok'),
     refresh: vi.fn(async () => false),
     onSignedOut: vi.fn(),
     ...over,
@@ -72,7 +110,7 @@ describe('authedFetch', () => {
     const ctx = ctxWith(async () => jsonResp({ ok: 1 }));
     const r = await authedFetch(ctx, 'u', 'sql');
     expect(r.ok).toBe(true);
-    expect(ctx.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer tok');
+    expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer tok');
   });
   it('refreshes once on 401 then retries', async () => {
     let n = 0;
@@ -91,7 +129,10 @@ describe('authedFetch', () => {
     );
     await expect(authedFetch(ctx, 'u', 'sql')).rejects.toThrow('signed out');
     expect(ctx.onSignedOut).toHaveBeenCalledTimes(1);
-    const msg = ctx.onSignedOut.mock.calls[0][0];
+    // Not overridden by `over` in this test, so it's still ctxWith's default
+    // `vi.fn()` — the cast just recovers `.mock` from the (over-widened, since
+    // `over.onSignedOut` COULD have replaced it) static union type.
+    const msg = (ctx.onSignedOut as Mock).mock.calls[0][0];
     expect(msg).toContain('HTTP 403');
     expect(msg).toContain('not authorizing you');
     expect(msg).toContain('Server: Code: 516. DB::Exception: Authentication failed');
@@ -129,7 +170,7 @@ describe('authedFetch', () => {
       authHeader: (t) => 'Basic ' + t.toUpperCase(),
     });
     await authedFetch(ctx, 'u', 'sql');
-    expect(ctx.fetch.mock.calls[0][1].headers.Authorization).toBe('Basic TOK');
+    expect(ctx.fetchMock.mock.calls[0][1].headers.Authorization).toBe('Basic TOK');
   });
 });
 
@@ -145,9 +186,9 @@ describe('queryJson', () => {
   it('forwards params as param_<name> query-string args, omitted when absent', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     await queryJson(ctx, 'SELECT {id:UInt32}', undefined, undefined, { param_id: '5' });
-    expect(ctx.fetch.mock.calls[0][0]).toContain('param_id=5');
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('param_id=5');
     await queryJson(ctx, 'SELECT 1');
-    expect(ctx.fetch.mock.calls[1][0]).not.toContain('param_');
+    expect(ctx.fetchMock.mock.calls[1][0]).not.toContain('param_');
   });
 });
 
@@ -196,7 +237,7 @@ describe('loadSchema', () => {
     expect(schema[0].tables[1].comment).toBe('');
   });
   it('sorts underscore-prefixed tables after regular ones, in both queries', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith(async (url, o) => {
       seen.push(o.body);
       return o.body.includes('FROM system.databases')
@@ -231,7 +272,7 @@ describe('loadSchema', () => {
     expect(await loadSchema(ctx)).toEqual([]);
   });
   it('excludes DataLakeCatalog databases from the main system.tables query, querying each separately (#162)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith(async (url, o) => {
       seen.push(o.body);
       if (o.body.includes('FROM system.databases')) {
@@ -246,7 +287,7 @@ describe('loadSchema', () => {
     expect(mainTablesSql).not.toContain('show_data_lake_catalogs_in_system_tables');
     const catalogSql = seen.find((s) => s.includes("database = 'ice'"));
     expect(catalogSql).toBe("SELECT database, name FROM system.tables WHERE database = 'ice'\nSETTINGS show_data_lake_catalogs_in_system_tables = 1\nFORMAT JSON");
-    expect(schema.find((d) => d.db === 'ice').tables).toEqual([{ name: 'orders', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
+    expect(schema.find((d) => d.db === 'ice')!.tables).toEqual([{ name: 'orders', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
   });
   it('zero-fills stats for catalog tables and sorts them underscore-last (#162 — stats aren\'t fetchable without risking the abort)', async () => {
     const ctx = ctxWith(async (url, o) => {
@@ -302,9 +343,9 @@ describe('loadSchema', () => {
       return jsonResp({ data: [{ database: 'default', name: 't0', total_rows: '1', total_bytes: '2', comment: '' }] });
     });
     const schema = await loadSchema(ctx);
-    expect(schema.find((d) => d.db === 'default').tables).toEqual([{ name: 't0', total_rows: '1', total_bytes: '2', comment: '', columns: null }]);
-    expect(schema.find((d) => d.db === 'broken').tables).toEqual([]);
-    expect(schema.find((d) => d.db === 'healthy').tables).toEqual([{ name: 't1', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
+    expect(schema.find((d) => d.db === 'default')!.tables).toEqual([{ name: 't0', total_rows: '1', total_bytes: '2', comment: '', columns: null }]);
+    expect(schema.find((d) => d.db === 'broken')!.tables).toEqual([]);
+    expect(schema.find((d) => d.db === 'healthy')!.tables).toEqual([{ name: 't1', total_rows: 0, total_bytes: 0, comment: '', columns: null }]);
   });
 });
 
@@ -315,7 +356,7 @@ describe('loadColumns', () => {
       { name: 'c1', type: 'UInt8', comment: 'x' },
       { name: 'c2', type: 'String', comment: '' },
     ]);
-    expect(ctx.fetch.mock.calls[0][1].body).toContain("database = 'db'");
+    expect(ctx.fetchMock.mock.calls[0][1].body).toContain("database = 'db'");
   });
   it('handles missing data', async () => {
     const ctx = ctxWith(async () => jsonResp({}));
@@ -366,8 +407,8 @@ describe('loadReferenceData', () => {
     ));
     const ref = await loadReferenceData(ctx);
     expect(ref.keywords).toEqual(['SELECT', 'PREWHERE']);
-    expect(ref.functions.count).toEqual({ kind: 'agg', sig: 'count()', ret: '', desc: '' });
-    expect(ref.functions.toDate.kind).toBe('fn'); // is_aggregate 0 → plain function
+    expect(ref.functions!.count).toEqual({ kind: 'agg', sig: 'count()', ret: '', desc: '' });
+    expect(ref.functions!.toDate.kind).toBe('fn'); // is_aggregate 0 → plain function
   });
   it('returns null pieces when a system table is missing/denied (best-effort)', async () => {
     const ctx = ctxWith(async () => textResp('Code: 60. DB::Exception: Unknown table', false, 500));
@@ -385,7 +426,7 @@ describe('loadReferenceData', () => {
     ));
     const ref = await loadReferenceData(ctx);
     // desc stays '' here — hover docs are fetched on demand via loadEntityDoc.
-    expect(ref.functions.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
+    expect(ref.functions!.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
   });
   it('falls back to the minimal function query when the syntax column is absent (older CH)', async () => {
     const ctx = ctxWith(async (url, o) => {
@@ -394,7 +435,7 @@ describe('loadReferenceData', () => {
       return jsonResp({ data: [{ name: 'now', is_aggregate: 0 }] }); // minimal columns only
     });
     const ref = await loadReferenceData(ctx);
-    expect(ref.functions.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
+    expect(ref.functions!.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
   });
 });
 
@@ -404,7 +445,7 @@ describe('loadEntityDoc (#27 — lazy hover docs)', () => {
     expect(await loadEntityDoc(ctx, 'BLAKE3', sqlString)).toBe('Calculates a hash.');
   });
   it('escapes the name through sqlString and queries system.functions', async () => {
-    const fetchImpl = vi.fn(async () => jsonResp({ data: [{ description: 'doc' }] }));
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [{ description: 'doc' }] }));
     const ctx = ctxWith(fetchImpl);
     await loadEntityDoc(ctx, "o'brien", sqlString);
     expect(fetchImpl.mock.calls[0][1].body).toContain("WHERE name = 'o''brien'");
@@ -424,12 +465,12 @@ describe('runQuery', () => {
       '{"meta":[{"name":"metric","type":"Tuple(value Decimal(38, 2), delta Decimal(38, 2))"}]}\n',
       '{"row":{"metric":{"value":"9007199254740993.25","delta":"-9007199254740993.25"}}}\n',
     ]));
-    const lines = [];
+    const lines: StreamLine[] = [];
     await runQuery(ctx, 'SELECT 1', { format: 'KPI', params: { output_format_json_named_tuples_as_objects: 1, output_format_json_quote_decimals: 1 }, onLine: (line) => lines.push(line) });
-    expect(ctx.fetch.mock.calls[0][0]).toContain('default_format=JSONEachRowWithProgress');
-    expect(ctx.fetch.mock.calls[0][0]).toContain('output_format_json_named_tuples_as_objects=1');
-    expect(ctx.fetch.mock.calls[0][0]).toContain('output_format_json_quote_decimals=1');
-    expect(lines[1].row.metric).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('default_format=JSONEachRowWithProgress');
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('output_format_json_named_tuples_as_objects=1');
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('output_format_json_quote_decimals=1');
+    expect((lines[1].row as Record<string, unknown>).metric).toEqual({ value: '9007199254740993.25', delta: '-9007199254740993.25' });
   });
   it('streams lines and reports an error result on !ok', async () => {
     const ctx = ctxWith(async () => textResp('{"exception":"boom"}', false, 500));
@@ -444,7 +485,7 @@ describe('runQuery', () => {
       '{"row":{"a":"2"}}', // trailing, no newline
     ];
     const ctx = ctxWith(async () => streamResp(lines));
-    const got = [];
+    const got: StreamLine[] = [];
     const out = await runQuery(ctx, 'SELECT a', { format: 'Table', onLine: (j) => got.push(j), onChunk: () => {} });
     expect(out).toEqual({ streamed: true });
     expect(got.filter((j) => j.row)).toHaveLength(2);
@@ -452,7 +493,7 @@ describe('runQuery', () => {
   });
   it('skips malformed lines and a malformed trailing buffer', async () => {
     const ctx = ctxWith(async () => streamResp(['not json\n', '{bad trailing']));
-    const got = [];
+    const got: StreamLine[] = [];
     const out = await runQuery(ctx, 'x', { onLine: (j) => got.push(j) });
     expect(out).toEqual({ streamed: true });
     expect(got).toEqual([]);
@@ -472,19 +513,19 @@ describe('runQuery', () => {
   });
   it('passes the abort signal through', async () => {
     const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
-    const signal = { aborted: false };
+    const signal = new AbortController().signal;
     await runQuery(ctx, 'x', { signal });
-    expect(ctx.fetch.mock.calls[0][1].signal).toBe(signal);
+    expect(ctx.fetchMock.mock.calls[0][1].signal).toBe(signal);
   });
   it('tags the run request with query_id when given', async () => {
     const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));
     await runQuery(ctx, 'x', { queryId: 'abc-123' });
-    expect(ctx.fetch.mock.calls[0][0]).toContain('query_id=abc-123');
+    expect(ctx.fetchMock.mock.calls[0][0]).toContain('query_id=abc-123');
   });
   it('passes caller params (e.g. result caps) alongside query_id', async () => {
     const ctx = ctxWith(async () => textResp('{"meta":[],"data":[]}'));
     await runQuery(ctx, 'x', { format: 'JSONCompact', queryId: 'q1', params: { max_result_rows: 100, result_overflow_mode: 'break' } });
-    const url = ctx.fetch.mock.calls[0][0];
+    const url = ctx.fetchMock.mock.calls[0][0];
     expect(url).toContain('query_id=q1');
     expect(url).toContain('max_result_rows=100');
     expect(url).toContain('result_overflow_mode=break');
@@ -492,20 +533,20 @@ describe('runQuery', () => {
   it('streams without wait_end_of_query; raw modes keep it for clean error status', async () => {
     const s = ctxWith(async () => streamResp(['{"row":{}}\n']));
     await runQuery(s, 'x', { format: 'Table' });
-    expect(s.fetch.mock.calls[0][0]).not.toContain('wait_end_of_query'); // progressive first rows
+    expect(s.fetchMock.mock.calls[0][0]).not.toContain('wait_end_of_query'); // progressive first rows
     const raw = ctxWith(async () => textResp('a\tb'));
     await runQuery(raw, 'x', { format: 'TSV' });
-    expect(raw.fetch.mock.calls[0][0]).toContain('wait_end_of_query=1');
+    expect(raw.fetchMock.mock.calls[0][0]).toContain('wait_end_of_query=1');
   });
   it('adds the server-side row cap when resultRowLimit is set; omits it otherwise', async () => {
     const capped = ctxWith(async () => streamResp(['{"row":{}}\n']));
     await runQuery(capped, 'x', { format: 'Table', resultRowLimit: 500 });
-    const url = capped.fetch.mock.calls[0][0];
+    const url = capped.fetchMock.mock.calls[0][0];
     expect(url).toContain('max_result_rows=500');
     expect(url).toContain('result_overflow_mode=break');
     const uncapped = ctxWith(async () => streamResp(['{"row":{}}\n']));
     await runQuery(uncapped, 'x', { format: 'Table' }); // no limit → no cap params
-    expect(uncapped.fetch.mock.calls[0][0]).not.toContain('max_result_rows');
+    expect(uncapped.fetchMock.mock.calls[0][0]).not.toContain('max_result_rows');
   });
 });
 
@@ -513,12 +554,12 @@ describe('killQuery', () => {
   it('POSTs KILL QUERY for the query_id', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     await killQuery(ctx, 'abc-123', sqlString);
-    expect(ctx.fetch.mock.calls[0][1].body).toBe("KILL QUERY WHERE query_id = 'abc-123' ASYNC");
+    expect(ctx.fetchMock.mock.calls[0][1].body).toBe("KILL QUERY WHERE query_id = 'abc-123' ASYNC");
   });
   it('no-ops without a query_id', async () => {
     const ctx = ctxWith(async () => jsonResp({ data: [] }));
     await killQuery(ctx, null, sqlString);
-    expect(ctx.fetch).not.toHaveBeenCalled();
+    expect(ctx.fetchMock).not.toHaveBeenCalled();
   });
   it('swallows errors (cancellation must never throw)', async () => {
     const ctx = ctxWith(async () => { throw new Error('boom'); });
@@ -528,14 +569,14 @@ describe('killQuery', () => {
 
 describe('exportQuery', () => {
   it('sets query_id + default_format, passes the signal, and returns the raw Response', async () => {
-    const signal = {};
+    const signal = new AbortController().signal;
     const stream = streamResp(['a\tb\n1\tx\n']);
     const ctx = ctxWith(async () => stream);
     const resp = await exportQuery(ctx, 'SELECT 1 FORMAT TabSeparatedWithNames', {
       queryId: 'export-abc', signal, format: 'TabSeparatedWithNames',
     });
     expect(resp).toBe(stream);
-    const [url, init] = ctx.fetch.mock.calls[0];
+    const [url, init] = ctx.fetchMock.mock.calls[0];
     expect(url).toContain('default_format=TabSeparatedWithNames');
     expect(url).toContain('query_id=export-abc');
     expect(init.signal).toBe(signal);
@@ -544,7 +585,7 @@ describe('exportQuery', () => {
   it('defaults to TabSeparatedWithNames and omits query_id when absent', async () => {
     const ctx = ctxWith(async () => streamResp(['x']));
     await exportQuery(ctx, 'SELECT 1');
-    const url = ctx.fetch.mock.calls[0][0];
+    const url = ctx.fetchMock.mock.calls[0][0];
     expect(url).toContain('default_format=TabSeparatedWithNames');
     expect(url).not.toContain('query_id');
   });
@@ -555,7 +596,7 @@ describe('exportQuery', () => {
   it('forwards caller params (e.g. session_id) alongside query_id (#99: script export)', async () => {
     const ctx = ctxWith(async () => streamResp(['x']));
     await exportQuery(ctx, 'SELECT 1', { queryId: 'export-abc', params: { session_id: 'sess-1' } });
-    const url = ctx.fetch.mock.calls[0][0];
+    const url = ctx.fetchMock.mock.calls[0][0];
     expect(url).toContain('query_id=export-abc');
     expect(url).toContain('session_id=sess-1');
   });
@@ -563,7 +604,7 @@ describe('exportQuery', () => {
 
 describe('loadSchemaLineage', () => {
   it('fetches scoped system.tables + dictionaries and attaches EXPLAIN AST sources', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       const sql = init.body;
       seen.push(sql);
@@ -579,8 +620,8 @@ describe('loadSchemaLineage', () => {
     expect(out.tables).toHaveLength(2);
     expect(out.dictionaries).toEqual([{ database: 'lin', name: 'd', source: 'ClickHouse: lin.dim' }]);
     // the MV (non-empty as_select) got EXPLAIN AST sources; the plain table did not
-    expect(out.tables.find((t) => t.name === 'mv').astTables).toEqual(['lin.events']);
-    expect(out.tables.find((t) => t.name === 'events').astTables).toBeUndefined();
+    expect(out.tables.find((t) => t.name === 'mv')!.astTables).toEqual(['lin.events']);
+    expect(out.tables.find((t) => t.name === 'events')!.astTables).toBeUndefined();
     // scoped to the database, and target_* never requested (OSS-portable)
     expect(seen.some((s) => /WHERE database = 'lin'/.test(s))).toBe(true);
     expect(seen.some((s) => /target_database/.test(s))).toBe(false);
@@ -607,7 +648,7 @@ describe('loadSchemaLineage', () => {
     expect(out.dictionaries).toEqual([]);
   });
   it('includes the card metadata columns in the scoped tables query', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       seen.push(init.body);
       if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
@@ -622,7 +663,7 @@ describe('loadSchemaLineage', () => {
     expect(tablesSql).toMatch(/\bcomment\b/);
   });
   it('sorts underscore-prefixed tables after regular ones', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       seen.push(init.body);
       if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
@@ -635,8 +676,8 @@ describe('loadSchemaLineage', () => {
 
   // #124 — progressive draw + cancellation.
   it('calls onBase with the free-edges data before any EXPLAIN AST resolves', async () => {
-    let resolveAst;
-    const astPending = new Promise((r) => { resolveAst = r; });
+    let resolveAst: (v: FakeResponse | Promise<FakeResponse>) => void;
+    const astPending = new Promise<FakeResponse>((r) => { resolveAst = r; });
     const ctx = ctxWith((url, init) => {
       const sql = init.body;
       if (/EXPLAIN AST/.test(sql)) return astPending;
@@ -646,14 +687,14 @@ describe('loadSchemaLineage', () => {
         { database: 'lin', name: 'mv', engine: 'MaterializedView', as_select: 'SELECT 1 FROM lin.events', create_table_query: '' },
       ] });
     });
-    let resolveBaseSeen;
+    let resolveBaseSeen: (base: unknown) => void;
     const baseSeen = new Promise((r) => { resolveBaseSeen = r; });
     // progressiveThreshold: 1 forces the two-phase path with this tiny (1-astTarget)
     // fixture — production leaves it at the AST_PROGRESSIVE_THRESHOLD default.
-    const pending = loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase: resolveBaseSeen, progressiveThreshold: 1 });
-    const base = await baseSeen; // resolves exactly when onBase fires — deterministic, no microtask counting
+    const pending = loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase: resolveBaseSeen!, progressiveThreshold: 1 });
+    const base = await baseSeen as { tables: unknown[] }; // resolves exactly when onBase fires — deterministic, no microtask counting
     expect(base.tables).toHaveLength(2);
-    resolveAst(jsonResp({ data: [{ explain: '' }] }));
+    resolveAst!(jsonResp({ data: [{ explain: '' }] }));
     await pending;
   });
   it('calls onProgress as each EXPLAIN AST settles, with a done/total count', async () => {
@@ -666,7 +707,7 @@ describe('loadSchemaLineage', () => {
         { database: 'lin', name: 'v2', engine: 'View', as_select: 'SELECT 2' },
       ] });
     });
-    const progress = [];
+    const progress: [number, number][] = [];
     await loadSchemaLineage(ctx, { kind: 'db', db: 'lin' },
       { onProgress: (done, total) => progress.push([done, total]), progressiveThreshold: 1 });
     expect(progress).toHaveLength(2);
@@ -674,8 +715,8 @@ describe('loadSchemaLineage', () => {
     expect(progress.map(([done]) => done).sort()).toEqual([1, 2]);
   });
   it('skips onBase/onProgress below the progressive threshold (small schemas draw in one step, no flicker)', async () => {
-    let resolveAst;
-    const astPending = new Promise((r) => { resolveAst = r; });
+    let resolveAst: (v: FakeResponse | Promise<FakeResponse>) => void;
+    const astPending = new Promise<FakeResponse>((r) => { resolveAst = r; });
     const ctx = ctxWith((url, init) => {
       const sql = init.body;
       if (/EXPLAIN AST/.test(sql)) return astPending;
@@ -690,7 +731,7 @@ describe('loadSchemaLineage', () => {
     const pending = loadSchemaLineage(ctx, { kind: 'db', db: 'lin' }, { onBase, onProgress });
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     expect(onBase).not.toHaveBeenCalled();
-    resolveAst(jsonResp({ data: [{ explain: '' }] }));
+    resolveAst!(jsonResp({ data: [{ explain: '' }] }));
     await pending;
     expect(onBase).not.toHaveBeenCalled();
     expect(onProgress).not.toHaveBeenCalled();
@@ -711,7 +752,7 @@ describe('loadSchemaLineage', () => {
   });
   it('threads an aborted signal through to fetch (network layer sees it)', async () => {
     const controller = new AbortController();
-    const seenSignals = [];
+    const seenSignals: (AbortSignal | undefined)[] = [];
     const ctx = ctxWith((url, init) => {
       seenSignals.push(init.signal);
       if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
@@ -750,7 +791,7 @@ describe('loadSchemaLineage', () => {
     expect(out).toEqual({ keywords: null, functions: null, formats: null });
   });
   it('requests data-lake-catalog visibility on the scoped system.tables query (#122 — Iceberg/Glue/Unity tables hidden by default)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       seen.push(init.body);
       if (/system\.dictionaries/.test(init.body)) return jsonResp({ data: [] });
@@ -789,7 +830,7 @@ describe('loadSchemaLineage', () => {
 
 describe('loadSchemaCards', () => {
   it('keys columns by db.table, scopes via IN (…), and no longer fetches skip indices (#179)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       const sql = init.body; seen.push(sql);
       return jsonResp({ data: [
@@ -813,10 +854,10 @@ describe('loadSchemaCards', () => {
   it('issues no query for an empty database list', async () => {
     const ctx = ctxWith(() => { throw new Error('should not fetch'); });
     expect(await loadSchemaCards(ctx, [])).toEqual({ columnsByKey: {} });
-    expect(ctx.fetch).not.toHaveBeenCalled();
+    expect(ctx.fetchMock).not.toHaveBeenCalled();
   });
   it('requests data-lake-catalog visibility on the system.columns query (#122)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       seen.push(init.body);
       return jsonResp({ data: [] });
@@ -838,11 +879,11 @@ describe('loadSchemaCards', () => {
 
 describe('loadLineageTransitive', () => {
   // 'a.t' depends on 'b.mv' (cross-DB), so the walk should pull in database 'b'.
-  const tbl = (database, name, engine, over = {}) => ({
+  const tbl = (database: string, name: string, engine: string, over: Record<string, unknown> = {}) => ({
     database, name, engine, engine_full: '', create_table_query: '', as_select: '', uuid: '',
     dependencies_database: [], dependencies_table: [], loading_dependencies_database: [], loading_dependencies_table: [], ...over,
   });
-  const lineageCtx = (extra = {}) => ctxWith((url, init) => {
+  const lineageCtx = (extra: { b?: Record<string, unknown> } = {}) => ctxWith((url, init) => {
     const sql = init.body;
     if (/EXPLAIN AST/.test(sql)) return jsonResp({ data: [] });
     if (/system\.dictionaries/.test(sql)) return jsonResp({ data: [] });
@@ -921,7 +962,7 @@ describe('loadLineageTransitive', () => {
 
 describe('loadTableDetail', () => {
   it('returns columns (with comments), skip indexes, per-partition sums, DDL, and the table comment (best-effort)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       const sql = init.body; seen.push(sql);
       if (/system\.parts/.test(sql)) return jsonResp({ data: [{ partition: '2024', parts: 3, rows: 100, bytes: 5000 }] });
@@ -951,7 +992,7 @@ describe('loadTableDetail', () => {
     expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '' });
   });
   it('requests data-lake-catalog visibility on system.columns/system.tables (#122 — Iceberg tables\' columns/DDL otherwise hidden)', async () => {
-    const seen = [];
+    const seen: string[] = [];
     const ctx = ctxWith((url, init) => {
       seen.push(init.body);
       return jsonResp({ data: [] });

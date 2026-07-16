@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { buildResultSource } from '../../src/core/query-source.js';
-import { savedQuery } from '../helpers/saved-query.js';
+import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
+
+// tests/helpers/saved-query.js is a still-untyped .js dependency (out of scope
+// here): its destructured params without defaults (id, description, view,
+// panel, dashboard) infer as `any` and drop out of TS's view of the parameter
+// shape entirely, so a fresh object literal fails the excess-property check —
+// same convention as share.test.ts / state.test.ts.
+const savedQuery = (args: Record<string, unknown> = {}): unknown =>
+  savedQueryUntyped(args as Parameters<typeof savedQueryUntyped>[0]);
 
 describe('buildResultSource', () => {
   const base = { srcSql: 'SELECT * FROM system.tables', tabId: 't1', rowLimit: 1000 };

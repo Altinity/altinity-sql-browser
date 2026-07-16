@@ -9,9 +9,25 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { isNumericType, truncate } from '../core/format.js';
 import { sortRows } from '../core/sort.js';
+import type { ResultSort } from '../state.js';
 
 export const GRID_VIS_CAP = 5000; // fallback display cap for results that carry no row limit (raw / EXPLAIN)
 const MIN_COL = 48; // px floor for a resized column
+
+/** A grid column descriptor — `type` is optional because the script grids
+ *  (results.js's side pane) can carry columns with no ClickHouse type at all. */
+export interface GridColumn {
+  name: string;
+  type?: string;
+}
+
+/** A `widths` holder key: 'idx' for the data grid's row-number column, else a
+ *  0-based data-column index (IDX_KEY), or the cell's own index unchanged
+ *  (PLAIN_KEY, script grids with no row-number column). */
+export type WidthKey = string | number;
+export type KeyOf = (cellIndex: number) => WidthKey;
+/** A colWidths holder, mutated in place by drag-resize. */
+export type Widths = Record<string, number>;
 
 /**
  * How many rows to render: follow the result's own row cap when set (so a 10000
@@ -19,7 +35,7 @@ const MIN_COL = 48; // px floor for a resized column
  * trims a normal SELECT to its limit, so this just keeps the renderers from
  * re-capping a large-but-allowed result. Pure — exported for tests.
  */
-export function visCap(r) {
+export function visCap(r: { rowLimit: number }): number {
   return r.rowLimit > 0 ? r.rowLimit : GRID_VIS_CAP;
 }
 
@@ -28,7 +44,7 @@ export function visCap(r) {
  * row view (renderGrid here, the dashboard's logs view) so the wording and
  * styling can't drift between adjacent surfaces.
  */
-export function truncationFooter(hidden) {
+export function truncationFooter(hidden: number): HTMLDivElement {
   return h('div', {
     style: { padding: '10px 14px', fontSize: '11px', color: 'var(--fg-faint)', fontFamily: 'var(--mono)', borderTop: '1px solid var(--border)' },
   }, '… + ' + hidden + ' more rows truncated for display.');
@@ -38,24 +54,24 @@ export function truncationFooter(hidden) {
  * New width (px) for a column dragged by `dx` native client px. Clamped to
  * MIN_COL. Pure — exported for tests.
  */
-export function colResizeWidth(startW, dx) {
+export function colResizeWidth(startW: number, dx: number): number {
   return Math.max(MIN_COL, Math.round(startW + dx));
 }
 
 // Map a header cell index to its `widths` key. The data grid's first cell is
 // the row-number column ('idx'); its data columns are then 0-based. The script
 // grids have no row-number column, so every cell keys by its own index.
-const IDX_KEY = (k) => (k === 0 ? 'idx' : k - 1);
-export const PLAIN_KEY = (k) => k;
+const IDX_KEY: KeyOf = (k) => (k === 0 ? 'idx' : k - 1);
+export const PLAIN_KEY: KeyOf = (k) => k;
 
 /**
  * Pin every column of `table` to the px widths in `widths` (keyed via
  * `keyOf(cellIndex)`) and switch it to fixed layout so columns honor those widths
  * exactly (and the wrap scrolls). Shared by the data grid and the script grids.
  */
-function applyFixedWidths(table, widths, keyOf) {
+function applyFixedWidths(table: HTMLTableElement, widths: Widths, keyOf: KeyOf): void {
   table.classList.add('fixed');
-  const cells = table.querySelectorAll('thead th');
+  const cells = table.querySelectorAll<HTMLTableCellElement>('thead th');
   let total = 0;
   for (let k = 0; k < cells.length; k++) {
     const w = widths[keyOf(k)];
@@ -75,12 +91,14 @@ function applyFixedWidths(table, widths, keyOf) {
  * table's total width (and every other column) stays put. Dragging the last
  * column's edge has no neighbor to take from, so it grows the table (scroll).
  */
-function startColumnResize(widths, th, ev, keyOf) {
+function startColumnResize(widths: Widths, th: HTMLTableCellElement, ev: MouseEvent, keyOf: KeyOf): void {
   ev.preventDefault();
   ev.stopPropagation(); // don't let the handle's mousedown reach the sort header
-  const table = th.closest('table');
-  const cells = table.querySelectorAll('thead th');
-  const cellIdx = [].indexOf.call(cells, th);
+  // `!`: startColumnResize is only ever reached from a resize handle appended
+  // inside a `<th>` inside a `<table>` (resizeHandle/renderGrid below).
+  const table = th.closest('table')!;
+  const cells = table.querySelectorAll<HTMLTableCellElement>('thead th');
+  const cellIdx = Array.from(cells).indexOf(th);
   const colIndex = keyOf(cellIdx);
   const nextKey = cellIdx + 1 < cells.length ? keyOf(cellIdx + 1) : null;
   // First resize: freeze every column at its current rendered width, then fix.
@@ -90,11 +108,14 @@ function startColumnResize(widths, th, ev, keyOf) {
     }
   }
   applyFixedWidths(table, widths, keyOf);
-  const win = th.ownerDocument.defaultView;
+  // `!`: a `<th>` built and appended by this module always has a live
+  // ownerDocument attached to a window (the main document, or the detached
+  // schema/data-pane tab's own document — never a bare, window-less document).
+  const win = th.ownerDocument.defaultView!;
   const startX = ev.clientX;
   const startW = widths[colIndex];
   const pairW = nextKey != null ? startW + widths[nextKey] : 0; // combined width of the pair
-  const onMove = (m) => {
+  const onMove = (m: MouseEvent): void => {
     let w = colResizeWidth(startW, m.clientX - startX);
     if (nextKey != null) {
       // Keep the pair's combined width constant; both stay ≥ MIN_COL (a pair
@@ -105,7 +126,7 @@ function startColumnResize(widths, th, ev, keyOf) {
     widths[colIndex] = w;
     applyFixedWidths(table, widths, keyOf);
   };
-  const onUp = () => {
+  const onUp = (): void => {
     win.removeEventListener('mousemove', onMove);
     win.removeEventListener('mouseup', onUp);
   };
@@ -120,12 +141,12 @@ function startColumnResize(widths, th, ev, keyOf) {
  * the data grid appends it per header below; the script grids in results.js
  * append it with PLAIN_KEY.
  */
-export function resizeHandle(widths, keyOf) {
+export function resizeHandle(widths: Widths, keyOf: KeyOf): HTMLSpanElement {
   return h('span', {
     class: 'col-resize-h',
     title: 'Drag to resize column',
-    onmousedown: (e) => startColumnResize(widths, e.currentTarget.closest('th'), e, keyOf),
-    onclick: (e) => e.stopPropagation(),
+    onmousedown: (e: MouseEvent) => startColumnResize(widths, (e.currentTarget as HTMLElement).closest('th')!, e, keyOf),
+    onclick: (e: Event) => e.stopPropagation(),
   });
 }
 
@@ -133,8 +154,19 @@ export function resizeHandle(widths, keyOf) {
  * Re-pin previously drag-resized columns on a fresh render: a no-op until the
  * first resize populates `widths` (auto layout), fixed layout after.
  */
-export function reapplyWidths(table, widths, keyOf) {
+export function reapplyWidths(table: HTMLTableElement, widths: Widths, keyOf: KeyOf): void {
   if (Object.keys(widths).length) applyFixedWidths(table, widths, keyOf);
+}
+
+/** `renderGrid`'s argument bag. */
+export interface RenderGridArgs {
+  columns: GridColumn[];
+  rows: unknown[][];
+  sort: ResultSort;
+  onSort: (col: number, dir: 'asc' | 'desc') => void;
+  widths: Widths;
+  onCell?: (name: string, type: string, value: unknown) => void;
+  cap?: number;
 }
 
 /**
@@ -148,7 +180,7 @@ export function reapplyWidths(table, widths, keyOf) {
  * row cap (the main table passes the selectable result-row limit; the rows pane
  * leaves the default). Stateless: renders exactly its inputs, owns no holders.
  */
-export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCell, cap = GRID_VIS_CAP }) {
+export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCell, cap = GRID_VIS_CAP }: RenderGridArgs): HTMLElement {
   const { col, dir } = sort;
   const rows = sortRows(rawRows, col, dir);
   const wrap = h('div', { class: 'res-table-wrap' });
@@ -191,7 +223,10 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
       tr.appendChild(h('td', {
         class: 'cell' + (isNum ? ' num' : ''),
         title: truncate(text, 100),
-        onclick: () => onCell && onCell(columns[ci].name, columns[ci].type, v),
+        // `as`: onCell's contract (this module's + panels.ts's wrapper) always
+        // carries a real column type; the only column that can omit `type` is
+        // a hand-built test fixture that never wires a click handler.
+        onclick: () => onCell && onCell(columns[ci].name, columns[ci].type as string, v),
       }, h('div', { class: 'cell-val' }, text)));
     });
     tbody.appendChild(tr);
@@ -200,6 +235,20 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
   wrap.appendChild(table);
   if (rows.length > cap) wrap.appendChild(truncationFooter(rows.length - cap));
   return wrap;
+}
+
+/** `renderGridView`'s argument bag — the one grid state-wiring adapter's
+ *  contract (also pinned, structurally, by panels.ts's own local wrapper type
+ *  over this export). */
+export interface RenderGridViewArgs {
+  columns: GridColumn[];
+  rows: unknown[][];
+  sort: ResultSort;
+  setSort: (next: ResultSort) => void;
+  widths: Widths;
+  rerender: () => void;
+  onCell?: (name: string, type: string, value: unknown) => void;
+  cap?: number;
 }
 
 /**
@@ -211,7 +260,7 @@ export function renderGrid({ columns, rows: rawRows, sort, onSort, widths, onCel
  * view). `widths` passes through by reference so drag-resize mutations land in
  * the caller's holder unchanged. No network, no app actions, no policy.
  */
-export function renderGridView({ columns, rows, sort, setSort, widths, rerender, onCell, cap }) {
+export function renderGridView({ columns, rows, sort, setSort, widths, rerender, onCell, cap }: RenderGridViewArgs): HTMLElement {
   return renderGrid({
     columns,
     rows,

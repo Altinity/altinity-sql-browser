@@ -33,7 +33,10 @@ describe('KPI presentation and formatting', () => {
       unit: '%', color: null, hidden: false, future: { y: 2 },
       delta: { unit: ' pp', positiveIsGood: true, decimals: 2 },
     });
-    out.future.y = 9;
+    // `as`: `future` rides through FieldPresentation's index signature (an
+    // unknown-forward-compatible renderer extension), so its shape here is
+    // this test fixture's own, not something `resolveKpiPresentation` types.
+    (out.future as { y: number }).y = 9;
     expect(fieldConfig.columns.score.future.y).toBe(2);
     expect(resolveKpiPresentation({ fieldConfig: null, columnName: 'x' })).toEqual({
       displayName: 'x', description: null, unit: '', decimals: null,
@@ -64,12 +67,12 @@ describe('KPI presentation and formatting', () => {
     expect(formatKpiValue({ value: 5n, clickhouseType: 'UInt64' })).toBe('5');
   });
   it('derives delta direction and good/bad/neutral semantics', () => {
-    const item = (delta, config = {}) => ({ delta, presentation: { delta: config } });
+    const item = (delta: unknown, config: { positiveIsGood?: boolean; show?: boolean } = {}) => ({ delta, presentation: { delta: config } });
     expect(kpiDeltaState(item(2, { positiveIsGood: true }))).toEqual({ value: 2, direction: 'up', semantic: 'good' });
     expect(kpiDeltaState(item(-2, { positiveIsGood: true }))).toEqual({ value: -2, direction: 'down', semantic: 'bad' });
-    expect(kpiDeltaState(item(2, { positiveIsGood: false })).semantic).toBe('bad');
-    expect(kpiDeltaState(item(0, { positiveIsGood: false })).semantic).toBe('neutral');
-    expect(kpiDeltaState(item(2)).semantic).toBe('neutral');
+    expect(kpiDeltaState(item(2, { positiveIsGood: false }))!.semantic).toBe('bad');
+    expect(kpiDeltaState(item(0, { positiveIsGood: false }))!.semantic).toBe('neutral');
+    expect(kpiDeltaState(item(2))!.semantic).toBe('neutral');
     expect(kpiDeltaState(item('-9007199254740993'))).toEqual({ value: '-9007199254740993', direction: 'down', semantic: 'neutral' });
     expect(kpiDeltaState(item(null))).toBeNull();
     expect(kpiDeltaState(item('bad'))).toBeNull();
@@ -89,7 +92,7 @@ describe('readKpiFields', () => {
     const out = readKpiFields({ columns, row: [42, { value: '99.95', delta: null, ignored: 'x' }, 'EU'], rowCount: 1, fieldConfig, serverVersion: '26.3' });
     expect(out.items.map((item) => [item.columnName, item.kind, item.value, item.delta])).toEqual([['users', 'scalar', 42, null], ['availability', 'tuple', '99.95', null]]);
     expect(out.items[0].presentation.displayName).toBe('Active users');
-    expect(out.items[1].presentation.delta.unit).toBe(' pp');
+    expect(out.items[1].presentation.delta!.unit).toBe(' pp');
     expect(out.diagnostics.map((d) => d.code)).toEqual(['kpi-missing-field-metadata-target', 'kpi-unsupported-field']);
   });
   it('skips hidden and invalid tuple fields with stable diagnostics', () => {
@@ -102,7 +105,7 @@ describe('readKpiFields', () => {
   it('reports no eligible fields and supports object-shaped rows', () => {
     const none = readKpiFields({ columns: [{ name: 's', type: 'String' }], row: { s: 'x' }, rowCount: 1 });
     expect(none.items).toEqual([]);
-    expect(none.diagnostics.at(-1).code).toBe('kpi-no-eligible-fields');
+    expect(none.diagnostics.at(-1)!.code).toBe('kpi-no-eligible-fields');
     const object = readKpiFields({ columns: [{ name: 'n', type: 'Nullable(Int32)' }], row: { n: null }, rowCount: 1 });
     expect(object.items[0].value).toBeNull();
     const tupleString = readKpiFields({ columns: [{ name: 't', type: 'Tuple(value UInt64)' }], row: ['(42)'], rowCount: 1, serverVersion: '24.3' });

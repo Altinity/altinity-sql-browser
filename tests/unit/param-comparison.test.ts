@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { paramComparisonColumns } from '../../src/core/param-comparison.js';
 
-const posOf = (sql, name) => sql.indexOf('{' + name + ':');
+const posOf = (sql: string, name: string) => sql.indexOf('{' + name + ':');
 
 describe('paramComparisonColumns (#172 v2 heuristic)', () => {
   it('returns {} for SQL with no parameters at all', () => {

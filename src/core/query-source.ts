@@ -17,6 +17,24 @@
 import { inferQueryName } from './format.js';
 import { queryDescription, queryName } from './saved-query.js';
 
+/** `buildResultSource`'s inputs — a run's exact source snapshot (#185). */
+export interface ResultSourceInput {
+  srcSql: string;
+  tabId: string;
+  rowLimit: number;
+  tabName?: string | null;
+  savedEntry?: unknown;
+}
+
+/** The immutable `result.source` shape `buildResultSource` returns. */
+export interface ResultSource {
+  sql: string;
+  tabId: string;
+  rowLimit: number;
+  title: string;
+  description: string;
+}
+
 /**
  * Build the immutable `source` metadata for a run's result.
  *
@@ -29,10 +47,10 @@ import { queryDescription, queryName } from './saved-query.js';
  * Description comes from the saved entry, trimmed; a missing description
  * normalizes to an empty string (unsaved queries have none).
  */
-export function buildResultSource({ srcSql, tabId, rowLimit, tabName, savedEntry }) {
+export function buildResultSource({ srcSql, tabId, rowLimit, tabName, savedEntry }: ResultSourceInput): ResultSource {
   const sql = String(srcSql);
-  let title;
-  let description;
+  let title: string;
+  let description: string;
   if (savedEntry) {
     title = queryName(savedEntry);
     description = queryDescription(savedEntry).trim();

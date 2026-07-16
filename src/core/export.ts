@@ -7,7 +7,13 @@
 
 import { inferQueryName } from './format.js';
 
-function cell(v) {
+/** The minimal result-column shape `toTSV` reads (a name to head the TSV). */
+export interface ExportColumn {
+  name: string;
+  [k: string]: unknown;
+}
+
+function cell(v: unknown): string {
   return v == null ? '' : String(v);
 }
 
@@ -16,11 +22,17 @@ function cell(v) {
  * Backslashes, tabs and newlines are escaped ClickHouse-TSV style so embedded
  * whitespace can't break the column/row grid when pasted.
  */
-export function toTSV(columns, rows) {
-  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+export function toTSV(columns: ExportColumn[], rows: unknown[][]): string {
+  const esc = (s: string): string => s.replace(/\\/g, '\\\\').replace(/\t/g, '\\t').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
   const head = columns.map((c) => esc(c.name)).join('\t');
   const body = rows.map((row) => row.map((v) => esc(cell(v))).join('\t')).join('\n');
   return rows.length ? head + '\n' + body : head;
+}
+
+/** The `{ext, mime}` shape `formatFileMeta` resolves for a ClickHouse output format. */
+export interface FileMeta {
+  ext: string;
+  mime: string;
 }
 
 /**
@@ -29,7 +41,7 @@ export function toTSV(columns, rows) {
  * pretty-text formats fall back to `.txt`. `mime` feeds showSaveFilePicker's
  * `accept`. Pure.
  */
-export function formatFileMeta(format) {
+export function formatFileMeta(format?: string | null): FileMeta {
   const f = String(format || '');
   if (/EachRow$/i.test(f) || /^NDJSON$/i.test(f)) return { ext: 'jsonl', mime: 'application/x-ndjson' };
   if (/^JSON/i.test(f)) return { ext: 'json', mime: 'application/json' };
@@ -52,7 +64,7 @@ export function formatFileMeta(format) {
  * fallback when it's blank/all-punctuation) + the format's extension. `now`
  * is injected (Date.now()) for deterministic tests. Pure.
  */
-export function exportFilename(tabName, now, ext) {
+export function exportFilename(tabName: string | null | undefined, now: number, ext?: string | null): string {
   const base = String(tabName || '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '')
     || 'export-' + new Date(now).toISOString().replace(/[:.]/g, '-');
   return base + '.' + (ext || 'tsv');
@@ -67,7 +79,7 @@ export function exportFilename(tabName, now, ext) {
  * `taken` (Set of names already used this run) de-dupes with `-2`, `-3`, …
  * Pure — the caller adds the returned name to `taken`.
  */
-export function scriptExportName(index, stmt, ext, taken) {
+export function scriptExportName(index: number, stmt: string, ext: string, taken?: Set<string>): string {
   const num = String(index + 1).padStart(3, '0');
   const slug = (inferQueryName(stmt).replace(/^Query · /, '') || stmt)
     .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'query';

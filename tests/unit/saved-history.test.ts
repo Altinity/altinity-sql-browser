@@ -5,42 +5,224 @@ import { queryDescription, queryFavorite, queryName } from '../../src/core/saved
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { setTabSpecDraft } from '../../src/state.js';
+import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { AppState, HistoryEntry } from '../../src/state.js';
+import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
-const click = (el) => el.dispatchEvent(new Event('click', { bubbles: true }));
-const setSaved = (app, queries) => { app.state.savedQueries = queries.map(savedQuery); };
-const dragStart = (el) => {
-  const e = new Event('dragstart', { bubbles: true });
-  e.dataTransfer = { setData: vi.fn() };
-  el.dispatchEvent(e);
-  return e.dataTransfer.setData;
+// ── Typed test-app scaffolding ───────────────────────────────────────────────
+// tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
+// double that predates ADR-0002's `App` contract (app.types.ts) — it
+// implements the handful of members this file's render path actually reads,
+// not the whole ~50-member interface (out of scope here — fake-app.js isn't
+// one of this change's files; same convention as dashboard.test.ts /
+// panels.test.ts). `appDefaults` fills every member `makeApp()` doesn't
+// provide with an inert placeholder (never read by the paths this file
+// exercises); spreading `...app` OVER those defaults (not `Object.assign`'s
+// `T & U` intersection) lets a later key's REAL, often Mock-typed, shape win
+// on both value AND type — so `app.actions.loadIntoNewTab.mockReturnValue(…)`
+// below still sees the concrete `vi.fn()` mock, not App's argument-erased
+// method signature.
+type FakeApp = ReturnType<typeof makeApp>;
+type ResultView = AppState['resultView']['value'];
+
+const appDefaults: App = {
+  state: {} as AppState,
+  dom: {},
+  root: null,
+  document,
+  token: null,
+  refreshToken: null,
+  sqlEditor: {} as App['sqlEditor'],
+  specEditor: {} as App['specEditor'],
+  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
+  specValidators: { validate: () => [] },
+  specCompletionSources: [],
+  Chart: undefined,
+  cssVar: () => '',
+  Dagre: undefined,
+  openWindow: () => null,
+  stylesText: '',
+  faviconHref: '',
+  toggleTheme: () => {},
+  chart: undefined,
+  host: () => '',
+  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
+  isSignedIn: () => true,
+  email: () => '',
+  chUsername: () => '',
+  authMode: 'basic',
+  chAuth: 'basic',
+  basicUserClaim: 'sub',
+  idpId: null,
+  hostHint: '',
+  basePath: '',
+  setTokens: () => {},
+  loadConfig: async () => ({}),
+  loadIdps: async () => ({ idps: [] }),
+  selectIdp: () => {},
+  ensureConfig: async () => null,
+  ensureFreshToken: async () => true,
+  chCtx: {
+    fetch, origin: '', authConfirmed: true,
+    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
+  },
+  showLogin: () => {},
+  signOut: () => {},
+  receiveAuthHandoff: async () => false,
+  canExport: () => false,
+  canExportScript: () => false,
+  showSaveFilePicker: null,
+  showDirectoryPicker: null,
+  isSecureContext: true,
+  FileReader: globalThis.FileReader,
+  saveJSON: () => {},
+  saveStr: () => {},
+  savePref: () => {},
+  saveVarValues: () => {},
+  saveFilterActive: () => {},
+  saveVarRecent: () => {},
+  saveVarRecentDisabled: () => {},
+  recordBoundParams: () => {},
+  clearVarRecent: () => {},
+  clearAllVarRecent: () => {},
+  recordHistory: () => {},
+  downloadFile: () => {},
+  editingLibrary: false,
+  loadVersion: async () => {},
+  loadSchema: async () => {},
+  loadReference: async () => {},
+  refData: { functions: {}, keywordDocs: {} },
+  completions: {},
+  rebuildCompletions: () => {},
+  docCache: new Map(),
+  entityDoc: async () => null,
+  updateBanner: () => {},
+  wallNow: () => 0,
+  now: () => 0,
+  elapsedMs: () => 0,
+  tickElapsed: () => {},
+  runReadInto: async (result) => result,
+  setRunBtn: () => {},
+  renderVarStrip: () => {},
+  setExportBtn: () => {},
+  specBlocked: () => false,
+  updateSaveBtn: () => {},
+  evaluateSpecDraft: () => ({}),
+  revalidateSpecDrafts: () => {},
+  revealFirstSpecError: () => {},
+  registerSpecValidator: () => () => {},
+  activateInvalidSpecDraft: () => {},
+  openSavePopover: () => {},
+  openUserMenu: () => {},
+  renderApp: () => {},
+  renderDashboard: () => {},
+  openDashboard: () => {},
+  actions: {} as ActionsRegistry,
 };
+
+/** A `FakeApp` fixture, widened to satisfy `App` for `renderSavedHistory`
+ *  while keeping every concrete `makeApp()` mock directly readable/spyable
+ *  off the SAME object. No explicit return-type annotation: inferring it
+ *  (rather than pinning to `App`) keeps every `makeApp()` mock's own precise
+ *  type (`actions.loadIntoNewTab.mockReturnValue`, …). */
+function withApp(base: FakeApp) {
+  // fake-app.js's default `chart: null` predates App.chart's `undefined`-only
+  // optional shape (the field it models, chart-render.js's ad-hoc instance,
+  // is simply absent until a chart renders — never explicitly `null`); this
+  // file never touches charts, so it's always the "absent" default.
+  const merged = {
+    ...appDefaults, ...base, chart: base.chart ?? undefined,
+    // fake-app.js's `dom` stub holds concrete `<div>`s for every key it sets
+    // (narrower-but-always-present), while `AppDom`'s real members are all
+    // optional (a fresh renderApp() run resets `app.dom` to `{}` — see its
+    // own doc comment); widen so a "no mount" test can null one back out.
+    dom: base.dom as App['dom'],
+    // fake-app.js's own `chCtx` only ever stubs `onSignedOut` (the one member
+    // this file's render path reads) — narrower than the full `ChCtx`
+    // contract; keep the rest of the default's members, letting only
+    // `onSignedOut` win.
+    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
+    // fake-app.js's own `actions` predates two ActionsRegistry members
+    // (openUserMenu/openDashboard) added since — same "keep the rest, let
+    // fake-app.js's real spies win" merge.
+    actions: { ...appDefaults.actions, ...base.actions },
+  };
+  // Assignability check only (a variable reference, not a fresh literal, so
+  // this never trips an excess-property error) — `merged`'s own inferred
+  // type (every field's real, often Mock-typed, shape) is what callers
+  // actually get back, not this widened annotation.
+  const check: App = merged;
+  void check;
+  return merged;
+}
+
+// tests/helpers/saved-query.js is plain JS with no default for its `id`
+// param; TS's inference over its destructured signature therefore omits `id`
+// from the parameter type it derives, rejecting every fixture literal below
+// with an excess-property error. Pin the honest fixture shape it accepts
+// (same "typed wrapper over a still-untyped .js dependency" convention as
+// panels.test.ts's own `newResult` wrapper).
+interface SavedQueryFixture {
+  id: string;
+  sql?: string;
+  name?: string;
+  favorite?: boolean;
+  description?: string;
+  view?: string;
+  panel?: unknown;
+  dashboard?: unknown;
+  spec?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+const savedQueryFixture = savedQuery as (fixture: SavedQueryFixture) => SavedQueryV2;
+
+const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
+const setSaved = (app: ReturnType<typeof withApp>, queries: SavedQueryFixture[]) => {
+  app.state.savedQueries = queries.map(savedQueryFixture);
+};
+const dragStart = (el: Element) => {
+  const setData = vi.fn();
+  const e = Object.assign(new Event('dragstart', { bubbles: true }), { dataTransfer: { setData } });
+  el.dispatchEvent(e);
+  return setData;
+};
+const qs = <T extends Element = HTMLElement>(root: ParentNode, selector: string): T =>
+  root.querySelector(selector) as T;
+const qsa = <T extends Element = HTMLElement>(root: ParentNode, selector: string): T[] =>
+  [...root.querySelectorAll(selector)] as T[];
+const byTitle = (root: ParentNode, t: string): HTMLElement =>
+  qsa(root, '.sv-act').find((b) => b.title === t) as HTMLElement;
+/** `app.dom.*` mounts are always present once `withApp` merges in real
+ *  `<div>`s (fake-app.js's own dom stubs), or are deliberately cleared in a
+ *  no-mount test — those tests never read through this helper. */
+const savedList = (app: App): HTMLElement => app.dom.savedList!;
+const savedTabsRow = (app: App): HTMLElement => app.dom.savedTabsRow!;
+const savedSearch = (app: App): HTMLElement => app.dom.savedSearch!;
 
 describe('renderSavedHistory', () => {
   it('no-ops without mounts', () => {
-    const app = makeApp();
-    app.dom.savedTabsRow = null;
+    const app = withApp(makeApp());
+    app.dom.savedTabsRow = undefined;
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
   it('saved: empty state', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
-    expect(app.dom.savedList.textContent).toContain('No saved queries yet.');
+    expect(savedList(app).textContent).toContain('No saved queries yet.');
   });
 
-  const byTitle = (root, t) => [...root.querySelectorAll('.sv-act')].find((b) => b.title === t);
-
   it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }]);
     app.activeTab().savedId = 's1';
     app.activeTab().editorMode = 'spec';
     renderSavedHistory(app);
-    const row = app.dom.savedList.querySelector('.saved-row');
-    expect(row.querySelector('.preview').textContent).toBe('SELECT 1');
+    const row = qs(savedList(app), '.saved-row');
+    expect(qs(row, '.preview').textContent).toBe('SELECT 1');
     click(row);
     // links the tab + restores the chart, then runs in the saved view so results show immediately
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
@@ -53,46 +235,46 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false }]);
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.saved-row'));
+    click(qs(savedList(app), '.saved-row'));
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
   it('saved: opens a Filter badge directly in Spec at the role', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
     const loaded = app.activeTab();
     app.specEditor.revealOffset = vi.fn();
     loaded.specText = '{"dashboard":{"role":"filter"}}';
-    app.actions.loadIntoNewTab.mockReturnValue(loaded);
+    (app.actions.loadIntoNewTab as ReturnType<typeof vi.fn>).mockReturnValue(loaded);
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.query-role-badge'));
+    click(qs(savedList(app), '.query-role-badge'));
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
     expect(app.actions.setEditorMode).toHaveBeenCalledWith('spec');
     expect(app.specEditor.revealOffset).toHaveBeenCalledWith(loaded.specText.indexOf('"role"'));
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
-  it.each(['table', 'json', 'panel'])(
+  it.each(['table', 'json', 'panel'] as ResultView[])(
     'saved: a Filter-role query always launches into the Filter preview, independent of the current result view (was %s) (#244)',
     (previousView) => {
-      const app = makeApp();
+      const app = withApp(makeApp());
       app.state.sidePanel.value = 'saved';
       app.state.resultView.value = previousView;
       setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
       renderSavedHistory(app);
-      click(app.dom.savedList.querySelector('.saved-row'));
+      click(qs(savedList(app), '.saved-row'));
       expect(app.actions.run).toHaveBeenCalledWith({ view: 'filter' });
     },
   );
 
   it('saved: Filter role takes precedence over a dormant persisted spec.view and Panel config, without touching either (#244)', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 'f1', name: 'No persisted view', sql: 'SELECT 1', dashboard: { role: 'filter' } },
@@ -102,13 +284,13 @@ describe('renderSavedHistory', () => {
       },
     ]);
     renderSavedHistory(app);
-    const rows = app.dom.savedList.querySelectorAll('.saved-row');
+    const rows = qsa(savedList(app), '.saved-row');
     click(rows[0]);
     expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' });
     click(rows[1]);
     expect(app.actions.run).toHaveBeenLastCalledWith({ view: 'filter' }); // role wins, not 'panel'
     // launch never mutates the saved entry — dormant view/panel survive untouched
-    const dormant = app.state.savedQueries.find((q) => q.id === 'f2');
+    const dormant = app.state.savedQueries.find((q) => q.id === 'f2')!;
     expect(dormant.spec.view).toBe('panel');
     expect(dormant.spec.panel).toEqual({ cfg: { type: 'kpi' } });
     expect(dormant.spec.dashboard).toEqual({ role: 'filter' }); // no spec.view:'filter' persisted
@@ -122,7 +304,7 @@ describe('renderSavedHistory', () => {
     // enforces. The role must still win the launch view: `SAVED_VIEWS`
     // deliberately excludes 'filter' (it's never persisted), so this only
     // opens correctly if the role bypasses that persisted-view check.
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     app.state.resultView.value = 'table';
     setSaved(app, [
@@ -133,7 +315,7 @@ describe('renderSavedHistory', () => {
       },
     ]);
     renderSavedHistory(app);
-    const rows = app.dom.savedList.querySelectorAll('.saved-row');
+    const rows = qsa(savedList(app), '.saved-row');
     click(rows[0]);
     expect(app.actions.run).not.toHaveBeenCalled(); // not auto-runnable
     expect(app.state.resultView.value).toBe('filter');
@@ -144,17 +326,17 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 'a', name: 'A', sql: '1', favorite: false },
       { id: 'b', name: 'B', sql: '2', favorite: false },
     ]);
     renderSavedHistory(app);
-    expect(app.dom.savedTabsRow.querySelector('.side-count').textContent).toContain('2');
-    const names = () => [...app.dom.savedList.querySelectorAll('.saved-row .name')].map((n) => n.textContent);
+    expect(qs(savedTabsRow(app), '.side-count').textContent).toContain('2');
+    const names = () => qsa(savedList(app), '.saved-row .name').map((n) => n.textContent);
     expect(names()).toEqual(['A', 'B']);
-    const stars = app.dom.savedList.querySelectorAll('.sv-star');
+    const stars = qsa(savedList(app), '.sv-star');
     stars[1].dispatchEvent(new Event('click', { bubbles: true })); // favorite B
     expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'b'))).toBe(true);
     expect(names()).toEqual(['B', 'A']);
@@ -162,14 +344,14 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: favorite merges into a linked dirty valid Spec draft', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
     tab.savedId = 's1';
     setTabSpecDraft(tab, { name: 'Draft', favorite: false, future: { keep: true } }, { dirty: true });
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.sv-star'));
+    click(qs(savedList(app), '.sv-star'));
     expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
     expect(tab.specParsed).toMatchObject({ name: 'Draft', favorite: true, future: { keep: true } });
     expect(tab.dirtySpec).toBe(true);
@@ -177,47 +359,47 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: pencil focuses an invalid linked Spec draft instead of opening', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
     tab.savedId = 's1';
     tab.specParsed = null;
     tab.specText = '{"name":';
-    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
     renderSavedHistory(app);
-    click(byTitle(app.dom.savedList, 'Edit name & description'));
+    click(byTitle(savedList(app), 'Edit name & description'));
     expect(app.state.editingSavedId.value).toBeNull();
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
   });
 
   it('saved: favorite blocks on invalid JSON without persistence', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
     tab.savedId = 's1';
     tab.specParsed = null;
     tab.specText = '{';
-    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.sv-star'));
+    click(qs(savedList(app), '.sv-star'));
     expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
     expect(app.saveJSON).not.toHaveBeenCalled();
   });
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
     renderSavedHistory(app);
-    byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.editingSavedId.value).toBe('s1');
-    const nameInput = app.dom.savedList.querySelector('.sv-edit-name');
-    const descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    const nameInput = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    const descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
     expect(nameInput.value).toBe('Old');
     expect(descInput.value).toBe(''); // no description yet
     nameInput.value = 'New';
@@ -232,93 +414,93 @@ describe('renderSavedHistory', () => {
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(queryName(app.state.savedQueries[0])).toBe('New');
     // re-open and press Escape on the name field → cancels without saving
-    byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
-    const reName = app.dom.savedList.querySelector('.sv-edit-name');
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const reName = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
     reName.value = 'XYZ';
     reName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(app.state.editingSavedId.value).toBeNull();
     expect(queryName(app.state.savedQueries[0])).toBe('New');
   });
   it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }]);
     renderSavedHistory(app);
-    const open = () => byTitle(app.dom.savedList, 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const open = () => byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
     // ⌘Enter on the description commits (and prefills the existing description)
     open();
-    let descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    let descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
     expect(descInput.value).toBe('d0');
     descInput.value = 'd1';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
     expect(queryDescription(app.state.savedQueries[0])).toBe('d1');
     // Ctrl+Enter also commits
     open();
-    descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
     descInput.value = 'd2';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
     expect(queryDescription(app.state.savedQueries[0])).toBe('d2');
     // Escape on the description cancels without saving
     open();
-    descInput = app.dom.savedList.querySelector('.sv-edit-desc');
+    descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
     descInput.value = 'nope';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(queryDescription(app.state.savedQueries[0])).toBe('d2');
     expect(app.state.editingSavedId.value).toBeNull();
     // Save button with a blank name does not rename (commit guard)
     open();
-    app.dom.savedList.querySelector('.sv-edit-name').value = '   ';
-    app.dom.savedList.querySelector('.sv-edit-save').dispatchEvent(new Event('click', { bubbles: true }));
+    qs<HTMLInputElement>(savedList(app), '.sv-edit-name').value = '   ';
+    qs(savedList(app), '.sv-edit-save').dispatchEvent(new Event('click', { bubbles: true }));
     expect(queryName(app.state.savedQueries[0])).toBe('Old');
     expect(app.state.editingSavedId.value).toBeNull();
     // Cancel button reverts an edited name
     open();
-    app.dom.savedList.querySelector('.sv-edit-name').value = 'ZZZ';
-    app.dom.savedList.querySelector('.sv-edit-cancel').dispatchEvent(new Event('click', { bubbles: true }));
+    qs<HTMLInputElement>(savedList(app), '.sv-edit-name').value = 'ZZZ';
+    qs(savedList(app), '.sv-edit-cancel').dispatchEvent(new Event('click', { bubbles: true }));
     expect(queryName(app.state.savedQueries[0])).toBe('Old');
   });
   it('saved: renders a 2-line description preview when present, omits it otherwise', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 's1', name: 'A', sql: '1', favorite: false, description: 'explains A' },
       { id: 's2', name: 'B', sql: '2', favorite: false },
     ]);
     renderSavedHistory(app);
-    const rows = app.dom.savedList.querySelectorAll('.saved-row');
-    expect(rows[0].querySelector('.desc').textContent).toBe('explains A');
+    const rows = qsa(savedList(app), '.saved-row');
+    expect(qs(rows[0], '.desc').textContent).toBe('explains A');
     expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
   it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
-    const savedTab = app.dom.savedTabsRow.querySelectorAll('.side-tab')[0];
+    const savedTab = qsa(savedTabsRow(app), '.side-tab')[0];
     expect(savedTab.textContent).toContain('Library');
     expect(savedTab.textContent).not.toContain('Saved');
-    expect(savedTab.querySelector('.side-count').textContent).toContain('1');
+    expect(qs(savedTab, '.side-count').textContent).toContain('1');
     // the old bottom Export/Import row is gone (moved to the header File menu)
-    expect(app.dom.savedList.querySelector('.saved-actions')).toBeNull();
-    expect(app.dom.savedList.querySelector('.sv-io')).toBeNull();
+    expect(savedList(app).querySelector('.saved-actions')).toBeNull();
+    expect(savedList(app).querySelector('.sv-io')).toBeNull();
   });
   it('history: empty state', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     renderSavedHistory(app);
-    expect(app.dom.savedList.textContent).toContain('No history yet.');
+    expect(savedList(app).textContent).toContain('No history yet.');
   });
 
   it('history: lists rows (with + without row count) and loads on click', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
       { id: 'h2', sql: 'INSERT …', ts: Date.now(), rows: null, ms: 1 },
     ];
     renderSavedHistory(app);
-    const rows = app.dom.savedList.querySelectorAll('.history-row');
+    const rows = qsa(savedList(app), '.history-row');
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain('3 rows');
     expect(rows[1].textContent).not.toContain('rows');
@@ -328,34 +510,34 @@ describe('renderSavedHistory', () => {
   });
 
   it('history: an effectful entry loads into the editor but does NOT auto-run', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'DROP TABLE t', ts: Date.now(), rows: null, ms: 1 }];
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.history-row'));
+    click(qs(savedList(app), '.history-row'));
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith('From history', 'DROP TABLE t');
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
   it('history: per-row delete removes just that entry without loading it', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
       { id: 'h2', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 2 },
     ];
     renderSavedHistory(app);
-    click(app.dom.savedList.querySelector('.history-row .del'));
-    expect(app.state.history.map((e) => e.id)).toEqual(['h2']);
+    click(qs(savedList(app), '.history-row .del'));
+    expect(app.state.history.map((e: HistoryEntry) => e.id)).toEqual(['h2']);
     expect(app.actions.loadIntoNewTab).not.toHaveBeenCalled();
-    expect(app.dom.savedList.querySelectorAll('.history-row')).toHaveLength(1);
+    expect(qsa(savedList(app), '.history-row')).toHaveLength(1);
   });
 
   it('switching panels persists the choice', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
-    const [savedBtn, histBtn] = app.dom.savedTabsRow.querySelectorAll('.side-tab');
+    const [savedBtn, histBtn] = qsa(savedTabsRow(app), '.side-tab');
     click(histBtn);
     expect(app.state.sidePanel.value).toBe('history');
     expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'history');
@@ -367,7 +549,7 @@ describe('renderSavedHistory', () => {
 
 describe('renderSavedHistory — search/filter', () => {
   const savedApp = () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false, description: 'worst delays' },
@@ -377,22 +559,22 @@ describe('renderSavedHistory — search/filter', () => {
     renderSavedHistory(app);
     return app;
   };
-  const input = (app) => app.dom.savedSearch.querySelector('.sv-search-input');
-  const names = (app) => [...app.dom.savedList.querySelectorAll('.saved-row .name')].map((n) => n.textContent);
-  const type = (app, v) => { const i = input(app); i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); };
+  const input = (app: App): HTMLInputElement => qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
+  const names = (app: App): (string | null)[] => qsa(savedList(app), '.saved-row .name').map((n) => n.textContent);
+  const type = (app: App, v: string): void => { const i = input(app); i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); };
 
   it('tolerates a missing search mount', () => {
     const app = savedApp();
-    app.dom.savedSearch = null;
+    app.dom.savedSearch = undefined;
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
   it('collapses the search box when the active list is empty', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
-    expect(app.dom.savedSearch.children.length).toBe(0); // :empty → hidden via CSS
-    expect(input(app)).toBeNull();
+    expect(savedSearch(app).children.length).toBe(0); // :empty → hidden via CSS
+    expect(savedSearch(app).querySelector('.sv-search-input')).toBeNull();
   });
 
   it('shows the box with a per-tab placeholder when items exist', () => {
@@ -419,9 +601,9 @@ describe('renderSavedHistory — search/filter', () => {
   it('shows a no-match message and clears via the × button and Escape', () => {
     const app = savedApp();
     type(app, 'zzzz');
-    expect(app.dom.savedList.textContent).toContain('No queries match');
-    expect(app.dom.savedList.textContent).toContain('zzzz');
-    click(app.dom.savedSearch.querySelector('.sv-search-clear'));
+    expect(savedList(app).textContent).toContain('No queries match');
+    expect(savedList(app).textContent).toContain('zzzz');
+    click(qs(savedSearch(app), '.sv-search-clear'));
     expect(app.state.libraryFilter).toBe('');
     expect(names(app)).toHaveLength(3);
     type(app, 'busiest');
@@ -432,47 +614,47 @@ describe('renderSavedHistory — search/filter', () => {
   });
 
   it('filters history by sql with its own no-match message', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 },
       { id: 'h2', sql: 'INSERT INTO t', ts: Date.now(), rows: null, ms: 1 },
     ];
     renderSavedHistory(app);
-    const i = app.dom.savedSearch.querySelector('.sv-search-input');
+    const i = qs<HTMLInputElement>(savedSearch(app), '.sv-search-input');
     i.value = 'insert'; i.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(app.dom.savedList.querySelectorAll('.history-row')).toHaveLength(1);
-    expect(app.dom.savedList.textContent).toContain('INSERT INTO t');
+    expect(qsa(savedList(app), '.history-row')).toHaveLength(1);
+    expect(savedList(app).textContent).toContain('INSERT INTO t');
     i.value = 'nope'; i.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(app.dom.savedList.textContent).toContain('No history matches');
+    expect(savedList(app).textContent).toContain('No history matches');
   });
 
   it('clears the filter when switching tabs', () => {
     const app = savedApp();
     type(app, 'delay');
     expect(app.state.libraryFilter).toBe('delay');
-    click(app.dom.savedTabsRow.querySelectorAll('.side-tab')[1]); // → History
+    click(qsa(savedTabsRow(app), '.side-tab')[1]); // → History
     expect(app.state.libraryFilter).toBe('');
   });
 });
 
 describe('drag a row into the editor', () => {
   it('a saved row is draggable and carries its SQL as a subquery payload', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }]);
     renderSavedHistory(app);
-    const row = app.dom.savedList.querySelector('.saved-row');
+    const row = qs(savedList(app), '.saved-row');
     expect(row.getAttribute('draggable')).toBe('true');
     const setData = dragStart(row);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 1\n-- more');
   });
   it('a history row is draggable and carries its SQL as a subquery payload', () => {
-    const app = makeApp();
+    const app = withApp(makeApp());
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);
-    const row = app.dom.savedList.querySelector('.history-row');
+    const row = qs(savedList(app), '.history-row');
     expect(row.getAttribute('draggable')).toBe('true');
     const setData = dragStart(row);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');

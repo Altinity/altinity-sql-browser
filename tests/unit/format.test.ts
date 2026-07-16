@@ -15,7 +15,11 @@ describe('formatRows', () => {
   it('handles null / NaN', () => {
     expect(formatRows(null)).toBe('—');
     expect(formatRows(undefined)).toBe('—');
-    expect(formatRows('abc')).toBe('—');
+    // A deliberately wrong-typed runtime value (formatRows is declared
+    // `number | null | undefined`) via an `unknown` local, not `any`/`as
+    // unknown as` — same convention as dashboard.test.ts's `badValues`.
+    const notANumber: unknown = 'abc';
+    expect(formatRows(notANumber as number)).toBe('—');
   });
   it('formats each band', () => {
     expect(formatRows(0)).toBe('0');
@@ -32,7 +36,9 @@ describe('formatRows', () => {
 describe('formatBytes', () => {
   it('handles null / NaN', () => {
     expect(formatBytes(null)).toBe('—');
-    expect(formatBytes('x')).toBe('—');
+    // A deliberately wrong-typed runtime value — see formatRows's note above.
+    const notANumber: unknown = 'x';
+    expect(formatBytes(notANumber as number)).toBe('—');
   });
   it('formats each unit', () => {
     expect(formatBytes(512)).toBe('512 B');

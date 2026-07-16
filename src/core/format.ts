@@ -5,7 +5,7 @@ import { scanSpans } from './sql-spans.js';
 import { leadingKeyword } from './sql-split.js';
 
 /** Clamp `v` into the inclusive range [lo, hi]. */
-export function clamp(v, lo, hi) {
+export function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
@@ -13,7 +13,7 @@ export function clamp(v, lo, hi) {
  * Human-readable row count: 0..999 verbatim, then K/M/B with one decimal of
  * precision for the low end of each band. Returns '—' for null/NaN.
  */
-export function formatRows(n) {
+export function formatRows(n: number | null | undefined): string {
   if (n == null || Number.isNaN(Number(n))) return '—';
   n = Number(n);
   if (n < 1000) return String(n);
@@ -28,7 +28,7 @@ export function formatRows(n) {
  * — `max <= 0` collapses to just '…', never a string longer than the input
  * would need). Short strings pass through unchanged.
  */
-export function truncate(str, max) {
+export function truncate(str: unknown, max: number): string {
   const s = String(str == null ? '' : str);
   return s.length > max ? s.slice(0, Math.max(0, max - 1)) + '…' : s;
 }
@@ -40,7 +40,7 @@ export function truncate(str, max) {
  * '25%'. Returns '—' when `uncompressed` is 0/null/NaN (nothing to divide by
  * — e.g. an empty table) or `compressed` isn't a number.
  */
-export function formatCompressionRatio(compressed, uncompressed) {
+export function formatCompressionRatio(compressed: unknown, uncompressed: unknown): string {
   const c = Number(compressed);
   const u = Number(uncompressed);
   if (!u || compressed == null || Number.isNaN(c)) return '—';
@@ -48,7 +48,7 @@ export function formatCompressionRatio(compressed, uncompressed) {
 }
 
 /** Human-readable byte count (B/KB/MB/GB/TB). Returns '—' for null/NaN. */
-export function formatBytes(n) {
+export function formatBytes(n: number | null | undefined): string {
   if (n == null || Number.isNaN(Number(n))) return '—';
   n = Number(n);
   if (n < 1024) return n + ' B';
@@ -62,7 +62,7 @@ export function formatBytes(n) {
  * Relative time label ("12s ago", "3m ago", "5h ago", "2d ago").
  * `now` is injectable for deterministic tests.
  */
-export function timeAgo(ts, now = Date.now()) {
+export function timeAgo(ts: number, now: number = Date.now()): string {
   const s = (now - ts) / 1000;
   if (s < 60) return Math.floor(s) + 's ago';
   if (s < 3600) return Math.floor(s / 60) + 'm ago';
@@ -71,7 +71,7 @@ export function timeAgo(ts, now = Date.now()) {
 }
 
 /** Quote + escape a string as a ClickHouse SQL string literal. */
-export function sqlString(s) {
+export function sqlString(s: unknown): string {
   // Escape the backslash first (CH honors backslash escapes in string literals,
   // so a trailing `\` would otherwise escape the closing quote and break out),
   // then double the single quote.
@@ -88,7 +88,7 @@ const BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * backticks, with `\` and `` ` `` backslash-escaped (CH's identifier escaping).
  * Bare identifiers pass through unquoted so ordinary SQL stays readable.
  */
-export function quoteIdent(name) {
+export function quoteIdent(name: unknown): string {
   const s = String(name);
   if (BARE_IDENT.test(s)) return s;
   return '`' + s.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
@@ -99,7 +99,7 @@ export function quoteIdent(name) {
  * part as needed: `qualifyIdent('db', 'a.b')` → `` db.`a.b` ``. Empty/nullish
  * parts are dropped (so a bare table name qualifies to just itself).
  */
-export function qualifyIdent(...parts) {
+export function qualifyIdent(...parts: unknown[]): string {
   return parts.filter((p) => p != null && p !== '').map(quoteIdent).join('.');
 }
 
@@ -111,7 +111,7 @@ export function qualifyIdent(...parts) {
  * Appends a single newline only when the text doesn't already end in whitespace
  * or ';'. Pure.
  */
-export function withStatementBreak(sql) {
+export function withStatementBreak(sql?: string | null): string {
   const s = String(sql || '');
   return s === '' || /[\s;]$/.test(s) ? s : s + '\n';
 }
@@ -125,9 +125,9 @@ export function withStatementBreak(sql) {
  * output format from their own SQL (e.g. `… FORMAT Pretty` / `FORMAT CSV`, with
  * or without a following `SETTINGS …`). Pure.
  */
-export function detectSqlFormat(sql) {
+export function detectSqlFormat(sql?: string | null): string | null {
   const text = String(sql || '');
-  const words = [];
+  const words: string[] = [];
   let depth = 0;
   for (const span of scanSpans(text)) {
     if (span.kind !== 'code') continue;
@@ -162,7 +162,7 @@ export function detectSqlFormat(sql) {
  * Semicolons and comment characters inside strings/identifiers/heredocs are
  * never inspected, because the scanner already made those spans opaque. Pure.
  */
-function stripTrailingTrivia(text) {
+function stripTrailingTrivia(text: string): string {
   const spans = [...scanSpans(text)];
   let end = text.length;
   for (let si = spans.length - 1; si >= 0;) {
@@ -187,6 +187,13 @@ function stripTrailingTrivia(text) {
   return text.slice(0, end);
 }
 
+/** `withTrailingFormat`'s result: the (possibly comment/`;`-trimmed and
+ *  FORMAT-completed) SQL, and the format it will run/export under. */
+export interface TrailingFormatResult {
+  sql: string;
+  format: string;
+}
+
 /**
  * Peel a trailing `;` and any trailing **closed** SQL comments (line
  * `-- …` / `# …` / `// …`, nested block `/* … *​/`, incl. after a `;`) from
@@ -201,7 +208,7 @@ function stripTrailingTrivia(text) {
  * shared by the export prep and the dashboard tile fetch so this edge handling
  * lives in one place.
  */
-export function withTrailingFormat(sql, fallbackFormat) {
+export function withTrailingFormat(sql: string | null | undefined, fallbackFormat: string): TrailingFormatResult {
   const s = stripTrailingTrivia(String(sql || '')).replace(/^\s+/, '');
   const fmt = detectSqlFormat(s);
   if (fmt) return { sql: s, format: fmt };
@@ -214,7 +221,7 @@ export function withTrailingFormat(sql, fallbackFormat) {
  * input → `{ sql: '', format: 'TabSeparatedWithNames' }` — the caller no-ops on
  * an empty `sql`. Pure.
  */
-export function prepareExportSql(sql) {
+export function prepareExportSql(sql: string | null | undefined): TrailingFormatResult {
   return withTrailingFormat(sql, 'TabSeparatedWithNames');
 }
 
@@ -231,7 +238,7 @@ const SCHEMA_MUTATING = new Set([
  * so DDL after any of them still refreshes the schema, while an invalid `#x`
  * (not a comment) correctly does not. Pure.
  */
-export function isSchemaMutatingSql(sql) {
+export function isSchemaMutatingSql(sql?: string | null): boolean {
   return SCHEMA_MUTATING.has(leadingKeyword(sql));
 }
 
@@ -239,7 +246,7 @@ export function isSchemaMutatingSql(sql) {
  * Derive a short display name for a saved query: "Query · <table>" when a
  * FROM clause is present, else the first 48 chars of the collapsed SQL.
  */
-export function inferQueryName(sql) {
+export function inferQueryName(sql: string): string {
   const s = String(sql).replace(/\s+/g, ' ').trim();
   const m = /\bFROM\s+([A-Za-z_][\w.`"]*)/i.exec(s);
   if (m) return 'Query · ' + m[1].replace(/[`"]/g, '');
@@ -252,7 +259,7 @@ export function inferQueryName(sql) {
  * <name>` clause (FORMAT must be a statement's last clause) — then brackets it on
  * its own lines. Empty/whitespace input → '' (caller inserts nothing). Pure.
  */
-export function toSubquery(sql) {
+export function toSubquery(sql?: string | null): string {
   let s = String(sql || '').trim();
   // Peel trailing `;` and `FORMAT <name>` clauses (either order, repeated) — both
   // are invalid inside a subquery. A trailing comment after FORMAT is left as-is
@@ -266,7 +273,7 @@ export function toSubquery(sql) {
 }
 
 /** True for ClickHouse numeric column types (Int/UInt/Float/Decimal). */
-export function isNumericType(type) {
+export function isNumericType(type?: string | null): boolean {
   return /^(U?Int|Float|Decimal)/.test(type || '');
 }
 
@@ -275,7 +282,7 @@ export function isNumericType(type) {
  * dot-segments (e.g. '26.3.10.20001.altinityantalya' → '26.3.10'). The full
  * string is shown on hover. Empty/short inputs pass through unchanged.
  */
-export function shortVersion(v) {
+export function shortVersion(v?: string | null): string {
   const parts = String(v || '').split('.');
   return parts.length > 3 ? parts.slice(0, 3).join('.') : String(v || '');
 }
@@ -284,7 +291,7 @@ export function shortVersion(v) {
  * True when `v` (a ClickHouse version string) is >= 26.3, the release that
  * added EXPLAIN's `pretty`/`compact` settings. Malformed/empty input → false.
  */
-export function supportsExplainPretty(v) {
+export function supportsExplainPretty(v?: string | null): boolean {
   const m = /^(\d+)\.(\d+)/.exec(String(v || ''));
   if (!m) return false;
   const major = Number(m[1]);
@@ -297,7 +304,7 @@ export function supportsExplainPretty(v) {
  * (before '@'). Falls back to the whole string when there's no '@', and '' for
  * empty/nullish input.
  */
-export function userShortName(email) {
+export function userShortName(email?: string | null): string {
   const s = String(email || '');
   const at = s.indexOf('@');
   return at > 0 ? s.slice(0, at) : s;

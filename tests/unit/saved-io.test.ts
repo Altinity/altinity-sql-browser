@@ -6,9 +6,22 @@ import {
 const FORMAT = 'altinity-sql-browser/saved-queries';
 const SCHEMA = 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json';
 const NOW = '2026-07-13T00:00:00.000Z';
-const v2 = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec });
-const envelope = (version, queries, over = {}) => JSON.stringify({ format: FORMAT, version, queries, ...over });
+const v2 = (id: string, sql: string, spec: Record<string, unknown> = {}) => ({ id, sql, specVersion: 1, spec });
+const envelope = (version: number, queries: unknown[], over: Record<string, unknown> = {}) =>
+  JSON.stringify({ format: FORMAT, version, queries, ...over });
 const CHART = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
+
+// `buildExportDoc` returns a bare `Record<string, unknown>` (the generic export
+// envelope shape) — this module's own tests read a query's canonical fields
+// back off it, so a single, local, honestly-loose shape (not `any`) narrows
+// `doc.queries` for every assertion below.
+interface ExportedQuery {
+  id: string;
+  sql: string;
+  specVersion: number;
+  spec: Record<string, unknown>;
+}
+const queriesOf = (doc: Record<string, unknown>): ExportedQuery[] => doc.queries as ExportedQuery[];
 
 describe('buildExportDoc', () => {
   it('writes only the canonical v2 envelope and preserves the complete Spec', () => {
@@ -22,17 +35,17 @@ describe('buildExportDoc', () => {
         name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
       })],
     });
-    expect(doc.queries[0].spec.extension).not.toBe(extension);
-    expect('name' in doc.queries[0]).toBe(false);
-    expect('panel' in doc.queries[0]).toBe(false);
-    expect('chart' in doc.queries[0]).toBe(false);
+    expect(queriesOf(doc)[0].spec.extension).not.toBe(extension);
+    expect('name' in queriesOf(doc)[0]).toBe(false);
+    expect('panel' in queriesOf(doc)[0]).toBe(false);
+    expect('chart' in queriesOf(doc)[0]).toBe(false);
   });
 
   it('upgrades defensive v1 input on export and handles an empty list', () => {
     const doc = buildExportDoc([{ id: 'old', name: 'Old', sql: '1', chart: CHART }], NOW);
     expect(doc.version).toBe(2);
-    expect(doc.queries[0]).toEqual(v2('old', '1', { name: 'Old', favorite: false, panel: CHART }));
-    expect(buildExportDoc([], NOW).queries).toEqual([]);
+    expect(queriesOf(doc)[0]).toEqual(v2('old', '1', { name: 'Old', favorite: false, panel: CHART }));
+    expect(queriesOf(buildExportDoc([], NOW))).toEqual([]);
   });
 });
 
@@ -87,7 +100,7 @@ describe('parseImportDoc — v2 validation', () => {
   });
 
   it('rejects malformed v2 rows with an index and reason', () => {
-    const cases = [
+    const cases: [unknown, string][] = [
       [null, 'queries[1] must be object'],
       [{ id: '', sql: '', specVersion: 1, spec: {} }, 'queries[1].id has an invalid string value'],
       [{ id: 'x', sql: 1, specVersion: 1, spec: {} }, 'queries[1].sql must be string'],
@@ -116,9 +129,11 @@ describe('parseImportDoc — v2 validation', () => {
   });
 
   it('runs the injected feature service after structural upgrade', () => {
-    const validationService = { validate: (spec) => spec.forbidden
-      ? [{ path: ['forbidden'], severity: 'error', message: 'forbidden is unavailable' }]
-      : [] };
+    const validationService = {
+      validate: (spec: unknown) => (spec && typeof spec === 'object' && (spec as Record<string, unknown>).forbidden
+        ? [{ path: ['forbidden'], severity: 'error' as const, message: 'forbidden is unavailable' }]
+        : []),
+    };
     expect(() => parseImportDoc(envelope(2, [v2('feature', '', { forbidden: true })]), validationService))
       .toThrow('Query "feature": forbidden is unavailable.');
     expect(parseImportDoc(envelope(2, [v2('allowed', '', {})]), validationService).queries[0].id)
@@ -173,7 +188,7 @@ describe('mergeSaved', () => {
     ];
     const result = mergeSaved(existing, incoming, generator());
     expect(result).toMatchObject({ added: 1, updated: 2, skipped: 0 });
-    expect(result.merged.find((q) => q.id === 'old').sql).toBe('2');
+    expect(result.merged.find((q) => q.id === 'old')!.sql).toBe('2');
     expect(upgradeSavedEntry({ name: 'Alias', sql: 'a' }).spec.name).toBe('Alias');
   });
 

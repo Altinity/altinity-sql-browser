@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderKpiCards, renderKpiPanel } from '../../src/ui/kpi-panel.js';
 
-const item = (over = {}) => ({
+const item = (over: Record<string, unknown> = {}) => ({
   columnName: 'value', value: 12.4, valueType: 'Float64', delta: null, deltaType: null,
   presentation: { displayName: 'Value', noValue: '—', delta: {} }, ...over,
 });
@@ -15,25 +15,25 @@ describe('renderKpiPanel', () => {
       })],
       diagnostics: [{ severity: 'warning', code: 'warn', message: 'Ignored region' }],
     });
-    expect(node.querySelector('.kpi-grid').getAttribute('aria-label')).toBe('Key performance indicators');
-    expect(node.querySelector('.kpi-card').getAttribute('aria-label')).toBe('Availability');
-    expect(node.querySelector('.kpi-card').style.getPropertyValue('--kpi-accent')).toBe('#123456');
-    expect(node.querySelector('.kpi-value').textContent).toBe('12.4%');
-    expect(node.querySelector('.kpi-description').textContent).toBe('Current service level');
-    expect(node.querySelector('.kpi-delta').classList.contains('is-good')).toBe(true);
-    expect(node.querySelector('.kpi-delta').textContent).toBe('↓ Change 1.5 pp');
-    expect(node.querySelector('.kpi-warnings').textContent).toContain('Ignored region');
+    expect(node.querySelector('.kpi-grid')!.getAttribute('aria-label')).toBe('Key performance indicators');
+    expect(node.querySelector('.kpi-card')!.getAttribute('aria-label')).toBe('Availability');
+    expect((node.querySelector('.kpi-card') as HTMLElement).style.getPropertyValue('--kpi-accent')).toBe('#123456');
+    expect(node.querySelector('.kpi-value')!.textContent).toBe('12.4%');
+    expect(node.querySelector('.kpi-description')!.textContent).toBe('Current service level');
+    expect(node.querySelector('.kpi-delta')!.classList.contains('is-good')).toBe(true);
+    expect(node.querySelector('.kpi-delta')!.textContent).toBe('↓ Change 1.5 pp');
+    expect(node.querySelector('.kpi-warnings')!.textContent).toContain('Ignored region');
   });
   it('renders no-data and errors as visible states', () => {
     const noData = renderKpiPanel({ items: [], diagnostics: [{ severity: 'info', code: 'kpi-no-data', message: 'No data' }] });
-    expect(noData.querySelector('[role="status"]').textContent).toBe('No data');
+    expect(noData.querySelector('[role="status"]')!.textContent).toBe('No data');
     const error = renderKpiPanel({ items: [], diagnostics: [{ severity: 'error', code: 'kpi-row-count', message: 'Expected 1 row, got 2' }] });
-    expect(error.querySelector('[role="alert"]').textContent).toContain('got 2');
+    expect(error.querySelector('[role="alert"]')!.textContent).toContain('got 2');
   });
   it('renders a neutral flat delta and tolerates a missing normalization result', () => {
     const node = renderKpiPanel({ items: [item({ delta: 0, deltaType: 'Int8' })], diagnostics: [] });
-    expect(node.querySelector('.kpi-delta').textContent).toBe('→ 0');
-    expect(node.querySelector('.kpi-delta').classList.contains('is-neutral')).toBe(true);
+    expect(node.querySelector('.kpi-delta')!.textContent).toBe('→ 0');
+    expect(node.querySelector('.kpi-delta')!.classList.contains('is-neutral')).toBe(true);
     expect(renderKpiPanel(null).querySelectorAll('.kpi-card')).toHaveLength(0);
   });
   it('preserves exact large integer delta text', () => {
@@ -43,8 +43,8 @@ describe('renderKpiPanel', () => {
         presentation: { displayName: 'Value', noValue: '—', delta: { decimals: 0 } },
       })], diagnostics: [],
     });
-    expect(node.querySelector('.kpi-delta').textContent).toBe('↓ 9007199254740993');
-    expect(node.querySelector('.kpi-delta').getAttribute('aria-label')).toContain('9007199254740993');
+    expect(node.querySelector('.kpi-delta')!.textContent).toBe('↓ 9007199254740993');
+    expect(node.querySelector('.kpi-delta')!.getAttribute('aria-label')).toContain('9007199254740993');
   });
 });
 

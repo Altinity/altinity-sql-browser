@@ -12,6 +12,31 @@ import { truncate } from './format.js';
 // the cap it can't) and shows at most SELECT_ROW_CAP.
 export const SELECT_ROW_CAP = 100;
 
+/** One `meta` entry of a FORMAT JSONCompact response body. */
+interface JsonCompactMeta {
+  name: string;
+  type: string;
+  [k: string]: unknown;
+}
+
+// The `{meta, data}` shape a FORMAT JSONCompact response body parses into —
+// narrowed to the two fields this parser reads; a missing/non-array meta or
+// data degrades to empty via the `|| []` fallbacks below, same as the
+// original untyped behavior.
+interface JsonCompactBody {
+  meta?: JsonCompactMeta[];
+  data?: unknown[][];
+  [k: string]: unknown;
+}
+
+/** `parseSelectResult`'s return shape — the same `{columns, rows}` shape the
+ *  result grid (renderTable) consumes, plus a truncation flag. */
+export interface SelectResult {
+  columns: { name: string; type: string }[];
+  rows: unknown[][];
+  truncated: boolean;
+}
+
 /**
  * Parse a JSONCompact response body into `{ columns, rows, truncated }`, capping
  * `rows` at `cap` (default SELECT_ROW_CAP). `truncated` is true when more than
@@ -19,12 +44,15 @@ export const SELECT_ROW_CAP = 100;
  * body or one that isn't valid JSON yields an empty result rather than throwing.
  * Pure.
  */
-export function parseSelectResult(rawText, cap = SELECT_ROW_CAP) {
+export function parseSelectResult(rawText: unknown, cap: number = SELECT_ROW_CAP): SelectResult {
   const text = String(rawText == null ? '' : rawText).trim();
   if (!text) return { columns: [], rows: [], truncated: false };
-  let json;
+  let json: JsonCompactBody;
   try {
-    json = JSON.parse(text);
+    // Ingress: a raw HTTP response body is arbitrary text — only object-shape
+    // proven here (the try/catch above); `meta`/`data` are read defensively
+    // (`|| []`) exactly like the pre-conversion behavior.
+    json = JSON.parse(text) as JsonCompactBody;
   } catch {
     return { columns: [], rows: [], truncated: false };
   }
@@ -38,7 +66,7 @@ export function parseSelectResult(rawText, cap = SELECT_ROW_CAP) {
  * one row / one number, e.g. a count). NULLs render empty, matching the result
  * grid. Truncated with an ellipsis past `max`. '' when there are no rows. Pure.
  */
-export function firstRowPreview(rows, max = 160) {
+export function firstRowPreview(rows: unknown[][] | null | undefined, max: number = 160): string {
   if (!rows || !rows.length) return '';
   return truncate(rows[0].map((v) => (v == null ? '' : String(v))).join(', '), max);
 }

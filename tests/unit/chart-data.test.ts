@@ -7,6 +7,14 @@ import {
   applyChartStylePreset, shouldShowChartPoints, formatChartValue, visibleChartMeasures,
   CHART_STYLE_PRESETS,
 } from '../../src/core/chart-data.js';
+import type { ChartConfig, ChartFamilyType, ChartMeasure, ChartStyle } from '../../src/core/chart-data.js';
+import type { Column } from '../../src/core/panel-cfg.js';
+
+// A chart cfg literal, typed loosely enough for this suite's fixtures (many
+// omit `y`/`style`, or use a non-family `type` string to exercise fallback
+// behavior) — cast at each call site, same convention as `Column` below.
+type ChartConfigFixture = { type: string; x: number; y?: number[]; series?: number | null; style?: unknown };
+const cc = (cfg: ChartConfigFixture): ChartConfig => cfg as ChartConfig;
 
 describe('chartStripType', () => {
   it('strips Nullable/LowCardinality, including nested', () => {
@@ -30,7 +38,7 @@ describe('chartRole', () => {
     expect(chartRole({ name: 'carrier', type: 'LowCardinality(String)' })).toBe('category');
   });
   it('treats a numeric column with no name as a measure, and a missing col as category', () => {
-    expect(chartRole({ type: 'Float64' })).toBe('measure');
+    expect(chartRole({ type: 'Float64' } as Column)).toBe('measure');
     expect(chartRole(undefined)).toBe('category');
   });
   it('does not misclassify a measure merely prefixed with a bucket word', () => {
@@ -337,7 +345,7 @@ describe('buildChartData', () => {
     // label; buildChartData must plot it directly rather than re-resolving from
     // cfg.y/fieldConfig — the single-resolution path chartJsConfig relies on.
     const rows = [['B6', '10', '5.5', 'E']];
-    const measures = [{ index: 2, presentation: { displayName: 'Avg delay' }, authoredValueFormat: false }];
+    const measures = [{ index: 2, presentation: { displayName: 'Avg delay' }, authoredValueFormat: false }] as ChartMeasure[];
     const out = buildChartData(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, {}, measures);
     expect(out.datasets).toEqual([{ label: 'Avg delay', data: [5.5] }]);
   });
@@ -375,7 +383,7 @@ describe('buildChartData', () => {
     expect(out.datasets[0].data).toEqual([1, 2]); // and the two points survive (no merge)
   });
   it('applies display names and hidden state without mutating cfg.y or fieldConfig', () => {
-    const cfg = { type: 'line', x: 0, y: [1, 2], series: null };
+    const cfg = cc({ type: 'line', x: 0, y: [1, 2], series: null });
     const fieldConfig = { defaults: { unit: '%' }, columns: {
       flights: { displayName: 'Flights' }, delay: { hidden: true },
     } };
@@ -386,14 +394,14 @@ describe('buildChartData', () => {
     expect(fieldConfig.columns.delay.hidden).toBe(true);
   });
   it('keeps Series values as dataset labels while using the selected measure visibility', () => {
-    const cfg = { type: 'line', x: 0, y: [1], series: 3 };
+    const cfg = cc({ type: 'line', x: 0, y: [1], series: 3 });
     const fields = { columns: { flights: { displayName: 'Flight count' } } };
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, fields).datasets[0].label).toBe('East');
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, { columns: { flights: { hidden: true } } }))
       .toEqual({ labels: [], datasets: [] });
-    expect(buildChartData(cols, [['B6', 10, 2, 'East']], {
+    expect(buildChartData(cols, [['B6', 10, 2, 'East']], cc({
       type: 'line', x: 0, y: [1, 2], series: 3,
-    }, { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [] });
+    }), { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [] });
   });
 });
 
@@ -420,28 +428,28 @@ describe('chartJsConfig', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
     expect(cfg.type).toBe('bar');
     expect(cfg.options.indexAxis).toBe('y');
-    expect(cfg.options.scales.x.beginAtZero).toBe(true); // value axis on x
-    expect(cfg.options.scales.y.grid.display).toBe(false); // category axis
+    expect(cfg.options.scales!.x.beginAtZero).toBe(true); // value axis on x
+    expect(cfg.options.scales!.y.grid.display).toBe(false); // category axis
     expect(cfg.data.datasets[0].backgroundColor).toBe(colors.palette[0]);
   });
   it('shows value-axis gridlines by default, hides them with opts.hideGrid (#149)', () => {
     const shown = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
-    expect(shown.options.scales.y.grid.display).toBe(true);
+    expect(shown.options.scales!.y.grid.display).toBe(true);
     const hidden = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, { hideGrid: true });
-    expect(hidden.options.scales.y.grid.display).toBe(false);
+    expect(hidden.options.scales!.y.grid.display).toBe(false);
     // the horizontal-bar value axis (x) is hidden too, not just the category axis
     const hbar = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors, { hideGrid: true });
-    expect(hbar.options.scales.x.grid.display).toBe(false);
+    expect(hbar.options.scales!.x.grid.display).toBe(false);
   });
   it('vertical column keeps indexAxis x', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
     expect(cfg.type).toBe('bar');
     expect(cfg.options.indexAxis).toBe('x');
-    expect(cfg.options.scales.y.beginAtZero).toBe(true);
+    expect(cfg.options.scales!.y.beginAtZero).toBe(true);
   });
   it('value-axis ticks humanize via callback (number and coercible string)', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
-    const cb = cfg.options.scales.y.ticks.callback;
+    const cb = cfg.options.scales!.y.ticks.callback!;
     expect(cb(2_000_000)).toBe('2.0M');
     expect(cb('1500')).toBe('1.5K');
   });
@@ -466,7 +474,7 @@ describe('chartJsConfig', () => {
     const measures = [{
       index: 1, authoredValueFormat: false,
       presentation: { displayName: 'Flights!', unit: '', decimals: null, description: null, hidden: false },
-    }];
+    }] as ChartMeasure[];
     const out = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, { measures });
     expect(out.data.datasets[0].label).toBe('Flights!');
   });
@@ -499,16 +507,16 @@ describe('chartJsConfig', () => {
     expect(stepped).toMatchObject({ tension: 0, stepped: 'after', pointRadius: 2 });
   });
   it('maps grouped/stacked Bar and Column plus compact/joined density exactly', () => {
-    const config = (type, style) => chartJsConfig(cols, rows, {
+    const config = (type: ChartFamilyType, style: ChartStyle) => chartJsConfig(cols, rows, {
       type, x: 0, y: [1, 2], series: null, style,
     }, colors);
     const grouped = config('hbar', { mode: 'grouped', density: 'normal', scale: 'zero' });
     expect(grouped.options.indexAxis).toBe('y');
-    expect(grouped.options.scales).toMatchObject({ x: { stacked: false }, y: { stacked: false } });
+    expect(grouped.options.scales!).toMatchObject({ x: { stacked: false }, y: { stacked: false } });
     expect(grouped.data.datasets[0]).not.toHaveProperty('categoryPercentage');
     const stacked = config('bar', { mode: 'stacked', density: 'normal', scale: 'zero' });
     expect(stacked.options.indexAxis).toBe('x');
-    expect(stacked.options.scales).toMatchObject({ x: { stacked: true }, y: { stacked: true } });
+    expect(stacked.options.scales!).toMatchObject({ x: { stacked: true }, y: { stacked: true } });
     const compact = config('bar', { density: 'compact', scale: 'zero' }).data.datasets[0];
     expect(compact).toMatchObject({ categoryPercentage: 0.9, barPercentage: 0.95, borderRadius: 2 });
     const joined = config('bar', { density: 'joined', scale: 'zero' }).data.datasets[0];
@@ -520,49 +528,49 @@ describe('chartJsConfig', () => {
       style: { curve: 'smooth', points: 'hide', stack: 'stacked', scale: 'data' },
     }, colors);
     expect(cfg.data.datasets.map((dataset) => dataset.stack)).toEqual(['chart', 'chart']);
-    expect(cfg.options.scales).toMatchObject({ x: { stacked: false }, y: { stacked: true, beginAtZero: false } });
+    expect(cfg.options.scales!).toMatchObject({ x: { stacked: false }, y: { stacked: true, beginAtZero: false } });
     expect(cfg.data.datasets.map((dataset) => dataset.data)).toEqual([[null, 20], [5, 6]]);
     const overlay = chartJsConfig(cols, rows, {
       type: 'area', x: 0, y: [1], series: null, style: { stack: 'overlay' },
     }, colors);
     expect(overlay.data.datasets[0]).not.toHaveProperty('stack');
-    expect(overlay.options.scales.y.stacked).toBe(false);
+    expect(overlay.options.scales!.y.stacked).toBe(false);
   });
   it('maps Line/Area scale, legend, grid, and axes independently', () => {
-    const config = (style, opts) => chartJsConfig(cols, rows, {
+    const config = (style: ChartStyle, opts?: { hideGrid?: boolean }) => chartJsConfig(cols, rows, {
       type: 'line', x: 0, y: [1, 2], series: null, style,
     }, colors, opts);
 
-    expect(config({ scale: 'zero' }).options.scales.y.beginAtZero).toBe(true);
-    expect(config({ scale: 'data' }).options.scales.y.beginAtZero).toBe(false);
-    expect(config({ scale: 'auto' }).options.scales.y.beginAtZero).toBe(false);
+    expect(config({ scale: 'zero' }).options.scales!.y.beginAtZero).toBe(true);
+    expect(config({ scale: 'data' }).options.scales!.y.beginAtZero).toBe(false);
+    expect(config({ scale: 'auto' }).options.scales!.y.beginAtZero).toBe(false);
     expect(config({ legend: 'show' }).options.plugins.legend.display).toBe(true);
     expect(config({ legend: 'hide' }).options.plugins.legend.display).toBe(false);
     expect(config({ legend: 'auto' }).options.plugins.legend.display).toBe(true);
     expect(chartJsConfig(cols, rows, {
       type: 'area', x: 0, y: [1], series: null, style: { legend: 'auto' },
     }, colors).options.plugins.legend.display).toBe(false);
-    expect(config({ grid: 'show' }, { hideGrid: true }).options.scales.y.grid.display).toBe(true);
-    expect(config({ grid: 'hide' }).options.scales.y.grid.display).toBe(false);
-    expect(config({ grid: 'auto' }).options.scales.y.grid.display).toBe(true);
-    expect(config({ grid: 'auto' }, { hideGrid: true }).options.scales.y.grid.display).toBe(false);
-    expect(config({ axes: 'hide' }).options.scales).toMatchObject({ x: { display: false }, y: { display: false } });
-    expect(config({ axes: 'show' }).options.scales).toMatchObject({ x: { display: true }, y: { display: true } });
+    expect(config({ grid: 'show' }, { hideGrid: true }).options.scales!.y.grid.display).toBe(true);
+    expect(config({ grid: 'hide' }).options.scales!.y.grid.display).toBe(false);
+    expect(config({ grid: 'auto' }).options.scales!.y.grid.display).toBe(true);
+    expect(config({ grid: 'auto' }, { hideGrid: true }).options.scales!.y.grid.display).toBe(false);
+    expect(config({ axes: 'hide' }).options.scales!).toMatchObject({ x: { display: false }, y: { display: false } });
+    expect(config({ axes: 'show' }).options.scales!).toMatchObject({ x: { display: true }, y: { display: true } });
   });
   it.each([
     ['line', false],
     ['area', false],
     ['hbar', true],
     ['bar', true],
-  ])('resolves explicit auto scale for %s to its chart-family default', (type, expected) => {
+  ] as [ChartFamilyType, boolean][])('resolves explicit auto scale for %s to its chart-family default', (type, expected) => {
     const config = chartJsConfig(cols, rows, {
       type, x: 0, y: [1], series: null, style: { scale: 'auto' },
     }, colors);
-    const valueAxis = type === 'hbar' ? config.options.scales.x : config.options.scales.y;
+    const valueAxis = type === 'hbar' ? config.options.scales!.x : config.options.scales!.y;
     expect(valueAxis.beginAtZero).toBe(expected);
   });
   it('keeps Sparkline interaction and data while hiding presentation chrome', () => {
-    const preset = CHART_STYLE_PRESETS.line.find((item) => item.value === 'sparkline');
+    const preset = CHART_STYLE_PRESETS.line.find((item) => item.value === 'sparkline')!;
     const cfg = chartJsConfig(cols, rows, {
       type: 'line', x: 0, y: [1], series: null, style: preset.style,
     }, colors, { hideGrid: false });
@@ -573,7 +581,7 @@ describe('chartJsConfig', () => {
     expect(cfg.options.plugins.legend.display).toBe(false);
     expect(cfg.options.plugins.tooltip).toBeDefined();
     expect(cfg.options.responsive).toBe(true);
-    expect(cfg.options.scales).toMatchObject({
+    expect(cfg.options.scales!).toMatchObject({
       x: { display: false, grid: { display: false } },
       y: { display: false, grid: { display: false } },
     });
@@ -594,8 +602,8 @@ describe('chartJsConfig', () => {
     expect(pivoted.data.datasets.every((dataset) => dataset.pointRadius === 0)).toBe(true);
   });
   it('changes automatic markers deterministically across the final label threshold', () => {
-    const make = (count) => Array.from({ length: count }, (_, i) => ['x' + i, i, 0]);
-    const cfg = { type: 'line', x: 0, y: [1], series: null };
+    const make = (count: number) => Array.from({ length: count }, (_, i) => ['x' + i, i, 0]);
+    const cfg = cc({ type: 'line', x: 0, y: [1], series: null });
     expect(chartJsConfig(cols, make(60), cfg, colors).data.datasets[0].pointRadius).toBe(2);
     expect(chartJsConfig(cols, make(61), cfg, colors).data.datasets[0].pointRadius).toBe(0);
   });
@@ -639,7 +647,7 @@ describe('chartJsConfig', () => {
     } };
     const cfg = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1, 2], series: null }, colors, { fieldConfig });
     expect(cfg.data.datasets.map((dataset) => dataset.label)).toEqual(['Flights', 'Delay']);
-    expect(cfg.options.scales.y.ticks.callback(68.234)).toBe('68.2%');
+    expect(cfg.options.scales!.y.ticks.callback!(68.234)).toBe('68.2%');
     const callbacks = cfg.options.plugins.tooltip.callbacks;
     expect(callbacks.label({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 68.234 })).toBe('Flights: 68.2%');
     expect(callbacks.label({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: 6.25 })).toBe('Delay: 6.3%');
@@ -651,7 +659,7 @@ describe('chartJsConfig', () => {
       flights: { unit: ' B', decimals: 0 }, delay: { unit: '%', decimals: 1 },
     } };
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1, 2], series: null }, colors, { fieldConfig });
-    expect(cfg.options.scales.y.ticks.callback(1500)).toBe('1.5K');
+    expect(cfg.options.scales!.y.ticks.callback!(1500)).toBe('1.5K');
     const cb = cfg.options.plugins.tooltip.callbacks.label;
     expect(cb({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1048576 })).toBe('flights: 1048576 B');
     expect(cb({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: 2.25 })).toBe('delay: 2.3%');
@@ -681,12 +689,12 @@ describe('cloneChartCfg', () => {
       style: { mode: 'stacked', density: 'compact', scale: 'zero', legend: 'show', future: { x: 1 } },
       future: true,
     };
-    const c = cloneChartCfg(src);
+    const c = cloneChartCfg(cc(src))!;
     expect(c).toEqual(src);
     expect(c).not.toBe(src);
     expect(c.y).not.toBe(src.y);
     expect(c.style).not.toBe(src.style);
-    expect(c.style.future).not.toBe(src.style.future);
+    expect((c.style as { future: unknown }).future).not.toBe(src.style.future);
   });
   it('null → null and defaults a missing y/series', () => {
     expect(cloneChartCfg(null)).toBeNull();

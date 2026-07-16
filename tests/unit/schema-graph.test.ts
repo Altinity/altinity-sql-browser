@@ -3,6 +3,7 @@ import {
   objectKind, parseAstTables, parseMvTarget, parseDictSource, parseEngineRef, buildSchemaGraph,
   expandLineage, externalDbs,
 } from '../../src/core/schema-graph.js';
+import type { SchemaGraph, SchemaGraphTableRow } from '../../src/core/schema-graph.js';
 
 // Fixtures are the *actual* outputs captured from ClickHouse 26.5.1 (Docker) for a
 // lineage schema: an MV with explicit TO, an implicit MV (.inner storage), a JOIN
@@ -89,7 +90,9 @@ describe('parseEngineRef', () => {
 
 // ---- whole-graph assembly against the captured `lin` schema ----
 const UUID = '79c63514-8064-4314-b6eb-e12147f0b28b';
-const T = (database, name, engine, over = {}) => ({
+const T = (
+  database: string, name: string, engine: string, over: Partial<SchemaGraphTableRow> = {},
+): SchemaGraphTableRow => ({
   database, name, engine, engine_full: '', create_table_query: '', as_select: '', uuid: '',
   dependencies_database: [], dependencies_table: [], loading_dependencies_database: [], loading_dependencies_table: [], ...over,
 });
@@ -109,7 +112,7 @@ const ROWS = {
   ],
   dictionaries: [{ database: 'lin', name: 'dim_dict', source: 'ClickHouse: lin.dim' }],
 };
-const eset = (g) => new Set(g.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
+const eset = (g: SchemaGraph) => new Set(g.edges.map((e) => `${e.from}>${e.to}:${e.kind}`));
 
 describe('buildSchemaGraph', () => {
   it('derives every CH relationship type for the whole DB', () => {
@@ -128,8 +131,8 @@ describe('buildSchemaGraph', () => {
     // the CTE/alias name in the AST is NOT a real object → no phantom node/edge
     expect(g.nodes.some((n) => n.id === 'lin.cte_not_real')).toBe(false);
     // node kinds carried through
-    expect(g.nodes.find((n) => n.id === 'lin.events_mv').kind).toBe('mv');
-    expect(g.nodes.find((n) => n.id === 'lin.dim_dict').kind).toBe('dictionary');
+    expect(g.nodes.find((n) => n.id === 'lin.events_mv')!.kind).toBe('mv');
+    expect(g.nodes.find((n) => n.id === 'lin.dim_dict')!.kind).toBe('dictionary');
   });
 
   it('falls back to AST feeds for an MV when dependencies_table is empty', () => {
@@ -168,7 +171,7 @@ describe('buildSchemaGraph', () => {
       T('lin', 'd', 'Dictionary', { loading_dependencies_database: ['other'], loading_dependencies_table: ['dsrc'] }),
     ], dictionaries: [] };
     const g = buildSchemaGraph(rows, { kind: 'db', db: 'lin' });
-    const kindOf = (id) => (g.nodes.find((n) => n.id === id) || {}).kind;
+    const kindOf = (id: string) => (g.nodes.find((n) => n.id === id) || { kind: undefined }).kind;
     expect(kindOf('other.dst')).toBe('table'); // unknown target → leaf
     expect(kindOf('other.xmv')).toBe('table');
     expect(kindOf('other.remote')).toBe('table');
@@ -304,7 +307,7 @@ describe('buildSchemaGraph', () => {
       T('my.db', 'tbl', 'MergeTree', { dependencies_database: ['my.db'], dependencies_table: ['mv'] }),
       T('my.db', 'mv', 'MaterializedView'),
     ], dictionaries: [] };
-    const tbl = buildSchemaGraph(rows, { kind: 'db', db: 'my.db' }).nodes.find((n) => n.id === 'my.db.tbl');
+    const tbl = buildSchemaGraph(rows, { kind: 'db', db: 'my.db' }).nodes.find((n) => n.id === 'my.db.tbl')!;
     expect(tbl.db).toBe('my.db');   // not 'my'
     expect(tbl.name).toBe('tbl');   // not 'db.tbl'
   });
@@ -312,7 +315,7 @@ describe('buildSchemaGraph', () => {
   it("attaches a table's own comment to its node", () => {
     const rows = { tables: [T('lin', 'dim', 'MergeTree', { comment: 'dimension table' })], dictionaries: [] };
     const g = buildSchemaGraph(rows, { kind: 'db', db: 'lin' });
-    expect(g.nodes.find((n) => n.id === 'lin.dim').comment).toBe('dimension table');
+    expect(g.nodes.find((n) => n.id === 'lin.dim')!.comment).toBe('dimension table');
   });
 
   it("defaults comment to '' for a node only ever reached as a dependency reference (never its own row)", () => {
@@ -321,8 +324,8 @@ describe('buildSchemaGraph', () => {
       dictionaries: [],
     };
     const g = buildSchemaGraph(rows, { kind: 'db', db: 'lin' });
-    expect(g.nodes.find((n) => n.id === 'lin.events').comment).toBe('');
-    expect(g.nodes.find((n) => n.id === 'lin.events_mv').comment).toBe('');
+    expect(g.nodes.find((n) => n.id === 'lin.events')!.comment).toBe('');
+    expect(g.nodes.find((n) => n.id === 'lin.events_mv')!.comment).toBe('');
   });
 });
 
@@ -354,8 +357,8 @@ describe('expandLineage', () => {
     expect(ids.has('b.u')).toBe(true);   // 1 hop
     expect(ids.has('c.w')).toBe(true);   // transitive 2 hops
     expect(ids.has('d.iso')).toBe(false); // unreached
-    expect(out.nodes.find((n) => n.id === 'a.t1').external).toBe(false);
-    expect(out.nodes.find((n) => n.id === 'b.u').external).toBe(true);
+    expect(out.nodes.find((n) => n.id === 'a.t1')!.external).toBe(false);
+    expect(out.nodes.find((n) => n.id === 'b.u')!.external).toBe(true);
     expect(out.edges).toHaveLength(2);
     expect(out.truncated).toBe(false);
   });
