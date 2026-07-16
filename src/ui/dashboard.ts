@@ -16,39 +16,254 @@
 // out across every favorite instead of one query at a time. Per-tile overrides
 // and export arrive in later phases (D7–D8).
 
-import { h } from './dom.js';
-import { Icon } from './icons.js';
+import { h as hUntyped } from './dom.js';
+import { Icon as IconUntyped } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
-import { schemaKey } from '../core/chart-data.js';
+import { schemaKey as schemaKeyUntyped } from '../core/chart-data.js';
 import { resolvePanel } from '../core/panel-cfg.js';
+import type { Column } from '../core/panel-cfg.js';
 import {
   DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../core/dashboard.js';
-import { formatBytes, formatRows, detectSqlFormat } from '../core/format.js';
-import { newResult } from '../core/stream.js';
+import {
+  formatBytes as formatBytesUntyped, formatRows as formatRowsUntyped,
+  detectSqlFormat as detectSqlFormatUntyped,
+} from '../core/format.js';
+import { newResult as newResultUntyped } from '../core/stream.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../core/param-pipeline.js';
+import type { FieldControl, PreparedFieldState, PreparedSource, ValidationMode } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { effectiveFilterActive, KEYS } from '../state.js';
-import { buildFilterBar } from './filter-bar.js';
+import { buildFilterBar as buildFilterBarUntyped } from './filter-bar.js';
 import { queryDescription, queryFavorite, queryName, queryPanel } from '../core/saved-query.js';
 import { explicitPanel, isKpiPanel, panelExecution } from '../core/panel-execution.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import { filterExecution } from '../core/filter-execution.js';
-import { readFilterOptions } from '../core/filter-options.js';
+import { readFilterOptions as readFilterOptionsUntyped } from '../core/filter-options.js';
 import { mergeDashboardFilterHelpers } from '../core/dashboard-filters.js';
-import { diagnostic } from '../core/diagnostics.js';
+import type {
+  FilterDiagnostic, FilterHelper, FilterProvider, MergeDashboardFilterHelpersResult,
+} from '../core/dashboard-filters.js';
+import { diagnostic as diagnosticUntyped } from '../core/diagnostics.js';
 import {
   buildKpiBand, buildKpiSourceSlot, setKpiSourceLoading, setKpiSourceUnfilled, applyKpiSourceResult,
   refreshBandWarnings,
 } from './dashboard-kpi-band.js';
+import type { KpiBand, KpiSourceSlot } from './dashboard-kpi-band.js';
+import type { Panel, SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { App } from './app.types.js';
+
+// ── Typed wrappers over still-untyped .js dependencies ──────────────────────
+// Each const/overload pins exactly the signature this module relies on,
+// verified against the wrapped function body; the runtime module stays `.js`
+// until its own leaf-up conversion (ADR-0002) — same convention as panels.ts /
+// state.ts / core/panel-execution.ts.
+
+type ElProps = Record<string, unknown> | null;
+
+/** dom.js's `h` supports far more (SVG documents, function components, style
+ *  objects, ...) than this render module needs; the TagNameMap overload keeps
+ *  e.g. `h('button', ...)` typed as HTMLButtonElement (so `.disabled` needs no
+ *  cast at each call site) while every other/dynamic tag still returns a
+ *  plain HTMLElement — the same overload pair panels.ts pins. */
+function h<K extends keyof HTMLElementTagNameMap>(
+  tag: K, props: ElProps, ...children: unknown[]
+): HTMLElementTagNameMap[K];
+function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement;
+function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement {
+  // `as`: dom.js is unconverted — its inferred signature is looser than the
+  // overloads above promise; the runtime always creates exactly the
+  // requested tag (document.createElement(tag)).
+  return hUntyped(tag, props, ...children) as HTMLElement;
+}
+
+// icons.js is unconverted JS built on the untyped `s()` SVG hyperscript —
+// this module only ever appends the returned nodes as h() children or via
+// appendChild, so the six icons it uses are pinned to that one honest shape.
+const Icon: {
+  star(filled?: boolean): SVGElement;
+  spinner(): SVGElement;
+  refresh(): SVGElement;
+  sun(): SVGElement;
+  moon(): SVGElement;
+  arrow(): SVGElement;
+} = IconUntyped;
+
+// format.js is unconverted — detectSqlFormat returns either the authored
+// FORMAT keyword text or `null` (the same wrapper cast panel-execution.ts
+// applies to this same export); formatRows/formatBytes render '—' for
+// null/NaN and compact human-readable text otherwise.
+const detectSqlFormat = detectSqlFormatUntyped as (sql: string) => string | null;
+const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
+const formatBytes: (n: number | null | undefined) => string = formatBytesUntyped;
+
+// chart-data.js is unconverted — the same wrapper panels.ts pins for schemaKey.
+const schemaKey: (columns: Column[] | null | undefined) => string = schemaKeyUntyped;
+
+/** The mutable streamed-result accumulator `newResult` (stream.js,
+ *  unconverted) returns and `app.runReadInto` fills, narrowed to the fields
+ *  this module reads — verified against the wrapped body. A type alias (not
+ *  an interface) so it keeps TS's implicit index signature and stays
+ *  assignable to `runReadInto`'s `Record<string, unknown>` result param. */
+type StreamResult = {
+  columns: Column[];
+  rows: unknown[][];
+  rawFormat: string;
+  progress: { rows: number; bytes: number; elapsed_ns: number };
+  error: string | null;
+  cancelled: boolean;
+  rowLimit: number;
+  capped: boolean;
+};
+const newResult: (fmt: string, rowLimit?: number) => StreamResult = newResultUntyped;
+
+// filter-bar.js is unconverted — buildFilterBar(app, params, onCommit,
+// getField, options) builds one field per `fieldControls` entry, reading the
+// shared varValues/filterActive state off `app`; `curatedFields` entries are
+// consumed structurally inside it, so the bag stays unknown-valued here.
+const buildFilterBar: (
+  app: App,
+  params: FieldControl[],
+  onCommit: (name: string) => void,
+  getField: (name: string, mode: ValidationMode) => PreparedFieldState,
+  options?: { curatedFields?: Record<string, unknown>; document?: Document; ariaLabel?: string },
+) => HTMLElement = buildFilterBarUntyped;
+
+// filter-options.js is unconverted — readFilterOptions normalizes one Filter
+// result row into helper columns + diagnostics, the exact shapes
+// dashboard-filters.ts declares for the same pipeline.
+const readFilterOptions = readFilterOptionsUntyped as (args: {
+  columns?: Column[]; row?: unknown; rowCount?: number;
+}) => { helpers: FilterHelper[]; diagnostics: FilterDiagnostic[] };
+
+// diagnostics.js's shared `{severity, code, message, ...extra}` factory
+// (unconverted) — the same wrapper shape dashboard-filters.ts pins for the
+// same function.
+const diagnostic = diagnosticUntyped as (
+  severity: 'error' | 'warning' | 'info',
+  code: string,
+  message: string,
+  extra?: Record<string, unknown>,
+) => FilterDiagnostic;
+
+/** Structurally identical alias view of filter-execution.ts's
+ *  `FilterSqlDiagnostic`. That declaration is an interface, which TS never
+ *  grants an implicit index signature, so its arrays can't assign into
+ *  FilterProvider's indexed `FilterDiagnostic[]` even though every member
+ *  matches — this alias DOES get the implicit index signature, bridging the
+ *  two .ts contracts without a cast. */
+type FilterSqlDiagnosticView = { severity: 'error'; code: string; message: string; path: string[] };
+
+// ── Slot & outcome contracts ─────────────────────────────────────────────────
+
+/** One fetched tile result's footer metadata (see `tileFooter` /
+ *  `dashboardTileResult`). */
+interface TileResultMeta {
+  rows: number;
+  ms: number;
+  bytes: number;
+  truncated: boolean;
+}
+
+/** A settled dashboard source outcome, as `runFavoriteSource` hands it to a
+ *  hook's `applyResult`: either the error-only gate/rejection object (a
+ *  per-source serialization/config error, an owned-FORMAT rejection) or
+ *  `dashboardTileResult`'s full fetched shape. A type alias (implicit index
+ *  signature) so it also flows into the KPI band's structurally matching
+ *  result parameter. */
+type FavoriteSourceResult = {
+  error?: string | null;
+  cancelled?: boolean;
+  columns?: Column[];
+  rows?: unknown[][];
+  meta?: TileResultMeta;
+};
+
+/** Slot-persistent table-tile state (#166): the result-schema key this slot's
+ *  grid state was built for, plus whatever sort/width state the panel
+ *  registry parks on it (panels.ts's `state` holder contract). */
+type TilePanelState = { key: string; [k: string]: unknown };
+
+/** One ordinary favorite's stable tile slot (`buildTileSlot`) — the
+ *  `kind:'tile'` counterpart of dashboard-kpi-band.ts's `KpiSourceSlot`, so
+ *  `runPlan`'s dispatch is one discriminated union. Lifecycle fields mirror
+ *  that slot exactly: `gen` + `abortController` are the stale-wave guard,
+ *  `destroy` tears down the live panel instance (PanelRenderResult.destroy),
+ *  `loadLabel` is the streaming placeholder's live text node. */
+interface TileSlot {
+  kind: 'tile';
+  card: HTMLElement;
+  body: HTMLElement;
+  foot: HTMLElement;
+  gen: number;
+  status: 'panel' | 'unfilled' | 'error' | 'skip' | null;
+  destroy: (() => void) | null;
+  panelState: TilePanelState | null;
+  abortController: AbortController | null;
+  loadLabel: HTMLElement | null;
+}
+
+/** Any dashboard grid slot — an ordinary tile or a KPI band source (#240),
+ *  discriminated on `kind`. */
+type DashSlot = TileSlot | KpiSourceSlot;
+
+/** The stale-wave guard fields every slot kind (tile, KPI source, Filter
+ *  source) shares — `supersedeSlot`'s whole contract (#193/#237). */
+interface SupersedableSlot {
+  gen: number;
+  abortController: AbortController | null;
+}
+
+/** One Filter-role query's in-memory slot (#237): the same generation/abort
+ *  guard the tile slots use, plus the last provider it produced so a retry
+ *  can re-merge every source's current contribution. */
+interface FilterSlot extends SupersedableSlot {
+  status: 'idle' | 'loading' | 'error' | 'success';
+  lastProvider: FilterProvider | null;
+}
+
+/** The per-consumer half of `runFavoriteSource` (#240): which explicit panel
+ *  owns transport, the client row cap, whether the shared `detectSqlFormat`
+ *  cross-check applies, and the three state-transition renderers. Generic
+ *  over the slot kind so an ordinary tile's hooks can never be paired with a
+ *  KPI source slot (or vice versa) — the handlers are function-typed (not
+ *  method shorthand) to keep the slot parameter contravariant under
+ *  strictFunctionTypes. `setLoading` returns only the loading label's live
+ *  text node: streamed progress (#193 design req 4) may update that text and
+ *  nothing else — a progress callback can never render/classify a result. */
+interface FavoriteSourceHooks<S extends DashSlot> {
+  explicit: Panel | null;
+  rowCap: number;
+  checkFormat: boolean;
+  setUnfilled: (slot: S, names: string[]) => void;
+  setLoading: (slot: S) => HTMLElement;
+  applyResult: (slot: S, r: FavoriteSourceResult) => void;
+}
+
+/** One entry of a wave's execution plan (`planWave`): the favorite, its
+ *  stable slot, its prepared source from the wave's batch, and the generation
+ *  reserved for it at wave creation (#193 design req 3). `src` comes from the
+ *  wave's `PreparedBatch.sources` by index — runAll temporarily plans against
+ *  an empty wave and swaps the real `src` in after the filter wave resolves. */
+interface PlannedSource {
+  index: number;
+  q: SavedQueryV2;
+  slot: DashSlot;
+  src: PreparedSource;
+  generation: number;
+}
 
 // At most this many tile queries run at once, so a large favorites list doesn't
 // fire a thundering herd of concurrent reads at ClickHouse (saturating the
 // browser's per-host pool and the cluster) on open and on every Refresh.
 const TILE_CONCURRENCY = 6;
+
+/** One layout-switcher option: `[value, label, title?]` (the optional `title`
+ *  becomes the button's hover tooltip). */
+type SegOption = [value: string, label: string, title?: string];
 
 /**
  * Build a segmented control (the four-way `Full width | Report | 2 columns |
@@ -60,7 +275,13 @@ const TILE_CONCURRENCY = 6;
  * active button (and its `aria-pressed`) from `getActive()`, so a pick and the
  * shared `apply()` stay in agreement.
  */
-function buildSeg(cls, options, getActive, onPick, ariaLabel) {
+function buildSeg(
+  cls: string,
+  options: SegOption[],
+  getActive: () => string,
+  onPick: (value: string) => void,
+  ariaLabel: string,
+): { el: HTMLElement; sync: () => void } {
   // `h` skips nullish attribute values, so an option's absent `title` (or a
   // missing `ariaLabel`) simply isn't set — no explicit guard needed here.
   const btns = options.map(([, label, title]) =>
@@ -84,7 +305,7 @@ function buildSeg(cls, options, getActive, onPick, ariaLabel) {
  * gets an honest note — client-side sort and chart aggregation only cover that
  * fetched prefix, not the full underlying result.
  */
-function tileFooter(meta) {
+function tileFooter(meta: TileResultMeta): HTMLElement[] {
   const parts = [
     h('span', null, formatRows(meta.rows) + ' rows'),
     h('span', null, meta.ms + ' ms'),
@@ -105,7 +326,7 @@ function tileFooter(meta) {
  * past `DASH_TILE_ROW_CAP` arrives). Only a successful, non-cancelled,
  * current-generation result is ever applied (see runSlotTile).
  */
-function dashboardTileResult(result, startedAt, finishedAt) {
+function dashboardTileResult(result: StreamResult, startedAt: number, finishedAt: number): FavoriteSourceResult {
   return {
     columns: result.columns,
     rows: result.rows,
@@ -126,8 +347,8 @@ function dashboardTileResult(result, startedAt, finishedAt) {
  * await, so cards land in favorite order regardless of which query returns
  * first. Returns the per-item results in index order.
  */
-async function runPool(items, limit, worker) {
-  const results = new Array(items.length);
+async function runPool<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
   let next = 0;
   const run = async () => {
     while (next < items.length) {
@@ -157,7 +378,7 @@ async function runPool(items, limit, worker) {
 // An EXPLICIT KPI favorite never reaches this builder — it's routed to a KPI
 // band slot instead (#240, see partitionKpiBands) — so `is-kpi` here only ever
 // toggles on later for an AUTO-DETECTED one-row result (applyTileResult).
-function buildTileSlot(q) {
+function buildTileSlot(q: SavedQueryV2): TileSlot {
   const body = h('div', { class: 'dash-tile-body' });
   const foot = h('div', { class: 'dash-tile-foot' });
   const name = queryName(q);
@@ -181,26 +402,29 @@ function buildTileSlot(q) {
 // race where a slower older wave's worker finally runs a tile and supersedes a
 // newer affected wave with older values. Returns the reserved generation; the
 // worker re-checks `slot.gen === generation` before issuing and after streaming.
-function supersedeSlot(slot) {
+function supersedeSlot(slot: SupersedableSlot): number {
   const generation = ++slot.gen;
   if (slot.abortController) slot.abortController.abort();
   slot.abortController = null;
   return generation;
 }
 
-function destroySlotChart(slot) {
+function destroySlotChart(slot: TileSlot): void {
   if (slot.destroy) { slot.destroy(); slot.destroy = null; }
 }
 
 /** True for a text panel — the no-query partition (#166). */
-function isTextFav(q) {
+function isTextFav(q: SavedQueryV2): boolean {
   const p = explicitPanel(q);
-  return !!p && p.cfg.type === 'text';
+  // `!`: explicitPanel only ever returns a panel whose `cfg` passed its own
+  // plain-object check (panel-execution.ts) — the schema marks `cfg` optional
+  // only for forward compatibility.
+  return !!p && p.cfg!.type === 'text';
 }
 
 // Render a text favorite's tile: immediately, with zero queries — the #166
 // partition runs this before any auth/SQL work.
-function renderTextSlot(app, q, slot) {
+function renderTextSlot(app: App, q: SavedQueryV2, slot: TileSlot): void {
   destroySlotChart(slot);
   slot.status = 'panel';
   slot.card.style.display = '';
@@ -210,7 +434,7 @@ function renderTextSlot(app, q, slot) {
   slot.foot.replaceChildren();
 }
 
-function setSlotLoading(slot) {
+function setSlotLoading(slot: TileSlot): HTMLElement {
   destroySlotChart(slot);
   slot.card.style.display = '';
   // Return the label node so streamed progress (onChunk, #193) can update just
@@ -229,7 +453,7 @@ function setSlotLoading(slot) {
 // the card's header/footer chrome so it doesn't look broken), and stays
 // visible: unlike a classifyTile `skip`, one filter value away it becomes
 // chartable, so it is NOT counted in the header's "N not shown" note.
-function setSlotUnfilled(slot, names) {
+function setSlotUnfilled(slot: TileSlot, names: string[]): void {
   destroySlotChart(slot);
   slot.status = 'unfilled';
   slot.card.style.display = '';
@@ -237,7 +461,7 @@ function setSlotUnfilled(slot, names) {
   slot.foot.replaceChildren();
 }
 
-function applyTileResult(app, q, slot, r) {
+function applyTileResult(app: App, q: SavedQueryV2, slot: TileSlot, r: FavoriteSourceResult): void {
   destroySlotChart(slot);
   if (r.error != null) {
     slot.status = 'error';
@@ -248,10 +472,13 @@ function applyTileResult(app, q, slot, r) {
   }
   const savedPanel = queryPanel(q);
   const explicit = explicitPanel(q);
+  // `!` (on rows/meta below): a non-error outcome is always dashboardTileResult's
+  // full fetched shape — runFavoriteSource's only other applyResult payloads
+  // are error-only, and those returned above.
   // Unconfigured empty results remain skipped. An EXPLICIT panel never vanishes —
   // a zero-row one renders an honest "0 rows" state instead (visible, and
   // excluded from the header's skip tally).
-  if (!explicit && r.rows.length === 0) {
+  if (!explicit && r.rows!.length === 0) {
     slot.status = 'skip';
     slot.card.style.display = 'none';
     // Clear the previous panel's DOM (its live instance is already torn down
@@ -266,9 +493,9 @@ function applyTileResult(app, q, slot, r) {
   // `explicit` here is never an explicit KPI panel — those are routed to a KPI
   // band slot (#240) and never reach applyTileResult — so an explicit zero-row
   // result is always a non-KPI panel's honest "0 rows" state.
-  if (explicit && r.rows.length === 0) {
+  if (explicit && r.rows!.length === 0) {
     slot.body.replaceChildren(h('div', { class: 'dash-tile-empty' }, '0 rows'));
-    slot.foot.replaceChildren(...tileFooter(r.meta));
+    slot.foot.replaceChildren(...tileFooter(r.meta!));
     return;
   }
   // The one shared resolution (#166/#254): queryPanel retains fieldConfig even
@@ -279,19 +506,27 @@ function applyTileResult(app, q, slot, r) {
     columns: r.columns,
     rows: r.rows,
     fieldConfig: savedPanel?.fieldConfig,
-    serverVersion: app.state.serverVersion,
+    // `as`: AppState.serverVersion is `string | null` while ResultLike's is
+    // `string | undefined` — the resolver treats both identically as "absent"
+    // (a seam-type gap between the two contracts, reported; no runtime branch).
+    serverVersion: app.state.serverVersion as string | undefined,
   });
   slot.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
   // Grid state persists across refreshes/filter edits on the stable slot,
   // keyed by result schema — a schema change resets it, a re-run keeps it.
   const key = schemaKey(r.columns);
   if (!slot.panelState || slot.panelState.key !== key) slot.panelState = { key };
-  const res = { columns: r.columns, rows: r.rows };
+  // `as`: panels.ts's (unexported) PanelResult also declares `error`/`rawText`,
+  // which no dashboard-dispatched arm reads (table/logs/chart consume
+  // columns/rows only; kpi/text ignore the result) — the dashboard has always
+  // passed exactly this two-field shape. Reported as a panels.ts contract gap.
+  const res = { columns: r.columns, rows: r.rows } as Parameters<typeof renderResolvedPanel>[2];
   const paint = () => {
     destroySlotChart(slot);
     const out = renderResolvedPanel(app, resolved, res, {
       surface: 'dashboard',
-      state: slot.panelState,
+      // `!`: assigned right above (and only ever replaced, never nulled back).
+      state: slot.panelState!,
       rerender: paint, // header-click sorts re-paint locally — NO re-query
       readonly: true,
       cap: DASH_TABLE_DISPLAY_CAP,
@@ -301,7 +536,7 @@ function applyTileResult(app, q, slot, r) {
     slot.body.replaceChildren(out.node);
   };
   paint();
-  slot.foot.replaceChildren(...tileFooter(r.meta));
+  slot.foot.replaceChildren(...tileFooter(r.meta!));
 }
 
 // Run (or re-run) one favorite's source into its slot, gated by its prepared
@@ -330,7 +565,10 @@ function applyTileResult(app, q, slot, r) {
 // up front without issuing, and a supersede mid-stream aborts this request and
 // makes the post-await guard drop it — so a stale wave can never overwrite a
 // newer one, even under the 6-way pool's queueing.
-async function runFavoriteSource(app, q, slot, onSettled, src, generation, hooks) {
+async function runFavoriteSource<S extends DashSlot>(
+  app: App, q: SavedQueryV2, slot: S, onSettled: () => void,
+  src: PreparedSource, generation: number, hooks: FavoriteSourceHooks<S>,
+): Promise<void> {
   if (slot.gen !== generation) return; // a newer wave already superseded this queued source
   if (src.missing.length || src.invalid.length) {
     hooks.setUnfilled(slot, src.missing.concat(src.invalid));
@@ -367,7 +605,9 @@ async function runFavoriteSource(app, q, slot, onSettled, src, generation, hooks
   // Client row limit = CAP (newResult trims + flags `capped`); server cap =
   // CAP + 1 (the sentinel one past the client limit), so an exactly-CAP result
   // is NOT marked truncated and a >CAP result is trimmed AND flagged (#193 req 1).
-  const result = newResult(execution.format, hooks.rowCap);
+  // `!`: format is always concrete here — the defaults above pin 'Table' and
+  // panelExecution's owned KPI arm overrides it with 'KPI'.
+  const result = newResult(execution.format!, hooks.rowCap);
   await app.runReadInto(result, {
     sql: execSql,
     format: execution.format,
@@ -401,7 +641,9 @@ async function runFavoriteSource(app, q, slot, onSettled, src, generation, hooks
 // `q` here is never an explicit KPI favorite — those run through
 // runKpiSourceTile instead (#240) — so `explicitPanel(q)` (if non-null) is
 // never `isKpiPanel`.
-function runSlotTile(app, q, slot, onSettled, src, generation) {
+function runSlotTile(
+  app: App, q: SavedQueryV2, slot: TileSlot, onSettled: () => void, src: PreparedSource, generation: number,
+): Promise<void> {
   return runFavoriteSource(app, q, slot, onSettled, src, generation, {
     explicit: explicitPanel(q), rowCap: DASH_TILE_ROW_CAP, checkFormat: true,
     setUnfilled: setSlotUnfilled,
@@ -418,26 +660,33 @@ function runSlotTile(app, q, slot, onSettled, src, generation) {
 // (owned typed transport, two-row sentinel) and the authored-FORMAT rejection
 // is entirely panelExecution's own (no detectSqlFormat cross-check needed,
 // unlike the ordinary-tile path).
-function runKpiSourceTile(app, q, explicit, slot, onSettled, src, generation) {
+function runKpiSourceTile(
+  app: App, q: SavedQueryV2, explicit: Panel, slot: KpiSourceSlot,
+  onSettled: () => void, src: PreparedSource, generation: number,
+): Promise<void> {
   return runFavoriteSource(app, q, slot, onSettled, src, generation, {
     explicit, rowCap: 2, checkFormat: false,
     setUnfilled: setKpiSourceUnfilled,
     setLoading: setKpiSourceLoading,
-    applyResult: (s, r) => applyKpiSourceResult(app, explicit, s, r),
+    // `as`: dashboard-kpi-band.ts's (unexported) KpiSourceResult types `error`
+    // as `string | undefined`, but the shared fetched result carries the
+    // stream's `error: null` — handled identically by its own `!= null` guard.
+    // A kpi-band contract gap, reported; the runtime shape is the same.
+    applyResult: (s, r) => applyKpiSourceResult(app, explicit, s, r as Parameters<typeof applyKpiSourceResult>[3]),
   });
 }
 
 /** Render the dashboard into `app.root`. */
-export function renderDashboard(app) {
+export function renderDashboard(app: App): Promise<void> {
   const { document: doc, state } = app;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
 
   const favorites = state.savedQueries.filter(queryFavorite);
-  const panelFavorites = [];
-  const filterFavorites = [];
-  const roleDiagnostics = [];
+  const panelFavorites: SavedQueryV2[] = [];
+  const filterFavorites: SavedQueryV2[] = [];
+  const roleDiagnostics: { severity: 'warning' | 'error'; message: string }[] = [];
   for (const query of favorites) {
     const role = effectiveDashboardRole(query.spec);
     if (role === 'panel') panelFavorites.push(query);
@@ -457,12 +706,12 @@ export function renderDashboard(app) {
   // (#173 phase 1 — structure only) runs once; each wave (runAll / a filter's
   // runAffected) prepares it against the current varValues with one wall-clock
   // read, and every tile gate + fetch of that wave reads the same batch.
-  const tileId = (i) => 'tile:' + (panelFavorites[i].id || i);
+  const tileId = (i: number): string => 'tile:' + (panelFavorites[i].id || i);
   const analysis = analyzeParameterizedSources(panelFavorites.map((q, i) => ({
     id: tileId(i), label: queryName(q), kind: 'tile', sql: isTextFav(q) ? '' : q.sql, bindPolicy: 'row-returning',
   })));
-  const prepareBatch = (validationMode = 'execute') => prepareParameterizedBatch(analysis, {
-    values: Object.fromEntries(Object.entries(app.state.varValues).map(([name, value]) => [
+  const prepareBatch = (validationMode: ValidationMode = 'execute') => prepareParameterizedBatch(analysis, {
+    values: Object.fromEntries(Object.entries(app.state.varValues).map(([name, value]): [string, string] => [
       name, curatedFields?.[name] && !app.state.filterActive[name] ? '' : value,
     ])),
     active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
@@ -471,7 +720,7 @@ export function renderDashboard(app) {
   const prepareWave = () => prepareBatch('execute').sources;
   // The filter bar's per-keystroke field-state read (#170): 'input' while
   // typing (neutral on a plausible prefix), 'execute' on blur/Enter (hardens).
-  const getFilterField = (name, mode) => prepareBatch(mode).fields[name];
+  const getFilterField = (name: string, mode: ValidationMode) => prepareBatch(mode).fields[name];
 
   const favChip = h('span', { class: 'dash-chip dash-fav' },
     Icon.star(true),
@@ -535,7 +784,10 @@ export function renderDashboard(app) {
     if (view === activeDashboardView(state)) return;
     const sel = dashboardViewSelection(view);
     if (sel.dashLayout !== state.dashLayout) {
-      state.dashLayout = sel.dashLayout;
+      // `!`: dashboardViewSelection always returns a concrete dashLayout — the
+      // optionality belongs to its persisted-state-shaped return interface,
+      // not this value (a core/dashboard.ts return-type gap, reported).
+      state.dashLayout = sel.dashLayout!;
       app.savePref('dashLayout', sel.dashLayout);
     }
     if (sel.dashCols != null && sel.dashCols !== state.dashCols) {
@@ -550,7 +802,7 @@ export function renderDashboard(app) {
   // Seed from the persisted last-known bundle (#234) so a curated field paints
   // as the combobox immediately instead of flashing plain text for one frame
   // before the first Filter wave resolves; the live wave replaces it below.
-  let curatedFields = state.filterCurated || {};
+  let curatedFields: Record<string, unknown> = state.filterCurated || {};
   const filterHost = h('div', { class: 'dash-filter-host' });
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
   const renderFilterBar = () => filterHost.replaceChildren(buildFilterBar(
@@ -568,7 +820,9 @@ export function renderDashboard(app) {
   // #root is a fixed, overflow:hidden flex column (the workbench layout), so the
   // dashboard needs its own scroll container — otherwise a tall grid clips with
   // no vertical scroll. The header + toolbar share one sticky top bar inside it.
-  app.root.replaceChildren(h('div', { class: 'dash-page' },
+  // `!`: the dashboard renders only into a mounted page — main.js/openDashboard
+  // always hand createApp a real root element.
+  app.root!.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' }, header, toolbar),
     ...roleDiagnostics.map((item) => h('div', { class: `dash-config-diagnostic is-${item.severity}` }, item.message)),
     filterDiagnosticsHost, empty, grid));
@@ -577,21 +831,24 @@ export function renderDashboard(app) {
   // successful run (below) and reused for the tab's lifetime — a filter edit
   // or Refresh updates a slot's contents/visibility in place rather than
   // inserting/removing grid children (see buildTileSlot).
-  let slots = [];
+  let slots: DashSlot[] = [];
   // Filter sources reuse the SAME generation/abort guard tile slots use
   // (supersedeSlot / `slot.gen`, #237) — a second consumer of the stale-wave
   // pattern gets the existing primitive, not a re-implementation. `gen` is
   // reserved at wave-creation time (see runFilterWave), so a queued worker from
   // an older wave sees `slot.gen !== generation` and discards itself.
-  const filterSlots = new Map(filterFavorites.map((query) => [query.id, {
+  const filterSlots = new Map<string, FilterSlot>(filterFavorites.map((query): [string, FilterSlot] => [query.id, {
     gen: 0, abortController: null, status: 'idle', lastProvider: null,
   }]));
 
-  async function runFilterSource(query, slot, generation) {
+  async function runFilterSource(query: SavedQueryV2, slot: FilterSlot, generation: number): Promise<FilterProvider | null> {
     const execution = filterExecution(query.sql);
     if (execution.error) {
-      const provider = {
-        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: execution.diagnostics,
+      // The alias view (see FilterSqlDiagnosticView above) lets the plan's
+      // interface-typed diagnostics assign into the provider's FilterDiagnostic[].
+      const diagnostics: FilterSqlDiagnosticView[] = execution.diagnostics;
+      const provider: FilterProvider = {
+        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics,
       };
       if (slot.gen !== generation) return null;
       slot.status = 'error';
@@ -609,7 +866,7 @@ export function renderDashboard(app) {
     });
     if (slot.gen !== generation) return null;
     slot.abortController = null;
-    let provider;
+    let provider: FilterProvider;
     if (result.error || result.cancelled) {
       provider = {
         sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: [diagnostic(
@@ -629,18 +886,23 @@ export function renderDashboard(app) {
     return provider;
   }
 
-  const renderFilterDiagnostics = (diagnostics) => {
+  const renderFilterDiagnostics = (diagnostics: FilterDiagnostic[]) => {
     filterDiagnosticsHost.replaceChildren(...diagnostics.map((item) => {
+      // `as`: `sourceId` reaches FilterDiagnostic only through its open index
+      // signature (`unknown`), but every 'filter-query-failed' diagnostic is
+      // minted in runFilterSource above with `sourceId: query.id` (a string).
       const retry = item.code === 'filter-query-failed' && item.sourceId
-        ? h('button', { type: 'button', onclick: () => retryFilter(item.sourceId) }, 'Retry')
+        ? h('button', { type: 'button', onclick: () => retryFilter(item.sourceId as string) }, 'Retry')
         : null;
       return h('div', { class: `dash-config-diagnostic is-${item.severity}` }, item.message, retry);
     }));
   };
 
-  const applyFilterProviders = (providers) => {
+  const applyFilterProviders = (providers: (FilterProvider | null)[]): MergeDashboardFilterHelpersResult => {
     const merged = mergeDashboardFilterHelpers({
-      providers: providers.filter(Boolean), controls,
+      // The predicate is `filter(Boolean)` made narrowable: a provider is only
+      // ever null here (a superseded run), never any other falsy value.
+      providers: providers.filter((provider): provider is FilterProvider => provider !== null), controls,
       values: state.varValues, active: effectiveFilterActive(state.varValues, state.filterActive),
     });
     curatedFields = merged.fields;
@@ -656,9 +918,10 @@ export function renderDashboard(app) {
     return merged;
   };
 
-  async function runFilterWave() {
+  async function runFilterWave(): Promise<MergeDashboardFilterHelpersResult> {
     const plan = filterFavorites.map((query) => {
-      const slot = filterSlots.get(query.id);
+      // `!`: filterSlots is keyed from this exact filterFavorites list above.
+      const slot = filterSlots.get(query.id)!;
       return { query, slot, generation: supersedeSlot(slot) };
     });
     const providers = await runPool(plan, TILE_CONCURRENCY,
@@ -666,13 +929,14 @@ export function renderDashboard(app) {
     return applyFilterProviders(providers);
   }
 
-  async function retryFilter(sourceId) {
+  async function retryFilter(sourceId: string): Promise<void> {
     const query = filterFavorites.find((item) => item.id === sourceId);
     const slot = filterSlots.get(sourceId);
     if (!query || !slot) return;
     if (!(await app.ensureFreshToken())) { app.chCtx.onSignedOut(); return; }
     await runFilterSource(query, slot, supersedeSlot(slot));
-    const merged = applyFilterProviders(filterFavorites.map((item) => filterSlots.get(item.id).lastProvider));
+    // `!`: same filterSlots key invariant as runFilterWave above.
+    const merged = applyFilterProviders(filterFavorites.map((item) => filterSlots.get(item.id)!.lastProvider));
     for (const name of merged.changed) await runAffected(name);
   }
 
@@ -693,11 +957,11 @@ export function renderDashboard(app) {
   // (#193 design req 3). Reserving up front — not when a pool worker starts —
   // closes the stale-wave race: a queued older worker sees `slot.gen !==
   // generation` and discards itself instead of superseding a newer wave.
-  const planWave = (indices, wave) => indices
+  const planWave = (indices: number[], wave: PreparedSource[]): PlannedSource[] => indices
     .filter((i) => !isTextFav(panelFavorites[i]))
     .map((i) => ({ index: i, q: panelFavorites[i], slot: slots[i], src: wave[i], generation: supersedeSlot(slots[i]) }));
 
-  const runPlan = (plan) => {
+  const runPlan = (plan: PlannedSource[]): Promise<void[]> => {
     // Mark every planned slot loading up front — before the 6-way pool starts —
     // so tiles beyond TILE_CONCURRENCY's window don't linger on stale content
     // while queued. Applies to BOTH full Refresh and targeted affected waves
@@ -709,7 +973,7 @@ export function renderDashboard(app) {
     // (that would be one O(band size) DOM rebuild PER member, back to back,
     // synchronously, with only the last ever visible) — collect every band this
     // plan touches and refresh each exactly once after marking the whole batch.
-    const touchedBands = new Set();
+    const touchedBands = new Set<KpiBand>();
     plan.forEach(({ slot }) => {
       if (slot.kind === 'kpi-source') { setKpiSourceLoading(slot); touchedBands.add(slot.band); }
       else setSlotLoading(slot);
@@ -727,7 +991,7 @@ export function renderDashboard(app) {
   // affected even while the param's optional blocks are inactive (#165), so an
   // activation flip re-runs it exactly like a value change. A no-op before
   // the first successful run (slots not built yet).
-  async function runAffected(name) {
+  async function runAffected(name: string): Promise<void[] | undefined> {
     if (!slots.length) return undefined;
     // Match full Refresh: ONE token preflight before the wave (#193 design
     // req 2). `runReadInto` leaves token freshness to the caller, so without
@@ -744,7 +1008,7 @@ export function renderDashboard(app) {
     return runPlan(planWave(targets, wave));
   }
 
-  const runAll = async () => {
+  const runAll = async (): Promise<void> => {
     // Resolve (and refresh) the auth token ONCE up front. This both avoids N
     // tiles racing an expired-token refresh and lets a lost session redirect to
     // login exactly once — rather than each tile firing onSignedOut in parallel.
@@ -757,19 +1021,22 @@ export function renderDashboard(app) {
       // shared stream, in favorite order. `slots` stays flat over panelFavorites
       // (the index space planWave/tileId/runAffected all key off), regardless
       // of which favorites share a band.
-      slots = new Array(panelFavorites.length);
+      slots = new Array<DashSlot>(panelFavorites.length);
       for (const item of layoutItems) {
         if (item.kind === 'tile') {
           const q = panelFavorites[item.index];
-          slots[item.index] = buildTileSlot(q);
-          grid.appendChild(slots[item.index].card);
+          const slot = buildTileSlot(q);
+          slots[item.index] = slot;
+          grid.appendChild(slot.card);
         } else {
           const band = buildKpiBand();
           for (const i of item.indices) {
             // `explicit` is cached on the slot once, here (structural build
             // time), so runPlan's dispatch reads `slot.explicit` on every later
             // wave instead of re-deriving it from `q` on every Refresh/filter run.
-            slots[i] = buildKpiSourceSlot(band, explicitPanel(panelFavorites[i]), queryName(panelFavorites[i]));
+            // `!`: partitionKpiBands only groups indices whose favorite passed
+            // isKpiPanel(explicitPanel(q)) above — the explicit panel is present.
+            slots[i] = buildKpiSourceSlot(band, explicitPanel(panelFavorites[i])!, queryName(panelFavorites[i]));
           }
           grid.appendChild(band.el);
         }
@@ -778,7 +1045,9 @@ export function renderDashboard(app) {
     // Partition before execution (#166): text panels render right here —
     // synchronously, before any tile query is issued — and they never join
     // the wave below (zero queries for a text favorite).
-    slots.forEach((s, i) => { if (isTextFav(panelFavorites[i])) renderTextSlot(app, panelFavorites[i], s); });
+    // `as`: a text favorite is never an explicit KPI (its cfg.type is 'text'),
+    // so partitionKpiBands always made its slot an ordinary tile above.
+    slots.forEach((s, i) => { if (isTextFav(panelFavorites[i])) renderTextSlot(app, panelFavorites[i], s as TileSlot); });
     // One prepared batch (and one wall-clock read) for the whole refresh wave;
     // reserve every query-backed slot's generation NOW (planWave), before the
     // pool starts, so a queued worker from an older Refresh discards itself.
