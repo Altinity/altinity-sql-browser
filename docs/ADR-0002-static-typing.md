@@ -1,10 +1,16 @@
 # ADR-0002: Static typing — incremental strict TypeScript, dev-time only
 
-- **Status:** Accepted — 2026-07-16; **phase 0 landed** 2026-07-16 (#262): the
-  `tsc --noEmit` gate, and typed seam interfaces for `EditorPort`, the Spec
-  editor/CodeViewer factories, `createApp`/`bootstrap`'s `env`, and the `app`
-  controller surface as consumed by render modules. No existing module
-  converted yet — phase 1+ (leaf-up conversion) is unstarted.
+- **Status:** Accepted — 2026-07-16; **phases 0–5 landed** 2026-07-16 (#262,
+  one PR): the `tsc --noEmit` gate + typed seam interfaces (phase 0);
+  generated persisted-data types from the canonical schemas via
+  `build/emit-schema-types.mjs` (phase 1 — see the emitter addendum below);
+  `src/state.ts` (phase 2); the saved-query/panel/dashboard contract spine and
+  the parameter/filter/execution pipeline in `src/core/` (phases 3–4); and the
+  dashboard runtime slice `src/ui/{dashboard,dashboard-kpi-band,panels}.ts`
+  (phase 5) — 16 runtime modules strict, their unit tests converted as a
+  second wave, zero behavior change. Remaining `.js` (app.js glue, net/,
+  editor adapters, the rest of ui/ and core/) converts leaf-up as feature
+  work touches it, per decision item 4.
 - **Date:** 2026-07-16
 - **Context tracking:** roadmap #68; phase 0 #262
 - **Related:** ADR-0001 (the slice-by-slice migration playbook this reuses)
