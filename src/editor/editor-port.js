@@ -18,21 +18,7 @@
 //   consumers; today nothing calls destroy() and the port lives as long as
 //   the app.
 
-/**
- * @typedef {Object} EditorPort
- * @property {(container: Element) => void} mount   build the editor UI into `container`
- * @property {() => void} destroy                   TERMINAL — drop all subscriptions; never re-mount a destroyed port
- * @property {() => void} focus
- * @property {() => boolean} hasFocus               the editor input holds document focus (drives the hasSelection signal)
- * @property {() => string} getValue                the full document text
- * @property {() => {start: number, end: number, text: string}} getSelection
- * @property {(text: string) => void} insertAtCursor    replace the selection with `text` (undo-joining)
- * @property {(text: string) => void} replaceDocument   replace the whole document (undo-preserving; equal-value no-op)
- * @property {(pos: number) => void} revealOffset       move the caret to `pos` and scroll its line into view
- * @property {() => void} syncFromState             re-read the active tab into the view (tab switch / bootstrap)
- * @property {() => void} refreshReference          server keyword/function sets changed → re-highlight
- * @property {(cb: (value: string) => void) => (() => void)} onDocChange
- */
+/** @typedef {import('./editor-port.types.js').EditorPort} EditorPort */
 
 /**
  * The do-nothing EditorPort used when `env.Editor` isn't injected (headless

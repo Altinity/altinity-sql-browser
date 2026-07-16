@@ -1,0 +1,761 @@
+import { describe, it, expect } from 'vitest';
+import { renderMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/panels.js';
+import { renderResults } from '../../src/ui/results.js';
+import { parseMarkdown } from '../../src/core/markdown-lite.js';
+import { resolvePanel } from '../../src/core/panel-cfg.js';
+import { newResult as newResultUntyped } from '../../src/core/stream.js';
+import { makeApp } from '../helpers/fake-app.js';
+import type { FakeChart } from '../helpers/fake-app.js';
+import { DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES } from '../../src/core/result-choice.js';
+import type { App, Tab } from '../../src/ui/app.types.js';
+import type { PanelCfg } from '../../src/generated/json-schema.types.js';
+import type { Column } from '../../src/core/panel-cfg.js';
+
+// core/stream.js is plain JS; without an explicit return-type annotation TS
+// infers the empty-array initializers of `columns`/`rows` as `never[]`,
+// which then rejects every fixture's real rows below. This wrapper pins the
+// exact shape newResult(fmt, rowLimit) builds (see stream.js) — the same
+// "typed wrapper over a still-untyped .js dependency" convention panels.ts
+// itself documents.
+interface StreamResult {
+  columns: Column[];
+  rows: unknown[][];
+  rawText: string | null;
+  rawFormat: string;
+  progress: { rows: number; bytes: number; elapsed_ns: number };
+  error: unknown;
+  cancelled: boolean;
+  pct: number;
+  rowLimit: number;
+  capped: boolean;
+  // QueryTab.result (state.ts) holds this as an opaque Record<string, unknown>
+  // (only results.js knows the concrete shape); the index signature lets a
+  // StreamResult assign straight into `tab.result` without a further cast.
+  [k: string]: unknown;
+}
+const newResult = (fmt: string, rowLimit = 0): StreamResult => newResultUntyped(fmt, rowLimit) as StreamResult;
+
+const md = (text: string) => renderMarkdown(parseMarkdown(text));
+
+function chartResult(): StreamResult {
+  const r = newResult('Table');
+  r.columns = [{ name: 'carrier', type: 'String' }, { name: 'flights', type: 'UInt64' }];
+  r.rows = [['B6', '10'], ['AA', '20']];
+  r.progress = { rows: 2, bytes: 100, elapsed_ns: 5e6 };
+  return r;
+}
+function logsResult(): StreamResult {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'level', type: 'String' },
+    { name: 'message', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', 'Error', 'boom']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+// A result with a time column by convention but no message-shaped column at
+// all — a saved `{type:'logs'}` cannot resolve Message, so resolvePanel falls
+// back (#192's rescue scenario).
+function noMessageResult(): StreamResult {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'operation', type: 'String' },
+    { name: 'component', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', 'op', 'comp']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+// Same rescue shape as noMessageResult, but WITH a numeric measure — autoPanel
+// derives a chart fallback (not Table) for this one (#195's reported scenario).
+function noMessageChartResult(): StreamResult {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'event_time', type: 'DateTime' },
+    { name: 'duration_ms', type: 'Int64' },
+    { name: 'operation', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', '12', 'op']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+// Neither Time nor Message resolves by convention — findTimeColumn matches by
+// TYPE (not name), so no column here may be DateTime-shaped.
+function noTimeNoMessageResult(): StreamResult {
+  const r = newResult('Table');
+  r.columns = [
+    { name: 'ts', type: 'String' },
+    { name: 'operation', type: 'String' },
+    { name: 'component', type: 'String' },
+  ];
+  r.rows = [['2026-01-01 00:00:00', 'op', 'comp']];
+  r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
+  return r;
+}
+
+type FakeApp = ReturnType<typeof makeApp>;
+
+/** `panelApp`'s `Object.defineProperties` below installs two convenience
+ *  accessors (`panelCfg`/`panelKey`, mirroring `tab.specParsed.panel`) on the
+ *  active tab purely for this file's terse assertions — real code always
+ *  reads spec.panel directly (state.ts has no such fields). `TestTab`
+ *  documents them for the type checker: it's a genuine subtype of `Tab`
+ *  (the properties really are installed on the object below), so casting a
+ *  plain `Tab` to it is an ordinary single-step narrowing, not an `unknown`
+ *  bridge. */
+type TestTab = Tab & { panelCfg: PanelCfg | null; panelKey: string | null };
+type TestApp = Omit<FakeApp, 'activeTab' | 'chart'> & { activeTab(): TestTab; chart: FakeChart | null };
+
+/** `renderResolvedPanel`/`PANEL_TYPES[...].renderPanel` want the full `App`
+ *  contract; tests/helpers/fake-app.js's `makeApp()` is a long-standing
+ *  untyped test double that implements the handful of members these panel
+ *  arms actually read (state/activeTab/chart/specValidators/…) — not the
+ *  whole ~50-member interface, since it long predates ADR-0002's App
+ *  contract (out of scope here — fake-app.js isn't one of this change's
+ *  files). The stub fields below are never read by the panel arms these 4
+ *  tests exercise; they exist only so the real fixture's value structurally
+ *  satisfies `App` without an `unknown` bridge. */
+const asApp = (app: FakeApp): App => {
+  const stub: App = {
+  ...app,
+  actions: { ...app.actions, openUserMenu: () => {}, openDashboard: () => {} },
+  chCtx: {
+    ...app.chCtx, fetch, origin: '', authConfirmed: true,
+    getToken: async () => null, refresh: async () => false, authHeader: () => '',
+  },
+  chart: undefined,
+  token: null,
+  refreshToken: null,
+  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
+  // `register` is app.js-internal wiring beyond the SpecValidationService
+  // contract — kept on the stub (fake-app parity), hence the cast.
+  specValidators: { validate: () => [], register: () => () => {} } as App['specValidators'],
+  specCompletionSources: [],
+  openWindow: () => null,
+  stylesText: '',
+  faviconHref: '',
+  chUsername: () => '',
+  authMode: 'basic',
+  chAuth: 'basic',
+  basicUserClaim: 'sub',
+  idpId: null,
+  hostHint: '',
+  setTokens: () => {},
+  loadConfig: async () => ({}),
+  selectIdp: () => {},
+  ensureConfig: async () => null,
+  receiveAuthHandoff: async () => false,
+  canExport: () => false,
+  canExportScript: () => false,
+  showSaveFilePicker: null,
+  showDirectoryPicker: null,
+  isSecureContext: true,
+  FileReader: globalThis.FileReader,
+  editingLibrary: false,
+  loadReference: async () => {},
+  refData: { functions: {}, keywordDocs: {} },
+  completions: {},
+  rebuildCompletions: () => {},
+  docCache: new Map(),
+  updateBanner: () => {},
+  tickElapsed: () => {},
+  setRunBtn: () => {},
+  renderVarStrip: () => {},
+  setExportBtn: () => {},
+  specBlocked: () => false,
+  evaluateSpecDraft: () => ({}),
+  revealFirstSpecError: () => {},
+  registerSpecValidator: () => () => {},
+  openSavePopover: () => {},
+  openUserMenu: () => {},
+  renderApp: () => {},
+  renderDashboard: () => {},
+  openDashboard: () => {},
+  recordHistory: () => {},
+  };
+  return stub;
+};
+
+const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
+const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] =>
+  [...root.querySelectorAll(selector)] as T[];
+
+const selectRole = (app: TestApp, index: number, value: string): void => {
+  const sel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[index];
+  sel.value = value;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+interface StateOverride {
+  resultView?: 'table' | 'json' | 'panel' | 'filter';
+  running?: boolean;
+}
+
+function panelApp(result: StreamResult | null, panelCfg: PanelCfg | null = null, over: StateOverride = {}): TestApp {
+  const app = makeApp();
+  const tab = app.activeTab();
+  if (result) tab.result = result;
+  if (panelCfg) tab.specParsed!.panel = { cfg: panelCfg };
+  // Keep the assertions terse while routing every read/write through the v2
+  // tab spec. These aliases exist only in this test harness.
+  Object.defineProperties(tab, {
+    panelCfg: {
+      configurable: true,
+      get() { return this.specParsed?.panel?.cfg ?? null; },
+      set(cfg: PanelCfg | null) {
+        if (cfg == null) delete this.specParsed!.panel;
+        else this.specParsed!.panel = { ...(this.specParsed!.panel || {}), cfg };
+      },
+    },
+    panelKey: {
+      configurable: true,
+      get() { return this.specParsed?.panel?.key ?? null; },
+      set(key: string | null) {
+        if (!this.specParsed!.panel && key != null) this.specParsed!.panel = {};
+        if (key == null) {
+          if (this.specParsed!.panel) delete this.specParsed!.panel.key;
+        } else this.specParsed!.panel.key = key;
+      },
+    },
+  });
+  app.state.resultView.value = 'panel';
+  if (over.resultView !== undefined) app.state.resultView.value = over.resultView;
+  if (over.running !== undefined) app.state.running.value = over.running;
+  return app as TestApp;
+}
+const region = (app: TestApp): HTMLDivElement => app.dom.resultsRegion;
+const pickType = (app: TestApp, type: string): void => {
+  const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
+  sel.value = type.includes(':') ? type : `panel:${type}`;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+// ── renderMarkdown (AST → DOM, injection-inert by construction) ──────────────
+describe('renderMarkdown', () => {
+  it('renders every block/inline construct as real elements', () => {
+    const el = md('# T\n\npara **b** *i* `c`\n\n- item\n\n1. one\n\n[d](https://x.example/)');
+    expect(el.querySelector('h1')!.textContent).toBe('T');
+    expect(el.querySelector('p strong')!.textContent).toBe('b');
+    expect(el.querySelector('p em')!.textContent).toBe('i');
+    expect(el.querySelector('p code')!.textContent).toBe('c');
+    expect(el.querySelector('ul li')!.textContent).toBe('item');
+    expect(el.querySelector('ol li')!.textContent).toBe('one');
+    const a = el.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('https://x.example/');
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+  it('raw HTML and unsafe links stay inert (text nodes, no elements)', () => {
+    const el = md('<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert1)');
+    expect(el.querySelector('script')).toBeNull();
+    expect(el.querySelector('img')).toBeNull();
+    expect(el.querySelector('a')).toBeNull();
+    expect(el.textContent).toContain('<script>alert(1)</script>'); // literal text
+  });
+});
+
+// ── the Panel drawer tab (through renderResults) ─────────────────────────────
+describe('Panel drawer tab', () => {
+  it('renders the panel picker in the toolbar without Table + an auto chart preview', () => {
+    const app = panelApp(chartResult());
+    renderResults(app);
+    const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
+    expect([...sel.options].map((o) => o.value)).toEqual([
+      '', 'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
+    ]);
+    expect([...sel.options].map((o) => o.value)).not.toContain('table');
+    expect(sel.value).toBe('panel:auto'); // reflects the current choice while the panel preview shows
+    expect(region(app).querySelectorAll('.result-view-tab')).toHaveLength(2); // Table + JSON; no fixed Panel button
+    expect(region(app).querySelector('.panel-config')).toBeNull(); // no separate picker row
+    expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
+    expect(app.activeTab().panelCfg).toBeNull(); // #166 dirty pin: derived cfg never persisted
+    expect(app.activeTab().dirtySpec).toBe(false);
+  });
+  it('picking a type writes tab.panelCfg + marks the tab dirty (like a SQL edit); no SQL runs', () => {
+    const app = panelApp(chartResult());
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie' });
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.rerenderTabs).toHaveBeenCalled();
+    expect(app.updateSaveBtn).toHaveBeenCalled();
+    expect(app.actions.run).not.toHaveBeenCalled(); // previews never execute SQL
+    expect(region(app).querySelector('.chart-view')).not.toBeNull();
+  });
+  it('selects Filter as a role, preserves Panel configuration, and never runs SQL', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], future: true });
+    app.activeTab().specParsed!.dashboard = { role: 'panel', future: { keep: true } };
+    renderResults(app);
+    pickType(app, 'role:filter');
+    expect(app.activeTab().specParsed!.dashboard).toEqual({ role: 'filter', future: { keep: true } });
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'line', future: true });
+    expect(app.state.resultView.value).toBe('filter');
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    renderResults(app);
+    expect(region(app).textContent).toContain('Run the query to preview Filter options.');
+  });
+  it('switches a Filter query back to Panel without rewriting unrelated Spec fields', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] });
+    app.activeTab().specParsed!.dashboard = { role: 'filter', future: 1 };
+    app.activeTab().specParsed!.keep = true;
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activeTab().specParsed!.dashboard).toEqual({ role: 'panel', future: 1 });
+    expect(app.activeTab().specParsed!.keep).toBe(true);
+    expect((app.activeTab().panelCfg as PanelCfg).type).toBe('pie');
+    expect(app.state.resultView.value).toBe('panel');
+  });
+  it('shows the placeholder on Table/JSON and switches to the preview when the current type is re-picked', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] }, { resultView: 'table' });
+    renderResults(app);
+    const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
+    expect(sel.value).toBe(''); // placeholder while viewing the raw Table
+    // Re-picking the query's CURRENT type still switches to its preview — the
+    // placeholder makes it a genuine change event (the reported inconsistency).
+    pickType(app, 'line');
+    expect(app.state.resultView.value).toBe('panel');
+    expect(region(app).querySelector('.chart-view')).not.toBeNull();
+  });
+  it('a panel control merges into a linked dirty valid Spec draft', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.dirtySpec = true;
+    tab.specParsed!.future = { keep: true };
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(tab.specParsed).toMatchObject({ panel: { cfg: { type: 'pie' } }, future: { keep: true } });
+    expect(tab.dirtySpec).toBe(true);
+    expect(app.actions.rerenderTabs).toHaveBeenCalled();
+  });
+  it('a panel control focuses invalid Spec JSON without mutating it', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    tab.specText = '{"panel":';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
+    tab.dirtySpec = true;
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+    expect(tab.specText).toBe('{"panel":');
+    expect(app.actions.rerenderTabs).not.toHaveBeenCalled();
+  });
+  it('an already-rendered chart field focuses a Spec draft that becomes invalid', () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
+    const tab = app.activeTab();
+    renderResults(app);
+    const xSelect = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((field) => qs(field, '.chart-field-label').textContent === 'X')!,
+      'select',
+    );
+    tab.specText = '{';
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
+    tab.dirtySpec = true;
+    xSelect.value = '1';
+    xSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+  });
+  it('the toolbar selector activates Panel view from the ordinary Table view', () => {
+    const app = panelApp(chartResult());
+    app.state.resultView.value = 'table';
+    renderResults(app);
+    pickType(app, 'pie');
+    expect(app.state.resultView.value).toBe('panel');
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'pie', x: 0, y: [1] });
+    expect(region(app).querySelector('.chart-view canvas')).not.toBeNull();
+  });
+  it('a chart choice on an all-string result remains a valid draft and shows the result hint', () => {
+    const app = panelApp(noTimeNoMessageResult());
+    app.state.resultView.value = 'table';
+    renderResults(app);
+    pickType(app, 'line');
+    expect(app.activeTab().panelCfg).toEqual({ type: 'line', x: 0, y: [3], series: null });
+    expect(app.activeTab().specDiagnostics).toEqual([]);
+    expect(app.activateInvalidSpecDraft).not.toHaveBeenCalled();
+    expect(region(app).textContent).toContain('nothing to plot');
+  });
+  it("the chart arm's field controls (X/Y) write back through onCfgChange + dirty; no Type select duplicate", () => {
+    const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1], series: null });
+    app.activeTab().panelKey = 'carrier:String|flights:UInt64';
+    renderResults(app);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
+    expect(labels).not.toContain('Type'); // the panel picker owns type (typeControl:false)
+    const xSel = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((f) => qs(f, '.chart-field-label').textContent === 'X')!,
+      'select',
+    );
+    xSel.value = '1';
+    xSel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((app.activeTab().panelCfg as PanelCfg).x).toBe(1);
+    expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
+    expect(app.activeTab().dirtySpec).toBe(true);
+  });
+  it('the Panel drawer exposes one Line Style selector and persists its preset', () => {
+    const app = panelApp(chartResult(), {
+      type: 'line', x: 0, y: [1], series: null, style: {
+        curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
+      },
+    });
+    app.activeTab().panelKey = 'carrier:String|flights:UInt64';
+    renderResults(app);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((el) => el.textContent);
+    expect(labels).toEqual(['Style', 'X', 'Y']);
+    const style = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((field) => qs(field, '.chart-field-label').textContent === 'Style')!,
+      'select',
+    );
+    style.value = 'stepped';
+    style.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((app.activeTab().panelCfg as PanelCfg).style).toEqual({
+      curve: 'stepped', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
+    });
+    expect(app.activeTab().dirtySpec).toBe(true);
+  });
+  it('adopting an auto-derived chart records the current schema key', () => {
+    const app = panelApp(chartResult());
+    renderResults(app);
+    pickType(app, 'hbar');
+    expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
+  });
+  it('logs: role selects override by name; a bad shape shows the pick-columns hint', () => {
+    const app = panelApp(logsResult(), { type: 'logs' });
+    renderResults(app);
+    expect(region(app).querySelectorAll('.dash-logs .log-row')).toHaveLength(1);
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
+    expect(roleSels).toHaveLength(3); // Time / Message / Level
+    roleSels[1].value = 'level'; // point Message at the level column (silly but explicit)
+    roleSels[1].dispatchEvent(new Event('change', { bubbles: true }));
+    expect((app.activeTab().panelCfg as PanelCfg).msg).toBe('level');
+    // a logs panel over a result with no time column → hint, not a crash
+    const bad = panelApp(chartResult(), { type: 'logs' });
+    renderResults(bad);
+    expect(region(bad).textContent).toContain('no time + message columns'); // impossible → fallback diagnostic
+  });
+  it('rescue (#192): a saved Logs panel that falls back still shows Logs controls, and Message repair resolves it', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs' });
+    renderResults(app);
+    // Fallback diagnostic + fallback Table preview are both visible...
+    expect(region(app).textContent).toContain('no time + message columns');
+    expect(region(app).querySelector('.res-table')).not.toBeNull();
+    // ...alongside the three Logs role selectors (the rescue path), fed the
+    // saved cfg — not the fallback (Table) cfg.
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
+    expect(roleSels).toHaveLength(3);
+
+    selectRole(app, 1, 'component'); // Message → component
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // The repair resolves the shape: Logs renders, the fallback note is gone.
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+    expect(region(app).querySelector('.res-table')).toBeNull();
+  });
+  it('rescue (#192): two-step repair keeps controls visible until both roles resolve', () => {
+    const app = panelApp(noTimeNoMessageResult(), { type: 'logs' });
+    renderResults(app);
+    expect(qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')).toHaveLength(3);
+
+    selectRole(app, 0, 'ts'); // Time → ts (Message still unresolved)
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts' });
+    expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull(); // still falling back
+    expect(qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')).toHaveLength(3); // still visible
+
+    selectRole(app, 1, 'component'); // Message → component completes the shape
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+  });
+  it('rescue (#195): a KPI fallback shows Logs as the picker type, stays read-only, and cannot write panelCfg', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    // Fallback diagnostic + the current auto-panel preview...
+    expect(region(app).textContent).toContain('no time + message columns');
+    expect(region(app).querySelector('.kpi-card')).not.toBeNull();
+    expect(region(app).querySelector('.res-table')).toBeNull();
+    // ...the toolbar picker still reads Logs, the authoring type...
+    expect(qs<HTMLSelectElement>(region(app), '.result-panel-select').value).toBe('panel:logs');
+    // ...the three Logs role selectors are the rescue controls...
+    const configRows = region(app).querySelectorAll('.panel-config .chart-config');
+    expect(configRows).toHaveLength(1);
+    expect(configRows[0].querySelectorAll('select')).toHaveLength(3);
+    // ...and the fallback renderer exposes no X/Y/Series controls.
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
+    expect(labels).not.toContain('X');
+    expect(labels).not.toContain('Y');
+    expect(labels).not.toContain('Series');
+    // Rendering alone must not touch tab state.
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs' });
+    expect(app.activeTab().panelKey).toBeNull();
+    expect(app.activeTab().dirtySpec).toBe(false);
+  });
+  it('shows KPI field presentation guidance without adding tuning controls', () => {
+    const result = newResult('KPI');
+    result.columns = [{ name: 'n', type: 'UInt64' }];
+    result.rows = [[42]];
+    const app = panelApp(result, { type: 'kpi' });
+    renderResults(app);
+    expect(qs(region(app), '.panel-authoring-hint').textContent).toContain('Spec → panel.fieldConfig');
+    expect(region(app).querySelector('.panel-config select')).toBeNull();
+  });
+  it('applies saved chart field metadata through the shared workbench renderer', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], series: null });
+    app.activeTab().specParsed!.panel!.fieldConfig = {
+      columns: { flights: { displayName: 'Flights', unit: ' trips', decimals: 0 } },
+    };
+    renderResults(app);
+    const chart = app.chart!;
+    expect(chart.config.data.datasets[0].label).toBe('Flights');
+    expect(chart.config.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: chart.config.data.datasets[0], raw: 10,
+    })).toBe('Flights: 10 trips');
+  });
+  it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    selectRole(app, 1, 'operation'); // Message → operation
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'operation' });
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(region(app).querySelector('.panel-note.is-fallback')).toBeNull();
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull();
+    expect(region(app).querySelector('.chart-view canvas')).toBeNull();
+  });
+  it('rescue (#195): an explicit Panel-picker conversion out of the chart fallback writes the new type and ends rescue', () => {
+    const app = panelApp(noMessageChartResult(), { type: 'logs' });
+    renderResults(app);
+    pickType(app, 'bar');
+    expect(app.activeTab().panelCfg).toMatchObject({ type: 'bar' });
+    expect(app.activeTab().panelKey).toBe('event_time:DateTime|duration_ms:Int64|operation:String');
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // Rescue is over: ordinary chart controls (X/Y) are now present, and the
+    // Logs rescue row (a `.panel-config` wrapper; the chart arm has no
+    // separate controls() row of its own) is gone.
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
+    expect(labels).toContain('X');
+    expect(labels).toContain('Y');
+    expect(region(app).querySelector('.panel-config')).toBeNull();
+    expect(region(app).querySelectorAll('.chart-config')).toHaveLength(1); // only renderChart's own bar
+  });
+  it('rescue (#200): a nested unknown field on the saved cfg is deep-cloned, never aliased', () => {
+    const extension = { nested: { value: 1 } };
+    const app = panelApp(noMessageResult());
+    const savedCfg = { type: 'logs', extension };
+    app.activeTab().panelCfg = savedCfg;
+    app.activeTab().specParsed!.panel!.fieldConfig = { future: { value: 2 } };
+
+    renderResults(app);
+    // Rendering alone (no control change) must not mutate or replace the saved cfg.
+    expect(app.activeTab().panelCfg).toBe(savedCfg);
+    expect((app.activeTab().panelCfg as PanelCfg).extension).toBe(extension);
+    expect(app.activeTab().dirtySpec).toBe(false);
+
+    selectRole(app, 1, 'component'); // Message → component
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component', extension: { nested: { value: 1 } } });
+    expect((app.activeTab().panelCfg as PanelCfg).extension).not.toBe(extension);
+    expect(((app.activeTab().panelCfg as PanelCfg).extension as { nested: unknown }).nested).not.toBe(extension.nested);
+    expect(app.activeTab().specParsed!.panel!.fieldConfig).toEqual({ future: { value: 2 } });
+    expect(app.activeTab().dirtySpec).toBe(true);
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // The originally-saved object (and its nested field) are untouched.
+    expect(savedCfg).toEqual({ type: 'logs', extension: { nested: { value: 1 } } });
+    expect(extension.nested.value).toBe(1);
+  });
+  it('#196: stale required roles show "<name> (missing)", selected + disabled, and never mutate cfg', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    renderResults(app);
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
+    expect(roleSels).toHaveLength(3);
+    const [timeSel, msgSel, levelSel] = roleSels;
+
+    expect(timeSel.value).toBe('old_time_col');
+    expect(timeSel.selectedOptions[0].textContent).toBe('old_time_col (missing)');
+    expect(timeSel.selectedOptions[0].disabled).toBe(true);
+    expect(timeSel.disabled).toBe(false);
+    expect(timeSel.getAttribute('aria-invalid')).toBe('true');
+    expect(timeSel.title).toContain('old_time_col');
+
+    expect(msgSel.value).toBe('old_msg_col');
+    expect(msgSel.selectedOptions[0].textContent).toBe('old_msg_col (missing)');
+    expect(msgSel.getAttribute('aria-invalid')).toBe('true');
+
+    // Level was omitted → plain (auto), not stale.
+    expect(levelSel.value).toBe('');
+    expect(levelSel.selectedOptions[0].textContent).toBe('(auto)');
+    expect(levelSel.getAttribute('aria-invalid')).toBeNull();
+
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    expect(app.activeTab().dirtySpec).toBe(false);
+  });
+  it('#196: partial repair keeps the untouched stale role stored and visibly marked', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
+    renderResults(app);
+    selectRole(app, 1, 'operation'); // Message → operation
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'operation' });
+    expect(app.actions.run).not.toHaveBeenCalled();
+    // Time remains stored and still rendered as missing; panel still falls back.
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
+    expect(timeSel.value).toBe('old_time_col');
+    expect(timeSel.selectedOptions[0].textContent).toBe('old_time_col (missing)');
+    expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull();
+  });
+  it('#196: repairing with a current column clears the missing option and invalid state', () => {
+    const app = panelApp(noTimeNoMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'component' });
+    renderResults(app);
+    selectRole(app, 0, 'ts'); // Time → ts
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
+    expect(timeSel.value).toBe('ts');
+    expect([...timeSel.options].some((o) => (o.textContent ?? '').includes('(missing)'))).toBe(false);
+    expect(timeSel.getAttribute('aria-invalid')).toBeNull();
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+  it('#196: repairing with (auto) deletes the property rather than storing an empty string', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'component' });
+    renderResults(app);
+    selectRole(app, 0, ''); // Time → (auto)
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
+    expect('time' in (app.activeTab().panelCfg as PanelCfg)).toBe(false);
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
+    expect(timeSel.value).toBe('');
+    expect(app.actions.run).not.toHaveBeenCalled();
+  });
+  it('#196: case-insensitive saved names match without a synthetic missing option', () => {
+    const app = panelApp(logsResult(), { type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' });
+    renderResults(app);
+    const [timeSel, msgSel] = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
+    expect(timeSel.value).toBe('event_time');
+    expect(msgSel.value).toBe('message');
+    expect(timeSel.getAttribute('aria-invalid')).toBeNull();
+    expect(msgSel.getAttribute('aria-invalid')).toBeNull();
+    expect([...timeSel.options].some((o) => (o.textContent ?? '').includes('missing'))).toBe(false);
+    expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' }); // never rewritten
+  });
+  it('#196: a stale optional Level is marked missing even while Logs renders', () => {
+    const app = panelApp(logsResult(), { type: 'logs', level: 'old_level_col' });
+    renderResults(app);
+    expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull(); // renders fine — Level is optional
+    const levelSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[2];
+    expect(levelSel.value).toBe('old_level_col');
+    expect(levelSel.selectedOptions[0].textContent).toBe('old_level_col (missing)');
+    expect(levelSel.getAttribute('aria-invalid')).toBe('true');
+
+    selectRole(app, 2, ''); // Level → (auto) deletes it
+    expect('level' in (app.activeTab().panelCfg as PanelCfg)).toBe(false);
+  });
+  it('#196: a markup-like stale saved name renders as inert text, not markup', () => {
+    const app = panelApp(noMessageResult(), { type: 'logs', time: '<img src=x onerror=alert(1)>' });
+    renderResults(app);
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
+    expect(timeSel.querySelector('img')).toBeNull();
+    expect(timeSel.selectedOptions[0].textContent).toBe('<img src=x onerror=alert(1)> (missing)');
+  });
+  it('rescue (#192) does not engage for a table panel type: no false controls leak in', () => {
+    const app = panelApp(noMessageResult(), { type: 'table' });
+    renderResults(app);
+    // Not a saved Logs panel → no rescue; Table has no controls at all.
+    expect(region(app).querySelector('.panel-config')).toBeNull();
+  });
+  it('an unknown saved panel type still falls back safely, without a rescue path', () => {
+    const app = panelApp(noMessageResult(), { type: 'gauge' });
+    expect(() => renderResults(app)).not.toThrow();
+    expect(region(app).textContent).toContain('Unknown panel type');
+    expect(region(app).querySelector('.panel-config')).toBeNull();
+  });
+  it('text: renders from cfg.content with NO result; textarea edits update cfg + preview', () => {
+    const app = panelApp(null, { type: 'text', content: '# Hello' });
+    renderResults(app);
+    expect(qs(region(app), '.md-view h1').textContent).toBe('Hello');
+    const ta = qs<HTMLTextAreaElement>(region(app), '.panel-text-input');
+    ta.value = '# Bye';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    expect((app.activeTab().panelCfg as PanelCfg).content).toBe('# Bye');
+    expect(qs(region(app), '.md-view h1').textContent).toBe('Bye');
+    expect(app.activeTab().dirtySpec).toBe(true);
+  });
+  it('query-backed types show the empty-preview hint before any Run (and while running)', () => {
+    const app = panelApp(null);
+    renderResults(app);
+    expect(region(app).textContent).toContain('Run the query');
+    const running = panelApp(chartResult(), { type: 'bar', x: 0, y: [1], series: null }, { running: true });
+    renderResults(running);
+    // streamed rows exist but the run is live → the panel hint, not a half chart
+    expect(region(running).textContent).toContain('renders when the query completes');
+  });
+  it('an explicit table panel uses the ordinary Table workbench view', () => {
+    const r = chartResult();
+    r.rows = [];
+    const app = panelApp(r, { type: 'table' });
+    renderResults(app);
+    expect(app.state.resultView.value).toBe('table');
+    expect(qs(region(app), '.result-view-tab.active').textContent).toBe('Table');
+    expect(region(app).textContent).toContain('Query returned 0 rows');
+  });
+  it('a migrated table panel uses the ordinary table sort state', () => {
+    const app = panelApp(chartResult(), { type: 'table' });
+    renderResults(app);
+    const th = region(app).querySelectorAll('.res-table th')[1]; // first data column
+    th.dispatchEvent(new Event('click', { bubbles: true }));
+    const firstCell = qs(region(app), '.res-table tbody tr .cell');
+    expect(firstCell.textContent).toBe('AA'); // sorted asc by carrier
+    expect(app.state.resultSort).toEqual({ col: 0, dir: 'asc' });
+  });
+});
+
+// ── renderResolvedPanel notes + fallback ─────────────────────────────────────
+describe('renderResolvedPanel', () => {
+  it('wraps a fallback resolution with its diagnostic note', () => {
+    const app = makeApp();
+    const r = chartResult();
+    const resolved = resolvePanel({ cfg: { type: 'gauge' } }, r.columns); // unknown type
+    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
+      surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
+    });
+    expect(qs(node, '.panel-note.is-fallback').textContent).toContain('gauge');
+    expect(node.querySelector('canvas')).not.toBeNull(); // autoPanel fallback rendered below
+  });
+  it('a rederived resolution gets the roles-re-detected hint (no fallback style)', () => {
+    const app = makeApp();
+    const r = logsResult();
+    const resolved = resolvePanel({ cfg: { type: 'logs', msg: 'renamed_away' } }, r.columns);
+    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
+      surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
+    });
+    const note = node.querySelector('.panel-note')!;
+    expect(note.textContent).toContain('re-detected');
+    expect(note.classList.contains('is-fallback')).toBe(false);
+    expect(node.querySelector('.dash-logs')).not.toBeNull();
+  });
+  it('the logs arm renders the pick-columns hint when even re-derive found no shape', () => {
+    const app = makeApp();
+    const r = chartResult();
+    const out = PANEL_TYPES.logs.renderPanel({ app: asApp(app), result: r, cfg: { type: 'logs' }, cap: 10 });
+    expect(out.node.textContent).toContain('No time + message columns');
+  });
+  it("the chart arm's destroy tears down its instance exactly once", () => {
+    const app = makeApp();
+    const r = chartResult();
+    let inst: FakeChart | null = null;
+    const out = PANEL_TYPES.bar.renderPanel({
+      app: asApp(app), result: r, cfg: { type: 'bar', x: 0, y: [1], series: null },
+      surface: 'dashboard', rerender: () => {}, readonly: true, setChart: (c) => { inst = c as FakeChart; },
+    });
+    expect(inst).not.toBeNull();
+    expect(inst!.destroyed).toBe(false);
+    out.destroy!();
+    expect(inst!.destroyed).toBe(true);
+    expect(() => out.destroy!()).not.toThrow(); // idempotent
+  });
+});

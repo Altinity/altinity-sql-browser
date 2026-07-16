@@ -6,10 +6,12 @@ all bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
 
-1. **Coverage gate is non-negotiable.** `npm test` must pass. The pure/network/
-   state/DOM and render layers are gated at **100/100/100/100 per file**.
-   `src/ui/app.js` + `src/main.js` are the browser glue — gated lower and
-   integration-tested. Add tests in the same change as the code.
+1. **Coverage gate is non-negotiable.** `npm test` must pass, and `tsc --noEmit`
+   must pass (ADR-0002 — incremental strict TypeScript, dev-time only; wired
+   into the `pretest` step). The pure/network/state/DOM and render layers are
+   gated at **100/100/100/100 per file**. `src/ui/app.js` + `src/main.js` are
+   the browser glue — gated lower and integration-tested. Add tests in the
+   same change as the code.
 2. **Keep the layers honest.** Pure logic goes in `src/core/` (no DOM, no
    globals). Network goes in `src/net/` with the fetch seam *injected*, never
    imported. DOM rendering goes in `src/ui/` as functions that take the `app`
@@ -83,8 +85,10 @@ Touch these in one change:
 | `src/net/*` | OAuth + ClickHouse client, injected fetch |
 | `src/ui/*` | hyperscript, icons, render modules, controller |
 | `src/editor/*` | injected SQL/Spec editor ports + CodeMirror adapters (#143/#21/#212) |
-| `src/state.js` | state model + pure ops |
+| `src/state.ts` | state model + pure ops (strict TS — ADR-0002 phase 2) |
 | `src/main.js` | bootstrap (OAuth callback, share-links) |
+| `src/**/*.types.ts` | type-only seam contracts (ADR-0002 phase 0), co-located next to the `.js` file each describes (or, for a shape spanning several consumers like `src/env.types.ts`, at their shared directory); `tsc --noEmit` gate |
+| `src/generated/json-schema.types.ts` | **generated** persisted-data types (`QuerySpecV1`/`SavedQueryV2`/`LibraryV2`/`PanelCfg`) emitted by `build/emit-schema-types.mjs` from the schema manifest — never hand-edit, never hand-duplicate these shapes; regenerate via `npm run generate:schemas` |
 | `build/build.mjs` | esbuild → `dist/sql.html` |
 | `deploy/*` | install/uninstall + `http_handlers.xml` |
 | `tests/unit/*` | one spec per module (vitest + happy-dom) |

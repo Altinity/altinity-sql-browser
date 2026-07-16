@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "moduleResolution": "bundler",
+    "module": "esnext",
+    "target": "es2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "tests/types/**/*.ts", "tests/unit/**/*.ts", "tests/helpers/**/*.ts"]
+}

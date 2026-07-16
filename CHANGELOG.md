@@ -20,6 +20,33 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   behavior or schema change.
 
 ### Added
+- **ADR-0002 phases 1–5: the TypeScript migration slice lands whole** (#262,
+  same PR as phase 0). Phase 1: `build/emit-schema-types.mjs`, a hand-rolled
+  deterministic emitter (no `json-schema-to-typescript` — see the ADR-0002
+  addendum), generates `src/generated/json-schema.types.ts`
+  (`QuerySpecV1`/`SavedQueryV2`/`LibraryV2` + a usable `PanelCfg` discriminated
+  union with a `FuturePanelCfg` forward-compat member) from the canonical
+  schema manifest, staleness-checked by `check:schemas`;
+  `src/schema-contract.types.ts` pins the semantic invariants at
+  `check:types` time. Phases 2–5 convert 19 modules to strict `.ts` — the
+  state model (`src/state.ts`, typed signals, honest localStorage ingress),
+  the saved-query/panel/dashboard contract spine, the parameter/filter/
+  execution pipeline, and the dashboard runtime (typed slot lifecycle,
+  tile/KPI hook contracts) — zero behavior change, still-`.js` imports typed
+  via local wrapper consts, per-file coverage held. Their unit tests convert
+  to `.ts` as a second wave (assertions unchanged); vitest gains a mixed-tree
+  resolver shim (Vite only retries `.js`→`.ts` from TS importers). The build
+  and artifact are unchanged; runtime deps stay four.
+- **ADR-0002 phase 0: TypeScript gate** (#262). `tsconfig.json` (strict,
+  `allowJs`, `checkJs: false`, `noEmit`, `erasableSyntaxOnly`); `typescript`
+  devDependency; `tsc --noEmit` joins `pretest` (and therefore CI) alongside
+  `check:schemas`. Five type-only `.types.ts` seam-interface files, each
+  co-located next to the runtime module it describes: `EditorPort`,
+  `SpecEditorPort`, `CodeViewerHandle`, `CreateAppEnv`/`BootstrapEnv`, and the
+  `App` controller surface as consumed by render modules. No existing `.js`
+  module converted; the build and artifact are unchanged. Vitest coverage
+  `include` widens to `src/**/*.{js,ts}`, excluding the type-only files
+  (no executable statements) alongside `src/generated/`.
 - **ADR-0002 accepted: incremental strict TypeScript, dev-time only**
   (`docs/ADR-0002-static-typing.md`; phase 0 tracked by #262). `tsc --noEmit`
   joins the gate; files convert leaf-up one at a time; esbuild and the

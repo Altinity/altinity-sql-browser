@@ -1,6 +1,18 @@
 # ADR-0002: Static typing — incremental strict TypeScript, dev-time only
 
-- **Status:** Accepted — 2026-07-16; phase 0 tracked by #262
+- **Status:** Accepted — 2026-07-16; **phases 0–5 landed** 2026-07-16 (#262,
+  one PR): the `tsc --noEmit` gate + typed seam interfaces (phase 0);
+  generated persisted-data types from the canonical schemas via
+  `build/emit-schema-types.mjs` (phase 1 — see the emitter addendum below);
+  `src/state.ts` (phase 2); the saved-query/panel/dashboard contract spine and
+  the parameter/filter/execution pipeline in `src/core/` (phases 3–4); and the
+  dashboard runtime slice `src/ui/{dashboard,dashboard-kpi-band,panels}.ts`
+  (phase 5) — 19 runtime modules strict (the 16-module slice plus the dom.js/
+  param-scan.js/diagnostics.js leaves whose typed wrappers it would otherwise
+  have duplicated), their unit tests converted as a
+  second wave, zero behavior change. Remaining `.js` (app.js glue, net/,
+  editor adapters, the rest of ui/ and core/) converts leaf-up as feature
+  work touches it, per decision item 4.
 - **Date:** 2026-07-16
 - **Context tracking:** roadmap #68; phase 0 #262
 - **Related:** ADR-0001 (the slice-by-slice migration playbook this reuses)
@@ -46,10 +58,13 @@ Adopt **TypeScript, strict, incrementally, dev-time only**:
    every `.ts` file must be type-strippable (the flag enforces it), so esbuild,
    Node type-stripping, and coverage source maps all stay trivial.
 3. **Types for persisted data are generated, not written.** The canonical
-   JSON-Schema graph stays the single source of truth; `.d.ts` for
-   Library/saved-query/Spec shapes are emitted by the existing
-   `build/compile-json-schemas.mjs` pipeline (json-schema-to-typescript,
-   devDependency), committed, and staleness-checked like the validators.
+   JSON-Schema graph stays the single source of truth; the type declarations
+   for Library/saved-query/Spec shapes are emitted by the existing
+   `build/compile-json-schemas.mjs` pipeline (via the hand-rolled
+   `build/emit-schema-types.mjs` — see the 2026-07-16 addendum; the
+   json-schema-to-typescript devDependency originally anticipated here was
+   evaluated and rejected), committed, and staleness-checked like the
+   validators.
 4. **Convert seams and contracts first, then leaf-up.** Order of value:
    `EditorPort`/`env`/`CodeViewer` seam interfaces and the `app` controller
    surface (interface files, no behavior change) → `src/state.js` (typed
@@ -68,6 +83,35 @@ Adopt **TypeScript, strict, incrementally, dev-time only**:
    converted itself); converting tests is worthwhile but never blocks the
    module.
 
+### Addendum — 2026-07-16: the type emitter is hand-rolled, not json-schema-to-typescript
+
+Phase 1 (generated types for the persisted-data schema graph) landed with a
+hand-rolled emitter, `build/emit-schema-types.mjs`, instead of the
+`json-schema-to-typescript` devDependency point 3 of the Decision anticipated.
+Reasons, in order of weight:
+
+- **$refs must resolve through the Ajv $id registry, not the filesystem.** The
+  pipeline's records already carry every canonical schema keyed by `$id`;
+  jsts resolves cross-file refs by reading files relative to a cwd, a second
+  resolution mechanism that can silently disagree with the manifest.
+- **jsts ignores the 2020-12 keywords this graph leans on.** It does not honor
+  `unevaluatedProperties: false` (the saved-query envelope's closedness) or
+  `not` (the forward-compatible catch-all panel branch), so exactly the
+  contracts worth checking would be lost.
+- **Unstable names.** jsts derives type names from `title` and disambiguates
+  collisions with numeric suffixes; a wording edit or a new titled subschema
+  renames emitted types. Here names are pinned (`typeExport` in
+  `build/schema-manifest.mjs`; PascalCase `$defs` keys) and duplicates throw.
+- **Byte stability.** The committed artifact is staleness-checked
+  (`check:schemas`); jsts output couples the bytes to jsts+prettier versions.
+
+The emitter is a strict whitelist: any shape-affecting keyword it does not
+understand throws at generate time, so schema evolution fails loudly rather
+than emitting wrong types. `typescript` remains the only typing
+devDependency; `src/schema-contract.types.ts` holds the hand-written
+type-level assertions that pin the generated contracts (openness of the Spec,
+closedness of the envelopes, the panel discriminated union).
+
 ## Options considered
 
 | Option | Verdict |
@@ -79,8 +123,9 @@ Adopt **TypeScript, strict, incrementally, dev-time only**:
 
 ## Consequences
 
-- `typescript` (and `json-schema-to-typescript`) are devDependencies; runtime
-  deps stay four; the artifact is byte-identical in kind (hard rule 4 intact).
+- `typescript` is the only typing devDependency (json-schema-to-typescript was
+  rejected — see the addendum); runtime deps stay four; the artifact is
+  byte-identical in kind (hard rule 4 intact).
 - CLAUDE.md rule 1 gains "and `tsc --noEmit` must pass"; rule 2's seam
   descriptions gain their interface names once the seam interfaces land.
 - CI adds one fast job (`tsc --noEmit` on the converted set).
