@@ -1,0 +1,2210 @@
+{
+  "format": "altinity-sql-browser/saved-queries",
+  "version": 2,
+  "exportedAt": "2026-07-16T00:00:00.000Z",
+  "queries": [
+    {
+      "id": "gco-filter",
+      "sql": "SELECT\n  [toUInt8(1), toUInt8(0)] AS is_initial_query,\n  (\n    SELECT arraySort(groupUniqArray(query_kind))\n    FROM merge(system, '^query_log')\n    WHERE event_time >= now() - INTERVAL 7 DAY AND query_kind != ''\n  ) AS query_kind,\n  (\n    SELECT arraySort(groupUniqArray(initial_user))\n    FROM merge(system, '^query_log')\n    WHERE event_time >= now() - INTERVAL 7 DAY AND initial_user != ''\n  ) AS user,\n  (\n    SELECT groupArray((exception_code AS value, concat(toString(exception_code), ' · ', errorCodeToName(exception_code)) AS label))\n    FROM\n    (\n      SELECT exception_code\n      FROM merge(system, '^query_log')\n      WHERE event_time >= now() - INTERVAL 7 DAY AND exception_code != 0\n      GROUP BY exception_code\n      ORDER BY count() DESC\n      LIMIT 100\n    )\n  ) AS exception_code,\n  (\n    SELECT groupArray((normalized_query_hash AS value, concat(toString(normalized_query_hash), ' · ', substring(sample_query, 1, 80)) AS label))\n    FROM\n    (\n      SELECT normalized_query_hash, anyHeavy(replaceAll(query, '\\n', ' ')) AS sample_query\n      FROM merge(system, '^query_log')\n      WHERE event_time >= now() - INTERVAL 7 DAY AND normalized_query_hash != 0\n      GROUP BY normalized_query_hash\n      ORDER BY count() DESC\n      LIMIT 80\n    )\n  ) AS query_hash,\n  ['count', 'avg_duration', 'max_duration', 'cpu_time', 'read_bytes', 'written_bytes', 'avg_written_rows', 'result_bytes', 'network_bytes', 'memory', 'max_memory', 'network_wait', 'io_time', 'io_wait', 'zk_txns', 'read_bps', 'write_bps', 'parts_inserted', 'parts_inserted_avg', 'marks_load_time', 'marks_miss_rate', 'selected_parts', 'selected_ranges', 'selected_marks', 'exceptions', 'open_files', 'external_processing_files', 'threads1', 'threads2', 'threads3'] AS metric\nSETTINGS enable_named_columns_in_function_tuple = 1",
+      "specVersion": 1,
+      "spec": {
+        "name": "Grafana port filters",
+        "favorite": true,
+        "description": "Filter source for is_initial_query, query_kind, user, exception_code, query_hash, and metric. Dynamic query-log options use a fixed last-seven-days window. Controls are single-select; blank means Grafana All. Query hashes are capped at the 80 most frequent.",
+        "dashboard": {
+          "role": "filter"
+        }
+      }
+    },
+    {
+      "id": "gco-029-running-queries",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  max(CurrentMetric_Query) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Overview · Running Queries (max over interval)",
+        "favorite": true,
+        "description": "CurrentMetric_Query from system.metric_log. Single-node port; the original per-host series collapses to one line.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Running queries",
+                "unit": " queries",
+                "decimals": 0,
+                "description": "Maximum concurrent queries in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-047-merges",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_Merge) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · Merges running",
+        "favorite": true,
+        "description": "CurrentMetric_Merge from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Merges",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active merge tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-048-mutations",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_PartMutation) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · Mutations running",
+        "favorite": true,
+        "description": "CurrentMetric_PartMutation from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Mutations",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active mutation tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-049-moves",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_Move) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · Moves running",
+        "favorite": true,
+        "description": "CurrentMetric_Move from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Moves",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active move tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-050-distributed-send",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_DistributedSend) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · DistributedSend running",
+        "favorite": true,
+        "description": "CurrentMetric_DistributedSend from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Distributed sends",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active distributed-send tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-064-replicated-checks",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_ReplicatedChecks) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ReplicatedChecks running",
+        "favorite": true,
+        "description": "CurrentMetric_ReplicatedChecks from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Replication checks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active replication-check tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-061-replicated-fetch",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_ReplicatedFetch) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ReplicatedFetch running",
+        "favorite": true,
+        "description": "CurrentMetric_ReplicatedFetch from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Replication fetches",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active replication-fetch tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-062-replicated-send",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_ReplicatedSend) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ReplicatedSend running",
+        "favorite": true,
+        "description": "CurrentMetric_ReplicatedSend from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Replication sends",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active replication-send tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-063-kafka-background-reads",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_KafkaBackgroundReads) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · KafkaBackgroundReads running",
+        "favorite": true,
+        "description": "CurrentMetric_KafkaBackgroundReads from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Kafka background reads",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active Kafka background-read tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-065-refreshing-views",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_RefreshingViews) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · RefreshingViews running",
+        "favorite": true,
+        "description": "CurrentMetric_RefreshingViews from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Refreshing views",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active refreshable-view tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-077-kafka-writes",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_KafkaWrites) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · KafkaWrites",
+        "favorite": true,
+        "description": "CurrentMetric_KafkaWrites from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Kafka writes",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active Kafka write tasks in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-071-background-schedule",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundSchedulePoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundSchedulePoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundSchedulePoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background schedule tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active BackgroundSchedulePool tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-068-background-common",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundCommonPoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundCommonPoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundCommonPoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background common tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active BackgroundCommonPool tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-069-background-move",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundMovePoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundMovePoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundMovePoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background move tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active BackgroundMovePool tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-067-background-fetches",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundFetchesPoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundFetchesPoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundFetchesPoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background fetch tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active BackgroundFetchesPool tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-066-background-merges-mutations",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundMergesAndMutationsPoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundMergesAndMutationsPoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundMergesAndMutationsPoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background merge/mutation tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active background merge and mutation tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-074-background-distributed",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundDistributedSchedulePoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundDistributedSchedulePoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundDistributedSchedulePoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background distributed tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active distributed schedule tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-075-background-message-broker",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundMessageBrokerSchedulePoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundMessageBrokerSchedulePoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundMessageBrokerSchedulePoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background broker tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active message-broker schedule tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-073-background-buffer-flush",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_BackgroundBufferFlushSchedulePoolTask) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · BackgroundBufferFlushSchedulePoolTask",
+        "favorite": true,
+        "description": "CurrentMetric_BackgroundBufferFlushSchedulePoolTask from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Background buffer flush tasks",
+                "unit": " tasks",
+                "decimals": 1,
+                "description": "Average active buffer-flush schedule tasks."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-078-global-thread-active",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_GlobalThreadActive) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · GlobalThreadActive",
+        "favorite": true,
+        "description": "CurrentMetric_GlobalThreadActive from system.metric_log, averaged into an automatic roughly-300-point time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Active global threads",
+                "unit": " threads",
+                "decimals": 1,
+                "description": "Average active global threads."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-094-accounted-time",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    JSONExtractKeysAndValues(formatRow('JSONEachRow', COLUMNS('ProfileEvent.*seconds$') EXCEPT(ProfileEvent_NetworkReceiveElapsedMicroseconds, ProfileEvent_RealTimeMicroseconds, ProfileEvent_LocalThreadPoolBusyMicroseconds) APPLY avg), 'Float64') AS metrics,\n    arrayFilter(item -> item.2 != 0, metrics) AS non_zero,\n    arrayMap(item -> multiIf(\n      item.1 LIKE '%Nanoseconds%', tuple(extract(item.1, '_(.*)Nanoseconds'), item.2 / 1000),\n      item.1 LIKE '%Milliseconds%', tuple(extract(item.1, '_(.*)Milliseconds'), item.2 * 1000),\n      item.1 LIKE '%Microseconds%', tuple(extract(item.1, '_(.*)Microseconds'), item.2),\n      tuple(item.1, item.2)\n    ), non_zero) AS pairs\n  SELECT toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t, pairs\n  FROM system.metric_log\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · Accounted time (ClickHouse, average over interval)",
+        "favorite": true,
+        "description": "ProfileEvent timing columns normalized to microseconds and expanded into a Series column. This preserves the source dashboard dynamic COLUMNS approach but uses SQL Browser line-series pivoting.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "stacked",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Accounted time",
+                "unit": " µs",
+                "description": "ClickHouse timing components normalized to microseconds."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-076-active-pools",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    JSONExtractKeysAndValues(formatRow('JSONEachRow', COLUMNS('Threads?Active$') EXCEPT(CurrentMetric_GlobalThreadActive, CurrentMetric_MergeTreeBackgroundExecutorThreadsActive) APPLY quantile(0.999)), 'UInt32') AS metrics,\n    arrayMap(item -> (extract(item.1, '_(.*)Threads?Active'), item.2), arrayFilter(item -> item.2 != 0, metrics)) AS pairs\n  SELECT toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t, pairs\n  FROM system.metric_log\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · Active tasks in local task-specific pools (p99.9 over interval)",
+        "favorite": true,
+        "description": "Dynamic *ThreadsActive metrics expanded to one SQL Browser line series per task pool.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "stacked",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Active pool tasks",
+                "unit": " tasks",
+                "decimals": 0,
+                "description": "p99.9 active tasks split by task-specific pool."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-095-zk-transactions",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(ProfileEvent_ZooKeeperTransactions) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ZooKeeper transactions (average per interval)",
+        "favorite": true,
+        "description": "ProfileEvent_ZooKeeperTransactions from system.metric_log.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "ZooKeeper transactions",
+                "unit": " txns",
+                "decimals": 1,
+                "description": "Average ZooKeeper transactions in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-096-zk-latency",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  sum(ProfileEvent_ZooKeeperWaitMicroseconds) / nullIf(sum(ProfileEvent_ZooKeeperTransactions), 0) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ZooKeeper latency (average per interval)",
+        "favorite": true,
+        "description": "ZooKeeper wait microseconds divided by transactions for each automatic time bucket.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "ZooKeeper latency",
+                "unit": " µs",
+                "decimals": 1,
+                "description": "Average ZooKeeper wait per transaction."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-097-zk-inflight",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  quantile(0.95)(CurrentMetric_ZooKeeperRequest) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ZooKeeper in-flight requests (p95 per interval)",
+        "favorite": true,
+        "description": "CurrentMetric_ZooKeeperRequest p95 from system.metric_log.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "ZooKeeper in-flight requests",
+                "unit": " requests",
+                "decimals": 1,
+                "description": "p95 in-flight ZooKeeper requests."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-098-zk-traffic",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    [\n      tuple('Received', avg(ProfileEvent_ZooKeeperBytesReceived)),\n      tuple('Sent', -avg(ProfileEvent_ZooKeeperBytesSent))\n    ] AS pairs\n  FROM merge(system, '^metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "Other activities · ZooKeeper traffic (average per interval)",
+        "favorite": true,
+        "description": "Received bytes are positive and sent bytes negative, matching the Grafana directional plot.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "ZooKeeper traffic",
+                "unit": " B/s",
+                "description": "Received traffic is positive and sent traffic is negative."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-041-cpus-loaded",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(ProfileEvent_OSCPUVirtualTimeMicroseconds) / 1000000 AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · CPUs loaded (ClickHouse-scoped, average per interval)",
+        "favorite": true,
+        "description": "ProfileEvent_OSCPUVirtualTimeMicroseconds converted to CPU-seconds per sample.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "CPU time",
+                "unit": " CPU s",
+                "decimals": 2,
+                "description": "ClickHouse-scoped CPU-seconds per sample."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-053-memory",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  max(CurrentMetric_MemoryTracking) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Memory usage (ClickHouse-scoped, max per interval)",
+        "favorite": true,
+        "description": "Maximum CurrentMetric_MemoryTracking in bytes.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "stack": "overlay",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Memory usage",
+                "unit": " B",
+                "description": "Maximum ClickHouse memory tracking in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-093-cpu-system",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  100 * avg(1 - value) AS value\nFROM merge(system, '^asynchronous_metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  AND metric = 'OSIdleTimeNormalized'\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · CPU usage (system-wide, average per interval)",
+        "favorite": true,
+        "description": "1 - OSIdleTimeNormalized from system.asynchronous_metric_log.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "CPU usage",
+                "unit": "%",
+                "decimals": 1,
+                "description": "System-wide non-idle CPU percentage."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-028-load-average",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  max(value) AS value\nFROM merge(system, '^asynchronous_metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  AND metric = 'LoadAverage1'\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Load Average (system-wide, max per interval)",
+        "favorite": true,
+        "description": "LoadAverage1 from system.asynchronous_metric_log.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Load average",
+                "decimals": 2,
+                "description": "Maximum one-minute system load average."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-058-io-util",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    sumMapIf(map(metric, value), metric != 'AsynchronousMetricsUpdateInterval') AS metric_map,\n    sumIf(value, metric = 'AsynchronousMetricsUpdateInterval') AS update_interval\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    arrayMap((key, metric_value) -> tuple(substring(key, 17), 100 * metric_value / nullIf(update_interval, 0)), mapKeys(metric_map), mapValues(metric_map)) AS pairs\n  FROM merge(system, '^asynchronous_metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n    AND (metric = 'AsynchronousMetricsUpdateInterval' OR metric LIKE 'BlockActiveTime\\_%')\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nWHERE pair.2 != 0\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · IO utilization % (system-wide, average per interval)",
+        "favorite": true,
+        "description": "BlockActiveTime per asynchronous-metrics update interval, one series per block device. Target is ClickHouse 25.8+, so the post-25.4 unit multiplier is used.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "I/O utilization",
+                "unit": "%",
+                "decimals": 1,
+                "description": "Block-device active-time percentage."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-046-network",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    sumMapIf(map(metric, value), metric != 'AsynchronousMetricsUpdateInterval') AS metric_map,\n    sumIf(value, metric = 'AsynchronousMetricsUpdateInterval') AS update_interval\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    arrayMap((key, metric_value) -> if(key LIKE 'NetworkReceiveBytes%', tuple('Receive ' || substring(key, 21), 8 * metric_value / nullIf(update_interval, 0)), tuple('Send ' || substring(key, 18), -8 * metric_value / nullIf(update_interval, 0))), mapKeys(metric_map), mapValues(metric_map)) AS pairs\n  FROM merge(system, '^asynchronous_metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n    AND (metric = 'AsynchronousMetricsUpdateInterval' OR metric LIKE 'NetworkReceiveBytes%' OR metric LIKE 'NetworkSendBytes%')\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nWHERE pair.2 != 0\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Network In & Out (system-wide, average per interval)",
+        "favorite": true,
+        "description": "Network receive bits/s positive and send bits/s negative, one series per interface.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Network traffic",
+                "unit": " bit/s",
+                "description": "Receive traffic is positive and send traffic is negative, split by interface."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-042-io-wait",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(ProfileEvent_OSIOWaitMicroseconds) / 1000000 AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · IOWait (ClickHouse-scoped, average per interval)",
+        "favorite": true,
+        "description": "ProfileEvent_OSIOWaitMicroseconds converted to seconds.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "I/O wait",
+                "unit": " s",
+                "decimals": 3,
+                "description": "ClickHouse-scoped I/O wait time."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-043-cpu-wait",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(ProfileEvent_OSCPUWaitMicroseconds) / 1000000 AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · CPUWait (ClickHouse-scoped, average per interval)",
+        "favorite": true,
+        "description": "ProfileEvent_OSCPUWaitMicroseconds converted to seconds.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "hide",
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "CPU wait",
+                "unit": " s",
+                "decimals": 3,
+                "description": "ClickHouse-scoped CPU wait time."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-044-disk-io",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    [\n      tuple('Read', avg(ProfileEvent_OSReadBytes)),\n      tuple('Write', -avg(ProfileEvent_OSWriteBytes))\n    ] AS pairs\n  FROM merge(system, '^metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Disk reads & writes (ClickHouse-scoped, average per interval)",
+        "favorite": true,
+        "description": "OS read bytes positive and write bytes negative.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Disk I/O",
+                "unit": " B/s",
+                "description": "Reads are positive and writes are negative."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-045-page-cache-io",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    [\n      tuple('Read', avg(ProfileEvent_OSReadChars)),\n      tuple('Write', -avg(ProfileEvent_OSWriteChars))\n    ] AS pairs\n  FROM merge(system, '^metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Disk + page cache reads & writes (ClickHouse-scoped, average per interval)",
+        "favorite": true,
+        "description": "OSReadChars/OSWriteChars include page-cache traffic; writes are plotted negative.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "overlay",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Disk and page-cache I/O",
+                "unit": " B/s",
+                "description": "Reads are positive and writes are negative, including page-cache traffic."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-059-io-bytes",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    sumMapIf(map(metric, value), metric != 'AsynchronousMetricsUpdateInterval') AS metric_map,\n    sumIf(value, metric = 'AsynchronousMetricsUpdateInterval') AS update_interval\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    arrayMap((key, metric_value) -> if(key LIKE 'BlockReadBytes%', tuple('Read ' || substring(key, 16), metric_value / nullIf(update_interval, 0)), tuple('Write ' || substring(key, 17), -metric_value / nullIf(update_interval, 0))), mapKeys(metric_map), mapValues(metric_map)) AS pairs\n  FROM merge(system, '^asynchronous_metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n    AND (metric = 'AsynchronousMetricsUpdateInterval' OR metric LIKE 'BlockReadBytes%' OR metric LIKE 'BlockWriteBytes%')\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nWHERE pair.2 != 0\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · IO bytes (system-wide, average per interval)",
+        "favorite": true,
+        "description": "Block read bytes/s positive and write bytes/s negative, one series per block device.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "I/O throughput",
+                "unit": " B/s",
+                "description": "Read values are positive and write values are negative, split by device."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-060-iops",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  WITH\n    sumMapIf(map(metric, value), metric != 'AsynchronousMetricsUpdateInterval') AS metric_map,\n    sumIf(value, metric = 'AsynchronousMetricsUpdateInterval') AS update_interval\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    arrayMap((key, metric_value) -> if(key LIKE 'BlockReadOps%', tuple('Read ' || substring(key, 13), metric_value / nullIf(update_interval, 0)), tuple('Write ' || substring(key, 14), -metric_value / nullIf(update_interval, 0))), mapKeys(metric_map), mapValues(metric_map)) AS pairs\n  FROM merge(system, '^asynchronous_metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n    AND (metric = 'AsynchronousMetricsUpdateInterval' OR metric LIKE 'BlockReadOps%' OR metric LIKE 'BlockWriteOps%')\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nWHERE pair.2 != 0\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · IOPS (system-wide, average per interval)",
+        "favorite": true,
+        "description": "Block read operations/s positive and write operations/s negative, one series per block device.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "I/O operations",
+                "unit": " ops/s",
+                "decimals": 1,
+                "description": "Read operations are positive and write operations are negative, split by device."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-040-queries-started",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(ProfileEvent_Query) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Queries Started (ClickHouse, average per interval)",
+        "favorite": true,
+        "description": "ProfileEvent_Query from system.metric_log.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Queries started",
+                "unit": " queries",
+                "decimals": 1,
+                "description": "Average queries started in each bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-055-connections",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  pair.1 AS series,\n  pair.2 AS value\nFROM\n(\n  SELECT\n    toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n    [\n      tuple('TCP', max(CurrentMetric_TCPConnection)),\n      tuple('HTTP', max(CurrentMetric_HTTPConnection)),\n      tuple('Interserver', max(CurrentMetric_InterserverConnection)),\n      tuple('MySQL', max(CurrentMetric_MySQLConnection))\n    ] AS pairs\n  FROM merge(system, '^metric_log')\n  WHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  GROUP BY t\n)\nARRAY JOIN pairs AS pair\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "System metrics · Connections active (ClickHouse, max per interval)",
+        "favorite": true,
+        "description": "TCP, HTTP, interserver, and MySQL connections from CurrentMetric columns.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "area",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "curve": "linear",
+              "points": "auto",
+              "stack": "stacked",
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Active connections",
+                "unit": " connections",
+                "decimals": 0,
+                "description": "Active TCP, HTTP, interserver, and MySQL connections."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-099-error-log",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  concat(error, ' (', toString(code), if(remote, ' remote', ''), ')') AS series,\n  toFloat64(sum(value)) AS value\nFROM merge(system, '^error_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  /*[ AND code = {exception_code:Int32} ]*/\nGROUP BY t, series\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "error_log (24.8+) · Errors over interval",
+        "favorite": true,
+        "description": "Grafana status history converted to grouped columns. Series combine error name, code, and remote flag.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Errors",
+                "unit": " errors",
+                "decimals": 0,
+                "description": "Error occurrences in each time bucket."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-025-query-hash",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  series,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(query_start_time), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    toString(normalized_query_hash) AS series,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^query_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND type != 'QueryStart'\n  /*[ AND is_initial_query = {is_initial_query:UInt8} ]*/\n  /*[ AND query_kind = {query_kind:String} ]*/\n  /*[ AND exception_code = {exception_code:Int32} ]*/\n  /*[ AND initial_user = {user:String} ]*/\n  /*[ AND normalized_query_hash = {query_hash:UInt64} ]*/\n  GROUP BY t, series\n  )\n  ORDER BY count() OVER (PARTITION BY series) DESC, sum(value) OVER (PARTITION BY series) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_log by query hash · Selected metric by normalized query hash",
+        "favorite": true,
+        "description": "Grafana status history converted to grouped columns. Long-running queries are represented in every automatic bucket they overlap. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-030-query-hash-details",
+      "sql": "SELECT\n  toString(normalized_query_hash) AS query_hash,\n  argMax(query_id, ProfileEvents['OSCPUVirtualTimeMicroseconds']) AS sample_query_id,\n  replaceAll(argMax(query, ProfileEvents['OSCPUVirtualTimeMicroseconds']), '\\n', ' ') AS query,\n  count() AS count,\n  max(query_duration_ms) AS max_duration_ms,\n  avg(query_duration_ms) AS avg_duration_ms,\n  sum(ProfileEvents['OSCPUVirtualTimeMicroseconds']) / 1000000 AS cpu_time_s,\n  quantile(0.99)(memory_usage) AS memory_q99,\n  sum(read_rows) AS read_rows,\n  sum(read_bytes) AS read_bytes,\n  sum(written_rows) AS total_written_rows,\n  avg(written_rows) AS avg_written_rows,\n  sum(written_bytes) AS written_bytes,\n  sum(result_rows) AS result_rows,\n  sum(result_bytes) AS result_bytes,\n  sum(ProfileEvents['NetworkReceiveBytes']) AS network_receive_bytes,\n  sum(ProfileEvents['NetworkSendBytes']) AS network_send_bytes,\n  sum(ProfileEvents['OSCPUVirtualTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0) AS cpu_usage,\n  sum(ProfileEvents['OSIOWaitMicroseconds']) / nullIf(sum(ProfileEvents['RealTimeMicroseconds']), 0) AS io_wait_ratio,\n  sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0) AS concurrency,\n  arrayStringConcat(groupUniqArrayIf(5)(errorCodeToName(exception_code), exception_code != 0), ',') AS exceptions,\n  arrayStringConcat(groupUniqArray(5)(initial_user), ',') AS users,\n  sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000 AS os_io_wait_s,\n  sum(ProfileEvents['DiskReadElapsedMicroseconds']) / 1000000 AS disk_read_s,\n  sum(ProfileEvents['DiskWriteElapsedMicroseconds']) / 1000000 AS disk_write_s,\n  sum(ProfileEvents['RealTimeMicroseconds']) / 1000000 AS real_time_s,\n  sum(ProfileEvents['UserTimeMicroseconds']) / 1000000 AS user_time_s,\n  sum(ProfileEvents['SystemTimeMicroseconds']) / 1000000 AS system_time_s,\n  sum(ProfileEvents['NetworkSendElapsedMicroseconds']) / 1000000 AS network_send_s,\n  sum(ProfileEvents['NetworkReceiveElapsedMicroseconds']) / 1000000 AS network_receive_s,\n  sum(ProfileEvents['SelectedParts']) AS selected_parts,\n  sum(ProfileEvents['SelectedRanges']) AS selected_ranges,\n  sum(ProfileEvents['SelectedMarks']) AS selected_marks,\n  sum(ProfileEvents['SelectedRows']) AS selected_rows,\n  sum(ProfileEvents['SelectedBytes']) AS selected_bytes,\n  sum(ProfileEvents['FileOpen']) AS file_open,\n  sum(ProfileEvents['ZooKeeperTransactions']) AS zookeeper_transactions,\n  sum(ProfileEvents['OSReadBytes']) AS os_read_bytes_excluding_page_cache,\n  sum(ProfileEvents['OSWriteBytes']) AS os_write_bytes_excluding_page_cache,\n  sum(ProfileEvents['OSReadChars']) AS os_read_chars_including_page_cache,\n  sum(ProfileEvents['OSWriteChars']) AS os_write_chars_including_page_cache,\n  anyIf(exception, exception != '') AS exception_sample,\n  min(event_time) AS min_event_time,\n  max(event_time) AS max_event_time\nFROM merge(system, '^query_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  AND type != 'QueryStart'\n  /*[ AND is_initial_query = {is_initial_query:UInt8} ]*/\n  /*[ AND query_kind = {query_kind:String} ]*/\n  /*[ AND exception_code = {exception_code:Int32} ]*/\n  /*[ AND initial_user = {user:String} ]*/\n  /*[ AND normalized_query_hash = {query_hash:UInt64} ]*/\nGROUP BY normalized_query_hash\nORDER BY count DESC\nLIMIT 200",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_log by query hash DETAILS · Query hash details",
+        "favorite": true,
+        "description": "Resource and timing breakdown per normalized query hash, adapted to a single node and SQL Browser parameters.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "table"
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-056-query-table",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  series,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(query_start_time), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    arrayJoin(arrayFilter(name -> name NOT LIKE '%temporary%', tables)) AS series,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^query_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND type != 'QueryStart'\n  /*[ AND is_initial_query = {is_initial_query:UInt8} ]*/\n  /*[ AND query_kind = {query_kind:String} ]*/\n  /*[ AND exception_code = {exception_code:Int32} ]*/\n  /*[ AND initial_user = {user:String} ]*/\n  /*[ AND normalized_query_hash = {query_hash:UInt64} ]*/\n  GROUP BY t, series\n  )\n  ORDER BY count() OVER (PARTITION BY series) DESC, sum(value) OVER (PARTITION BY series) DESC\n  LIMIT 50 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_log by table · Selected metric by table",
+        "favorite": true,
+        "description": "Grafana status history converted to grouped columns. One query touching several tables contributes to each table series.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-037-query-user",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  series,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(query_start_time), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    if(initial_user = '', '<no_user>', initial_user) AS series,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^query_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND type != 'QueryStart'\n  /*[ AND is_initial_query = {is_initial_query:UInt8} ]*/\n  /*[ AND query_kind = {query_kind:String} ]*/\n  /*[ AND exception_code = {exception_code:Int32} ]*/\n  /*[ AND initial_user = {user:String} ]*/\n  /*[ AND normalized_query_hash = {query_hash:UInt64} ]*/\n  GROUP BY t, series\n  )\n  ORDER BY count() OVER (PARTITION BY series) DESC, sum(value) OVER (PARTITION BY series) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_log by user · Selected metric by initial user",
+        "favorite": true,
+        "description": "Grafana status history converted to grouped columns and grouped by initial_user.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-026-query-host",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  series,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(query_start_time), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    hostName() AS series,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^query_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND type != 'QueryStart'\n  /*[ AND is_initial_query = {is_initial_query:UInt8} ]*/\n  /*[ AND query_kind = {query_kind:String} ]*/\n  /*[ AND exception_code = {exception_code:Int32} ]*/\n  /*[ AND initial_user = {user:String} ]*/\n  /*[ AND normalized_query_hash = {query_hash:UInt64} ]*/\n  GROUP BY t, series\n  )\n  ORDER BY count() OVER (PARTITION BY series) DESC, sum(value) OVER (PARTITION BY series) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, series",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_log by host · Selected metric by host",
+        "favorite": true,
+        "description": "Retained for source fidelity. In the single-node port this normally contains one host series.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-079-query-views",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  view_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    peak_memory_usage AS memory_usage,\n    view_duration_ms AS query_duration_ms,\n    written_bytes AS result_bytes,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(view_duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    view_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^query_views_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND status != 'QueryStart'\n  GROUP BY t, view_name\n  )\n  ORDER BY count() OVER (PARTITION BY view_name) DESC, sum(value) OVER (PARTITION BY view_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, view_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "query_views_log · Selected metric by view name",
+        "favorite": true,
+        "description": "Grafana status history converted to grouped columns. query_views_log fields are remapped to the common metric vocabulary; blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-newpart",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 1\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: NewPart · part_log metric (NewPart by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='NewPart'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-downloadpart",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 3\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: DownloadPart · part_log metric (DownloadPart by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='DownloadPart'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-mergeparts",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 2\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: MergeParts · part_log metric (MergeParts by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='MergeParts'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-mutatepart",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 5\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: MutatePart · part_log metric (MutatePart by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='MutatePart'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-movepart",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 6\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: MovePart · part_log metric (MovePart by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='MovePart'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-part-removepart",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  t,\n  table_name,\n  value\nFROM\n(\n  SELECT * FROM (\n  WITH\n    duration_ms AS query_duration_ms,\n    error AS exception_code,\n    rows AS result_rows,\n    rows AS written_rows,\n    size_in_bytes AS written_bytes,\n    size_in_bytes AS result_bytes,\n    peak_memory_usage AS memory_usage,\n    0 AS peak_threads_usage,\n    [] AS thread_ids,\n    intDiv(toUInt32(event_time), bucket_s) AS finish_bucket,\n    intDiv(toUInt32(event_time - toIntervalMillisecond(duration_ms)), bucket_s) AS start_bucket,\n    arrayMap(i -> toDateTime((start_bucket + i) * bucket_s), range(toUInt32(finish_bucket - start_bucket + 1))) AS buckets\n  SELECT\n    arrayJoin(buckets) AS t,\n    concat(database, '.', table) AS table_name,\n    multiIf(\n    /*[ {metric:String} = 'avg_duration', toFloat64(avg(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'max_duration', toFloat64(max(query_duration_ms)), ]*/\n    /*[ {metric:String} = 'cpu_time', toFloat64(sum(ProfileEvents['UserTimeMicroseconds']) + sum(ProfileEvents['SystemTimeMicroseconds'])), ]*/\n    /*[ {metric:String} = 'read_bytes', toFloat64(sum(read_bytes)), ]*/\n    /*[ {metric:String} = 'written_bytes', toFloat64(sum(written_bytes)), ]*/\n    /*[ {metric:String} = 'avg_written_rows', toFloat64(avg(written_rows)), ]*/\n    /*[ {metric:String} = 'result_bytes', toFloat64(sum(result_bytes)), ]*/\n    /*[ {metric:String} = 'network_bytes', toFloat64(sum(ProfileEvents['NetworkReceiveBytes']) + sum(ProfileEvents['NetworkSendBytes'])), ]*/\n    /*[ {metric:String} = 'memory', toFloat64(sum(memory_usage)), ]*/\n    /*[ {metric:String} = 'max_memory', toFloat64(max(memory_usage)), ]*/\n    /*[ {metric:String} = 'network_wait', toFloat64((sum(ProfileEvents['NetworkSendElapsedMicroseconds']) + sum(ProfileEvents['NetworkReceiveElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_time', toFloat64((sum(ProfileEvents['DiskReadElapsedMicroseconds']) + sum(ProfileEvents['DiskWriteElapsedMicroseconds'])) / 1000000), ]*/\n    /*[ {metric:String} = 'io_wait', toFloat64(sum(ProfileEvents['OSIOWaitMicroseconds']) / 1000000), ]*/\n    /*[ {metric:String} = 'zk_txns', toFloat64(sum(ProfileEvents['ZooKeeperTransactions'])), ]*/\n    /*[ {metric:String} = 'read_bps', toFloat64(sum(read_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'write_bps', toFloat64(sum(written_bytes) * 1000 / nullIf(sum(query_duration_ms), 0)), ]*/\n    /*[ {metric:String} = 'parts_inserted', toFloat64(sum(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'parts_inserted_avg', toFloat64(avg(ProfileEvents['InsertedCompactParts'] + ProfileEvents['InsertedWideParts'])), ]*/\n    /*[ {metric:String} = 'marks_load_time', toFloat64(sum(ProfileEvents['WaitMarksLoadMicroseconds'])), ]*/\n    /*[ {metric:String} = 'marks_miss_rate', toFloat64(sum(ProfileEvents['MarkCacheMisses']) / nullIf(sum(ProfileEvents['MarkCacheHits']) + sum(ProfileEvents['MarkCacheMisses']), 0)), ]*/\n    /*[ {metric:String} = 'selected_parts', toFloat64(sum(ProfileEvents['SelectedParts'])), ]*/\n    /*[ {metric:String} = 'selected_ranges', toFloat64(sum(ProfileEvents['SelectedRanges'])), ]*/\n    /*[ {metric:String} = 'selected_marks', toFloat64(sum(ProfileEvents['SelectedMarks'])), ]*/\n    /*[ {metric:String} = 'exceptions', toFloat64(countIf(exception_code != 0)), ]*/\n    /*[ {metric:String} = 'open_files', toFloat64(sum(ProfileEvents['FileOpen'])), ]*/\n    /*[ {metric:String} = 'external_processing_files', toFloat64(sum(ProfileEvents['ExternalProcessingFilesTotal'])), ]*/\n    /*[ {metric:String} = 'threads1', toFloat64(max(peak_threads_usage)), ]*/\n    /*[ {metric:String} = 'threads2', toFloat64(max(length(thread_ids))), ]*/\n    /*[ {metric:String} = 'threads3', toFloat64(sum(ProfileEvents['RealTimeMicroseconds']) / nullIf(1000 * sum(query_duration_ms), 0)), ]*/\n    1, toFloat64(count()),\n    toFloat64(count())\n  ) AS value\n  FROM merge(system, '^part_log')\n  WHERE event_time >= {from:DateTime} - INTERVAL 20 MINUTE\n    AND event_time <= {to:DateTime} + INTERVAL 20 MINUTE\n    AND event_type = 4\n  GROUP BY t, table_name\n  )\n  ORDER BY count() OVER (PARTITION BY table_name) DESC, sum(value) OVER (PARTITION BY table_name) DESC\n  LIMIT 100 BY t\n)\nWHERE t >= {from:DateTime} AND t <= {to:DateTime}\nORDER BY t, table_name",
+      "specVersion": 1,
+      "spec": {
+        "name": "part_log: RemovePart · part_log metric (RemovePart by table)",
+        "favorite": true,
+        "description": "Approximation of Grafana status history. The selected optional metric is grouped by time bucket and table for system.part_log event_type='RemovePart'. Blank metric means count.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "bar",
+            "x": 0,
+            "y": [
+              2
+            ],
+            "series": 1,
+            "style": {
+              "mode": "stacked",
+              "density": "normal",
+              "scale": "zero",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Selected metric",
+                "description": "Metric selected by the Dashboard metric filter; blank means count."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-kpi-overview",
+      "sql": "WITH snap AS (\n  SELECT\n    (SELECT max(event_time) FROM merge(system, '^metric_log')) - 300 AS t_prev,\n    argMax(CurrentMetric_Query, event_time) AS q_now,\n    round(argMax(CurrentMetric_MemoryTracking, event_time) / 1048576) AS mem_now,\n    round(argMaxIf(CurrentMetric_MemoryTracking, event_time, event_time <= t_prev) / 1048576) AS mem_prev,\n    argMax(CurrentMetric_PartsActive, event_time) AS parts_now,\n    argMaxIf(CurrentMetric_PartsActive, event_time, event_time <= t_prev) AS parts_prev,\n    round(max(CurrentMetric_MemoryTracking) / 1048576) AS mem_peak\n  FROM merge(system, '^metric_log')\n)\nSELECT\n  q_now AS running_queries,\n  CAST((mem_now, mem_now - mem_prev) AS Tuple(value Int64, delta Int64)) AS memory_used,\n  CAST((parts_now, parts_now - parts_prev) AS Tuple(value Int64, delta Int64)) AS active_parts,\n  mem_peak AS peak_memory\nFROM snap",
+      "specVersion": 1,
+      "spec": {
+        "name": "Overview · Live KPIs",
+        "favorite": true,
+        "description": "Current running queries, tracked/peak memory (MiB), and active parts from the latest system.metric_log snapshot. Memory and parts carry a delta against five minutes earlier.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "kpi"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "noValue": "—"
+            },
+            "columns": {
+              "running_queries": {
+                "displayName": "Running queries",
+                "decimals": 0,
+                "color": "#4f8cff",
+                "description": "Concurrent queries at the latest sample."
+              },
+              "memory_used": {
+                "displayName": "Memory tracked",
+                "unit": " MiB",
+                "decimals": 0,
+                "description": "Server-tracked memory at the latest sample.",
+                "delta": {
+                  "unit": " MiB",
+                  "decimals": 0,
+                  "positiveIsGood": false
+                }
+              },
+              "active_parts": {
+                "displayName": "Active parts",
+                "decimals": 0,
+                "description": "Active data parts across all tables.",
+                "delta": {
+                  "decimals": 0,
+                  "positiveIsGood": false
+                }
+              },
+              "peak_memory": {
+                "displayName": "Peak memory",
+                "unit": " MiB",
+                "decimals": 0,
+                "description": "Maximum tracked memory over the window."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-donut-query-kind",
+      "sql": "SELECT query_kind, count() AS queries\nFROM merge(system, '^query_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\n  AND type != 'QueryStart'\n  AND query_kind != ''\nGROUP BY query_kind\nORDER BY queries DESC",
+      "specVersion": 1,
+      "spec": {
+        "name": "Queries · Mix by kind (Donut)",
+        "favorite": true,
+        "description": "Share of query kinds (Select, Insert, …) from system.query_log over the dashboard window. Uses the Donut Style preset.",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "pie",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "shape": "donut",
+              "legend": "show",
+              "frame": "normal"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "queries": {
+                "displayName": "Queries",
+                "unit": " queries",
+                "decimals": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-spark-memory",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  round(avg(CurrentMetric_MemoryTracking) / 1048576) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Memory · Tracked (Sparkline)",
+        "favorite": true,
+        "description": "Average tracked memory (MiB) per bucket from system.metric_log, drawn with the Sparkline Style preset (no axes, grid, legend, or markers — hover still works).",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "scale": "data",
+              "legend": "hide",
+              "grid": "hide",
+              "axes": "hide",
+              "curve": "linear",
+              "points": "hide"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Memory tracked",
+                "unit": " MiB",
+                "decimals": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "gco-smooth-load",
+      "sql": "WITH\n  greatest(1, toUInt32(ceil(greatest(1, dateDiff('second', {from:DateTime}, {to:DateTime})) / 300))) AS bucket_s\nSELECT\n  toDateTime(intDiv(toUInt32(event_time), bucket_s) * bucket_s) AS t,\n  avg(CurrentMetric_QueryThread) AS value\nFROM merge(system, '^metric_log')\nWHERE event_time >= {from:DateTime}\n  AND event_time <= {to:DateTime}\nGROUP BY t\nORDER BY t",
+      "specVersion": 1,
+      "spec": {
+        "name": "Threads · Query threads (Smooth)",
+        "favorite": true,
+        "description": "Average active query threads per bucket from system.metric_log, drawn with the Smooth Style preset (monotone interpolation — no overshoot past the data).",
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "line",
+            "x": 0,
+            "y": [
+              1
+            ],
+            "series": null,
+            "style": {
+              "scale": "data",
+              "legend": "auto",
+              "grid": "auto",
+              "axes": "show",
+              "curve": "smooth",
+              "points": "auto"
+            }
+          },
+          "fieldConfig": {
+            "columns": {
+              "value": {
+                "displayName": "Query threads",
+                "unit": " threads",
+                "decimals": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
