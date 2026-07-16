@@ -11,9 +11,12 @@ export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.spec.js',
   // Serve the repo root over HTTP so the harness can import the *actual* source
-  // modules (/src/**) as native ESM — no bundling, always current.
+  // modules (/src/**) as native ESM — no bundling, always current. The server
+  // is build/e2e-serve.mjs (not a plain static server) because the tree is
+  // mixed .js/.ts under ADR-0002: an imported `./x.js` whose module converted
+  // to `x.ts` must be found and type-stripped, or the fixture pages 404.
   webServer: {
-    command: 'python3 -m http.server -d . 5599',
+    command: 'node build/e2e-serve.mjs 5599',
     url: 'http://127.0.0.1:5599/tests/e2e/editor.html',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

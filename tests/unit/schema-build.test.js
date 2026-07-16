@@ -152,6 +152,15 @@ describe('multi-schema build', () => {
       additionalProperties: true,
       properties: { x: { type: 'object', patternProperties: { '^a': { type: 'string' } } } },
     })])).toThrow('Unhandled JSON-Schema keyword "patternProperties"');
+    // `required` on a properties-less object has no Record<> representation —
+    // the emitter must fail loud instead of silently dropping the constraint.
+    expect(() => buildSchemaTypes([record({
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        x: { type: 'object', required: ['k'], additionalProperties: { type: 'string' } },
+      },
+    })])).toThrow('"required" on a properties-less object');
 
     // The same guard fires through the full pipeline on a temp-file schema.
     const dir = await mkdtemp(join(tmpdir(), 'asb-schema-'));

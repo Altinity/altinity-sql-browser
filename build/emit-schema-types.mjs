@@ -127,6 +127,13 @@ export function buildSchemaTypes(records) {
   function objectExpr(schema, record, where) {
     const ap = schema.additionalProperties;
     if (schema.properties === undefined) {
+      // `required` is honored only via the properties path (flattenInto); a
+      // property-less object with `required` ("must carry key x conforming to
+      // additionalProperties") has no Record<> representation here — fail
+      // loud rather than silently emitting a shape that drops the constraint.
+      if (schema.required !== undefined) {
+        throw new Error(`Unsupported: "required" on a properties-less object at ${where}`);
+      }
       if (ap === undefined || ap === true) return 'Record<string, unknown>';
       if (ap === false) return 'Record<string, never>';
       return `Record<string, ${typeExpr(ap, record, `${where}.additionalProperties`)}>`;

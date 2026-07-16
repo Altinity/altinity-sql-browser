@@ -56,10 +56,13 @@ Adopt **TypeScript, strict, incrementally, dev-time only**:
    every `.ts` file must be type-strippable (the flag enforces it), so esbuild,
    Node type-stripping, and coverage source maps all stay trivial.
 3. **Types for persisted data are generated, not written.** The canonical
-   JSON-Schema graph stays the single source of truth; `.d.ts` for
-   Library/saved-query/Spec shapes are emitted by the existing
-   `build/compile-json-schemas.mjs` pipeline (json-schema-to-typescript,
-   devDependency), committed, and staleness-checked like the validators.
+   JSON-Schema graph stays the single source of truth; the type declarations
+   for Library/saved-query/Spec shapes are emitted by the existing
+   `build/compile-json-schemas.mjs` pipeline (via the hand-rolled
+   `build/emit-schema-types.mjs` — see the 2026-07-16 addendum; the
+   json-schema-to-typescript devDependency originally anticipated here was
+   evaluated and rejected), committed, and staleness-checked like the
+   validators.
 4. **Convert seams and contracts first, then leaf-up.** Order of value:
    `EditorPort`/`env`/`CodeViewer` seam interfaces and the `app` controller
    surface (interface files, no behavior change) → `src/state.js` (typed
@@ -118,8 +121,9 @@ closedness of the envelopes, the panel discriminated union).
 
 ## Consequences
 
-- `typescript` (and `json-schema-to-typescript`) are devDependencies; runtime
-  deps stay four; the artifact is byte-identical in kind (hard rule 4 intact).
+- `typescript` is the only typing devDependency (json-schema-to-typescript was
+  rejected — see the addendum); runtime deps stay four; the artifact is
+  byte-identical in kind (hard rule 4 intact).
 - CLAUDE.md rule 1 gains "and `tsc --noEmit` must pass"; rule 2's seam
   descriptions gain their interface names once the seam interfaces land.
 - CI adds one fast job (`tsc --noEmit` on the converted set).

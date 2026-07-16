@@ -63,6 +63,9 @@ describe('saved-query model', () => {
     expect(queryPanel(q)).toBe(panel);
     expect(queryDashboard(q)).toBe(dashboard);
     expect(queryName(v2({ name: '  ' }))).toBe('Untitled');
+    // A truthy non-object `spec` (garbage ingress): field reads fall through
+    // to undefined exactly like the old `spec && spec.name` chain did.
+    expect(queryName({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: 'oops' })).toBe('Untitled');
     expect(queryDescription(v2())).toBe('');
     expect(queryFavorite(null)).toBe(false);
     expect(queryView({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { view: 1 } })).toBeUndefined();
