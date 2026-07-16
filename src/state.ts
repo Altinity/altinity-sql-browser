@@ -2,26 +2,255 @@
 // is injected as a `save(key, value)` function (defaulting to storage.js), so
 // every operation is unit-testable with a spy and no real localStorage.
 
-import { clamp } from './core/format.js';
-import { mergeSaved, validateLibraryQueries } from './core/saved-io.js';
+import { clamp as clampUntyped } from './core/format.js';
+import { mergeSaved as mergeSavedUntyped, validateLibraryQueries as validateLibraryQueriesUntyped } from './core/saved-io.js';
 import {
   SPEC_VERSION, cloneJson, patchQuerySpec, queryDescription, queryFavorite, queryName,
   queryPanel, queryView, withQuerySpec,
 } from './core/saved-query.js';
-import { decodeStoredSavedQueries } from './core/library-codec.js';
+import type { QueryRoot } from './core/saved-query.js';
+import { decodeStoredSavedQueries as decodeStoredSavedQueriesUntyped } from './core/library-codec.js';
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
-import { loadJSON, saveJSON, loadStr, saveStr } from './core/storage.js';
-import { emptyRecentMap } from './core/recent-values.js';
 import {
-  defaultSpecValidationService, evaluateSpecText, hasBlockingSpecErrors, normalizeSpec, serializeSpec,
+  loadJSON as loadJSONUntyped, saveJSON as saveJSONUntyped,
+  loadStr as loadStrUntyped, saveStr as saveStrUntyped,
+} from './core/storage.js';
+import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
+import {
+  defaultSpecValidationService as defaultSpecValidationServiceUntyped,
+  evaluateSpecText as evaluateSpecTextUntyped,
+  hasBlockingSpecErrors as hasBlockingSpecErrorsUntyped,
+  normalizeSpec as normalizeSpecUntyped,
+  serializeSpec as serializeSpecUntyped,
 } from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
+import type { Signal } from '@preact/signals-core';
+import type { QuerySpecV1, SavedQueryV2 } from './generated/json-schema.types.js';
+import type { SpecDiagnostic } from './editor/spec-editor.types.js';
+
+// ── Persisted-data types (schema-generated) ─────────────────────────────────
+
+/** A tab's in-memory parsed Spec draft — the same document shape the canonical
+ * query-spec v1 schema describes (extension fields ride along in the index
+ * signature). */
+export type QuerySpecDraft = QuerySpecV1;
+
+/** A complete `spec.panel` payload (cfg/key/fieldConfig + future siblings). */
+export type PanelSpec = NonNullable<QuerySpecV1['panel']>;
+
+// ── Injected persistence seam types ─────────────────────────────────────────
+
+/** The read half of the persistence seam `createState` consumes. */
+export interface StateReader {
+  /** Read + JSON.parse `key`; the stored shape is unknowable here — decoding
+   * (or an explicit trust assertion) happens at each field's ingress. */
+  loadJSON(key: string, fallback: unknown): unknown;
+  loadStr(key: string, fallback: string): string;
+}
+
+export type SaveJSON = (key: string, value: unknown) => void;
+export type SaveStr = (key: string, value: string) => void;
+
+// ── Spec validation seam types ──────────────────────────────────────────────
+
+/** Context handed to Spec validators (core/spec-schema.js): the linked SQL
+ * document plus whichever tab/query the Spec belongs to. */
+export interface SpecValidationContext {
+  sql?: string;
+  tab?: QueryTab | null;
+  query?: SavedQueryV2;
+  [k: string]: unknown;
+}
+
+/** The app-owned Spec validation service (core/spec-draft.js): canonical
+ * schema validation plus registered feature rules. */
+export interface SpecValidationService {
+  validate(spec: unknown, context?: SpecValidationContext): SpecDiagnostic[];
+}
+
+/** A committed-Spec patch: top-level field updates (`undefined` deletes a
+ * field) or a function over the cloned current draft (which is null while a
+ * tab's textual Spec isn't parseable — see `QueryTab.specParsed`). */
+export type SpecPatch =
+  | Partial<QuerySpecV1>
+  | ((spec: QuerySpecDraft | null) => QuerySpecDraft);
+
+// ── Typed wrappers over still-untyped .js dependencies ──────────────────────
+// Each const pins exactly the signature state.ts relies on; the runtime module
+// stays `.js` until its own leaf-up conversion (ADR-0002).
+
+const clamp: (v: number, lo: number, hi: number) => number = clampUntyped;
+
+const loadJSON: StateReader['loadJSON'] = loadJSONUntyped;
+const saveJSON: SaveJSON = saveJSONUntyped;
+const loadStr: StateReader['loadStr'] = loadStrUntyped;
+const saveStr: SaveStr = saveStrUntyped;
+
+// mergeSaved mints a fresh string id for every merged entry that lacks one, so
+// the canonical persisted SavedQueryV2 shape holds for the whole merged list.
+const mergeSaved: (
+  existing: SavedQueryV2[], incoming: readonly unknown[], genId: () => string,
+) => { merged: SavedQueryV2[]; added: number; updated: number; skipped: number } = mergeSavedUntyped;
+
+// validateLibraryQueries upgrades/validates each raw entry into the canonical
+// `{id, sql, specVersion, spec}` shape (throwing on the first invalid one).
+// `as`: the .js default parameter (`validationService = null`) makes TS infer
+// the param as `null | undefined`; the runtime accepts any object with
+// `.validate` (the SpecValidationService seam).
+const validateLibraryQueries = validateLibraryQueriesUntyped as (
+  queries: readonly unknown[], validationService: SpecValidationService | null,
+) => SavedQueryV2[];
+
+// decodeStoredSavedQueries fails closed: `ok: false` carries diagnostics and
+// no usable value (createState substitutes []); `ok: true` value entries are
+// schema-validated canonical v2 documents. `as`: the .js return type infers as
+// non-discriminated `ok: boolean` branches; the runtime pairs `ok: true`
+// exclusively with a validated canonical `value`.
+const decodeStoredSavedQueries = decodeStoredSavedQueriesUntyped as (value: unknown) =>
+  | { ok: true; value: SavedQueryV2[]; diagnostics: SpecDiagnostic[] }
+  | { ok: false; diagnostics: SpecDiagnostic[] };
+
+const emptyRecentMap: () => RecentMap = emptyRecentMapUntyped;
+
+const defaultSpecValidationService: SpecValidationService = defaultSpecValidationServiceUntyped;
+// `as`: the .js signature infers `validators` as the full concrete registry
+// object; the runtime only ever calls `validators.validate` (the
+// SpecValidationService seam, which injected test doubles also implement).
+const evaluateSpecText = evaluateSpecTextUntyped as (
+  text: string, validators: SpecValidationService, context: SpecValidationContext,
+) => { parsed: QuerySpecDraft | null; diagnostics: SpecDiagnostic[] };
+const hasBlockingSpecErrors: (diagnostics?: SpecDiagnostic[]) => boolean = hasBlockingSpecErrorsUntyped;
+const normalizeSpec: (spec: QuerySpecDraft) => QuerySpecDraft = normalizeSpecUntyped;
+const serializeSpec: (spec: QuerySpecDraft) => string = serializeSpecUntyped;
+
+// withQuerySpec/patchQuerySpec return the looser QueryRoot (`id` may be
+// null/undefined for a not-yet-saved draft); every call below passes a query
+// root that already carries its minted string id, so the persisted
+// SavedQueryV2 shape holds by construction.
+const asSavedEntry = (root: QueryRoot): SavedQueryV2 => root as SavedQueryV2;
+
+// ── State value types ───────────────────────────────────────────────────────
+
+/** One open query tab: the SQL document plus its complete authored Spec. */
+export interface QueryTab {
+  id: string;
+  name: string;
+  sqlDraft: string;
+  specVersion: number;
+  specText: string;
+  /** null exactly when `specDiagnostics` has an invalid-json diagnostic (the
+   * textual Spec isn't parseable JSON); a parsed draft object otherwise. */
+  specParsed: QuerySpecDraft | null;
+  specDiagnostics: SpecDiagnostic[];
+  editorMode: 'sql' | 'spec';
+  dirtySql: boolean;
+  dirtySpec: boolean;
+  /** Opaque run-result holder — owned and shaped by ui/results.js. */
+  result: Record<string, unknown> | null;
+  /** Opaque Filter-role preview result — owned by ui/results.js (#244). */
+  filterPreview: Record<string, unknown> | null;
+  lastSuccessfulResultColumns: string[];
+  savedId: string | null;
+  /** Set post-construction (app.js) once a query has run on this tab. */
+  chSession?: unknown;
+}
+
+/** One executed-query history entry (most-recent first, capped at 50). */
+export interface HistoryEntry {
+  id: string;
+  sql: string;
+  ts: number;
+  /** Row count of the recorded run; null for raw-FORMAT results and scripts. */
+  rows: number | null;
+  ms: number;
+}
+
+/** The global results-table sort: a zero-based column index (grid-render.js
+ * sorts positionally), or `col: null` for the natural row order. */
+export interface ResultSort {
+  col: number | null;
+  dir: 'asc' | 'desc';
+}
+
+/** One recorded recent value for a variable (core/recent-values.js). */
+export interface RecentValueEntry {
+  value: string;
+  /** Strictly-increasing global counter — one true recency order across names. */
+  seq: number;
+}
+
+/** The versioned per-variable MRU map persisted at `asb:varRecent` (#171). */
+export interface RecentMap {
+  version: number;
+  nextSeq: number;
+  byName: Record<string, RecentValueEntry[]>;
+}
+
+/** The complete application state `createState` builds. */
+export interface AppState {
+  nextTabId: number;
+  theme: string;
+  density: string;
+  resultRowLimit: number;
+  dashLayout: string;
+  dashCols: number;
+  sidebarPx: number;
+  editorPct: number;
+  sideSplitPct: number;
+  cellDrawerPx: number;
+  tabs: Signal<QueryTab[]>;
+  activeTabId: Signal<string>;
+  schema: Signal<unknown[] | null>;
+  schemaError: Signal<string | null>;
+  schemaFilter: Signal<string>;
+  expanded: Signal<Set<string>>;
+  bannerDismissedFor: Signal<string | null>;
+  serverVersion: string | null;
+  running: Signal<boolean>;
+  abortController: AbortController | null;
+  schemaGraphAbortController: AbortController | null;
+  resultView: Signal<'table' | 'json' | 'panel' | 'filter'>;
+  exporting: Signal<boolean>;
+  detachedView: Signal<number>;
+  hasSelection: Signal<boolean>;
+  forceExplain: boolean;
+  resultSort: ResultSort;
+  varValues: Record<string, string>;
+  filterActive: Record<string, boolean>;
+  filterCurated: Record<string, unknown>;
+  varRecent: RecentMap;
+  varRecentDisabled: boolean;
+  /** 'saved' | 'history' at every write site; typed string because the
+   * initial value is an undecoded localStorage read (`asb:sidePanel`). */
+  sidePanel: Signal<string>;
+  savedQueries: SavedQueryV2[];
+  savedQueryLoadDiagnostics: SpecDiagnostic[];
+  editingSavedId: Signal<string | null>;
+  history: HistoryEntry[];
+  libraryName: Signal<string>;
+  libraryDirty: Signal<boolean>;
+  libraryFilter: string;
+  shortcutsOpen: Signal<boolean>;
+  isMobile: Signal<boolean>;
+  mobileView: Signal<'tables' | 'editor' | 'results'>;
+  mobileTab: Signal<'schema' | 'library'>;
+}
+
+/** Result of `patchSpecDraft`: the patched draft, or which tab blocked it. */
+export type PatchDraftResult =
+  | { ok: true; invalidTab: null; spec: QuerySpecDraft }
+  | { ok: false; invalidTab: QueryTab | null; diagnostics?: SpecDiagnostic[] };
+
+/** Result of `patchSavedSpec` (and the pencil/star ops built on it). */
+export type PatchSavedResult =
+  | { ok: true; invalidTab: null; entry: SavedQueryV2 }
+  | { ok: false; invalidTab: QueryTab | null; entry: null; diagnostics?: SpecDiagnostic[] };
 
 /**
  * A tab's complete `spec.panel` payload, cloned for safe use/persistence. The
  * cfg/key fields drive today's renderer; future siblings ride along unchanged.
  */
-export function tabPanel(tab) {
+export function tabPanel(tab: Pick<QueryTab, 'specParsed'> | null | undefined): PanelSpec | null {
   const panel = queryPanel(tab && { spec: tab.specParsed });
   return panel ? cloneJson(panel) : null;
 }
@@ -51,14 +280,16 @@ export const KEYS = {
   varRecentDisabled: 'asb:varRecentDisabled',
 };
 
-/** Row-limit options for the result cap selector (shared between state + UI). */
-export const RESULT_ROW_LIMIT_OPTIONS = [100, 500, 1000, 5000, 10000];
+/** Row-limit options for the result cap selector (shared between state + UI).
+ * `readonly number[]` (not a literal tuple) so `includes(n)` accepts any
+ * number a caller parsed. */
+export const RESULT_ROW_LIMIT_OPTIONS: readonly number[] = [100, 500, 1000, 5000, 10000];
 
 /** Default row cap when none is persisted (or a stored value is unrecognized). */
 export const DEFAULT_RESULT_ROW_LIMIT = 500;
 
 /** Snap a row-limit to a known option, falling back to the default. Pure. */
-export function normalizeRowLimit(n) {
+export function normalizeRowLimit(n: number): number {
   return RESULT_ROW_LIMIT_OPTIONS.includes(n) ? n : DEFAULT_RESULT_ROW_LIMIT;
 }
 
@@ -76,7 +307,7 @@ export const MOBILE_BREAKPOINT_PX = 768;
 
 /** A blank query tab. Its complete Spec is the sole tab-side authoring source;
  * SQL remains the separate editor document. */
-export function newTabObj(id) {
+export function newTabObj(id: string): QueryTab {
   const specParsed = { name: 'Untitled', favorite: false };
   return {
     id, name: 'Untitled', sqlDraft: '', specVersion: SPEC_VERSION,
@@ -87,10 +318,16 @@ export function newTabObj(id) {
 }
 
 /** Overall tab dirty state is always the OR of the independent documents. */
-export const tabDirty = (tab) => !!(tab && (tab.dirtySql || tab.dirtySpec));
+export const tabDirty = (tab: Partial<Pick<QueryTab, 'dirtySql' | 'dirtySpec'>> | null | undefined): boolean =>
+  !!(tab && (tab.dirtySql || tab.dirtySpec));
 
 /** Replace a tab's complete parsed Spec draft and serialized text together. */
-export function setTabSpecDraft(tab, spec, { dirty = false, validationService = defaultSpecValidationService } = {}) {
+export function setTabSpecDraft(
+  tab: QueryTab,
+  spec: QuerySpecDraft,
+  { dirty = false, validationService = defaultSpecValidationService }:
+    { dirty?: boolean; validationService?: SpecValidationService } = {},
+): QueryTab {
   const parsed = cloneJson(spec);
   tab.specParsed = parsed;
   tab.specText = serializeSpec(parsed);
@@ -103,8 +340,9 @@ export function setTabSpecDraft(tab, spec, { dirty = false, validationService = 
  * Build the initial state, reading persisted prefs through `read` (an object
  * with loadJSON/loadStr, defaulting to storage.js over localStorage).
  */
-export function createState(read = { loadJSON, loadStr }) {
-  const num = (key, dflt, lo, hi) => clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
+export function createState(read: StateReader = { loadJSON, loadStr }): AppState {
+  const num = (key: string, dflt: number, lo: number, hi: number) =>
+    clamp(parseFloat(read.loadStr(key, String(dflt))), lo, hi);
   const storedQueries = decodeStoredSavedQueries(read.loadJSON(KEYS.saved, []));
   return {
     nextTabId: 2,
@@ -144,7 +382,7 @@ export function createState(read = { loadJSON, loadStr }) {
     schema: signal(null),
     schemaError: signal(null),
     schemaFilter: signal(''),
-    expanded: signal(new Set()),
+    expanded: signal(new Set<string>()),
     // The last schemaError text the user dismissed from the auth banner
     // (updateBanner, in app.js) — re-shown only if a *different* error occurs.
     // Session-only, never persisted.
@@ -159,7 +397,7 @@ export function createState(read = { loadJSON, loadStr }) {
     // export controllers, since a graph fetch isn't gated by `running` and a
     // second click/drag must be able to supersede an in-flight one.
     schemaGraphAbortController: null,
-    resultView: signal('table'),
+    resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
     // True while a streaming Export (issue #87) is in flight — separate from
     // `running` (the grid run) so an export and a grid run never clobber each
     // other's button/cancel state.
@@ -183,7 +421,9 @@ export function createState(read = { loadJSON, loadStr }) {
     // name and shared across every tab/query, so a value typed once is reused
     // wherever the same variable appears. Persisted (asb:varValues) so it also
     // survives reloads. A plain object, mutated in place + re-saved by app.js.
-    varValues: read.loadJSON(KEYS.varValues, {}),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists
+    // today (unlike savedQueries).
+    varValues: read.loadJSON(KEYS.varValues, {}) as Record<string, string>,
     // Explicit filter activation for optional SQL blocks (#165), keyed by
     // param name and shared/persisted exactly like varValues (its own key;
     // never carried in share links — varValues aren't either). true ⇒ the
@@ -192,24 +432,28 @@ export function createState(read = { loadJSON, loadStr }) {
     // value (blank ⇒ false, typed ⇒ true); a name with no entry derives its
     // activation from the stored value (effectiveFilterActive below), so
     // pre-#165 persisted values keep working on first load.
-    filterActive: read.loadJSON(KEYS.filterActive, {}),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
+    filterActive: read.loadJSON(KEYS.filterActive, {}) as Record<string, boolean>,
     // Last-known curated Dashboard Filter fields (#234), keyed by param name —
     // the merged `{options, sourceType, …}` bundle each Filter favorite last
     // produced. Seeded synchronously at the top of renderDashboard so a curated
     // field paints as the searchable-combobox shape immediately (with
     // possibly-stale options) instead of flashing a plain text input for one
     // frame; the live Filter wave replaces it silently on completion.
-    filterCurated: read.loadJSON(KEYS.filterCurated, {}),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
+    filterCurated: read.loadJSON(KEYS.filterCurated, {}) as Record<string, unknown>,
     // Per-variable MRU recent-value history (#171): recorded from a
     // successful statement's `boundParams` (#173's immutable snapshots) —
     // never from a keystroke — keyed by variable name and shared/persisted
     // exactly like varValues (its own key; never carried in share links).
     // See core/recent-values.js for the shape and its pure ops.
-    varRecent: read.loadJSON(KEYS.varRecent, emptyRecentMap()),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
+    varRecent: read.loadJSON(KEYS.varRecent, emptyRecentMap()) as RecentMap,
     // Disable-history preference (#171, "settings"): when true, new values
     // stop being recorded but existing history is retained until explicitly
     // cleared (Clear all recent values / per-field Clear recent).
-    varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
+    varRecentDisabled: read.loadJSON(KEYS.varRecentDisabled, false) as boolean,
     sidePanel: signal(read.loadStr(KEYS.sidePanel, 'saved')),
     // The localStorage startup ingress: v1 entries become canonical v2 in
     // memory without an eager write; future Spec versions fail closed here.
@@ -221,7 +465,8 @@ export function createState(read = { loadJSON, loadStr }) {
     // Which saved row (if any) is showing its inline edit form (saved-history.js).
     // Session-only, never persisted.
     editingSavedId: signal(null),
-    history: read.loadJSON(KEYS.history, []),
+    // The `as` trusts the localStorage shape verbatim — no decoder exists today.
+    history: read.loadJSON(KEYS.history, []) as HistoryEntry[],
     // The saved-query collection treated as a named document ("the Library").
     // Signals: the header title (name + unsaved-changes dot) repaints via an
     // effect that reads these. `libraryName` is persisted; `libraryDirty`
@@ -252,7 +497,7 @@ export function createState(read = { loadJSON, loadStr }) {
 }
 
 /** The currently-active tab object (falls back to the first tab). */
-export function activeTab(state) {
+export function activeTab(state: AppState): QueryTab {
   return state.tabs.value.find((t) => t.id === state.activeTabId.value) || state.tabs.value[0];
 }
 
@@ -262,32 +507,33 @@ export function activeTab(state) {
  * derives activation from its stored value (non-empty ⇒ active), so persisted
  * pre-#165 varValues keep working on first load — and a first load with
  * neither entry defaults to inactive without throwing. Pure.
- * @param {Object<string, any>} [values] state.varValues
- * @param {Object<string, boolean>} [filterActive] state.filterActive
- * @returns {Object<string, boolean>}
  */
-export function effectiveFilterActive(values = {}, filterActive = {}) {
-  const out = {};
+export function effectiveFilterActive(
+  values: Record<string, unknown> = {},
+  filterActive: Record<string, unknown> = {},
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
   for (const [name, v] of Object.entries(values)) out[name] = v != null && v !== '';
   for (const [name, a] of Object.entries(filterActive)) out[name] = !!a;
   return out;
 }
 
 /** Allocate a new tab id ('t2', 't3', ...). */
-export function allocTabId(state) {
+export function allocTabId(state: AppState): string {
   return 't' + state.nextTabId++;
 }
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
-const makeId = (prefix, now) => prefix + now + rnd();
-export const tabsForSaved = (state, id) => state.tabs.value.filter((t) => t.savedId === id);
+const makeId = (prefix: string, now: number) => prefix + now + rnd();
+export const tabsForSaved = (state: AppState, id: string): QueryTab[] =>
+  state.tabs.value.filter((t) => t.savedId === id);
 
 /** First linked tab whose textual Spec is not currently parseable JSON. */
-export const invalidSpecTabForSaved = (state, id) =>
+export const invalidSpecTabForSaved = (state: AppState, id: string): QueryTab | null =>
   tabsForSaved(state, id).find((tab) =>
     tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) || null;
 
-const patchedSpec = (spec, patch) => (typeof patch === 'function'
+const patchedSpec = (spec: QuerySpecDraft | null, patch: SpecPatch): QuerySpecDraft => (typeof patch === 'function'
   ? patch(cloneJson(spec))
   : patchQuerySpec({ spec }, patch).spec);
 
@@ -295,7 +541,12 @@ const patchedSpec = (spec, patch) => (typeof patch === 'function'
  * Patch one valid open Spec draft without replacing unrelated unsaved fields.
  * External writers use this helper so text and parsed state stay synchronized.
  */
-export function patchSpecDraft(tab, patch, { dirty = true, validationService = defaultSpecValidationService } = {}) {
+export function patchSpecDraft(
+  tab: QueryTab | null | undefined,
+  patch: SpecPatch,
+  { dirty = true, validationService = defaultSpecValidationService }:
+    { dirty?: boolean; validationService?: SpecValidationService } = {},
+): PatchDraftResult {
   if (!tab) return { ok: false, invalidTab: null };
   if (tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) {
     return { ok: false, invalidTab: tab };
@@ -305,11 +556,15 @@ export function patchSpecDraft(tab, patch, { dirty = true, validationService = d
   if (hasBlockingSpecErrors(diagnostics)) return { ok: false, invalidTab: tab, diagnostics };
   setTabSpecDraft(tab, spec, { dirty, validationService });
   tab.name = queryName({ spec: tab.specParsed });
-  return { ok: true, invalidTab: null, spec: tab.specParsed };
+  // `!`: setTabSpecDraft above just assigned a parsed (non-null) draft — see
+  // the QueryTab.specParsed invariant.
+  return { ok: true, invalidTab: null, spec: tab.specParsed! };
 }
 
 /** The saved query a tab is linked to (via tab.savedId), or null. */
-export function savedForTab(state, tab) {
+export function savedForTab(
+  state: AppState, tab: Pick<QueryTab, 'savedId'> | null | undefined,
+): SavedQueryV2 | null {
   return (tab && tab.savedId && state.savedQueries.find((q) => q.id === tab.savedId)) || null;
 }
 
@@ -318,15 +573,19 @@ export function savedForTab(state, tab) {
  * instead, so popover metadata can never compete with the textual Spec draft.
  */
 export function createSavedQuery(
-  state, tab, name, description, save = saveJSON, now = Date.now(), validationService = defaultSpecValidationService,
-) {
+  state: AppState, tab: QueryTab | null | undefined, name: unknown, description?: unknown,
+  save: SaveJSON = saveJSON, now: number = Date.now(),
+  validationService: SpecValidationService = defaultSpecValidationService,
+): SavedQueryV2 | null {
   if (!tab || tab.savedId) return null;
   const sql = String(tab.sqlDraft || '');
   const nm = String(name || '').trim();
   const panel = tabPanel(tab);
   // The save guard relaxes per panel type (#166): a text panel is authored
   // entirely in its cfg, so `sql: ''` is allowed for that type ONLY.
-  const sqlOptional = panel && panel.cfg.type === 'text';
+  // (`cfg!`: every panel this save path sees carries a cfg — the schema marks
+  // cfg optional only for forward compatibility.)
+  const sqlOptional = panel && panel.cfg!.type === 'text';
   if ((!sql.trim() && !sqlOptional) || !nm) return null;
   const desc = String(description || '').trim();
   // Remember the current result view (Table/JSON/Panel) so a restore reopens the
@@ -340,7 +599,7 @@ export function createSavedQuery(
     panel: panel || undefined,
     view,
   });
-  const entry = withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec));
+  const entry = asSavedEntry(withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec)));
   if (hasBlockingSpecErrors(validationService.validate(entry.spec, { sql, query: entry, tab }))) return null;
   state.savedQueries.unshift(entry);
   tab.savedId = entry.id;
@@ -355,10 +614,12 @@ export function createSavedQuery(
 }
 
 /** Atomically persist both documents of a linked tab in one Library write. */
-export function commitSavedQuery(state, tab, spec, save = saveJSON, validationService = defaultSpecValidationService) {
-  const index = tab && tab.savedId
-    ? state.savedQueries.findIndex((query) => query.id === tab.savedId)
-    : -1;
+export function commitSavedQuery(
+  state: AppState, tab: QueryTab, spec: QuerySpecDraft | null | undefined,
+  save: SaveJSON = saveJSON,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): SavedQueryV2 | null {
+  const index = tab && tab.savedId ? state.savedQueries.findIndex((query) => query.id === tab.savedId) : -1;
   if (index < 0 || !spec) return null;
   const normalized = normalizeSpec(spec);
   const sql = String(tab.sqlDraft || '');
@@ -367,7 +628,7 @@ export function commitSavedQuery(state, tab, spec, save = saveJSON, validationSe
   const panel = queryPanel({ spec: normalized });
   if (!sql.trim() && panel?.cfg?.type !== 'text') return null;
   const current = state.savedQueries[index];
-  const entry = withQuerySpec({ id: current.id, sql }, normalized);
+  const entry = asSavedEntry(withQuerySpec({ id: current.id, sql }, normalized));
   state.savedQueries[index] = entry;
   tab.specVersion = SPEC_VERSION;
   tab.name = queryName(entry);
@@ -383,13 +644,17 @@ export function commitSavedQuery(state, tab, spec, save = saveJSON, validationSe
  * applied independently to the persisted entry and every linked valid draft,
  * preserving unrelated unsaved fields. Invalid JSON blocks the whole write.
  */
-export function patchSavedSpec(state, id, patch, save = saveJSON, validationService = defaultSpecValidationService) {
+export function patchSavedSpec(
+  state: AppState, id: string, patch: SpecPatch,
+  save: SaveJSON = saveJSON,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): PatchSavedResult {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
   const index = state.savedQueries.findIndex((query) => query.id === id);
   if (index < 0) return { ok: false, invalidTab: null, entry: null };
   const current = state.savedQueries[index];
-  const entry = withQuerySpec(current, patchedSpec(current.spec, patch));
+  const entry = asSavedEntry(withQuerySpec(current, patchedSpec(current.spec, patch)));
   const entryDiagnostics = validationService.validate(entry.spec, { sql: entry.sql, query: entry });
   if (hasBlockingSpecErrors(entryDiagnostics)) {
     return { ok: false, invalidTab: null, entry: null, diagnostics: entryDiagnostics };
@@ -418,12 +683,16 @@ export function patchSavedSpec(state, id, patch, save = saveJSON, validationServ
  * `description` is provided (not undefined) it is set/cleared too; pass
  * undefined to leave the existing description untouched (name-only rename).
  */
-export function renameSaved(state, id, name, description, save = saveJSON, validationService = defaultSpecValidationService) {
+export function renameSaved(
+  state: AppState, id: string, name: unknown, description?: string | null,
+  save: SaveJSON = saveJSON,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): PatchSavedResult | undefined {
   const nm = String(name || '').trim();
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry || !nm) return;
-  const patch = { name: nm };
+  const patch: Partial<QuerySpecV1> = { name: nm };
   if (description !== undefined) {
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
     patch.description = desc || undefined;
@@ -432,7 +701,11 @@ export function renameSaved(state, id, name, description, save = saveJSON, valid
 }
 
 /** Toggle a saved query's favorite flag. */
-export function toggleFavorite(state, id, save = saveJSON, validationService = defaultSpecValidationService) {
+export function toggleFavorite(
+  state: AppState, id: string,
+  save: SaveJSON = saveJSON,
+  validationService: SpecValidationService = defaultSpecValidationService,
+): PatchSavedResult | undefined {
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
@@ -441,9 +714,9 @@ export function toggleFavorite(state, id, save = saveJSON, validationService = d
 }
 
 /** Saved queries with favorites first (stable within each group). */
-export function sortedSaved(state) {
+export function sortedSaved(state: AppState): SavedQueryV2[] {
   return state.savedQueries
-    .map((q, i) => [q, i])
+    .map((q, i): [SavedQueryV2, number] => [q, i])
     .sort((a, b) => (queryFavorite(b[0]) ? 1 : 0) - (queryFavorite(a[0]) ? 1 : 0) || a[1] - b[1])
     .map(([q]) => q);
 }
@@ -452,7 +725,7 @@ export function sortedSaved(state) {
  * Filter saved queries by a free-text query (case-insensitive substring over
  * name, description and SQL). Blank query → the list returned unchanged. Pure.
  */
-export function filterSaved(list, query) {
+export function filterSaved(list: SavedQueryV2[], query: unknown): SavedQueryV2[] {
   const q = String(query || '').trim().toLowerCase();
   if (!q) return list;
   return list.filter((it) =>
@@ -462,7 +735,7 @@ export function filterSaved(list, query) {
 }
 
 /** Filter history entries by a free-text query (case-insensitive over SQL). Pure. */
-export function filterHistory(list, query) {
+export function filterHistory(list: HistoryEntry[], query: unknown): HistoryEntry[] {
   const q = String(query || '').trim().toLowerCase();
   if (!q) return list;
   return list.filter((ent) => (ent.sql || '').toLowerCase().includes(q));
@@ -472,7 +745,10 @@ export function filterHistory(list, query) {
  * Merge imported queries into savedQueries (dedupe by content, update by id,
  * else add). Returns { added, updated, skipped }.
  */
-export function importSaved(state, queries, save = saveJSON, genId = () => makeId('s', Date.now())) {
+export function importSaved(
+  state: AppState, queries: readonly unknown[],
+  save: SaveJSON = saveJSON, genId: () => string = () => makeId('s', Date.now()),
+): { added: number; updated: number; skipped: number } {
   const { merged, added, updated, skipped } = mergeSaved(state.savedQueries, queries, genId);
   state.savedQueries = merged;
   state.libraryDirty.value = true;
@@ -481,7 +757,7 @@ export function importSaved(state, queries, save = saveJSON, genId = () => makeI
 }
 
 /** Delete a saved query by id and clear any tab pointer to it. */
-export function deleteSaved(state, id, save = saveJSON) {
+export function deleteSaved(state: AppState, id: string, save: SaveJSON = saveJSON): void {
   state.savedQueries = state.savedQueries.filter((q) => q.id !== id);
   for (const t of tabsForSaved(state, id)) {
     t.savedId = null;
@@ -498,7 +774,7 @@ export function deleteSaved(state, id, save = saveJSON) {
 
 /** Clear tab→saved links whose entry no longer exists (after New/Replace), so a
  *  kept tab doesn't show "Saved" against a query that's gone. */
-function pruneTabLinks(state) {
+function pruneTabLinks(state: AppState): void {
   const ids = new Set(state.savedQueries.map((q) => q.id));
   for (const t of state.tabs.value) {
     if (t.savedId && !ids.has(t.savedId)) {
@@ -509,7 +785,7 @@ function pruneTabLinks(state) {
 }
 
 /** Rename the library (blank → the default name). Marks dirty; persists name. */
-export function renameLibrary(state, name, saveName = saveStr) {
+export function renameLibrary(state: AppState, name: unknown, saveName: SaveStr = saveStr): void {
   state.libraryName.value = String(name || '').trim() || DEFAULT_LIBRARY_NAME;
   state.libraryDirty.value = true;
   saveName(KEYS.libraryName, state.libraryName.value);
@@ -517,7 +793,7 @@ export function renameLibrary(state, name, saveName = saveStr) {
 
 /** Start an empty, default-named library. Clears dirty; open tabs are kept
  *  (their now-dangling saved links are pruned). */
-export function newLibrary(state, save = saveJSON, saveName = saveStr) {
+export function newLibrary(state: AppState, save: SaveJSON = saveJSON, saveName: SaveStr = saveStr): void {
   state.savedQueries = [];
   pruneTabLinks(state);
   state.libraryName.value = DEFAULT_LIBRARY_NAME;
@@ -530,11 +806,13 @@ export function newLibrary(state, save = saveJSON, saveName = saveStr) {
  *  Unique ids are kept (lossless round-trip); missing OR duplicate ids get a fresh id.
  *  Clears dirty; open tabs are kept (dangling links pruned). */
 export function replaceLibrary(
-  state, queries, fileName, save = saveJSON, saveName = saveStr,
-  genId = () => makeId('s', Date.now()), validationService = defaultSpecValidationService,
-) {
+  state: AppState, queries: readonly Record<string, unknown>[], fileName: unknown,
+  save: SaveJSON = saveJSON, saveName: SaveStr = saveStr,
+  genId: () => string = () => makeId('s', Date.now()),
+  validationService: SpecValidationService | false = defaultSpecValidationService,
+): void {
   const validated = validationService === false ? queries : validateLibraryQueries(queries, validationService);
-  const seen = new Set();
+  const seen = new Set<unknown>();
   state.savedQueries = validated.map((q) => {
     // Mint a fresh id for a missing OR already-seen id so every saved row has a
     // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
@@ -543,7 +821,7 @@ export function replaceLibrary(
     let id = q.id;
     if (!id || seen.has(id)) { do { id = genId(); } while (seen.has(id)); }
     seen.add(id);
-    return withQuerySpec({ ...q, id }, q.spec);
+    return asSavedEntry(withQuerySpec({ ...q, id }, q.spec));
   });
   pruneTabLinks(state);
   const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
@@ -556,19 +834,25 @@ export function replaceLibrary(
 /** Append `queries` into the library via the standard merge dedupe (sets dirty
  *  through importSaved). Returns { added, updated, skipped }. */
 export function appendLibrary(
-  state, queries, save = saveJSON, genId = () => makeId('s', Date.now()), validationService = defaultSpecValidationService,
-) {
+  state: AppState, queries: readonly Record<string, unknown>[],
+  save: SaveJSON = saveJSON,
+  genId: () => string = () => makeId('s', Date.now()),
+  validationService: SpecValidationService | false = defaultSpecValidationService,
+): { added: number; updated: number; skipped: number } {
   return importSaved(state, validationService === false ? queries : validateLibraryQueries(queries, validationService), save, genId);
 }
 
 /** Mark the library as saved to a file (clears the unsaved-changes dot). */
-export function markLibrarySaved(state) {
+export function markLibrarySaved(state: AppState): void {
   state.libraryDirty.value = false;
 }
 
 // Push one history entry (most-recent first, capped at 50). Internal — the
 // exported recorders below supply the sql/rows/ms.
-function pushHistory(state, sql, rows, ms, save, now) {
+function pushHistory(
+  state: AppState, sql: string | null | undefined, rows: number | null, ms: number,
+  save: SaveJSON, now: number,
+): void {
   const s = String(sql || '').trim();
   if (!s) return;
   state.history.unshift({ id: makeId('h', now), sql: s, ts: now, rows, ms });
@@ -576,11 +860,23 @@ function pushHistory(state, sql, rows, ms, save, now) {
   save(KEYS.history, state.history);
 }
 
+/** The slice of a run's result `recordHistory` reads — a structural subset of
+ * the results.js-owned result object (`QueryTab.result` stays opaque here). */
+export interface HistoryResultSnapshot {
+  rawText: string | null;
+  rows: readonly unknown[];
+  progress: { elapsed_ns: number };
+}
+
 /**
  * Record a successful run in history. `sqlText` overrides the recorded SQL (used
  * when a selection — not the whole tab — was run); it defaults to `tab.sqlDraft`.
  */
-export function recordHistory(state, tab, save = saveJSON, now = Date.now(), sqlText) {
+export function recordHistory(
+  state: AppState,
+  tab: { sqlDraft: string | null; result: HistoryResultSnapshot },
+  save: SaveJSON = saveJSON, now: number = Date.now(), sqlText?: string | null,
+): void {
   pushHistory(
     state,
     sqlText != null ? sqlText : tab.sqlDraft,
@@ -592,18 +888,20 @@ export function recordHistory(state, tab, save = saveJSON, now = Date.now(), sql
 
 /** Record a successful multiquery script run as one history entry (the whole
  *  script text); per-statement row counts aren't meaningful, so rows is null. */
-export function recordScriptHistory(state, sql, ms, save = saveJSON, now = Date.now()) {
+export function recordScriptHistory(
+  state: AppState, sql: string, ms: number, save: SaveJSON = saveJSON, now: number = Date.now(),
+): void {
   pushHistory(state, sql, null, Math.round(ms), save, now);
 }
 
 /** Clear all history. */
-export function clearHistory(state, save = saveJSON) {
+export function clearHistory(state: AppState, save: SaveJSON = saveJSON): void {
   state.history = [];
   save(KEYS.history, state.history);
 }
 
 /** Delete one history entry by id. */
-export function deleteHistory(state, id, save = saveJSON) {
+export function deleteHistory(state: AppState, id: string, save: SaveJSON = saveJSON): void {
   state.history = state.history.filter((h) => h.id !== id);
   save(KEYS.history, state.history);
 }

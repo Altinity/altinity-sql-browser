@@ -4,38 +4,18 @@
 // src/ui/*.js, src/editor/*.js and src/main.js (ADR-0002 phase 0 / #262). No
 // behavior change: app.js stays untouched `.js`.
 //
-// `State`/`Tab` below are a deliberately MINIMAL, hand-written shape covering
-// only what `app.state`/tab consumers touch today — not a full type for
-// src/state.js, which is its own later conversion (ADR-0002 §4, "leaf-up").
-// Persisted-data shapes (Spec/SavedQuery) are intentionally loose placeholders;
-// precise schema-generated types are a separate follow-up (ADR-0002 §3).
+// `State`/`Tab` are the real src/state.ts types (ADR-0002 phase 2), re-exported
+// under the names this contract has always used.
 
-import type { Signal } from '@preact/signals-core';
 import type { EditorView } from '@codemirror/view';
 import type { EditorPort } from '../editor/editor-port.types.js';
-import type { SpecEditorPort, SpecDiagnostic } from '../editor/spec-editor.types.js';
+import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
+import type { QueryTab as Tab, AppState as State } from '../state.js';
+
+export type { QueryTab as Tab, AppState as State } from '../state.js';
 
 type Json = Record<string, unknown>;
-
-export interface Tab {
-  id: string;
-  name: string;
-  sqlDraft: string;
-  specVersion: number;
-  specText: string;
-  specParsed: Json;
-  specDiagnostics: SpecDiagnostic[];
-  editorMode: 'sql' | 'spec';
-  dirtySql: boolean;
-  dirtySpec: boolean;
-  result: Json | null;
-  filterPreview: Json | null;
-  lastSuccessfulResultColumns: string[];
-  savedId: string | null;
-  /** Set post-construction (app.js) once a query has run on this tab. */
-  chSession?: unknown;
-}
 
 export interface SavedQuery extends Json {
   id: string;
@@ -48,53 +28,6 @@ export interface SavedQuery extends Json {
 export interface SchemaFocus {
   db: string;
   name?: string;
-}
-
-export interface State {
-  nextTabId: number;
-  theme: string;
-  density: string;
-  resultRowLimit: number;
-  dashLayout: string;
-  dashCols: number;
-  sidebarPx: number;
-  editorPct: number;
-  sideSplitPct: number;
-  cellDrawerPx: number;
-  tabs: Signal<Tab[]>;
-  activeTabId: Signal<string>;
-  schema: Signal<unknown[] | null>;
-  schemaError: Signal<string | null>;
-  schemaFilter: Signal<string>;
-  expanded: Signal<Set<string>>;
-  bannerDismissedFor: Signal<string | null>;
-  serverVersion: string | null;
-  running: Signal<boolean>;
-  abortController: AbortController | null;
-  schemaGraphAbortController: AbortController | null;
-  resultView: Signal<'table' | 'json' | 'panel' | 'filter'>;
-  exporting: Signal<boolean>;
-  detachedView: Signal<number>;
-  hasSelection: Signal<boolean>;
-  forceExplain: boolean;
-  resultSort: { col: string | null; dir: 'asc' | 'desc' };
-  varValues: Record<string, string>;
-  filterActive: Record<string, boolean>;
-  filterCurated: Record<string, unknown>;
-  varRecent: Record<string, unknown>;
-  varRecentDisabled: boolean;
-  sidePanel: Signal<'saved' | 'history'>;
-  savedQueries: SavedQuery[];
-  savedQueryLoadDiagnostics: unknown[];
-  editingSavedId: Signal<string | null>;
-  history: Array<{ id: string; sql: string; ts: number; rows: number | null; ms: number }>;
-  libraryName: Signal<string>;
-  libraryDirty: Signal<boolean>;
-  libraryFilter: string;
-  shortcutsOpen: Signal<boolean>;
-  isMobile: Signal<boolean>;
-  mobileView: Signal<string>;
-  mobileTab: Signal<string>;
 }
 
 /** `app.dom` is reset wholesale (`{}`) at the top of every renderApp() call —
