@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { validateParamValue } from '../../src/core/param-validate.js';
 import { parseParamType } from '../../src/core/param-type.js';
+import type { ParsedParamType } from '../../src/core/param-type.js';
 
-const valid = (t, v) => expect(validateParamValue(t, v)).toEqual({ status: 'valid' });
-const unknown = (t, v) => expect(validateParamValue(t, v)).toEqual({ status: 'unknown' });
-const incomplete = (t, v) => expect(validateParamValue(t, v)).toEqual({ status: 'incomplete' });
-const invalid = (t, v, reason) => {
+const valid = (t: string | ParsedParamType, v: unknown) => expect(validateParamValue(t, v)).toEqual({ status: 'valid' });
+const unknown = (t: string | ParsedParamType, v: unknown) => expect(validateParamValue(t, v)).toEqual({ status: 'unknown' });
+const incomplete = (t: string | ParsedParamType, v: unknown) => expect(validateParamValue(t, v)).toEqual({ status: 'incomplete' });
+const invalid = (t: string | ParsedParamType, v: unknown, reason?: string) => {
   const r = validateParamValue(t, v);
   expect(r.status).toBe('invalid');
   if (reason != null) expect(r.reason).toBe(reason);

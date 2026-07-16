@@ -12,9 +12,18 @@ import {
   fieldControls,
   fieldControlKind,
 } from '../../src/core/param-pipeline.js';
+import type { ParameterizedSourceInput } from '../../src/core/param-pipeline.js';
 import { paramArgs } from '../../src/core/query-params.js';
+import type { ParsedParamType } from '../../src/core/param-type.js';
 
-const src = (id, sql, over = {}) => ({ id, label: id, kind: 'tab', sql, ...over });
+const src = (id: string, sql: string, over: Partial<ParameterizedSourceInput> = {}): ParameterizedSourceInput =>
+  ({ id, label: id, kind: 'tab', sql, ...over });
+
+// A handful of tests below exercise `resolveRelativeValue`/`validateParamValue`
+// with a deliberately partial `ParsedParamType` fixture — the real callers
+// only ever read `.base` for these cases, but the exported signatures take
+// the full parsed shape, so the fixture is cast rather than fully populated.
+const pt = (base: string): ParsedParamType => ({ base } as ParsedParamType);
 
 describe('stage functions (#165/#169/#170 real)', () => {
   it('analysisView / executionView are identity for SQL without optional blocks', () => {
@@ -28,24 +37,24 @@ describe('stage functions (#165/#169/#170 real)', () => {
     expect(executionView(sql, { a: true })).toBe('SELECT 1  AND a = {a:String} ');
   });
   it('resolveRelativeValue (#169) resolves a relative expression against the given clock', () => {
-    expect(resolveRelativeValue('-1h', { base: 'DateTime' }, 3600123)).toBe('0');
+    expect(resolveRelativeValue('-1h', pt('DateTime'), 3600123)).toBe('0');
     // a near-miss comes back as the {error} sentinel, not a value
-    expect(resolveRelativeValue('now/q', { base: 'DateTime' }, 123)).toEqual({ error: expect.any(String) });
+    expect(resolveRelativeValue('now/q', pt('DateTime'), 123)).toEqual({ error: expect.any(String) });
     // non-date types and absolute values are untouched
-    expect(resolveRelativeValue('-1h', { base: 'String' }, 123)).toBe('-1h');
-    expect(resolveRelativeValue('2026-07-11', { base: 'Date' }, 123)).toBe('2026-07-11');
+    expect(resolveRelativeValue('-1h', pt('String'), 123)).toBe('-1h');
+    expect(resolveRelativeValue('2026-07-11', pt('Date'), 123)).toBe('2026-07-11');
   });
   it('validateParamValue passes through an out-of-scope type', () => {
-    expect(validateParamValue('x', { base: 'String' }, 'execute')).toBe('unknown');
+    expect(validateParamValue('x', pt('String'), 'execute')).toBe('unknown');
   });
   it('validateParamValue (#170) adapts param-validate.js\'s {status,reason} into the stage contract', () => {
     // valid → 'valid' (falls through the caller's checks exactly like 'unknown'/'ok')
-    expect(validateParamValue('255', { base: 'UInt8' }, 'execute')).toBe('valid');
+    expect(validateParamValue('255', pt('UInt8'), 'execute')).toBe('valid');
     // invalid → {state, reason}
-    expect(validateParamValue('256', { base: 'UInt8' }, 'execute'))
+    expect(validateParamValue('256', pt('UInt8'), 'execute'))
       .toEqual({ state: 'invalid', reason: 'Expected UInt8 from 0 to 255' });
     // incomplete → 'incomplete'
-    expect(validateParamValue('-', { base: 'Int32' }, 'input')).toBe('incomplete');
+    expect(validateParamValue('-', pt('Int32'), 'input')).toBe('incomplete');
   });
   it('exports the two bind policies', () => {
     expect(BIND_POLICIES).toEqual(['row-returning', 'all']);
@@ -222,7 +231,7 @@ describe('analyzeParameterizedSources', () => {
   });
 
   it('an injected stages.analysisView still overrides the built-in materialization', () => {
-    const stages = { analysisView: (sql) => sql.replace('{hidden}', '{a:String}') };
+    const stages = { analysisView: (sql: string) => sql.replace('{hidden}', '{a:String}') };
     const a = analyzeParameterizedSources([src('A', 'SELECT {hidden} FROM t')], stages);
     expect(a.fields.a.declarations).toHaveLength(1);
     expect(a.fields.a.optionalIn).toEqual(['A']); // not visible to the raw scan → optional
@@ -395,7 +404,9 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
   });
 
   it('threads one wallNowMs into the resolve stage (#169 seam) for every bound param', () => {
-    const resolveRelativeValue = vi.fn((raw) => raw + ':resolved');
+    const resolveRelativeValue = vi.fn(
+      (raw: unknown, _type: ParsedParamType, _wallNowMs?: number): unknown => (raw as string) + ':resolved',
+    );
     const a = analyzeParameterizedSources([src('A', 'SELECT {a:String}; SELECT {b:String}')]);
     const p = prepareParameterizedBatch(a, {
       values: { a: '1', b: '2' },
@@ -425,7 +436,7 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
   });
 
   it('an injected stages.executionView still overrides the built-in materialization', () => {
-    const stages = { executionView: (sql) => sql.replace('t', 'u') };
+    const stages = { executionView: (sql: string) => sql.replace('t', 'u') };
     const a = analyzeParameterizedSources([src('A', 'SELECT * FROM t')]);
     const p = prepareParameterizedBatch(a, { stages });
     expect(p.sources[0].statements[0].sql).toBe('SELECT * FROM u');
@@ -551,7 +562,7 @@ describe('prepareParameterizedBatch — per-source verdicts', () => {
 
   it('an invalid verdict gates its sources and carries the validator reason into the field state', () => {
     const stages = {
-      validateParamValue: (v) => (v === 'bad' ? { state: 'invalid', reason: 'not a date' } : 'ok'),
+      validateParamValue: (v: unknown) => (v === 'bad' ? { state: 'invalid', reason: 'not a date' } : 'ok'),
     };
     const a = analyzeParameterizedSources([
       src('A', 'SELECT {d:Date}; SELECT {d:Date}'), // invalid twice in one source → deduped
@@ -605,7 +616,7 @@ describe('integration parity + regression sweep', () => {
   });
 
   it('scalar-string behavior is byte-identical to paramArgs for single-statement SQL', () => {
-    const cases = [
+    const cases: [string, Record<string, string>][] = [
       ['SELECT {database:String}, {table:String}', { database: 'default', table: 'events' }],
       ['SELECT {n:UInt8}', { n: '0' }],
       ['SELECT {a:String}, {b:String}, {c:String}', { a: 'x', b: '' }],

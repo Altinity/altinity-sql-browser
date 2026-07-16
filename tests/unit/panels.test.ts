@@ -3,20 +3,48 @@ import { renderMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/p
 import { renderResults } from '../../src/ui/results.js';
 import { parseMarkdown } from '../../src/core/markdown-lite.js';
 import { resolvePanel } from '../../src/core/panel-cfg.js';
-import { newResult } from '../../src/core/stream.js';
+import { newResult as newResultUntyped } from '../../src/core/stream.js';
 import { makeApp } from '../helpers/fake-app.js';
+import type { FakeChart } from '../helpers/fake-app.js';
 import { DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES } from '../../src/core/result-choice.js';
+import type { App, Tab } from '../../src/ui/app.types.js';
+import type { PanelCfg } from '../../src/generated/json-schema.types.js';
+import type { Column } from '../../src/core/panel-cfg.js';
 
-const md = (text) => renderMarkdown(parseMarkdown(text));
+// core/stream.js is plain JS; without an explicit return-type annotation TS
+// infers the empty-array initializers of `columns`/`rows` as `never[]`,
+// which then rejects every fixture's real rows below. This wrapper pins the
+// exact shape newResult(fmt, rowLimit) builds (see stream.js) — the same
+// "typed wrapper over a still-untyped .js dependency" convention panels.ts
+// itself documents.
+interface StreamResult {
+  columns: Column[];
+  rows: unknown[][];
+  rawText: string | null;
+  rawFormat: string;
+  progress: { rows: number; bytes: number; elapsed_ns: number };
+  error: unknown;
+  cancelled: boolean;
+  pct: number;
+  rowLimit: number;
+  capped: boolean;
+  // QueryTab.result (state.ts) holds this as an opaque Record<string, unknown>
+  // (only results.js knows the concrete shape); the index signature lets a
+  // StreamResult assign straight into `tab.result` without a further cast.
+  [k: string]: unknown;
+}
+const newResult = (fmt: string, rowLimit = 0): StreamResult => newResultUntyped(fmt, rowLimit) as StreamResult;
 
-function chartResult() {
+const md = (text: string) => renderMarkdown(parseMarkdown(text));
+
+function chartResult(): StreamResult {
   const r = newResult('Table');
   r.columns = [{ name: 'carrier', type: 'String' }, { name: 'flights', type: 'UInt64' }];
   r.rows = [['B6', '10'], ['AA', '20']];
   r.progress = { rows: 2, bytes: 100, elapsed_ns: 5e6 };
   return r;
 }
-function logsResult() {
+function logsResult(): StreamResult {
   const r = newResult('Table');
   r.columns = [
     { name: 'event_time', type: 'DateTime' },
@@ -30,7 +58,7 @@ function logsResult() {
 // A result with a time column by convention but no message-shaped column at
 // all — a saved `{type:'logs'}` cannot resolve Message, so resolvePanel falls
 // back (#192's rescue scenario).
-function noMessageResult() {
+function noMessageResult(): StreamResult {
   const r = newResult('Table');
   r.columns = [
     { name: 'event_time', type: 'DateTime' },
@@ -43,7 +71,7 @@ function noMessageResult() {
 }
 // Same rescue shape as noMessageResult, but WITH a numeric measure — autoPanel
 // derives a chart fallback (not Table) for this one (#195's reported scenario).
-function noMessageChartResult() {
+function noMessageChartResult(): StreamResult {
   const r = newResult('Table');
   r.columns = [
     { name: 'event_time', type: 'DateTime' },
@@ -56,7 +84,7 @@ function noMessageChartResult() {
 }
 // Neither Time nor Message resolves by convention — findTimeColumn matches by
 // TYPE (not name), so no column here may be DateTime-shaped.
-function noTimeNoMessageResult() {
+function noTimeNoMessageResult(): StreamResult {
   const r = newResult('Table');
   r.columns = [
     { name: 'ts', type: 'String' },
@@ -67,50 +95,138 @@ function noTimeNoMessageResult() {
   r.progress = { rows: 1, bytes: 10, elapsed_ns: 1e6 };
   return r;
 }
-const selectRole = (app, index, value) => {
-  const sel = [...region(app).querySelectorAll('.panel-config .chart-config select')][index];
+
+type FakeApp = ReturnType<typeof makeApp>;
+
+/** `panelApp`'s `Object.defineProperties` below installs two convenience
+ *  accessors (`panelCfg`/`panelKey`, mirroring `tab.specParsed.panel`) on the
+ *  active tab purely for this file's terse assertions — real code always
+ *  reads spec.panel directly (state.ts has no such fields). `TestTab`
+ *  documents them for the type checker: it's a genuine subtype of `Tab`
+ *  (the properties really are installed on the object below), so casting a
+ *  plain `Tab` to it is an ordinary single-step narrowing, not an `unknown`
+ *  bridge. */
+type TestTab = Tab & { panelCfg: PanelCfg | null; panelKey: string | null };
+type TestApp = Omit<FakeApp, 'activeTab' | 'chart'> & { activeTab(): TestTab; chart: FakeChart | null };
+
+/** `renderResolvedPanel`/`PANEL_TYPES[...].renderPanel` want the full `App`
+ *  contract; tests/helpers/fake-app.js's `makeApp()` is a long-standing
+ *  untyped test double that implements the handful of members these panel
+ *  arms actually read (state/activeTab/chart/specValidators/…) — not the
+ *  whole ~50-member interface, since it long predates ADR-0002's App
+ *  contract (out of scope here — fake-app.js isn't one of this change's
+ *  files). The stub fields below are never read by the panel arms these 4
+ *  tests exercise; they exist only so the real fixture's value structurally
+ *  satisfies `App` without an `unknown` bridge. */
+const asApp = (app: FakeApp): App => {
+  const stub: App = {
+  ...app,
+  actions: { ...app.actions, openUserMenu: () => {}, openDashboard: () => {} },
+  chCtx: {
+    ...app.chCtx, fetch, origin: '', authConfirmed: true,
+    getToken: async () => null, refresh: async () => false, authHeader: () => '',
+  },
+  chart: undefined,
+  token: null,
+  refreshToken: null,
+  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
+  specValidators: { validate: () => [], register: () => () => {} },
+  specCompletionSources: [],
+  openWindow: () => null,
+  stylesText: '',
+  faviconHref: '',
+  chUsername: () => '',
+  authMode: 'basic',
+  chAuth: 'basic',
+  basicUserClaim: 'sub',
+  idpId: null,
+  hostHint: '',
+  setTokens: () => {},
+  loadConfig: async () => ({}),
+  selectIdp: () => {},
+  ensureConfig: async () => null,
+  receiveAuthHandoff: async () => false,
+  canExport: () => false,
+  canExportScript: () => false,
+  showSaveFilePicker: null,
+  showDirectoryPicker: null,
+  isSecureContext: true,
+  FileReader: globalThis.FileReader,
+  editingLibrary: false,
+  loadReference: async () => {},
+  refData: { functions: {}, keywordDocs: {} },
+  completions: {},
+  rebuildCompletions: () => {},
+  docCache: new Map(),
+  updateBanner: () => {},
+  tickElapsed: () => {},
+  setRunBtn: () => {},
+  renderVarStrip: () => {},
+  setExportBtn: () => {},
+  specBlocked: () => false,
+  evaluateSpecDraft: () => ({}),
+  revealFirstSpecError: () => {},
+  registerSpecValidator: () => () => {},
+  openSavePopover: () => {},
+  openUserMenu: () => {},
+  renderApp: () => {},
+  renderDashboard: () => {},
+  openDashboard: () => {},
+  recordHistory: () => {},
+  };
+  return stub;
+};
+
+const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
+const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] =>
+  [...root.querySelectorAll(selector)] as T[];
+
+const selectRole = (app: TestApp, index: number, value: string): void => {
+  const sel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[index];
   sel.value = value;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
-function panelApp(result, panelCfg = null, over = {}) {
+interface StateOverride {
+  resultView?: 'table' | 'json' | 'panel' | 'filter';
+  running?: boolean;
+}
+
+function panelApp(result: StreamResult | null, panelCfg: PanelCfg | null = null, over: StateOverride = {}): TestApp {
   const app = makeApp();
   const tab = app.activeTab();
-  tab.result = result;
-  if (panelCfg) tab.specParsed.panel = { cfg: panelCfg };
+  if (result) tab.result = result;
+  if (panelCfg) tab.specParsed!.panel = { cfg: panelCfg };
   // Keep the assertions terse while routing every read/write through the v2
   // tab spec. These aliases exist only in this test harness.
   Object.defineProperties(tab, {
     panelCfg: {
       configurable: true,
       get() { return this.specParsed?.panel?.cfg ?? null; },
-      set(cfg) {
-        if (cfg == null) delete this.specParsed.panel;
-        else this.specParsed.panel = { ...(this.specParsed.panel || {}), cfg };
+      set(cfg: PanelCfg | null) {
+        if (cfg == null) delete this.specParsed!.panel;
+        else this.specParsed!.panel = { ...(this.specParsed!.panel || {}), cfg };
       },
     },
     panelKey: {
       configurable: true,
       get() { return this.specParsed?.panel?.key ?? null; },
-      set(key) {
-        if (!this.specParsed.panel && key != null) this.specParsed.panel = {};
+      set(key: string | null) {
+        if (!this.specParsed!.panel && key != null) this.specParsed!.panel = {};
         if (key == null) {
-          if (this.specParsed.panel) delete this.specParsed.panel.key;
-        } else this.specParsed.panel.key = key;
+          if (this.specParsed!.panel) delete this.specParsed!.panel.key;
+        } else this.specParsed!.panel.key = key;
       },
     },
   });
   app.state.resultView.value = 'panel';
-  for (const [k, v] of Object.entries(over)) {
-    const cur = app.state[k];
-    if (cur && typeof cur === 'object' && 'value' in cur) cur.value = v;
-    else app.state[k] = v;
-  }
-  return app;
+  if (over.resultView !== undefined) app.state.resultView.value = over.resultView;
+  if (over.running !== undefined) app.state.running.value = over.running;
+  return app as TestApp;
 }
-const region = (app) => app.dom.resultsRegion;
-const pickType = (app, type) => {
-  const sel = region(app).querySelector('.result-panel-select');
+const region = (app: TestApp): HTMLDivElement => app.dom.resultsRegion;
+const pickType = (app: TestApp, type: string): void => {
+  const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
   sel.value = type.includes(':') ? type : `panel:${type}`;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 };
@@ -119,13 +235,13 @@ const pickType = (app, type) => {
 describe('renderMarkdown', () => {
   it('renders every block/inline construct as real elements', () => {
     const el = md('# T\n\npara **b** *i* `c`\n\n- item\n\n1. one\n\n[d](https://x.example/)');
-    expect(el.querySelector('h1').textContent).toBe('T');
-    expect(el.querySelector('p strong').textContent).toBe('b');
-    expect(el.querySelector('p em').textContent).toBe('i');
-    expect(el.querySelector('p code').textContent).toBe('c');
-    expect(el.querySelector('ul li').textContent).toBe('item');
-    expect(el.querySelector('ol li').textContent).toBe('one');
-    const a = el.querySelector('a');
+    expect(el.querySelector('h1')!.textContent).toBe('T');
+    expect(el.querySelector('p strong')!.textContent).toBe('b');
+    expect(el.querySelector('p em')!.textContent).toBe('i');
+    expect(el.querySelector('p code')!.textContent).toBe('c');
+    expect(el.querySelector('ul li')!.textContent).toBe('item');
+    expect(el.querySelector('ol li')!.textContent).toBe('one');
+    const a = el.querySelector('a')!;
     expect(a.getAttribute('href')).toBe('https://x.example/');
     expect(a.getAttribute('target')).toBe('_blank');
     expect(a.getAttribute('rel')).toBe('noopener noreferrer');
@@ -144,7 +260,7 @@ describe('Panel drawer tab', () => {
   it('renders the panel picker in the toolbar without Table + an auto chart preview', () => {
     const app = panelApp(chartResult());
     renderResults(app);
-    const sel = region(app).querySelector('.result-panel-select');
+    const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
     expect([...sel.options].map((o) => o.value)).toEqual([
       '', 'panel:auto', ...PANEL_RESULT_CHOICES.map((o) => o.id), ...DASHBOARD_ROLE_RESULT_CHOICES.map((o) => o.id),
     ]);
@@ -169,10 +285,10 @@ describe('Panel drawer tab', () => {
   });
   it('selects Filter as a role, preserves Panel configuration, and never runs SQL', () => {
     const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], future: true });
-    app.activeTab().specParsed.dashboard = { role: 'panel', future: { keep: true } };
+    app.activeTab().specParsed!.dashboard = { role: 'panel', future: { keep: true } };
     renderResults(app);
     pickType(app, 'role:filter');
-    expect(app.activeTab().specParsed.dashboard).toEqual({ role: 'filter', future: { keep: true } });
+    expect(app.activeTab().specParsed!.dashboard).toEqual({ role: 'filter', future: { keep: true } });
     expect(app.activeTab().panelCfg).toMatchObject({ type: 'line', future: true });
     expect(app.state.resultView.value).toBe('filter');
     expect(app.activeTab().dirtySpec).toBe(true);
@@ -182,19 +298,19 @@ describe('Panel drawer tab', () => {
   });
   it('switches a Filter query back to Panel without rewriting unrelated Spec fields', () => {
     const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] });
-    app.activeTab().specParsed.dashboard = { role: 'filter', future: 1 };
-    app.activeTab().specParsed.keep = true;
+    app.activeTab().specParsed!.dashboard = { role: 'filter', future: 1 };
+    app.activeTab().specParsed!.keep = true;
     renderResults(app);
     pickType(app, 'pie');
-    expect(app.activeTab().specParsed.dashboard).toEqual({ role: 'panel', future: 1 });
-    expect(app.activeTab().specParsed.keep).toBe(true);
-    expect(app.activeTab().panelCfg.type).toBe('pie');
+    expect(app.activeTab().specParsed!.dashboard).toEqual({ role: 'panel', future: 1 });
+    expect(app.activeTab().specParsed!.keep).toBe(true);
+    expect((app.activeTab().panelCfg as PanelCfg).type).toBe('pie');
     expect(app.state.resultView.value).toBe('panel');
   });
   it('shows the placeholder on Table/JSON and switches to the preview when the current type is re-picked', () => {
     const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1] }, { resultView: 'table' });
     renderResults(app);
-    const sel = region(app).querySelector('.result-panel-select');
+    const sel = qs<HTMLSelectElement>(region(app), '.result-panel-select');
     expect(sel.value).toBe(''); // placeholder while viewing the raw Table
     // Re-picking the query's CURRENT type still switches to its preview — the
     // placeholder makes it a genuine change event (the reported inconsistency).
@@ -207,7 +323,7 @@ describe('Panel drawer tab', () => {
     const tab = app.activeTab();
     tab.savedId = 's1';
     tab.dirtySpec = true;
-    tab.specParsed.future = { keep: true };
+    tab.specParsed!.future = { keep: true };
     renderResults(app);
     pickType(app, 'pie');
     expect(tab.specParsed).toMatchObject({ panel: { cfg: { type: 'pie' } }, future: { keep: true } });
@@ -220,7 +336,7 @@ describe('Panel drawer tab', () => {
     tab.savedId = 's1';
     tab.specText = '{"panel":';
     tab.specParsed = null;
-    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
     renderResults(app);
     pickType(app, 'pie');
@@ -232,11 +348,14 @@ describe('Panel drawer tab', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1] });
     const tab = app.activeTab();
     renderResults(app);
-    const xSelect = [...region(app).querySelectorAll('.chart-field')]
-      .find((field) => field.querySelector('.chart-field-label').textContent === 'X').querySelector('select');
+    const xSelect = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((field) => qs(field, '.chart-field-label').textContent === 'X')!,
+      'select',
+    );
     tab.specText = '{';
     tab.specParsed = null;
-    tab.specDiagnostics = [{ code: 'invalid-json' }];
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
     xSelect.value = '1';
     xSelect.dispatchEvent(new Event('change', { bubbles: true }));
@@ -265,13 +384,16 @@ describe('Panel drawer tab', () => {
     const app = panelApp(chartResult(), { type: 'bar', x: 0, y: [1], series: null });
     app.activeTab().panelKey = 'carrier:String|flights:UInt64';
     renderResults(app);
-    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
     expect(labels).not.toContain('Type'); // the panel picker owns type (typeControl:false)
-    const xSel = [...region(app).querySelectorAll('.chart-field')]
-      .find((f) => f.querySelector('.chart-field-label').textContent === 'X').querySelector('select');
+    const xSel = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((f) => qs(f, '.chart-field-label').textContent === 'X')!,
+      'select',
+    );
     xSel.value = '1';
     xSel.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.activeTab().panelCfg.x).toBe(1);
+    expect((app.activeTab().panelCfg as PanelCfg).x).toBe(1);
     expect(app.activeTab().panelKey).toBe('carrier:String|flights:UInt64');
     expect(app.activeTab().dirtySpec).toBe(true);
   });
@@ -283,13 +405,16 @@ describe('Panel drawer tab', () => {
     });
     app.activeTab().panelKey = 'carrier:String|flights:UInt64';
     renderResults(app);
-    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((el) => el.textContent);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((el) => el.textContent);
     expect(labels).toEqual(['Style', 'X', 'Y']);
-    const style = [...region(app).querySelectorAll('.chart-field')]
-      .find((field) => field.querySelector('.chart-field-label').textContent === 'Style').querySelector('select');
+    const style = qs<HTMLSelectElement>(
+      qsa<HTMLElement>(region(app), '.chart-field')
+        .find((field) => qs(field, '.chart-field-label').textContent === 'Style')!,
+      'select',
+    );
     style.value = 'stepped';
     style.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.activeTab().panelCfg.style).toEqual({
+    expect((app.activeTab().panelCfg as PanelCfg).style).toEqual({
       curve: 'stepped', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show', future: true,
     });
     expect(app.activeTab().dirtySpec).toBe(true);
@@ -304,11 +429,11 @@ describe('Panel drawer tab', () => {
     const app = panelApp(logsResult(), { type: 'logs' });
     renderResults(app);
     expect(region(app).querySelectorAll('.dash-logs .log-row')).toHaveLength(1);
-    const roleSels = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
     expect(roleSels).toHaveLength(3); // Time / Message / Level
     roleSels[1].value = 'level'; // point Message at the level column (silly but explicit)
     roleSels[1].dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.activeTab().panelCfg.msg).toBe('level');
+    expect((app.activeTab().panelCfg as PanelCfg).msg).toBe('level');
     // a logs panel over a result with no time column → hint, not a crash
     const bad = panelApp(chartResult(), { type: 'logs' });
     renderResults(bad);
@@ -322,7 +447,7 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.res-table')).not.toBeNull();
     // ...alongside the three Logs role selectors (the rescue path), fed the
     // saved cfg — not the fallback (Table) cfg.
-    const roleSels = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
     expect(roleSels).toHaveLength(3);
 
     selectRole(app, 1, 'component'); // Message → component
@@ -337,12 +462,12 @@ describe('Panel drawer tab', () => {
   it('rescue (#192): two-step repair keeps controls visible until both roles resolve', () => {
     const app = panelApp(noTimeNoMessageResult(), { type: 'logs' });
     renderResults(app);
-    expect([...region(app).querySelectorAll('.panel-config .chart-config select')]).toHaveLength(3);
+    expect(qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')).toHaveLength(3);
 
     selectRole(app, 0, 'ts'); // Time → ts (Message still unresolved)
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts' });
     expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull(); // still falling back
-    expect([...region(app).querySelectorAll('.panel-config .chart-config select')]).toHaveLength(3); // still visible
+    expect(qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')).toHaveLength(3); // still visible
 
     selectRole(app, 1, 'component'); // Message → component completes the shape
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
@@ -358,13 +483,13 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.kpi-card')).not.toBeNull();
     expect(region(app).querySelector('.res-table')).toBeNull();
     // ...the toolbar picker still reads Logs, the authoring type...
-    expect(region(app).querySelector('.result-panel-select').value).toBe('panel:logs');
+    expect(qs<HTMLSelectElement>(region(app), '.result-panel-select').value).toBe('panel:logs');
     // ...the three Logs role selectors are the rescue controls...
     const configRows = region(app).querySelectorAll('.panel-config .chart-config');
     expect(configRows).toHaveLength(1);
-    expect([...configRows[0].querySelectorAll('select')]).toHaveLength(3);
+    expect(configRows[0].querySelectorAll('select')).toHaveLength(3);
     // ...and the fallback renderer exposes no X/Y/Series controls.
-    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
     expect(labels).not.toContain('X');
     expect(labels).not.toContain('Y');
     expect(labels).not.toContain('Series');
@@ -379,18 +504,19 @@ describe('Panel drawer tab', () => {
     result.rows = [[42]];
     const app = panelApp(result, { type: 'kpi' });
     renderResults(app);
-    expect(region(app).querySelector('.panel-authoring-hint').textContent).toContain('Spec → panel.fieldConfig');
+    expect(qs(region(app), '.panel-authoring-hint').textContent).toContain('Spec → panel.fieldConfig');
     expect(region(app).querySelector('.panel-config select')).toBeNull();
   });
   it('applies saved chart field metadata through the shared workbench renderer', () => {
     const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], series: null });
-    app.activeTab().specParsed.panel.fieldConfig = {
+    app.activeTab().specParsed!.panel!.fieldConfig = {
       columns: { flights: { displayName: 'Flights', unit: ' trips', decimals: 0 } },
     };
     renderResults(app);
-    expect(app.chart.config.data.datasets[0].label).toBe('Flights');
-    expect(app.chart.config.options.plugins.tooltip.callbacks.label({
-      datasetIndex: 0, dataset: app.chart.config.data.datasets[0], raw: 10,
+    const chart = app.chart!;
+    expect(chart.config.data.datasets[0].label).toBe('Flights');
+    expect(chart.config.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: chart.config.data.datasets[0], raw: 10,
     })).toBe('Flights: 10 trips');
   });
   it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
@@ -415,7 +541,7 @@ describe('Panel drawer tab', () => {
     // Rescue is over: ordinary chart controls (X/Y) are now present, and the
     // Logs rescue row (a `.panel-config` wrapper; the chart arm has no
     // separate controls() row of its own) is gone.
-    const labels = [...region(app).querySelectorAll('.chart-field-label')].map((s) => s.textContent);
+    const labels = qsa<HTMLElement>(region(app), '.chart-field-label').map((s) => s.textContent);
     expect(labels).toContain('X');
     expect(labels).toContain('Y');
     expect(region(app).querySelector('.panel-config')).toBeNull();
@@ -426,19 +552,19 @@ describe('Panel drawer tab', () => {
     const app = panelApp(noMessageResult());
     const savedCfg = { type: 'logs', extension };
     app.activeTab().panelCfg = savedCfg;
-    app.activeTab().specParsed.panel.fieldConfig = { future: { value: 2 } };
+    app.activeTab().specParsed!.panel!.fieldConfig = { future: { value: 2 } };
 
     renderResults(app);
     // Rendering alone (no control change) must not mutate or replace the saved cfg.
     expect(app.activeTab().panelCfg).toBe(savedCfg);
-    expect(app.activeTab().panelCfg.extension).toBe(extension);
+    expect((app.activeTab().panelCfg as PanelCfg).extension).toBe(extension);
     expect(app.activeTab().dirtySpec).toBe(false);
 
     selectRole(app, 1, 'component'); // Message → component
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component', extension: { nested: { value: 1 } } });
-    expect(app.activeTab().panelCfg.extension).not.toBe(extension);
-    expect(app.activeTab().panelCfg.extension.nested).not.toBe(extension.nested);
-    expect(app.activeTab().specParsed.panel.fieldConfig).toEqual({ future: { value: 2 } });
+    expect((app.activeTab().panelCfg as PanelCfg).extension).not.toBe(extension);
+    expect(((app.activeTab().panelCfg as PanelCfg).extension as { nested: unknown }).nested).not.toBe(extension.nested);
+    expect(app.activeTab().specParsed!.panel!.fieldConfig).toEqual({ future: { value: 2 } });
     expect(app.activeTab().dirtySpec).toBe(true);
     expect(app.actions.run).not.toHaveBeenCalled();
     // The originally-saved object (and its nested field) are untouched.
@@ -448,7 +574,7 @@ describe('Panel drawer tab', () => {
   it('#196: stale required roles show "<name> (missing)", selected + disabled, and never mutate cfg', () => {
     const app = panelApp(noMessageResult(), { type: 'logs', time: 'old_time_col', msg: 'old_msg_col' });
     renderResults(app);
-    const roleSels = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    const roleSels = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
     expect(roleSels).toHaveLength(3);
     const [timeSel, msgSel, levelSel] = roleSels;
 
@@ -478,7 +604,7 @@ describe('Panel drawer tab', () => {
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'old_time_col', msg: 'operation' });
     expect(app.actions.run).not.toHaveBeenCalled();
     // Time remains stored and still rendered as missing; panel still falls back.
-    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
     expect(timeSel.value).toBe('old_time_col');
     expect(timeSel.selectedOptions[0].textContent).toBe('old_time_col (missing)');
     expect(region(app).querySelector('.panel-note.is-fallback')).not.toBeNull();
@@ -488,9 +614,9 @@ describe('Panel drawer tab', () => {
     renderResults(app);
     selectRole(app, 0, 'ts'); // Time → ts
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'ts', msg: 'component' });
-    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
     expect(timeSel.value).toBe('ts');
-    expect([...timeSel.options].some((o) => o.textContent.includes('(missing)'))).toBe(false);
+    expect([...timeSel.options].some((o) => (o.textContent ?? '').includes('(missing)'))).toBe(false);
     expect(timeSel.getAttribute('aria-invalid')).toBeNull();
     expect(app.actions.run).not.toHaveBeenCalled();
   });
@@ -499,38 +625,38 @@ describe('Panel drawer tab', () => {
     renderResults(app);
     selectRole(app, 0, ''); // Time → (auto)
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', msg: 'component' });
-    expect('time' in app.activeTab().panelCfg).toBe(false);
-    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    expect('time' in (app.activeTab().panelCfg as PanelCfg)).toBe(false);
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
     expect(timeSel.value).toBe('');
     expect(app.actions.run).not.toHaveBeenCalled();
   });
   it('#196: case-insensitive saved names match without a synthetic missing option', () => {
     const app = panelApp(logsResult(), { type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' });
     renderResults(app);
-    const [timeSel, msgSel] = [...region(app).querySelectorAll('.panel-config .chart-config select')];
+    const [timeSel, msgSel] = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select');
     expect(timeSel.value).toBe('event_time');
     expect(msgSel.value).toBe('message');
     expect(timeSel.getAttribute('aria-invalid')).toBeNull();
     expect(msgSel.getAttribute('aria-invalid')).toBeNull();
-    expect([...timeSel.options].some((o) => o.textContent.includes('missing'))).toBe(false);
+    expect([...timeSel.options].some((o) => (o.textContent ?? '').includes('missing'))).toBe(false);
     expect(app.activeTab().panelCfg).toEqual({ type: 'logs', time: 'EVENT_TIME', msg: 'MESSAGE' }); // never rewritten
   });
   it('#196: a stale optional Level is marked missing even while Logs renders', () => {
     const app = panelApp(logsResult(), { type: 'logs', level: 'old_level_col' });
     renderResults(app);
     expect(region(app).querySelector('.dash-logs .log-row')).not.toBeNull(); // renders fine — Level is optional
-    const levelSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][2];
+    const levelSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[2];
     expect(levelSel.value).toBe('old_level_col');
     expect(levelSel.selectedOptions[0].textContent).toBe('old_level_col (missing)');
     expect(levelSel.getAttribute('aria-invalid')).toBe('true');
 
     selectRole(app, 2, ''); // Level → (auto) deletes it
-    expect('level' in app.activeTab().panelCfg).toBe(false);
+    expect('level' in (app.activeTab().panelCfg as PanelCfg)).toBe(false);
   });
   it('#196: a markup-like stale saved name renders as inert text, not markup', () => {
     const app = panelApp(noMessageResult(), { type: 'logs', time: '<img src=x onerror=alert(1)>' });
     renderResults(app);
-    const timeSel = [...region(app).querySelectorAll('.panel-config .chart-config select')][0];
+    const timeSel = qsa<HTMLSelectElement>(region(app), '.panel-config .chart-config select')[0];
     expect(timeSel.querySelector('img')).toBeNull();
     expect(timeSel.selectedOptions[0].textContent).toBe('<img src=x onerror=alert(1)> (missing)');
   });
@@ -549,12 +675,12 @@ describe('Panel drawer tab', () => {
   it('text: renders from cfg.content with NO result; textarea edits update cfg + preview', () => {
     const app = panelApp(null, { type: 'text', content: '# Hello' });
     renderResults(app);
-    expect(region(app).querySelector('.md-view h1').textContent).toBe('Hello');
-    const ta = region(app).querySelector('.panel-text-input');
+    expect(qs(region(app), '.md-view h1').textContent).toBe('Hello');
+    const ta = qs<HTMLTextAreaElement>(region(app), '.panel-text-input');
     ta.value = '# Bye';
     ta.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(app.activeTab().panelCfg.content).toBe('# Bye');
-    expect(region(app).querySelector('.md-view h1').textContent).toBe('Bye');
+    expect((app.activeTab().panelCfg as PanelCfg).content).toBe('# Bye');
+    expect(qs(region(app), '.md-view h1').textContent).toBe('Bye');
     expect(app.activeTab().dirtySpec).toBe(true);
   });
   it('query-backed types show the empty-preview hint before any Run (and while running)', () => {
@@ -572,7 +698,7 @@ describe('Panel drawer tab', () => {
     const app = panelApp(r, { type: 'table' });
     renderResults(app);
     expect(app.state.resultView.value).toBe('table');
-    expect(region(app).querySelector('.result-view-tab.active').textContent).toBe('Table');
+    expect(qs(region(app), '.result-view-tab.active').textContent).toBe('Table');
     expect(region(app).textContent).toContain('Query returned 0 rows');
   });
   it('a migrated table panel uses the ordinary table sort state', () => {
@@ -580,7 +706,7 @@ describe('Panel drawer tab', () => {
     renderResults(app);
     const th = region(app).querySelectorAll('.res-table th')[1]; // first data column
     th.dispatchEvent(new Event('click', { bubbles: true }));
-    const firstCell = region(app).querySelector('.res-table tbody tr .cell');
+    const firstCell = qs(region(app), '.res-table tbody tr .cell');
     expect(firstCell.textContent).toBe('AA'); // sorted asc by carrier
     expect(app.state.resultSort).toEqual({ col: 0, dir: 'asc' });
   });
@@ -592,20 +718,20 @@ describe('renderResolvedPanel', () => {
     const app = makeApp();
     const r = chartResult();
     const resolved = resolvePanel({ cfg: { type: 'gauge' } }, r.columns); // unknown type
-    const { node } = renderResolvedPanel(app, resolved, r, {
+    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
       surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
     });
-    expect(node.querySelector('.panel-note.is-fallback').textContent).toContain('gauge');
+    expect(qs(node, '.panel-note.is-fallback').textContent).toContain('gauge');
     expect(node.querySelector('canvas')).not.toBeNull(); // autoPanel fallback rendered below
   });
   it('a rederived resolution gets the roles-re-detected hint (no fallback style)', () => {
     const app = makeApp();
     const r = logsResult();
     const resolved = resolvePanel({ cfg: { type: 'logs', msg: 'renamed_away' } }, r.columns);
-    const { node } = renderResolvedPanel(app, resolved, r, {
+    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
       surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
     });
-    const note = node.querySelector('.panel-note');
+    const note = node.querySelector('.panel-note')!;
     expect(note.textContent).toContain('re-detected');
     expect(note.classList.contains('is-fallback')).toBe(false);
     expect(node.querySelector('.dash-logs')).not.toBeNull();
@@ -613,21 +739,21 @@ describe('renderResolvedPanel', () => {
   it('the logs arm renders the pick-columns hint when even re-derive found no shape', () => {
     const app = makeApp();
     const r = chartResult();
-    const out = PANEL_TYPES.logs.renderPanel({ app, result: r, cfg: { type: 'logs' }, cap: 10 });
+    const out = PANEL_TYPES.logs.renderPanel({ app: asApp(app), result: r, cfg: { type: 'logs' }, cap: 10 });
     expect(out.node.textContent).toContain('No time + message columns');
   });
   it("the chart arm's destroy tears down its instance exactly once", () => {
     const app = makeApp();
     const r = chartResult();
-    let inst = null;
+    let inst: FakeChart | null = null;
     const out = PANEL_TYPES.bar.renderPanel({
-      app, result: r, cfg: { type: 'bar', x: 0, y: [1], series: null },
-      surface: 'dashboard', rerender: () => {}, readonly: true, setChart: (c) => { inst = c; },
+      app: asApp(app), result: r, cfg: { type: 'bar', x: 0, y: [1], series: null },
+      surface: 'dashboard', rerender: () => {}, readonly: true, setChart: (c) => { inst = c as FakeChart; },
     });
     expect(inst).not.toBeNull();
-    expect(inst.destroyed).toBe(false);
-    out.destroy();
-    expect(inst.destroyed).toBe(true);
-    expect(() => out.destroy()).not.toThrow(); // idempotent
+    expect(inst!.destroyed).toBe(false);
+    out.destroy!();
+    expect(inst!.destroyed).toBe(true);
+    expect(() => out.destroy!()).not.toThrow(); // idempotent
   });
 });

@@ -40,7 +40,7 @@ export default defineConfig({
   plugins: [jsToTsInMixedTree],
   test: {
     environment: 'happy-dom',
-    include: ['tests/unit/**/*.test.js'],
+    include: ['tests/unit/**/*.test.{js,ts}'],
     setupFiles: ['tests/setup.js'],
     // Run workers as threads, not child processes. Vitest 2.x defaults to
     // `pool: 'forks'`, which fans out to (cpus-1) child *node processes* via

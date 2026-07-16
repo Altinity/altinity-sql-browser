@@ -114,7 +114,7 @@ describe('materializeOptionalBlocks — inclusion/removal', () => {
 });
 
 describe('materializeOptionalBlocks — not a delimiter outside code context (rule 1)', () => {
-  const untouched = (s) => {
+  const untouched = (s: string) => {
     const r = materializeOptionalBlocks(s, {});
     expect(r.sql).toBe(s);
     expect(r.blocks).toEqual([]);
@@ -150,7 +150,7 @@ describe('materializeOptionalBlocks — array-literal regression (the [[ … ]] 
 });
 
 describe('materializeOptionalBlocks — validation errors (rules 3–6)', () => {
-  const errOf = (s) => materializeOptionalBlocks(s, {}).errors;
+  const errOf = (s: string) => materializeOptionalBlocks(s, {}).errors;
 
   it('unbalanced /*[ (comment runs to EOF) is a clear error, sql returned verbatim', () => {
     const s = 'SELECT 1 /*[ AND d = {d:String}';

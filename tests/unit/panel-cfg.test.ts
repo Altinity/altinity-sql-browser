@@ -5,6 +5,7 @@ import {
   autoPanel, resolvePanel, switchPanelType,
 } from '../../src/core/panel-cfg.js';
 import { schemaKey } from '../../src/core/chart-data.js';
+import type { BarPanelCfg, TablePanelCfg } from '../../src/generated/json-schema.types.js';
 
 const chartCols = [
   { name: 'carrier', type: 'String' },
@@ -32,8 +33,16 @@ describe('type sets', () => {
 
 describe('clonePanelCfg', () => {
   it('deep-clones (no aliasing) and preserves unknown fields at every level', () => {
+    // A known runtime shape (table cfg + forward-compatible extra fields) —
+    // clonePanelCfg's declared return is the closed PanelCfg union, so a
+    // single-level cast (via the matching TablePanelCfg branch) pins the
+    // fixture's actual `chart`/`futureField` shape for the mutation checks below.
+    interface TableCfgFixture extends TablePanelCfg {
+      chart: { y: number[] };
+      futureField: unknown[];
+    }
     const src = { type: 'table', chart: { type: 'line', x: 0, y: [1], series: null }, futureField: [1, { a: 2 }] };
-    const out = clonePanelCfg(src);
+    const out = clonePanelCfg(src) as TableCfgFixture;
     expect(out).toEqual(src);
     expect(out).not.toBe(src);
     expect(out.chart).not.toBe(src.chart);
@@ -46,12 +55,15 @@ describe('clonePanelCfg', () => {
     expect(clonePanelCfg('nope')).toBeNull();
   });
   it('keeps a literal __proto__ field inert instead of turning it into cfg inheritance', () => {
+    interface ProtoPollutionFixture extends TablePanelCfg {
+      __proto__?: unknown;
+    }
     const src = JSON.parse('{"type":"table","__proto__":{"content":"unsafe"}}');
-    const out = clonePanelCfg(src);
+    const out = clonePanelCfg(src) as ProtoPollutionFixture;
     expect(Object.hasOwn(out, '__proto__')).toBe(true);
     expect(out.__proto__).toEqual({ content: 'unsafe' });
     expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
-    expect(Object.prototype.content).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).content).toBeUndefined();
   });
 });
 
@@ -116,9 +128,9 @@ describe('normalizePanelCfg', () => {
     expect(cfg).toMatchObject({ y: [1], series: null });
   });
   it("text coerces a missing/non-string content to ''", () => {
-    expect(normalizePanelCfg({ type: 'text' }).content).toBe('');
-    expect(normalizePanelCfg({ type: 'text', content: 42 }).content).toBe('');
-    expect(normalizePanelCfg({ type: 'text', content: 'keep' }).content).toBe('keep');
+    expect(normalizePanelCfg({ type: 'text' })!.content).toBe('');
+    expect(normalizePanelCfg({ type: 'text', content: 42 })!.content).toBe('');
+    expect(normalizePanelCfg({ type: 'text', content: 'keep' })!.content).toBe('keep');
   });
   it('table passes through untouched; null → null', () => {
     const cfg = { type: 'table', futureField: 1 };
@@ -170,7 +182,9 @@ describe('switchPanelType', () => {
       chart: { type: 'bar', x: 0, y: [1], series: null, key: 'K' },
     });
     expect(table.key).toBeNull();
-    const back = switchPanelType(table, 'line', chartCols);
+    // switchPanelType's own return (ResolvedPanelPayload) has no index signature,
+    // so re-feeding it needs a fresh PanelPayload-shaped literal, not the value itself.
+    const back = switchPanelType({ cfg: table.cfg, key: table.key }, 'line', chartCols);
     expect(back.cfg).toMatchObject({ type: 'line', x: 0, y: [1], series: null });
     expect(back.cfg.style).toEqual(style);
     expect(back.key).toBe('K');
@@ -190,12 +204,12 @@ describe('switchPanelType', () => {
     const text = switchPanelType({ cfg: { type: 'table' } }, 'text', []);
     expect(text.cfg).toEqual({ type: 'text', content: '' });
     const away = switchPanelType({ cfg: { type: 'text', content: '# kept' } }, 'table', []);
-    const back = switchPanelType(away, 'text', []);
+    const back = switchPanelType({ cfg: away.cfg, key: away.key }, 'text', []);
     expect(back.cfg.content).toBe('# kept');
   });
   it('logs role names ride along through a table round-trip (unknown-field preservation)', () => {
     const away = switchPanelType({ cfg: { type: 'logs', msg: 'body' } }, 'table', logCols);
-    const back = switchPanelType(away, 'logs', logCols);
+    const back = switchPanelType({ cfg: away.cfg, key: away.key }, 'logs', logCols);
     expect(back.cfg).toMatchObject({ type: 'logs', msg: 'body' });
   });
   it('a null/empty payload starts from scratch', () => {
@@ -206,12 +220,16 @@ describe('switchPanelType', () => {
 
 describe('resolvePanel', () => {
   it('retains explicit KPI with normalized result diagnostics instead of falling back', () => {
+    // readKpiFields's KpiResult is deliberately loose (`items: unknown[]`) —
+    // downstream readers (this test included) know the actual per-item shape.
+    interface KpiItemFixture { presentation: { unit?: string } }
+    interface KpiDiagnosticFixture { code: string }
     const one = resolvePanel({ cfg: { type: 'kpi' }, fieldConfig: { columns: { n: { unit: '%' } } } }, { columns: [{ name: 'n', type: 'UInt64' }], rows: [[7]] });
     expect(one).toMatchObject({ cfg: { type: 'kpi' }, fallback: false });
-    expect(one.kpi.items[0].presentation.unit).toBe('%');
+    expect((one.kpi!.items[0] as KpiItemFixture).presentation.unit).toBe('%');
     const many = resolvePanel({ cfg: { type: 'kpi' } }, { columns: [{ name: 'n', type: 'UInt64' }], rows: [[1], [2]] });
     expect(many.cfg.type).toBe('kpi');
-    expect(many.kpi.diagnostics[0].code).toBe('kpi-row-count');
+    expect((many.kpi!.diagnostics[0] as KpiDiagnosticFixture).code).toBe('kpi-row-count');
     expect(resolvePanel({ cfg: { type: 'kpi' } }, []).kpi).toBeNull();
   });
   it('no saved panel → autoPanel, not a fallback', () => {
@@ -227,7 +245,7 @@ describe('resolvePanel', () => {
     const out = resolvePanel(saved, chartCols);
     expect(out).toMatchObject({ rederived: false, fallback: false });
     expect(out.cfg).toMatchObject({ type: 'bar', x: 0, y: [1] });
-    out.cfg.y.push(9);
+    (out.cfg as BarPanelCfg).y.push(9);
     expect(saved.cfg.y).toEqual([1]); // saved entry untouched
   });
   it('a valid chart cfg with a stale key retains its type but re-derives roles', () => {

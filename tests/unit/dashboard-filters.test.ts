@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { mergeDashboardFilterHelpers } from '../../src/core/dashboard-filters.js';
+import type { FilterHelper, FilterHelperOption, FilterProvider } from '../../src/core/dashboard-filters.js';
 
-const helper = (name, options) => ({ name, sourceType: 'Array(String)', shape: 'array', options, totalOptions: options.length, truncated: false });
-const provider = (sourceId, sourceName, helpers) => ({ sourceId, sourceName, helpers });
+const helper = (name: string, options: FilterHelperOption[]): FilterHelper =>
+  ({ name, sourceType: 'Array(String)', shape: 'array', options, totalOptions: options.length, truncated: false });
+// `sourceName` deliberately accepts `null` too — a couple of call sites below
+// pass it to exercise the `provider.sourceName || provider.sourceId` fallback
+// in the module under test; the cast keeps that exact runtime value while
+// satisfying `FilterProvider`'s `sourceName?: string`.
+const provider = (sourceId: string, sourceName: string | null, helpers: FilterHelper[]): FilterProvider =>
+  ({ sourceId, sourceName: sourceName as string | undefined, helpers });
 
 describe('Dashboard Filter helper merge', () => {
   it('has harmless defaults', () => {
     expect(mergeDashboardFilterHelpers()).toEqual({ fields: {}, diagnostics: [], values: {}, active: {}, changed: [] });
-    expect(mergeDashboardFilterHelpers({ providers: [{}] }).fields).toEqual({});
+    // A deliberately malformed provider (missing every field) — the module
+    // must degrade harmlessly rather than throw.
+    expect(mergeDashboardFilterHelpers({ providers: [{}] as FilterProvider[] }).fields).toEqual({});
   });
   it('matches exact consumers and retains healthy siblings', () => {
     const out = mergeDashboardFilterHelpers({

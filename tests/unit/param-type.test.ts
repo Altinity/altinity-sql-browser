@@ -34,7 +34,7 @@ describe('parseParamType', () => {
   it('parses Array(T) with a parsed element type', () => {
     const t = parseParamType('Array(String)');
     expect(t.isArray).toBe(true);
-    expect(t.elem.base).toBe('String');
+    expect(t.elem!.base).toBe('String');
     expect(t.raw).toBe('Array(String)');
   });
 
@@ -56,26 +56,26 @@ describe('parseParamType', () => {
   it('unwraps LowCardinality recursively inside Array(...)', () => {
     const t = parseParamType('Array(LowCardinality(UInt64))');
     expect(t.isArray).toBe(true);
-    expect(t.elem.base).toBe('UInt64');
-    expect(t.elem.nullable).toBe(false);
+    expect(t.elem!.base).toBe('UInt64');
+    expect(t.elem!.nullable).toBe(false);
   });
 
   it('parses Array(Nullable(T)) — nullable element', () => {
     const t = parseParamType('Array(Nullable(String))');
     expect(t.isArray).toBe(true);
-    expect(t.elem.base).toBe('String');
-    expect(t.elem.nullable).toBe(true);
+    expect(t.elem!.base).toBe('String');
+    expect(t.elem!.nullable).toBe(true);
   });
 
   it('parses nested arrays (recognized so the serializer can reject them)', () => {
     const t = parseParamType('Array(Array(UInt8))');
     expect(t.isArray).toBe(true);
-    expect(t.elem.isArray).toBe(true);
-    expect(t.elem.elem.base).toBe('UInt8');
+    expect(t.elem!.isArray).toBe(true);
+    expect(t.elem!.elem!.base).toBe('UInt8');
   });
 
   it('trims input and tolerates inner whitespace', () => {
-    expect(parseParamType('  Array( String ) ').elem.base).toBe('String');
+    expect(parseParamType('  Array( String ) ').elem!.base).toBe('String');
   });
 
   it('degrades an unparsable shape to an opaque scalar', () => {
@@ -107,8 +107,8 @@ describe('parseParamType', () => {
     expect(nested.node).toBeNull();
     const inArray = parseParamType("Array(LowCardinality(Enum8('a' = 1)))");
     expect(inArray.isArray).toBe(true);
-    expect(inArray.elem.node).toBeNull();
-    expect(inArray.elem.base).toBe("LowCardinality(Enum8('a' = 1))");
+    expect(inArray.elem!.node).toBeNull();
+    expect(inArray.elem!.base).toBe("LowCardinality(Enum8('a' = 1))");
   });
 });
 

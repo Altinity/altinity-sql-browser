@@ -4,17 +4,24 @@ import {
   queryPanel, queryDashboard, withQuerySpec, patchQuerySpec, patchQueryPanel, patchQueryDashboard,
   upgradeV1Query, cloneV2Query, upgradeSavedQuery, queryContentKey, isPlainObject,
 } from '../../src/core/saved-query.js';
+import type { QueryRoot } from '../../src/core/saved-query.js';
+import type { Dashboard, QuerySpecV1 } from '../../src/generated/json-schema.types.js';
 
-const v2 = (spec = {}) => ({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec });
+const v2 = (spec: QuerySpecV1 = {}): QueryRoot => ({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec });
 
 describe('saved-query model', () => {
   it('patches dashboard fields without aliases and supports field/object removal', () => {
+    // A known runtime shape (Dashboard's own fields are all optional/index-signature
+    // typed) — a single-level cast pins the fixture's actual `future` shape.
+    interface DashboardFixture extends Dashboard {
+      future: { values: number[] };
+    }
     const query = v2({ dashboard: { role: 'filter', future: { values: [1] } }, panel: { cfg: { type: 'line' } } });
     const changed = patchQueryDashboard(query, { role: 'panel', future2: { ok: true } });
     expect(changed.spec.dashboard).toEqual({ role: 'panel', future: { values: [1] }, future2: { ok: true } });
-    changed.spec.dashboard.future.values.push(2);
-    expect(query.spec.dashboard.future.values).toEqual([1]);
-    expect(patchQueryDashboard(changed, { role: undefined }).spec.dashboard.role).toBeUndefined();
+    (changed.spec.dashboard as DashboardFixture).future.values.push(2);
+    expect((query.spec.dashboard as DashboardFixture).future.values).toEqual([1]);
+    expect(patchQueryDashboard(changed, { role: undefined }).spec.dashboard?.role).toBeUndefined();
     expect(patchQueryDashboard(changed, null).spec.dashboard).toBeUndefined();
   });
   it('recognizes plain objects and deep-clones unknown JSON objects/arrays', () => {
@@ -36,28 +43,31 @@ describe('saved-query model', () => {
     expect(Object.hasOwn(cloned, '__proto__')).toBe(true);
     expect(cloned.__proto__).toEqual({ polluted: true });
     expect(Object.hasOwn(cloned.nested, '__proto__')).toBe(true);
-    expect(Object.prototype.polluted).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
     expect(queryContentKey(v2(source))).toContain('__proto__');
   });
 
   it('reads known fields with safe defaults without stripping extensions', () => {
     const panel = { cfg: { type: 'table' }, links: [{ url: '/x' }] };
-    const dashboard = { role: 'panel', future: { x: 1 } };
+    const dashboard: Dashboard = { role: 'panel', future: { x: 1 } };
     const q = v2({ name: 'Q', description: 'D', favorite: true, view: 'panel', panel, dashboard });
     expect(queryName(q)).toBe('Q');
     expect(queryDescription(q)).toBe('D');
     expect(queryFavorite(q)).toBe(true);
-    expect(queryFavorite(v2({ favorite: 'false' }))).toBe(false);
-    expect(queryFavorite(v2({ favorite: {} }))).toBe(false);
+    // favorite/view/panel/dashboard below are deliberately wrong-typed inputs
+    // (garbage ingress); bypass v2's typed wrapper with the same literal query
+    // shape rather than casting to QuerySpecV1's honest field types.
+    expect(queryFavorite({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { favorite: 'false' } })).toBe(false);
+    expect(queryFavorite({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { favorite: {} } })).toBe(false);
     expect(queryView(q)).toBe('panel');
     expect(queryPanel(q)).toBe(panel);
     expect(queryDashboard(q)).toBe(dashboard);
     expect(queryName(v2({ name: '  ' }))).toBe('Untitled');
     expect(queryDescription(v2())).toBe('');
     expect(queryFavorite(null)).toBe(false);
-    expect(queryView(v2({ view: 1 }))).toBeUndefined();
-    expect(queryPanel(v2({ panel: [] }))).toBeUndefined();
-    expect(queryDashboard(v2({ dashboard: null }))).toBeUndefined();
+    expect(queryView({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { view: 1 } })).toBeUndefined();
+    expect(queryPanel({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { panel: [] } })).toBeUndefined();
+    expect(queryDashboard({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { dashboard: null } })).toBeUndefined();
   });
 
   it('replaces/patches complete Specs immutably and treats undefined as deletion', () => {
@@ -83,7 +93,7 @@ describe('saved-query model', () => {
       cfg: { type: 'logs', msg: 'message' },
       fieldConfig: { defaults: { color: 'red' } }, transformations: [{ id: 'sort' }],
     });
-    expect(original.spec.panel.key).toBe('old');
+    expect(original.spec.panel!.key).toBe('old');
     expect(patchQueryPanel(patched, null).spec.panel).toBeUndefined();
     expect(patchQueryPanel(v2(), null).spec).toEqual({});
   });
@@ -95,8 +105,8 @@ describe('saved-query model', () => {
     const panelPatched = patchQueryPanel(specPatched, panelPatch);
     expect(Object.hasOwn(specPatched.spec, '__proto__')).toBe(true);
     expect(specPatched.spec.name).toBe('Q');
-    expect(Object.hasOwn(panelPatched.spec.panel, '__proto__')).toBe(true);
-    expect(Object.getPrototypeOf(panelPatched.spec.panel)).toBe(Object.prototype);
+    expect(Object.hasOwn(panelPatched.spec.panel!, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(panelPatched.spec.panel!)).toBe(Object.prototype);
   });
 });
 
@@ -115,7 +125,9 @@ describe('v1 migration', () => {
     expect(q.spec.panel).not.toBe(raw.panel);
     expect(q.spec.dashboard).not.toBe(raw.dashboard);
     expect('transient' in q.spec).toBe(false);
-    expect(raw.spec).toBeUndefined();
+    // raw is a flat v1 fixture with no `spec` field declared; probing for its
+    // absence needs a minimal cast since the literal type has no such property.
+    expect((raw as Record<string, unknown>).spec).toBeUndefined();
   });
 
   it('keeps panel authoritative over chart and removes the compatibility mirror', () => {
@@ -139,7 +151,7 @@ describe('v1 migration', () => {
     // emitting `key: null` here would defeat merge dedup against that twin.
     const nullKey = upgradeV1Query({ name: 'A', sql: '1', chart: { cfg: { type: 'line', x: 0, y: [1], series: null } } });
     expect(nullKey.spec.panel).toEqual({ cfg: { type: 'line', x: 0, y: [1], series: null } });
-    expect('key' in nullKey.spec.panel).toBe(false);
+    expect('key' in nullKey.spec.panel!).toBe(false);
   });
 
   it('defaults missing name/favorite, permits SQL-less entries, and omits invalid optional fields', () => {
