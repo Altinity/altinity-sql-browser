@@ -551,8 +551,39 @@ Two caveats for the baked demo config:
   interface sends `Access-Control-Allow-Origin` for requests carrying an `Origin`
   by default, so the public demos work out of the box.
 
-Kubernetes manifests (Deployment + Service, non-root `securityContext`,
-config via ConfigMap) are in [`deploy/k8s/`](deploy/k8s/).
+### Kubernetes (Helm)
+
+A Helm chart is published to GHCR as an OCI artifact:
+
+```bash
+helm install sql-browser \
+  oci://ghcr.io/altinity/altinity-sql-browser/helm/altinity-sql-browser \
+  -n <namespace> -f values.yaml
+```
+
+Key values: `image.tag`, `connectSrc` (→ CSP `connect-src`), `config` (the
+`config.json` served at `/sql/config.json`, rendered into a ConfigMap), and
+`service.annotations`. The container serves plain HTTP on **8080** and runs
+non-root (uid 101).
+
+**Exposing a hostname.** For a standard cluster, enable `ingress` in values. In
+an **Altinity edge-proxy** environment (e.g. `*.demo.altinity.cloud`) you instead
+put edge-proxy annotations on the ClusterIP Service — TLS terminates at the edge
+(wildcard cert) and wildcard DNS already resolves, so no ingress/cert/DNS is
+needed:
+
+```yaml
+service:
+  type: ClusterIP
+  port: 8080
+  annotations:
+    edge-proxy.altinity.com/port-mapping: "443:tls-to-tcp:8080"
+    edge-proxy.altinity.com/tls-server-name: sql.example.demo.altinity.cloud
+```
+
+The chart source is in [`helm/altinity-sql-browser/`](helm/altinity-sql-browser/);
+a ready-made demo overlay is [`deploy/helm/values-demo.yaml`](deploy/helm/values-demo.yaml).
+Plain (no-Helm) manifests are in [`deploy/k8s/`](deploy/k8s/).
 
 ### Run locally against your own ClickHouse
 

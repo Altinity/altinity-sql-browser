@@ -1,0 +1,24 @@
+# Values for deploying the Altinity SQL Browser to the demo.altinity.cloud ACM
+# environment, exposed at https://sql.demo.altinity.cloud via the edge-proxy.
+#
+#   export KUBECONFIG=~/tmp/acm-session.kubeconfig
+#   helm upgrade --install sql-browser helm/altinity-sql-browser \
+#     -n demo -f deploy/helm/values-demo.yaml
+#
+# connectSrc + config inherit the 4-entry public-demo defaults from values.yaml
+# (antalya + github.demo, each in demo:demo and Google-SSO modes).
+
+image:
+  # Rolling latest-main tag. Pin to a released version or sha-<commit> for
+  # reproducibility once a v* release cuts the image.
+  tag: edge
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations:
+    # Edge-proxy: listen on public 443, terminate TLS (wildcard
+    # *.demo.altinity.cloud cert), forward plain TCP to the pod's 8080. Wildcard
+    # DNS already points at the edge-proxy ELB — no DNS/cert/ingress work needed.
+    edge-proxy.altinity.com/port-mapping: "443:tls-to-tcp:8080"
+    edge-proxy.altinity.com/tls-server-name: sql.demo.altinity.cloud

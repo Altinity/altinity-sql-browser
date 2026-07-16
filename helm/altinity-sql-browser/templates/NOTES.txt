@@ -1,0 +1,26 @@
+Altinity SQL Browser deployed as {{ include "altinity-sql-browser.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+{{- $host := "" -}}
+{{- with .Values.service.annotations }}{{ $host = index . "edge-proxy.altinity.com/tls-server-name" }}{{- end }}
+{{- if $host }}
+Exposed via the Altinity edge-proxy at:
+
+    https://{{ $host }}/sql
+
+TLS is terminated at the edge-proxy (wildcard cert); the pod serves plain HTTP on {{ .Values.containerPort }}.
+{{- else if .Values.ingress.enabled }}
+Exposed via Ingress at:
+{{- range .Values.ingress.hosts }}
+    http(s)://{{ .host }}/sql
+{{- end }}
+{{- else }}
+The Service is {{ .Values.service.type }} on port {{ .Values.service.port }}. Port-forward to try it:
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "altinity-sql-browser.fullname" . }} 8900:{{ .Values.service.port }}
+    open http://localhost:8900/sql
+{{- end }}
+
+The login picker offers these saved connections:
+{{- range .Values.config.hosts }}
+    - {{ .label }}
+{{- end }}
