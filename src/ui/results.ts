@@ -14,32 +14,210 @@ import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import { RESULT_ROW_LIMIT_OPTIONS, tabPanel, effectiveFilterActive } from '../state.js';
+import type { AppState, QueryTab as Tab, ResultSort } from '../state.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../core/param-pipeline.js';
+import type { ParameterAnalysis, PreparedFieldState, ValidationMode } from '../core/param-pipeline.js';
 import { newResult } from '../core/stream.js';
+import type { StreamResult } from '../core/stream.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
+import type { DetachedGraphApp, SchemaLineageGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
+import type { DetachedView, DetachedViewApp, DetachedWindowLike, MountCtx } from './detached-view.js';
 import { buildFilterBar } from './filter-bar.js';
+import type { FilterBarApp } from './filter-bar.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
 import { panelExecution } from '../core/panel-execution.js';
 import { renderFilterPreview } from './filter-preview.js';
+import type { AppDom, App } from './app.types.js';
+import type { PanelResolution } from '../core/panel-cfg.js';
+import type { ResultSource } from '../core/query-source.js';
+import type { SchemaGraphFocus } from '../core/schema-graph.js';
+
+// ── The Result contract (#267) ──────────────────────────────────────────────
+// `QueryTab.result` (state.ts) is deliberately opaque there
+// (`Record<string, unknown> | null`) — this module is the one place that
+// knows and owns the concrete shape a run actually produces. A run's result is
+// exactly one of three bespoke JS object shapes (app.js's run()/runScript()/
+// exportScript()), never a single closed discriminated union with a shared
+// tag field — so `Result` below is a plain union of those three shapes, and
+// every dispatch in this file narrows it with an `in` check (equivalent, for
+// these fields, to the original untyped `r.script`/`r.scriptExport` truthy
+// checks: each field, when the object carries it at all, is always a
+// non-empty-meaningful value — an array or object — so presence and
+// truthiness agree).
+
+/** One statement's outcome in a multiquery script run (#83) — one entry of
+ *  `ScriptResult.script`. `sql`/`ms` ride on every status; the rest is
+ *  per-status (a 'rows' entry is the only one carrying real data). */
+export type ScriptEntry = { sql?: string; ms?: number } & (
+  | { status: 'ok' }
+  | { status: 'error'; error?: string }
+  | {
+      status: 'rows';
+      columns: { name: string; type: string }[];
+      rows: unknown[][];
+      truncated?: boolean;
+      preview?: string;
+      /** Local sort/width state, lazily attached by openRowsViewer — persists
+       *  for the life of that statement's open rows pane. */
+      viewerSort?: ResultSort;
+      viewerWidths?: Record<string, number>;
+    }
+);
+
+/** A multiquery script run's `tab.result` shape (#83): one row per executed
+ *  statement, replacing the ordinary StreamResult-based shape wholesale. */
+export interface ScriptResult {
+  script: ScriptEntry[];
+  elapsedMs?: number;
+  cancelled?: boolean;
+  /** Drag-resized column widths for the script grid, persisted across re-renders. */
+  colWidths?: Record<string, number>;
+}
+
+/** One statement's export outcome in a script-export run (#99) — metadata
+ *  only, never the exported rows. */
+export interface ScriptExportEntry {
+  i: number;
+  sql?: string;
+  type: string;
+  status: string;
+  file: string | null;
+  bytes: number;
+  startedAt: number | null;
+  ms: number | null;
+  error: string | null;
+}
+
+/** A script-export run's `tab.result` shape (#99), replacing the ordinary
+ *  StreamResult-based shape wholesale, same as `ScriptResult`. */
+export interface ScriptExportResult {
+  scriptExport: ScriptExportEntry[];
+  startedAt: number;
+  elapsedMs?: number;
+  colWidths?: Record<string, number>;
+}
+
+/** Progressive-load schema-lineage state (#124): the compact drawn shape
+ *  explain-graph.ts itself reads (`SchemaLineageGraph`) plus the Phase A/B
+ *  resolution bookkeeping only app.js/results.js track — `tableCount` (Phase A
+ *  resolved once known), `loading` (Phase B — per-view/MV EXPLAIN AST — still
+ *  in flight), its `progress`, and `partial` (a cancelled-but-kept Phase-A
+ *  graph). */
+export interface ResultSchemaGraph extends SchemaLineageGraph {
+  tableCount?: number;
+  loading?: boolean;
+  progress?: { done: number; total: number };
+  partial?: boolean;
+}
+
+/** The ordinary streamed query result: `core/stream.ts`'s `StreamResult` plus
+ *  the fields app.js/results.js attach after the fact — the active EXPLAIN
+ *  view id, the schema-lineage graph (#124), the captured #185 detached-view
+ *  source, drag-resized column widths, and the Panel drawer's own grid
+ *  sort/width holder (#166). */
+export interface QueryResult extends StreamResult {
+  explainView?: string;
+  schemaGraph?: ResultSchemaGraph;
+  source?: ResultSource;
+  colWidths?: Record<string, number>;
+  panelState?: Record<string, unknown>;
+}
+
+/** `QueryTab.result`'s real shape — the canonical contract this module owns
+ *  (see the module doc above). */
+export type Result = ScriptResult | ScriptExportResult | QueryResult;
+
+// ── The narrow `app` surface this module reads directly ────────────────────
+// Not the full ~50-member `App` contract (app.types.ts) — tests/helpers/
+// fake-app.js's long-standing `makeApp()` stub (and panels.test.ts's own
+// further-narrowed fixture) satisfy this directly, matching the convention
+// filter-bar.ts/filter-preview.ts/explain-graph.ts already established for
+// their own narrow app surfaces. The three calls into panels.ts's registry
+// (which wants the literal `App`, since it's also Dashboard's shared
+// registry) cast at that one seam (`app as App`) — the real production
+// caller (main.js's createApp()) always supplies the genuine full App; a
+// render-path test exercising just this module's own logic never reaches the
+// OTHER panel arms' extra fields.
+export interface ResultsAppActions {
+  rerenderTabs(): void;
+  cancel(): void;
+  cancelExportScript(): void;
+  cancelSchemaGraph(opts?: { clearResult?: boolean }): void;
+  expandSchemaGraph(focus?: SchemaGraphFocus): unknown;
+  setExplainView(id: string): unknown;
+  setResultRowLimit(n: number): unknown;
+  copyResult(): void;
+  copySnapshot(result: unknown, doc?: Document): void;
+  /** Never called by this module directly — forwarded to explain-graph.ts's
+   *  node-click handlers (renderExplainGraph/renderSchemaGraph) when the
+   *  inline pipeline/schema graph is drawn. */
+  insertCreate?(target: string): unknown;
+  openNodeDetail?(node: unknown, targetDoc?: Document): unknown;
+}
+
+export interface ResultsApp {
+  dom: AppDom;
+  document: Document;
+  chart?: { destroy(): void } | null;
+  state: AppState;
+  activeTab(): Tab;
+  actions: ResultsAppActions;
+  now(): number;
+  elapsedMs(): number;
+  wallNow(): number;
+  ensureFreshToken(): Promise<boolean>;
+  runReadInto(
+    result: StreamResult,
+    opts: {
+      sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal;
+      queryId?: string; onChunk?: (chunk: unknown) => void;
+    },
+  ): Promise<StreamResult>;
+  recordBoundParams(boundParams: Array<{ name: string; rawValue: unknown }>): void;
+  savePref(name: string, value: unknown): void;
+  saveVarValues(): void;
+  saveFilterActive(): void;
+  clearVarRecent(name: string): void;
+  updateSaveBtn(): void;
+  updateEditorModeUi?(): void;
+  openWindow?(url: string, target: string): DetachedWindowLike | null;
+}
+
+/** The Chart.js instance shape a readonly panel's `setChart` ever receives —
+ *  matches panels.ts's own (unexported) `PanelChartInstance`. */
+interface PanelChartInstance { destroy(): void }
+
+/** The Panel drawer tab's caller seams (#166): the repaint scope, the cell
+ *  drawer, the tab-dirty wiring, and the display cap — matches panels.ts's
+ *  own (unexported) `PanelHooks`. */
+interface PanelHooks {
+  rerender: () => void;
+  onCell: (name: string, type: string, value: unknown) => void;
+  cap?: number;
+  markDirty: () => void;
+}
 
 // View id → tab glyph for the EXPLAIN view strip (kept here so core/explain.js
 // stays DOM-free). Pipeline reuses the node-graph share glyph.
-const EXPLAIN_ICONS = {
+const EXPLAIN_ICONS: Record<string, () => SVGElement> = {
   explain: Icon.plan, indexes: Icon.key, projections: Icon.layers,
   pipeline: Icon.share, estimate: Icon.rows,
 };
 
-export function renderResults(app) {
+export function renderResults(app: ResultsApp): void {
   const region = app.dom.resultsRegion;
   if (!region) return;
   // Tear down any live Chart.js instance before the DOM is rebuilt, so a view
   // switch / re-render can't leak its canvas observers (renderChart re-creates).
   if (app.chart) { app.chart.destroy(); app.chart = null; }
   const tab = app.activeTab();
-  const r = tab.result;
+  // Ingress: QueryTab.result is deliberately opaque at the state-contract
+  // boundary (`Record<string, unknown> | null`, state.ts) — this module is
+  // the one place that knows the concrete Result union (see above).
+  const r = tab.result as Result | null;
   // `table` remains a valid persisted/dashboard panel arm, but it has no
   // separate workbench choice: use the ordinary Table view instead of showing
   // two Tables or a Panel selector with an unavailable value. Normalize before
@@ -56,7 +234,7 @@ export function renderResults(app) {
   if (app.state.running.value) inner.appendChild(streamStrip(r));
   // Multiquery script: a per-statement summary grid. Handled before the
   // single-result chain below (a script result has no `rows`/`rawText`).
-  if (r && r.script) {
+  if (r && 'script' in r) {
     inner.appendChild(renderScriptGrid(app, r));
     body.appendChild(inner);
     region.replaceChildren(body);
@@ -64,12 +242,13 @@ export function renderResults(app) {
   }
   // Script export (issue #99): a per-statement log — metadata only, never the
   // exported rows. Same early-return shape as the r.script branch above.
-  if (r && r.scriptExport) {
+  if (r && 'scriptExport' in r) {
     inner.appendChild(renderScriptExportGrid(app, r));
     body.appendChild(inner);
     region.replaceChildren(body);
     return;
   }
+  // Beyond this point `r` is narrowed to `QueryResult | null`.
   const view = app.state.resultView.value;
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
   if (streamingBlank && view !== 'filter') {
@@ -101,7 +280,7 @@ export function renderResults(app) {
     // The live pane's Panel view is editable (the drawer + type picker); its
     // table/grid state is the global resultSort + the result's own colWidths.
     inner.appendChild(renderResultView({
-      app,
+      app: app as App,
       view,
       result: r,
       sort: app.state.resultSort,
@@ -121,7 +300,7 @@ export function renderResults(app) {
 // edit — same UI writes as the independent editor callbacks), and the display cap.
 // Supplied from here (not imported by panels.js) so panels.js never imports
 // results.js back.
-function panelHooks(app, r) {
+function panelHooks(app: ResultsApp, r: QueryResult | null): PanelHooks {
   return {
     rerender: () => renderResults(app),
     onCell: (name, type, value) => openCellDetail(app, name, type, value),
@@ -136,7 +315,7 @@ function panelHooks(app, r) {
 
 // Render the active EXPLAIN view: monospace text (Explain/Indexes/Projections),
 // a real table (Estimate, streamed structured), or the SVG pipeline graph.
-function renderExplainView(app, r) {
+function renderExplainView(app: ResultsApp, r: QueryResult): HTMLElement {
   const desc = EXPLAIN_VIEWS.find((v) => v.id === r.explainView);
   const kind = desc ? desc.kind : 'text';
   if (kind === 'graph') return renderExplainGraph(app, r);
@@ -148,10 +327,13 @@ function renderExplainView(app, r) {
   return h('div', { class: 'raw-text-view', tabindex: '0' }, r.rawText || '');
 }
 
-// 2px progress strip atop the results body while a query streams.
-function streamStrip(r) {
+// 2px progress strip atop the results body while a query streams. `r` may
+// still be a script/script-export result here (called before that narrowing
+// in renderResults) — neither carries `pct` at all, so the `in` check reads
+// identically to the original's `r && r.pct > 0` truthy check for every shape.
+function streamStrip(r: Result | null): HTMLDivElement {
   return h('div', { class: 'stream-strip' },
-    r && r.pct > 0
+    r && 'pct' in r && r.pct > 0
       ? h('i', { class: 'fill', style: { width: r.pct + '%' } })
       : h('i', { class: 'sweep' }));
 }
@@ -163,7 +345,7 @@ function streamStrip(r) {
 // row, since the run stops on first failure); Col 3 is that statement's own
 // execution time (the toolbar still shows the script total). Columns are
 // drag-resizable like the data grid (initial 25 / 65 / 10 from CSS).
-function renderScriptGrid(app, r) {
+function renderScriptGrid(app: ResultsApp, r: ScriptResult): HTMLDivElement {
   r.colWidths = r.colWidths || {}; // persists drag-resized widths across re-renders
   const wrap = h('div', { class: 'res-table-wrap script-grid' });
   const table = document.createElement('table');
@@ -200,7 +382,7 @@ function renderScriptGrid(app, r) {
 // Statement, Type, Status, File, Bytes, Time. Drag-resizable like the other
 // grids; a fresh set of column keys (7, plain-indexed) since it's a different
 // shape from the run script grid.
-function renderScriptExportGrid(app, r) {
+function renderScriptExportGrid(app: ResultsApp, r: ScriptExportResult): HTMLDivElement {
   r.colWidths = r.colWidths || {};
   const wrap = h('div', { class: 'res-table-wrap script-export-grid' });
   const table = document.createElement('table');
@@ -238,7 +420,7 @@ function renderScriptExportGrid(app, r) {
 
 // Status cell: a colored word, plus the error message inline for a failed row
 // (including the "File may be incomplete…" mid-stream note).
-function scriptExportStatusCell(e) {
+function scriptExportStatusCell(e: ScriptExportEntry): HTMLTableCellElement {
   const cell = h('td', { class: 'script-cell se-status-cell ' + e.status }, e.status);
   if (e.status === 'failed' && e.error) cell.appendChild(h('div', { class: 'se-error' }, e.error));
   return cell;
@@ -247,14 +429,18 @@ function scriptExportStatusCell(e) {
 // A live now()-startedAt readout for the active row (ticked by exportScript's
 // 200ms interval — see app.js); e.ms once a statement is done; blank while
 // still pending/skipped (ms defaults to 0, so status — not e.ms — is the gate).
-function scriptExportTime(app, e) {
-  if (e.status === 'running' || e.status === 'exporting') return (app.now() - e.startedAt).toFixed(0) + ' ms';
+function scriptExportTime(app: ResultsApp, e: ScriptExportEntry): string {
+  // `!`: 'running'/'exporting' only ever reach here with startedAt already set
+  // (app.js sets it when the statement starts, before either status can hold).
+  if (e.status === 'running' || e.status === 'exporting') return (app.now() - e.startedAt!).toFixed(0) + ' ms';
   if (e.status === 'pending' || e.status === 'skipped') return '';
-  return e.ms.toFixed(0) + ' ms';
+  // `!`: every other status ('ok'/'failed'/'cancelled') is only ever reached
+  // once the statement has finished, always with a recorded ms.
+  return e.ms!.toFixed(0) + ' ms';
 }
 
 // Column 2 of one script row, by outcome.
-function scriptOutcomeCell(app, e) {
+function scriptOutcomeCell(app: ResultsApp, e: ScriptEntry): HTMLTableCellElement {
   if (e.status === 'error') return h('td', { class: 'script-cell err' }, e.error || 'Error');
   if (e.status === 'ok') return h('td', { class: 'script-cell ok' }, 'OK');
   // status === 'rows'
@@ -267,6 +453,19 @@ function scriptOutcomeCell(app, e) {
   }, h('span', { class: 'script-preview' }, e.preview || ''), h('span', { class: 'script-meta' }, meta));
 }
 
+/** The rows-bearing shape openRowsViewer needs — the 'rows' variant of a
+ *  `ScriptEntry` (scriptOutcomeCell only wires the click handler once
+ *  `e.rows.length` is confirmed truthy) or a standalone fixture (tests call
+ *  this directly). `columns`/`truncated` default when absent, matching the
+ *  pre-existing `entry.columns || []` fallback below. */
+export interface RowsViewerEntry {
+  columns?: { name: string; type: string }[];
+  rows: unknown[][];
+  truncated?: boolean;
+  viewerSort?: ResultSort;
+  viewerWidths?: Record<string, number>;
+}
+
 /**
  * Open a right-side pane with the full rows of one script SELECT, using the same
  * sortable + resizable grid as the main results table (renderGridView). Sort state and
@@ -274,13 +473,13 @@ function scriptOutcomeCell(app, e) {
  * cell-detail drawer, stacked). Reuses the .cd-* drawer scaffold (a shared Drawer
  * primitive is deferred to #60). Escape / backdrop / ✕ closes. Exported for tests.
  */
-export function openRowsViewer(app, entry) {
+export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLElement {
   const doc = app.document;
-  let backdrop;
-  let cancelDrawerDrag; // assigned by attachDrawerResize below, before close() can possibly fire
-  let detachBackdrop;
-  const onKey = (ev) => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
-  function close() {
+  let backdrop: HTMLElement;
+  let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
+  let detachBackdrop: () => void;
+  const onKey = (ev: KeyboardEvent): void => { if (ev.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
+  function close(): void {
     cancelDrawerDrag();
     detachBackdrop();
     if (backdrop) backdrop.remove();
@@ -296,10 +495,11 @@ export function openRowsViewer(app, entry) {
   entry.viewerSort = entry.viewerSort || { col: null, dir: 'asc' };
   const widths = entry.viewerWidths || (entry.viewerWidths = {});
   const body = h('div', { class: 'cd-body' });
-  const paint = () => body.replaceChildren(renderGridView({
+  const paint = (): void => body.replaceChildren(renderGridView({
     columns: entry.columns || [],
     rows: entry.rows,
-    sort: entry.viewerSort,
+    // `!`: just assigned above, unconditionally, before this closure can run.
+    sort: entry.viewerSort!,
     setSort: (next) => { entry.viewerSort = next; },
     widths,
     rerender: paint,
@@ -321,11 +521,11 @@ export function openRowsViewer(app, entry) {
  * cap, so a higher limit genuinely fetches more. The caller hides it for EXPLAIN
  * views (small output a cap would truncate oddly).
  */
-function rowLimitSelect(app) {
+function rowLimitSelect(app: ResultsApp): HTMLLabelElement {
   const sel = h('select', {
     class: 'row-limit-select',
     title: 'Max rows to fetch — changing re-runs the query',
-    onchange: (e) => app.actions.setResultRowLimit(Number(e.target.value)),
+    onchange: (e: Event) => app.actions.setResultRowLimit(Number((e.target as HTMLSelectElement).value)),
   });
   for (const n of RESULT_ROW_LIMIT_OPTIONS) {
     sel.appendChild(h('option', { value: String(n) }, String(n)));
@@ -336,9 +536,9 @@ function rowLimitSelect(app) {
   return h('label', { class: 'row-limit' }, h('span', { class: 'row-limit-label' }, 'Rows'), sel);
 }
 
-function buildToolbar(app, r) {
+function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
   const toolbar = h('div', { class: 'res-toolbar' });
-  if (r && r.script) {
+  if (r && 'script' in r) {
     // Script view: a title (N statements) + live elapsed / Cancel while running,
     // else the total elapsed. No view-switcher / copy / export (each statement
     // owns its own preview + rows pane).
@@ -360,10 +560,10 @@ function buildToolbar(app, r) {
     }
     return toolbar;
   }
-  if (r && r.scriptExport) {
+  if (r && 'scriptExport' in r) {
     // Script-export view: a title (N statements) + live elapsed / Cancel while
     // exporting, else the total elapsed. Same "no view tabs / row-limit / Copy /
-    // Export" shape as the r.script branch — each statement owns its own file.
+    // Export" shape as the r.script branch above — each statement owns its own file.
     const n = r.scriptExport.length;
     toolbar.appendChild(h('div', { class: 'result-view-tabs' },
       h('span', { class: 'res-graph-title' }, 'Export script · ' + n + ' statement' + (n === 1 ? '' : 's'))));
@@ -406,7 +606,7 @@ function buildToolbar(app, r) {
         class: 'res-act cancel-act', title: 'Cancel schema graph',
         onclick: () => app.actions.cancelSchemaGraph({ clearResult: true }),
       }, Icon.close(), h('span', null, 'Cancel')));
-    } else if (!sg.loading && sg.nodes.length) {
+    } else if (!sg.loading && sg.nodes && sg.nodes.length) {
       // Expand is meaningless when there's nothing to draw (no connected
       // objects → the pane shows a message, not a graph).
       toolbar.appendChild(h('button', {
@@ -418,7 +618,7 @@ function buildToolbar(app, r) {
     }
     return toolbar;
   }
-  let tabs;
+  let tabs: HTMLDivElement;
   if (r && r.explainView) {
     // The five EXPLAIN views — clicking re-runs the derived query (editor SQL is
     // never touched). Stays visible on error so a failing view can be switched.
@@ -439,8 +639,8 @@ function buildToolbar(app, r) {
       h('button', { class: 'result-view-tab active' },
         r.rawFormat === 'JSON' ? Icon.json() : Icon.table2(), h('span', null, r.rawFormat)));
   } else {
-    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id; }, false);
-    tabs.appendChild(renderPanelTypePicker(app, r, panelHooks(app, r)));
+    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id as 'table' | 'json' | 'panel' | 'filter'; }, false);
+    tabs.appendChild(renderPanelTypePicker(app as App, r, panelHooks(app, r)));
   }
   toolbar.appendChild(tabs);
   // Row-cap selector after the view tabs, for normal result queries only —
@@ -488,7 +688,7 @@ function buildToolbar(app, r) {
       toolbar.appendChild(h('button', {
         // Marker class → CSS hides fullscreen (pan/zoom-only) in mobile mode (#126).
         class: 'res-act res-act--pipeline-expand', title: 'Open the graph fullscreen (pan & zoom)',
-        onclick: () => openPipelineFullscreen(app, r.rawText),
+        onclick: () => openPipelineFullscreen(app as DetachedGraphApp, r.rawText),
       }, Icon.expand(), h('span', null, 'Expand')));
     }
     if (!r.error) {
@@ -519,7 +719,7 @@ function buildToolbar(app, r) {
  * call (never cached/shared across the two consumers' documents — an Icon
  * element inserted into a second document would just move out of the first).
  */
-function viewSwitcherTabs(current, onSelect, includePanel = true) {
+function viewSwitcherTabs(current: string, onSelect: (id: string) => void, includePanel = true): HTMLDivElement {
   const tabs = h('div', { class: 'result-view-tabs' });
   const views = [
     { id: 'table', label: 'Table', icon: Icon.table2() },
@@ -535,9 +735,9 @@ function viewSwitcherTabs(current, onSelect, includePanel = true) {
   return tabs;
 }
 
-export function renderJson(r) {
+export function renderJson(r: QueryResult): HTMLDivElement {
   const arr = r.rows.slice(0, visCap(r)).map((row) => {
-    const o = {};
+    const o: Record<string, unknown> = {};
     r.columns.forEach((c, i) => { o[c.name] = row[i]; });
     return o;
   });
@@ -545,7 +745,7 @@ export function renderJson(r) {
 }
 
 // The main results table: the shared grid wired to the global sort state + result.
-export function renderTable(app, r) {
+export function renderTable(app: ResultsApp, r: QueryResult): HTMLElement {
   r.colWidths = r.colWidths || {}; // persists across re-renders (sort/streaming)
   return renderGridView({
     columns: r.columns,
@@ -557,6 +757,35 @@ export function renderTable(app, r) {
     onCell: (name, type, value) => openCellDetail(app, name, type, value),
     cap: visCap(r), // honor the selectable result-row limit (#86)
   });
+}
+
+/** The discriminated `panel` argument `renderResultView` accepts — 'edit' is
+ *  the workbench Panel drawer tab's own hooks (#166); 'readonly' is a
+ *  render-only panel from a pre-resolved (cloned) cfg, used by the detached
+ *  Data Pane's local grid/chart state. */
+export type RenderResultViewPanelArgs =
+  | { mode: 'edit'; hooks: PanelHooks }
+  | {
+      mode: 'readonly';
+      resolved: PanelResolution;
+      state: Record<string, unknown>;
+      setChart: (chart: PanelChartInstance) => void;
+    };
+
+/** `renderResultView`'s argument bag. `app` is the literal `App` (panels.ts's
+ *  registry needs it) — callers (both narrowly `ResultsApp`-typed) cast at
+ *  this one boundary. */
+export interface RenderResultViewArgs {
+  app: App;
+  view: string;
+  result: QueryResult | null;
+  sort: ResultSort;
+  setSort: (next: ResultSort) => void;
+  widths: Record<string, number> | undefined;
+  rerender: () => void;
+  onCell: (name: string, type: string, value: unknown) => void;
+  cap: number | undefined;
+  panel: RenderResultViewPanelArgs;
 }
 
 /**
@@ -579,7 +808,7 @@ export function renderTable(app, r) {
  * handle the no-result-at-all case (only the Panel view renders with a null
  * result). Exported for tests.
  */
-export function renderResultView({ app, view, result, sort, setSort, widths, rerender, onCell, cap, panel }) {
+export function renderResultView({ app, view, result, sort, setSort, widths, rerender, onCell, cap, panel }: RenderResultViewArgs): HTMLElement {
   const r = result;
   if (view === 'panel') {
     if (panel.mode === 'readonly') {
@@ -596,11 +825,16 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
     }
     return renderPanelView(app, r, panel.hooks);
   }
-  if (r.rows.length === 0) {
+  // `!`: every non-panel view is only ever reached with a real result —
+  // renderResults gates the null+non-panel+non-filter case with its own
+  // empty-prompt branch, and expandDataPane's `current` is never null (it
+  // starts as the expand-time snapshot and only ever replaces itself with
+  // another real StreamResult-shaped run).
+  if (r!.rows.length === 0) {
     return h('div', { class: 'placeholder' }, h('div', null, 'Query returned 0 rows.'));
   }
-  if (view === 'json') return renderJson(r);
-  return renderGridView({ columns: r.columns, rows: r.rows, sort, setSort, widths, rerender, onCell, cap });
+  if (view === 'json') return renderJson(r!);
+  return renderGridView({ columns: r!.columns, rows: r!.rows, sort, setSort, widths: widths!, rerender, onCell, cap });
 }
 
 /**
@@ -622,9 +856,12 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
  * shows immediately); Copy always copies the current detached result. Exported
  * for tests.
  */
-export function expandDataPane(app, r) {
+export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
   const mainDoc = app.document;
-  const source = r.source;
+  // `!`: expandDataPane is only ever reached from buildToolbar's own Expand
+  // button, gated on `r.source` being truthy — a caller invoking this directly
+  // (tests) always builds a fixture carrying its own `.source` too.
+  const source = r.source!;
   // Capture the originating tab's ClickHouse session AT EXPAND TIME (the active
   // tab is the source tab now) and reuse it for the life of this view, so a
   // source depending on session state (temp tables / SET) re-filters against
@@ -638,15 +875,15 @@ export function expandDataPane(app, r) {
   const savedPanel = tabPanel(app.activeTab());
   // Analyze the captured source ONCE — its `{name:Type}` fields drive the
   // filter row; the SQL is fixed for the life of this view.
-  const analysis = analyzeParameterizedSources([
+  const analysis: ParameterAnalysis = analyzeParameterizedSources([
     { id: 'detached', label: 'detached data', kind: 'tab', sql: source.sql, bindPolicy: 'row-returning' },
   ]);
   const fields = fieldControls(analysis);
 
-  return openInDetachedTab(app, {
+  return openInDetachedTab(app as DetachedViewApp, {
     title: source.title, // browser-tab title + the primitive's bar title
     mode: 'grid',
-    mount: ({ doc, bar, body, close, closeBtn }) => {
+    mount: ({ doc, bar, body, close, closeBtn }: MountCtx) => {
       const isTab = doc !== mainDoc;
       // Header: replace the primitive's plain title span with a real heading +
       // (optional) description — plain text only, full value in the title attr,
@@ -663,20 +900,20 @@ export function expandDataPane(app, r) {
 
       // Detached-local view/render state (never the live tab's).
       const view = { current: 'table' };
-      const panelState = {};
-      let sort = { col: null, dir: 'asc' };
-      const widths = {};
-      let chartInstance = null;
-      let current = r; // the current result — starts as the expand-time snapshot
+      const panelState: Record<string, unknown> = {};
+      let sort: ResultSort = { col: null, dir: 'asc' };
+      const widths: Record<string, number> = {};
+      let chartInstance: PanelChartInstance | null = null;
+      let current: QueryResult = r; // the current result — starts as the expand-time snapshot
       // Concurrency: a fresh generation + AbortController per run; a stale or
       // post-close response is discarded, never painted.
       let gen = 0;
       let running = false;
-      let ac = null;
+      let ac: AbortController | null = null;
       let closed = false;
-      let statEl = null;
-      let refreshBtn = null;
-      let statusEl = null;
+      let statEl: HTMLElement | null = null;
+      let refreshBtn: HTMLButtonElement | null = null;
+      let statusEl: HTMLElement | null = null;
 
       const inner = h('div', { class: 'res-body' });
       // Render `res` (defaults to the committed `current`) into the body.
@@ -685,12 +922,12 @@ export function expandDataPane(app, r) {
       // a successful current-generation commit. So the previous committed result
       // stays on screen through streaming (no metadata-only "0 rows" flash) and
       // the chart is not destroyed/recreated per chunk.
-      const paint = (res = current) => withDocument(doc, () => {
+      const paint = (res: QueryResult = current): void => withDocument(doc, () => {
         // Destroy the previous chart before rebuilding — same reasoning as
         // renderResults' destroy-before-rebuild (nothing may leak its canvas).
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
         inner.replaceChildren(renderResultView({
-          app,
+          app: app as App,
           view: view.current,
           result: res,
           sort,
@@ -710,7 +947,7 @@ export function expandDataPane(app, r) {
       });
 
       let tabsEl = viewSwitcherTabs(view.current, selectView);
-      function selectView(id) {
+      function selectView(id: string): void {
         // Switching views is local and NEVER re-runs SQL.
         view.current = id;
         const next = viewSwitcherTabs(id, selectView);
@@ -719,15 +956,15 @@ export function expandDataPane(app, r) {
         paint();
       }
 
-      const setStatus = (t) => { if (statusEl) statusEl.textContent = t; };
+      const setStatus = (t: string): void => { if (statusEl) statusEl.textContent = t; };
 
       // Settle this run's chrome (running flag + Refresh enabled + status). A
       // blocked or superseded-then-blocked run must reset these too, else the
       // Refresh button (disabled by the aborted in-flight run) stays stuck.
-      const settle = (msg) => { running = false; if (refreshBtn) refreshBtn.disabled = false; setStatus(msg); };
+      const settle = (msg: string): void => { running = false; if (refreshBtn) refreshBtn.disabled = false; setStatus(msg); };
 
       // Re-run ONLY this detached query with the current shared filter values.
-      async function rerun() {
+      async function rerun(): Promise<void> {
         if (closed) return;
         const myGen = ++gen;
         if (ac) ac.abort(); // supersede any in-flight detached request
@@ -757,7 +994,10 @@ export function expandDataPane(app, r) {
           params: { ...(sessionId ? { session_id: sessionId } : {}), ...mergedSourceArgs(src) },
         });
         if (execution.error) { settle(execution.error); return; }
-        const result = newResult(execution.format, execution.rowLimit);
+        // `!`: `defaults.format: 'Table'` is always supplied above, so
+        // `execution.format` is always populated whether or not the KPI arm
+        // ends up owning transport (it overrides to 'KPI' rather than clearing it).
+        const result = newResult(execution.format!, execution.rowLimit);
         await app.runReadInto(result, {
           sql: mergedSourceSql(src, source.sql),
           format: execution.format,
@@ -803,7 +1043,7 @@ export function expandDataPane(app, r) {
       // omitted entirely otherwise (no empty toolbar). Committing a field or
       // clicking Refresh re-runs only this detached query.
       if (fields.length) {
-        const getField = (name, mode) => prepareParameterizedBatch(analysis, {
+        const getField = (name: string, mode: ValidationMode): PreparedFieldState => prepareParameterizedBatch(analysis, {
           values: app.state.varValues,
           active: effectiveFilterActive(app.state.varValues, app.state.filterActive),
           wallNowMs: app.wallNow(),
@@ -811,7 +1051,7 @@ export function expandDataPane(app, r) {
         }).fields[name];
         // A committed field re-runs only this detached query (rerun ignores the
         // param name buildFilterBar passes — a single source re-runs wholesale).
-        const filterBar = buildFilterBar(app, fields, rerun, getField, { document: doc, ariaLabel: 'Query filters' });
+        const filterBar = buildFilterBar(app as FilterBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query filters' });
         refreshBtn = h('button', {
           class: 'res-act detached-refresh', title: 'Re-run this query with the current filter values',
           onclick: () => rerun(),
@@ -826,7 +1066,7 @@ export function expandDataPane(app, r) {
       // Esc closes an open cell-detail drawer first (its own listener, keyed
       // off isTopDrawer, handles that); a second Esc — no drawer left — closes
       // the pane (overlay only; a real tab closes via the browser).
-      const onKey = (e) => {
+      const onKey = (e: KeyboardEvent): void => {
         if (e.key !== 'Escape' || doc.querySelector('.cd-backdrop')) return;
         e.stopPropagation();
         close();
@@ -853,7 +1093,7 @@ export function expandDataPane(app, r) {
 // Only the topmost drawer responds to Escape, so dismissing a stacked cell drawer
 // returns to the rows pane underneath instead of closing both at once. (The
 // current backdrop is always in the DOM when its handler fires.)
-function isTopDrawer(doc, el) {
+function isTopDrawer(doc: Document, el: Element | undefined): boolean {
   const all = doc.querySelectorAll('.cd-backdrop');
   return all[all.length - 1] === el;
 }
@@ -877,26 +1117,34 @@ function isTopDrawer(doc, el) {
  * stale `cellDrawerPx`. `close()` must call it before removing the backdrop.
  * A no-op if no drag is in progress.
  */
-function attachDrawerResize(app, panel, doc) {
+function attachDrawerResize(app: ResultsApp, panel: HTMLElement, doc: Document): () => void {
   // doc.defaultView is null for a detached document not yet attached to a real
   // browsing context (e.g. tests' document.implementation.createHTMLDocument());
   // a real detached tab (window.open()) always has one. Fall back to the
   // ambient window rather than crash on the (harmless) synthetic-doc case.
   const win = doc.defaultView || window;
   panel.style.width = clampDrawerWidth(app.state.cellDrawerPx, win.innerWidth) + 'px';
-  let cancelActive = null;
+  let cancelActive: (() => void) | null = null;
   const handle = h('div', {
     class: 'cd-resize-h',
     title: 'Drag to resize',
-    onmousedown: (ev) => {
+    onmousedown: (ev: MouseEvent) => {
       const startPx = app.state.cellDrawerPx;
-      const stopDrag = startDrag(ev, 'drawer', {
-        win,
-        state: app.state,
-        rectFor: () => ({ width: win.innerWidth }),
-        apply: (_axis, value) => { panel.style.width = value + 'px'; },
-        save: (name, value) => app.savePref(name, value),
-      });
+      const stopDrag = startDrag(
+        // `as Element`: this handler is only ever reached via a real
+        // `mousedown` dispatched on `handle` itself (the listener target),
+        // so `currentTarget` is always that element, never null — the DOM
+        // lib's own `EventTarget | null` is just wider than the true contract.
+        { preventDefault: () => ev.preventDefault(), currentTarget: ev.currentTarget as Element },
+        'drawer',
+        {
+          win,
+          state: app.state,
+          rectFor: () => ({ width: win.innerWidth }),
+          apply: (_axis, value) => { panel.style.width = value + 'px'; },
+          save: (name, value) => app.savePref(name, value),
+        },
+      );
       cancelActive = () => { stopDrag(); app.state.cellDrawerPx = startPx; cancelActive = null; };
     },
   });
@@ -904,14 +1152,14 @@ function attachDrawerResize(app, panel, doc) {
   return () => { if (cancelActive) cancelActive(); };
 }
 
-export function openCellDetail(app, name, type, value, targetDoc) {
+export function openCellDetail(app: ResultsApp, name: string, type: string, value: unknown, targetDoc?: Document): HTMLElement {
   const doc = targetDoc || app.document;
   const text = value == null ? '' : String(value);
-  let backdrop;
-  let cancelDrawerDrag; // assigned by attachDrawerResize below, before close() can possibly fire
-  let detachBackdrop;
-  const onKey = (e) => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
-  function close() {
+  let backdrop: HTMLElement;
+  let cancelDrawerDrag: () => void; // assigned by attachDrawerResize below, before close() can possibly fire
+  let detachBackdrop: () => void;
+  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape' && isTopDrawer(doc, backdrop)) close(); };
+  function close(): void {
     cancelDrawerDrag();
     detachBackdrop();
     if (backdrop) backdrop.remove();
@@ -925,7 +1173,7 @@ export function openCellDetail(app, name, type, value, targetDoc) {
   // since unwound by the time the user clicks anything.
   return withDocument(doc, () => {
     const body = h('div', { class: 'cd-body' });
-    const showSource = () => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
+    const showSource = (): void => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
 
     const head = h('div', { class: 'cd-head' },
       h('div', { class: 'cd-title' },
@@ -938,7 +1186,7 @@ export function openCellDetail(app, name, type, value, targetDoc) {
 
     if (looksLikeHtml(text)) {
       const seg = h('div', { class: 'cd-toggle' });
-      const setMode = (mode) => withDocument(doc, () => {
+      const setMode = (mode: 'rendered' | 'source'): void => withDocument(doc, () => {
         seg.replaceChildren(
           h('button', { class: 'cd-seg' + (mode === 'rendered' ? ' on' : ''), onclick: () => setMode('rendered') }, 'Rendered'),
           h('button', { class: 'cd-seg' + (mode === 'source' ? ' on' : ''), onclick: () => setMode('source') }, 'Source'));

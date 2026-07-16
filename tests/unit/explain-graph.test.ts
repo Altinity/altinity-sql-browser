@@ -1,13 +1,22 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { signal } from '@preact/signals-core';
-import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaView, buildRichSchemaSvg } from '../../src/ui/explain-graph.js';
+import {
+  renderExplainGraph, openPipelineFullscreen, renderSchemaGraph, openSchemaView, buildRichSchemaSvg,
+} from '../../src/ui/explain-graph.js';
+import type { DetachedGraphApp, ExplainGraphApp, SchemaLineageGraph } from '../../src/ui/explain-graph.js';
+
+const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
+const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] => [...root.querySelectorAll(selector)] as T[];
 
 // Every detached-view entry point (openPipelineFullscreen/openSchemaView) reads
 // app.state.detachedView (a signal, #100) — a fresh one per stub so counts
 // from one test don't leak into another.
 const detachedState = () => ({ detachedView: signal(0) });
-const APP = { document, Dagre: dagre, state: detachedState() }; // app stub carrying the dagre layout seam
+// `as`: a minimal draw-only stub (never clicks a node or opens a real tab) —
+// the dedicated fixtures further down (overlayApp/tabApp, or an inline
+// literal) supply openWindow/actions for the tests that exercise those paths.
+const APP = { document, Dagre: dagre, state: detachedState() } as DetachedGraphApp;
 
 const DOT = `digraph
 {
@@ -23,17 +32,17 @@ describe('renderExplainGraph', () => {
   it('draws an SVG with one rect+label per node and a path per edge', () => {
     const el = renderExplainGraph(APP, { rawText: DOT });
     expect(el.className).toBe('explain-graph-view');
-    const svg = el.querySelector('svg.explain-graph');
+    const svg = el.querySelector('svg.explain-graph')!;
     expect(svg).not.toBeNull();
     expect(svg.getAttribute('width')).toBe('100%'); // fills the pane; viewBox is the window
-    expect(svg.getAttribute('viewBox').split(' ').map(Number).every(Number.isFinite)).toBe(true);
+    expect(svg.getAttribute('viewBox')!.split(' ').map(Number).every(Number.isFinite)).toBe(true);
     expect(svg.querySelectorAll('rect.eg-node')).toHaveLength(3);
     expect(svg.querySelectorAll('text.eg-label')).toHaveLength(3);
     expect(svg.querySelectorAll('path.eg-edge')).toHaveLength(2);
     // a reusable arrowhead marker is defined and referenced
     expect(svg.querySelector('marker#eg-arrow')).not.toBeNull();
-    expect(svg.querySelector('path.eg-edge').getAttribute('marker-end')).toBe('url(#eg-arrow)');
-    expect([...svg.querySelectorAll('text.eg-label')].map((t) => t.textContent))
+    expect(svg.querySelector('path.eg-edge')!.getAttribute('marker-end')).toBe('url(#eg-arrow)');
+    expect(qsa(svg, 'text.eg-label').map((t) => t.textContent))
       .toEqual(['NumbersRange', 'Filter', 'Aggregating']);
   });
   it('shows a placeholder when the DOT has no nodes', () => {
@@ -53,16 +62,16 @@ describe('openPipelineFullscreen', () => {
   // openPipelineFullscreen now shares the detached-view primitive with the
   // schema graph, whose return value is a controller — not the backdrop —
   // so (like the schema tests' overlayOf()) query the document for it.
-  const overlayOf = () => document.querySelector('.graph-overlay');
+  const overlayOf = (): HTMLElement => document.querySelector('.graph-overlay')!;
 
   // happy-dom has no layout, so stub the canvas rect the pan/zoom math reads.
-  const stubRect = (canvas) => {
-    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+  const stubRect = (canvas: HTMLElement): void => {
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
   };
-  const vbOf = (overlay) => overlay.querySelector('svg.explain-graph').getAttribute('viewBox').split(' ').map(Number);
+  const vbOf = (overlay: HTMLElement): number[] => overlay.querySelector('svg.explain-graph')!.getAttribute('viewBox')!.split(' ').map(Number);
   // happy-dom drops modifier keys AND clientX/clientY from the WheelEvent init
   // dict (it keeps deltaX/deltaY), so force every field the handler reads.
-  const fireWheel = (canvas, opts = {}) => {
+  const fireWheel = (canvas: Element, opts: { deltaX?: number; deltaY?: number; clientX?: number; clientY?: number; ctrlKey?: boolean; metaKey?: boolean } = {}): void => {
     const e = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: opts.deltaX || 0, deltaY: opts.deltaY || 0 });
     Object.defineProperty(e, 'clientX', { value: opts.clientX ?? 200 });
     Object.defineProperty(e, 'clientY', { value: opts.clientY ?? 100 });
@@ -76,7 +85,7 @@ describe('openPipelineFullscreen', () => {
     const overlay = overlayOf();
     expect(document.body.contains(overlay)).toBe(true);
     expect(overlay.className).toBe('graph-overlay');
-    const svg = overlay.querySelector('svg.explain-graph');
+    const svg = overlay.querySelector('svg.explain-graph')!;
     expect(svg.getAttribute('width')).toBe('100%');
     expect(svg.querySelectorAll('rect.eg-node')).toHaveLength(3);
     expect(overlay.querySelector('.graph-overlay-zoom')).not.toBeNull();
@@ -86,7 +95,7 @@ describe('openPipelineFullscreen', () => {
   it('⌘/Ctrl+wheel zooms around the cursor; plain wheel pans', () => {
     openPipelineFullscreen(APP, DOT);
     const overlay = overlayOf();
-    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(overlay, '.graph-overlay-canvas');
     stubRect(canvas);
     const w0 = vbOf(overlay)[2];
     fireWheel(canvas, { deltaY: -1, ctrlKey: true });
@@ -106,7 +115,7 @@ describe('openPipelineFullscreen', () => {
   it('double-click fits the graph', () => {
     openPipelineFullscreen(APP, DOT);
     const overlay = overlayOf();
-    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(overlay, '.graph-overlay-canvas');
     stubRect(canvas);
     const fitW = vbOf(overlay)[2];
     fireWheel(canvas, { deltaY: -1, ctrlKey: true });
@@ -118,7 +127,7 @@ describe('openPipelineFullscreen', () => {
   it('drag pans the viewBox; a stray mousemove without a drag is a no-op', () => {
     openPipelineFullscreen(APP, DOT);
     const overlay = overlayOf();
-    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(overlay, '.graph-overlay-canvas');
     stubRect(canvas);
     const [x0] = vbOf(overlay);
     canvas.dispatchEvent(new MouseEvent('mousemove', { clientX: 50, clientY: 0, bubbles: true })); // no drag yet
@@ -135,10 +144,10 @@ describe('openPipelineFullscreen', () => {
   it('zoom buttons and Fit reframe the graph', () => {
     openPipelineFullscreen(APP, DOT);
     const overlay = overlayOf();
-    const canvas = overlay.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(overlay, '.graph-overlay-canvas');
     stubRect(canvas);
     const fitW = vbOf(overlay)[2];
-    const [zoomOut, zoomIn, fit] = overlay.querySelectorAll('.graph-overlay-zoom .res-act');
+    const [zoomOut, zoomIn, fit] = qsa(overlay, '.graph-overlay-zoom .res-act');
     zoomIn.dispatchEvent(new Event('click', { bubbles: true }));
     expect(vbOf(overlay)[2]).toBeLessThan(fitW);
     zoomOut.dispatchEvent(new Event('click', { bubbles: true }));
@@ -157,9 +166,9 @@ describe('openPipelineFullscreen', () => {
     // panel click does NOT close; ✕ does
     openPipelineFullscreen(APP, DOT);
     overlay = overlayOf();
-    overlay.querySelector('.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlay, '.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(true);
-    overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlay, '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
     // backdrop click closes
     openPipelineFullscreen(APP, DOT);
@@ -176,17 +185,17 @@ describe('openPipelineFullscreen', () => {
     expect(overlay.querySelector('svg.explain-graph')).toBeNull();
     expect(overlay.querySelector('.graph-overlay-zoom')).toBeNull();
     expect(overlay.textContent).toMatch(/Nothing to display/);
-    overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlay, '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
 
   it('tracks app.state.detachedView while open, decrementing on close', () => {
-    const app = { document, Dagre: dagre, state: detachedState() };
-    expect(app.state.detachedView.value).toBe(0);
+    const app = { document, Dagre: dagre, state: detachedState() } as DetachedGraphApp;
+    expect(app.state!.detachedView!.value).toBe(0);
     openPipelineFullscreen(app, DOT);
-    expect(app.state.detachedView.value).toBe(1);
-    overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.state.detachedView.value).toBe(0);
+    expect(app.state!.detachedView!.value).toBe(1);
+    qs(overlayOf(), '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    expect(app.state!.detachedView!.value).toBe(0);
   });
 });
 
@@ -194,33 +203,35 @@ describe('openPipelineFullscreen — real browser tab', () => {
   afterEach(() => { document.body.innerHTML = ''; });
   const makeWin = () => {
     const childDoc = document.implementation.createHTMLDocument('');
-    const ls = {};
+    const ls: Record<string, () => void> = {};
     return {
       document: childDoc, closed: false,
       close: vi.fn(), focus: vi.fn(),
-      addEventListener: (t, fn) => { ls[t] = fn; },
-      fire: (t) => ls[t] && ls[t](),
+      addEventListener: (t: string, fn: () => void) => { ls[t] = fn; },
+      fire: (t: string) => { if (ls[t]) ls[t](); },
     };
   };
-  const stub = (canvas) => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 }); };
+  const stub = (canvas: HTMLElement): void => {
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
+  };
 
   it('builds the graph in the child document: copies CSS, mirrors theme, fills the tab, no close button', () => {
     document.documentElement.setAttribute('data-theme', 'dark');
     const win = makeWin();
-    const app = { document, Dagre: dagre, stylesText: 'body{color:red}', openWindow: () => win, state: detachedState() };
+    const app = { document, Dagre: dagre, stylesText: 'body{color:red}', openWindow: () => win, state: detachedState() } as DetachedGraphApp;
     openPipelineFullscreen(app, DOT);
-    expect(win.document.querySelector('style').textContent).toBe('body{color:red}');
+    expect(win.document.querySelector('style')!.textContent).toBe('body{color:red}');
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.title).toBe('Pipeline');
     expect(win.document.body.className).toBe('detached-tab');
     expect(win.focus).toHaveBeenCalled();
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     expect(canvas.querySelectorAll('rect.eg-node')).toHaveLength(3);
     expect(win.document.querySelector('.graph-overlay-close')).toBeNull(); // no JS close in a real tab
     // pan/zoom still works in the tab's own document
     canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    expect(canvas.querySelector('svg.explain-graph').getAttribute('viewBox')).not.toBeNull();
+    expect(canvas.querySelector('svg.explain-graph')!.getAttribute('viewBox')).not.toBeNull();
     // Escape is a no-op in a tab (no nested pane, no JS-driven close)
     win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(win.document.body.contains(canvas)).toBe(true);
@@ -228,25 +239,25 @@ describe('openPipelineFullscreen — real browser tab', () => {
 
   it('closing the real tab (pagehide) decrements app.state.detachedView', () => {
     const win = makeWin();
-    const app = { document, Dagre: dagre, openWindow: () => win, state: detachedState() };
+    const app = { document, Dagre: dagre, openWindow: () => win, state: detachedState() } as DetachedGraphApp;
     openPipelineFullscreen(app, DOT);
-    expect(app.state.detachedView.value).toBe(1);
+    expect(app.state!.detachedView!.value).toBe(1);
     win.fire('pagehide');
-    expect(app.state.detachedView.value).toBe(0);
+    expect(app.state!.detachedView!.value).toBe(0);
   });
 
   it('falls back to the overlay when the window is null or has no document', () => {
-    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => null, state: detachedState() }, DOT);
+    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => null, state: detachedState() } as DetachedGraphApp, DOT);
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
     document.body.innerHTML = '';
-    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => ({ document: null }), state: detachedState() }, DOT);
+    openPipelineFullscreen({ document, Dagre: dagre, openWindow: () => ({ document: null } as unknown as ReturnType<typeof makeWin>), state: detachedState() } as DetachedGraphApp, DOT);
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
   });
 });
 
 describe('schema lineage graph', () => {
   afterEach(() => { document.body.innerHTML = ''; });
-  const GRAPH = {
+  const GRAPH: SchemaLineageGraph = {
     focus: { kind: 'db', db: 'lin' },
     // nodes carry db/name separately, as buildSchemaGraph produces them
     nodes: [
@@ -267,12 +278,12 @@ describe('schema lineage graph', () => {
     expect(el.querySelector('rect.eg-node--mv')).not.toBeNull();
     expect(el.querySelector('rect.eg-node--table')).not.toBeNull();
     expect(el.querySelector('path.eg-edge--writes')).not.toBeNull();
-    expect([...el.querySelectorAll('text.eg-edge-label')].map((t) => t.textContent)).toContain('feeds');
+    expect(qsa(el, 'text.eg-edge-label').map((t) => t.textContent)).toContain('feeds');
     expect(el.querySelector('.schema-graph-legend')).not.toBeNull();
   });
 
   it('shows a table comment as a native hover tooltip (<title>) on its node', () => {
-    const g = {
+    const g: SchemaLineageGraph = {
       focus: { kind: 'db', db: 'lin' },
       nodes: [
         { id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a', comment: 'raw events' },
@@ -281,9 +292,9 @@ describe('schema lineage graph', () => {
       edges: [],
     };
     const el = renderSchemaGraph(APP, { schemaGraph: g });
-    const groups = [...el.querySelectorAll('svg.explain-graph > g')];
-    const withTitle = groups.find((gr) => gr.querySelector('title'));
-    expect(withTitle.querySelector('title').textContent).toBe('raw events');
+    const groups = qsa(el, 'svg.explain-graph > g');
+    const withTitle = groups.find((gr) => gr.querySelector('title'))!;
+    expect(withTitle.querySelector('title')!.textContent).toBe('raw events');
     expect(withTitle.querySelector('rect.eg-node--table')).not.toBeNull();
     // the commentless node's rect/text are appended directly (no wrapping <g>, no <title>)
     expect(el.querySelectorAll('svg.explain-graph > g')).toHaveLength(1);
@@ -297,14 +308,14 @@ describe('schema lineage graph', () => {
 
   it('clicking a node runs SHOW CREATE for it (insertCreate) into the editor', () => {
     const actions = { insertCreate: vi.fn() };
-    const el = renderSchemaGraph({ document, Dagre: dagre, actions }, { schemaGraph: GRAPH });
-    el.querySelector('rect.eg-node--mv').dispatchEvent(new Event('click', { bubbles: true }));
+    const el = renderSchemaGraph({ document, Dagre: dagre, actions } as ExplainGraphApp, { schemaGraph: GRAPH });
+    el.querySelector('rect.eg-node--mv')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(actions.insertCreate).toHaveBeenCalledWith('lin.mv');
   });
 
   it('clicking an external (ext:) leaf in the inline graph is a no-op (no SHOW CREATE)', () => {
     const actions = { insertCreate: vi.fn() };
-    const g = {
+    const g: SchemaLineageGraph = {
       focus: { kind: 'db', db: 'lin' },
       nodes: [
         { id: 'lin.d', label: 'd', kind: 'dictionary', db: 'lin', name: 'd' },
@@ -312,24 +323,24 @@ describe('schema lineage graph', () => {
       ],
       edges: [{ from: 'ext:HTTP', to: 'lin.d', kind: 'dict' }],
     };
-    const el = renderSchemaGraph({ document, Dagre: dagre, actions }, { schemaGraph: g });
-    el.querySelector('rect.eg-node--external').dispatchEvent(new Event('click', { bubbles: true }));
+    const el = renderSchemaGraph({ document, Dagre: dagre, actions } as ExplainGraphApp, { schemaGraph: g });
+    el.querySelector('rect.eg-node--external')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(actions.insertCreate).not.toHaveBeenCalled();
   });
 
   it('clicking a node with a non-bare name backtick-quotes the SHOW CREATE target', () => {
     const actions = { insertCreate: vi.fn() };
-    const g = { focus: { kind: 'db', db: 'target_all' }, nodes: [{ id: 'target_all.a-b.parquet', label: 'a-b.parquet', kind: 'table', db: 'target_all', name: 'a-b.parquet' }], edges: [] };
-    const el = renderSchemaGraph({ document, Dagre: dagre, actions }, { schemaGraph: g });
-    el.querySelector('rect.eg-node--table').dispatchEvent(new Event('click', { bubbles: true }));
+    const g: SchemaLineageGraph = { focus: { kind: 'db', db: 'target_all' }, nodes: [{ id: 'target_all.a-b.parquet', label: 'a-b.parquet', kind: 'table', db: 'target_all', name: 'a-b.parquet' }], edges: [] };
+    const el = renderSchemaGraph({ document, Dagre: dagre, actions } as ExplainGraphApp, { schemaGraph: g });
+    el.querySelector('rect.eg-node--table')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(actions.insertCreate).toHaveBeenCalledWith('target_all.`a-b.parquet`');
   });
 
   it('a plain drag does not pan (click selects); ⌘/Ctrl-drag pans', () => {
-    const el = renderSchemaGraph({ document, Dagre: dagre, actions: { insertCreate: vi.fn() } }, { schemaGraph: GRAPH });
-    const svg = el.querySelector('svg.explain-graph');
-    el.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
-    const vbX = () => svg.getAttribute('viewBox').split(' ').map(Number)[0];
+    const el = renderSchemaGraph({ document, Dagre: dagre, actions: { insertCreate: vi.fn() } } as ExplainGraphApp, { schemaGraph: GRAPH });
+    const svg = el.querySelector('svg.explain-graph')!;
+    el.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
+    const vbX = (): number => svg.getAttribute('viewBox')!.split(' ').map(Number)[0];
     const x0 = vbX();
     // plain drag → no pan (modifierPan gate blocks the mousedown)
     el.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, bubbles: true }));
@@ -362,8 +373,9 @@ describe('schema lineage graph', () => {
 
   // Overlay-fallback mode: openWindow returns null, so openSchemaView falls back
   // to the in-app modal overlay (mounted in the main document).
-  const overlayApp = (actions = {}) => ({ document, Dagre: dagre, openWindow: () => null, actions, state: detachedState() });
-  const overlayOf = () => document.querySelector('.graph-overlay');
+  const overlayApp = (actions: { openNodeDetail?: ReturnType<typeof vi.fn>; insertCreate?: ReturnType<typeof vi.fn> } = {}): DetachedGraphApp =>
+    ({ document, Dagre: dagre, openWindow: () => null, actions, state: detachedState() } as DetachedGraphApp);
+  const overlayOf = (): HTMLElement => document.querySelector('.graph-overlay')!;
 
   it('openSchemaView (overlay fallback) mounts the legend incl. Buffer+Merge, then renders and closes', () => {
     const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
@@ -372,17 +384,17 @@ describe('schema lineage graph', () => {
     expect(overlay.textContent).toMatch(/Loading/); // placeholder before render
     view.render(GRAPH);
     expect(overlay.querySelector('svg.explain-graph')).not.toBeNull();
-    const legend = [...overlay.querySelectorAll('.schema-graph-legend .sg-leg')].map((s) => s.textContent);
+    const legend = qsa(overlay, '.schema-graph-legend .sg-leg').map((s) => s.textContent);
     expect(legend).toEqual(expect.arrayContaining(['Buffer', 'Merge', 'External']));
     expect(overlay.querySelector('.graph-overlay-note')).toBeNull(); // not truncated
-    overlay.querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlay, '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(false);
   });
 
   it('overlay closes on Escape and on a backdrop click (but not a panel click)', () => {
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render(GRAPH);
     let overlay = overlayOf();
-    overlay.querySelector('.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlay, '.graph-overlay-panel').dispatchEvent(new Event('click', { bubbles: true }));
     expect(document.body.contains(overlay)).toBe(true); // panel click stops propagation
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); // ignored
     expect(document.body.contains(overlay)).toBe(true);
@@ -398,7 +410,7 @@ describe('schema lineage graph', () => {
   it('Esc closes the open detail pane first (clearing its card ring), then the overlay', () => {
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render(GRAPH);
     const overlay = overlayOf();
-    const panel = overlay.querySelector('.graph-overlay-panel');
+    const panel = qs(overlay, '.graph-overlay-panel');
     const pane = document.createElement('div'); pane.className = 'schema-detail';
     panel.appendChild(pane);
     // a selected card with a ring, as markSelected would have left it on the canvas
@@ -417,15 +429,15 @@ describe('schema lineage graph', () => {
   });
 
   it('falls back to the overlay using the global document when app has none', () => {
-    const view = openSchemaView({ Dagre: dagre, openWindow: () => null, actions: { openNodeDetail: vi.fn() }, state: detachedState() });
+    const view = openSchemaView({ Dagre: dagre, openWindow: () => null, actions: { openNodeDetail: vi.fn() }, state: detachedState() } as DetachedGraphApp);
     view.render(GRAPH);
     expect(overlayOf()).not.toBeNull(); // app.document undefined → global document
-    overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlayOf(), '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
   });
 
   it('clicking a node opens the detail pane (openNodeDetail); ⌘-click and ext: leaves do not', () => {
     const actions = { openNodeDetail: vi.fn(), insertCreate: vi.fn() };
-    const g = {
+    const g: SchemaLineageGraph = {
       focus: { kind: 'db', db: 'lin' },
       nodes: [
         { id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a' },
@@ -435,12 +447,12 @@ describe('schema lineage graph', () => {
     };
     openSchemaView(overlayApp(actions)).render(g);
     const overlay = overlayOf();
-    const card = [...overlay.querySelectorAll('g.eg-card')].find((c) => c.getAttribute('data-node-id') === 'lin.a');
+    const card = qsa<SVGGElement>(overlay, 'g.eg-card').find((c) => c.getAttribute('data-node-id') === 'lin.a')!;
     card.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(actions.openNodeDetail).toHaveBeenCalledTimes(1);
     card.dispatchEvent(new MouseEvent('click', { metaKey: true, bubbles: true })); // ⌘ reserved for moving
     expect(actions.openNodeDetail).toHaveBeenCalledTimes(1);
-    const ext = [...overlay.querySelectorAll('g.eg-card')].find((c) => c.querySelector('rect.eg-node--external'));
+    const ext = qsa<SVGGElement>(overlay, 'g.eg-card').find((c) => c.querySelector('rect.eg-node--external'))!;
     ext.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(actions.openNodeDetail).toHaveBeenCalledTimes(1);
     expect(actions.insertCreate).not.toHaveBeenCalled();
@@ -450,7 +462,7 @@ describe('schema lineage graph', () => {
     openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render({ ...GRAPH, truncated: true });
     const note = overlayOf().querySelector('.graph-overlay-note');
     expect(note).not.toBeNull();
-    expect(note.textContent).toMatch(/truncated/i);
+    expect(note!.textContent).toMatch(/truncated/i);
   });
 
   it('renders an empty-graph message when there is nothing to draw', () => {
@@ -472,7 +484,7 @@ describe('schema lineage graph', () => {
     // or attach the (leaking) main-document key handlers.
     const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); // close before render
-    expect(overlayOf()).toBeNull();
+    expect(document.querySelector('.graph-overlay')).toBeNull();
     view.render(GRAPH); // late-arriving fetch result
     expect(document.querySelector('g.eg-card')).toBeNull(); // nothing mounted
     view.fail('too late'); // also a no-op (no toast)
@@ -485,18 +497,18 @@ describe('schema lineage graph', () => {
 
   it('overlay theme toggle drives the app’s own toggleTheme (keeps state/pref/header in sync)', () => {
     const toggleTheme = vi.fn();
-    const view = openSchemaView({ document, Dagre: dagre, openWindow: () => null, toggleTheme, actions: { openNodeDetail: vi.fn() }, state: detachedState() });
-    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
-    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    const view = openSchemaView({ document, Dagre: dagre, openWindow: () => null, toggleTheme, actions: { openNodeDetail: vi.fn() }, state: detachedState() } as DetachedGraphApp);
+    const canvas = qs<HTMLElement>(overlayOf(), '.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
     view.render(GRAPH);
-    overlayOf().querySelector('button[title="Toggle theme"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    qs(overlayOf(), 'button[title="Toggle theme"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(toggleTheme).toHaveBeenCalledTimes(1); // routed through the app, not a stray data-theme flip
   });
 
   it('clears the latched .modkey cursor when the window loses focus', () => {
     const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
-    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
-    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    const canvas = qs<HTMLElement>(overlayOf(), '.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
     view.render(GRAPH);
     document.dispatchEvent(new KeyboardEvent('keydown', { metaKey: true, key: 'Meta' }));
     expect(canvas.classList.contains('modkey')).toBe(true);
@@ -506,13 +518,13 @@ describe('schema lineage graph', () => {
 
   it('refits on window resize and drops the listener once the overlay is gone', () => {
     const view = openSchemaView(overlayApp({ openNodeDetail: vi.fn() }));
-    const canvas = overlayOf().querySelector('.graph-overlay-canvas');
-    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+    const canvas = qs<HTMLElement>(overlayOf(), '.graph-overlay-canvas');
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect);
     view.render(GRAPH);
-    const svg = canvas.querySelector('svg.explain-graph');
+    const svg = canvas.querySelector('svg.explain-graph')!;
     window.dispatchEvent(new Event('resize')); // connected → refit, no throw
     expect(svg.getAttribute('viewBox')).not.toBeNull();
-    overlayOf().querySelector('.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
+    qs(overlayOf(), '.graph-overlay-close').dispatchEvent(new Event('click', { bubbles: true }));
     window.dispatchEvent(new Event('resize')); // disconnected → self-removes, no throw
     expect(document.querySelector('.graph-overlay')).toBeNull();
   });
@@ -520,7 +532,7 @@ describe('schema lineage graph', () => {
 
 describe('openSchemaView — real browser tab', () => {
   afterEach(() => { document.body.innerHTML = ''; });
-  const GRAPH = {
+  const GRAPH: SchemaLineageGraph = {
     focus: { kind: 'db', db: 'lin' },
     nodes: [
       { id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a' },
@@ -534,46 +546,46 @@ describe('openSchemaView — real browser tab', () => {
   };
   // A same-origin child window backed by a detached document (what a real
   // about:blank tab exposes to the opener), with capturable pagehide/close.
-  const makeWin = (over = {}) => {
+  const makeWin = (over: { close?: ReturnType<typeof vi.fn> } = {}) => {
     const childDoc = document.implementation.createHTMLDocument('');
-    const ls = {};
+    const ls: Record<string, () => void> = {};
     return {
       document: childDoc, closed: false,
       close: over.close || vi.fn(),
       focus: vi.fn(),
-      addEventListener: (t, fn) => { ls[t] = fn; },
-      fire: (t) => ls[t] && ls[t](),
+      addEventListener: (t: string, fn: () => void) => { ls[t] = fn; },
+      fire: (t: string) => { if (ls[t]) ls[t](); },
     };
   };
-  const tabApp = (win, over = {}) => ({
+  const tabApp = (win: ReturnType<typeof makeWin>, over: Partial<DetachedGraphApp> = {}): DetachedGraphApp => ({
     document, Dagre: dagre, stylesText: 'body{color:red}', openWindow: () => win,
     actions: { openNodeDetail: vi.fn(), insertCreate: vi.fn() }, state: detachedState(), ...over,
-  });
-  const stub = (canvas) => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 }); };
+  } as DetachedGraphApp);
+  const stub = (canvas: HTMLElement): void => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect); };
 
   it('builds the graph in the child document: copies CSS, mirrors theme, fills the tab', () => {
     document.documentElement.setAttribute('data-theme', 'dark'); // data-density left unset → skipped
     const win = makeWin();
     const app = tabApp(win);
     const view = openSchemaView(app);
-    expect(win.document.querySelector('style').textContent).toBe('body{color:red}');
+    expect(win.document.querySelector('style')!.textContent).toBe('body{color:red}');
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
     expect(win.document.documentElement.getAttribute('data-density')).toBeNull();
     expect(win.document.body.className).toBe('detached-tab');
     expect(win.focus).toHaveBeenCalled(); // tab brought to front for key events
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     expect(canvas.getAttribute('tabindex')).toBe('-1'); // focusable → receives ⌘ key events
     stub(canvas);
     view.render(GRAPH);
     expect(win.document.querySelectorAll('g.eg-card')).toHaveLength(3);
     // browser-tab title is "Schema:<db>"; headline is "Schema: <db>"; colour key in the bar; no close ✕
     expect(win.document.title).toBe('Schema:lin');
-    expect(win.document.querySelector('.graph-overlay-title').textContent).toBe('Schema: lin');
+    expect(win.document.querySelector('.graph-overlay-title')!.textContent).toBe('Schema: lin');
     expect(win.document.querySelector('.graph-overlay-bar .schema-graph-legend')).not.toBeNull();
     expect(win.document.querySelector('.graph-overlay-close')).toBeNull();
     // fitWidth frames to the container aspect (no horizontal letterbox)
     canvas.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-    const vb = canvas.querySelector('svg.explain-graph').getAttribute('viewBox').split(' ').map(Number);
+    const vb = canvas.querySelector('svg.explain-graph')!.getAttribute('viewBox')!.split(' ').map(Number);
     expect(vb[2] / vb[3]).toBeCloseTo(400 / 200, 4);
     // edges + cards are tagged for the move handler
     expect(canvas.querySelector('path[data-from="lin.a"][data-to="lin.mv"]')).not.toBeNull();
@@ -584,32 +596,32 @@ describe('openSchemaView — real browser tab', () => {
     document.documentElement.setAttribute('data-theme', 'dark');
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    stub(win.document.querySelector('.graph-overlay-canvas'));
+    stub(qs<HTMLElement>(win.document, '.graph-overlay-canvas'));
     view.render(GRAPH);
     const btn = win.document.querySelector('.graph-overlay-actions button[title="Toggle theme"]');
     expect(btn).not.toBeNull();
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('light');
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    btn!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
 
   it('falls back to stylesText="" when the app has none', () => {
     const win = makeWin();
     openSchemaView(tabApp(win, { stylesText: undefined }));
-    expect(win.document.querySelector('style').textContent).toBe('');
+    expect(win.document.querySelector('style')!.textContent).toBe('');
   });
 
   it('⌘+drag on a node moves it and straightens only the incident edges; mouseup records the position', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     const positions = {};
     view.render({ ...GRAPH, savedPositions: positions });
-    const incident = canvas.querySelector('path[data-from="lin.a"][data-to="lin.mv"]');
-    const other = canvas.querySelector('path[data-from="lin.mv"][data-to="lin.dst"]');
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const incident = canvas.querySelector('path[data-from="lin.a"][data-to="lin.mv"]')!;
+    const other = canvas.querySelector('path[data-from="lin.mv"][data-to="lin.dst"]')!;
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     const incBefore = incident.getAttribute('d');
     const otherBefore = other.getAttribute('d');
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
@@ -618,7 +630,7 @@ describe('openSchemaView — real browser tab', () => {
     expect(incident.getAttribute('d')).not.toBe(incBefore); // incident edge re-routed straight
     expect(other.getAttribute('d')).toBe(otherBefore); // non-incident edge untouched
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    expect(positions['lin.a']).toMatchObject({ x: expect.any(Number), y: expect.any(Number) });
+    expect(positions).toMatchObject({ 'lin.a': { x: expect.any(Number), y: expect.any(Number) } });
     // after release, further moves do nothing
     const settled = card.getAttribute('transform');
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 300, clientY: 300, bubbles: true }));
@@ -628,11 +640,11 @@ describe('openSchemaView — real browser tab', () => {
   it('⌘Z undoes a node move, ⌘⇧Z and ⌘Y redo it; undo/redo past the ends are no-ops', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
-    const key = (opts) => win.document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...opts }));
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
+    const key = (opts: KeyboardEventInit) => win.document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...opts }));
     // perform a move
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
@@ -659,14 +671,14 @@ describe('openSchemaView — real browser tab', () => {
   it('headline Undo/Redo buttons drive the move history and reflect enabled state', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const [undoBtn, redoBtn] = ['Undo move (⌘Z)', 'Redo move (⌘⇧Z)'].map((t) => win.document.querySelector(`button[title="${t}"]`));
+    const [undoBtn, redoBtn] = ['Undo move (⌘Z)', 'Redo move (⌘⇧Z)'].map((t) => qs<HTMLButtonElement>(win.document, `button[title="${t}"]`));
     expect(undoBtn).not.toBeNull();
     expect(undoBtn.disabled).toBe(true); // nothing to undo yet
     expect(redoBtn.disabled).toBe(true);
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
@@ -684,10 +696,10 @@ describe('openSchemaView — real browser tab', () => {
   it('plain drag, ⌘-drag off a node, and ⌘-drag on an unknown node id do not move anything', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, bubbles: true })); // no modifier
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     expect(card.getAttribute('transform')).toBeNull();
@@ -696,7 +708,7 @@ describe('openSchemaView — real browser tab', () => {
     expect(card.getAttribute('transform')).toBeNull();
     const ghost = win.document.createElementNS('http://www.w3.org/2000/svg', 'g');
     ghost.setAttribute('data-node-id', 'nope');
-    canvas.querySelector('svg').appendChild(ghost);
+    canvas.querySelector('svg')!.appendChild(ghost);
     ghost.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 5, clientY: 5, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 60, clientY: 60, bubbles: true }));
     expect(ghost.getAttribute('transform')).toBeNull();
@@ -705,10 +717,10 @@ describe('openSchemaView — real browser tab', () => {
   it('records nothing when no savedPositions map is supplied', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render(GRAPH); // no savedPositions
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); // no throw
@@ -718,10 +730,10 @@ describe('openSchemaView — real browser tab', () => {
   it('ends the drag when the button is released off-window (a no-button mousemove)', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 160, clientY: 140, buttons: 1, bubbles: true }));
     const moved = card.getAttribute('transform');
@@ -737,11 +749,11 @@ describe('openSchemaView — real browser tab', () => {
   it('a plain (no-modifier) press on a card does not pan; on empty canvas it does', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const svg = canvas.querySelector('svg.explain-graph');
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const svg = canvas.querySelector('svg.explain-graph')!;
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     // plain press on a card is swallowed → the canvas does not pan
     const vbBefore = svg.getAttribute('viewBox');
     card.dispatchEvent(new MouseEvent('mousedown', { clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
@@ -757,10 +769,10 @@ describe('openSchemaView — real browser tab', () => {
   it('repositions edge labels with a moved node and tolerates an unlabelled incident edge', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     // lin.a has a labelled edge (feeds) and an unlabelled one (kind '') incident to it.
-    const g = {
+    const g: SchemaLineageGraph = {
       focus: { kind: 'db', db: 'lin' },
       nodes: [
         { id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a' },
@@ -774,10 +786,10 @@ describe('openSchemaView — real browser tab', () => {
       savedPositions: {},
     };
     view.render(g);
-    const label = canvas.querySelector('text[data-lbl-eidx]');
+    const label = canvas.querySelector('text[data-lbl-eidx]')!;
     expect(label).not.toBeNull();
     const lblBefore = label.getAttribute('x');
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mousemove', { clientX: 220, clientY: 220, buttons: 1, bubbles: true })); // no throw on the unlabelled edge
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
@@ -787,11 +799,11 @@ describe('openSchemaView — real browser tab', () => {
   it('a ⌘ press with no movement records nothing (no undoable op)', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render({ ...GRAPH, savedPositions: {} });
-    const undoBtn = win.document.querySelector('button[title="Undo move (⌘Z)"]');
-    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]');
+    const undoBtn = qs<HTMLButtonElement>(win.document, 'button[title="Undo move (⌘Z)"]');
+    const card = canvas.querySelector('g.eg-card[data-node-id="lin.a"]')!;
     card.dispatchEvent(new MouseEvent('mousedown', { metaKey: true, clientX: 100, clientY: 100, buttons: 1, bubbles: true }));
     win.document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); // released without moving
     expect(card.getAttribute('transform')).toBeNull(); // never moved
@@ -801,16 +813,16 @@ describe('openSchemaView — real browser tab', () => {
   it('titles a table-focus view "Schema:<db>.<table>"', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    stub(win.document.querySelector('.graph-overlay-canvas'));
+    stub(qs<HTMLElement>(win.document, '.graph-overlay-canvas'));
     view.render({ ...GRAPH, focus: { kind: 'table', db: 'lin', table: 'events' } });
     expect(win.document.title).toBe('Schema:lin.events');
-    expect(win.document.querySelector('.graph-overlay-title').textContent).toBe('Schema: lin.events');
+    expect(win.document.querySelector('.graph-overlay-title')!.textContent).toBe('Schema: lin.events');
   });
 
   it('⌘/Ctrl toggles the hand-cursor (.modkey) class', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    const canvas = win.document.querySelector('.graph-overlay-canvas');
+    const canvas = qs<HTMLElement>(win.document, '.graph-overlay-canvas');
     stub(canvas);
     view.render(GRAPH);
     win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })); // no modifier → no class
@@ -826,10 +838,10 @@ describe('openSchemaView — real browser tab', () => {
   it('Esc closes the open detail pane in the tab', () => {
     const win = makeWin();
     const view = openSchemaView(tabApp(win));
-    stub(win.document.querySelector('.graph-overlay-canvas'));
+    stub(qs<HTMLElement>(win.document, '.graph-overlay-canvas'));
     view.render(GRAPH);
     const pane = win.document.createElement('div'); pane.className = 'schema-detail';
-    win.document.querySelector('.graph-overlay-panel').appendChild(pane);
+    qs(win.document, '.graph-overlay-panel').appendChild(pane);
     win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(win.document.querySelector('.schema-detail')).toBeNull();
   });
@@ -837,31 +849,31 @@ describe('openSchemaView — real browser tab', () => {
   it('routes a node click to its OWN tab even when a second view is open', () => {
     // Open two views sharing one app; each must keep targeting its own document.
     const winA = makeWin();
-    const captured = [];
-    const app = tabApp(winA, { actions: { openNodeDetail: (n, doc) => captured.push(doc), insertCreate: vi.fn() } });
-    const viewA = openSchemaView(app); stub(winA.document.querySelector('.graph-overlay-canvas')); viewA.render(GRAPH);
+    const captured: Document[] = [];
+    const app = tabApp(winA, { actions: { openNodeDetail: (n, doc) => captured.push(doc as Document), insertCreate: vi.fn() } });
+    const viewA = openSchemaView(app); stub(qs<HTMLElement>(winA.document, '.graph-overlay-canvas')); viewA.render(GRAPH);
     const winB = makeWin();
     app.openWindow = () => winB;
-    const viewB = openSchemaView(app); stub(winB.document.querySelector('.graph-overlay-canvas')); viewB.render(GRAPH);
+    const viewB = openSchemaView(app); stub(qs<HTMLElement>(winB.document, '.graph-overlay-canvas')); viewB.render(GRAPH);
     // Click a node in the FIRST tab after the second opened.
-    winA.document.querySelector('g.eg-card[data-node-id="lin.a"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    qs(winA.document, 'g.eg-card[data-node-id="lin.a"]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(captured[0]).toBe(winA.document); // not winB.document
   });
 
   it('falls back to the overlay when the window is null, has no document, or is COOP-severed', () => {
-    openSchemaView({ document, Dagre: dagre, openWindow: () => null, actions: {}, state: detachedState() });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => null, actions: {}, state: detachedState() } as DetachedGraphApp);
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
     document.body.innerHTML = '';
-    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ document: null }), actions: {}, state: detachedState() });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ document: null } as unknown as ReturnType<typeof makeWin>), actions: {}, state: detachedState() } as DetachedGraphApp);
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
     document.body.innerHTML = '';
-    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ get document() { throw new Error('coop'); } }), actions: {}, state: detachedState() });
+    openSchemaView({ document, Dagre: dagre, openWindow: () => ({ get document(): Document { throw new Error('coop'); } } as unknown as ReturnType<typeof makeWin>), actions: {}, state: detachedState() } as DetachedGraphApp);
     expect(document.querySelector('.graph-overlay')).not.toBeNull();
   });
 });
 
 describe('buildRichSchemaSvg (rich cards)', () => {
-  const RICH = {
+  const RICH: SchemaLineageGraph = {
     nodes: [
       {
         id: 'lin.a', label: 'a', kind: 'table', db: 'lin', name: 'a',
@@ -887,36 +899,36 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     expect(svg.querySelectorAll('g.eg-card')).toHaveLength(3);
     expect(svg.querySelector('rect.eg-node--table')).not.toBeNull();
     expect(svg.querySelector('rect.eg-node--mv')).not.toBeNull();
-    expect([...svg.querySelectorAll('text.eg-card-title')].map((t) => t.textContent)).toContain('lin.a');
-    expect([...svg.querySelectorAll('text.eg-card-header')].map((t) => t.textContent)).toContain('MergeTree · 5 rows · 0 B');
+    expect(qsa(svg, 'text.eg-card-title').map((t) => t.textContent)).toContain('lin.a');
+    expect(qsa(svg, 'text.eg-card-header').map((t) => t.textContent)).toContain('MergeTree · 5 rows · 0 B');
     expect(svg.querySelector('line.eg-card-divider')).not.toBeNull();
     expect(svg.querySelectorAll('text.eg-col').length).toBeGreaterThanOrEqual(2);
     expect(svg.querySelector('tspan.eg-badge--pk')).not.toBeNull();
     expect(svg.querySelector('tspan.eg-badge--sk')).not.toBeNull();
-    expect([...svg.querySelectorAll('text.eg-col-more')].map((t) => t.textContent)).toContain('+2 more');
+    expect(qsa(svg, 'text.eg-col-more').map((t) => t.textContent)).toContain('+2 more');
     // #179: data-skipping indexes are never drawn on a card — the geometry-inflating
     // idx: line is gone; index metadata lives in the detail drawer instead.
     expect(svg.querySelector('text.eg-skipidx')).toBeNull();
     // the comment is a hover-only <title> on the whole card — same idiom as the
     // plain inline graph's nodeTitle — never a drawn row, so it can't affect
     // any other row's position or the card's own size.
-    const card = svg.querySelector('g.eg-card[data-node-id="lin.a"]');
-    expect(card.querySelector('title').textContent).toBe('raw ingest table');
+    const card = svg.querySelector('g.eg-card[data-node-id="lin.a"]')!;
+    expect(card.querySelector('title')!.textContent).toBe('raw ingest table');
     expect(card.querySelector('text.eg-card-comment')).toBeNull(); // no such row exists
     // only the labelled edge draws a mid-edge label; the empty-kind edge draws none
-    expect([...svg.querySelectorAll('text.eg-edge-label')].map((t) => t.textContent)).toEqual(['feeds']);
+    expect(qsa(svg, 'text.eg-edge-label').map((t) => t.textContent)).toEqual(['feeds']);
   });
 
   it('falls back to a header-only card for a node without a .card model', () => {
     const built = buildRichSchemaSvg(RICH, dagre);
-    const titles = [...built.svg.querySelectorAll('text.eg-card-title')].map((t) => t.textContent);
+    const titles = qsa(built.svg, 'text.eg-card-title').map((t) => t.textContent);
     expect(titles).toContain('mv'); // buildCardModel(node) → label
-    const headers = [...built.svg.querySelectorAll('text.eg-card-header')].map((t) => t.textContent);
+    const headers = qsa(built.svg, 'text.eg-card-header').map((t) => t.textContent);
     expect(headers).toContain('mv · — rows · —'); // engine falls back to kind, no row/byte data
   });
 
   it('carries the full, untruncated comment in the card\'s <title> even when very long', () => {
-    const g = {
+    const g: SchemaLineageGraph = {
       nodes: [{
         id: 'lin.c', label: 'c', kind: 'table', db: 'lin', name: 'c',
         card: {
@@ -928,13 +940,13 @@ describe('buildRichSchemaSvg (rich cards)', () => {
       edges: [],
     };
     const built = buildRichSchemaSvg(g, dagre);
-    const card = built.svg.querySelector('g.eg-card[data-node-id="lin.c"]');
-    expect(card.querySelector('title').textContent).toBe('a very long comment that would never fit on the card at all');
+    const card = built.svg.querySelector('g.eg-card[data-node-id="lin.c"]')!;
+    expect(card.querySelector('title')!.textContent).toBe('a very long comment that would never fit on the card at all');
   });
 
   it('a compacted column type carries the full type as a hover <title> on its row (#177)', () => {
     const full = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
-    const g = {
+    const g: SchemaLineageGraph = {
       nodes: [{
         id: 'lin.c', label: 'c', kind: 'table', db: 'lin', name: 'c',
         card: {
@@ -949,15 +961,15 @@ describe('buildRichSchemaSvg (rich cards)', () => {
       edges: [],
     };
     const built = buildRichSchemaSvg(g, dagre);
-    const rows = [...built.svg.querySelectorAll('text.eg-col')];
-    const stateRow = rows.find((t) => t.textContent.includes('state'));
-    expect(stateRow.querySelector('title').textContent).toBe(full);
-    const idRow = rows.find((t) => t.textContent.includes('id'));
+    const rows = qsa(built.svg, 'text.eg-col');
+    const stateRow = rows.find((t) => t.textContent!.includes('state'))!;
+    expect(stateRow.querySelector('title')!.textContent).toBe(full);
+    const idRow = rows.find((t) => t.textContent!.includes('id'))!;
     expect(idRow.querySelector('title')).toBeNull();
   });
 
   it('draws no <title> on a card without a comment', () => {
-    const g = { nodes: [{ id: 'lin.b', label: 'b', kind: 'table', db: 'lin', name: 'b' }], edges: [] };
+    const g: SchemaLineageGraph = { nodes: [{ id: 'lin.b', label: 'b', kind: 'table', db: 'lin', name: 'b' }], edges: [] };
     const built = buildRichSchemaSvg(g, dagre);
     expect(built.svg.querySelector('g.eg-card title')).toBeNull();
   });
@@ -965,7 +977,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
   it('fires onNode with the clicked node (which carries db/name for SHOW CREATE)', () => {
     const onNode = vi.fn();
     const built = buildRichSchemaSvg(RICH, dagre, onNode);
-    built.svg.querySelector('g.eg-card').dispatchEvent(new Event('click', { bubbles: true }));
+    built.svg.querySelector('g.eg-card')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(onNode).toHaveBeenCalledTimes(1);
     const arg = onNode.mock.calls[0][0];
     expect(arg).toMatchObject({ db: 'lin' });
@@ -980,7 +992,7 @@ describe('buildRichSchemaSvg (rich cards)', () => {
   });
 
   it('marks external (other-db) nodes with eg-node--ext, leaving local nodes plain', () => {
-    const g = {
+    const g: SchemaLineageGraph = {
       nodes: [
         { id: 'a.t', label: 't', kind: 'table', db: 'a', name: 't', external: false },
         { id: 'b.u', label: 'u', kind: 'mv', db: 'b', name: 'u', external: true },
@@ -989,16 +1001,16 @@ describe('buildRichSchemaSvg (rich cards)', () => {
     };
     const built = buildRichSchemaSvg(g, dagre);
     expect(built.svg.querySelectorAll('rect.eg-node--ext')).toHaveLength(1);
-    expect(built.svg.querySelector('rect.eg-node--ext').getAttribute('class')).toContain('eg-node--mv');
+    expect(built.svg.querySelector('rect.eg-node--ext')!.getAttribute('class')).toContain('eg-node--mv');
   });
 
   it('applies saved positions and straightens only the edges touching a moved node', () => {
     const built = buildRichSchemaSvg({ ...RICH, savedPositions: { 'lin.a': { x: 500, y: 500 } } }, dagre);
-    const moved = [...built.svg.querySelectorAll('g.eg-card')].find((c) => c.getAttribute('data-node-id') === 'lin.a');
-    expect(moved.querySelector('rect').getAttribute('x')).toBe('500'); // drawn at the saved x
+    const moved = qsa<SVGGElement>(built.svg, 'g.eg-card').find((c) => c.getAttribute('data-node-id') === 'lin.a')!;
+    expect(moved.querySelector('rect')!.getAttribute('x')).toBe('500'); // drawn at the saved x
     // the edge touching lin.a is a 2-point straight line (exactly one L); the other keeps dagre's route
-    const inc = built.svg.querySelector('path[data-from="lin.a"][data-to="lin.mv"]');
-    expect((inc.getAttribute('d').match(/L/g) || []).length).toBe(1);
+    const inc = built.svg.querySelector('path[data-from="lin.a"][data-to="lin.mv"]')!;
+    expect((inc.getAttribute('d')!.match(/L/g) || []).length).toBe(1);
     expect(built).toMatchObject({ nodes: expect.any(Array), edges: expect.any(Array) });
   });
 });

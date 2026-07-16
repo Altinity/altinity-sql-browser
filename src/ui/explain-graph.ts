@@ -9,29 +9,147 @@ import { h, s, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { parseDot } from '../core/dot.js';
 import { dagreLayout, schemaLayout } from '../core/dot-layout.js';
+import type { LayoutInputEdge, LayoutInputNode, LayoutOutputEdge, LayoutOutputNode, LayoutResult } from '../core/dot-layout.js';
 import { buildCardModel, cardSize, CARD } from '../core/schema-cards.js';
+import type { CardModel, CardGraphNode } from '../core/schema-cards.js';
+import type { SchemaGraphFocus } from '../core/schema-graph.js';
 import { qualifyIdent } from '../core/format.js';
 import { fitBox, fitWidthBox, zoomBox, panBox, viewBoxStr } from '../core/panzoom.js';
-import { straightEdgePoints, incidentEdges, dragDeltaToSvg, applyPositions, recordPosition, createMoveHistory } from '../core/graph-layout.js';
+import type { ViewBox } from '../core/panzoom.js';
+import {
+  straightEdgePoints, incidentEdges, dragDeltaToSvg, applyPositions, recordPosition, createMoveHistory,
+} from '../core/graph-layout.js';
+import type { PositionMap } from '../core/graph-layout.js';
 import { flashToast } from './toast.js';
 import { clearSchemaSelection, closeDetailPane } from './schema-detail.js';
 import { openInDetachedTab } from './detached-view.js';
+import type { DetachedView, DetachedViewApp, MountCtx } from './detached-view.js';
 
 const ZOOM_STEP = 1.2; // per zoom-button press
 const WHEEL_ZOOM_STEP = 1.04; // per ⌘/Ctrl+wheel notch — gentle, so trackpad/wheel zoom isn't jumpy
 
+// Mirrors dot-layout.ts's own (unexported) DagreModule shape: the dagre seam
+// arrives here as `unknown` (like app.Dagre, env.types.ts) and is passed
+// straight through to dagreLayout/schemaLayout, which already do the real,
+// tested cast to the richer DagreGraphInstance shape internally — this module
+// only needs the same minimal "constructable + layout-able" contract to
+// satisfy their parameter type at the call sites below.
+interface DagreModule {
+  graphlib: { Graph: new () => unknown };
+  layout(g: unknown): void;
+}
+
+/** The click-related app callbacks this module reads — both optional so a
+ *  draw-only caller (a test that never dispatches a click, or the standalone
+ *  schema tab before any object is clicked) can pass a minimal/action-less
+ *  app; a genuine click with a missing callback still throws exactly as
+ *  before (the `!` at each call site below is erased at runtime, not a new
+ *  guard — see the "null/minimal app" convention this module follows
+ *  throughout, e.g. openPipelineFullscreen/renderSchemaGraph). */
+export interface ExplainGraphActions {
+  insertCreate?(target: string): unknown;
+  openNodeDetail?(node: LayoutOutputNode, targetDoc?: Document): unknown;
+}
+
+/** The `app` surface renderExplainGraph/renderSchemaGraph read — a narrow,
+ *  deliberately partial contract (mirrors schema-detail.ts's SchemaDetailApp):
+ *  both are exercised with a minimal stub in tests, never the full App. */
+export interface ExplainGraphApp {
+  document?: Document;
+  Dagre?: unknown;
+  actions?: ExplainGraphActions;
+}
+
+/** The `app` surface the detached-view entry points (openPipelineFullscreen/
+ *  openSchemaView) and their shared controller read — DetachedViewApp (the
+ *  openInDetachedTab contract) plus the dagre seam, the theme toggle, and the
+ *  schema-detail click callback. */
+export interface DetachedGraphApp extends DetachedViewApp {
+  Dagre?: unknown;
+  toggleTheme?: () => void;
+  actions?: ExplainGraphActions;
+}
+
+/** A schema-lineage node the rich (card) fullscreen view may carry a
+ *  pre-attached card model on (buildCardGraph's output, core/schema-cards.ts) —
+ *  read once by buildRichSchemaSvg to size + draw a card, then tracked
+ *  separately via its own `cardById` side-channel (dagre's own carry-through,
+ *  like the plain inline view, only keeps id/label/kind/db/name/external/
+ *  comment across layout — see dot-layout.ts's `carry`). */
+export interface SchemaLineageNode extends LayoutInputNode {
+  card?: CardModel;
+}
+
+/** The schema-lineage graph both the compact inline view (buildSchemaSvg) and
+ *  the rich fullscreen view (buildRichSchemaSvg) draw — core/schema-graph.ts's
+ *  buildSchemaGraph/expandLineage output, widened with the fields the
+ *  fullscreen controller reads off it directly (focus/truncated/
+ *  savedPositions). */
+export interface SchemaLineageGraph {
+  focus?: SchemaGraphFocus;
+  nodes?: SchemaLineageNode[];
+  edges?: LayoutInputEdge[];
+  truncated?: boolean;
+  savedPositions?: PositionMap;
+}
+
+/** A laid-out rich-view node with its drawn origin recorded (x0/y0) — set
+ *  once, right after schemaLayout, in buildRichSchemaSvg — so a live drag can
+ *  translate its <g> by a delta from where it was actually drawn. */
+export interface DrawnLineageNode extends LayoutOutputNode {
+  x0: number;
+  y0: number;
+}
+
+/** buildPipelineSvg/buildSchemaSvg's return shape. */
+interface GraphBuild {
+  svg: SVGElement;
+  width: number;
+  height: number;
+  nodeCount: number;
+}
+
+/** buildRichSchemaSvg's return shape — the drawn build plus the laid-out
+ *  nodes/edges the schema-graph drag/undo interactions need. */
+interface DrawnRichGraph extends GraphBuild {
+  nodes: DrawnLineageNode[];
+  edges: LayoutOutputEdge[];
+}
+
 /** A centred message shown in place of a graph (no nodes / nothing to draw). */
-const placeholder = (msg) => h('div', { class: 'placeholder' }, h('div', null, msg));
+const placeholder = (msg: string): HTMLDivElement => h('div', { class: 'placeholder' }, h('div', null, msg));
 
 /**
  * Empty-state copy when there's genuinely nothing to draw. A whole-DB graph now
  * keeps its tables as standalone nodes even with no relationships, so this is only
  * reached for a focused table with no neighbours, or a database with no objects.
  */
-function schemaEmptyMessage(graph) {
+function schemaEmptyMessage(graph?: SchemaLineageGraph | null): string {
   const f = (graph && graph.focus) || {};
   if (f.kind === 'table') return f.db + '.' + f.table + ' has no data-flow relationships.';
   return f.db ? 'No objects in ' + f.db + '.' : 'Nothing to draw.';
+}
+
+/** attachPanZoom's dims argument — only width/height are read (a LayoutResult
+ *  or GraphBuild both satisfy this). */
+interface PanZoomDims {
+  width: number;
+  height: number;
+}
+
+/** attachPanZoom's options bag. */
+interface AttachPanZoomOpts {
+  modifierPan?: boolean;
+  fitWidth?: boolean;
+  refitOnResize?: boolean;
+}
+
+/** attachPanZoom's return shape — the fit/zoom controls the fullscreen
+ *  overlay's own buttons wire to. */
+interface PanZoomControls {
+  fit(): void;
+  zoomIn(): void;
+  zoomOut(): void;
 }
 
 /**
@@ -40,7 +158,7 @@ function schemaEmptyMessage(graph) {
  * for external controls (the overlay buttons). Shared by the inline pane and the
  * fullscreen overlay so both behave identically.
  */
-function attachPanZoom(container, svg, dims, opts = {}) {
+function attachPanZoom(container: HTMLElement, svg: SVGElement, dims: PanZoomDims, opts: AttachPanZoomOpts = {}): PanZoomControls {
   // When modifierPan is set, drag-to-pan requires ⌘/Ctrl held — so a plain click
   // selects a node (schema graph) instead of grabbing the canvas. The cursor then
   // stays default (see .schema-graph-view CSS) rather than the grab hand.
@@ -60,44 +178,44 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   // wide graph can still be zoomed to a legible node, not just to width/8.
   const minW = Math.min(dims.width / 8, 600);
   const maxW = dims.width * 3;
-  const computeFit = () => {
+  const computeFit = (): ViewBox => {
     if (fitWidth) { const r = container.getBoundingClientRect(); return fitWidthBox(dims.width, dims.height, r.width, r.height); }
     return fitBox(dims.width, dims.height);
   };
   let vb = computeFit();
-  const apply = () => svg.setAttribute('viewBox', viewBoxStr(vb));
-  const fit = () => { vb = computeFit(); apply(); };
-  const toSvg = (cx, cy) => {
+  const apply = (): void => { svg.setAttribute('viewBox', viewBoxStr(vb)); };
+  const fit = (): void => { vb = computeFit(); apply(); };
+  const toSvg = (cx: number, cy: number): { x: number; y: number } => {
     const r = container.getBoundingClientRect();
     return { x: vb.x + ((cx - r.left) / r.width) * vb.w, y: vb.y + ((cy - r.top) / r.height) * vb.h };
   };
-  const zoomAt = (factor, cx, cy) => { const p = toSvg(cx, cy); vb = zoomBox(vb, factor, p.x, p.y, minW, maxW); apply(); };
+  const zoomAt = (factor: number, cx: number, cy: number): void => { const p = toSvg(cx, cy); vb = zoomBox(vb, factor, p.x, p.y, minW, maxW); apply(); };
   // Pan by pixel deltas (drag grabs the content; wheel scrolls the viewport — the
   // caller passes the appropriate sign).
-  const panBy = (dxPx, dyPx) => {
+  const panBy = (dxPx: number, dyPx: number): void => {
     const { dx, dy } = dragDeltaToSvg(dxPx, dyPx, vb, container.getBoundingClientRect());
     vb = panBox(vb, dx, dy);
     apply();
   };
-  const centre = () => { const r = container.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+  const centre = (): { x: number; y: number } => { const r = container.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
 
-  container.addEventListener('wheel', (e) => {
+  container.addEventListener('wheel', (e: WheelEvent) => {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) zoomAt(e.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP, e.clientX, e.clientY);
     else panBy(-e.deltaX, -e.deltaY);
   });
-  let drag = null;
-  container.addEventListener('mousedown', (e) => {
+  let drag: { x: number; y: number } | null = null;
+  container.addEventListener('mousedown', (e: MouseEvent) => {
     if (modifierPan && !(e.metaKey || e.ctrlKey)) return; // plain drag → let the click through
     drag = { x: e.clientX, y: e.clientY };
     container.classList.add('grabbing');
   });
-  container.addEventListener('mousemove', (e) => {
+  container.addEventListener('mousemove', (e: MouseEvent) => {
     if (!drag) return;
     panBy(e.clientX - drag.x, e.clientY - drag.y);
     drag = { x: e.clientX, y: e.clientY };
   });
-  const end = () => { drag = null; container.classList.remove('grabbing'); };
+  const end = (): void => { drag = null; container.classList.remove('grabbing'); };
   container.addEventListener('mouseup', end);
   container.addEventListener('mouseleave', end);
   container.addEventListener('dblclick', fit);
@@ -108,12 +226,21 @@ function attachPanZoom(container, svg, dims, opts = {}) {
   // detached document (defaultView null) never gets one in the first place.
   const win = container.ownerDocument.defaultView;
   if (win && refitOnResize) {
-    const onResize = () => { if (container.isConnected) fit(); else win.removeEventListener('resize', onResize); };
+    const onResize = (): void => { if (container.isConnected) fit(); else win.removeEventListener('resize', onResize); };
     win.addEventListener('resize', onResize);
   }
 
   apply();
   return { fit, zoomIn: () => { const c = centre(); zoomAt(ZOOM_STEP, c.x, c.y); }, zoomOut: () => { const c = centre(); zoomAt(1 / ZOOM_STEP, c.x, c.y); } };
+}
+
+/** renderGraphSvg/renderRichGraphSvg's shared draw options. */
+interface GraphDrawOpts {
+  nodeClass?: (n: LayoutOutputNode) => string;
+  edgeClass?: (e: LayoutOutputEdge) => string;
+  edgeLabel?: (e: LayoutOutputEdge) => string | null | undefined;
+  nodeTitle?: (n: LayoutOutputNode) => string | null | undefined;
+  onNode?: (n: LayoutOutputNode, e: MouseEvent) => void;
 }
 
 /**
@@ -127,7 +254,9 @@ function attachPanZoom(container, svg, dims, opts = {}) {
 // mid-edge labels). Node drawing is the caller's job — plain labelled boxes
 // (renderGraphSvg) or rich cards (renderRichGraphSvg) — so the edge/marker code
 // lives in one place. Empty-graph safe: returns a bare <svg> with no defs.
-function graphSvgWithEdges(g, edgeClass, edgeLabel) {
+function graphSvgWithEdges(
+  g: LayoutResult, edgeClass: (e: LayoutOutputEdge) => string, edgeLabel?: (e: LayoutOutputEdge) => string | null | undefined,
+): SVGElement {
   const svg = s('svg', { class: 'explain-graph', viewBox: `0 0 ${g.width} ${g.height}` });
   if (!g.nodes.length) return svg;
   svg.appendChild(s('defs', null,
@@ -155,7 +284,7 @@ function graphSvgWithEdges(g, edgeClass, edgeLabel) {
   return svg;
 }
 
-function renderGraphSvg(g, opts = {}) {
+function renderGraphSvg(g: LayoutResult, opts: GraphDrawOpts = {}): GraphBuild {
   const nodeClass = opts.nodeClass || (() => 'eg-node');
   const svg = graphSvgWithEdges(g, opts.edgeClass || (() => 'eg-edge'), opts.edgeLabel);
   if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
@@ -167,7 +296,7 @@ function renderGraphSvg(g, opts = {}) {
     }, n.label);
     if (opts.onNode) {
       rect.setAttribute('cursor', 'pointer'); text.setAttribute('cursor', 'pointer');
-      const fire = (e) => { e.stopPropagation(); opts.onNode(n, e); };
+      const fire = (e: MouseEvent): void => { e.stopPropagation(); opts.onNode!(n, e); };
       rect.addEventListener('click', fire); text.addEventListener('click', fire);
     }
     // Wrap in a <g> so a single <title> child (a native browser tooltip on hover
@@ -186,13 +315,15 @@ function renderGraphSvg(g, opts = {}) {
 }
 
 /** Build the pipeline SVG from a DOT document (kind-agnostic boxes). */
-export function buildPipelineSvg(rawText, dagre) {
-  return renderGraphSvg(dagreLayout(dagre, parseDot(rawText || '')));
+export function buildPipelineSvg(rawText: string | null | undefined, dagre: unknown): GraphBuild {
+  return renderGraphSvg(dagreLayout(dagre as DagreModule, parseDot(rawText || '')));
 }
 
 /** Build the schema-lineage SVG from a `{nodes,edges}` graph (kind-coloured). */
-export function buildSchemaSvg(graph, dagre, onNode) {
-  return renderGraphSvg(schemaLayout(dagre, graph || { nodes: [], edges: [] }), {
+export function buildSchemaSvg(
+  graph: SchemaLineageGraph | null | undefined, dagre: unknown, onNode?: (n: LayoutOutputNode, e: MouseEvent) => void,
+): GraphBuild {
+  return renderGraphSvg(schemaLayout(dagre as DagreModule, graph || { nodes: [], edges: [] }), {
     nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table'),
     edgeClass: (e) => 'eg-edge eg-edge--' + (e.kind || 'feeds'),
     edgeLabel: (e) => e.kind,
@@ -211,7 +342,9 @@ export function buildSchemaSvg(graph, dagre, onNode) {
 // node). A table comment (when there is one) is a hover-only <title> on the
 // whole card — same as the plain inline graph's nodeTitle — never a drawn row,
 // so it can't affect card layout.
-function renderCardNode(n, model, nodeClass, onNode) {
+function renderCardNode(
+  n: LayoutOutputNode, model: CardModel, nodeClass: (n: LayoutOutputNode) => string, onNode?: (n: LayoutOutputNode, e: MouseEvent) => void,
+): SVGElement {
   const g = s('g', { class: 'eg-card', 'data-node-id': n.id });
   if (model.comment) g.appendChild(s('title', {}, model.comment));
   const rect = s('rect', { class: nodeClass(n), x: n.x, y: n.y, width: n.w, height: n.h, rx: '5' });
@@ -222,7 +355,7 @@ function renderCardNode(n, model, nodeClass, onNode) {
   const divY = n.y + CARD.HEADER_H;
   g.appendChild(s('line', { class: 'eg-card-divider', x1: n.x, y1: divY, x2: n.x + n.w, y2: divY }));
   let row = 0;
-  const rowY = () => divY + row * CARD.ROW_H + CARD.ROW_BASELINE;
+  const rowY = (): number => divY + row * CARD.ROW_H + CARD.ROW_BASELINE;
   for (const c of model.cols) {
     const t = s('text', { class: 'eg-col', x: left, y: rowY() },
       // A compacted type (#177) keeps the full declaration reachable as a
@@ -237,18 +370,31 @@ function renderCardNode(n, model, nodeClass, onNode) {
   if (model.overflow) g.appendChild(s('text', { class: 'eg-col eg-col-more', x: left, y: rowY() }, '+' + model.overflow + ' more'));
   if (onNode) {
     rect.setAttribute('cursor', 'pointer');
-    g.addEventListener('click', (e) => { e.stopPropagation(); onNode(n, e); });
+    g.addEventListener('click', (e) => { e.stopPropagation(); onNode(n, e as MouseEvent); });
   }
   return g;
+}
+
+/** renderRichGraphSvg's draw options — always carries cardById/nodeClass/
+ *  edgeClass/edgeLabel (onNode optional). */
+interface RichGraphDrawOpts {
+  cardById: Map<string, CardModel>;
+  nodeClass: (n: LayoutOutputNode) => string;
+  edgeClass: (e: LayoutOutputEdge) => string;
+  edgeLabel?: (e: LayoutOutputEdge) => string | null | undefined;
+  onNode?: (n: LayoutOutputNode, e: MouseEvent) => void;
 }
 
 // Like renderGraphSvg, but draws each node as a rich card (looked up by id in
 // `opts.cardById`) instead of a single labelled box, reusing the same edge/marker
 // scaffold. `opts` always carries cardById/nodeClass/edgeClass/edgeLabel (onNode optional).
-function renderRichGraphSvg(g, opts) {
+function renderRichGraphSvg(g: LayoutResult, opts: RichGraphDrawOpts): GraphBuild {
   const svg = graphSvgWithEdges(g, opts.edgeClass, opts.edgeLabel);
   if (!g.nodes.length) return { svg, width: g.width, height: g.height, nodeCount: 0 };
-  for (const n of g.nodes) svg.appendChild(renderCardNode(n, opts.cardById.get(n.id), opts.nodeClass, opts.onNode));
+  // `!`: sized (buildRichSchemaSvg) populates cardById for every node id in `g`
+  // before this runs — a header-only model at worst (buildCardModel(n) with no
+  // matching row), never a missing entry.
+  for (const n of g.nodes) svg.appendChild(renderCardNode(n, opts.cardById.get(n.id)!, opts.nodeClass, opts.onNode));
   return { svg, width: g.width, height: g.height, nodeCount: g.nodes.length };
 }
 
@@ -258,18 +404,23 @@ function renderRichGraphSvg(g, opts) {
  * card), lay out with dagre (honoring the card w/h), then draw cards. Used by the
  * fullscreen overlay; the inline pane keeps the compact buildSchemaSvg.
  */
-export function buildRichSchemaSvg(graph, dagre, onNode) {
+export function buildRichSchemaSvg(
+  graph: SchemaLineageGraph | null | undefined, dagre: unknown, onNode?: (n: LayoutOutputNode, e: MouseEvent) => void,
+): DrawnRichGraph {
   const g = graph || { nodes: [], edges: [] };
-  const cardById = new Map();
+  const cardById = new Map<string, CardModel>();
   const sized = (g.nodes || []).map((n) => {
-    const model = n.card || buildCardModel(n);
+    // `as`: buildCardModel's CardGraphNode carries an index signature for its
+    // widest (bare test-fixture) callers — this module's own richer node shape
+    // (id/label/kind, the only fields buildCardModel reads) satisfies it structurally.
+    const model = n.card || buildCardModel(n as CardGraphNode);
     cardById.set(n.id, model);
     const { w, h } = cardSize(model);
     return { ...n, w, h };
   });
   // `external` rides through dagreLayout (like kind/db/name), so the node class can
   // read it off the laid node — no side-channel needed.
-  const laid = schemaLayout(dagre, { nodes: sized, edges: g.edges || [] });
+  const laid = schemaLayout(dagre as DagreModule, { nodes: sized, edges: g.edges || [] });
   // Overlay any manually-moved positions remembered for this result, then
   // straighten the edges touching a moved node so they still connect on first draw.
   const positions = g.savedPositions;
@@ -277,11 +428,17 @@ export function buildRichSchemaSvg(graph, dagre, onNode) {
     applyPositions(laid.nodes, positions);
     const byId = new Map(laid.nodes.map((n) => [n.id, n]));
     for (const e of laid.edges) {
-      if (positions[e.from] || positions[e.to]) e.points = straightEdgePoints(byId.get(e.from), byId.get(e.to));
+      // `!`: dagreLayout only ever creates edges between declared node ids
+      // (its own ids.has(e.from)/ids.has(e.to) filter), so both endpoints are
+      // always present in byId (built from these same laid.nodes).
+      if (positions[e.from] || positions[e.to]) e.points = straightEdgePoints(byId.get(e.from)!, byId.get(e.to)!);
     }
   }
   // Remember each card's drawn origin so a live drag can translate its <g> by a delta.
-  for (const n of laid.nodes) { n.x0 = n.x; n.y0 = n.y; }
+  // `as`: schemaLayout's own LayoutOutputNode carries no x0/y0 — set here, right
+  // after layout, same as the runtime shape this whole rich-view path relies on.
+  const nodes = laid.nodes as DrawnLineageNode[];
+  for (const n of nodes) { n.x0 = n.x; n.y0 = n.y; }
   const built = renderRichGraphSvg(laid, {
     cardById,
     nodeClass: (n) => 'eg-node eg-node--' + (n.kind || 'table') + (n.external ? ' eg-node--ext' : ''),
@@ -289,7 +446,7 @@ export function buildRichSchemaSvg(graph, dagre, onNode) {
     edgeLabel: (e) => e.kind,
     onNode,
   });
-  return { ...built, nodes: laid.nodes, edges: laid.edges };
+  return { ...built, nodes, edges: laid.edges };
 }
 
 /**
@@ -297,7 +454,7 @@ export function buildRichSchemaSvg(graph, dagre, onNode) {
  * shared drag/wheel pan-zoom. Falls back to a placeholder when the DOT has no
  * nodes. The fullscreen overlay (openPipelineFullscreen) adds zoom buttons.
  */
-export function renderExplainGraph(app, r) {
+export function renderExplainGraph(app: ExplainGraphApp, r: { rawText?: string | null }): HTMLDivElement {
   const built = buildPipelineSvg(r.rawText || '', app.Dagre);
   if (!built.nodeCount) return placeholder('No pipeline graph to display.');
   const view = h('div', { class: 'explain-graph-view', tabindex: '0' }, built.svg);
@@ -307,12 +464,12 @@ export function renderExplainGraph(app, r) {
 
 // The schema-graph kinds + their legend labels (also drive the .eg-node--<kind>
 // and .eg-edge--<kind> CSS colours).
-const NODE_LEGEND = [
+const NODE_LEGEND: [string, string][] = [
   ['table', 'Table'], ['view', 'View'], ['mv', 'Materialized View'],
   ['dictionary', 'Dictionary'], ['distributed', 'Distributed'],
   ['buffer', 'Buffer'], ['merge', 'Merge'], ['external', 'External'],
 ];
-function schemaLegend() {
+function schemaLegend(): HTMLDivElement {
   return h('div', { class: 'schema-graph-legend' },
     ...NODE_LEGEND.map(([k, label]) =>
       h('span', { class: 'sg-leg' }, h('i', { class: 'sg-swatch sg-swatch--' + k }), label)));
@@ -324,12 +481,12 @@ function schemaLegend() {
  * overlay (Esc / ✕ / backdrop close — Esc only in the overlay; a real tab has
  * no JS-driven close, matching the schema tab).
  */
-export function openPipelineFullscreen(app, rawText) {
+export function openPipelineFullscreen(app: DetachedGraphApp | null, rawText: string | null | undefined): DetachedView {
   const mainDoc = (app && app.document) || document;
   return openInDetachedTab(app, {
     title: 'Pipeline',
     mode: 'graph',
-    mount: ({ doc, bar, body, close, closeBtn }) => {
+    mount: ({ doc, bar, body, close, closeBtn }: MountCtx) => {
       const isTab = doc !== mainDoc;
       const built = buildPipelineSvg(rawText || '', app && app.Dagre);
       const actions = h('div', { class: 'graph-overlay-actions' });
@@ -342,8 +499,8 @@ export function openPipelineFullscreen(app, rawText) {
       }
       if (closeBtn) actions.appendChild(closeBtn); // last, so it stays the rightmost action
       bar.appendChild(actions);
-      if (isTab) return null; // no JS-driven close in a real tab (browser tab-close serves that)
-      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+      if (isTab) return undefined; // no JS-driven close in a real tab (browser tab-close serves that)
+      const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
       doc.addEventListener('keydown', onKey, true);
       return () => doc.removeEventListener('keydown', onKey, true);
     },
@@ -355,9 +512,11 @@ export function openPipelineFullscreen(app, rawText) {
 // carries `db`/`name` separately (from buildSchemaGraph via dagreLayout), so each
 // part is quoted independently — non-bare names (`…snappy.parquet`) stay valid SQL
 // without re-splitting the id. External dictionary-source leaves have no DDL.
-const schemaClick = (app) => (n) => {
+const schemaClick = (app: ExplainGraphApp) => (n: LayoutOutputNode): void => {
   if (!n.id || n.id.startsWith('ext:')) return;
-  app.actions.insertCreate(qualifyIdent(n.db, n.name));
+  // `!`: a real caller always wires actions.insertCreate; a test that never
+  // clicks a node in the drawn graph can pass a minimal/action-less app.
+  app.actions!.insertCreate!(qualifyIdent(n.db, n.name));
 };
 
 // In the full schema view, clicking an object opens the detail pane (full columns
@@ -367,14 +526,15 @@ const schemaClick = (app) => (n) => {
 // `targetDoc` is this view's own document (the tab or the overlay's host), threaded
 // so a node click always opens the pane in the view it came from — even when
 // several full views are open at once (no shared single-slot document).
-const schemaDetailClick = (app, targetDoc) => (n, e) => {
+const schemaDetailClick = (app: DetachedGraphApp, targetDoc: Document) => (n: LayoutOutputNode, e: MouseEvent): void => {
   if (!n.id || n.id.startsWith('ext:')) return;
   if (e.metaKey || e.ctrlKey) return;
-  app.actions.openNodeDetail(n, targetDoc);
+  // `!`: see schemaClick's note above — a real caller always wires this.
+  app.actions!.openNodeDetail!(n, targetDoc);
 };
 
 // Zoom-out / zoom-in / fit buttons wired to an attachPanZoom controller.
-function zoomControls(pz) {
+function zoomControls(pz: PanZoomControls): HTMLDivElement {
   return h('div', { class: 'graph-overlay-zoom' },
     h('button', { class: 'res-act', title: 'Zoom out', onclick: pz.zoomOut }, Icon.minus()),
     h('button', { class: 'res-act', title: 'Zoom in', onclick: pz.zoomIn }, Icon.plus()),
@@ -382,7 +542,7 @@ function zoomControls(pz) {
 }
 
 // Headline title for a focus: "default" (whole-DB) or "default.events" (table).
-function focusLabel(focus) {
+function focusLabel(focus?: SchemaGraphFocus | null): string {
   const f = focus || {};
   return f.table ? f.db + '.' + f.table : (f.db || '');
 }
@@ -393,8 +553,8 @@ function focusLabel(focus) {
 // document (overlay fallback) so app.state/the saved pref/the header button stay
 // in sync; in a separate tab it's omitted and the flip is local + ephemeral. The
 // icon is rebuilt inside withDocument(doc) so it's created in the view's own realm.
-function themeToggle(doc, onToggle) {
-  const icon = () => (doc.documentElement.getAttribute('data-theme') === 'light' ? Icon.moon() : Icon.sun());
+function themeToggle(doc: Document, onToggle?: () => void): HTMLButtonElement {
+  const icon = (): SVGElement => (doc.documentElement.getAttribute('data-theme') === 'light' ? Icon.moon() : Icon.sun());
   const btn = h('button', { class: 'res-act', title: 'Toggle theme' }, icon());
   btn.addEventListener('click', () => {
     if (onToggle) onToggle(); // overlay: app's toggle flips data-theme + state + pref + header icon
@@ -407,71 +567,94 @@ function themeToggle(doc, onToggle) {
 // Truncation banner text (null when the lineage wasn't soft-capped). Only called
 // from render() with a populated graph (the nodeCount > 0 branch), so graph.nodes
 // is always present here.
-function schemaNote(graph) {
-  return graph.truncated ? 'Data flow truncated — showing ' + graph.nodes.length + ' objects' : null;
+function schemaNote(graph: SchemaLineageGraph): string | null {
+  // `!`: only ever called from render() with a populated graph (see above) —
+  // graph.nodes is always present, never the plain `?` a bare test fixture
+  // might otherwise omit.
+  return graph.truncated ? 'Data flow truncated — showing ' + graph.nodes!.length + ' objects' : null;
+}
+
+/** attachSchemaInteractions's return shape — undo/redo history controls +
+ *  the teardown the fullscreen controller runs on close. */
+interface InteractionController {
+  undo(): void;
+  redo(): void;
+  canUndo(): boolean;
+  canRedo(): boolean;
+  teardown(): void;
 }
 
 // ⌘/Ctrl drives a hand cursor (.modkey) and gates node dragging: a ⌘/Ctrl+drag
 // on a card moves it (capture phase, pre-empting the pan handler) and straightens
 // only the edges incident to it; a plain drag falls through to pan. Pure geometry
 // lives in core/graph-layout.js; this only mutates the DOM + records positions.
-function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onChange = () => {}) {
+function attachSchemaInteractions(
+  canvas: HTMLElement, svg: SVGElement, built: DrawnRichGraph, targetDoc: Document,
+  positions: PositionMap | null | undefined, onChange: () => void = () => {},
+): InteractionController {
   const nodes = built.nodes;
   const edges = built.edges;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const cardById = new Map();
-  svg.querySelectorAll('g.eg-card[data-node-id]').forEach((g) => cardById.set(g.getAttribute('data-node-id'), g));
-  const pathByIdx = new Map();
-  svg.querySelectorAll('path[data-eidx]').forEach((p) => pathByIdx.set(+p.getAttribute('data-eidx'), p));
-  const labelByIdx = new Map();
-  svg.querySelectorAll('text[data-lbl-eidx]').forEach((t) => labelByIdx.set(+t.getAttribute('data-lbl-eidx'), t));
+  const cardById = new Map<string, SVGElement>();
+  svg.querySelectorAll<SVGGElement>('g.eg-card[data-node-id]').forEach((g) => cardById.set(g.getAttribute('data-node-id')!, g));
+  const pathByIdx = new Map<number, SVGPathElement>();
+  svg.querySelectorAll<SVGPathElement>('path[data-eidx]').forEach((p) => pathByIdx.set(Number(p.getAttribute('data-eidx')), p));
+  const labelByIdx = new Map<number, SVGTextElement>();
+  svg.querySelectorAll<SVGTextElement>('text[data-lbl-eidx]').forEach((t) => labelByIdx.set(Number(t.getAttribute('data-lbl-eidx')), t));
   // Each node's incident-edge indices are fixed for the view's lifetime, so map
   // them once here rather than rescanning every edge on every drag-move frame.
-  const incidentById = new Map();
+  const incidentById = new Map<string, number[]>();
   nodes.forEach((n) => incidentById.set(n.id, incidentEdges(edges, n.id)));
-  const getVb = () => { const a = svg.getAttribute('viewBox').split(' ').map(Number); return { x: a[0], y: a[1], w: a[2], h: a[3] }; };
+  const getVb = (): ViewBox => {
+    // `!`: attachPanZoom's apply() always sets viewBox before this runs.
+    const a = svg.getAttribute('viewBox')!.split(' ').map(Number);
+    return { x: a[0], y: a[1], w: a[2], h: a[3] };
+  };
   const history = createMoveHistory();
 
   // Move a node to an absolute position: translate its card, re-route only its
   // incident edges (and their labels), grow the layout bounds, and update the
   // persisted map. Shared by live drag + undo/redo.
-  const placeAt = (id, x, y) => {
-    const node = byId.get(id);
+  const placeAt = (id: string, x: number, y: number): void => {
+    // `!`: placeAt is only ever called with an id from a card's own
+    // data-node-id (the drag handler below) or a recorded history op — always
+    // a real node built into `nodes`/`byId` above.
+    const node = byId.get(id)!;
     node.x = x; node.y = y;
-    cardById.get(id).setAttribute('transform', 'translate(' + (x - node.x0) + ' ' + (y - node.y0) + ')');
+    cardById.get(id)!.setAttribute('transform', 'translate(' + (x - node.x0) + ' ' + (y - node.y0) + ')');
     // Grow the layout bounds (same object attachPanZoom fits) so Fit/double-click
     // can still frame a node dragged past dagre's original extent.
     if (x + node.w > built.width) built.width = x + node.w;
     if (y + node.h > built.height) built.height = y + node.h;
-    for (const i of incidentById.get(id)) { // every node id is mapped above
+    for (const i of incidentById.get(id)!) { // every node id is mapped above
       const ed = edges[i];
-      const pts = straightEdgePoints(byId.get(ed.from), byId.get(ed.to));
-      pathByIdx.get(i).setAttribute('d', 'M' + pts.map((p) => p.x + ' ' + p.y).join(' L'));
+      const pts = straightEdgePoints(byId.get(ed.from)!, byId.get(ed.to)!);
+      pathByIdx.get(i)!.setAttribute('d', 'M' + pts.map((p) => p.x + ' ' + p.y).join(' L'));
       // Keep the relationship label on the re-routed edge's midpoint, not stranded.
       const lbl = labelByIdx.get(i);
-      if (lbl) { lbl.setAttribute('x', (pts[0].x + pts[1].x) / 2); lbl.setAttribute('y', (pts[0].y + pts[1].y) / 2 - 3); }
+      if (lbl) { lbl.setAttribute('x', String((pts[0].x + pts[1].x) / 2)); lbl.setAttribute('y', String((pts[0].y + pts[1].y) / 2 - 3)); }
     }
     if (positions) recordPosition(positions, id, x, y);
   };
 
   // undo()/redo() are shared by the keyboard shortcuts and the headline buttons;
   // each notifies onChange so the buttons can refresh their enabled state.
-  const doUndo = () => { const op = history.undo(); if (op) placeAt(op.id, op.from.x, op.from.y); onChange(); };
-  const doRedo = () => { const op = history.redo(); if (op) placeAt(op.id, op.to.x, op.to.y); onChange(); };
-  const onKeyDown = (e) => {
+  const doUndo = (): void => { const op = history.undo(); if (op) placeAt(op.id, op.from.x, op.from.y); onChange(); };
+  const doRedo = (): void => { const op = history.redo(); if (op) placeAt(op.id, op.to.x, op.to.y); onChange(); };
+  const onKeyDown = (e: KeyboardEvent): void => {
     if (!(e.metaKey || e.ctrlKey)) return;
     canvas.classList.add('modkey');
     const k = e.key.toLowerCase();
     if (k === 'z') { e.preventDefault(); if (e.shiftKey) doRedo(); else doUndo(); } // ⌘Z undo, ⌘⇧Z redo
     else if (k === 'y') { e.preventDefault(); doRedo(); } // ⌘Y redo (Windows-style)
   };
-  const onKeyUp = (e) => { if (!(e.metaKey || e.ctrlKey)) canvas.classList.remove('modkey'); };
+  const onKeyUp = (e: KeyboardEvent): void => { if (!(e.metaKey || e.ctrlKey)) canvas.classList.remove('modkey'); };
   // If the window loses focus mid-press the modifier keyup may never arrive, which
   // would leave the grab/move cursor (.modkey) latched on — clear it on blur.
-  const onBlur = () => canvas.classList.remove('modkey');
+  const onBlur = (): void => canvas.classList.remove('modkey');
   const win = targetDoc.defaultView;
-  const onDown = (e) => {
-    const g = e.target.closest('[data-node-id]');
+  const onDown = (e: MouseEvent): void => {
+    const g = (e.target as Element).closest('[data-node-id]');
     if (!(e.metaKey || e.ctrlKey)) {
       // Plain press on a card: swallow it so the canvas doesn't pan (a clean click
       // still opens the detail pane). Plain press on empty canvas falls through to pan.
@@ -479,7 +662,7 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
       return;
     }
     if (!g) return; // ⌘/Ctrl on empty canvas → let the pan handler grab it
-    const node = byId.get(g.getAttribute('data-node-id'));
+    const node = byId.get(g.getAttribute('data-node-id')!);
     if (!node) return;
     e.preventDefault(); e.stopPropagation();
     canvas.classList.add('grabbing');
@@ -488,13 +671,13 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
     // re-read each move (a ⌘/wheel zoom mid-drag changes it) so deltas stay scaled.
     const rect = canvas.getBoundingClientRect();
     let last = { x: e.clientX, y: e.clientY };
-    const onMove = (ev) => {
-      if (ev.buttons === 0) return onUp(); // button released off-window → end the drag
+    const onMove = (ev: MouseEvent): void => {
+      if (ev.buttons === 0) { onUp(); return; } // button released off-window → end the drag
       const { dx, dy } = dragDeltaToSvg(ev.clientX - last.x, ev.clientY - last.y, getVb(), rect);
       last = { x: ev.clientX, y: ev.clientY };
       placeAt(node.id, node.x + dx, node.y + dy);
     };
-    const onUp = () => {
+    const onUp = (): void => {
       targetDoc.removeEventListener('mousemove', onMove);
       targetDoc.removeEventListener('mouseup', onUp);
       canvas.classList.remove('grabbing');
@@ -524,19 +707,30 @@ function attachSchemaInteractions(canvas, svg, built, targetDoc, positions, onCh
   };
 }
 
+/** makeController's return shape — the render/fail/destroy controller over an
+ *  already-open detached surface. */
+interface LineageController {
+  render(graph: SchemaLineageGraph): void;
+  fail(msg: string): void;
+  destroy(): void;
+}
+
 // A controller over an already-open surface (new tab or overlay). `render(graph)`
 // draws the rich-card graph into `targetDoc`'s canvas (replacing the Loading…
 // placeholder) and wires pan/zoom + the drag/cursor model; `fail(msg)` shows an
 // error in the canvas and toasts the main window.
-function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
-  let teardown = null;
+function makeController(
+  app: DetachedGraphApp, targetDoc: Document, mainDoc: Document, canvas: HTMLElement, bar: HTMLElement, closeBtn: HTMLElement | null,
+): LineageController {
+  let teardown: (() => void) | null = null;
   let destroyed = false;
   return {
-    render(graph) {
+    render(graph: SchemaLineageGraph) {
       if (destroyed) return; // the view was closed before the lineage finished loading
       withDocument(targetDoc, () => {
         canvas.textContent = '';
-        bar.querySelector('.graph-overlay-title').textContent = 'Schema: ' + focusLabel(graph.focus);
+        // `!`: bar always carries the title span the tab/overlay chrome built.
+        bar.querySelector('.graph-overlay-title')!.textContent = 'Schema: ' + focusLabel(graph.focus);
         // Name the browser tab "Schema:<db>" (only a real tab — never clobber the
         // main app's title when this is the in-app overlay fallback).
         if (targetDoc !== mainDoc) targetDoc.title = 'Schema:' + focusLabel(graph.focus);
@@ -545,15 +739,16 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
         // In the overlay (targetDoc === mainDoc) the toggle routes through app's own
         // toggleTheme so state/pref/header stay in sync; a real tab flips locally.
         const actions = h('div', { class: 'graph-overlay-actions' },
-          themeToggle(targetDoc, targetDoc === mainDoc ? app.toggleTheme : null));
+          themeToggle(targetDoc, targetDoc === mainDoc ? app.toggleTheme : undefined));
         if (!built.nodeCount) {
           canvas.appendChild(placeholder(schemaEmptyMessage(graph)));
         } else {
           canvas.classList.add('schema-canvas');
           canvas.appendChild(built.svg);
           const pz = attachPanZoom(canvas, built.svg, built, { fitWidth: true, refitOnResize: true });
-          let undoBtn, redoBtn;
-          const refresh = () => { undoBtn.disabled = !controls.canUndo(); redoBtn.disabled = !controls.canRedo(); };
+          let undoBtn: HTMLButtonElement;
+          let redoBtn: HTMLButtonElement;
+          const refresh = (): void => { undoBtn.disabled = !controls.canUndo(); redoBtn.disabled = !controls.canRedo(); };
           const controls = attachSchemaInteractions(canvas, built.svg, built, targetDoc, graph.savedPositions, refresh);
           teardown = controls.teardown;
           undoBtn = h('button', { class: 'res-act', title: 'Undo move (⌘Z)', onclick: controls.undo }, Icon.undo());
@@ -570,13 +765,19 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
         canvas.focus({ preventScroll: true }); // focus for ⌘/Ctrl key events — but never scroll the header off
       });
     },
-    fail(msg) {
+    fail(msg: string) {
       if (destroyed) return;
       withDocument(targetDoc, () => { canvas.textContent = ''; canvas.appendChild(placeholder(msg)); });
       flashToast(msg, { document: mainDoc });
     },
     destroy() { destroyed = true; if (teardown) teardown(); },
   };
+}
+
+/** openSchemaView's return shape. */
+export interface SchemaViewController {
+  render(graph: SchemaLineageGraph): void;
+  fail(msg: string): void;
 }
 
 /**
@@ -586,22 +787,22 @@ function makeController(app, targetDoc, mainDoc, canvas, bar, closeBtn) {
  * back to it. The view is opened synchronously so it survives the click
  * gesture; the caller fetches lineage, then calls render()/fail().
  */
-export function openSchemaView(app) {
+export function openSchemaView(app: DetachedGraphApp | null): SchemaViewController {
   const mainDoc = (app && app.document) || document;
-  let ctrl;
+  let ctrl: LineageController;
   openInDetachedTab(app, {
     title: 'Schema',
     mode: 'graph',
-    mount: ({ doc, bar, body, close, closeBtn }) => {
+    mount: ({ doc, bar, body, close, closeBtn }: MountCtx) => {
       const isTab = doc !== mainDoc;
       if (isTab) doc.title = 'Schema'; // render() refines this to "Schema:<db>" — never the main page's title
       body.appendChild(placeholder('Loading…'));
       // Esc closes the open detail pane first; a second Esc closes the overlay
       // (a real tab has no JS-driven close — the browser tab's own close serves it).
-      const onKey = (e) => {
+      const onKey = (e: KeyboardEvent): void => {
         if (e.key !== 'Escape') return;
         if (!isTab) e.stopPropagation();
-        const pane = doc.querySelector('.schema-detail');
+        const pane = doc.querySelector<HTMLElement>('.schema-detail');
         if (pane) {
           if (isTab) e.stopPropagation();
           closeDetailPane(pane);
@@ -614,16 +815,19 @@ export function openSchemaView(app) {
       // closeBtn is appended inside render()'s own (async, built-on-first-load)
       // actions cluster — not here — so it lands last within that cluster
       // rather than stranded next to the title before the cluster exists.
-      ctrl = makeController(app, doc, mainDoc, body, bar, closeBtn);
+      // `!`: a null app reaching this point is untested and would throw inside
+      // render()/fail() exactly as it always has — a type-level acknowledgment
+      // of that throw path (mirrors openInDetachedTab's own `app!.openWindow`).
+      ctrl = makeController(app!, doc, mainDoc, body, bar, closeBtn);
       return () => {
         doc.removeEventListener('keydown', onKey, true);
-        const pane = doc.querySelector('.schema-detail');
+        const pane = doc.querySelector<HTMLElement>('.schema-detail');
         if (pane) closeDetailPane(pane);
         ctrl.destroy();
       };
     },
   });
-  return { render: (g) => ctrl.render(g), fail: (m) => ctrl.fail(m) };
+  return { render: (g: SchemaLineageGraph) => ctrl.render(g), fail: (m: string) => ctrl.fail(m) };
 }
 
 /**
@@ -631,7 +835,7 @@ export function openSchemaView(app) {
  * relationship-coloured edges, legend, click-a-node to expand). Same pan/zoom as
  * the pipeline view.
  */
-export function renderSchemaGraph(app, r) {
+export function renderSchemaGraph(app: ExplainGraphApp, r: { schemaGraph?: SchemaLineageGraph }): HTMLDivElement {
   const built = buildSchemaSvg(r.schemaGraph, app.Dagre, schemaClick(app));
   // No connected objects → explain why instead of drawing nothing / a wide strip.
   if (!built.nodeCount) return placeholder(schemaEmptyMessage(r.schemaGraph));
