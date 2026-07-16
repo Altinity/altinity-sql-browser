@@ -4,6 +4,7 @@ import {
   chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
   normalizeChartStyle, chartStylePreset, applyChartStylePreset, shouldShowChartPoints,
+  formatChartValue, visibleChartMeasures,
 } from '../../src/core/chart-data.js';
 
 describe('chartStripType', () => {
@@ -257,16 +258,16 @@ describe('buildChartData', () => {
     { name: 'delay', type: 'Float64' },
     { name: 'region', type: 'String' },
   ];
-  it('single series per measure, coercing nullish/garbage to 0', () => {
+  it('single series per measure, preserving nullish/garbage values as gaps', () => {
     const rows = [['B6', '10', '5.5', 'E'], ['AA', null, 'x', 'W'], ['DL', '', '2', 'W']];
     const out = buildChartData(cols, rows, { type: 'hbar', x: 0, y: [1, 2], series: null });
     expect(out.labels).toEqual(['B6', 'AA', 'DL']);
     expect(out.datasets).toEqual([
-      { label: 'flights', data: [10, 0, 0] },
-      { label: 'delay', data: [5.5, 0, 2] },
+      { label: 'flights', data: [10, null, null] },
+      { label: 'delay', data: [5.5, null, 2] },
     ]);
   });
-  it('group-by pivots into one aligned dataset per series value, missing → 0', () => {
+  it('group-by pivots into one aligned dataset per series value, missing → null', () => {
     const rows = [
       ['B6', '10', '1', 'E'],
       ['AA', '20', '1', 'W'],
@@ -275,7 +276,7 @@ describe('buildChartData', () => {
     const out = buildChartData(cols, rows, { type: 'bar', x: 0, y: [1], series: 3 });
     expect(out.labels).toEqual(['B6', 'AA']); // first-seen X order, deduped
     expect(out.datasets).toEqual([
-      { label: 'E', data: [10, 0] }, // E has only B6
+      { label: 'E', data: [10, null] }, // E has only B6
       { label: 'W', data: [30, 20] }, // W has B6(30) and AA(20)
     ]);
   });
@@ -312,6 +313,41 @@ describe('buildChartData', () => {
     expect(out.labels).toEqual(['2026-06-15 09:00', '2026-06-15 17:00']); // distinct intraday ticks
     expect(out.datasets[0].data).toEqual([1, 2]); // and the two points survive (no merge)
   });
+  it('applies display names and hidden state without mutating cfg.y or fieldConfig', () => {
+    const cfg = { type: 'line', x: 0, y: [1, 2], series: null };
+    const fieldConfig = { defaults: { unit: '%' }, columns: {
+      flights: { displayName: 'Flights' }, delay: { hidden: true },
+    } };
+    const out = buildChartData(cols, [['B6', 10, 2, 'E']], cfg, fieldConfig);
+    expect(out.datasets).toEqual([{ label: 'Flights', data: [10] }]);
+    expect(visibleChartMeasures(cols, cfg, fieldConfig).map((item) => item.index)).toEqual([1]);
+    expect(cfg.y).toEqual([1, 2]);
+    expect(fieldConfig.columns.delay.hidden).toBe(true);
+  });
+  it('keeps Series values as dataset labels while using the selected measure visibility', () => {
+    const cfg = { type: 'line', x: 0, y: [1], series: 3 };
+    const fields = { columns: { flights: { displayName: 'Flight count' } } };
+    expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, fields).datasets[0].label).toBe('East');
+    expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, { columns: { flights: { hidden: true } } }))
+      .toEqual({ labels: [], datasets: [] });
+    expect(buildChartData(cols, [['B6', 10, 2, 'East']], {
+      type: 'line', x: 0, y: [1, 2], series: 3,
+    }, { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [] });
+  });
+});
+
+describe('formatChartValue', () => {
+  it('uses exact decimals and authored units, with a safe non-finite fallback', () => {
+    const presentation = { decimals: 1, unit: '%', noValue: 'n/a' };
+    expect(formatChartValue(68.234, presentation)).toBe('68.2%');
+    expect(formatChartValue(0, presentation)).toBe('0.0%');
+    expect(formatChartValue(null, presentation)).toBe('n/a');
+    expect(formatChartValue(Infinity, presentation)).toBe('n/a');
+    expect(formatChartValue('nope', presentation)).toBe('n/a');
+    expect(formatChartValue(-0, presentation)).toBe('0.0%');
+    expect(formatChartValue(1048576, { decimals: 0, unit: ' B' })).toBe('1048576 B');
+    expect(formatChartValue(1.25, { decimals: 99, unit: 'x' })).toBe('1.25x');
+  });
 });
 
 describe('chartJsConfig', () => {
@@ -347,6 +383,20 @@ describe('chartJsConfig', () => {
     const cb = cfg.options.scales.y.ticks.callback;
     expect(cb(2_000_000)).toBe('2.0M');
     expect(cb('1500')).toBe('1.5K');
+  });
+  it('retains Chart.js legacy tooltip value formatting when fieldConfig has no value format', () => {
+    const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+    expect(cfg.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1500, formattedValue: '1,500',
+    })).toBe('flights: 1,500');
+  });
+  it('does not change valid tooltip formatting when only noValue is authored', () => {
+    const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, {
+      fieldConfig: { columns: { flights: { noValue: 'n/a' } } },
+    });
+    expect(cfg.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1500, formattedValue: '1,500',
+    })).toBe('flights: 1,500');
   });
   it('line is not filled; area fills with an alpha-blended hex', () => {
     const line = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1], series: null }, colors);
@@ -415,6 +465,46 @@ describe('chartJsConfig', () => {
     expect(cfg.data.datasets).toHaveLength(2);
     expect(cfg.options.plugins.legend.display).toBe(true);
     expect(cfg.options.plugins.legend.position).toBe('top');
+  });
+  it('formats labels, field-specific tooltips, descriptions, and a compatible shared axis', () => {
+    const fieldConfig = { defaults: { unit: '%', decimals: 1, noValue: 'n/a' }, columns: {
+      flights: { displayName: 'Flights', description: 'Completed flights.' },
+      delay: { displayName: 'Delay' },
+    } };
+    const cfg = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1, 2], series: null }, colors, { fieldConfig });
+    expect(cfg.data.datasets.map((dataset) => dataset.label)).toEqual(['Flights', 'Delay']);
+    expect(cfg.options.scales.y.ticks.callback(68.234)).toBe('68.2%');
+    const callbacks = cfg.options.plugins.tooltip.callbacks;
+    expect(callbacks.label({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 68.234 })).toBe('Flights: 68.2%');
+    expect(callbacks.label({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: 6.25 })).toBe('Delay: 6.3%');
+    expect(callbacks.afterLabel({ datasetIndex: 0 })).toBe('Completed flights.');
+    expect(callbacks.afterLabel({ datasetIndex: 1 })).toBe('');
+  });
+  it('keeps the generic axis for incompatible measures while tooltips stay field-specific', () => {
+    const fieldConfig = { columns: {
+      flights: { unit: ' B', decimals: 0 }, delay: { unit: '%', decimals: 1 },
+    } };
+    const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1, 2], series: null }, colors, { fieldConfig });
+    expect(cfg.options.scales.y.ticks.callback(1500)).toBe('1.5K');
+    const cb = cfg.options.plugins.tooltip.callbacks.label;
+    expect(cb({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1048576 })).toBe('flights: 1048576 B');
+    expect(cb({ datasetIndex: 1, dataset: cfg.data.datasets[1], raw: 2.25 })).toBe('delay: 2.3%');
+  });
+  it('uses Series identity in labels and the measure metadata in tooltips', () => {
+    const pivotCols = [...cols, { name: 'region', type: 'String' }];
+    const cfg = chartJsConfig(pivotCols, [['B6', 10, 2, 'East']], {
+      type: 'line', x: 0, y: [1], series: 3,
+    }, colors, { fieldConfig: { columns: { flights: { displayName: 'Flight count', unit: ' trips', decimals: 0 } } } });
+    expect(cfg.data.datasets[0].label).toBe('East');
+    expect(cfg.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 10 }))
+      .toBe('East: 10 trips');
+  });
+  it('uses category identity for pie tooltip labels', () => {
+    const cfg = chartJsConfig(cols, rows, { type: 'pie', x: 0, y: [1], series: null }, colors, {
+      fieldConfig: { columns: { flights: { unit: ' trips', decimals: 0 } } },
+    });
+    expect(cfg.options.plugins.tooltip.callbacks.label({ datasetIndex: 0, dataset: cfg.data.datasets[0], label: 'B6', raw: 4 }))
+      .toBe('B6: 4 trips');
   });
 });
 

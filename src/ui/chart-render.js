@@ -11,7 +11,7 @@ import { Icon } from './icons.js';
 import { formatRows } from '../core/format.js';
 import {
   chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap,
-  CHART_STYLE_PRESETS, chartStylePreset, applyChartStylePreset,
+  CHART_STYLE_PRESETS, chartStylePreset, applyChartStylePreset, visibleChartMeasures,
 } from '../core/chart-data.js';
 
 /** A labelled <select> for the config bar (shared with the Panel tab's
@@ -48,7 +48,8 @@ export function chartEmpty(icon, msg) {
  * `opts.controls === false` omits the Type/X/Y config bar (read-only tiles);
  * `opts.typeControl === false` omits just the Type select (the Panel tab's
  * picker owns type). `opts.hideGrid` suppresses the value-axis gridlines
- * (dashboard tiles — #149).
+ * (dashboard tiles — #149). `opts.fieldConfig` is the saved panel metadata;
+ * the pure chart layer resolves it without reading application state.
  */
 export function renderChart(app, r, opts = {}) {
   const rerender = opts.rerender;
@@ -110,13 +111,21 @@ export function renderChart(app, r, opts = {}) {
     }
   }
 
+  if (visibleChartMeasures(r.columns, cfg, opts.fieldConfig).length === 0) {
+    return h('div', { class: 'chart-view' }, bar,
+      chartEmpty(Icon.chart(), 'All selected chart fields are hidden by panel.fieldConfig.'));
+  }
+
   const canvas = h('canvas', null); // via h() so it lands in the right document (detached-tab safe)
   // Plot in result (query) order — independent of the table's sort, which is a
   // global, cross-tab setting; applying it here would reorder the X axis (a
   // time series would zig-zag) and change which rows the type's row cap keeps,
   // contradicting the "first N rows" note. It would also sort up to the display
   // cap's rows just to discard all but the first `cap`.
-  const chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), { hideGrid: opts.hideGrid }));
+  const chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), {
+    fieldConfig: opts.fieldConfig,
+    hideGrid: opts.hideGrid,
+  }));
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,
   // ResizeObserver) bound to the window the Chart.js module itself runs in —

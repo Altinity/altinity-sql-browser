@@ -28,10 +28,17 @@ describe('KPI presentation and formatting', () => {
   it('clones defaults and overrides while merging delta independently', () => {
     const fieldConfig = { defaults: { decimals: 1, noValue: 'n/a', future: { x: 1 }, delta: { unit: ' pp', positiveIsGood: true } }, columns: { score: { displayName: 'Score', unit: '%', future: { y: 2 }, delta: { decimals: 2 } } } };
     const out = resolveKpiPresentation({ fieldConfig, columnName: 'score' });
-    expect(out).toEqual({ decimals: 1, noValue: 'n/a', displayName: 'Score', unit: '%', future: { y: 2 }, delta: { unit: ' pp', positiveIsGood: true, decimals: 2 } });
+    expect(out).toEqual({
+      decimals: 1, noValue: 'n/a', displayName: 'Score', description: null,
+      unit: '%', color: null, hidden: false, future: { y: 2 },
+      delta: { unit: ' pp', positiveIsGood: true, decimals: 2 },
+    });
     out.future.y = 9;
     expect(fieldConfig.columns.score.future.y).toBe(2);
-    expect(resolveKpiPresentation({ fieldConfig: null, columnName: 'x' })).toEqual({ displayName: 'x', noValue: '—', delta: {} });
+    expect(resolveKpiPresentation({ fieldConfig: null, columnName: 'x' })).toEqual({
+      displayName: 'x', description: null, unit: '', decimals: null,
+      color: null, noValue: '—', hidden: false, delta: {},
+    });
   });
   it('formats compact integers, decimals, units, null, negative zero, and invalid values', () => {
     expect(formatKpiValue({ value: 999, clickhouseType: 'UInt64' })).toBe('999');

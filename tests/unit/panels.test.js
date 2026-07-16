@@ -378,6 +378,17 @@ describe('Panel drawer tab', () => {
     expect(region(app).querySelector('.panel-authoring-hint').textContent).toContain('Spec → panel.fieldConfig');
     expect(region(app).querySelector('.panel-config select')).toBeNull();
   });
+  it('applies saved chart field metadata through the shared workbench renderer', () => {
+    const app = panelApp(chartResult(), { type: 'line', x: 0, y: [1], series: null });
+    app.activeTab().specParsed.panel.fieldConfig = {
+      columns: { flights: { displayName: 'Flights', unit: ' trips', decimals: 0 } },
+    };
+    renderResults(app);
+    expect(app.chart.config.data.datasets[0].label).toBe('Flights');
+    expect(app.chart.config.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: app.chart.config.data.datasets[0], raw: 10,
+    })).toBe('Flights: 10 trips');
+  });
   it('rescue (#195): repairing Message from a chart fallback preserves type:logs and ends the rescue', () => {
     const app = panelApp(noMessageChartResult(), { type: 'logs' });
     renderResults(app);

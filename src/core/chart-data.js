@@ -5,6 +5,7 @@
 // `ui/results.js` stays a thin wrapper around `new Chart(canvas, config)`.
 
 import { isNumericType } from './format.js';
+import { hasFieldValueFormat, resolveFieldConfig } from './field-config.js';
 
 const TIME_RE = /^(Date|DateTime)/;
 // Numeric columns whose *name is exactly* a calendar bucket (year, month, …)
@@ -198,6 +199,20 @@ export function chartNumFmt(v) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
+/** Format one measure value from resolved field metadata, without scaling it. */
+export function formatChartValue(value, presentation = {}) {
+  if (value == null || value === '') return presentation.noValue ?? '—';
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return presentation.noValue ?? '—';
+  const normalized = Object.is(numeric, -0) ? 0 : numeric;
+  const exactDecimals = Number.isInteger(presentation.decimals)
+    && presentation.decimals >= 0 && presentation.decimals <= 20;
+  const rendered = exactDecimals
+    ? normalized.toFixed(presentation.decimals)
+    : String(normalized);
+  return rendered + (typeof presentation.unit === 'string' ? presentation.unit : '');
+}
+
 /**
  * Format an X label. A date-like value is trimmed to a readable tick: just the
  * date (YYYY-MM-DD) for a Date or a midnight DateTime (day-level aggregations),
@@ -275,6 +290,19 @@ export function chartColors(read) {
   };
 }
 
+/** Resolve the selected, visible measures without altering the saved cfg. */
+export function visibleChartMeasures(columns, cfg, fieldConfig) {
+  // Series pivoting has always consumed only cfg.y[0]. Preserve that identity
+  // for hand-authored multi-measure+Series configs instead of promoting a
+  // later visible measure when the producing field is hidden.
+  const selected = cfg.series != null ? (cfg.y || []).slice(0, 1) : (cfg.y || []);
+  return selected.map((index) => {
+    const columnName = columns[index].name;
+    const authoredValueFormat = hasFieldValueFormat(fieldConfig, columnName);
+    return { index, presentation: resolveFieldConfig(fieldConfig, columnName), authoredValueFormat };
+  }).filter((measure) => !measure.presentation.hidden);
+}
+
 /**
  * Transform `rows` (capped) + columns into a library-agnostic
  * { labels, datasets:[{label, data}] } per the encoding in `cfg`. Rows are
@@ -283,18 +311,28 @@ export function chartColors(read) {
  * than the last one silently winning. `chartLabel` is applied only to the
  * final tick text, never to the grouping identity.
  * - group-by (cfg.series set): one dataset per series value, aligned to the
- *   union of X categories, missing cell → 0.
- * - otherwise: one dataset per measure in `cfg.y`.
+ *   union of X categories, missing cell → null.
+ * - otherwise: one dataset per visible measure in `cfg.y`.
  */
-export function buildChartData(columns, rows, cfg) {
+export function buildChartData(columns, rows, cfg, fieldConfig = {}) {
   const slice = rows.slice(0, chartRowCap(cfg.type));
-  const num = (v) => (v == null || v === '' ? 0 : Number(v) || 0);
+  const measures = visibleChartMeasures(columns, cfg, fieldConfig);
+  const num = (v) => {
+    if (v == null || v === '') return null;
+    const parsed = Number(v);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const add = (map, key, value) => {
+    const parsed = num(value);
+    if (parsed != null) map.set(key, (map.get(key) || 0) + parsed);
+  };
   const cats = []; // raw X keys, first-seen order
   const seen = new Set();
   const noteCat = (xk) => { if (!seen.has(xk)) { seen.add(xk); cats.push(xk); } };
 
   if (cfg.series != null) {
-    const yi = cfg.y[0];
+    const yi = measures[0]?.index;
+    if (yi == null) return { labels: [], datasets: [] };
     const groups = new Map(); // seriesValue -> Map(xKey -> summed y)
     for (const row of slice) {
       const xk = String(row[cfg.x]);
@@ -302,24 +340,24 @@ export function buildChartData(columns, rows, cfg) {
       const sk = String(row[cfg.series]);
       if (!groups.has(sk)) groups.set(sk, new Map());
       const byCat = groups.get(sk);
-      byCat.set(xk, (byCat.get(xk) || 0) + num(row[yi]));
+      add(byCat, xk, row[yi]);
     }
     const datasets = [...groups.entries()].map(([name, byCat]) => ({
       label: name,
-      data: cats.map((xk) => byCat.get(xk) || 0),
+      data: cats.map((xk) => byCat.has(xk) ? byCat.get(xk) : null),
     }));
     return { labels: cats.map(chartLabel), datasets };
   }
 
-  const sums = cfg.y.map(() => new Map()); // per measure: xKey -> summed y
+  const sums = measures.map(() => new Map()); // per measure: xKey -> summed y
   for (const row of slice) {
     const xk = String(row[cfg.x]);
     noteCat(xk);
-    cfg.y.forEach((yi, mi) => sums[mi].set(xk, (sums[mi].get(xk) || 0) + num(row[yi])));
+    measures.forEach(({ index }, mi) => add(sums[mi], xk, row[index]));
   }
-  const datasets = cfg.y.map((yi, mi) => ({
-    label: columns[yi].name,
-    data: cats.map((xk) => sums[mi].get(xk) || 0),
+  const datasets = measures.map(({ presentation }, mi) => ({
+    label: presentation.displayName,
+    data: cats.map((xk) => sums[mi].has(xk) ? sums[mi].get(xk) : null),
   }));
   return { labels: cats.map(chartLabel), datasets };
 }
@@ -341,7 +379,9 @@ const withAlpha = (hex, frac) => {
  * stay), keeping the chart body clean like the design's tiles.
  */
 export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
-  const { labels, datasets } = buildChartData(columns, rows, cfg);
+  const fieldConfig = opts.fieldConfig || {};
+  const measures = visibleChartMeasures(columns, cfg, fieldConfig);
+  const { labels, datasets } = buildChartData(columns, rows, cfg, fieldConfig);
   const pal = colors.palette;
   const horizontal = cfg.type === 'hbar';
   const isPie = cfg.type === 'pie';
@@ -378,6 +418,18 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const grid = { color: colors.borderFaint, drawBorder: false, display: !opts.hideGrid };
   const ticks = { color: colors.fgMute, font: { family: colors.mono, size: 10 } };
   const valueTicks = { ...ticks, callback: (v) => chartNumFmt(typeof v === 'number' ? v : Number(v)) };
+  const compatible = measures.length > 0 && measures.every(({ presentation }) => (
+    presentation.unit === measures[0].presentation.unit
+    && presentation.decimals === measures[0].presentation.decimals
+  ));
+  if (compatible) {
+    const shared = measures[0].presentation;
+    valueTicks.callback = (v) => Number.isInteger(shared.decimals)
+      ? formatChartValue(v, shared)
+      : chartNumFmt(typeof v === 'number' ? v : Number(v)) + shared.unit;
+  }
+
+  const tooltipMeasure = (context) => cfg.series != null ? measures[0] : measures[context.datasetIndex];
 
   const options = {
     responsive: true,
@@ -398,6 +450,17 @@ export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
         bodyColor: colors.fg,
         titleFont: { family: colors.mono },
         bodyFont: { family: colors.mono },
+        callbacks: {
+          label: (context) => {
+            const measure = tooltipMeasure(context);
+            const label = isPie ? context.label : context.dataset.label;
+            const value = measure?.authoredValueFormat
+              ? formatChartValue(context.raw, measure.presentation)
+              : context.formattedValue ?? formatChartValue(context.raw, measure?.presentation);
+            return `${label}: ${value}`;
+          },
+          afterLabel: (context) => tooltipMeasure(context)?.presentation.description || '',
+        },
       },
     },
   };
