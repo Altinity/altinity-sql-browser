@@ -10,6 +10,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Helm chart.** A chart at `helm/altinity-sql-browser/` deploys the nginx image
+  to Kubernetes (Deployment + ClusterIP Service + config ConfigMap + optional
+  Ingress/HPA), non-root, config via `.Values.config` → `/sql/config.json`, CSP
+  origins via `.Values.connectSrc`. `release.yml` packages and pushes it to
+  `oci://ghcr.io/altinity/altinity-sql-browser/helm` on `v*` tags (altinity-mcp
+  parity). For Altinity edge-proxy environments, `service.annotations` expose a
+  host with no ingress/cert/DNS work (`deploy/helm/values-demo.yaml` targets
+  `sql.demo.altinity.cloud`).
 - **Production container + GHCR image.** The Docker image is now a static
   **nginx** server for the single-file SPA (replacing the containerized Python
   runner): it serves `/sql`, `/sql/dashboard`, a mounted `config.json` at

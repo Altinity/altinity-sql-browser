@@ -1,0 +1,136 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/altinity/altinity-sql-browser
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Extra labels merged into the selector (usually leave empty).
+selectorLabels: {}
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101          # nginx-unprivileged
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# The container listens on 8080 (non-root nginx-unprivileged).
+containerPort: 8080
+
+# CSP connect-src origins the browser must reach: the IdP endpoints plus every
+# ClickHouse cluster origin referenced in `config` below. Same-origin ('self')
+# is added by the image's nginx template. Fills the CONNECT_SRC env var.
+connectSrc: "https://accounts.google.com https://oauth2.googleapis.com https://antalya.demo.altinity.cloud https://github.demo.altinity.cloud"
+
+# Extra environment variables (list of {name,value}). CONNECT_SRC is injected
+# from .Values.connectSrc by the deployment template.
+env: []
+
+service:
+  type: ClusterIP
+  port: 8080
+  # In the Altinity edge-proxy envs (e.g. demo.altinity.cloud), expose a host by
+  # setting these on the Service — no ingress/ELB/DNS needed (see values-demo):
+  #   edge-proxy.altinity.com/port-mapping: "443:tls-to-tcp:8080"
+  #   edge-proxy.altinity.com/tls-server-name: sql.demo.altinity.cloud
+  annotations: {}
+  sessionAffinity: ""
+  sessionAffinityConfig: {}
+
+# Standard k8s Ingress (for environments that use one instead of the edge-proxy).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: sql.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+probes:
+  # /healthz is cheap and dependency-free; /sql/config.json proves the config
+  # is being served before the pod takes traffic.
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 15
+  readiness:
+    path: /sql/config.json
+    initialDelaySeconds: 2
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The deployment's OAuth/host config, rendered to config.json and served at
+# /sql/config.json. Default = the public Altinity demo (antalya + github.demo,
+# each in demo:demo and Google-SSO modes) — same as deploy/config.json.example.
+# Override for your own IdPs/clusters. Google clients are public-by-design with
+# host-locked redirect URIs.
+config:
+  basic_login: true
+  idps:
+    - id: google-antalya
+      label: Google (Antalya)
+      issuer: https://accounts.google.com
+      client_id: 925653064731-tpj128lp5qm5vkqn4llgbl96udvt3lsf.apps.googleusercontent.com
+      client_secret: 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
+    - id: google-github
+      label: Google (github.demo)
+      issuer: https://accounts.google.com
+      client_id: 925653064731-vsep3e0vjq74q16svj5jshgvdlm6uptm.apps.googleusercontent.com
+      client_secret: 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
+      ch_auth: basic
+  hosts:
+    - label: Antalya (demo:demo)
+      url: https://antalya.demo.altinity.cloud
+      auth: basic
+      user: demo
+      password: demo
+    - label: Antalya (Google SSO)
+      url: https://antalya.demo.altinity.cloud
+      auth: oauth
+      idp: google-antalya
+    - label: github.demo (demo:demo)
+      url: https://github.demo.altinity.cloud
+      auth: basic
+      user: demo
+      password: demo
+    - label: github.demo (Google SSO)
+      url: https://github.demo.altinity.cloud
+      auth: oauth
+      idp: google-github
