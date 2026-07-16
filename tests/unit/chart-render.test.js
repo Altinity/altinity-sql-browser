@@ -176,6 +176,18 @@ describe('renderChart', () => {
     change(fieldSel(app.dom.resultsRegion, 'Y'), '3');
     expect(app.activeTab().panelCfg.y).toEqual([3]);
   });
+  it('keeps filtered role selectors usable when imported values are unavailable', () => {
+    const app = appWithResult(chartResult());
+    const unavailableY = renderChart(app, app.activeTab().result, {
+      cfg: { type: 'line', x: 1, y: [0], series: null }, rerender: vi.fn(),
+    });
+    expect(fieldSel(unavailableY, 'Y').value).toBe('2'); // first numeric column, never blank
+
+    const unavailableSeries = renderChart(app, app.activeTab().result, {
+      cfg: { type: 'line', x: 1, y: [2], series: 3 }, rerender: vi.fn(),
+    });
+    expect(fieldSel(unavailableSeries, 'Series').value).toBe(''); // explicit no-series fallback
+  });
   it('uses the direct rerender seam when no onCfgChange owner is supplied', () => {
     const app = appWithResult(chartResult());
     const rerender = vi.fn();

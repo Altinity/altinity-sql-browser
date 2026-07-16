@@ -22,7 +22,8 @@ export function chartSelect(label, value, options, onChange) {
     const opt = h('option', { value: o.value }, o.label);
     sel.appendChild(opt);
   }
-  sel.value = value;
+  const selected = options.some((option) => String(option.value) === String(value));
+  if (selected) sel.value = String(value);
   return h('label', { class: 'chart-field' }, h('span', { class: 'chart-field-label' }, label), sel);
 }
 
