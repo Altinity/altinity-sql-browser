@@ -230,9 +230,11 @@ export function switchPanelType(payload, type, columns) {
 export function resolvePanel(saved, input) {
   const context = resultContext(input);
   const { columns } = context;
+  const fieldConfig = saved?.fieldConfig || context.fieldConfig;
+  const resolved = (value) => ({ ...value, fieldConfig });
   const savedCfg = saved && saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : null;
-  const fallbackTo = (diagnostic) => ({ ...autoPanel(context), rederived: false, fallback: true, diagnostic });
-  if (!savedCfg) return { ...autoPanel(context), rederived: false, fallback: false };
+  const fallbackTo = (diagnostic) => resolved({ ...autoPanel(context), rederived: false, fallback: true, diagnostic });
+  if (!savedCfg) return resolved({ ...autoPanel(context), rederived: false, fallback: false });
   if (!panelCfgStaticValid(savedCfg)) {
     return fallbackTo('Saved panel has invalid static configuration.');
   }
@@ -240,31 +242,31 @@ export function resolvePanel(saved, input) {
   if (cfg.type === 'kpi') {
     const kpi = context.rowCount == null ? null : readKpiFields({
       columns, row: context.rows && context.rows[0], rowCount: context.rowCount,
-      fieldConfig: saved.fieldConfig || context.fieldConfig, serverVersion: context.serverVersion,
+      fieldConfig, serverVersion: context.serverVersion,
     });
-    return { cfg, kpi, rederived: false, fallback: false };
+    return resolved({ cfg, kpi, rederived: false, fallback: false });
   }
   if (isChartFamily(cfg.type)) {
     // An explicit key mismatch means the column positions no longer carry the
     // saved roles, even if every old index remains in range (columns may have
     // reordered). Retain the requested chart type but derive fresh axes.
     const keyMismatch = saved.key != null && saved.key !== schemaKey(columns);
-    if (chartCfgValid(cfg, columns) && !keyMismatch) return { cfg, rederived: false, fallback: false };
+    if (chartCfgValid(cfg, columns) && !keyMismatch) return resolved({ cfg, rederived: false, fallback: false });
     const red = rederiveChart(cfg.type, columns);
-    if (red) return { cfg: { ...cfg, ...red, type: cfg.type }, rederived: true, fallback: false };
+    if (red) return resolved({ cfg: { ...cfg, ...red, type: cfg.type }, rederived: true, fallback: false });
     return fallbackTo('Saved ' + cfg.type + ' chart has nothing to plot in this result.');
   }
   if (cfg.type === 'logs') {
     const explicit = resolveLogsShape(cfg, columns);
-    if (explicit) return { cfg, shape: explicit, rederived: false, fallback: false };
+    if (explicit) return resolved({ cfg, shape: explicit, rederived: false, fallback: false });
     // A failed explicit-name lookup is the logs arm's mismatch signal: retain
     // the type and re-derive the roles by convention (the mismatch policy).
     const detected = detectLogsView(columns);
-    if (detected) return { cfg, shape: detected, rederived: true, fallback: false };
+    if (detected) return resolved({ cfg, shape: detected, rederived: true, fallback: false });
     return fallbackTo('Saved logs panel: no time + message columns in this result.');
   }
   if (cfg.type === 'table' || cfg.type === 'text') {
-    return { cfg, rederived: false, fallback: false };
+    return resolved({ cfg, rederived: false, fallback: false });
   }
   return fallbackTo('Unknown panel type "' + String(cfg.type) + '" (saved by a newer build?).');
 }

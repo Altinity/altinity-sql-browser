@@ -272,6 +272,34 @@ describe('renderChart', () => {
     renderChart(app, app.activeTab().result, { cfg: restored, controls: false });
     expect(restored).toEqual({ type: 'pie', x: 0, y: [2], series: null });
   });
+  it('passes field metadata to Chart.js for display names and formatting', () => {
+    const app = appWithResult(chartResult());
+    const cfg = { type: 'line', x: 0, y: [2], series: null };
+    renderChart(app, app.activeTab().result, {
+      cfg, controls: false,
+      fieldConfig: { columns: { flights: { displayName: 'Flights', unit: ' trips', decimals: 0 } } },
+    });
+    expect(app.chart.config.data.datasets[0].label).toBe('Flights');
+    expect(app.chart.config.options.scales.y.ticks.callback(12)).toBe('12 trips');
+  });
+  it('keeps authoring controls but shows an empty state when every selected field is hidden', () => {
+    const app = appWithResult(chartResult());
+    const cfg = { type: 'line', x: 0, y: [2], series: null };
+    const el = renderChart(app, app.activeTab().result, {
+      cfg, rerender: vi.fn(), fieldConfig: { columns: { flights: { hidden: true } } },
+    });
+    expect(el.textContent).toContain('All selected chart fields are hidden by panel.fieldConfig.');
+    expect(fieldSel(el, 'Y').value).toBe('2');
+    expect(el.querySelector('canvas')).toBeNull();
+    expect(app.chart).toBeNull();
+    expect(cfg.y).toEqual([2]);
+
+    const readonly = renderChart(app, app.activeTab().result, {
+      cfg, controls: false, fieldConfig: { columns: { flights: { hidden: true } } },
+    });
+    expect(readonly.querySelector('.chart-config')).toBeNull();
+    expect(readonly.textContent).toContain('All selected chart fields are hidden');
+  });
   it('normalizes a restored, self-contradictory pie config (multi-measure + series) on render', () => {
     const r = chartResult();
     const app = appWithResult(r, { resultView: 'chart' });

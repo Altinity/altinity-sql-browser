@@ -1044,6 +1044,23 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     expect(charts[0].config.options.scales.y.grid.display).toBe(false);
   });
 
+  it('applies the same saved chart field metadata on Dashboard tiles', async () => {
+    const charts = [];
+    const app = oneFav(vi.fn(async () => chartResult()), { panel: {
+      cfg: { type: 'line', x: 0, y: [1], series: null },
+      fieldConfig: { columns: { v: { displayName: 'Requests', unit: ' req', decimals: 0 } } },
+    } });
+    const Base = app.Chart;
+    app.Chart = class extends Base { constructor(...args) { super(...args); charts.push(this); } };
+    await renderDashboard(app);
+    expect(charts).toHaveLength(1);
+    expect(charts[0].config.data.datasets[0].label).toBe('Requests');
+    expect(charts[0].config.options.plugins.tooltip.callbacks.label({
+      datasetIndex: 0, dataset: charts[0].config.data.datasets[0], raw: 2,
+    })).toBe('Requests: 2 req');
+    expect(app.root.querySelector('.chart-config')).toBeNull();
+  });
+
   it('a header click sorts locally — no re-query — and a cell click is a harmless no-op', async () => {
     const runTile = vi.fn(async () => tableResult());
     const app = oneFav(runTile);

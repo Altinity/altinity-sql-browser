@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Chart panels now apply saved `panel.fieldConfig` metadata consistently**
+  (#254). Exact result-column overrides merge over defaults to drive legend
+  display names, per-measure tooltip units/decimals/no-value text and
+  descriptions, and shared-axis formatting when visible measures are
+  compatible. Hidden measures are omitted without rewriting their saved Y
+  selection, with an explicit all-hidden state; missing and invalid measure
+  values now remain `null` geometry instead of becoming zero. The same shared
+  renderer supplies workbench, detached, and Dashboard charts, while the
+  compact chart toolbar remains unchanged and advanced formatting stays in the
+  Spec editor.
 - **Line and Area panels now have compact style presets for dense time series**
   (#252). Clean, Smooth, Stepped, and Points controls map to explicit Chart.js
   curve and point settings, with automatic point visibility based on the final

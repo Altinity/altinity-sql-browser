@@ -137,7 +137,7 @@ const chartArm = {
   // bar (X/Y/Series/All-measures; its Type select is suppressed — the Panel
   // tab's picker owns type). No separate controls() row.
   controls: () => null,
-  renderPanel({ app, result, cfg, surface, rerender, readonly, onCfgChange, setChart }) {
+  renderPanel({ app, result, cfg, fieldConfig, surface, rerender, readonly, onCfgChange, setChart }) {
     let inst = null;
     const node = renderChart(app, result, {
       cfg,
@@ -146,6 +146,7 @@ const chartArm = {
       typeControl: false,
       setChart: (c) => { inst = c; if (setChart) setChart(c); },
       controls: surface === 'workbench' && !readonly,
+      fieldConfig,
       hideGrid: surface === 'dashboard',
       running: false, // the caller gates on run state before dispatching
     });
@@ -238,7 +239,10 @@ export const PANEL_PICKER_OPTIONS = [
  */
 export function renderResolvedPanel(app, resolved, result, opts) {
   const arm = PANEL_TYPES[resolved.cfg.type];
-  const out = arm.renderPanel({ app, result, cfg: resolved.cfg, shape: resolved.shape, kpi: resolved.kpi, ...opts });
+  const out = arm.renderPanel({
+    app, result, cfg: resolved.cfg, fieldConfig: resolved.fieldConfig,
+    shape: resolved.shape, kpi: resolved.kpi, ...opts,
+  });
   if (!resolved.diagnostic && !resolved.rederived) return out;
   // Wrap with the mismatch affordance: a small hint bar above the panel.
   const note = resolved.diagnostic

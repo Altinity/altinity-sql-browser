@@ -1,8 +1,9 @@
 // Pure KPI result normalization and display formatting. SQL owns every runtime
 // value; the saved-query Presentation Spec contributes display metadata only.
 
-import { cloneJson, isPlainObject } from './saved-query.js';
+import { isPlainObject } from './saved-query.js';
 import { namedTupleMembers, parseClickHouseType, unwrapValueTransparentWrappers } from './clickhouse-type.js';
+import { resolveFieldConfig } from './field-config.js';
 
 const NUMERIC = /^(?:U?Int(?:8|16|32|64|128|256)|Float(?:32|64)|BFloat16|Decimal(?:32|64|128|256)?\s*\()/;
 
@@ -18,17 +19,9 @@ export function parseKpiTupleType(type) {
 }
 
 export function resolveKpiPresentation({ fieldConfig, columnName }) {
-  const config = isPlainObject(fieldConfig) ? fieldConfig : {};
-  const defaults = isPlainObject(config.defaults) ? cloneJson(config.defaults) : {};
-  const columns = isPlainObject(config.columns) ? config.columns : {};
-  const column = isPlainObject(columns[columnName]) ? cloneJson(columns[columnName]) : {};
-  const delta = {
-    ...(isPlainObject(defaults.delta) ? defaults.delta : {}),
-    ...(isPlainObject(column.delta) ? column.delta : {}),
-  };
-  const presentation = { ...defaults, ...column, delta };
-  presentation.displayName = typeof presentation.displayName === 'string' ? presentation.displayName : columnName;
-  presentation.noValue = typeof presentation.noValue === 'string' ? presentation.noValue : '—';
+  const presentation = resolveFieldConfig(fieldConfig, columnName);
+  const delta = isPlainObject(presentation.delta) ? presentation.delta : {};
+  presentation.delta = delta;
   return presentation;
 }
 
