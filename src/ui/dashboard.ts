@@ -16,7 +16,7 @@
 // out across every favorite instead of one query at a time. Per-tile overrides
 // and export arrive in later phases (D7–D8).
 
-import { h as hUntyped } from './dom.js';
+import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { schemaKey as schemaKeyUntyped } from '../core/chart-data.js';
@@ -47,7 +47,7 @@ import { mergeDashboardFilterHelpers } from '../core/dashboard-filters.js';
 import type {
   FilterDiagnostic, FilterHelper, FilterProvider, MergeDashboardFilterHelpersResult,
 } from '../core/dashboard-filters.js';
-import { diagnostic as diagnosticUntyped } from '../core/diagnostics.js';
+import { diagnostic } from '../core/diagnostics.js';
 import {
   buildKpiBand, buildKpiSourceSlot, setKpiSourceLoading, setKpiSourceUnfilled, applyKpiSourceResult,
   refreshBandWarnings,
@@ -60,25 +60,9 @@ import type { App } from './app.types.js';
 // Each const/overload pins exactly the signature this module relies on,
 // verified against the wrapped function body; the runtime module stays `.js`
 // until its own leaf-up conversion (ADR-0002) — same convention as panels.ts /
-// state.ts / core/panel-execution.ts.
-
-type ElProps = Record<string, unknown> | null;
-
-/** dom.js's `h` supports far more (SVG documents, function components, style
- *  objects, ...) than this render module needs; the TagNameMap overload keeps
- *  e.g. `h('button', ...)` typed as HTMLButtonElement (so `.disabled` needs no
- *  cast at each call site) while every other/dynamic tag still returns a
- *  plain HTMLElement — the same overload pair panels.ts pins. */
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K, props: ElProps, ...children: unknown[]
-): HTMLElementTagNameMap[K];
-function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement;
-function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement {
-  // `as`: dom.js is unconverted — its inferred signature is looser than the
-  // overloads above promise; the runtime always creates exactly the
-  // requested tag (document.createElement(tag)).
-  return hUntyped(tag, props, ...children) as HTMLElement;
-}
+// state.ts / core/panel-execution.ts. (dom.ts and diagnostics.ts are already
+// typed — see their own `h<K extends keyof HTMLElementTagNameMap>` overload
+// and `diagnostic()` factory, imported directly above.)
 
 // icons.js is unconverted JS built on the untyped `s()` SVG hyperscript —
 // this module only ever appends the returned nodes as h() children or via
@@ -138,24 +122,6 @@ const buildFilterBar: (
 const readFilterOptions = readFilterOptionsUntyped as (args: {
   columns?: Column[]; row?: unknown; rowCount?: number;
 }) => { helpers: FilterHelper[]; diagnostics: FilterDiagnostic[] };
-
-// diagnostics.js's shared `{severity, code, message, ...extra}` factory
-// (unconverted) — the same wrapper shape dashboard-filters.ts pins for the
-// same function.
-const diagnostic = diagnosticUntyped as (
-  severity: 'error' | 'warning' | 'info',
-  code: string,
-  message: string,
-  extra?: Record<string, unknown>,
-) => FilterDiagnostic;
-
-/** Structurally identical alias view of filter-execution.ts's
- *  `FilterSqlDiagnostic`. That declaration is an interface, which TS never
- *  grants an implicit index signature, so its arrays can't assign into
- *  FilterProvider's indexed `FilterDiagnostic[]` even though every member
- *  matches — this alias DOES get the implicit index signature, bridging the
- *  two .ts contracts without a cast. */
-type FilterSqlDiagnosticView = { severity: 'error'; code: string; message: string; path: string[] };
 
 // ── Slot & outcome contracts ─────────────────────────────────────────────────
 
@@ -837,11 +803,11 @@ export function renderDashboard(app: App): Promise<void> {
   async function runFilterSource(query: SavedQueryV2, slot: FilterSlot, generation: number): Promise<FilterProvider | null> {
     const execution = filterExecution(query.sql);
     if (execution.error) {
-      // The alias view (see FilterSqlDiagnosticView above) lets the plan's
-      // interface-typed diagnostics assign into the provider's FilterDiagnostic[].
-      const diagnostics: FilterSqlDiagnosticView[] = execution.diagnostics;
+      // filter-execution.ts's `FilterSqlDiagnostic` now extends the same
+      // `Diagnostic` base as `FilterDiagnostic` (dashboard-filters.ts), so its
+      // array assigns straight into the provider's `FilterDiagnostic[]`.
       const provider: FilterProvider = {
-        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics,
+        sourceId: query.id, sourceName: queryName(query), helpers: [], diagnostics: execution.diagnostics,
       };
       if (slot.gen !== generation) return null;
       slot.status = 'error';

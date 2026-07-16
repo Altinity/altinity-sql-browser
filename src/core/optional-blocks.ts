@@ -18,7 +18,7 @@
 // seams; this file only understands one statement string at a time.
 
 import { scanSpans as _scanSpans } from './sql-spans.js';
-import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+import { scanParamDeclarations } from './param-scan.js';
 
 // The lexical span shape `sql-spans.js`'s `scanSpans` yields, narrowed to
 // exactly the fields this file reads.
@@ -29,14 +29,6 @@ interface Span {
   closed: boolean;
 }
 const scanSpans: (text: string) => Iterable<Span> = _scanSpans;
-
-// One `{name:Type}` declaration as `param-scan.js`'s `scanParamDeclarations`
-// reports it (position fields dropped, same as its own doc contract).
-interface ParamDeclaration {
-  name: string;
-  type: string;
-}
-const scanParamDeclarations: (sql: string) => ParamDeclaration[] = _scanParamDeclarations;
 
 /** Activation sentinel: materialize with *every* block retained (markers
  *  stripped) — the analysis view all param discovery works on (rule 9). */

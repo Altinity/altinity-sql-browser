@@ -27,7 +27,8 @@
 // debounce; the pipeline's contract is only "same batch → same clock".
 
 import { splitStatements as _splitStatements, isRowReturning as _isRowReturning } from './sql-split.js';
-import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+import { scanParamDeclarations } from './param-scan.js';
+import type { ParamDeclaration } from './param-scan.js';
 import { parseParamType, conflictingTypes, enumValues } from './param-type.js';
 import type { ParsedParamType } from './param-type.js';
 import { serializeParamValue as _serializeParamValue } from './param-serialize.js';
@@ -45,15 +46,6 @@ import {
 // bodies (same convention `param-type.ts` uses for `clickhouse-type.js`).
 const splitStatements = _splitStatements as (sql: string) => string[];
 const isRowReturning = _isRowReturning as (stmt: string) => boolean;
-
-// `param-scan.js`'s all-occurrences declaration shape (position fields
-// dropped) — the same narrowed contract `optional-blocks.ts` already declares
-// for the same function.
-interface ParamDeclaration {
-  name: string;
-  type: string;
-}
-const scanParamDeclarations = _scanParamDeclarations as (sql: string) => ParamDeclaration[];
 
 // `param-serialize.js` is unconverted — its `{ok:true,value} | {ok:false,
 // error,structural?}` result contract, narrowed to what this file reads.

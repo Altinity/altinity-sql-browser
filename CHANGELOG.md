@@ -18,7 +18,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   union with a `FuturePanelCfg` forward-compat member) from the canonical
   schema manifest, staleness-checked by `check:schemas`;
   `src/schema-contract.types.ts` pins the semantic invariants at
-  `check:types` time. Phases 2–5 convert 16 modules to strict `.ts` — the
+  `check:types` time. Phases 2–5 convert 19 modules to strict `.ts` — the
   state model (`src/state.ts`, typed signals, honest localStorage ingress),
   the saved-query/panel/dashboard contract spine, the parameter/filter/
   execution pipeline, and the dashboard runtime (typed slot lifecycle,

@@ -3,36 +3,41 @@
 // components (h only), style objects, class/className, raw html, on* event
 // listeners, boolean/null skipping, and nested/array children.
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
+const SVG_NS = 'http://www.w3.org/2000/svg' as const;
 
 // Ambient target document. Normally null → the global `document` (the served
 // page). `withDocument(doc, fn)` redirects element creation at `doc` for the
 // duration of `fn`, so the same builders can populate a second window (the
 // schema graph's new browser tab) without a document parameter on every call.
-let DOC = null;
-const D = () => DOC || document;
+let DOC: Document | null = null;
+const D = (): Document => DOC || document;
 // Realm-agnostic "is this a DOM node?" — `instanceof Node` is false for a node
 // from another window (e.g. the schema tab), so we duck-type on nodeType.
-const isNode = (c) => c != null && typeof c === 'object' && typeof c.nodeType === 'number';
-export function withDocument(doc, fn) {
+const isNode = (c: unknown): c is Node =>
+  c != null && typeof c === 'object' && typeof (c as { nodeType?: unknown }).nodeType === 'number';
+export function withDocument<T>(doc: Document, fn: () => T): T {
   const prev = DOC;
   DOC = doc;
   try { return fn(); } finally { DOC = prev; }
 }
 
+/** The attribute/prop bag `h`/`s` accept — `null` (or omitted) means "no
+ *  props". */
+export type ElProps = Record<string, unknown> | null;
+
 // Shared prop/children application — the only difference between h and s is
 // which document factory creates the element.
-function apply(el, props, children) {
+function apply<T extends Element & ElementCSSInlineStyle>(el: T, props: ElProps | undefined, children: unknown[]): T {
   if (props) {
     for (const k in props) {
       const v = props[k];
       if (v == null || v === false) continue;
       if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-      else if (k === 'class' || k === 'className') el.setAttribute('class', v);
-      else if (k === 'html') el.innerHTML = v;
+      else if (k === 'class' || k === 'className') el.setAttribute('class', String(v));
+      else if (k === 'html') el.innerHTML = String(v);
       else if (k.startsWith('on') && typeof v === 'function') {
-        el.addEventListener(k.slice(2).toLowerCase(), v);
-      } else el.setAttribute(k, v === true ? '' : v);
+        el.addEventListener(k.slice(2).toLowerCase(), v as EventListener);
+      } else el.setAttribute(k, v === true ? '' : String(v));
     }
   }
   for (const c of children.flat(Infinity)) {
@@ -46,14 +51,39 @@ function apply(el, props, children) {
   return el;
 }
 
-export function h(tag, props, ...children) {
+/** A function component: `h(Component, props, ...children)` invokes it
+ *  directly as `Component(props, children)` instead of building an element. */
+type FunctionComponent<T extends Node = HTMLElement> = (props: Record<string, unknown>, children: unknown[]) => T;
+
+export function h<K extends keyof HTMLElementTagNameMap>(
+  tag: K, props?: ElProps, ...children: unknown[]
+): HTMLElementTagNameMap[K];
+export function h<T extends Node>(tag: FunctionComponent<T>, props?: ElProps, ...children: unknown[]): T;
+export function h(tag: string, props?: ElProps, ...children: unknown[]): HTMLElement;
+export function h(
+  tag: string | FunctionComponent, props?: ElProps, ...children: unknown[]
+): HTMLElement | Node {
   if (typeof tag === 'function') return tag(props || {}, children);
   return apply(D().createElement(tag), props, children);
 }
 
 // Build an element in the SVG namespace (same prop rules as h()).
-export function s(tag, props, ...children) {
+export function s(tag: string, props?: ElProps, ...children: unknown[]): SVGElement {
   return apply(D().createElementNS(SVG_NS, tag), props, children);
+}
+
+/** A DOMRect-like anchor rectangle — only the edges `fixedAnchor` reads. */
+export interface AnchorRect {
+  bottom: number;
+  left?: number;
+  right?: number;
+}
+
+/** `fixedAnchor`'s options bag. */
+export interface FixedAnchorOptions {
+  gap?: number;
+  min?: number;
+  viewportW?: number;
 }
 
 // Place a fixed-position popover anchored under a button. Returns
@@ -61,13 +91,15 @@ export function s(tag, props, ...children) {
 // the anchor's right edge). `gap` is the px below the anchor; `min` floors the
 // side inset. Pure arithmetic on a DOMRect-like — the single recipe for the File
 // menu, the Save popover and the user menu.
-export function fixedAnchor(rect, opts = {}) {
+export function fixedAnchor(
+  rect: AnchorRect, opts: FixedAnchorOptions = {},
+): { top: number; left: number } | { top: number; right: number } {
   const gap = opts.gap != null ? opts.gap : 6;
   const min = opts.min != null ? opts.min : 8;
   const top = rect.bottom + gap;
   return opts.viewportW != null
-    ? { top, right: Math.max(min, opts.viewportW - rect.right) }
-    : { top, left: Math.max(min, rect.left) };
+    ? { top, right: Math.max(min, opts.viewportW - rect.right!) }
+    : { top, left: Math.max(min, rect.left!) };
 }
 
 // Wire a modal backdrop's close-on-click without the false positive from a
@@ -84,10 +116,10 @@ export function fixedAnchor(rect, opts = {}) {
 // descendant's own stopPropagation can run, so an intervening stopPropagation
 // inside the panel still can't hide the real mousedown target.
 // Returns `detach()` — callers must invoke it from their own close().
-export function attachBackdropClose(backdrop, close) {
+export function attachBackdropClose(backdrop: HTMLElement, close: () => void): () => void {
   let downOnBackdrop = false;
-  const onDown = (e) => { downOnBackdrop = e.target === backdrop; };
-  const onClick = () => {
+  const onDown = (e: MouseEvent): void => { downOnBackdrop = e.target === backdrop; };
+  const onClick = (): void => {
     const shouldClose = downOnBackdrop;
     downOnBackdrop = false; // consume — a later click with no mousedown must not reuse it
     if (shouldClose) close();

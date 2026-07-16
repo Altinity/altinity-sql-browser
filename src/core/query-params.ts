@@ -20,31 +20,29 @@
 //     views work.
 
 import { splitStatements as _splitStatements, isRowReturning as _isRowReturning } from './sql-split.js';
-import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+import { scanParamDeclarations } from './param-scan.js';
+import type { ParamDeclaration as ScannedParamDeclaration } from './param-scan.js';
 
-// `sql-split.js` and `param-scan.js` are unconverted (checkJs:false), so TS
-// infers their exports' shapes structurally from the JS body rather than
-// trusting these hand-written contracts — a plain cast pins the honest type
-// this file actually relies on (verified against the wrapped function bodies).
+// `sql-split.js` is unconverted (checkJs:false), so TS infers its exports'
+// shapes structurally from the JS body rather than trusting these
+// hand-written contracts — a plain cast pins the honest type this file
+// actually relies on (verified against the wrapped function bodies).
 const splitStatements = _splitStatements as (sql: string) => string[];
 const isRowReturning = _isRowReturning as (stmt: string) => boolean;
 
-/** One detected `{name:Type}` parameter — a name and its declared type text. */
-export interface ParamDeclaration {
-  name: string;
-  type: string;
-}
-// `scanParamDeclarations` (param-scan.js) tolerates a nullish `sql` at runtime
-// (`String(sql || '')` internally) — `detectParams` below relies on that.
-const scanParamDeclarations = _scanParamDeclarations as (sql?: string | null) => ParamDeclaration[];
+/** One detected `{name:Type}` parameter — a name and its declared type text.
+ *  A re-export of `param-scan.ts`'s declaration shape (this module's own
+ *  public API name, unchanged). */
+export type ParamDeclaration = ScannedParamDeclaration;
 
 /**
  * Detect ClickHouse `{name:Type}` parameters in `sql`, in first-appearance
  * order, unique by name (the first type seen wins). Placeholders inside
  * string / backtick literals and -- / # / block comments are skipped. A
- * compatibility wrapper over `scanParamDeclarations` (param-scan.js, #173),
+ * compatibility wrapper over `scanParamDeclarations` (param-scan.ts, #173),
  * which is the all-occurrences primitive the parameter pipeline's conflict
- * detection is built on. Pure.
+ * detection is built on. `scanParamDeclarations` tolerates a nullish `sql` at
+ * runtime (`String(sql || '')` internally) — this function relies on that. Pure.
  */
 export function detectParams(sql?: string | null): ParamDeclaration[] {
   const out: ParamDeclaration[] = [];

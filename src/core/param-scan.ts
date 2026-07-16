@@ -10,7 +10,17 @@
 // `…` literals and -- / # / block comments are skipped (via the shared
 // sql-spans.js scanner, also used by sql-split.js so tokenizing can't diverge).
 
-import { scanSpans } from './sql-spans.js';
+import { scanSpans as _scanSpans } from './sql-spans.js';
+
+// `sql-spans.js` is unconverted (checkJs:false) — a thin typed wrapper over
+// the exact shape this file reads off each span (same convention
+// `optional-blocks.ts` uses for the same scanner).
+interface Span {
+  kind: 'code' | 'string' | 'quoted-ident' | 'comment';
+  start: number;
+  end: number;
+}
+const scanSpans: (text: string) => Iterable<Span> = _scanSpans;
 
 // A parameter name is a bare SQL identifier; the type is a data-type expression
 // that starts with a letter (String, Nullable(String), Array(UInt8),
@@ -22,6 +32,23 @@ import { scanSpans } from './sql-spans.js';
 // opaque so it is skipped.
 const PARAM_RE = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z].*)$/;
 
+/** One ClickHouse `{name:Type}` declaration — a name and its declared type
+ *  text. The shape every existing caller (query-params.js, param-pipeline.js,
+ *  optional-blocks.js, filter-execution.js) relies on. */
+export interface ParamDeclaration {
+  name: string;
+  type: string;
+}
+
+/** One `{name:Type}` occurrence — `ParamDeclaration` plus the character
+ *  offsets of the WHOLE `{…}` span (`start` at `{`, `end` one past the
+ *  matching `}`) — #172 v2's `paramComparisonColumns` needs these to locate
+ *  each occurrence's surrounding tokens and, later, its FROM scope. */
+export interface ParamOccurrence extends ParamDeclaration {
+  start: number;
+  end: number;
+}
+
 /**
  * Every ClickHouse `{name:Type}` declaration in `sql`, in appearance order,
  * one entry per occurrence (no dedup — a name may repeat, with the same or a
@@ -30,10 +57,8 @@ const PARAM_RE = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z].*)$/;
  * `paramComparisonColumns` needs these to locate each occurrence's
  * surrounding tokens and, later, its FROM scope. Placeholders inside string /
  * backtick literals and -- / # / block comments are skipped. Pure.
- * @param {string} sql
- * @returns {{name: string, type: string, start: number, end: number}[]}
  */
-export function scanParamOccurrences(sql) {
+export function scanParamOccurrences(sql?: string | null): ParamOccurrence[] {
   const text = String(sql || '');
   const n = text.length;
   // Mark every character that lies inside an opaque '…'/"…"/`…` literal or a
@@ -45,7 +70,7 @@ export function scanParamOccurrences(sql) {
   for (const { kind, start, end } of scanSpans(text)) {
     if (kind !== 'code') opaque.fill(1, start, end);
   }
-  const out = [];
+  const out: ParamOccurrence[] = [];
   let i = 0;
   while (i < n) {
     if (opaque[i] || text[i] !== '{') { i += 1; continue; }
@@ -73,9 +98,7 @@ export function scanParamOccurrences(sql) {
  * -- / # / block comments are skipped. A thin wrapper over
  * `scanParamOccurrences` that drops the position fields — the shape every
  * existing caller (query-params.js, param-pipeline.js) already expects. Pure.
- * @param {string} sql
- * @returns {{name: string, type: string}[]}
  */
-export function scanParamDeclarations(sql) {
+export function scanParamDeclarations(sql?: string | null): ParamDeclaration[] {
   return scanParamOccurrences(sql).map(({ name, type }) => ({ name, type }));
 }

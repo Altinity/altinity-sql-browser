@@ -8,7 +8,7 @@ describe('withDocument', () => {
     const other = document.implementation.createHTMLDocument('');
     const el = withDocument(other, () => h('div', null, s('svg'), 'x'));
     expect(el.ownerDocument).toBe(other); // created in the target document
-    expect(el.querySelector('svg').namespaceURI).toBe(SVG_NS);
+    expect(el.querySelector('svg')!.namespaceURI).toBe(SVG_NS);
     // restored: a subsequent build uses the global document again
     expect(h('div').ownerDocument).toBe(document);
   });
@@ -37,15 +37,21 @@ describe('withDocument', () => {
   });
 });
 
+// `fixedAnchor` returns `{top,left} | {top,right}` — these tests assert on
+// whichever side wasn't requested too (expecting `undefined`), so results are
+// read through this looser local shape rather than the exact discriminated
+// union.
+type AnchorResult = { top: number; left?: number; right?: number };
+
 describe('fixedAnchor', () => {
   it('left-aligns under the anchor using native client coords with the default 6px gap', () => {
-    const a = fixedAnchor({ bottom: 40, left: 100 });
+    const a: AnchorResult = fixedAnchor({ bottom: 40, left: 100 });
     expect(a.top).toBe(46);
     expect(a.left).toBe(100);
     expect(a.right).toBeUndefined();
   });
   it('right-aligns to the anchor when viewportW is given', () => {
-    const a = fixedAnchor({ bottom: 40, right: 1180 }, { viewportW: 1200 });
+    const a: AnchorResult = fixedAnchor({ bottom: 40, right: 1180 }, { viewportW: 1200 });
     expect(a.top).toBe(46);
     expect(a.right).toBe(20);
     expect(a.left).toBeUndefined();
@@ -59,7 +65,8 @@ describe('fixedAnchor', () => {
     expect(fixedAnchor({ bottom: 0, right: 1200 }, { viewportW: 1200 })).toMatchObject({ right: 8 });
   });
   it('honors a custom min inset', () => {
-    expect(fixedAnchor({ bottom: 0, left: 2 }, { min: 0 }).left).toBe(2);
+    const a: AnchorResult = fixedAnchor({ bottom: 0, left: 2 }, { min: 0 });
+    expect(a.left).toBe(2);
   });
   it('handles zero and fractional coordinates', () => {
     expect(fixedAnchor({ bottom: 10.5, left: 50.25 }, { gap: 0, min: 0 })).toMatchObject({ top: 10.5, left: 50.25 });
@@ -76,7 +83,7 @@ describe('s (SVG namespace)', () => {
     expect(el.getAttribute('class')).toBe('c');
     expect(el.style.width).toBe('100%');
     expect(el.hasAttribute('title')).toBe(false); // null skipped
-    expect(el.firstChild.namespaceURI).toBe(SVG_NS); // child path is namespaced
+    expect(el.firstElementChild!.namespaceURI).toBe(SVG_NS); // child path is namespaced
     expect(el.textContent).toContain('x');
     el.dispatchEvent(new Event('click'));
     expect(onclick).toHaveBeenCalled();
@@ -92,8 +99,8 @@ describe('attachBackdropClose (#110)', () => {
     const detach = attachBackdropClose(backdrop, close);
     return { backdrop, panel, close, detach };
   }
-  const down = (el) => el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-  const click = (el) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  const down = (el: Element) => el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  const click = (el: Element) => el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
   it('closes when mousedown and click both land on the backdrop itself', () => {
     const { backdrop, close } = setup();
@@ -106,7 +113,7 @@ describe('attachBackdropClose (#110)', () => {
     // Simulates a drag that starts inside the panel and ends outside it — the
     // browser's click then targets the backdrop directly (#110's repro).
     const { backdrop, panel, close } = setup();
-    down(panel.querySelector('.inner'));
+    down(panel.querySelector('.inner')!);
     click(backdrop);
     expect(close).not.toHaveBeenCalled();
     backdrop.remove();
@@ -119,7 +126,7 @@ describe('attachBackdropClose (#110)', () => {
   });
   it('does not close a normal click inside the panel (mousedown and click both on a panel descendant)', () => {
     const { panel, close, backdrop } = setup();
-    const inner = panel.querySelector('.inner');
+    const inner = panel.querySelector('.inner')!;
     down(inner);
     click(inner); // bubbles to the backdrop; not stopped by the panel
     expect(close).not.toHaveBeenCalled();
@@ -150,9 +157,9 @@ describe('h', () => {
     expect(el.tagName).toBe('DIV');
   });
   it('invokes a function component with props + children', () => {
-    const Comp = vi.fn((props, children) => {
+    const Comp = vi.fn((props: Record<string, unknown>, children: unknown[]) => {
       const e = document.createElement('section');
-      e.textContent = props.label + children.length;
+      e.textContent = String(props.label) + children.length;
       return e;
     });
     const el = h(Comp, { label: 'x' }, 'a', 'b');
@@ -160,7 +167,7 @@ describe('h', () => {
     expect(el.textContent).toBe('x2');
   });
   it('function component with no props defaults to {}', () => {
-    const Comp = (props) => { const e = document.createElement('p'); e.textContent = JSON.stringify(props); return e; };
+    const Comp = (props: Record<string, unknown>) => { const e = document.createElement('p'); e.textContent = JSON.stringify(props); return e; };
     expect(h(Comp).textContent).toBe('{}');
   });
   it('applies a style object', () => {

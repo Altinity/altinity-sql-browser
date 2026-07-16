@@ -7,7 +7,9 @@
   `src/state.ts` (phase 2); the saved-query/panel/dashboard contract spine and
   the parameter/filter/execution pipeline in `src/core/` (phases 3–4); and the
   dashboard runtime slice `src/ui/{dashboard,dashboard-kpi-band,panels}.ts`
-  (phase 5) — 16 runtime modules strict, their unit tests converted as a
+  (phase 5) — 19 runtime modules strict (the 16-module slice plus the dom.js/
+  param-scan.js/diagnostics.js leaves whose typed wrappers it would otherwise
+  have duplicated), their unit tests converted as a
   second wave, zero behavior change. Remaining `.js` (app.js glue, net/,
   editor adapters, the rest of ui/ and core/) converts leaf-up as feature
   work touches it, per decision item 4.

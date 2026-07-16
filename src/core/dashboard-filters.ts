@@ -1,7 +1,8 @@
 import { serializeParamValue as _serializeParamValue } from './param-serialize.js';
 import { validateParamValue } from './param-validate.js';
 import type { ParsedParamType } from './param-type.js';
-import { diagnostic as makeDiagnostic } from './diagnostics.js';
+import { diagnostic } from './diagnostics.js';
+import type { Diagnostic } from './diagnostics.js';
 import type { FieldControl } from './param-pipeline.js';
 
 // `param-serialize.js` is unconverted (checkJs:false) — the same narrow
@@ -15,27 +16,17 @@ const serializeParamValue = _serializeParamValue as (
   name?: string,
 ) => SerializeParamResult;
 
-/** `diagnostics.js`'s shared `{severity, code, message, ...extra}` factory
- *  (unconverted): every Dashboard/Filter-role diagnostic producer in this app
- *  (this module, `filter-options.js`, the provider merge below) composes it,
- *  so the extra per-diagnostic context (`helperName`, `sourceId`,
- *  `optionIndex`, …) is folded in via an open index signature rather than
- *  named per caller. */
-export interface FilterDiagnostic {
-  severity: 'error' | 'warning' | 'info';
-  code: string;
-  message: string;
+/** `diagnostics.ts`'s shared `{severity, code, message, ...extra}` factory:
+ *  every Dashboard/Filter-role diagnostic producer in this app (this module,
+ *  `filter-options.js`, the provider merge below) composes it, so the extra
+ *  per-diagnostic context (`helperName`, `sourceId`, `optionIndex`, …) is
+ *  folded in via `Diagnostic`'s open index signature rather than named per
+ *  caller. */
+export interface FilterDiagnostic extends Diagnostic {
   /** Named (not just index-signature) because the dashboard's per-source Retry
    *  affordance dispatches on it for `filter-query-failed` diagnostics. */
   sourceId?: string;
-  [key: string]: unknown;
 }
-const diagnostic = makeDiagnostic as (
-  severity: 'error' | 'warning' | 'info',
-  code: string,
-  message: string,
-  extra?: Record<string, unknown>,
-) => FilterDiagnostic;
 
 /** One option a Filter helper column offers — the value bound into the
  *  consuming Panel's param and its display label. */

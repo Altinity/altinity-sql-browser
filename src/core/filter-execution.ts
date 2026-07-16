@@ -1,39 +1,26 @@
 import { detectSqlFormat as _detectSqlFormat } from './format.js';
 import { analysisView } from './param-pipeline.js';
-import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+import { scanParamDeclarations } from './param-scan.js';
 import { isRowReturning as _isRowReturning, splitStatements as _splitStatements } from './sql-split.js';
-import { diagnostic as _makeDiagnostic } from './diagnostics.js';
+import { diagnostic as makeDiagnostic } from './diagnostics.js';
+import type { Diagnostic } from './diagnostics.js';
 
-// `format.js` / `sql-split.js` / `param-scan.js` / `diagnostics.js` are all
-// unconverted (checkJs:false) — thin typed wrappers over the exact call
-// signatures this file relies on, verified against the wrapped function
-// bodies (same convention `param-type.ts` uses for `clickhouse-type.js`).
+// `format.js` / `sql-split.js` are unconverted (checkJs:false) — thin typed
+// wrappers over the exact call signatures this file relies on, verified
+// against the wrapped function bodies (same convention `param-type.ts` uses
+// for `clickhouse-type.js`).
 const detectSqlFormat = _detectSqlFormat as (sql: string) => string | null;
 const isRowReturning = _isRowReturning as (stmt: string) => boolean;
 const splitStatements = _splitStatements as (sql: string) => string[];
 
-interface ParamDeclaration {
-  name: string;
-  type: string;
-}
-const scanParamDeclarations = _scanParamDeclarations as (sql: string) => ParamDeclaration[];
-
 /** This module's own diagnostic shape: `diagnostic()` below always anchors at
  *  `severity: 'error'` and the Spec's `dashboard.role` path (#236) — narrower
- *  than `diagnostics.js`'s general `{severity, code, message, ...extra}`
+ *  than `diagnostics.ts`'s general `{severity, code, message, ...extra}`
  *  factory, since every Filter-SQL contract failure really is one of these. */
-export interface FilterSqlDiagnostic {
+export interface FilterSqlDiagnostic extends Diagnostic {
   severity: 'error';
-  code: string;
-  message: string;
   path: string[];
 }
-const makeDiagnostic = _makeDiagnostic as (
-  severity: 'error',
-  code: string,
-  message: string,
-  extra: { path: string[] },
-) => FilterSqlDiagnostic;
 
 export const FILTER_TOP_LEVEL_ROW_LIMIT = 2;
 export const FILTER_OPTION_CAP = 1000;
@@ -41,9 +28,13 @@ export const FILTER_HELPER_CAP = 50;
 export const FILTER_RESULT_BYTE_CAP = 10_000_000;
 
 // Filter-SQL diagnostics are always errors anchored at the Spec's dashboard.role
-// path — the narrow shape over the shared factory (#236).
+// path — the narrow shape over the shared factory (#236). `as`: `diagnostic()`'s
+// return type is the general `Diagnostic` (severity widened to all three
+// values, `path` only known via the index signature) — this call site is the
+// one place that knows the literal `'error'` severity and a real `string[]`
+// path always come out, so the narrowing is pinned here once.
 const diagnostic = (code: string, message: string): FilterSqlDiagnostic =>
-  makeDiagnostic('error', code, message, { path: ['dashboard', 'role'] });
+  makeDiagnostic('error', code, message, { path: ['dashboard', 'role'] }) as FilterSqlDiagnostic;
 
 export function filterSqlDiagnostics(sql?: string | null): FilterSqlDiagnostic[] {
   const text = String(sql || '');

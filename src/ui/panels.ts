@@ -18,7 +18,7 @@
 // the slot). `onChange(cfg)` hands the caller a NEW cfg to write back —
 // controls never touch tab state themselves (#166's dirty pin).
 
-import { h as hUntyped } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart as renderChartUntyped } from './chart-render.js';
 import { patchSpecDraft, setTabSpecDraft, tabPanel } from '../state.js';
@@ -44,24 +44,8 @@ import type { FieldConfig, PanelCfg } from '../generated/json-schema.types.js';
 // Each const pins exactly the signature this module relies on; the runtime
 // module stays `.js` until its own leaf-up conversion (ADR-0002) — same
 // convention as state.ts / core/panel-cfg.ts / core/result-choice.ts.
-
-type ElProps = Record<string, unknown> | null;
-
-/** dom.js's `h` supports far more (SVG documents, function components, style
- *  objects, ...) than this render module needs; the TagNameMap overload keeps
- *  e.g. `h('select', ...)` typed as HTMLSelectElement (so `.value` needs no
- *  cast at each call site) while every other/dynamic tag still returns a
- *  plain HTMLElement. */
-function h<K extends keyof HTMLElementTagNameMap>(
-  tag: K, props: ElProps, ...children: unknown[]
-): HTMLElementTagNameMap[K];
-function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement;
-function h(tag: string, props: ElProps, ...children: unknown[]): HTMLElement {
-  // `as`: dom.js is unconverted — its inferred signature is looser than the
-  // overloads above promise; the runtime always creates exactly the
-  // requested tag (document.createElement(tag)).
-  return hUntyped(tag, props, ...children) as HTMLElement;
-}
+// (dom.ts is already typed — see its own `h<K extends keyof
+// HTMLElementTagNameMap>` overload, imported directly above.)
 
 // icons.js is untyped; only Icon.chart() is used here — pinned to its actual
 // return shape (a detached SVG element built by the SVG hyperscript).

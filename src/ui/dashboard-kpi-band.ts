@@ -17,7 +17,7 @@
 // #193 stable-slot-identity/generation/abort guarantees extend unchanged to
 // KPI sources.
 
-import { h as _h } from './dom.js';
+import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { KpiResult, ResultLike } from '../core/panel-cfg.js';
@@ -25,15 +25,10 @@ import { renderKpiCards as _renderKpiCards, KPI_STREAM_ARIA as _KPI_STREAM_ARIA 
 import type { Panel } from '../generated/json-schema.types.js';
 import type { App } from './app.types.js';
 
-// dom.js's `h(tag, props, ...children)` is unconverted JS (apply()'s `el`
-// param is unannotated, so every call site would otherwise infer `any`) —
-// this file only ever calls it with a string tag, a plain attrs object
-// (class/role/aria-*/style, or `null`), and string/element children, so the
-// wrapper below pins exactly that honest shape rather than letting `any`
-// leak in.
+// This file only ever calls dom.ts's `h()` with a string tag, a plain attrs
+// object (class/role/aria-*/style, or `null`), and string/element children —
+// the local `HAttrs` alias below just names that shape for its own call sites.
 type HAttrs = Record<string, string | Record<string, string>> | null;
-type HChild = string | HTMLElement | SVGElement | null | undefined | false;
-const h = _h as (tag: string, attrs: HAttrs, ...children: HChild[]) => HTMLElement;
 
 // icons.js's `Icon.spinner()` is unconverted JS built via the same untyped
 // `s()` SVG hyperscript — this file only ever appends its returned node as an
@@ -42,7 +37,7 @@ const spinnerIcon = Icon.spinner as () => SVGElement;
 
 // kpi-panel.js is unconverted JS. `KPI_STREAM_ARIA` is a plain object literal
 // (no `any` risk, so a direct annotation suffices); `renderKpiCards` builds
-// its `cards` via the same untyped `h()` this file wraps above, and reads/
+// its `cards` via the same dom.ts `h()` this file imports above, and reads/
 // returns diagnostics shaped exactly like kpi.js's `diagnostic()`
 // (severity/code/message/columnName?) — the shape this file's own warning
 // aggregation and state-card rendering rely on.
