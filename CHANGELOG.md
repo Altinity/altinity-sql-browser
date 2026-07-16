@@ -9,6 +9,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **Chart style internals consolidated (post-#258 review).** The per-chart-type
+  style surface (which fields each type owns, their accepted values, and their
+  defaults) now lives in one `CHART_STYLE_SPEC` table that both
+  `normalizeChartStyle` and `chartStylePreset` read, replacing the parallel
+  field lists that could drift. Chart rendering resolves visible-measure field
+  metadata once per repaint (threaded from `chart-render` through
+  `chartJsConfig` into `buildChartData`) instead of three times. No user-facing
+  behavior or schema change.
+
 ### Added
 - **Bar, Column, Area, and Pie now share type-specific presentation presets**
   (#258) through the same compact Style selector. Bar/Column add Grouped,
