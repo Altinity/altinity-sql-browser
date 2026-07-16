@@ -9,16 +9,19 @@ export const SCHEMA_MANIFEST = [
     path: 'schemas/query-spec-v1.schema.json',
     schemaExport: 'querySpecV1Schema',
     validatorExport: 'validateQuerySpecV1',
+    typeExport: 'QuerySpecV1',
   },
   {
     path: 'schemas/saved-query-v2.schema.json',
     schemaExport: 'savedQueryV2Schema',
     validatorExport: 'validateSavedQueryV2',
+    typeExport: 'SavedQueryV2',
   },
   {
     path: 'schemas/library-v2.schema.json',
     schemaExport: 'libraryV2Schema',
     validatorExport: 'validateLibraryV2',
+    typeExport: 'LibraryV2',
     bundle: true,
   },
 ];

@@ -72,6 +72,35 @@ Adopt **TypeScript, strict, incrementally, dev-time only**:
    converted itself); converting tests is worthwhile but never blocks the
    module.
 
+### Addendum — 2026-07-16: the type emitter is hand-rolled, not json-schema-to-typescript
+
+Phase 1 (generated types for the persisted-data schema graph) landed with a
+hand-rolled emitter, `build/emit-schema-types.mjs`, instead of the
+`json-schema-to-typescript` devDependency point 3 of the Decision anticipated.
+Reasons, in order of weight:
+
+- **$refs must resolve through the Ajv $id registry, not the filesystem.** The
+  pipeline's records already carry every canonical schema keyed by `$id`;
+  jsts resolves cross-file refs by reading files relative to a cwd, a second
+  resolution mechanism that can silently disagree with the manifest.
+- **jsts ignores the 2020-12 keywords this graph leans on.** It does not honor
+  `unevaluatedProperties: false` (the saved-query envelope's closedness) or
+  `not` (the forward-compatible catch-all panel branch), so exactly the
+  contracts worth checking would be lost.
+- **Unstable names.** jsts derives type names from `title` and disambiguates
+  collisions with numeric suffixes; a wording edit or a new titled subschema
+  renames emitted types. Here names are pinned (`typeExport` in
+  `build/schema-manifest.mjs`; PascalCase `$defs` keys) and duplicates throw.
+- **Byte stability.** The committed artifact is staleness-checked
+  (`check:schemas`); jsts output couples the bytes to jsts+prettier versions.
+
+The emitter is a strict whitelist: any shape-affecting keyword it does not
+understand throws at generate time, so schema evolution fails loudly rather
+than emitting wrong types. `typescript` remains the only typing
+devDependency; `src/schema-contract.types.ts` holds the hand-written
+type-level assertions that pin the generated contracts (openness of the Spec,
+closedness of the envelopes, the panel discriminated union).
+
 ## Options considered
 
 | Option | Verdict |
