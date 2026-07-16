@@ -22,10 +22,9 @@ import { h as hUntyped } from './dom.js';
 import { Icon } from './icons.js';
 import { renderChart as renderChartUntyped } from './chart-render.js';
 import { patchSpecDraft, setTabSpecDraft, tabPanel } from '../state.js';
-import type { PanelSpec, QuerySpecDraft, SpecValidationService, ResultSort } from '../state.js';
+import type { PanelSpec, QuerySpecDraft, ResultSort } from '../state.js';
 import type { App, Tab } from './app.types.js';
 import { patchQueryPanel } from '../core/saved-query.js';
-import type { QueryRoot } from '../core/saved-query.js';
 import { renderGridView as renderGridViewUntyped, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs as renderLogsUntyped } from './logs.js';
 import { parseMarkdown as parseMarkdownUntyped } from '../core/markdown-lite.js';
@@ -36,7 +35,7 @@ import type { Column, ChartFamilyType, LogsShape, PanelResolution, KpiResult } f
 import { CHART_TYPES as CHART_TYPES_UNTYPED, schemaKey as schemaKeyUntyped } from '../core/chart-data.js';
 import { renderKpiPanel as renderKpiPanelUntyped } from './kpi-panel.js';
 import {
-  applyResultChoice as applyResultChoiceUntyped, DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES, resultChoiceForSpec,
+  applyResultChoice, DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES, resultChoiceForSpec,
 } from '../core/result-choice.js';
 import type { ResultChoice } from '../core/result-choice.js';
 import type { FieldConfig, PanelCfg } from '../generated/json-schema.types.js';
@@ -121,28 +120,6 @@ const renderKpiPanel: (normalized?: KpiResult | null) => HTMLElement = renderKpi
 // cast panel-cfg.ts/result-choice.ts already apply to this same export.
 const CHART_TYPES = CHART_TYPES_UNTYPED as { value: ChartFamilyType; label: string }[];
 const schemaKey: (columns: Column[] | null | undefined) => string = schemaKeyUntyped;
-
-// result-choice.ts's applyResultChoice carries no explicit return-type
-// annotation; its `!choice` early-return branch (returning the input
-// `query: unknown` unchanged) widens the whole function's inferred return to
-// `unknown`. Every call below runs only after a local `if (!choice) return;`
-// guard, so the actual return is always the QueryRoot its
-// patchQueryDashboard/patchQueryPanel branches produce — pinned here rather
-// than editing result-choice.ts (out of this file's scope; worth a follow-up
-// there to add the annotation upstream).
-const applyResultChoice = applyResultChoiceUntyped as (
-  query: unknown, choice: ResultChoice, columns?: Column[],
-) => QueryRoot;
-
-// `app.specValidators` is typed `unknown` in app.types.ts (createApp's real
-// {validate, register} registry — core/spec-draft.js — is out of that
-// phase-0 contract's scope). Every write path below feeds it straight into
-// state.ts's patchSpecDraft/setTabSpecDraft, which need the
-// SpecValidationService shape; flagged as an App-interface gap, not fixed
-// here (app.types.ts is out of this file's scope).
-function validators(app: App): SpecValidationService {
-  return app.specValidators as SpecValidationService;
-}
 
 // ── Markdown AST → DOM ───────────────────────────────────────────────────────
 
@@ -568,7 +545,7 @@ function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload, act
   const result = patchSpecDraft(tab, (spec: QuerySpecDraft | null): QuerySpecDraft => patchQueryPanel(
     { id: tab.savedId, sql: tab.sqlDraft, specVersion: tab.specVersion, spec },
     { cfg: payload.cfg, key: payload.key ?? undefined },
-  ).spec, { dirty: true, validationService: validators(app) });
+  ).spec, { dirty: true, validationService: app.specValidators });
   if (!result.ok) {
     // `!`: invalidTab is always this same `tab` here — patchSpecDraft only
     // nulls it when the tab argument itself was null, which app.activeTab()
@@ -612,10 +589,10 @@ export function renderPanelTypePicker(app: App, r: PanelResult | null, hooks: Pa
       };
       let result: { ok: boolean; invalidTab: Tab | null };
       if (choice.kind === 'role' && !tab.specDiagnostics?.some((item) => item.code === 'invalid-json')) {
-        setTabSpecDraft(tab, apply(tab.specParsed), { dirty: true, validationService: validators(app) });
+        setTabSpecDraft(tab, apply(tab.specParsed), { dirty: true, validationService: app.specValidators });
         result = { ok: true, invalidTab: null };
       } else {
-        result = patchSpecDraft(tab, apply, { dirty: true, validationService: validators(app) });
+        result = patchSpecDraft(tab, apply, { dirty: true, validationService: app.specValidators });
       }
       if (!result.ok) {
         // `!`: same invariant as writePanel above — invalidTab is always this `tab`.

@@ -506,10 +506,7 @@ function applyTileResult(app: App, q: SavedQueryV2, slot: TileSlot, r: FavoriteS
     columns: r.columns,
     rows: r.rows,
     fieldConfig: savedPanel?.fieldConfig,
-    // `as`: AppState.serverVersion is `string | null` while ResultLike's is
-    // `string | undefined` — the resolver treats both identically as "absent"
-    // (a seam-type gap between the two contracts, reported; no runtime branch).
-    serverVersion: app.state.serverVersion as string | undefined,
+    serverVersion: app.state.serverVersion,
   });
   slot.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
   // Grid state persists across refreshes/filter edits on the stable slot,
@@ -668,11 +665,7 @@ function runKpiSourceTile(
     explicit, rowCap: 2, checkFormat: false,
     setUnfilled: setKpiSourceUnfilled,
     setLoading: setKpiSourceLoading,
-    // `as`: dashboard-kpi-band.ts's (unexported) KpiSourceResult types `error`
-    // as `string | undefined`, but the shared fetched result carries the
-    // stream's `error: null` — handled identically by its own `!= null` guard.
-    // A kpi-band contract gap, reported; the runtime shape is the same.
-    applyResult: (s, r) => applyKpiSourceResult(app, explicit, s, r as Parameters<typeof applyKpiSourceResult>[3]),
+    applyResult: (s, r) => applyKpiSourceResult(app, explicit, s, r),
   });
 }
 

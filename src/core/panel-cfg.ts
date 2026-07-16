@@ -227,7 +227,8 @@ export interface ResultLike {
   rows?: unknown[][] | null;
   rowCount?: number | null;
   fieldConfig?: FieldConfig;
-  serverVersion?: string;
+  /** `null` and absent are equivalent — AppState.serverVersion is `string | null`. */
+  serverVersion?: string | null;
 }
 type PanelInput = Column[] | ResultLike | null | undefined;
 
@@ -236,7 +237,7 @@ interface ResultContext {
   rows: unknown[][] | null;
   rowCount: number | null;
   fieldConfig: FieldConfig;
-  serverVersion?: string;
+  serverVersion?: string | null;
 }
 
 /**
@@ -272,7 +273,7 @@ const readKpiFields = _readKpiFields as (args: {
   row?: unknown;
   rowCount?: number;
   fieldConfig?: FieldConfig;
-  serverVersion?: string;
+  serverVersion?: string | null;
 }) => KpiResult;
 
 /** The heuristic's proposed panel — an explicit type was never asked for, so

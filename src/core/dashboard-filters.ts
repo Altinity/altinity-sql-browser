@@ -25,6 +25,9 @@ export interface FilterDiagnostic {
   severity: 'error' | 'warning' | 'info';
   code: string;
   message: string;
+  /** Named (not just index-signature) because the dashboard's per-source Retry
+   *  affordance dispatches on it for `filter-query-failed` diagnostics. */
+  sourceId?: string;
   [key: string]: unknown;
 }
 const diagnostic = makeDiagnostic as (

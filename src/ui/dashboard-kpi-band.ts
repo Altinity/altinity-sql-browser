@@ -97,7 +97,9 @@ export interface KpiSourceSlot {
  *  (`applyKpiSourceResult`) — the same `{error}` | `{columns, rows}` shape
  *  every dashboard source's request lifecycle settles into (dashboard.js). */
 interface KpiSourceResult extends Pick<ResultLike, 'columns' | 'rows'> {
-  error?: string;
+  /** `null` and absent both mean "no error" — the shared fetched-result shape
+   *  carries `error: null` on success (the `!= null` guard below handles both). */
+  error?: string | null;
 }
 
 /** One compact white state card (loading/unfilled/error) — the query name

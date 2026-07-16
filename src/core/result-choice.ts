@@ -2,7 +2,7 @@ import type { QuerySpecV1 } from '../generated/json-schema.types.js';
 import { CHART_TYPES as _CHART_TYPES } from './chart-data.js';
 import { switchPanelType, type ChartFamilyType, type Column } from './panel-cfg.js';
 import {
-  patchQueryDashboard, patchQueryPanel, queryDashboard, queryPanel,
+  patchQueryDashboard, patchQueryPanel, queryDashboard, queryPanel, type QueryRoot,
 } from './saved-query.js';
 
 // chart-data.js is unconverted (checkJs:false); CHART_TYPES' `value` is
@@ -76,8 +76,11 @@ export function resultChoiceForSpec(spec: QuerySpecV1 | null | undefined): strin
   return type && PICKABLE_PANEL_TYPES.has(type as PickablePanelType) ? `panel:${type}` : 'panel:auto';
 }
 
-export function applyResultChoice(query: unknown, choice: ResultChoice | null | undefined, columns: Column[] = []) {
-  if (!choice || (choice.kind !== 'panel' && choice.kind !== 'role')) return query;
+export function applyResultChoice(query: unknown, choice: ResultChoice | null | undefined, columns: Column[] = []): QueryRoot {
+  // No-op passthrough: the caller gets back exactly the query root it passed
+  // (real callers hold a QueryRoot; `query` stays `unknown` because this is
+  // the same untrusted-ingress boundary the patchQuery* helpers guard).
+  if (!choice || (choice.kind !== 'panel' && choice.kind !== 'role')) return query as QueryRoot;
   if (choice.kind === 'role') return patchQueryDashboard(query, { role: choice.role });
   let next = query;
   // Flip a non-panel role back to the implicit default while PRESERVING any

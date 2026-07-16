@@ -26,7 +26,7 @@ const testApp = (serverVersion?: string): App => ({
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: undefined,
+  specValidators: { validate: () => [] },
   specCompletionSources: [],
   Chart: undefined,
   cssVar: () => '',

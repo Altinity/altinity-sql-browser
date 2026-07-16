@@ -130,7 +130,9 @@ const asApp = (app: FakeApp): App => {
   token: null,
   refreshToken: null,
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [], register: () => () => {} },
+  // `register` is app.js-internal wiring beyond the SpecValidationService
+  // contract — kept on the stub (fake-app parity), hence the cast.
+  specValidators: { validate: () => [], register: () => () => {} } as App['specValidators'],
   specCompletionSources: [],
   openWindow: () => null,
   stylesText: '',

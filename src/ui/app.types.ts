@@ -11,7 +11,7 @@ import type { EditorView } from '@codemirror/view';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
-import type { QueryTab as Tab, AppState as State } from '../state.js';
+import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -113,8 +113,10 @@ export interface App {
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   CodeViewer: CodeViewerFactory;
-  /** {validate, register} — see core/spec-draft.js. */
-  specValidators: unknown;
+  /** {validate, register} — see core/spec-draft.js. Typed as the service
+   *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
+   *  is app.js-internal wiring, outside this contract. */
+  specValidators: SpecValidationService;
   /** CM6 completion sources for the Spec JSON editor. */
   specCompletionSources: unknown[];
 
