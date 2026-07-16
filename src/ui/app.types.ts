@@ -12,6 +12,7 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
+import type { StreamResult } from '../core/stream.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -197,9 +198,9 @@ export interface App {
   elapsedMs(): number;
   tickElapsed(): void;
   runReadInto(
-    result: Json,
+    result: StreamResult,
     opts: { sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal; queryId?: string; onChunk?: (chunk: unknown) => void },
-  ): Promise<Json>;
+  ): Promise<StreamResult>;
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   renderVarStrip(): void;
   setExportBtn(exporting: boolean): void;

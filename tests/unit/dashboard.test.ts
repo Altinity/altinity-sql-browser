@@ -429,7 +429,7 @@ function streamInto(spy: TileSpy) {
     const rows = (out.rows || []).slice();
     result.columns = out.columns || [];
     result.rows = rows;
-    result.progress = { ...(result.progress as Record<string, unknown>), rows: rows.length, bytes: (out.meta && out.meta.bytes) || 0 };
+    result.progress = { ...result.progress, rows: rows.length, bytes: (out.meta && out.meta.bytes) || 0 };
     result.capped = !!(out.meta && out.meta.truncated);
     if (opts.onChunk) opts.onChunk(undefined);
     return result;
