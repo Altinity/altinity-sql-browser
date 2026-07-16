@@ -33,8 +33,10 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: resolve(repoRoot, 'coverage'),
-      include: ['src/**/*.js'],
-      exclude: ['src/generated/*.js'],
+      include: ['src/**/*.{js,ts}'],
+      // Type-only seam interface files (ADR-0002 phase 0 / #262) have no
+      // executable statements — nothing to cover, like src/generated/.
+      exclude: ['src/generated/*.js', 'src/**/*.types.ts'],
       // Every src file must hit 100% on its own (perFile) — no global
       // aggregate hiding a weak module. Code is written to avoid
       // unreachable defensive branches so 100/100/100/100 is genuine.

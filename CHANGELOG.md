@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **ADR-0002 phase 0: TypeScript gate** (#262). `tsconfig.json` (strict,
+  `allowJs`, `checkJs: false`, `noEmit`, `erasableSyntaxOnly`); `typescript`
+  devDependency; `tsc --noEmit` joins `pretest` (and therefore CI) alongside
+  `check:schemas`. Five type-only `.types.ts` seam-interface files, each
+  co-located next to the runtime module it describes: `EditorPort`,
+  `SpecEditorPort`, `CodeViewerHandle`, `CreateAppEnv`/`BootstrapEnv`, and the
+  `App` controller surface as consumed by render modules. No existing `.js`
+  module converted; the build and artifact are unchanged. Vitest coverage
+  `include` widens to `src/**/*.{js,ts}`, excluding the type-only files
+  (no executable statements) alongside `src/generated/`.
 - **ADR-0002 accepted: incremental strict TypeScript, dev-time only**
   (`docs/ADR-0002-static-typing.md`; phase 0 tracked by #262). `tsc --noEmit`
   joins the gate; files convert leaf-up one at a time; esbuild and the

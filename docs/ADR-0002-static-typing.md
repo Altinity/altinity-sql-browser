@@ -1,6 +1,10 @@
 # ADR-0002: Static typing — incremental strict TypeScript, dev-time only
 
-- **Status:** Accepted — 2026-07-16; phase 0 tracked by #262
+- **Status:** Accepted — 2026-07-16; **phase 0 landed** 2026-07-16 (#262): the
+  `tsc --noEmit` gate, and typed seam interfaces for `EditorPort`, the Spec
+  editor/CodeViewer factories, `createApp`/`bootstrap`'s `env`, and the `app`
+  controller surface as consumed by render modules. No existing module
+  converted yet — phase 1+ (leaf-up conversion) is unstarted.
 - **Date:** 2026-07-16
 - **Context tracking:** roadmap #68; phase 0 #262
 - **Related:** ADR-0001 (the slice-by-slice migration playbook this reuses)
