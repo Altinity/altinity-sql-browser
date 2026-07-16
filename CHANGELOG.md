@@ -10,6 +10,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **ADR-0002 accepted: incremental strict TypeScript, dev-time only**
+  (`docs/ADR-0002-static-typing.md`; phase 0 tracked by #262). `tsc --noEmit`
+  joins the gate; files convert leaf-up one at a time; esbuild and the
+  artifact are untouched, runtime deps stay four. In the same review,
+  ADR-0001 gained an addendum re-affirming **no UI framework** at the
+  dashboard milestone and replacing its re-evaluation trigger with three
+  concrete conditions (plugin ecosystem, virtualized large lists, rising
+  invalidation-bug rate).
 - **Bar, Column, Area, and Pie now share type-specific presentation presets**
   (#258) through the same compact Style selector. Bar/Column add Grouped,
   Stacked, Compact, Joined, Minimal, and Data range; Area adds additive
