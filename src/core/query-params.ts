@@ -19,8 +19,24 @@
 //     placeholder verbatim — which is exactly how ClickHouse parameterized
 //     views work.
 
-import { splitStatements, isRowReturning } from './sql-split.js';
-import { scanParamDeclarations } from './param-scan.js';
+import { splitStatements as _splitStatements, isRowReturning as _isRowReturning } from './sql-split.js';
+import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+
+// `sql-split.js` and `param-scan.js` are unconverted (checkJs:false), so TS
+// infers their exports' shapes structurally from the JS body rather than
+// trusting these hand-written contracts — a plain cast pins the honest type
+// this file actually relies on (verified against the wrapped function bodies).
+const splitStatements = _splitStatements as (sql: string) => string[];
+const isRowReturning = _isRowReturning as (stmt: string) => boolean;
+
+/** One detected `{name:Type}` parameter — a name and its declared type text. */
+export interface ParamDeclaration {
+  name: string;
+  type: string;
+}
+// `scanParamDeclarations` (param-scan.js) tolerates a nullish `sql` at runtime
+// (`String(sql || '')` internally) — `detectParams` below relies on that.
+const scanParamDeclarations = _scanParamDeclarations as (sql?: string | null) => ParamDeclaration[];
 
 /**
  * Detect ClickHouse `{name:Type}` parameters in `sql`, in first-appearance
@@ -29,12 +45,10 @@ import { scanParamDeclarations } from './param-scan.js';
  * compatibility wrapper over `scanParamDeclarations` (param-scan.js, #173),
  * which is the all-occurrences primitive the parameter pipeline's conflict
  * detection is built on. Pure.
- * @param {string} sql
- * @returns {{name: string, type: string}[]}
  */
-export function detectParams(sql) {
-  const out = [];
-  const seen = new Set();
+export function detectParams(sql?: string | null): ParamDeclaration[] {
+  const out: ParamDeclaration[] = [];
+  const seen = new Set<string>();
   for (const p of scanParamDeclarations(sql)) {
     if (!seen.has(p.name)) {
       seen.add(p.name);
@@ -50,11 +64,10 @@ export function detectParams(sql) {
  * placeholder that appears solely inside a non-read statement (e.g. a
  * `CREATE VIEW` definition) is intentionally omitted — it is not substituted.
  * Pure.
- * @returns {{name: string, type: string}[]}
  */
-export function readStatementParams(sql) {
-  const out = [];
-  const seen = new Set();
+export function readStatementParams(sql: string): ParamDeclaration[] {
+  const out: ParamDeclaration[] = [];
+  const seen = new Set<string>();
   for (const stmt of splitStatements(sql)) {
     if (!isRowReturning(stmt)) continue;
     for (const p of detectParams(stmt)) {
@@ -73,11 +86,10 @@ export function readStatementParams(sql) {
  * non-row-returning statement (so CREATE VIEW / INSERT / DDL are sent
  * unchanged). An absent or empty value is skipped — the run gate
  * (`unfilledParams`) prevents executing while any required value is empty. Pure.
- * @returns {Object<string,string>}
  */
-export function paramArgs(stmt, values) {
+export function paramArgs(stmt: string, values?: Record<string, string> | null): Record<string, string> {
   if (!isRowReturning(stmt)) return {};
-  const out = {};
+  const out: Record<string, string> = {};
   for (const { name } of detectParams(stmt)) {
     const v = values && values[name];
     if (v != null && v !== '') out['param_' + name] = v;
@@ -90,9 +102,8 @@ export function paramArgs(stmt, values) {
  * yet in `values` (absent or empty string). Pure — lets a caller that already
  * holds the detected list (e.g. the variable strip) compute the missing set
  * without re-lexing the SQL.
- * @returns {string[]}
  */
-export function missingValues(params, values) {
+export function missingValues(params: ParamDeclaration[], values?: Record<string, string> | null): string[] {
   return params
     .filter((p) => {
       const v = values && values[p.name];
@@ -105,8 +116,7 @@ export function missingValues(params, values) {
  * The names of parameters `sql` requires (its read statements) that have no
  * value yet in `values`. Empty when nothing is missing — the Run gate uses this
  * to block execution until every detected variable is filled. Pure.
- * @returns {string[]}
  */
-export function unfilledParams(sql, values) {
+export function unfilledParams(sql: string, values?: Record<string, string> | null): string[] {
   return missingValues(readStatementParams(sql), values);
 }

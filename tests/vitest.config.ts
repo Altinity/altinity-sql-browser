@@ -1,9 +1,31 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type Plugin } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
+
+// ADR-0002 mixed-tree resolver shim. TypeScript, esbuild, and Node all resolve
+// an explicit `./x.js` specifier to `x.ts` when only the `.ts` file exists —
+// which is what keeps importers untouched as modules convert leaf-up. Vite's
+// resolver, however, only tries the `.js`→`.ts` swap when the *importer* is
+// itself a TS file (`isFromTsImporter`), so a still-unconverted `.js` module or
+// test importing a converted `.ts` module fails to resolve under vitest alone.
+// This plugin fills exactly that gap: relative `.js` specifier, target `.js`
+// missing, sibling `.ts` present → resolve to the `.ts` file. No effect on the
+// production build (esbuild already does this natively).
+const jsToTsInMixedTree: Plugin = {
+  name: 'adr-0002-js-to-ts-mixed-tree',
+  enforce: 'pre',
+  resolveId(source, importer) {
+    if (!importer || !/^\.\.?\//.test(source) || !source.endsWith('.js')) return null;
+    const target = resolve(dirname(importer), source);
+    if (existsSync(target)) return null;
+    const ts = target.slice(0, -3) + '.ts';
+    return existsSync(ts) ? ts : null;
+  },
+};
 
 // One vitest config for the whole runtime. Root is the repo root so the
 // coverage `include` globs can name `src/**/*.js` directly.
@@ -15,6 +37,7 @@ const repoRoot = resolve(here, '..');
 // with plain stubs. We hold the whole tree at 100/100/100/100.
 export default defineConfig({
   root: repoRoot,
+  plugins: [jsToTsInMixedTree],
   test: {
     environment: 'happy-dom',
     include: ['tests/unit/**/*.test.js'],

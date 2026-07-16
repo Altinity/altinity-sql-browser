@@ -16,9 +16,76 @@
 // declaration identity — and lives in `canonicalType()`, not here.
 
 import {
-  parseClickHouseType, analyzeTypeModifiers, canonicalType,
-  enumMembers as astEnumMembers,
+  parseClickHouseType as _parseClickHouseType,
+  analyzeTypeModifiers as _analyzeTypeModifiers,
+  canonicalType as _canonicalType,
+  enumMembers as _astEnumMembers,
 } from './clickhouse-type.js';
+
+// The shared AST node shape `clickhouse-type.js` parses ClickHouse type
+// expressions into, narrowed to exactly the fields this file reads. A
+// non-type argument (Decimal's precision/scale, FixedString's length, …) is a
+// `LiteralArg`, never a `TypeNode` — `parseClickHouseType`'s `validArity`
+// check guarantees `Array`/`Nullable`/`LowCardinality` each carry exactly one
+// `TypeNode` argument, never a literal one.
+interface LiteralArg {
+  kind: 'string' | 'number';
+  value: string;
+  raw: string;
+}
+type TypeArg = TypeNode | LiteralArg;
+interface TypeNode {
+  kind: 'type';
+  name: string;
+  raw: string;
+  args: TypeArg[];
+  members: { name: string; type: TypeNode }[] | null;
+  enumMembers?: { name: string; code: number }[];
+}
+// `analyzeTypeModifiers` is only ever called here on a non-null `TypeNode`
+// (see `fromNode`), and its unwrap loop only ever steps into another
+// `TypeNode` (never a literal arg, per the same `validArity` guarantee above)
+// — so, for every call site in this file, `valueType` is always a real
+// `TypeNode`, never null.
+interface TypeModifiers {
+  valueType: TypeNode;
+  nullable: boolean;
+  lowCardinality: boolean;
+  wrapperOrder: string[];
+  lowCardinalityEnum: boolean;
+  valid: boolean;
+}
+// `clickhouse-type.js` is unconverted (checkJs:false), so TS infers its
+// exports' shapes structurally from the JS body rather than trusting these
+// hand-written contracts — a plain cast pins the honest, narrower type this
+// file actually relies on (verified against the wrapped function bodies).
+const parseClickHouseType = _parseClickHouseType as (input: string) => TypeNode | null;
+const analyzeTypeModifiers = _analyzeTypeModifiers as (node: TypeNode) => TypeModifiers;
+const canonicalType = _canonicalType as (input: string) => string;
+const astEnumMembers = _astEnumMembers as (node: TypeNode | null) => { name: string; code: number }[] | null;
+
+// An Array's single argument is always a type node, never a literal one (see
+// the `TypeArg` comment above) — this narrows that invariant for the
+// recursive `elem` projection below without inventing a new runtime state
+// (the check is always true for real data; it never changes behavior).
+function isTypeNode(arg: TypeArg): arg is TypeNode {
+  return arg.kind === 'type';
+}
+
+/**
+ * The compatibility shape `parseParamType` and its siblings project a
+ * declared parameter type into — see `parseParamType`'s own doc comment for
+ * what each field means.
+ */
+export interface ParsedParamType {
+  raw: string;
+  base: string;
+  inner: string | null;
+  nullable: boolean;
+  isArray: boolean;
+  elem: ParsedParamType | null;
+  node: TypeNode | null;
+}
 
 // Integer bases. UInt64 and up (and Int64 and up) exceed Number.MAX_SAFE_INTEGER,
 // which is why the serializer never routes numeric tokens through a JS Number —
@@ -32,7 +99,7 @@ const ENUM_BASE = /^Enum(8|16)$/;
 // `Decimal(10, 2)`), or null for a bare scalar — same contract the old
 // regex-based parser exposed as `inner` (including its `.trim()`: the old
 // parser's capture group was matched loosely and always trimmed).
-function innerOf(raw) {
+function innerOf(raw: string): string | null {
   const i = raw.indexOf('(');
   return i < 0 ? null : raw.slice(i + 1, raw.length - 1).trim();
 }
@@ -53,20 +120,21 @@ function innerOf(raw) {
 // ClickHouse version accepts `LowCardinality` wrapping an `Enum8`/`Enum16` at
 // all (regardless of order), so that degrades exactly like an unparseable
 // declaration — opaque passthrough, no Enum-specific behavior anywhere.
-function fromNode(node) {
+function fromNode(node: TypeNode): ParsedParamType {
   const mods = analyzeTypeModifiers(node);
   if (mods.lowCardinalityEnum) {
     return { raw: node.raw, base: node.raw, inner: null, nullable: false, isArray: false, elem: null, node: null };
   }
   const value = mods.valueType;
   const isArray = value.name === 'Array';
+  const firstArg = isArray ? value.args[0] : null;
   return {
     raw: node.raw,
     base: value.name,
     inner: innerOf(value.raw),
     nullable: mods.nullable,
     isArray,
-    elem: isArray ? fromNode(value.args[0]) : null,
+    elem: firstArg && isTypeNode(firstArg) ? fromNode(firstArg) : null,
     node: value,
   };
 }
@@ -93,9 +161,8 @@ function fromNode(node) {
  * an opaque scalar (`base` = the whole text) — the serializer treats opaque
  * scalars as passthrough, so an unrecognized type never blocks anything the
  * server itself might accept. Pure.
- * @param {string} raw
  */
-export function parseParamType(raw) {
+export function parseParamType(raw?: string | null): ParsedParamType {
   const text = String(raw || '').trim();
   const node = parseClickHouseType(text);
   if (!node) return { raw: text, base: text, inner: null, nullable: false, isArray: false, elem: null, node: null };
@@ -112,9 +179,9 @@ export function parseParamType(raw) {
  *   - `'text'`  — single-quoted with backslash escaping (String, UUID, Date,
  *                 DateTime, Enum, IPv4/6, and anything unrecognized).
  * Pure.
- * @param {{base: string}|string} type parsed type or raw declaration text
+ * @param type parsed type or raw declaration text
  */
-export function typeLexKind(type) {
+export function typeLexKind(type: string | ParsedParamType): 'int' | 'float' | 'bool' | 'text' {
   const base = typeof type === 'string' ? parseParamType(type).base : type.base;
   if (INT_BASE.test(base)) return 'int';
   if (FLOAT_BASE.test(base)) return 'float';
@@ -132,11 +199,9 @@ export function typeLexKind(type) {
  * the all-occurrences scan (every declaration participates, including ones
  * in non-bound statements: they are still declarations of the same name, and
  * a disagreement should surface as a diagnostic). Pure.
- * @param {{type: string}[]} declarations
- * @returns {string[]|null}
  */
-export function conflictingTypes(declarations) {
-  const seen = [];
+export function conflictingTypes(declarations?: { type: string }[] | null): string[] | null {
+  const seen: string[] = [];
   for (const d of declarations || []) {
     const t = canonicalType(d.type);
     if (!seen.includes(t)) seen.push(t);
@@ -157,10 +222,8 @@ export function conflictingTypes(declarations) {
  * `'Enum8'`/`'Enum16'` when `t.node` resolved to a real, already
  * value-transparent-unwrapped Enum node, so once the base check passes this
  * always gets a real member array (possibly empty) back, never `null`. Pure.
- * @param {string|ReturnType<typeof parseParamType>} type
- * @returns {{name: string, code: number}[]|null}
  */
-export function enumMembers(type) {
+export function enumMembers(type: string | ParsedParamType): { name: string; code: number }[] | null {
   const t = typeof type === 'string' ? parseParamType(type) : type;
   if (!ENUM_BASE.test(t.base)) return null;
   return astEnumMembers(t.node);
@@ -174,10 +237,8 @@ export function enumMembers(type) {
  * empty/unparseable list): null, never `[]`, so every truthiness-checking
  * consumer (the field builders in app.js / dashboard.js) falls back to the
  * plain input instead of rendering an empty dropdown. Pure.
- * @param {string|ReturnType<typeof parseParamType>} type
- * @returns {string[]|null}
  */
-export function enumValues(type) {
+export function enumValues(type: string | ParsedParamType): string[] | null {
   const members = enumMembers(type);
   return members && members.length ? members.map((m) => m.name) : null;
 }

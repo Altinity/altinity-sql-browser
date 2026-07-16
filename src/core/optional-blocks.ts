@@ -17,12 +17,43 @@
 // pipeline (param-pipeline.js) wires this into its analysis/execution stage
 // seams; this file only understands one statement string at a time.
 
-import { scanSpans } from './sql-spans.js';
-import { scanParamDeclarations } from './param-scan.js';
+import { scanSpans as _scanSpans } from './sql-spans.js';
+import { scanParamDeclarations as _scanParamDeclarations } from './param-scan.js';
+
+// The lexical span shape `sql-spans.js`'s `scanSpans` yields, narrowed to
+// exactly the fields this file reads.
+interface Span {
+  kind: 'code' | 'string' | 'quoted-ident' | 'comment';
+  start: number;
+  end: number;
+  closed: boolean;
+}
+const scanSpans: (text: string) => Iterable<Span> = _scanSpans;
+
+// One `{name:Type}` declaration as `param-scan.js`'s `scanParamDeclarations`
+// reports it (position fields dropped, same as its own doc contract).
+interface ParamDeclaration {
+  name: string;
+  type: string;
+}
+const scanParamDeclarations: (sql: string) => ParamDeclaration[] = _scanParamDeclarations;
 
 /** Activation sentinel: materialize with *every* block retained (markers
  *  stripped) — the analysis view all param discovery works on (rule 9). */
 export const ALL_ACTIVE = Symbol('all-active');
+
+// `active` is either the `ALL_ACTIVE` sentinel or a `{name: boolean}` map — a
+// block is included only when every parameter it references is truthy there.
+type ActiveMap = Record<string, boolean>;
+type Active = ActiveMap | typeof ALL_ACTIVE;
+
+// True when `active` is the `{name: boolean}` map form, narrowing away the
+// `ALL_ACTIVE` sentinel so indexing by name type-checks. Only ever used right
+// after `active !== ALL_ACTIVE` already holds, so this is always true where
+// it's called — a narrowing aid, not a new runtime branch.
+function isActiveMap(active: Active): active is ActiveMap {
+  return active !== ALL_ACTIVE;
+}
 
 const OPEN = '/*[';
 const CLOSE = ']*/';
@@ -34,9 +65,8 @@ const CLOSE = ']*/';
  * are counted whether or not they validate, so callers can detect a template
  * (Format's skip policy) and the pipeline can detect a block-only statement
  * the splitter dropped as a comment-only fragment (rule 4). Pure.
- * @param {string} sql
  */
-export function countOptionalBlocks(sql) {
+export function countOptionalBlocks(sql?: string): number {
   const text = String(sql || '');
   let n = 0;
   for (const span of scanSpans(text)) {
@@ -46,7 +76,7 @@ export function countOptionalBlocks(sql) {
 }
 
 /** True when `sql` contains at least one optional-block candidate. Pure. */
-export function hasOptionalBlocks(sql) {
+export function hasOptionalBlocks(sql?: string): boolean {
   return countOptionalBlocks(sql) > 0;
 }
 
@@ -60,8 +90,8 @@ export function hasOptionalBlocks(sql) {
 // the close marker), so only the content's own lexical shape reveals the
 // damage. The scanner's `closed` flag reports this directly now (#182), so no
 // escape logic needs to be replayed here.
-function endsUnterminated(text) {
-  let last = null;
+function endsUnterminated(text: string): boolean {
+  let last: Span | null = null;
   for (const s of scanSpans(text)) last = s;
   return !!last && (last.kind === 'string' || last.kind === 'quoted-ident') && !last.closed;
 }
@@ -71,13 +101,23 @@ function endsUnterminated(text) {
 // overwhelmingly common case — while covering the others (#182).
 const OPEN_STRING_ERROR = 'optional block: content ends inside a string literal — a "*/" inside a string still ends the SQL comment; remove it';
 
+// One optional-block candidate that passed rules 1/3/4/5/6 — offsets of the
+// whole marker-to-marker span in the source text; params unique, in
+// appearance order.
+interface BlockCandidate {
+  start: number;
+  end: number;
+  content: string;
+  params: string[];
+}
+
 // Scan one statement's optional blocks, validating rules 1/3/4/5/6. Each valid
 // block is `{start, end, content, params}` (offsets of the whole marker-to-
 // marker span in `text`; params unique, in appearance order). Invalid
 // candidates produce error strings instead.
-function scanBlocks(text) {
-  const blocks = [];
-  const errors = [];
+function scanBlocks(text: string): { blocks: BlockCandidate[]; errors: string[] } {
+  const blocks: BlockCandidate[] = [];
+  const errors: string[] = [];
   for (const span of scanSpans(text)) {
     if (span.kind !== 'comment' || !text.startsWith(OPEN, span.start)) continue;
     const t = text.slice(span.start, span.end);
@@ -123,7 +163,7 @@ function scanBlocks(text) {
       errors.push('optional block: content cannot contain a statement separator ";"');
       continue;
     }
-    const params = [];
+    const params: string[] = [];
     for (const p of scanParamDeclarations(content)) {
       if (!params.includes(p.name)) params.push(p.name);
     }
@@ -135,6 +175,22 @@ function scanBlocks(text) {
     blocks.push({ start: span.start, end: span.end, content, params });
   }
   return { blocks, errors };
+}
+
+/** One materialized block — the candidate shape plus whether it was
+ *  included. */
+export interface MaterializedBlock extends BlockCandidate {
+  included: boolean;
+}
+
+/** `materializeOptionalBlocks`'s return shape — see its own doc comment for
+ *  what each field means. */
+export interface MaterializeResult {
+  sql: string;
+  requiredParams: string[];
+  optionalParams: string[];
+  blocks: MaterializedBlock[];
+  errors: string[];
 }
 
 /**
@@ -161,17 +217,16 @@ function scanBlocks(text) {
  * The #134 `isRowReturning` gate is deliberately NOT applied here — the
  * pipeline (and any other caller) decides which statements materialize; a
  * non-row-returning statement must simply never be passed in. Pure.
- * @param {string} stmt
- * @param {Object<string, boolean>|symbol} [active]
  */
-export function materializeOptionalBlocks(stmt, active = {}) {
+export function materializeOptionalBlocks(stmt?: string, active: Active = {}): MaterializeResult {
   const text = String(stmt || '');
   const { blocks, errors } = scanBlocks(text);
-  const requiredParams = [];
+  const requiredParams: string[] = [];
   for (const p of scanParamDeclarations(text)) {
     if (!requiredParams.includes(p.name)) requiredParams.push(p.name);
   }
-  const failed = (errs) => ({ sql: text, requiredParams, optionalParams: [], blocks: [], errors: errs });
+  const failed = (errs: string[]): MaterializeResult =>
+    ({ sql: text, requiredParams, optionalParams: [], blocks: [], errors: errs });
   if (errors.length) return failed(errors);
   if (blocks.length) {
     // Rule 4 (second half): a block may not wrap a whole statement. With every
@@ -189,12 +244,12 @@ export function materializeOptionalBlocks(stmt, active = {}) {
     if (!hasCode) return failed(['optional block: a block cannot wrap a whole statement']);
   }
   const all = active === ALL_ACTIVE;
-  const optionalParams = [];
-  const outBlocks = [];
+  const optionalParams: string[] = [];
+  const outBlocks: MaterializedBlock[] = [];
   let sql = '';
   let pos = 0;
   for (const b of blocks) {
-    const included = all || b.params.every((n) => !!active[n]);
+    const included = all || (isActiveMap(active) && b.params.every((n) => !!active[n]));
     sql += text.slice(pos, b.start) + (included ? b.content : '');
     pos = b.end;
     for (const n of b.params) {
