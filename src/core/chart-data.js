@@ -146,46 +146,39 @@ const CHART_SCALES = new Set(['auto', 'zero', 'data']);
 const CHART_VISIBILITY = new Set(['auto', 'show', 'hide']);
 const CHART_AXES = new Set(['show', 'hide']);
 const CHART_FRAMES = new Set(['normal', 'compact']);
-const CHART_STYLE_FIELDS = {
-  hbar: { mode: CHART_BAR_MODES, density: CHART_BAR_DENSITIES, scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
-  bar: { mode: CHART_BAR_MODES, density: CHART_BAR_DENSITIES, scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
-  line: { curve: CHART_CURVES, points: CHART_POINTS, scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
-  area: { curve: CHART_CURVES, points: CHART_POINTS, stack: CHART_STACKS, scale: CHART_SCALES, legend: CHART_VISIBILITY, grid: CHART_VISIBILITY, axes: CHART_AXES },
-  pie: { shape: CHART_PIE_SHAPES, legend: CHART_VISIBILITY, frame: CHART_FRAMES },
+
+// The single source of truth for a chart type's style surface: which fields it
+// owns, the set of accepted values, and the default — in the canonical field
+// order. `normalizeChartStyle` (fill defaults + drop unsupported values) and
+// `chartStylePreset` (flag an unsupported value as Custom) both read this one
+// table, so the accepted-value set and the field list can't drift between the
+// two the way parallel per-type branches would. The value Sets stay aligned
+// with the schema enums (`schemas/query-spec-v1.schema.json`) and the preset
+// tables above by the round-trip tests in tests/unit/chart-data.test.js.
+const CHART_STYLE_SPEC = {
+  hbar: { mode: [CHART_BAR_MODES, 'grouped'], density: [CHART_BAR_DENSITIES, 'normal'], scale: [CHART_SCALES, 'zero'], legend: [CHART_VISIBILITY, 'auto'], grid: [CHART_VISIBILITY, 'auto'], axes: [CHART_AXES, 'show'] },
+  bar: { mode: [CHART_BAR_MODES, 'grouped'], density: [CHART_BAR_DENSITIES, 'normal'], scale: [CHART_SCALES, 'zero'], legend: [CHART_VISIBILITY, 'auto'], grid: [CHART_VISIBILITY, 'auto'], axes: [CHART_AXES, 'show'] },
+  line: { curve: [CHART_CURVES, 'linear'], points: [CHART_POINTS, 'auto'], scale: [CHART_SCALES, 'data'], legend: [CHART_VISIBILITY, 'auto'], grid: [CHART_VISIBILITY, 'auto'], axes: [CHART_AXES, 'show'] },
+  area: { curve: [CHART_CURVES, 'linear'], points: [CHART_POINTS, 'auto'], stack: [CHART_STACKS, 'overlay'], scale: [CHART_SCALES, 'data'], legend: [CHART_VISIBILITY, 'auto'], grid: [CHART_VISIBILITY, 'auto'], axes: [CHART_AXES, 'show'] },
+  pie: { shape: [CHART_PIE_SHAPES, 'pie'], legend: [CHART_VISIBILITY, 'show'], frame: [CHART_FRAMES, 'normal'] },
 };
 
 /** Resolve renderer-independent, type-specific style without mutating imported data. */
 export function normalizeChartStyle(style, type = 'line') {
   const value = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
-  if (type === 'hbar' || type === 'bar') return {
-    mode: CHART_BAR_MODES.has(value.mode) ? value.mode : 'grouped',
-    density: CHART_BAR_DENSITIES.has(value.density) ? value.density : 'normal',
-    scale: CHART_SCALES.has(value.scale) ? value.scale : 'zero',
-    legend: CHART_VISIBILITY.has(value.legend) ? value.legend : 'auto',
-    grid: CHART_VISIBILITY.has(value.grid) ? value.grid : 'auto',
-    axes: CHART_AXES.has(value.axes) ? value.axes : 'show',
-  };
-  if (type === 'pie') return {
-    shape: CHART_PIE_SHAPES.has(value.shape) ? value.shape : 'pie',
-    legend: CHART_VISIBILITY.has(value.legend) ? value.legend : 'show',
-    frame: CHART_FRAMES.has(value.frame) ? value.frame : 'normal',
-  };
-  return {
-    curve: CHART_CURVES.has(value.curve) ? value.curve : 'linear',
-    points: CHART_POINTS.has(value.points) ? value.points : 'auto',
-    ...(type === 'area' ? { stack: CHART_STACKS.has(value.stack) ? value.stack : 'overlay' } : {}),
-    scale: CHART_SCALES.has(value.scale) ? value.scale : 'data',
-    legend: CHART_VISIBILITY.has(value.legend) ? value.legend : 'auto',
-    grid: CHART_VISIBILITY.has(value.grid) ? value.grid : 'auto',
-    axes: CHART_AXES.has(value.axes) ? value.axes : 'show',
-  };
+  const spec = CHART_STYLE_SPEC[type] || CHART_STYLE_SPEC.line;
+  const out = {};
+  for (const [field, [supported, fallback]] of Object.entries(spec)) {
+    out[field] = supported.has(value[field]) ? value[field] : fallback;
+  }
+  return out;
 }
 
 /** Match every preset-owned field exactly; unusual advanced combinations stay Custom. */
 export function chartStylePreset(style, type) {
   const styleSource = style && typeof style === 'object' && !Array.isArray(style) ? style : {};
-  if (Object.entries(CHART_STYLE_FIELDS[type] || {})
-    .some(([field, supported]) => field in styleSource && !supported.has(styleSource[field]))) return 'custom';
+  if (Object.entries(CHART_STYLE_SPEC[type] || {})
+    .some(([field, [supported]]) => field in styleSource && !supported.has(styleSource[field]))) return 'custom';
   const normalizedStyle = normalizeChartStyle(style, type);
   const matched = chartStylePresets(type).find((preset) => (
     Object.keys(preset.style).every((field) => normalizedStyle[field] === preset.style[field])
@@ -396,10 +389,12 @@ export function visibleChartMeasures(columns, cfg, fieldConfig) {
  * - group-by (cfg.series set): one dataset per series value, aligned to the
  *   union of X categories, missing cell → null.
  * - otherwise: one dataset per visible measure in `cfg.y`.
+ * `measures` defaults to `visibleChartMeasures(...)` but the caller
+ * (`chartJsConfig`) passes the value it already resolved so a single render
+ * doesn't resolve field metadata twice; direct/test callers may omit it.
  */
-export function buildChartData(columns, rows, cfg, fieldConfig = {}) {
+export function buildChartData(columns, rows, cfg, fieldConfig = {}, measures = visibleChartMeasures(columns, cfg, fieldConfig)) {
   const slice = rows.slice(0, chartRowCap(cfg.type));
-  const measures = visibleChartMeasures(columns, cfg, fieldConfig);
   const num = (v) => {
     if (v == null || v === '') return null;
     const parsed = Number(v);
@@ -459,12 +454,18 @@ const withAlpha = (hex, frac) => {
  * `colors` is a resolved token bundle from `chartColors`. `opts.hideGrid`
  * supplies the surface default for `style.grid:'auto'` (dashboard tiles draw
  * on the panel background where a light gridline reads as noise — #149);
- * explicit `show`/`hide` style values override it.
+ * explicit `show`/`hide` style values override it. `opts.measures` (optional)
+ * is a pre-resolved `visibleChartMeasures` array — the caller passes it to
+ * avoid re-resolving field metadata it already computed.
  */
 export function chartJsConfig(columns, rows, cfg, colors, opts = {}) {
   const fieldConfig = opts.fieldConfig || {};
-  const measures = visibleChartMeasures(columns, cfg, fieldConfig);
-  const { labels, datasets } = buildChartData(columns, rows, cfg, fieldConfig);
+  // Resolve field metadata once per render: the caller (chart-render) may pass
+  // the measures it already computed for its empty-state guard, and we hand the
+  // same array to buildChartData so a single config build resolves the metadata
+  // once instead of three times (#254 review finding).
+  const measures = opts.measures ?? visibleChartMeasures(columns, cfg, fieldConfig);
+  const { labels, datasets } = buildChartData(columns, rows, cfg, fieldConfig, measures);
   const pal = colors.palette;
   const horizontal = cfg.type === 'hbar';
   const isPie = cfg.type === 'pie';

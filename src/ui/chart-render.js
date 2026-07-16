@@ -116,7 +116,11 @@ export function renderChart(app, r, opts = {}) {
     }
   }
 
-  if (visibleChartMeasures(r.columns, cfg, opts.fieldConfig).length === 0) {
+  // Resolve the visible measures once and reuse them for the chart config
+  // below (threaded through `chartJsConfig`), rather than re-resolving field
+  // metadata for the empty-state guard and again inside the renderer.
+  const measures = visibleChartMeasures(r.columns, cfg, opts.fieldConfig);
+  if (measures.length === 0) {
     return h('div', { class: 'chart-view' }, bar,
       chartEmpty(Icon.chart(), 'All selected chart fields are hidden by panel.fieldConfig.'));
   }
@@ -130,6 +134,7 @@ export function renderChart(app, r, opts = {}) {
   const chart = new app.Chart(canvas, chartJsConfig(r.columns, r.rows, cfg, chartColors(app.cssVar), {
     fieldConfig: opts.fieldConfig,
     hideGrid: opts.hideGrid,
+    measures,
   }));
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,

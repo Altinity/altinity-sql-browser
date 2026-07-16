@@ -246,6 +246,11 @@ describe('chart style', () => {
   ])('accepts every supported presentation %s value', (field, values) => {
     for (const value of values) expect(normalizeChartStyle({ [field]: value }, 'line')[field]).toBe(value);
   });
+  it('falls back to the line surface for an unknown/missing chart type', () => {
+    const lineDefaults = { curve: 'linear', points: 'auto', scale: 'data', legend: 'auto', grid: 'auto', axes: 'show' };
+    expect(normalizeChartStyle({}, 'mystery')).toEqual(lineDefaults);
+    expect(normalizeChartStyle({})).toEqual(lineDefaults); // default type argument
+  });
   it('accepts Pie frame values and independently defaults invalid fields without mutation', () => {
     expect(normalizeChartStyle({ frame: 'compact' }, 'pie').frame).toBe('compact');
     const style = {
@@ -326,6 +331,15 @@ describe('buildChartData', () => {
       { label: 'E', data: [10, null] }, // E has only B6
       { label: 'W', data: [30, 20] }, // W has B6(30) and AA(20)
     ]);
+  });
+  it('reuses a caller-supplied measures array verbatim (threaded from chartJsConfig)', () => {
+    // A pre-resolved measures array selects `delay` (index 2) with a custom
+    // label; buildChartData must plot it directly rather than re-resolving from
+    // cfg.y/fieldConfig — the single-resolution path chartJsConfig relies on.
+    const rows = [['B6', '10', '5.5', 'E']];
+    const measures = [{ index: 2, presentation: { displayName: 'Avg delay' }, authoredValueFormat: false }];
+    const out = buildChartData(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, {}, measures);
+    expect(out.datasets).toEqual([{ label: 'Avg delay', data: [5.5] }]);
   });
   it('caps at the row cap for the config type', () => {
     const bigCols = [{ name: 'c', type: 'String' }, { name: 'n', type: 'UInt64' }];
@@ -444,6 +458,17 @@ describe('chartJsConfig', () => {
     expect(cfg.options.plugins.tooltip.callbacks.label({
       datasetIndex: 0, dataset: cfg.data.datasets[0], raw: 1500, formattedValue: '1,500',
     })).toBe('flights: 1,500');
+  });
+  it('reuses opts.measures instead of re-resolving field metadata', () => {
+    // chart-render resolves visibleChartMeasures once for its empty-state guard
+    // and threads it in; chartJsConfig must honor that array (label proves it is
+    // used, not recomputed from fieldConfig).
+    const measures = [{
+      index: 1, authoredValueFormat: false,
+      presentation: { displayName: 'Flights!', unit: '', decimals: null, description: null, hidden: false },
+    }];
+    const out = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, { measures });
+    expect(out.data.datasets[0].label).toBe('Flights!');
   });
   it('line is not filled; area fills with an alpha-blended hex', () => {
     const line = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1], series: null }, colors);
