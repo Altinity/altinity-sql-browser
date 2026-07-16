@@ -15,7 +15,7 @@
  * The server only serves the artifact at its SPA routes, so nothing unexpected
  * reaches this predicate.
  */
-export function isDashboardRoute(pathname) {
+export function isDashboardRoute(pathname?: string | null): boolean {
   return /\/dashboard\/?$/.test(pathname || '');
 }
 
@@ -24,7 +24,7 @@ export function isDashboardRoute(pathname) {
  * dashboard sub-route: `/sql/dashboard` → `/sql` so `loadConfigDoc` fetches
  * `/sql/config.json` (not the non-existent `/sql/dashboard/config.json`).
  */
-export function configBase(pathname) {
+export function configBase(pathname?: string | null): string {
   return (pathname || '').replace(/\/dashboard\/?$/, '');
 }
 
@@ -38,19 +38,27 @@ export function configBase(pathname) {
  * UI exposes are derived by `activeDashboardView` below (wide, report, and
  * arrange split into its 2- and 3-column cases).
  */
-export const DASH_LAYOUTS = ['arrange', 'report', 'wide'];
+export const DASH_LAYOUTS: readonly string[] = ['arrange', 'report', 'wide'];
 
 /** Snap a persisted layout to a known mode, defaulting to `arrange`. Pure. */
-export function normalizeDashLayout(v) {
-  return DASH_LAYOUTS.includes(v) ? v : 'arrange';
+export function normalizeDashLayout(v?: string | null): string {
+  return v != null && DASH_LAYOUTS.includes(v) ? v : 'arrange';
 }
 
 /** Column-count options for Arrange mode (persisted `asb:dashCols`). */
-export const DASH_COLS = [2, 3];
+export const DASH_COLS: readonly number[] = [2, 3];
 
 /** Snap a persisted column count to 2 or 3, defaulting to 3. Pure. */
-export function normalizeDashCols(n) {
-  return DASH_COLS.includes(n) ? n : 3;
+export function normalizeDashCols(n?: number | null): number {
+  return n != null && DASH_COLS.includes(n) ? n : 3;
+}
+
+// The two persisted keys `activeDashboardView`/`dashboardViewSelection` read
+// and write — kept structural (rather than importing state.js's full State
+// type) since only these two fields are ever touched here.
+interface DashLayoutState {
+  dashLayout?: string;
+  dashCols?: number;
 }
 
 /**
@@ -60,7 +68,7 @@ export function normalizeDashCols(n) {
  * Pure — the UI's segmented control reads this to mark exactly one button
  * active, and `dashboardViewSelection` is its inverse (view → state changes).
  */
-export function activeDashboardView(state) {
+export function activeDashboardView(state: DashLayoutState): 'wide' | 'report' | 'columns-2' | 'columns-3' {
   if (state.dashLayout === 'wide') return 'wide';
   if (state.dashLayout === 'report') return 'report';
   return state.dashCols === 2 ? 'columns-2' : 'columns-3';
@@ -73,7 +81,7 @@ export function activeDashboardView(state) {
  * column count never rewrites `dashLayout` when it is already `arrange`, and
  * vice-versa). An unrecognized view falls back to the default `columns-3`.
  */
-export function dashboardViewSelection(view) {
+export function dashboardViewSelection(view?: string | null): DashLayoutState {
   if (view === 'wide') return { dashLayout: 'wide' };
   if (view === 'report') return { dashLayout: 'report' };
   if (view === 'columns-2') return { dashLayout: 'arrange', dashCols: 2 };
@@ -117,6 +125,11 @@ export const DASH_TABLE_DISPLAY_CAP = 1000;
 // `dashboardParams(favorites)` union — the analysis view also sees params
 // confined to optional blocks, which readStatementParams never could.)
 
+/** One partitioned Dashboard layout item — see `partitionKpiBands`. */
+export type DashboardLayoutItem =
+  | { kind: 'kpi-band'; indices: number[] }
+  | { kind: 'tile'; index: number };
+
 /**
  * Partition the ordered Panel-role favorites into Dashboard layout items
  * (#240): a maximal consecutive run of explicit KPI favorites becomes one
@@ -127,9 +140,9 @@ export const DASH_TABLE_DISPLAY_CAP = 1000;
  * cfg, never from a query's executed result. Structural only (no query
  * results involved), so bands are fixed before any tile issues a request.
  */
-export function partitionKpiBands(isKpiFlags) {
-  const items = [];
-  let run = null;
+export function partitionKpiBands(isKpiFlags: boolean[]): DashboardLayoutItem[] {
+  const items: DashboardLayoutItem[] = [];
+  let run: { kind: 'kpi-band'; indices: number[] } | null = null;
   isKpiFlags.forEach((isKpi, index) => {
     if (isKpi) {
       if (!run) { run = { kind: 'kpi-band', indices: [] }; items.push(run); }

@@ -38,6 +38,27 @@
 // free since `parseParamType` already flattens it to `T`'s shape.
 
 import { parseParamType, enumMembers } from './param-type.js';
+import type { ParsedParamType } from './param-type.js';
+
+/** The four verdict states `validateParamValue` (and every per-family helper
+ *  below) returns — see the module doc above for what each one means. */
+export type ParamValidationStatus = 'valid' | 'invalid' | 'incomplete' | 'unknown';
+
+/** `validateParamValue`'s return shape — a `reason` is only ever present
+ *  alongside `'invalid'`, but that pairing isn't worth a discriminated union
+ *  for this module's small, uniform set of call sites (both destructure
+ *  `.status`/`.reason` directly — see `param-pipeline.js` and
+ *  `dashboard-filters.js`). */
+export interface ParamValidationResult {
+  status: ParamValidationStatus;
+  reason?: string;
+}
+
+// One `Enum8`/`Enum16` member as `param-type.js`'s `enumMembers` reports it.
+interface EnumMember {
+  name: string;
+  code: number;
+}
 
 const INT_UINT = /^(U?)Int(8|16|32|64|128|256)$/;
 
@@ -57,14 +78,14 @@ const UINT_FULL = /^(0|[1-9]\d*)$/;
  *  this grammar — and the server — rejects). */
 export const INT_TOKEN = INT_FULL;
 
-function intBounds(signed, bits) {
+function intBounds(signed: boolean, bits: number): { min: bigint; max: bigint } {
   const width = BigInt(bits);
   const max = signed ? (2n ** (width - 1n)) - 1n : (2n ** width) - 1n;
   const min = signed ? -(2n ** (width - 1n)) : 0n;
   return { min, max };
 }
 
-function validateIntUint(signed, bits, base, value) {
+function validateIntUint(signed: boolean, bits: number, base: string, value: string): ParamValidationResult {
   const { min, max } = intBounds(signed, bits);
   const full = signed ? INT_FULL : UINT_FULL;
   const rangeReason = `Expected ${base} from ${min} to ${max}`;
@@ -128,20 +149,20 @@ const FLOAT_INCOMPLETE = /^[+-]?(?:\.|(?:\d+\.?\d*|\.\d+)?[eE][+-]?)?$/;
  *  forms plus `inf`/`infinity`/`nan` (case-insensitive, optionally signed) —
  *  exported for `param-serialize.js`'s array-element tokens (review F7), the
  *  same single-source-of-truth arrangement as `INT_TOKEN` above. */
-export const isValidFloatToken = (s) => FLOAT_LITERAL.test(s) || FLOAT_FULL.test(s);
+export const isValidFloatToken = (s: string): boolean => FLOAT_LITERAL.test(s) || FLOAT_FULL.test(s);
 
 // A letters-only prefix of 'infinity' or 'nan' (optionally signed) — 'i',
 // 'in', 'n', 'na', any case. Requires at least one letter so it never
 // overlaps FLOAT_INCOMPLETE's sign-only/empty match (kept as a separate,
 // disjoint check rather than folded in, so every branch here is reachable).
-function floatWordPrefix(value) {
+function floatWordPrefix(value: string): boolean {
   const m = /^[+-]?([A-Za-z]+)$/.exec(value);
   if (!m) return false;
   const body = m[1].toLowerCase();
   return 'infinity'.startsWith(body) || 'nan'.startsWith(body);
 }
 
-function validateFloat(base, value) {
+function validateFloat(base: string, value: string): ParamValidationResult {
   if (FLOAT_LITERAL.test(value) || FLOAT_FULL.test(value)) return { status: 'valid' };
   if (FLOAT_INCOMPLETE.test(value) || floatWordPrefix(value)) return { status: 'incomplete' };
   return { status: 'invalid', reason: `Expected a ${base} number (e.g. 1.5, -2e-3, inf, nan)` };
@@ -156,7 +177,7 @@ function validateFloat(base, value) {
 // like an uncovered type.
 const BOOL_VALID = /^(true|false|1|0|yes|no|on|off|t|y)$/i;
 
-function validateBool(value) {
+function validateBool(value: string): ParamValidationResult {
   return BOOL_VALID.test(value) ? { status: 'valid' } : { status: 'unknown' };
 }
 
@@ -173,7 +194,7 @@ const UUID_HYPHEN_POS = [8, 13, 18, 23];
 // exactly one of the canonical positions, and every non-hyphen must be hex —
 // a hyphen in the wrong slot, or a hex character sitting where a hyphen was
 // already required, can never be fixed by typing further.
-function uuidHyphenPrefixOk(value) {
+function uuidHyphenPrefixOk(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const mustBeHyphen = UUID_HYPHEN_POS.includes(i);
     const ch = value[i];
@@ -182,7 +203,7 @@ function uuidHyphenPrefixOk(value) {
   return true;
 }
 
-function validateUuid(value) {
+function validateUuid(value: string): ParamValidationResult {
   if (UUID_HYPHEN_FULL.test(value) || UUID_COMPACT_FULL.test(value)) return { status: 'valid' };
   const compactPrefix = value.length < 32 && /^[0-9a-f]*$/i.test(value);
   const hyphenPrefix = value.length < 36 && uuidHyphenPrefixOk(value);
@@ -206,13 +227,13 @@ const ENUM_CODE_FORMAT = /^-?(0|[1-9]\d*)$/;
 // short enough that the reason stays a one-line tooltip even for a huge Enum16.
 const ENUM_REASON_SAMPLE = 8;
 
-function enumReason(members) {
+function enumReason(members: EnumMember[]): string {
   const shown = members.slice(0, ENUM_REASON_SAMPLE).map((m) => `'${m.name}'`).join(', ');
   const rest = members.length > ENUM_REASON_SAMPLE ? `, … (${members.length} total)` : '';
   return `Expected one of: ${shown}${rest}`;
 }
 
-function validateEnum(type, value) {
+function validateEnum(type: ParsedParamType, value: string): ParamValidationResult {
   const members = enumMembers(type);
   // No parseable members (e.g. `Enum8` with a malformed/empty member list) —
   // nothing to check against, so this degrades to the same passthrough an
@@ -240,11 +261,8 @@ function validateEnum(type, value) {
 /**
  * Validate `value` (the field's current text) against its declared parameter
  * `type`. Pure. See the module doc above for the full status contract.
- * @param {string|import('./param-type.js').ParsedParamType} type
- * @param {*} value
- * @returns {{status: 'valid'|'invalid'|'incomplete'|'unknown', reason?: string}}
  */
-export function validateParamValue(type, value) {
+export function validateParamValue(type: string | ParsedParamType, value: unknown): ParamValidationResult {
   // Empty is the gate's business (missing/inactive), never the validator's —
   // an empty value never reaches a per-type check.
   if (value == null || value === '') return { status: 'unknown' };
