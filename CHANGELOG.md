@@ -194,6 +194,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   This closes **#235** (filter wave / panel parallelism) and the reorder half of
   **#153** (open-in-window arrives in Phase 6), and dissolves **#188** into the
   viewer's filter contract.
+  - **Fix (post-review):** the `.dash-grid` container kept its old-model
+    `grid-template-columns`, so it laid the new flow `.dash-row` wrappers out in
+    columns — full-width showed multiple rows side by side and 3-column showed
+    the rows multiplied across the page. The container is now a vertical flex
+    stack; each `.dash-row` owns its own column count. (Invisible to the unit
+    suite because happy-dom does not compute CSS layout; verified in real
+    Chromium.)
 
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
