@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Phase 4 of the app.ts → services refactor complete** (#276): five more
+  focused modules under `src/application/`, all constructible without
+  `App`/`AppState`/DOM, behavior byte-identical. `WorkbenchParameterSession`
+  (`app.params`) owns the `{name:Type}` prepare/gate/hardening/recents
+  policy (the var strip stays a DOM view calling it); `ExportService`
+  (`app.exports`) owns direct + script export behind an injectable
+  `ExportSink`, consolidating the last duplicated cancellation-state copies
+  (its 40 test scenarios moved to an in-memory-sink spec);
+  `QueryDocumentSession` (`app.queryDoc`) owns the Spec evaluation/document
+  lifecycle and `SavedQueryService` (`app.saved`) the create/commit/history/
+  share persistence (typed results; the shell keeps the exact messages and
+  post-commit repaint cascade); `SchemaGraphSession` (`app.graph`) owns the
+  lineage operation lifecycle with its stale-request guards, the abort state
+  now session-private; `AppPreferences` (`app.prefs`) is the typed
+  preference-persistence surface (`save` + `toggleTheme` — deliberately no
+  speculative per-key setters). `app.ts` is down to 1,761 lines of shell
+  wiring from the original 2,964.
 - **Server metadata and reference lifecycle extracted into
   `SchemaCatalogService`** (#276 Phase 4A). Version probe, schema tree
   loading, lazy column loading, SQL reference/completions assembly, and the

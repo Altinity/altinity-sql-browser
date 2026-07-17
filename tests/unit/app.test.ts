@@ -3454,8 +3454,23 @@ describe('exhaustive controller coverage', () => {
   });
 });
 
+// The streaming single-file export (issue #87) and multi-statement script
+// export (issue #99) POLICY now lives in `application/export-service.ts`
+// (#276 Phase 4B2 — `createExportService`, exercised directly and
+// exhaustively by export-service.test.ts: statement-count dispatch, the
+// picker-first/stream/hold-back-buffer path, cancellation, the
+// directory-picker/per-statement transport loop, file naming, and every
+// error/edge-case branch). What's left here is THIN integration coverage —
+// the pieces export-service.test.ts's own fake sink/ch-fns/hooks can't
+// exercise: `app.canExport`/`app.canExportScript` resolving from the real
+// injected env seams, the `setExportBtn` DOM effect reacting to
+// `state.exporting`, `app.actions.*` delegating to `app.exports`, and one
+// real round trip through each of `app.ts`'s own wiring lines (the
+// `ExportSink` wrapper around `showSaveFilePicker`/`showDirectoryPicker`, and
+// the `hooks` object's `showExportProgress`/`toast`/`renderResults`/
+// `loadSchema` bodies) so those lines stay covered end-to-end, not just at
+// the service layer.
 describe('streaming export (issue #87)', () => {
-  const TAG = 'abcdef0123456789';
   const fakeWin = (): Window => asWindow({ history: { replaceState: vi.fn() }, navigator: {} });
 
   it('canExport resolves from the injected seams; the toolbar button reflects it', () => {
@@ -3473,23 +3488,6 @@ describe('streaming export (issue #87)', () => {
     expect(enabled.dom.exportBtn!.getAttribute('aria-disabled')).toBeNull();
   });
 
-  it('is a no-op when export is unavailable, or when one is already running', async () => {
-    const showSaveFilePicker1 = vi.fn();
-    const unavailable = createApp(env({ window: fakeWin(), showSaveFilePicker: null, isSecureContext: false }));
-    unavailable.renderApp();
-    unavailable.activeTab().sqlDraft = 'SELECT 1';
-    await unavailable.actions.exportEntry();
-    expect(showSaveFilePicker1).not.toHaveBeenCalled();
-
-    const showSaveFilePicker2 = vi.fn();
-    const busy = createApp(env({ window: fakeWin(), showSaveFilePicker: showSaveFilePicker2, isSecureContext: true }));
-    busy.renderApp();
-    busy.activeTab().sqlDraft = 'SELECT 1';
-    busy.state.exporting.value = true;
-    await busy.actions.exportEntry();
-    expect(showSaveFilePicker2).not.toHaveBeenCalled();
-  });
-
   it('"Nothing to export" toast when the editor is empty', async () => {
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
     app.renderApp();
@@ -3498,65 +3496,7 @@ describe('streaming export (issue #87)', () => {
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to export');
   });
 
-  it('query variables (#134): export is blocked when a variable is unfilled', async () => {
-    const showSaveFilePicker = vi.fn();
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT {database:String}';
-    await app.actions.exportEntry();
-    expect(showSaveFilePicker).not.toHaveBeenCalled();
-    expect(qs(document, '.share-toast').textContent).toContain('database');
-  });
-
-  it('query variables (#134): export sends native param_<name> args for a filled query', async () => {
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT {database:String}\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['x']) })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT {database:String}';
-    app.state.varValues = { database: 'default' };
-    await app.actions.exportEntry();
-    const exportCall = asMock(fetch).mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL)!;
-    expect(exportCall[0]).toMatch(/param_database=default/);
-  });
-
-  it('picker AbortError (user dismissed the dialog) is a silent no-op', async () => {
-    const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast')).toBeNull();
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a non-abort picker failure toasts "Save dialog failed"', async () => {
-    const showSaveFilePicker = vi.fn(async () => { throw new Error('disk full'); });
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast').textContent).toBe('Save dialog failed: disk full');
-  });
-
-  it('signed out (no token): the picker still opens (transient activation preserved), but no query runs', async () => {
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const fetch = asFetch(vi.fn(async () => resp({ json: { data: [] } }))); // only the config-doc load, if anything
-    const app = createApp(env({
-      window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch, sessionStorage: memSession({}),
-    }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
-    expect(handle.createWritable).not.toHaveBeenCalled(); // never reached the streaming step
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('streams a clean result to disk (default TSV) and reports completion', async () => {
+  it('streams a clean result to disk (default TSV) and reports completion — a real round trip through app.ts\'s own ExportSink/hooks wiring', async () => {
     const { handle, writable, chunks } = fakeFileHandle();
     let pickerOpts: SaveFilePickerOpts | undefined;
     const showSaveFilePicker = vi.fn(async (opts: unknown) => { pickerOpts = opts as SaveFilePickerOpts; return handle; });
@@ -3577,204 +3517,6 @@ describe('streaming export (issue #87)', () => {
     expect(exportCall[0]).toContain('default_format=TabSeparatedWithNames');
   });
 
-  it('honors an explicit FORMAT in the query for the picker + the request', async () => {
-    const { handle } = fakeFileHandle();
-    let pickerOpts: SaveFilePickerOpts | undefined;
-    const showSaveFilePicker = vi.fn(async (opts: unknown) => { pickerOpts = opts as SaveFilePickerOpts; return handle; });
-    const EXPORT_SQL = 'SELECT 1 FORMAT JSON';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['[]']) })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = EXPORT_SQL;
-    await app.actions.exportEntry();
-    expect(pickerOpts!.suggestedName).toMatch(/\.json$/);
-    expect(pickerOpts!.types[0].accept).toEqual({ 'application/json': ['.json'] });
-    expect(asMock(fetch).mock.calls.some((c) => c[1] && c[1].body === EXPORT_SQL)).toBe(true);
-  });
-
-  it('holds back the trailing 32 KiB and streams the rest incrementally (no full buffering)', async () => {
-    const { handle, writable, chunks } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const big = 'a'.repeat(40960); // > HOLDBACK (32 KiB) in a single chunk
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody([big]) })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    // mid-loop commit (8192 = 40960 - 32768 HOLDBACK) then the EOF flush of the held-back tail.
-    expect(asAnyMock(writable.write).mock.calls.map((c) => c[0].length)).toEqual([8192, 32768]);
-    expect(writtenText(chunks)).toBe(big);
-    expect(writable.close).toHaveBeenCalledTimes(1);
-  });
-
-  it('excises a mid-stream exception frame — only clean bytes reach the file; reports "incomplete"', async () => {
-    const { handle, writable, chunks } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const clean = 'x'.repeat(40);
-    const frame = exceptionFrame(TAG, 'DB::Exception: Memory limit (total) exceeded');
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL,
-      () => resp({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(writtenText(chunks)).toBe(clean); // the exception frame never reaches the file
-    expect(writable.close).toHaveBeenCalledTimes(1);
-    expect(writable.abort).not.toHaveBeenCalled();
-    expect(qs(document, '.share-toast').textContent)
-      .toBe('Export incomplete — server error mid-stream: DB::Exception: Memory limit (total) exceeded');
-  });
-
-  it('a stream read failure mid-export closes (not aborts) the writable and renames it .partial', async () => {
-    const { handle, writable } = fakeFileHandle('My_Query.tsv');
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    let reads = 0;
-    const body = {
-      getReader: () => ({
-        read: async () => {
-          reads += 1;
-          if (reads === 1) return { done: false, value: new TextEncoder().encode('partial') };
-          throw new Error('network drop');
-        },
-        releaseLock: () => {},
-      }),
-    };
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    // close (not abort), so the already-committed bytes materialize under the
-    // target handle instead of a hidden 0-byte .crswap orphan being left behind.
-    expect(writable.abort).not.toHaveBeenCalled();
-    expect(writable.close).toHaveBeenCalledTimes(1);
-    expect(handle.move).toHaveBeenCalledWith('My_Query.tsv.partial');
-    expect(qs(document, '.share-toast').textContent).toBe('Export failed: network drop');
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('falls back to leaving the plain (non-renamed) file when the handle has no move() (no File System Access API move support)', async () => {
-    const { handle, writable } = fakeFileHandle();
-    delete handle.move;
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(writable.abort).not.toHaveBeenCalled();
-    expect(writable.close).toHaveBeenCalledTimes(1);
-    // No TypeError from calling a missing move() — the guard held, and the
-    // original "network drop" error (not a broken-guard error) is what surfaces.
-    expect(qs(document, '.share-toast').textContent).toBe('Export failed: network drop');
-  });
-
-  it('a failed move() (e.g. name collision) is swallowed — the plain file is still recoverable', async () => {
-    const { handle, writable } = fakeFileHandle();
-    handle.move = vi.fn(async () => { throw new Error('collision'); });
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: throwingBody('network drop') })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(writable.abort).not.toHaveBeenCalled();
-    expect(handle.move).toHaveBeenCalledTimes(1);
-    // move()'s rejection is swallowed, not propagated in place of the original error.
-    expect(qs(document, '.share-toast').textContent).toBe('Export failed: network drop');
-  });
-
-  it('a pre-header (non-OK) failure toasts "Export failed" without ever opening the writable', async () => {
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL,
-      () => resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast').textContent).toBe('Export failed: DB::Exception: nope');
-    expect(handle.createWritable).not.toHaveBeenCalled();
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('exporting.value is true for the duration of the run; cancel aborts the export\'s own signal + issues its own KILL QUERY', async () => {
-    const EXPORT_BODY = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    let resolveExportFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
-    const fetch = asFetch(vi.fn((url: string, init?: { body?: string; signal?: AbortSignal }) => (init && init.body === EXPORT_BODY
-      ? new Promise<FakeResponse>((res) => { resolveExportFetch = res; })
-      : Promise.resolve(resp({ json: { data: [] } })))));
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    const pending = app.actions.exportEntry();
-    await new Promise((r) => setTimeout(r)); // let the picker + export request kick off
-    expect(app.state.exporting.value).toBe(true);
-    const exportCall = asMock(fetch).mock.calls.find((c) => c[1] && c[1].body === EXPORT_BODY)!;
-    expect(exportCall[1].signal.aborted).toBe(false);
-
-    app.actions.cancelExport(); // the workbench session's own run bookkeeping is untouched — this is the export's own
-    expect(exportCall[1].signal.aborted).toBe(true);
-    resolveExportFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-    await pending;
-
-    expect(app.state.exporting.value).toBe(false);
-    expect(qs(document, '.share-toast')).toBeNull(); // AbortError → silent
-    expect(asMock(fetch).mock.calls.some((c) => c[1] && /KILL QUERY WHERE query_id = 'export-/.test(c[1].body))).toBe(true);
-  });
-
-  it('attaches the tab session_id when the tab already has an open session (e.g. after a TEMPORARY TABLE run)', async () => {
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT * FROM t\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => resp({ body: streamBody(['x']) })]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    const tab = app.activeTab();
-    tab.chSession = 'sess-abc';
-    tab.sqlDraft = 'SELECT * FROM t';
-    await app.actions.exportEntry();
-    const exportCall = asMock(fetch).mock.calls.find((c) => c[1] && c[1].body === EXPORT_SQL)!;
-    expect(exportCall[0]).toContain('session_id=sess-abc');
-  });
-
-  it('suppresses the "Export failed" toast when the underlying error is "signed out" (onSignedOut already showed the login screen)', async () => {
-    const { handle } = fakeFileHandle();
-    const showSaveFilePicker = vi.fn(async () => handle);
-    const EXPORT_SQL = 'SELECT 1\nFORMAT TabSeparatedWithNames';
-    const fetch = makeFetch([[(u, sql) => sql === EXPORT_SQL, () => { throw new Error('signed out'); }]]);
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast')).toBeNull();
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a second click while the save-file picker is still open is blocked (exporting flips true before the picker await)', async () => {
-    let rejectPicker!: (reason: unknown) => void;
-    const showSaveFilePicker = vi.fn(() => new Promise((_res, rej) => { rejectPicker = rej; }));
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    const first = app.actions.exportEntry();
-    await new Promise((r) => setTimeout(r)); // let the first call reach the picker await
-    expect(app.state.exporting.value).toBe(true);
-    await app.actions.exportEntry(); // second click: blocked by the re-entrance guard
-    expect(showSaveFilePicker).toHaveBeenCalledTimes(1); // only the first call opened a picker
-    rejectPicker(Object.assign(new Error('x'), { name: 'AbortError' }));
-    await first;
-    expect(app.state.exporting.value).toBe(false);
-  });
-
   it('setExportBtn reflects the exporting state on the toolbar button, blocking a second click visually too', () => {
     const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
     app.renderApp();
@@ -3788,10 +3530,26 @@ describe('streaming export (issue #87)', () => {
     expect(app.dom.exportBtn!.classList.contains('is-disabled')).toBe(false);
     expect(app.dom.exportBtn!.getAttribute('aria-disabled')).toBeNull();
   });
+
+  it('actions.exportEntry/exportDirect/cancelExport/cancelExportScript delegate to app.exports (#276 Phase 4B2)', async () => {
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
+    app.renderApp();
+    const exportEntry = vi.spyOn(app.exports, 'exportEntry').mockResolvedValue(undefined);
+    const exportDirect = vi.spyOn(app.exports, 'exportDirect').mockResolvedValue(undefined);
+    const cancelExport = vi.spyOn(app.exports, 'cancelExport').mockImplementation(() => {});
+    const cancelExportScript = vi.spyOn(app.exports, 'cancelExportScript').mockImplementation(() => {});
+    await app.actions.exportEntry();
+    await app.actions.exportDirect('SELECT 1', 7);
+    app.actions.cancelExport();
+    app.actions.cancelExportScript();
+    expect(exportEntry).toHaveBeenCalledTimes(1);
+    expect(exportDirect).toHaveBeenCalledWith('SELECT 1', 7);
+    expect(cancelExport).toHaveBeenCalledTimes(1);
+    expect(cancelExportScript).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('script export (issue #99)', () => {
-  const TAG = 'abcdef0123456789';
   const fakeWin = (): Window => asWindow({ history: { replaceState: vi.fn() }, navigator: {} });
 
   // A fake FileSystemDirectoryHandle: getFileHandle(name) hands back a fresh
@@ -3808,21 +3566,10 @@ describe('script export (issue #99)', () => {
     return { dir, written };
   }
 
-  it('exportEntry dispatches by statement count: 1 → the single-file picker, N → the directory picker', async () => {
-    const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
-    const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1';
-    await app.actions.exportEntry();
-    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
-    expect(showDirectoryPicker).not.toHaveBeenCalled();
-
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
-  });
-
+  // Restored integration pin (review, Phase-4 PR): the unit-level editorMode
+  // gate lives in export-service.test.ts, but only this end-to-end version
+  // catches a wiring regression between the query-document session's
+  // editor-mode policy and the export service's gate.
   it('exportEntry is unavailable in Spec mode and exports sqlDraft after switching to SQL', async () => {
     const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
@@ -3839,14 +3586,6 @@ describe('script export (issue #99)', () => {
     await app.actions.exportEntry();
     expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
-
-  it('exportDirect itself guards against empty input (defensive — exportEntry never sends it empty)', async () => {
-    const app = createApp(env({ window: fakeWin(), showSaveFilePicker: vi.fn(), isSecureContext: true }));
-    app.renderApp();
-    await app.actions.exportDirect('   ', 0);
-    expect(qs(document, '.share-toast').textContent).toBe('Nothing to export');
-  });
-
   it('canExportScript resolves from the showDirectoryPicker seam + secure context', () => {
     const withPicker = createApp(env({ window: fakeWin(), showDirectoryPicker: vi.fn(), isSecureContext: true }));
     expect(withPicker.canExportScript()).toBe(true);
@@ -3856,74 +3595,19 @@ describe('script export (issue #99)', () => {
     expect(insecure.canExportScript()).toBe(false);
   });
 
-  it('toasts and never opens the directory picker when canExportScript is false', async () => {
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker: null, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast').textContent)
-      .toBe('Script export requires Chrome/Edge directory access over HTTPS');
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a script with no row-returning statements toasts and never prompts for a directory', async () => {
-    const showDirectoryPicker = vi.fn();
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nINSERT INTO t VALUES (1);';
-    await app.actions.exportEntry();
-    expect(showDirectoryPicker).not.toHaveBeenCalled();
-    expect(qs(document, '.share-toast').textContent)
-      .toBe('Nothing to export — script has no result-producing statements.');
-  });
-
-  it('dismissing the directory picker (AbortError) is a silent no-op', async () => {
+  it('exportEntry dispatches by statement count: 1 → the single-file picker, N → the directory picker', async () => {
+    const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
     const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
     app.renderApp();
+    app.activeTab().sqlDraft = 'SELECT 1';
+    await app.actions.exportEntry();
+    expect(showSaveFilePicker).toHaveBeenCalledTimes(1);
+    expect(showDirectoryPicker).not.toHaveBeenCalled();
+
     app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
     await app.actions.exportEntry();
-    expect(qs(document, '.share-toast')).toBeNull();
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a non-abort directory picker failure toasts "Folder dialog failed"', async () => {
-    const showDirectoryPicker = vi.fn(async () => { throw new Error('denied'); });
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    expect(qs(document, '.share-toast').textContent).toBe('Folder dialog failed: denied');
-  });
-
-  it('the directory picker opens before ensureConfig/getToken; a signed-out tab never runs the script', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const app = createApp(env({
-      window: fakeWin(), showDirectoryPicker, isSecureContext: true, sessionStorage: memSession({}),
-    }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    expect(showDirectoryPicker).toHaveBeenCalledTimes(1); // opened despite no token
-    expect(dir.getFileHandle).not.toHaveBeenCalled(); // never reached the run loop
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a second click while the directory picker is still open is blocked (exporting flips true before the picker await, like exportDirect)', async () => {
-    let rejectPicker!: (reason: unknown) => void;
-    const showDirectoryPicker = vi.fn(() => new Promise((_res, rej) => { rejectPicker = rej; }));
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    const first = app.actions.exportEntry();
-    await new Promise((r) => setTimeout(r)); // let the first call reach the picker await
-    expect(app.state.exporting.value).toBe(true);
-    await app.actions.exportEntry(); // second click: blocked by the re-entrance guard
-    expect(showDirectoryPicker).toHaveBeenCalledTimes(1); // only the first call opened a picker
-    rejectPicker(Object.assign(new Error('x'), { name: 'AbortError' }));
-    await first;
-    expect(app.state.exporting.value).toBe(false);
+    expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
   });
 
   it('runs statements sequentially in one shared session, effect statements logged ok with no file, rows streamed to their own file', async () => {
@@ -3961,157 +3645,6 @@ describe('script export (issue #99)', () => {
     expect(app.state.exporting.value).toBe(false);
   });
 
-  it('row-returning statements get distinct, deterministic file names', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['a']) })],
-      [(u, sql) => sql === 'SELECT 2\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['b']) })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].file).toBe('001-select-1.tsv');
-    expect(entries[1].file).toBe('002-select-2.tsv');
-  });
-
-  it('respects an explicit trailing FORMAT per statement', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1 FORMAT JSON', () => resp({ body: streamBody(['[]']) })],
-      [(u, sql) => sql === 'SELECT 2\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['x']) })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1 FORMAT JSON;\nSELECT 2;';
-    await app.actions.exportEntry();
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].file).toBe('001-select-1-format-json.json');
-    expect(entries[1].file).toBe('002-select-2.tsv');
-  });
-
-  it('a non-row statement error marks it failed with no file and stops the script; the rest are skipped', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'CREATE TABLE bad', () => resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: table exists"}' })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'CREATE TABLE bad;\nSELECT 1;';
-    await app.actions.exportEntry();
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].status).toBe('failed');
-    expect(entries[0].error).toBe('DB::Exception: table exists');
-    expect(entries[0].file).toBeNull();
-    expect(entries[1].status).toBe('skipped');
-    expect(dir.getFileHandle).not.toHaveBeenCalled();
-  });
-
-  it('a pre-header (non-OK) export failure marks the row failed and stops; the rest are skipped', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1\nFORMAT TabSeparatedWithNames',
-        () => resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].status).toBe('failed');
-    expect(entries[0].error).toBe('DB::Exception: nope');
-    expect(entries[1].status).toBe('skipped');
-  });
-
-  it('a mid-stream exception marks the row failed/incomplete and stops the script (regression: streamToFile\'s return must not be ignored)', async () => {
-    const { dir, written } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const clean = 'x'.repeat(10);
-    const frame = exceptionFrame(TAG, 'DB::Exception: Memory limit (total) exceeded');
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1\nFORMAT TabSeparatedWithNames',
-        () => resp({ body: streamBody([clean, frame]), headers: { 'X-ClickHouse-Exception-Tag': TAG } })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].status).toBe('failed');
-    expect(entries[0].error).toBe('File may be incomplete; server failed after streaming started. DB::Exception: Memory limit (total) exceeded');
-    expect(writtenText(written.get('001-select-1.tsv')!.chunks)).toBe(clean); // the exception frame never reaches the file
-    expect(entries[1].status).toBe('skipped');
-  });
-
-  it('never retries — a transient SESSION_IS_LOCKED failure is reported like any other error', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'INSERT INTO t VALUES (1)',
-        () => resp({ ok: false, status: 500, text: '{"exception":"Code: 373. DB::Exception: SESSION_IS_LOCKED"}' })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'INSERT INTO t VALUES (1);\nSELECT 1;';
-    await app.actions.exportEntry();
-    const insertCalls = asMock(fetch).mock.calls.filter((c) => c[1] && c[1].body === 'INSERT INTO t VALUES (1)');
-    expect(insertCalls).toHaveLength(1); // no retry
-    expect(scriptExportOf(app.activeTab())[0].status).toBe('failed');
-  });
-
-  it('cancel aborts the active row, marks it cancelled, skips the rest, kills the active query, and keeps completed files', async () => {
-    const { dir, written } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    let resolveSecond!: (value: FakeResponse | Promise<FakeResponse>) => void;
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['a']) })],
-      [(u, sql) => sql === 'SELECT 2\nFORMAT TabSeparatedWithNames', () => new Promise<FakeResponse>((res) => { resolveSecond = res; })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;\nSELECT 3;';
-    const pending = app.actions.exportEntry();
-    await new Promise((r) => setTimeout(r)); // let stmt1 finish and stmt2's request kick off
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].status).toBe('ok');
-    expect(entries[1].status).toBe('exporting');
-
-    app.actions.cancelExportScript();
-    resolveSecond(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-    await pending;
-
-    expect(entries[1].status).toBe('cancelled');
-    expect(entries[2].status).toBe('skipped');
-    expect(asMock(fetch).mock.calls.some((c) => c[1] && /KILL QUERY WHERE query_id = 'export-/.test(c[1].body))).toBe(true);
-    expect(written.get('001-select-1.tsv')!.writable.close).toHaveBeenCalledTimes(1); // completed file kept
-    expect(app.state.exporting.value).toBe(false);
-  });
-
-  it('a cancel that arrives just after a statement completed cleanly still skips the remaining statements', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    let resolveFirst!: (value: FakeResponse | Promise<FakeResponse>) => void;
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'CREATE TABLE t (a Int8)', () => new Promise<FakeResponse>((res) => { resolveFirst = res; })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nSELECT 1;';
-    const pending = app.actions.exportEntry();
-    await new Promise((r) => setTimeout(r)); // let it reach the pending fetch for stmt1
-    app.actions.cancelExportScript(); // cancel arrives while stmt1 is still in flight...
-    resolveFirst(resp({ text: '' })); // ...but the request completes cleanly anyway
-    await pending;
-    const entries = scriptExportOf(app.activeTab());
-    expect(entries[0].status).toBe('ok'); // completed before the cancel could affect it
-    expect(entries[1].status).toBe('skipped'); // caught at the top of stmt2's iteration
-  });
-
   it('refreshes the schema when an effect statement that actually ran is schema-mutating', async () => {
     const { dir } = fakeDirHandle();
     const showDirectoryPicker = vi.fn(async () => dir);
@@ -4126,22 +3659,6 @@ describe('script export (issue #99)', () => {
     app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nSELECT 1;';
     await app.actions.exportEntry();
     expect(spy).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not refresh the schema when no statement that ran was schema-mutating', async () => {
-    const { dir } = fakeDirHandle();
-    const showDirectoryPicker = vi.fn(async () => dir);
-    const fetch = makeFetch([
-      [(u, sql) => sql === 'SELECT 1\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['x']) })],
-      [(u, sql) => sql === 'SELECT 2\nFORMAT TabSeparatedWithNames', () => resp({ body: streamBody(['y']) })],
-    ]);
-    const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
-    app.renderApp();
-    await new Promise((r) => setTimeout(r));
-    const spy = vi.spyOn(app, 'loadSchema');
-    app.activeTab().sqlDraft = 'SELECT 1;\nSELECT 2;';
-    await app.actions.exportEntry();
-    expect(spy).not.toHaveBeenCalled();
   });
 });
 

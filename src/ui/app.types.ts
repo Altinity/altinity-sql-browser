@@ -17,10 +17,16 @@ import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
+import type { SchemaGraphSession } from '../application/schema-graph-session.js';
+import type { AppPreferences } from '../application/app-preferences.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
+import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
+import type { ExportService } from '../application/export-service.js';
+import type { QueryDocumentSession, SpecEvaluationResult } from '../application/query-document-session.js';
+import type { SavedQueryService } from '../application/saved-query-service.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -164,8 +170,9 @@ export interface App {
   state: State;
   dom: AppDom;
   /** Names of `{name:Type}` variables whose value has hardened to invalid
-   * (#170 review — see app.ts's construction-site comment). Read directly by
-   * tests; otherwise app.ts-internal bookkeeping. */
+   * (#170 review — owned by `params`, see below; this is the SAME `Set`
+   * instance, aliased, not copied — app.ts's construction-site comment).
+   * Read directly by tests; otherwise app.ts-internal bookkeeping. */
   hardenedVars: Set<string>;
   root: Element | null;
   document: Document;
@@ -250,6 +257,13 @@ export interface App {
   build: string;
 
   // Persistence.
+  /** The true-preference persist service (#276 Phase 4D —
+   *  `src/application/app-preferences.ts`), constructible without
+   *  App/AppState/DOM. `savePref` below is a thin delegate onto it (kept so
+   *  no consumer — dashboard.ts/saved-history.ts/splitters.ts — needs to
+   *  change); `toggleTheme`'s preference-write half also delegates here, the
+   *  DOM half stays in app.ts. */
+  prefs: AppPreferences;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
   savePref(name: string, value: unknown): void;
@@ -298,11 +312,40 @@ export interface App {
    *  Run/Cancel actions and the Explain/row-limit re-run paths delegate to it,
    *  and `renderApp`'s `attachShell` call wires its 3 run-coupled effects. */
   workbench: WorkbenchSession;
+  /** The `{name:Type}` query-variable POLICY (#276 Phase 4B1 —
+   *  `src/application/workbench-parameter-session.ts`), constructible
+   *  without App/AppState/DOM: analyze/prepare/gate/execution-view, the #170
+   *  hardening bookkeeping, the #172 v2 schema-cache enum-suggestion
+   *  inference, and the #171 recent-value + persistence policy.
+   *  `renderVarStrip`/`setRunBtn` (DOM) stay in app.ts, calling this
+   *  session's methods directly; the workbench-session hooks + the export
+   *  block's direct calls are re-pointed here too. `saveVarValues`/
+   *  `saveFilterActive`/`saveVarRecent`/`saveVarRecentDisabled`/
+   *  `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent` (declared
+   *  below, under Persistence) are one-line delegates onto this. */
+  params: WorkbenchParameterSession;
+  /** The streaming single-file export (issue #87) + multi-statement script
+   *  export (issue #99) POLICY (#276 Phase 4B2 —
+   *  `src/application/export-service.ts`), constructible without
+   *  App/AppState/DOM. `actions.exportEntry`/`.exportDirect`/`.cancelExport`/
+   *  `.cancelExportScript` are one-line delegates onto this; `state.exporting`
+   *  stays an `AppState` signal this service is the sole writer of.
+   *  `canExport`/`canExportScript` (env capability checks) and
+   *  `showExportProgress` (the DOM progress banner) stay app.ts-owned,
+   *  injected into this service. */
+  exports: ExportService;
   /** The shared request/stream/normalize + multiquery-script transport
    *  service (#276 Phase 1) — `src/application/query-execution-service.ts`,
    *  constructible without App/AppState/DOM. `src/ui/**` may depend on
    *  `src/application/**`, never the reverse. */
   exec: QueryExecutionService;
+  /** The inline schema-lineage drawer + fullscreen expand/detail session
+   *  (#276 Phase 4D — `src/application/schema-graph-session.ts`),
+   *  constructible without App/AppState/DOM. `actions.showSchemaGraph`/
+   *  `cancelSchemaGraph`/`expandSchemaGraph`/`openNodeDetail` delegate to it;
+   *  the DOM (the fullscreen view object, the node-detail pane mount) stays
+   *  in app.ts — this session never sees either. */
+  graph: SchemaGraphSession;
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   renderVarStrip(): void;
   setExportBtn(exporting: boolean): void;
@@ -314,7 +357,19 @@ export interface App {
   /** Only present after the first renderApp() call. */
   updateEditorModeUi?: () => void;
   syncSelection?: () => void;
-  evaluateSpecDraft(tab: Tab, text: string, opts?: { dirty?: boolean }): Json;
+  /** The Spec-evaluation/document lifecycle (#276 Phase 4C —
+   *  `src/application/query-document-session.ts`), constructible without
+   *  App/AppState/DOM. `evaluateSpecDraft`/`revalidateSpecDrafts`/
+   *  `revealFirstSpecError`/`registerSpecValidator` below are direct
+   *  assignments onto this session's own identically-shaped methods
+   *  (app.ts's `setEditorMode` also calls `queryDoc.resolveEditorMode` for
+   *  the editor-mode-switch POLICY half, keeping the DOM/focus half itself). */
+  queryDoc: QueryDocumentSession;
+  /** The precise `{parsed, diagnostics}` shape `QueryDocumentSession.
+   *  evaluateSpecDraft` returns — previously the looser `Json` placeholder,
+   *  now typed exactly since this is a direct assignment onto that session's
+   *  own method (#276 Phase 4C). */
+  evaluateSpecDraft(tab: Tab, text: string, opts?: { dirty?: boolean }): SpecEvaluationResult;
   revalidateSpecDrafts(opts?: { refreshUi?: boolean }): void;
   revealFirstSpecError(tab?: Tab): void;
   /** `path` is a JSON-path segment list (array index / object key per
@@ -325,6 +380,13 @@ export interface App {
   /** `tab` is a defensive no-op-on-falsy read (`if (!tab) return;`, app.ts) —
    *  a test exercising a no-linked-tab call site passes `null` directly. */
   activateInvalidSpecDraft(tab: Tab | null): void;
+  /** The saved-query create/commit policy, history recording, and share-URL
+   *  building (#276 Phase 4C — `src/application/saved-query-service.ts`),
+   *  constructible without App/AppState/DOM. app.ts's `commitLinkedQuery`/
+   *  `openSavePopover`'s commit closure/`share` call this directly and keep
+   *  owning the post-commit DOM cascade + clipboard/location writes
+   *  themselves (see that module's header comment). */
+  saved: SavedQueryService;
   openSavePopover(): void;
   openUserMenu(): void;
 

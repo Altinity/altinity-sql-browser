@@ -32,7 +32,15 @@ import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 import type { ConnectionSession } from '../../src/application/connection-session.js';
 import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
+import type { SchemaGraphSession } from '../../src/application/schema-graph-session.js';
+import type { AppPreferences } from '../../src/application/app-preferences.js';
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
+import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
+import type { ExportService } from '../../src/application/export-service.js';
+import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
+import type {
+  SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
+} from '../../src/application/saved-query-service.js';
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
 
@@ -140,6 +148,85 @@ const catalogDefaults: SchemaCatalogService = {
   invalidate: vi.fn(),
 };
 
+// A minimal `WorkbenchParameterSession` stub (#276 Phase 4B1) — no
+// render-module fixture exercises the session directly (that's
+// workbench-parameter-session.test.ts's job); this just satisfies the
+// `App.params` contract. `hardenedVars` is the SAME `Set` instance as
+// `appDefaults.hardenedVars` below (the production aliasing invariant —
+// app.ts assigns `app.hardenedVars = params.hardenedVars`).
+const paramsHardenedVarsDefault = new Set<string>();
+const paramsDefaults: WorkbenchParameterSession = {
+  hardenedVars: paramsHardenedVarsDefault,
+  tabAnalysis: vi.fn(() => ({ fields: {}, sources: [], sourceErrors: {}, diagnostics: [] })),
+  prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
+  prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
+  prepareTabSource: vi.fn(() => ({ id: 'tab', statements: [], missing: [], invalid: [], errors: [], runnable: true })),
+  execStatementSql: vi.fn((stmt: string) => stmt),
+  varGateBlocked: vi.fn(() => false),
+  hardenVar: vi.fn(),
+  inputGate: vi.fn(() => ({ missing: [], invalid: [], errors: [] })),
+  inferredEnumOptions: vi.fn(() => null),
+  recordBoundParams: vi.fn(),
+  clearVarRecent: vi.fn(),
+  clearAllVarRecent: vi.fn(),
+  saveVarValues: vi.fn(),
+  saveFilterActive: vi.fn(),
+  saveVarRecent: vi.fn(),
+  saveVarRecentDisabled: vi.fn(),
+};
+
+// A minimal `ExportService` stub (#276 Phase 4B2) — no render-module fixture
+// exercises the service directly (that's export-service.test.ts's job); this
+// just satisfies the `App.exports` contract.
+const exportsDefaults: ExportService = {
+  exportEntry: vi.fn(),
+  exportDirect: vi.fn(async () => {}),
+  cancelExport: vi.fn(),
+  cancelExportScript: vi.fn(),
+};
+
+// A minimal `QueryDocumentSession` stub (#276 Phase 4C) — no render-module
+// fixture exercises the session directly (that's
+// query-document-session.test.ts's job); this just satisfies the
+// `App.queryDoc` contract.
+const queryDocDefaults: QueryDocumentSession = {
+  applySpecEvaluation: vi.fn(() => ({ parsed: null, diagnostics: [] })),
+  evaluateSpecDraft: vi.fn(() => ({ parsed: null, diagnostics: [] })),
+  revalidateSpecDrafts: vi.fn(),
+  revealFirstSpecError: vi.fn(),
+  registerSpecValidator: vi.fn(() => () => {}),
+  resolveEditorMode: vi.fn(() => ({ ok: true })),
+};
+
+// A minimal `SavedQueryService` stub (#276 Phase 4C) — no render-module
+// fixture exercises the service directly (that's
+// saved-query-service.test.ts's job); this just satisfies the `App.saved`
+// contract.
+const savedDefaults: SavedQueryService = {
+  create: vi.fn((): CreateSavedResult => ({ ok: false })),
+  commit: vi.fn((): CommitLinkedResult => ({ ok: false, reason: 'empty' })),
+  recordHistory: vi.fn(),
+  buildShareUrl: vi.fn((): ShareResult => ({ ok: false, reason: 'empty' })),
+};
+
+// A minimal `SchemaGraphSession` stub (#276 Phase 4D) — no render-module
+// fixture exercises the session directly (that's schema-graph-session.test.ts's
+// job); this just satisfies the `App.graph` contract.
+const graphDefaults: SchemaGraphSession = {
+  show: vi.fn(async () => {}),
+  cancel: vi.fn(),
+  expand: vi.fn(async () => ({ nodes: [], edges: [], focus: {}, truncated: false, savedPositions: {} })),
+  loadNodeDetail: vi.fn(async () => null),
+};
+
+// A minimal `AppPreferences` stub (#276 Phase 4D) — no render-module fixture
+// exercises the service directly (that's app-preferences.test.ts's job); this
+// just satisfies the `App.prefs` contract.
+const prefsDefaults: AppPreferences = {
+  save: vi.fn(),
+  toggleTheme: vi.fn(() => 'light'),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -149,13 +236,18 @@ const catalogDefaults: SchemaCatalogService = {
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
-  hardenedVars: new Set(),
+  // The SAME `Set` instance as `paramsDefaults.hardenedVars` — the production
+  // aliasing invariant (app.ts's `app.hardenedVars = params.hardenedVars`).
+  hardenedVars: paramsHardenedVarsDefault,
   matchMedia: null,
   build: 'v0.0.0-test',
   root: null,
   document,
   conn: connDefaults,
   catalog: catalogDefaults,
+  params: paramsDefaults,
+  graph: graphDefaults,
+  prefs: prefsDefaults,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
@@ -217,6 +309,9 @@ const appDefaults: App = {
   elapsedMs: () => 0,
   tickElapsed: () => {},
   workbench: workbenchDefaults,
+  exports: exportsDefaults,
+  queryDoc: queryDocDefaults,
+  saved: savedDefaults,
   exec: {
     executeRead: async (result) => result,
     executeScript: async () => ({ entries: [], aborted: false }),
@@ -228,7 +323,7 @@ const appDefaults: App = {
   setFmtBtn: () => {},
   specBlocked: () => false,
   updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
+  evaluateSpecDraft: () => ({ parsed: null, diagnostics: [] }),
   revalidateSpecDrafts: () => {},
   revealFirstSpecError: () => {},
   registerSpecValidator: () => () => {},
@@ -247,7 +342,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -264,6 +359,22 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
    *  session directly; a test asserting `workbench.run`/`.cancel` was called
    *  can override just that method. */
   workbench?: Partial<WorkbenchSession>;
+  /** Partial like `workbench` above (#276 Phase 4B1) — most fixtures never
+   *  touch the session directly; a test asserting e.g. `params.clearVarRecent`
+   *  was called can override just that method. */
+  params?: Partial<WorkbenchParameterSession>;
+  /** Partial like `workbench`/`params` above (#276 Phase 4C) — most fixtures
+   *  never touch the session directly; a test asserting e.g.
+   *  `queryDoc.resolveEditorMode`'s return can override just that method. */
+  queryDoc?: Partial<QueryDocumentSession>;
+  /** Partial like `queryDoc` above (#276 Phase 4C) — a test asserting e.g.
+   *  `saved.commit`'s return can override just that method. */
+  saved?: Partial<SavedQueryService>;
+  /** Partial like the rest (#276 Phase 4B2/4D — same convention as their
+   *  sibling sessions above). */
+  exports?: Partial<ExportService>;
+  graph?: Partial<SchemaGraphSession>;
+  prefs?: Partial<AppPreferences>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -397,6 +508,12 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
     conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
     workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
+    params: { ...paramsDefaults, ...(overrides.params ?? {}) },
+    queryDoc: { ...queryDocDefaults, ...(overrides.queryDoc ?? {}) },
+    saved: { ...savedDefaults, ...(overrides.saved ?? {}) },
+    exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
+    graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
+    prefs: { ...prefsDefaults, ...(overrides.prefs ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

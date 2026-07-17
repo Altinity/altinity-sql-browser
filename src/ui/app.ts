@@ -7,33 +7,22 @@
 import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, recordScriptHistory,
-  createSavedQuery, commitSavedQuery, savedForTab, tabPanel,
-  normalizeRowLimit, MOBILE_BREAKPOINT_PX, effectiveFilterActive,
+  createState, activeTab,
+  savedForTab, tabPanel,
+  normalizeRowLimit, MOBILE_BREAKPOINT_PX,
 } from '../state.js';
-import type { QueryTab, AppState, SpecValidationService, HistoryResultSnapshot, QuerySpecDraft } from '../state.js';
+import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
-import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
-import {
-  analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, analysisView,
-  fieldControls, fieldControlKind,
-} from '../core/param-pipeline.js';
-import type {
-  ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, FieldControl,
-} from '../core/param-pipeline.js';
+import { splitStatements, leadingKeyword } from '../core/sql-split.js';
+import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, isSchemaMutatingSql, prepareExportSql, formatBytes, formatRows } from '../core/format.js';
-import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
-import { buildCardGraph } from '../core/schema-cards.js';
-import type { SchemaCardColumnRow } from '../core/schema-cards.js';
-import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
-import { newResult, parseErrorPos, findExceptionFrame } from '../core/stream.js';
-import { encodeShare } from '../core/share.js';
-import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, formatBytes, formatRows } from '../core/format.js';
+import { toTSV } from '../core/export.js';
+import { newResult, parseErrorPos } from '../core/stream.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import {
-  CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
+  CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
   hasBlockingSpecErrors,
 } from '../core/spec-draft.js';
 import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
@@ -50,10 +39,10 @@ import type { QueryOrName } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
-import type { Result, QueryResult, ScriptResult, ScriptEntry, ScriptExportEntry, ScriptExportResult, ResultSchemaGraph } from './results.js';
+import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
 import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
-import type { SchemaLineageGraph, SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
+import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -66,11 +55,8 @@ import { buildEnumField } from './enum-field.js';
 import type { EnumField } from './enum-field.js';
 import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
-import { recordRecent, clearRecent, clearAllRecent, recentOptions } from '../core/recent-values.js';
-import { enumValues, parseParamType } from '../core/param-type.js';
+import { recentOptions } from '../core/recent-values.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
-import type { ParamComparisonEntry } from '../core/param-comparison.js';
-import { resolveComparisonColumnType } from '../core/from-scope.js';
 import type { SchemaDb } from '../core/from-scope.js';
 import type { AssembledReference, CompletionItem } from '../core/completions.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
@@ -81,12 +67,18 @@ import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitter
 import { flashToast } from './toast.js';
 import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
 import type { CreateAppEnv } from '../env.types.js';
-import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core/schema-graph.js';
-import type { LineageFocus } from '../net/ch-client.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
+import { createWorkbenchParameterSession } from '../application/workbench-parameter-session.js';
+import { createExportService } from '../application/export-service.js';
+import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
+import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
+import { createAppPreferences } from '../application/app-preferences.js';
+import type { PreferenceKey } from '../application/app-preferences.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
+import { createQueryDocumentSession } from '../application/query-document-session.js';
+import { createSavedQueryService } from '../application/saved-query-service.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -101,29 +93,6 @@ import { createWorkbenchSession } from './workbench/workbench-session.js';
  *  intersection makes reading it a safe optional no-op for the other two
  *  control kinds, which never populate it. */
 type VarStripCombo = (EnumField | RecentField | RelativeTimeField) & { previewEl?: HTMLElement };
-
-/** A `FileSystemWritableFileStream`-shaped handle — narrower than the DOM
- *  lib's own (this project's lib.dom build doesn't carry the File System
- *  Access API at all, hence `env.showSaveFilePicker`/`showDirectoryPicker`
- *  being typed `unknown` seams in the first place). */
-interface WritableFileStreamLike {
-  write(chunk: Uint8Array): Promise<void>;
-  close(): Promise<void>;
-  abort(): Promise<void>;
-}
-/** A `FileSystemFileHandle`-shaped handle — `showSaveFilePicker`'s resolved
- *  value, and `getFileHandle`'s. `move` (Chrome 110+) is optional — feature-
- *  detected at the one call site that uses it. */
-interface FileHandleLike {
-  name: string;
-  createWritable(): Promise<WritableFileStreamLike>;
-  move?(name: string): Promise<void>;
-}
-/** A `FileSystemDirectoryHandle`-shaped handle — `showDirectoryPicker`'s
- *  resolved value. */
-interface DirectoryHandleLike {
-  getFileHandle(name: string, opts?: { create?: boolean }): Promise<FileHandleLike>;
-}
 
 interface WindowExtras {
   Chart?: unknown;
@@ -164,15 +133,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     state: createState(),
     dom: {},
     // #170 review: names of `{name:Type}` variables whose value has hardened
-    // to invalid (blur/Enter/execute committed a strict verdict of invalid).
-    // setRunBtn's gate-less fallback (called from unrelated re-renders —
-    // renderVarStrip's tail call on every SQL-editor keystroke, and the
-    // hasSelection effect on every cursor/selection move) recomputes in
-    // lenient 'input' mode, which reads a still-incomplete prefix (e.g. a
-    // lone '-') as merely incomplete, not invalid — without this bookkeeping
-    // that recompute would silently re-enable Run while the field itself
-    // still paints red. Editing the field's value again (its own `oninput`)
-    // clears the name here, returning it to normal lenient behavior.
+    // to invalid — owned by the WorkbenchParameterSession (#276 Phase 4B1,
+    // application/workbench-parameter-session.ts), which the block below
+    // constructs; `app.hardenedVars` is aliased (not copied) to its `Set`
+    // once that session exists (see the `const params = …` block below), so
+    // this placeholder is only ever read before that assignment happens.
     hardenedVars: new Set<string>(),
     root: env.root || doc.getElementById('root'),
     document: doc,
@@ -224,53 +189,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
 
   // --- persistence -------------------------------------------------------
+  // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
+  // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit/dashLayout/
+  // dashCols, constructible without App/AppState/DOM. `savePref` below is a
+  // thin delegate (dashboard.ts/saved-history.ts/splitters.ts keep calling it
+  // unchanged); `toggleTheme` below composes `prefs.toggleTheme()` (the
+  // state-flip + persist) with its own DOM half.
+  const prefs = createAppPreferences({ saveStr, state: app.state });
+  app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  app.savePref = (name, value) => saveStr(KEYS[name as keyof typeof KEYS], String(value));
-  // Persist the shared query-variable values (#134) after each edit.
-  app.saveVarValues = () => saveJSON(KEYS.varValues, app.state.varValues);
-  // Persist the optional-block activation map (#165) alongside varValues.
-  app.saveFilterActive = () => saveJSON(KEYS.filterActive, app.state.filterActive);
-  // Persist the per-variable recent-value MRU history (#171) alongside
-  // varValues — same key convention, own key.
-  app.saveVarRecent = () => saveJSON(KEYS.varRecent, app.state.varRecent);
-  app.saveVarRecentDisabled = () => saveJSON(KEYS.varRecentDisabled, app.state.varRecentDisabled);
-  // Record every successful statement's `boundParams` (#173's immutable
-  // per-statement snapshots) into the recent-value history — the single hook
-  // point every success path (run/runScript's single-statement + per-script-
-  // statement paths, and the dashboard's per-tile completion) calls. A no-op
-  // while the disable-history preference is on (existing history is left
-  // alone, only new recording stops) or when nothing was actually bound.
-  // Array-valued `rawValue` (an `Array(...)`-typed param) is skipped — v1
-  // recents are a text-value affordance, like #172's (not yet built) enum
-  // controls; #160's curated-`filter:`-param opt-out hook has nothing to
-  // check yet (no curated param exists before #160 lands).
-  app.recordBoundParams = (boundParams) => {
-    if (app.state.varRecentDisabled || !boundParams || !boundParams.length) return;
-    let map = app.state.varRecent;
-    for (const p of boundParams) {
-      if (typeof p.rawValue !== 'string') continue;
-      map = recordRecent(map, p.name, p.rawValue);
-    }
-    if (map !== app.state.varRecent) {
-      app.state.varRecent = map;
-      app.saveVarRecent();
-    }
-  };
-  // Per-field "Clear recent" (the dropdown footer) / "Clear all recent
-  // values" (the File menu) — both no-op (no re-persist) when there was
-  // nothing to clear, mirroring recordRecent's own same-reference no-op.
-  app.clearVarRecent = (name) => {
-    const next = clearRecent(app.state.varRecent, name);
-    if (next !== app.state.varRecent) {
-      app.state.varRecent = next;
-      app.saveVarRecent();
-    }
-  };
-  app.clearAllVarRecent = () => {
-    app.state.varRecent = clearAllRecent();
-    app.saveVarRecent();
-  };
+  // Typed preference persistence (#276 Phase 4D) — `prefs` is constructed
+  // below; this closure only reads it at call time.
+  app.savePref = (name, value) => prefs.save(name as PreferenceKey, value);
+  // The `{name:Type}` var-value/filter-active/recent-value persistence
+  // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
+  // saveVarRecentDisabled) + the recent-value policy that sits on top of them
+  // (recordBoundParams/clearVarRecent/clearAllVarRecent) now live in the
+  // WorkbenchParameterSession (#276 Phase 4B1) — see the `const params = …`
+  // block below, which wires `app.saveVarValues`/etc. as one-line delegates
+  // once that session exists.
   app.FileReader = (env.FileReader || win.FileReader) as typeof FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
@@ -304,6 +242,47 @@ export function createApp(env: CreateAppEnv = {}): App {
   }));
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
+  // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
+  // applySpecEvaluation/evaluateSpecDraft/revalidateSpecDrafts/
+  // revealFirstSpecError/registerSpecValidator, plus the editor-mode POLICY
+  // half of setEditorMode (below) — now lives in
+  // `application/query-document-session.ts`, constructible without
+  // App/AppState/DOM (check:arch bars it from importing `src/editor/**`; its
+  // diagnostics are typed as core/spec-draft.js's own `SpecValidationDiagnostic`,
+  // documented there as directly assignable to the editor's `SpecDiagnostic`).
+  // The hooks below are the session's only DOM/editor touch points — app.ts
+  // supplies them (some still guarded on an as-yet-unassigned `app.actions`/
+  // `app.updateSaveBtn`/`app.updateEditorModeUi`, exactly as the pre-extraction
+  // inline code guarded itself), the session itself never imports `src/ui/**`
+  // or `src/editor/**`.
+  const queryDoc = createQueryDocumentSession({
+    state: app.state,
+    activeTab: () => app.activeTab(),
+    specValidators,
+    hooks: {
+      setDiagnostics: (diagnostics) => app.specEditor.setDiagnostics(diagnostics),
+      revealDiagnostic: (index) => app.specEditor.revealDiagnostic(index),
+      rerenderTabs: () => { if (app.actions) app.actions.rerenderTabs(); },
+      updateSaveBtn: () => { if (app.updateSaveBtn) app.updateSaveBtn(); },
+      updateEditorModeUi: () => { if (app.updateEditorModeUi) app.updateEditorModeUi(); },
+    },
+  });
+  app.queryDoc = queryDoc;
+  // The saved-query create/commit policy, history recording, and share-URL
+  // building (#276 Phase 4C) now live in `application/saved-query-service.ts`,
+  // constructible without App/AppState/DOM — this shell sequences Spec
+  // evaluation (via `queryDoc` above) THEN calls this service; the two never
+  // call each other (see that module's header comment). `now: () =>
+  // Date.now()` is a genuine wall-clock read (NOT `app.now`/`app.wallNow` —
+  // unrelated clocks), matching `createSavedQuery`'s own pre-extraction
+  // inline `Date.now()` call exactly.
+  const saved = createSavedQueryService({
+    state: app.state,
+    saveJSON,
+    now: () => Date.now(),
+    specValidators,
+  });
+  app.saved = saved;
   app.sqlEditor.onDocChange((value) => {
     const tab = app.activeTab();
     tab.sqlDraft = value;
@@ -314,62 +293,22 @@ export function createApp(env: CreateAppEnv = {}): App {
     // SQL, so re-evaluating the whole validator graph on each keystroke is
     // wasted work — gate it to filter tabs.
     if (effectiveDashboardRole(tab.specParsed) === 'filter') {
-      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
+      queryDoc.applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
       app.specEditor.setDiagnostics(tab.specDiagnostics);
     }
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
   });
-  const applySpecEvaluation = (
-    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
-  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } => {
-    const evaluated = evaluateSpecText(text, specValidators, { sql: tab.sqlDraft, tab });
-    tab.specText = text;
-    tab.specParsed = evaluated.parsed as QueryTab['specParsed'];
-    tab.specDiagnostics = evaluated.diagnostics;
-    tab.dirtySpec = dirty;
-    return evaluated;
-  };
-  // Kept as its own named local (precise `{parsed, diagnostics}` return) as
-  // well as `app.evaluateSpecDraft` (the public, loosely-`Json`-typed
-  // property other modules read per app.types.ts) — every in-module caller
-  // that reads `.parsed`/`.diagnostics` off the result calls this directly to
-  // stay precisely typed instead of going through the public property.
-  function evaluateSpecDraft(
-    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
-  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } {
-    const evaluated = applySpecEvaluation(tab, text, { dirty });
-    if (tab === app.activeTab()) app.specEditor.setDiagnostics(tab.specDiagnostics);
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.updateEditorModeUi) app.updateEditorModeUi();
-    return evaluated;
-  }
-  app.evaluateSpecDraft = evaluateSpecDraft;
-  app.revalidateSpecDrafts = ({ refreshUi = true } = {}) => {
-    for (const tab of app.state.tabs.value) {
-      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
-    }
-    if (!refreshUi) return;
-    const tab = app.activeTab();
-    app.specEditor.setDiagnostics(tab.specDiagnostics);
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.updateEditorModeUi) app.updateEditorModeUi();
-  };
-  app.revealFirstSpecError = (tab = app.activeTab()) => {
-    const index = tab.specDiagnostics?.findIndex((diagnostic) => diagnostic.severity === 'error') ?? -1;
-    if (index >= 0) app.specEditor.revealDiagnostic(index);
-  };
+  // Direct assignments (not one-line wrapper closures) — the session's own
+  // method signatures already match the public `App` contract exactly.
+  app.evaluateSpecDraft = queryDoc.evaluateSpecDraft;
+  app.revalidateSpecDrafts = queryDoc.revalidateSpecDrafts;
+  app.revealFirstSpecError = queryDoc.revealFirstSpecError;
   app.specEditor.onDocChange((value) => {
-    evaluateSpecDraft(app.activeTab(), value);
+    queryDoc.evaluateSpecDraft(app.activeTab(), value);
   });
-  app.registerSpecValidator = (path, validate) => {
-    const unregister = specValidators.register(path, validate);
-    app.revalidateSpecDrafts();
-    return () => { unregister(); app.revalidateSpecDrafts(); };
-  };
+  app.registerSpecValidator = queryDoc.registerSpecValidator;
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
   // writes through it unconditionally); every real renderLogin() call below
@@ -588,62 +527,85 @@ export function createApp(env: CreateAppEnv = {}): App {
   function sessionParamsFor(tab: QueryTab, sqls: string[]): Record<string, string> {
     return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
-  // The workbench SQL as the pipeline's single parameterized source (#173).
-  function tabAnalysis(sql: string): ParameterAnalysis {
-    return analyzeParameterizedSources([
-      { id: 'tab', label: 'editor tab', kind: 'tab', sql, bindPolicy: 'row-returning' },
-    ]);
-  }
-  // The optional-block activation map (#165): explicit filterActive entries
-  // win; params without one derive activation from their stored value.
-  const activeMap = (): Record<string, boolean> => effectiveFilterActive(app.state.varValues, app.state.filterActive);
-  // Analyze + prepare `sql` as the workbench's single parameterized source
-  // (#173): one call per SQL string per wave, drawing values from the shared
-  // varValues (+ the #165 activation map). Returns the full prepared batch
-  // ({fields, sources, diagnostics}) — `fields` is per-`{name:Type}` (#170's
-  // validated state, for the var-strip's inline affordance); `sources[0]` is
-  // this single source's `{statements, missing, invalid, errors, runnable}`.
-  // Args for a request come from a source's statements (or mergedSourceArgs
-  // when the SQL ships as one request); each statement's `sql` is its
-  // execution view (#165) — byte-identical for SQL without optional blocks.
-  function prepareAnalyzedBatch(analysis: ParameterAnalysis, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedBatch {
-    return prepareParameterizedBatch(analysis, {
-      values: app.state.varValues, active: activeMap(), wallNowMs, validationMode,
-    });
-  }
-  function prepareTabBatch(sql: string, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedBatch {
-    return prepareAnalyzedBatch(tabAnalysis(sql), wallNowMs, validationMode);
-  }
-  function prepareTabSource(sql: string, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedSource {
-    return prepareTabBatch(sql, wallNowMs, validationMode).sources[0];
-  }
-  // The execution text of one statement (#165): only active optional blocks
-  // retained, markers stripped — byte-identical for SQL without blocks. Follows
-  // the #134 bind gate: a non-row-returning statement passes through verbatim.
-  function execStatementSql(stmt: string): string {
-    return isRowReturning(stmt) ? executionView(stmt, activeMap()) : stmt;
-  }
-  // Block execution while any {name:Type} variable in the active tab is unfilled
-  // or invalid, or while its value can't serialize (e.g. an array value against
-  // a scalar declaration) — toasting why (#134/#173). Gating on the whole
-  // tab.sqlDraft — the exact set the variable strip shows — keeps every execution
-  // path consistent: the Run button (setRunBtn), the Run/⌘↵ path, Explain, and
-  // Export all agree. `wallNowMs` is the caller's wave clock.
-  function varGateBlocked(wallNowMs: number = wallNow()): boolean {
-    const tab = app.activeTab();
-    const src = tab ? prepareTabSource(tab.sqlDraft, wallNowMs) : null;
-    if (!src) return false;
-    const blockers = src.missing.concat(src.invalid);
-    if (blockers.length) {
-      flashToast('Enter a value for: ' + blockers.join(', '), { document: doc });
-      return true;
-    }
-    if (src.errors.length) {
-      flashToast(src.errors[0], { document: doc });
-      return true;
-    }
-    return false;
-  }
+  // The `{name:Type}` query-variable POLICY — analyze/prepare/gate/execution-
+  // view, the #170 hardening bookkeeping, the #172 v2 schema-cache enum-
+  // suggestion inference, and the #171 recent-value + persistence policy —
+  // now lives in `application/workbench-parameter-session.ts` (#276 Phase
+  // 4B1), constructible without App/AppState/DOM. `renderVarStrip` (the DOM
+  // view, below) and the workbench-session hooks + export block (further
+  // down) call its methods directly; `app.hardenedVars` is aliased (not
+  // copied) to its `Set` so `app.hardenedVars.has(...)` keeps working
+  // unchanged. `sessionParams`/`needsSession`/`sessionParamsFor` above stay
+  // HERE (they're `tab.chSession`/transport material, not parameter policy —
+  // Phase 4C's concern).
+  const params = createWorkbenchParameterSession({
+    varValues: () => app.state.varValues,
+    filterActive: () => app.state.filterActive,
+    varRecent: () => app.state.varRecent,
+    setVarRecent: (map) => { app.state.varRecent = map; },
+    varRecentDisabled: () => app.state.varRecentDisabled,
+    schema: () => app.state.schema.value as SchemaDb[] | null,
+    activeTab: () => app.activeTab(),
+    wallNow,
+    saveJSON,
+    hooks: {
+      onGateBlocked: (message) => flashToast(message, { document: doc }),
+      // Routed through the mutable, test-visible `app.saveVarRecent`
+      // property (a fresh property read every call) rather than
+      // `params.saveVarRecent()` directly — see
+      // workbench-parameter-session.ts's header comment: this keeps every
+      // automatic persist `recordBoundParams`/`clearVarRecent`/
+      // `clearAllVarRecent` performs observable through the exact seam
+      // app.test.ts's `app.saveVarRecent = vi.fn(app.saveVarRecent)`
+      // mock-substitution case exercises, byte-identical to the
+      // pre-extraction code's own `app.saveVarRecent()` property call.
+      saveVarRecent: () => app.saveVarRecent(),
+    },
+  });
+  app.params = params;
+  // Alias (not copy) — see `params`'s own construction comment above.
+  app.hardenedVars = params.hardenedVars;
+  app.saveVarValues = () => params.saveVarValues();
+  app.saveFilterActive = () => params.saveFilterActive();
+  app.saveVarRecent = () => params.saveVarRecent();
+  app.saveVarRecentDisabled = () => params.saveVarRecentDisabled();
+  app.recordBoundParams = (boundParams) => params.recordBoundParams(boundParams);
+  app.clearVarRecent = (name) => params.clearVarRecent(name);
+  app.clearAllVarRecent = () => params.clearAllVarRecent();
+
+  // The streaming single-file export (issue #87) + multi-statement script
+  // export (issue #99) POLICY (#276 Phase 4B2) now lives in
+  // `application/export-service.ts`, constructible without App/AppState/DOM
+  // — a pure move of the export bodies (already re-pointed onto `params`'s
+  // methods by Phase 4B1) wholesale. `exportSink` wraps the two File System
+  // Access pickers (feature-detected as `app.showSaveFilePicker`/
+  // `app.showDirectoryPicker` above — only ever called once
+  // `canExport`/`canExportScript` has already gated true); `canExport`/
+  // `canExportScript` themselves and `showExportProgress` (the DOM progress
+  // banner, defined further below) stay app.ts-owned, injected into the
+  // service. `state.exporting` stays an `AppState` signal this service is
+  // the sole writer of (mirrors `workbench`'s own `running` precedent).
+  const exportSink: ExportSink = {
+    pickFile: (input) => app.showSaveFilePicker!(input) as Promise<FileHandleLike>,
+    pickDirectory: (input) => app.showDirectoryPicker!(input) as Promise<DirectoryHandleLike>,
+  };
+  const exportService = createExportService({
+    exportQuery: ch.exportQuery, runQuery: ch.runQuery, killQuery: ch.killQuery,
+    ctx: () => chCtx, ensureConfig, getToken, sqlString, now, wallNow, uid,
+    canExport: () => app.canExport(), canExportScript: () => app.canExportScript(),
+    sink: exportSink,
+    state: app.state, // AppState structurally satisfies ExportStateSlice
+    activeTab: () => app.activeTab(),
+    params: { prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked, execStatementSql: params.execStatementSql },
+    sessionParamsFor,
+    hooks: {
+      renderResults: () => renderResults(app),
+      showExportProgress: (onCancel) => showExportProgress(onCancel),
+      toast: (message) => flashToast(message, { document: doc }),
+      loadSchema: () => { void app.loadSchema(); },
+    },
+  });
+  app.exports = exportService;
 
   // The run/runScript/runEntry/cancel orchestration (#276 Phase 3a) now lives
   // in ui/workbench/workbench-session.ts — a route-scoped session that owns
@@ -665,7 +627,8 @@ export function createApp(env: CreateAppEnv = {}): App {
       loadSchema: () => { void app.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
       recordBoundParams: (bp) => app.recordBoundParams([...bp]),
-      prepareTabSource, varGateBlocked, execStatementSql, sessionParamsFor,
+      prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked,
+      execStatementSql: params.execStatementSql, sessionParamsFor,
       getSelectionText: () => app.sqlEditor.getSelection().text,
       tickElapsed,
       saveJSON,
@@ -676,33 +639,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // Milliseconds since the running query started (0 when idle) — delegates to
   // the session's own private runT0 bookkeeping.
   app.elapsedMs = () => workbench.elapsedMs();
-  // Keep `app.hardenedVars` (#170 review) in sync with a field's just-computed
-  // 'execute'-mode verdict: added when it's invalid, cleared otherwise — so a
-  // corrected-then-reharded value, or a variable that simply stopped being
-  // invalid, doesn't linger in the set. Shared by every place that commits a
-  // strict verdict for a field (blur, Enter, and the strip's initial/rebuild
-  // paint, which is itself an 'execute'-mode read of the persisted value).
-  function hardenVar(name: string, field?: PreparedFieldState): void {
-    if (field && field.state === 'invalid') app.hardenedVars.add(name);
-    else app.hardenedVars.delete(name);
-  }
-  // The Run button's lenient ('input'-mode) gate for an already-computed
-  // analysis. #170 review: a field that hardened to invalid (blur/Enter/
-  // execute committed a strict invalid verdict) must keep blocking Run even
-  // though this recompute is lenient — 'input' mode reads a still-incomplete
-  // prefix like '-' as merely incomplete, not invalid — so `app.hardenedVars`
-  // is folded in. Only names the batch actually declares are considered, so a
-  // hardened flag for a variable that dropped out of the tab's SQL (or
-  // belongs to a different tab) doesn't block Run forever; the
-  // `!src.invalid.includes` filter just avoids listing a name twice. Shared
-  // by setRunBtn's own fallback and renderVarStrip's tail (review F9: one
-  // analysis per strip repaint feeds both consumers).
-  function inputGate(analysis: ParameterAnalysis): { missing: string[]; invalid: string[]; errors: string[] } {
-    const gateBatch = prepareAnalyzedBatch(analysis, wallNow(), 'input');
-    const src = gateBatch.sources[0];
-    const hardened = [...app.hardenedVars].filter((name) => name in gateBatch.fields && !src.invalid.includes(name));
-    return { missing: src.missing, invalid: src.invalid.concat(hardened), errors: src.errors };
-  }
+  // hardenVar/inputGate (#170 review bookkeeping) now live on `params` (see
+  // its construction above) — setRunBtn's fallback and renderVarStrip's tail
+  // call `params.inputGate`/`params.hardenVar` directly.
   function setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void {
     if (!app.dom.runBtn) return;
     // Disabled while running, or while any detected {name:Type} query variable
@@ -719,7 +658,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (gate == null) {
       gate = running || !tab
         ? { missing: [], invalid: [], errors: [] }
-        : inputGate(tabAnalysis(tab.sqlDraft));
+        : params.inputGate(params.tabAnalysis(tab.sqlDraft));
     }
     const blockers = gate.missing.concat(gate.invalid);
     app.dom.runBtn!.disabled = running || blockers.length > 0 || gate.errors.length > 0;
@@ -748,26 +687,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // same variables keeps the (already-correct, shared) values in place. Always
   // re-syncs the Run button's disabled/tooltip state.
   //
-  // #172 v2 (schema-cache inference — the SUGGESTION tier): the enum member
-  // list a plain `{name:String}` param's compared column implies, or null.
-  // The declared type's own Enum members (v1, authoritative and blocking —
-  // #170 validates those as a real Enum) are fieldControlKind's business;
-  // this helper only ever resolves the workbench's own SQL against the
-  // already-loaded schema cache (`paramComparisonColumns` +
-  // `resolveComparisonColumnType`), never a new query, and the declared type
-  // stays String, so #170 never blocks on a non-member.
-  function inferredEnumOptions(
-    v: FieldControl, sql: string, comparisonColumns: Record<string, ParamComparisonEntry>,
-  ): string[] | null {
-    // `.base` is value-transparent (#238): a `LowCardinality(String)` param
-    // reaches this suggestion tier too, same as plain `String` — intentional,
-    // since LowCardinality is just a storage encoding of String values.
-    if (parseParamType(v.type).base !== 'String') return null;
-    const cmp = comparisonColumns[v.name];
-    if (!cmp) return null;
-    const colType = resolveComparisonColumnType(sql, cmp.pos, cmp, app.state.schema.value as SchemaDb[] | null);
-    return colType ? enumValues(colType) : null;
-  }
+  // #172 v2 (schema-cache inference — the SUGGESTION tier) now lives on
+  // `params.inferredEnumOptions` (see its construction above) — pure over
+  // schema + analysis, no DOM.
   function renderVarStrip(): void {
     const strip = app.dom.varStrip;
     if (!strip) return;
@@ -776,7 +698,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // comparison scan, a rebuild's initial field paint, and the tail's Run-
     // button gate all feed off this single pass instead of re-analyzing the
     // same SQL a second time per editor keystroke.
-    const analysis = tab ? tabAnalysis(tab.sqlDraft) : null;
+    const analysis = tab ? params.tabAnalysis(tab.sqlDraft) : null;
     const vars = analysis ? fieldControls(analysis) : [];
     // #172 v2 scans the tab SQL's ANALYSIS materialization (review F2): in
     // the raw text a comparison inside a /*[ ]*/ optional block is one opaque
@@ -787,7 +709,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     const comparisonColumns = tab ? paramComparisonColumns(scanSql) : {};
     // Each field's control kind + member list (shared enum > date-like > text
     // priority; a type-conflicted field degrades to text — fieldControlKind).
-    const controls = vars.map((v) => fieldControlKind(v, inferredEnumOptions(v, scanSql, comparisonColumns)));
+    const controls = vars.map((v) => fieldControlKind(v, params.inferredEnumOptions(v, scanSql, comparisonColumns)));
     // The signature folds in each var's control kind and resolved enum
     // options — not just name/type/optional — so a column landing on the
     // idle-tick loader (loadColumns calls renderVarStrip on completion)
@@ -803,7 +725,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     // gate-less fallback would re-analyze the identical SQL). Lazy so the
     // running / tab-less states (whose gate setRunBtn hard-empties anyway)
     // skip the prepare entirely.
-    const runGate = () => (analysis && !app.state.running.value ? inputGate(analysis) : undefined);
+    const runGate = () => (analysis && !app.state.running.value ? params.inputGate(analysis) : undefined);
     if (sig !== app.dom.varStripSig) {
       // A signature change while the user is focused INSIDE the strip would
       // replaceChildren() every field out from under them — a background
@@ -842,7 +764,7 @@ export function createApp(env: CreateAppEnv = {}): App {
         // The freshly-(re)built strip paints each field's already-committed
         // state ('execute' mode — no field is mid-typing right after a
         // rebuild, e.g. a tab switch restoring a previously-invalid value).
-        const initialFields = prepareAnalyzedBatch(analysis!, wallNow(), 'execute').fields;
+        const initialFields = params.prepareAnalyzedBatch(analysis!, wallNow(), 'execute').fields;
         strip.replaceChildren(...vars.map((v, i) => {
           // controls[i] (fieldControlKind above) picks the field's control:
           // #172 enum members (v1 declared or v2 inferred) > #169 date-like
@@ -877,14 +799,14 @@ export function createApp(env: CreateAppEnv = {}): App {
             // 'input' mode (#170): a plausible prefix stays neutral while
             // the field is focused — only a value that's already certainly
             // wrong shows the inline error here.
-            const inputBatch = prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
+            const inputBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
             applyFieldState(input, inputBatch.fields[v.name], baseTitle, combo?.previewEl);
             setRunBtn(app.state.running.value, inputBatch.sources[0]);
           };
           const onCommitHard = (): void => {
             // Hardens 'incomplete' → 'invalid' on commit (#170).
-            const commitBatch = prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
-            hardenVar(v.name, commitBatch.fields[v.name]);
+            const commitBatch = params.prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
+            params.hardenVar(v.name, commitBatch.fields[v.name]);
             applyFieldState(input, commitBatch.fields[v.name], baseTitle, combo?.previewEl);
             setRunBtn(app.state.running.value, commitBatch.sources[0]);
           };
@@ -906,7 +828,7 @@ export function createApp(env: CreateAppEnv = {}): App {
           input = combo.input;
           wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
           if (conflictNote) input.classList.add('is-conflict');
-          hardenVar(v.name, initialFields[v.name]);
+          params.hardenVar(v.name, initialFields[v.name]);
           applyFieldState(input, initialFields[v.name], baseTitle, combo?.previewEl);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
             h('span', { class: 'var-name' }, v.name), combo.el);
@@ -1016,182 +938,75 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   }
 
-  // Abort any in-flight schema-lineage fetch. Called both as a manual Cancel
-  // (clearResult: true — the user asked to stop) and automatically whenever a
-  // new operation takes over the drawer (a fresh graph request, or Run/Explain
-  // replacing the tab's result outright) — in the automatic case the caller
-  // overwrites tab.result itself right after, so aborting the network request
-  // is all that's needed there (the identity guard in showSchemaGraph makes
-  // this belt-and-suspenders, not load-bearing, for correctness).
-  //
-  // With clearResult, the visible result depends on how far the fetch got: if
-  // Phase A (the free-edges graph) had already drawn, keep it on screen marked
-  // `partial` (its view/MV source edges may be incomplete); otherwise there's
-  // nothing worth keeping, so drop back to the normal empty-results placeholder.
-  function cancelSchemaGraph({ clearResult = false }: { clearResult?: boolean } = {}): void {
-    if (app.state.schemaGraphAbortController) app.state.schemaGraphAbortController.abort();
-    app.state.schemaGraphAbortController = null;
-    if (!clearResult) return;
-    const tab = app.activeTab();
-    const result = tab.result as QueryResult | null;
-    const sg = result?.schemaGraph;
-    if (!sg || !sg.loading) return;
-    if (sg.nodes && sg.nodes.length) {
-      sg.loading = false;
-      sg.partial = true;
-    } else {
-      tab.result = null;
-    }
-    renderResults(app);
+  // Inline schema-lineage drawer + fullscreen expand/detail flow (#276 Phase
+  // 4D) — the two-phase progressive draw (#124), the stale-write guard, the
+  // rich-card expand fetch, and the last-clicked-wins node-detail bookkeeping
+  // all now live in `application/schema-graph-session.ts`, constructible
+  // without App/AppState/DOM (byte-for-byte port — see that file for the
+  // ported bodies). This shell wraps it: `cancelSchemaGraph`/`showSchemaGraph`
+  // delegate straight through (the session's own `renderResults` hook below
+  // repaints); `expandSchemaGraph`/`openNodeDetail` own the DOM the session
+  // never sees — the fullscreen view object (opened synchronously, before the
+  // session's async fetch, so it survives the click gesture) and the
+  // detail-pane mount.
+  const graph = createSchemaGraphSession({
+    ensureConfig, getToken, ctx: () => chCtx,
+    loadSchemaLineage: ch.loadSchemaLineage,
+    loadLineageTransitive: ch.loadLineageTransitive,
+    loadSchemaCards: ch.loadSchemaCards,
+    loadTableDetail: ch.loadTableDetail,
+    activeTab: () => app.activeTab(),
+    hooks: {
+      renderResults: () => renderResults(app),
+      onAuthFailed: () => chCtx.onSignedOut(),
+    },
+  });
+  app.graph = graph;
+
+  function cancelSchemaGraph(opts?: { clearResult?: boolean }): void {
+    graph.cancel(opts);
   }
 
-  // Render the ClickHouse object-lineage graph for a dropped/clicked
-  // database/table into the data pane (queries system.* + EXPLAIN AST; the
-  // editor SQL is untouched). Two-phase on a large schema (#124): draws as soon
-  // as the free edges (dependencies/target/engine-arg/dictionary) are known,
-  // then a single second layout merges in view/MV source edges once EXPLAIN AST
-  // settles — so the pane isn't blank for the whole round trip. Below
-  // AST_PROGRESSIVE_THRESHOLD view/MV objects, loadSchemaLineage skips straight
-  // to one draw instead (onBase/onProgress never fire) — a visible first paint
-  // is just flicker when the whole fetch settles almost as fast anyway.
-  async function showSchemaGraph(focus: SchemaFocus): Promise<void> {
-    if (!focus || !focus.db) return;
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    cancelSchemaGraph(); // a new click/drag replaces whatever graph was in flight
-    const tab = app.activeTab();
-    // Show a loading placeholder first — even Phase A (system.tables +
-    // system.dictionaries) is a network round trip.
-    const result: QueryResult = newResult('Table');
-    result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
-    Object.assign(tab, { result });
-    // `result` is the stale-write guard (mirrors #97's identity-guard shape):
-    // captured once, checked before every later write, so a Run/Explain or a
-    // second graph request that replaces tab.result mid-fetch can never have
-    // this call's (Phase A or Phase B) result land on the new tab.result.
-    // `tab.result`'s declared type (state.ts's opaque `Record<string,unknown>
-    // | null`) has no overlap with `QueryResult` for a direct `!==` — widen
-    // `result` to `unknown` (not a further cast to another concrete type) for
-    // the comparison only; the identity check itself is unaffected.
-    const superseded = (): boolean => tab.result !== (result as unknown);
-    renderResults(app);
-    const controller = new AbortController();
-    app.state.schemaGraphAbortController = controller;
-    try {
-      const lineage = await ch.loadSchemaLineage(chCtx, focus, {
-        signal: controller.signal,
-        onBase: (base) => {
-          if (superseded()) return; // superseded before Phase A even landed
-          const g = buildSchemaGraph(base, focus);
-          result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
-          renderResults(app);
-        },
-        onProgress: (done, total) => {
-          if (superseded() || !result.schemaGraph || !result.schemaGraph.loading) return;
-          result.schemaGraph.progress = { done, total };
-          renderResults(app);
-        },
-      });
-      if (superseded()) return; // superseded while Phase B was resolving
-      const g = buildSchemaGraph(lineage, focus);
-      // tableCount lets the renderer explain an empty result ("N tables, none linked").
-      result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
-    } catch (e) {
-      // AbortError means cancelSchemaGraph() already left the pane in a clean
-      // state (partial graph or the empty placeholder) — nothing more to do.
-      if (e instanceof Error && e.name === 'AbortError') return;
-      if (superseded()) return;
-      const errorResult: QueryResult = newResult('Table');
-      errorResult.error = String((e instanceof Error && e.message) || e);
-      Object.assign(tab, { result: errorResult });
-    } finally {
-      if (app.state.schemaGraphAbortController === controller) app.state.schemaGraphAbortController = null;
-    }
-    renderResults(app);
+  function showSchemaGraph(focus: SchemaFocus): Promise<void> {
+    return graph.show(focus);
   }
 
-  // Open the schema lineage fullscreen with RICH cards. Lazily fetches a separate
-  // enriched dataset (the inline pane stays compact and untouched): re-loads
-  // lineage + the per-table column / skip-index metadata (best-effort), attaches a
-  // card model to each node, then opens the overlay. Re-fetch (vs reusing the inline
-  // result) keeps the inline path's shape frozen and the card data off the hot path.
-  // net/ch-client.ts's `CardColumnRow` (the real loader shape) has no index
-  // signature; core/schema-cards.ts's `SchemaCardColumnRow` (the shape
-  // `buildCardGraph` needs) does — reconstructing each row as a fresh object
-  // literal satisfies it directly (every field the card model reads is
-  // already there; nothing here changes what's read or its values).
-  const toCardColumns = (byKey: Record<string, ch.CardColumnRow[]>): Record<string, SchemaCardColumnRow[]> => {
-    const out: Record<string, SchemaCardColumnRow[]> = {};
-    for (const [key, rows] of Object.entries(byKey)) out[key] = rows.map((row) => ({ ...row }));
-    return out;
-  };
+  // Open the schema lineage fullscreen with RICH cards. The view is opened
+  // synchronously (a pop-up opened after an await is blocked) so it survives
+  // the click gesture; `graph.expand` never sees it — this wrapper alone
+  // calls `view.render`/`view.fail`.
   async function expandSchemaGraph(focus: SchemaFocus): Promise<void> {
     if (!focus || !focus.db) return;
-    // Pin the result whose Expand was clicked NOW: a tab switch during the async
-    // fetch must not redirect the saved-positions map to a different tab's result.
-    const clickedTab = app.activeTab();
-    const clickedResult = clickedTab.result as QueryResult | null;
-    const sg = clickedResult?.schemaGraph || null;
-    // Open the view synchronously so a real tab survives the click gesture (a
-    // pop-up opened after an await is blocked); fill it once the lineage loads.
     const view = openSchemaView(app as DetachedGraphApp);
-    // Everything after the synchronous open is wrapped: a token-refresh rejection,
-    // a lineage/cards fetch failure, or a graph-build throw must surface in the view
-    // (fail) instead of leaving the just-opened tab/overlay stranded on "Loading…".
     try {
-      await ensureConfig();
-      if (!(await getToken())) { chCtx.onSignedOut(); view.fail('Sign in to view the schema graph.'); return; }
-      // Walk lineage transitively across DB boundaries (soft-capped) — pulls in
-      // objects an other database references, instead of dead-ending at the edge.
-      const lineage = await ch.loadLineageTransitive(chCtx, focus);
-      const g = buildSchemaGraph(lineage.rows, focus);
-      // Fresh node/edge literals (`{...n}`): `SchemaGraphNode` (buildSchemaGraph's
-      // fixed-field output) has no index signature; `ExpandLineageNode` (what
-      // expandLineage's graph needs) does — every field it reads is already there.
-      const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db); // closure around focus.db, tags external nodes
-      // Card metadata for every database the expansion reached (external nodes too).
-      const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
-      const cards = await ch.loadSchemaCards(chCtx, dbs);
-      const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
-        { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
-      // Persist manually-moved node positions per result: the map hangs off the live
-      // schemaGraph result (captured above) so re-opening keeps the layout.
-      const positions = (sg && sg.savedPositions) || {};
-      if (sg) sg.savedPositions = positions;
-      // Every real lineage/expansion node always carries `id`/`label` (schema-
-      // graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both required there);
-      // schema-cards.ts's own `CardGraphNode` widens them to optional for a
-      // bare test fixture — reasserted here to match explain-graph.ts's
-      // `SchemaLineageNode` (also required, for the SVG drawer's own layout).
-      const nodes: SchemaLineageNode[] = cardGraph.nodes.map((n) => ({ ...n, id: n.id!, label: n.label! }));
-      // `tableCount` isn't part of `SchemaViewController.render`'s
-      // `SchemaLineageGraph` contract — only results.ts's OWN inline-pane
-      // progress bookkeeping (`ResultSchemaGraph.tableCount`) reads it; the
-      // fullscreen `render()`/`makeController` never did, so it never
-      // travelled past this call.
+      const data = await graph.expand(focus);
+      // Every real lineage/expansion node always carries `id`/`label`
+      // (schema-graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both
+      // required there); schema-cards.ts's own `CardGraphNode` widens them to
+      // optional for a bare test fixture — reasserted here to match
+      // explain-graph.ts's `SchemaLineageNode` (also required, for the SVG
+      // drawer's own layout).
+      const nodes: SchemaLineageNode[] = data.nodes.map((n) => ({ ...n, id: n.id!, label: n.label! }));
       view.render({
-        nodes, edges: cardGraph.edges, focus,
-        truncated: lineage.truncated || ex.truncated,
-        savedPositions: positions,
+        nodes, edges: data.edges, focus: data.focus,
+        truncated: data.truncated, savedPositions: data.savedPositions,
       });
-    } catch {
-      view.fail('Could not load the schema graph');
+    } catch (e) {
+      view.fail(e instanceof SchemaGraphAuthRequiredError ? e.message : 'Could not load the schema graph');
     }
   }
 
-  // Open the detail pane for a clicked fullscreen node: lazily load the table's full
-  // columns / partitions / DDL (best-effort) and mount the pane in the overlay.
-  // Keyed per overlay document (same resolution as openDetailPane's own `doc`) so a
-  // slow fetch for an earlier click can't clobber a newer pane once it resolves —
-  // last-clicked wins, not last-resolved (#97).
-  const latestDetailRequest = new WeakMap<Document, SchemaFocus>();
+  // Open the detail pane for a clicked fullscreen node: mount a loading
+  // placeholder synchronously (so it's visible immediately), then fill it
+  // once `graph.loadNodeDetail` resolves — `null` means a later click on the
+  // same overlay superseded this one (last-clicked wins, not last-resolved —
+  // #97), so no mount happens.
   async function openNodeDetail(node: SchemaFocus, targetDoc?: Document): Promise<void> {
     if (!node || !node.db || !node.name) return;
     const overlayDoc = targetDoc || (app && app.document) || document;
-    latestDetailRequest.set(overlayDoc, node);
     openDetailPane(app, node as DetailNode, { columns: 'loading' }, targetDoc);
-    const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
-    if (latestDetailRequest.get(overlayDoc) !== node) return; // superseded by a later click
+    const detail = await graph.loadNodeDetail(node, overlayDoc);
+    if (detail == null) return; // superseded by a later click
     // `columns` remapped through a fresh per-row spread: net/ch-client.ts's
     // `ColumnDetailRow` (the real loader shape) has no index signature;
     // schema-detail.ts's `DetailColumn` (via `ColumnRoleFlags`) does — every
@@ -1266,16 +1081,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   // --- saved / history bridges ------------------------------------------
+  // The history-recording POLICY itself now lives in `saved.recordHistory`
+  // (#276 Phase 4C) — this wrapper's own conditional History-panel repaint is
+  // a rendering concern the service must never own (see its header comment),
+  // so it stays here, unchanged.
   app.recordHistory = (tab, sqlText) => {
-    // `tab.result` is state.ts's deliberately opaque `Record<string,unknown> |
-    // null` — by the time recordHistory is ever called (only after a
-    // successful run), it already holds a real `QueryResult`-shaped value
-    // (rawText/rows/progress.elapsed_ns), the exact fields `HistoryResultSnapshot`
-    // pins. `| null` on both sides of the cast keeps it a legal single-step
-    // widen; `!` then asserts the same "already ran successfully" guarantee
-    // the untyped original relied on implicitly.
-    const result = (tab.result as HistoryResultSnapshot | null)!;
-    recordHistory(app.state, { sqlDraft: tab.sqlDraft, result }, saveJSON, undefined, sqlText);
+    saved.recordHistory(tab, sqlText);
     if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
   };
 
@@ -1283,22 +1094,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   function share() {
     const tab = app.activeTab();
     if (tab.editorMode !== 'sql') return;
-    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
-      flashToast('Fix Spec errors before sharing', { document: doc });
+    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const result = saved.buildShareUrl({ tab, evaluated, origin: loc.origin, pathname: loc.pathname, search: loc.search });
+    if (!result.ok) {
+      // 'empty' matches the decode side (main.js): sql OR panel — a text
+      // panel legitimately has no SQL, and a sql-only check would make it
+      // unshareable — silently no-op, same as the pre-extraction inline code.
+      if (result.reason === 'invalid-spec') flashToast('Fix Spec errors before sharing', { document: doc });
       return;
     }
-    const sql = String(tab.sqlDraft || '');
-    const panel = queryPanel({ spec: evaluated.parsed });
-    // The gate matches the decode side (main.js): sql OR panel — a text panel
-    // legitimately has no SQL, and a sql-only check would make it unshareable.
-    if (!sql.trim() && !isQuerylessPanel(panel)) return;
-    const query = withQuerySpec({ id: tab.savedId, sql }, evaluated.parsed);
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(query);
-    win.history && win.history.replaceState && win.history.replaceState(null, '', url);
+    win.history && win.history.replaceState && win.history.replaceState(null, '', result.url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
-      clip.writeText(loc.href || url)
+      clip.writeText(loc.href || result.url)
         .then(() => flashToast('Link copied to clipboard', { document: doc }))
         .catch(() => flashToast('Link in URL — copy manually', { document: doc }));
     } else {
@@ -1339,331 +1147,18 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
   function copyResult(): void { copySnapshot(exportableResult(), doc); }
   // --- streaming export (issue #87 single-file / #99 script) --------------
-  // Full, uncapped export of a query — never the loaded grid — streamed
-  // straight to a user-chosen file. Its own query_id + abort, kept separate
-  // from the workbench session's own private run bookkeeping so an export and
-  // a grid run never clobber each other's cancel state.
-  let exportAbort: AbortController | null = null;
-  let exportQueryId: string | null = null;
-  // Script-export state (issue #99) — its own abort/query-id, reassigned each
-  // iteration so Cancel reaches the in-flight statement, and kept distinct
-  // from both the workbench session's own run bookkeeping and the single-
-  // export state above.
-  let exportScriptAbort: AbortController | null = null;
-  let exportScriptQueryId: string | null = null;
-  let exportScriptCancelled = false;
-  let exportScriptTick: ReturnType<typeof setInterval> | null = null;
-
-  // The Export button dispatches by statement count: one statement keeps the
-  // rich single-file flow below; more than one opens the script-export flow
-  // (its own directory + per-statement log, since one file per script makes
-  // no sense). Mirrors runEntry's split/branch.
-  function exportEntry(): Promise<void> | undefined {
-    if (app.activeTab().editorMode !== 'sql') return undefined;
-    if (app.state.exporting.value) return undefined;
-    const waveMs = wallNow(); // one wall clock for this export wave (gate + args)
-    if (varGateBlocked(waveMs)) return undefined; // don't export with unfilled variables (#134)
-    const input = app.activeTab().sqlDraft;
-    const statements = splitStatements(input);
-    if (!statements.length) { flashToast('Nothing to export', { document: doc }); return undefined; }
-    if (statements.length === 1) return exportDirect(statements[0], waveMs);
-    return exportScriptEntry(statements, input, waveMs);
-  }
-
-  async function exportDirect(sqlInput: string, waveMs: number): Promise<void> {
-    if (app.activeTab().editorMode !== 'sql') return;
-    if (app.state.exporting.value) return;
-    if (!app.canExport()) return; // aria-disabled button; defensive guard
-    const tab = app.activeTab();
-    // Export streams the execution view (#165) — identical bytes without blocks.
-    const { sql, format } = prepareExportSql(execStatementSql(sqlInput));
-    if (!sql) { flashToast('Nothing to export', { document: doc }); return; }
-    const { ext, mime } = formatFileMeta(format);
-    // Prepared args captured NOW — synchronously with exportEntry's gate
-    // check, BEFORE the picker/auth awaits below (review F6 invariant, shared
-    // with run/runScript/exportScript): gate and args see the same varValues
-    // snapshot; edits during those awaits apply to the next export. (Session
-    // params stay live below — they don't read varValues.)
-    const paramArgs = mergedSourceArgs(prepareTabSource(sql, waveMs));
-
-    // Flip the flag before the picker (not after, like the file handle) so a
-    // second click while the native dialog is still open is blocked by the
-    // guard above — the button's own disabled state (setExportBtn) also
-    // reflects this via an effect, but the guard is the authority.
-    app.state.exporting.value = true;
-    try {
-      // Picker FIRST, before any await: showSaveFilePicker requires the click's
-      // transient activation, which a prior await (e.g. a token refresh in
-      // ensureConfig/getToken can be a network round trip) would forfeit.
-      // `!`: app.canExport() above already gated on this being non-null.
-      const pickFile = app.showSaveFilePicker!;
-      let handle: FileHandleLike;
-      try {
-        handle = (await pickFile({
-          suggestedName: exportFilename(tab.name, Date.now(), ext),
-          types: [{ description: format + ' data', accept: { [mime]: ['.' + ext] } }],
-        })) as FileHandleLike;
-      } catch (e) {
-        if (e instanceof Error && e.name === 'AbortError') return; // user dismissed the picker
-        flashToast('Save dialog failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
-        return;
-      }
-
-      // Now the awaits are safe — we already hold the file handle.
-      await ensureConfig();
-      if (!(await getToken())) { chCtx.onSignedOut(); return; }
-
-      exportQueryId = 'export-' + uid('');
-      exportAbort = new AbortController();
-      const progress = showExportProgress(cancelExport);
-      try {
-        const resp = await ch.exportQuery(chCtx, sql, {
-          queryId: exportQueryId, signal: exportAbort.signal, format,
-          // Native query-parameter substitution (#134/#173), same as run() —
-          // paramArgs is the wave-start snapshot captured above (review F6).
-          params: { ...sessionParamsFor(tab, [sql]), ...paramArgs },
-        });
-        const tag = resp.headers.get('X-ClickHouse-Exception-Tag'); // null on servers < 24.11
-        const err = await streamToFile(resp, handle, {
-          signal: exportAbort.signal, tag, onProgress: (bytes) => progress.update(bytes),
-        });
-        if (err) flashToast('Export incomplete — server error mid-stream: ' + err, { document: doc });
-        else flashToast('Export complete', { document: doc });
-      } catch (e) {
-        // AbortError (cancelled) and 'signed out' (chCtx.onSignedOut already
-        // rendered the login screen) both already have their own signal — an
-        // extra toast on top would just be a confusing second message.
-        const msg = String((e instanceof Error && e.message) || e);
-        if (!(e instanceof Error && e.name === 'AbortError') && msg !== 'signed out') {
-          flashToast('Export failed: ' + msg, { document: doc });
-        }
-      } finally {
-        progress.remove();
-        exportAbort = null;
-        exportQueryId = null;
-      }
-    } finally {
-      app.state.exporting.value = false;
-    }
-  }
-
-  // Stream `resp.body` to `handle` with a hold-back buffer: ClickHouse's
-  // mid-stream exception frame (findExceptionFrame) is at most 16 KiB and
-  // always trailing, so bytes are only committed to disk once they've aged
-  // out of a 32 KiB window — at EOF the retained tail is inspected and only
-  // the clean prefix is written, so a mid-stream exception is never written
-  // into the file. Memory stays flat (one HOLDBACK-sized buffer) regardless of
-  // result size. Reads the stream directly (not via a TransformStream) because
-  // the write is conditional (withhold, inspect, commit) — a passthrough
-  // transform can't un-write. Returns the CH error message, or null when clean.
-  async function streamToFile(
-    resp: Response, handle: FileHandleLike,
-    { signal, tag, onProgress }: { signal: AbortSignal; tag: string | null; onProgress: (bytes: number) => void },
-  ): Promise<string | null> {
-    const writable = await handle.createWritable();
-    const HOLDBACK = 32 * 1024; // >= ClickHouse's MAX_EXCEPTION_SIZE (16 KiB) + margin
-    const reader = resp.body!.getReader();
-    let held = new Uint8Array(0);
-    let written = 0;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (signal.aborted) throw new DOMException('aborted', 'AbortError');
-        const merged = new Uint8Array(held.length + value.length);
-        merged.set(held);
-        merged.set(value, held.length);
-        const commit = Math.max(0, merged.length - HOLDBACK);
-        if (commit > 0) {
-          await writable.write(merged.subarray(0, commit));
-          written += commit;
-          onProgress(written);
-        }
-        held = merged.subarray(commit);
-      }
-      // EOF: inspect the retained tail (latin1: 1 char per byte, for byte-accurate slicing).
-      const frame = findExceptionFrame(latin1(held), tag);
-      const clean = frame ? held.subarray(0, frame.cleanBytes) : held;
-      if (clean.length) {
-        await writable.write(clean);
-        written += clean.length;
-        onProgress(written);
-      }
-      await writable.close();
-      return frame ? frame.message : null;
-    } catch (e) {
-      // writable.abort() would discard everything already committed: on
-      // Chrome/File System Access API it leaves a hidden, 0-byte
-      // `.crswap` swap file behind and never materializes the visible
-      // target at all — so a cancelled/failed export recovers nothing.
-      // close() instead finalizes the bytes already written under the
-      // target handle, then move() (Chrome 110+) renames it in place with
-      // a `.partial` suffix so it reads as an inspectable, clearly-labeled
-      // partial artifact rather than a clean export. Best-effort: on
-      // browsers without move() (or if it throws), the file is still
-      // recoverable under its original name, just without the suffix.
-      await writable.close().catch(() => {});
-      if (typeof handle.move === 'function') await handle.move(handle.name + '.partial').catch(() => {});
-      throw e;
-    } finally {
-      reader.releaseLock();
-    }
-  }
-  const latin1 = (bytes: Uint8Array): string => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return s; };
-
-  // Mirrors cancel() (the grid run) but on the export's own id/abort.
-  function cancelExport(): void {
-    if (exportAbort) exportAbort.abort();
-    ch.killQuery(chCtx, exportQueryId, sqlString);
-  }
-
-  // Directory picker first (transient-activation rule, same as exportDirect's
-  // save-file picker), and skip the prompt entirely when there's nothing to
-  // export — no point asking for a folder a script will never write into.
-  async function exportScriptEntry(statements: string[], originalInput: string, waveMs: number): Promise<void> {
-    if (!app.canExportScript()) {
-      flashToast('Script export requires Chrome/Edge directory access over HTTPS', { document: doc });
-      return;
-    }
-    if (!statements.some(isRowReturning)) {
-      flashToast('Nothing to export — script has no result-producing statements.', { document: doc });
-      return;
-    }
-    // One prepared batch for the whole export wave (#173), captured NOW —
-    // synchronously with exportEntry's gate check, BEFORE the directory-picker
-    // and auth awaits below (review F6 invariant, shared with run/runScript/
-    // exportDirect): gate and args see the same varValues snapshot; edits
-    // during those awaits apply to the next export. `statements` came from
-    // splitStatements(originalInput), so the batch aligns by index.
-    const paramSrc = prepareTabSource(originalInput, waveMs);
-    // Flip the flag before the picker (mirrors exportDirect) so a second click
-    // while the directory dialog / auth is still in flight is blocked by
-    // exportEntry's guard — exportScript itself doesn't set this until after
-    // those awaits, which would otherwise leave a re-entrancy window open.
-    app.state.exporting.value = true;
-    try {
-      // `!`: app.canExportScript() above already gated on this being non-null.
-      const pickDir = app.showDirectoryPicker!;
-      let dir: DirectoryHandleLike;
-      try {
-        dir = (await pickDir({ mode: 'readwrite' })) as DirectoryHandleLike;
-      } catch (e) {
-        if (e instanceof Error && e.name === 'AbortError') return; // dismissed → silent no-op
-        flashToast('Folder dialog failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
-        return;
-      }
-      await ensureConfig();
-      if (!(await getToken())) { chCtx.onSignedOut(); return; }
-      await exportScript(statements, dir, paramSrc);
-    } finally {
-      // No-op if exportScript already reset it — covers every early-return
-      // path above that never reaches exportScript's own finally.
-      app.state.exporting.value = false;
-    }
-  }
-
-  // Run a script's statements sequentially into `dir`, one file per
-  // row-returning statement, for effect otherwise. A single shared session
-  // carries SET/TEMPORARY state across statements (sessionParamsFor). The log
-  // lives in tab.result.scriptExport — per-statement metadata only (status,
-  // file, bytes, time); the exported rows themselves are never held in
-  // memory/state, so a multi-million-row script export stays flat. Stop on
-  // first failure, mirroring runScript's script grid — but with no retry
-  // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
-  // can't self-collide, and a partially-written file shouldn't be silently
-  // re-attempted).
-  async function exportScript(statements: string[], dir: DirectoryHandleLike, paramSrc: PreparedSource): Promise<void> {
-    const tab = app.activeTab();
-    const t0 = now();
-    const sp = sessionParamsFor(tab, statements);
-    // `paramSrc` is the wave's prepared batch (#173), captured by
-    // exportScriptEntry at wave start, before its awaits (review F6).
-    const entries: ScriptExportEntry[] = statements.map((sql, i) => ({
-      i, sql, type: isRowReturning(sql) ? 'rows' : 'effect',
-      status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,
-    }));
-    const scriptExportResult: ScriptExportResult = { scriptExport: entries, startedAt: t0 };
-    Object.assign(tab, { result: scriptExportResult });
-    app.state.resultSort = { col: null, dir: 'asc' };
-    exportScriptCancelled = false;
-    app.state.exporting.value = true;
-    const taken = new Set<string>();
-    try {
-      // Live elapsed for the running row (bytes tick via onProgress; this ticks
-      // time). Started inside the try so a throw here still clears it below —
-      // an interval set before the try would otherwise leak forever.
-      exportScriptTick = setInterval(() => renderResults(app), 200);
-      renderResults(app);
-      for (const e of entries) {
-        if (exportScriptCancelled) { e.status = 'skipped'; continue; }
-        // Wire text = the pipeline's per-statement execution view (#165);
-        // verbatim for effect/DDL statements and for block-free SQL.
-        const execStmt = paramSrc.statements[e.i].sql;
-        const { sql, format } = prepareExportSql(execStmt);
-        // Per-statement prepared args (#134/#173): the pipeline binds only
-        // row-returning statements, so an effect/DDL statement (incl. CREATE
-        // VIEW) is sent with its {name:Type} placeholders intact.
-        const params = { ...sp, ...paramSrc.statements[e.i].args };
-        exportScriptQueryId = 'export-' + uid('');
-        exportScriptAbort = new AbortController();
-        const signal = exportScriptAbort.signal;
-        e.startedAt = now();
-        e.status = e.type === 'rows' ? 'exporting' : 'running';
-        renderResults(app);
-        try {
-          if (e.type !== 'rows') {
-            const out = await ch.runQuery(chCtx, execStmt,
-              { format: 'TSV', signal, queryId: exportScriptQueryId, params });
-            if (out.error != null) throw new Error(out.error);
-            e.status = 'ok';
-          } else {
-            const { ext } = formatFileMeta(format);
-            const name = scriptExportName(e.i, e.sql || '', ext, taken);
-            taken.add(name);
-            e.file = name;
-            const fileHandle = await dir.getFileHandle(name, { create: true });
-            const resp = await ch.exportQuery(chCtx, sql,
-              { queryId: exportScriptQueryId, signal, format, params });
-            const tag = resp.headers.get('X-ClickHouse-Exception-Tag');
-            const midErr = await streamToFile(resp, fileHandle,
-              { signal, tag, onProgress: (b) => { e.bytes = b; } });
-            if (midErr) {
-              e.status = 'failed';
-              e.error = 'File may be incomplete; server failed after streaming started. ' + midErr;
-              e.ms = now() - e.startedAt!;
-              break; // stop-on-first-failure
-            }
-            e.status = 'ok';
-          }
-          e.ms = now() - e.startedAt!;
-          renderResults(app);
-        } catch (ex) {
-          e.ms = now() - e.startedAt!;
-          if (ex instanceof Error && ex.name === 'AbortError') { e.status = 'cancelled'; exportScriptCancelled = true; }
-          else { e.status = 'failed'; e.error = String((ex instanceof Error && ex.message) || ex); }
-          break; // stop-on-first-failure
-        }
-      }
-      for (const e of entries) if (e.status === 'pending') e.status = 'skipped';
-    } finally {
-      clearInterval(exportScriptTick as ReturnType<typeof setInterval>); exportScriptTick = null;
-      exportScriptAbort = null;
-      exportScriptQueryId = null;
-      app.state.exporting.value = false;
-      scriptExportResult.elapsedMs = now() - t0;
-      // A schema-mutating effect statement that actually ran refreshes the tree
-      // (mirrors runScript) even though this export ran outside runScript.
-      if (entries.some((e) => e.status === 'ok' && isSchemaMutatingSql(e.sql))) app.loadSchema();
-      renderResults(app);
-    }
-  }
-
-  // Mirrors cancelExport but on the script's own active id/abort.
-  function cancelExportScript(): void {
-    exportScriptCancelled = true; // stops the loop from starting the next statement
-    if (exportScriptAbort) exportScriptAbort.abort();
-    ch.killQuery(chCtx, exportScriptQueryId, sqlString);
-  }
+  // The export POLICY (statement-count dispatch, the picker-first/stream/
+  // hold-back-buffer path, the script-export transport loop, both cancel
+  // paths) now lives in `application/export-service.ts` (#276 Phase 4B2 —
+  // `exportService`, constructed above alongside `params`). `exportEntry`/
+  // `exportDirect`/`cancelExport`/`cancelExportScript` below are one-line
+  // delegates onto it, kept as named locals (rather than inlining
+  // `exportService.*` at the actions-registry call sites) so those registry
+  // entries stay untouched.
+  const exportEntry = (): Promise<void> | undefined => exportService.exportEntry();
+  const exportDirect = (sqlInput: string, waveMs: number): Promise<void> => exportService.exportDirect(sqlInput, waveMs);
+  const cancelExport = (): void => exportService.cancelExport();
+  const cancelExportScript = (): void => exportService.cancelExportScript();
 
   // Inline progress banner (bytes written + elapsed, with Cancel) — no extra
   // tab/window; see the issue's "Why inline, not a child tab" rationale.
@@ -1753,19 +1248,20 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   function commitLinkedQuery(): SavedQueryV2 | null {
     const tab = app.activeTab();
-    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
-      app.revealFirstSpecError(tab);
-      flashToast('Fix Spec errors before saving', { document: doc });
+    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const result = saved.commit(tab, evaluated);
+    if (!result.ok) {
+      // 'rejected' (commit's own defensive re-check inside the service) stays
+      // a silent no-op, same as the pre-extraction inline code's own bare
+      // `if (!entry) return null;`.
+      if (result.reason === 'invalid-spec') {
+        app.revealFirstSpecError(tab);
+        flashToast('Fix Spec errors before saving', { document: doc });
+      } else if (result.reason === 'empty') {
+        flashToast('Nothing to save', { document: doc });
+      }
       return null;
     }
-    const panel = queryPanel({ spec: evaluated.parsed });
-    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(panel)) {
-      flashToast('Nothing to save', { document: doc });
-      return null;
-    }
-    const entry = commitSavedQuery(app.state, tab, evaluated.parsed as QuerySpecDraft | null, saveJSON, app.specValidators);
-    if (!entry) return null;
     app.revalidateSpecDrafts();
     app.specEditor.syncFromState();
     app.updateSaveBtn();
@@ -1774,7 +1270,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     renderResults(app);
     app.updateEditorModeUi!();
     flashToast('Saved', { document: doc });
-    return entry;
+    return result.entry;
   }
 
   function saveActiveQuery(): SavedQueryV2 | null | undefined {
@@ -1800,8 +1296,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = (): void => {
       if (!input.value.trim()) return;
-      const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON, Date.now(), app.specValidators);
-      if (!entry) return;
+      const result = saved.create(tab, input.value, descInput.value);
+      if (!result.ok) return;
       close();
       app.revalidateSpecDrafts();
       app.specEditor.syncFromState();
@@ -1832,20 +1328,24 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (tab.editorMode !== 'spec') return;
     const formatted = formatSpecText(tab.specText);
     if (formatted.diagnostic) {
-      evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+      queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
       app.specEditor.revealDiagnostic(0);
       return;
     }
     app.specEditor.replaceDocument(formatted.text);
   }
 
+  // The editor-mode-switch POLICY (whether `mode` is allowed right now) now
+  // lives in `queryDoc.resolveEditorMode` (#276 Phase 4C); this function keeps
+  // the DOM/focus half — assigning `tab.editorMode`, repainting the
+  // editor-mode chrome, focusing the target editor.
   function setEditorMode(mode: 'sql' | 'spec'): boolean {
     const tab = app.activeTab();
-    if (mode === 'spec' && !savedForTab(app.state, tab)) {
-      flashToast('Save this query to create an editable Spec.', { document: doc });
+    const gate = queryDoc.resolveEditorMode(tab, mode);
+    if (!gate.ok) {
+      if (gate.message) flashToast(gate.message, { document: doc });
       return false;
     }
-    if (mode !== 'sql' && mode !== 'spec') return false;
     tab.editorMode = mode;
     app.updateEditorModeUi!();
     const editor = mode === 'spec' ? app.specEditor : app.sqlEditor;
@@ -1879,10 +1379,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.openUserMenu = openUserMenu;
 
   function toggleTheme(): void {
-    app.state.theme = app.state.theme === 'dark' ? 'light' : 'dark';
-    app.savePref('theme', app.state.theme);
-    doc.documentElement.setAttribute('data-theme', app.state.theme);
-    if (app.dom.themeBtn) app.dom.themeBtn.replaceChildren(app.state.theme === 'dark' ? Icon.sun() : Icon.moon());
+    // The state-flip + persist half lives in `prefs.toggleTheme()` (#276
+    // Phase 4D); the DOM half — the `data-theme` attribute + header icon
+    // swap — stays here.
+    const theme = prefs.toggleTheme();
+    doc.documentElement.setAttribute('data-theme', theme);
+    if (app.dom.themeBtn) app.dom.themeBtn.replaceChildren(theme === 'dark' ? Icon.sun() : Icon.moon());
   }
   // Exposed so the schema-view overlay can drive the same toggle (keeps state +
   // saved pref + header icon in sync rather than flipping data-theme behind them).
