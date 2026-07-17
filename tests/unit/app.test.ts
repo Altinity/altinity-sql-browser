@@ -3566,6 +3566,26 @@ describe('script export (issue #99)', () => {
     return { dir, written };
   }
 
+  // Restored integration pin (review, Phase-4 PR): the unit-level editorMode
+  // gate lives in export-service.test.ts, but only this end-to-end version
+  // catches a wiring regression between the query-document session's
+  // editor-mode policy and the export service's gate.
+  it('exportEntry is unavailable in Spec mode and exports sqlDraft after switching to SQL', async () => {
+    const showSaveFilePicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
+    const showDirectoryPicker = vi.fn(async () => { throw Object.assign(new Error('x'), { name: 'AbortError' }); });
+    const app = createApp(env({ window: fakeWin(), showSaveFilePicker, showDirectoryPicker, isSecureContext: true }));
+    app.renderApp();
+    app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 1; SELECT 2' })];
+    app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
+    app.actions.setEditorMode('spec');
+    app.dom.specEditorView!.dispatch({ selection: { anchor: 0, head: 8 } });
+    await app.actions.exportEntry();
+    expect(showSaveFilePicker).not.toHaveBeenCalled();
+    expect(showDirectoryPicker).not.toHaveBeenCalled();
+    app.actions.setEditorMode('sql');
+    await app.actions.exportEntry();
+    expect(showDirectoryPicker).toHaveBeenCalledTimes(1);
+  });
   it('canExportScript resolves from the showDirectoryPicker seam + secure context', () => {
     const withPicker = createApp(env({ window: fakeWin(), showDirectoryPicker: vi.fn(), isSecureContext: true }));
     expect(withPicker.canExportScript()).toBe(true);

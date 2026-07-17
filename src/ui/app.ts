@@ -7,20 +7,19 @@
 import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordScriptHistory,
+  createState, activeTab,
   savedForTab, tabPanel,
   normalizeRowLimit, MOBILE_BREAKPOINT_PX,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import { splitStatements, leadingKeyword } from '../core/sql-split.js';
-import { mergedSourceSql, analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
+import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, formatBytes, formatRows } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
-import { queryName } from '../core/saved-query.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
@@ -40,7 +39,7 @@ import type { QueryOrName } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
-import type { Result, QueryResult, ScriptResult, ScriptEntry, ResultSchemaGraph } from './results.js';
+import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
 import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';

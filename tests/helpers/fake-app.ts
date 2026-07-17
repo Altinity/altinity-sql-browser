@@ -224,16 +224,7 @@ const graphDefaults: SchemaGraphSession = {
 // just satisfies the `App.prefs` contract.
 const prefsDefaults: AppPreferences = {
   save: vi.fn(),
-  setTheme: vi.fn(),
   toggleTheme: vi.fn(() => 'light'),
-  setSidebarPx: vi.fn(),
-  setEditorPct: vi.fn(),
-  setSideSplitPct: vi.fn(),
-  setCellDrawerPx: vi.fn(),
-  setSidePanel: vi.fn(),
-  setResultRowLimit: vi.fn(),
-  setDashLayout: vi.fn(),
-  setDashCols: vi.fn(),
 };
 
 // Every `App` member this file's own concrete stubs (below) don't cover,
@@ -351,7 +342,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params' | 'queryDoc' | 'saved'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -379,6 +370,11 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
   /** Partial like `queryDoc` above (#276 Phase 4C) — a test asserting e.g.
    *  `saved.commit`'s return can override just that method. */
   saved?: Partial<SavedQueryService>;
+  /** Partial like the rest (#276 Phase 4B2/4D — same convention as their
+   *  sibling sessions above). */
+  exports?: Partial<ExportService>;
+  graph?: Partial<SchemaGraphSession>;
+  prefs?: Partial<AppPreferences>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -515,6 +511,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     params: { ...paramsDefaults, ...(overrides.params ?? {}) },
     queryDoc: { ...queryDocDefaults, ...(overrides.queryDoc ?? {}) },
     saved: { ...savedDefaults, ...(overrides.saved ?? {}) },
+    exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
+    graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
+    prefs: { ...prefsDefaults, ...(overrides.prefs ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

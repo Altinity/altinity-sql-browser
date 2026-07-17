@@ -10,8 +10,8 @@
 // own state field itself (splitters.ts sets `ctx.state.sidebarPx` before
 // calling `ctx.save(...)`; dashboard.ts sets `state.dashLayout`/`dashCols`
 // before `app.savePref(...)`; app.ts's `setResultRowLimit` sets
-// `state.resultRowLimit` first) — so those typed setters below are pure
-// persist calls, no state slice needed. `toggleTheme` is the one exception
+// `state.resultRowLimit` first) — so `save(name, value)` is a pure typed
+// persist call, no state slice needed. `toggleTheme` is the one exception
 // (issue ruling): the state flip AND the persist happen together here: the
 // DOM half (the `data-theme` attribute + header icon swap) stays in app.ts's
 // own `toggleTheme`, which composes this service's `toggleTheme()` with that
@@ -44,25 +44,17 @@ export interface AppPreferencesDeps {
 export interface AppPreferences {
   /** Generic persist-only setter — the exact `(name, value)` shape app.ts's
    *  public `savePref` has always exposed (dashboard.ts/saved-history.ts/
-   *  splitters.ts call it through that unchanged delegate). Kept alongside
-   *  the typed per-key setters below for callers that already have a
-   *  validated `{name, value}` pair (the common case — every real call site
-   *  today). */
+   *  splitters.ts call it through that unchanged delegate). This IS the
+   *  service's write API: per-key typed setters were considered and dropped
+   *  (review) — every real call site already holds a validated
+   *  `{name, value}` pair, so a per-key surface would ship with zero
+   *  callers (CLAUDE.md rule 5: no speculative primitives). */
   save(name: PreferenceKey, value: unknown): void;
-  setTheme(theme: string): void;
   /** Flips `state.theme` light↔dark AND persists it in one call (issue
    *  ruling — the one preference whose state mutation moves here, not just
    *  its persist half); returns the new value so the DOM-half caller
    *  (app.ts's own `toggleTheme`) doesn't need to re-read `state.theme`. */
   toggleTheme(): string;
-  setSidebarPx(px: number): void;
-  setEditorPct(pct: number): void;
-  setSideSplitPct(pct: number): void;
-  setCellDrawerPx(px: number): void;
-  setSidePanel(panel: string): void;
-  setResultRowLimit(n: number): void;
-  setDashLayout(layout: string): void;
-  setDashCols(n: number): void;
 }
 
 /** Build an `AppPreferences` bound to `deps`. Trivial constructor — no
@@ -75,27 +67,11 @@ export function createAppPreferences(deps: AppPreferencesDeps): AppPreferences {
     deps.saveStr(KEYS[name], String(value));
   }
 
-  function setTheme(theme: string): void {
-    save('theme', theme);
-  }
-
   function toggleTheme(): string {
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     save('theme', state.theme);
     return state.theme;
   }
 
-  const setSidebarPx = (px: number): void => save('sidebarPx', px);
-  const setEditorPct = (pct: number): void => save('editorPct', pct);
-  const setSideSplitPct = (pct: number): void => save('sideSplitPct', pct);
-  const setCellDrawerPx = (px: number): void => save('cellDrawerPx', px);
-  const setSidePanel = (panel: string): void => save('sidePanel', panel);
-  const setResultRowLimit = (n: number): void => save('resultRowLimit', n);
-  const setDashLayout = (layout: string): void => save('dashLayout', layout);
-  const setDashCols = (n: number): void => save('dashCols', n);
-
-  return {
-    save, setTheme, toggleTheme, setSidebarPx, setEditorPct, setSideSplitPct,
-    setCellDrawerPx, setSidePanel, setResultRowLimit, setDashLayout, setDashCols,
-  };
+  return { save, toggleTheme };
 }

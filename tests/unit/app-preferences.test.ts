@@ -42,16 +42,6 @@ describe('save()', () => {
   });
 });
 
-describe('setTheme()', () => {
-  it('persists the given theme without touching state', () => {
-    const deps = makeDeps();
-    const prefs = createAppPreferences(deps);
-    prefs.setTheme('dark');
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.theme, 'dark');
-    expect(deps.state.theme).toBe('light'); // setTheme is persist-only — state.theme is toggleTheme's job
-  });
-});
-
 describe('toggleTheme()', () => {
   it('flips light to dark, persists, and returns the new value', () => {
     const deps = makeDeps();
@@ -67,55 +57,5 @@ describe('toggleTheme()', () => {
     expect(prefs.toggleTheme()).toBe('light');
     expect(deps.state.theme).toBe('light');
     expect(deps.saveStr).toHaveBeenCalledWith(KEYS.theme, 'light');
-  });
-});
-
-describe('typed per-key setters', () => {
-  it('setSidebarPx persists under KEYS.sidebarPx', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setSidebarPx(300);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.sidebarPx, '300');
-  });
-
-  it('setEditorPct persists under KEYS.editorPct', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setEditorPct(50);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.editorPct, '50');
-  });
-
-  it('setSideSplitPct persists under KEYS.sideSplitPct', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setSideSplitPct(62);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.sideSplitPct, '62');
-  });
-
-  it('setCellDrawerPx persists under KEYS.cellDrawerPx', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setCellDrawerPx(600);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.cellDrawerPx, '600');
-  });
-
-  it('setSidePanel persists under KEYS.sidePanel', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setSidePanel('history');
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.sidePanel, 'history');
-  });
-
-  it('setResultRowLimit persists under KEYS.resultRowLimit', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setResultRowLimit(5000);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.resultRowLimit, '5000');
-  });
-
-  it('setDashLayout persists under KEYS.dashLayout', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setDashLayout('report');
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.dashLayout, 'report');
-  });
-
-  it('setDashCols persists under KEYS.dashCols', () => {
-    const deps = makeDeps();
-    createAppPreferences(deps).setDashCols(2);
-    expect(deps.saveStr).toHaveBeenCalledWith(KEYS.dashCols, '2');
   });
 });
