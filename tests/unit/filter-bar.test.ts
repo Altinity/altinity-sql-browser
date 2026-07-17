@@ -61,8 +61,8 @@ describe('buildFilterBar (shared filter row)', () => {
     bar.el.querySelector('[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(app.state.varValues.x).toBe('a');
     expect(app.state.filterActive.x).toBe(true);
-    expect(app.saveVarValues).toHaveBeenCalled();
-    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(app.params.saveVarValues).toHaveBeenCalled();
+    expect(app.params.saveFilterActive).toHaveBeenCalled();
     expect(onCommit).toHaveBeenCalledWith('x');
     bar.el.remove();
   });

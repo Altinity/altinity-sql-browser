@@ -131,13 +131,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   const appBase: Partial<App> = {
     state: createState(),
     dom: {},
-    // #170 review: names of `{name:Type}` variables whose value has hardened
-    // to invalid — owned by the WorkbenchParameterSession (#276 Phase 4B1,
-    // application/workbench-parameter-session.ts), which the block below
-    // constructs; `app.hardenedVars` is aliased (not copied) to its `Set`
-    // once that session exists (see the `const params = …` block below), so
-    // this placeholder is only ever read before that assignment happens.
-    hardenedVars: new Set<string>(),
     root: env.root || doc.getElementById('root'),
     document: doc,
     // Charting seam: the Chart.js constructor (injected so tests stub it) and a
@@ -190,24 +183,23 @@ export function createApp(env: CreateAppEnv = {}): App {
   // --- persistence -------------------------------------------------------
   // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
   // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit/dashLayout/
-  // dashCols, constructible without App/AppState/DOM. `savePref` below is a
-  // thin delegate (dashboard.ts/saved-history.ts/splitters.ts keep calling it
-  // unchanged); `toggleTheme` below composes `prefs.toggleTheme()` (the
-  // state-flip + persist) with its own DOM half.
+  // dashCols, constructible without App/AppState/DOM. Consumers
+  // (dashboard.ts/saved-history.ts/splitters.ts) call `app.prefs.save(name,
+  // value)` directly (#276 Phase 5 deleted the flat `App.savePref` delegate);
+  // `toggleTheme` below composes `prefs.toggleTheme()` (the state-flip +
+  // persist) with its own DOM half.
   const prefs = createAppPreferences({ saveStr, state: app.state });
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  // Typed preference persistence (#276 Phase 4D) — `prefs` is constructed
-  // below; this closure only reads it at call time.
-  app.savePref = (name, value) => prefs.save(name as PreferenceKey, value);
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
   // (recordBoundParams/clearVarRecent/clearAllVarRecent) now live in the
   // WorkbenchParameterSession (#276 Phase 4B1) — see the `const params = …`
-  // block below, which wires `app.saveVarValues`/etc. as one-line delegates
-  // once that session exists.
+  // block below. No flat `App` delegates for these (#276 Phase 5 deleted
+  // them) except `app.saveVarRecent`, the one deliberate survivor (see its
+  // own doc comment below).
   app.FileReader = (env.FileReader || win.FileReader) as typeof FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
@@ -299,15 +291,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
   });
-  // Direct assignments (not one-line wrapper closures) — the session's own
-  // method signatures already match the public `App` contract exactly.
-  app.evaluateSpecDraft = queryDoc.evaluateSpecDraft;
-  app.revalidateSpecDrafts = queryDoc.revalidateSpecDrafts;
-  app.revealFirstSpecError = queryDoc.revealFirstSpecError;
+  // No flat `App` delegates for `evaluateSpecDraft`/`revalidateSpecDrafts`/
+  // `revealFirstSpecError`/`registerSpecValidator` (#276 Phase 5 deleted
+  // them) — every consumer (including this file's own call sites further
+  // down) reads `queryDoc.*` directly.
   app.specEditor.onDocChange((value) => {
     queryDoc.evaluateSpecDraft(app.activeTab(), value);
   });
-  app.registerSpecValidator = queryDoc.registerSpecValidator;
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
   // writes through it unconditionally); every real renderLogin() call below
@@ -489,11 +479,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   // now lives in `application/workbench-parameter-session.ts` (#276 Phase
   // 4B1), constructible without App/AppState/DOM. `renderVarStrip` (the DOM
   // view, below) and the workbench-session hooks + export block (further
-  // down) call its methods directly; `app.hardenedVars` is aliased (not
-  // copied) to its `Set` so `app.hardenedVars.has(...)` keeps working
-  // unchanged. `sessionParams`/`needsSession`/`sessionParamsFor` above stay
-  // HERE (they're `tab.chSession`/transport material, not parameter policy —
-  // Phase 4C's concern).
+  // down) call its methods directly; `app.params.hardenedVars` reads this
+  // session's own `Set` directly (#276 Phase 5 deleted the flat
+  // `App.hardenedVars` alias). `sessionParams`/`needsSession`/
+  // `sessionParamsFor` above stay HERE (they're `tab.chSession`/transport
+  // material, not parameter policy — Phase 4C's concern).
   const params = createWorkbenchParameterSession({
     varValues: () => app.state.varValues,
     filterActive: () => app.state.filterActive,
@@ -519,15 +509,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
   });
   app.params = params;
-  // Alias (not copy) — see `params`'s own construction comment above.
-  app.hardenedVars = params.hardenedVars;
-  app.saveVarValues = () => params.saveVarValues();
-  app.saveFilterActive = () => params.saveFilterActive();
+  // The single deliberate delegate survivor (#276 Phase 5 — see its own doc
+  // comment on app.types.ts's `App.saveVarRecent`): every other params-group
+  // member (`saveVarValues`/`saveFilterActive`/`saveVarRecentDisabled`/
+  // `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent`/`hardenedVars`)
+  // has no flat `App` delegate — every consumer reads `app.params.*` /
+  // `params.*` directly.
   app.saveVarRecent = () => params.saveVarRecent();
-  app.saveVarRecentDisabled = () => params.saveVarRecentDisabled();
-  app.recordBoundParams = (boundParams) => params.recordBoundParams(boundParams);
-  app.clearVarRecent = (name) => params.clearVarRecent(name);
-  app.clearAllVarRecent = () => params.clearAllVarRecent();
 
   // The streaming single-file export (issue #87) + multi-statement script
   // export (issue #99) POLICY (#276 Phase 4B2) now lives in
@@ -582,7 +570,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       cancelSchemaGraph,
       loadSchema: () => { void catalog.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
-      recordBoundParams: (bp) => app.recordBoundParams([...bp]),
+      recordBoundParams: (bp) => params.recordBoundParams([...bp]),
       prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked,
       execStatementSql: params.execStatementSql, sessionParamsFor,
       getSelectionText: () => app.sqlEditor.getSelection().text,
@@ -747,11 +735,11 @@ export function createApp(env: CreateAppEnv = {}): App {
             app.state.varValues[v.name] = input.value;
             // Text controls sync activation with the value (#165).
             app.state.filterActive[v.name] = input.value !== '';
-            app.saveVarValues();
-            app.saveFilterActive();
+            params.saveVarValues();
+            params.saveFilterActive();
             // Editing the value un-hardens it (#170 review): back to
             // neutral, lenient behavior until it's committed again.
-            app.hardenedVars.delete(v.name);
+            params.hardenedVars.delete(v.name);
             // 'input' mode (#170): a plausible prefix stays neutral while
             // the field is focused — only a value that's already certainly
             // wrong shows the inline error here.
@@ -773,7 +761,7 @@ export function createApp(env: CreateAppEnv = {}): App {
           // curated-param opt-out hook: nothing to check yet — no curated
           // param exists before #160 lands.)
           const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, v.name, v.type, text);
-          const onClearRecent = (): void => app.clearVarRecent(v.name);
+          const onClearRecent = (): void => params.clearVarRecent(v.name);
           const fieldOpts = {
             document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
             baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
@@ -996,7 +984,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // limit with nothing typed just saves the preference.
   function setResultRowLimit(n: number): Promise<void> | undefined {
     app.state.resultRowLimit = normalizeRowLimit(n);
-    app.savePref('resultRowLimit', app.state.resultRowLimit);
+    prefs.save('resultRowLimit', app.state.resultRowLimit);
     return app.activeTab().editorMode === 'sql' ? workbench.run() : undefined;
   }
 
@@ -1211,14 +1199,14 @@ export function createApp(env: CreateAppEnv = {}): App {
       // a silent no-op, same as the pre-extraction inline code's own bare
       // `if (!entry) return null;`.
       if (result.reason === 'invalid-spec') {
-        app.revealFirstSpecError(tab);
+        queryDoc.revealFirstSpecError(tab);
         flashToast('Fix Spec errors before saving', { document: doc });
       } else if (result.reason === 'empty') {
         flashToast('Nothing to save', { document: doc });
       }
       return null;
     }
-    app.revalidateSpecDrafts();
+    queryDoc.revalidateSpecDrafts();
     app.specEditor.syncFromState();
     app.updateSaveBtn();
     app.actions.rerenderTabs();
@@ -1255,7 +1243,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       const result = saved.create(tab, input.value, descInput.value);
       if (!result.ok) return;
       close();
-      app.revalidateSpecDrafts();
+      queryDoc.revalidateSpecDrafts();
       app.specEditor.syncFromState();
       app.updateSaveBtn();
       app.updateEditorModeUi!();
@@ -1487,7 +1475,7 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
       else if (axis === 'sideRow') schemaPane.style.height = value + '%';
       else app.dom.editorRegion!.style.height = value + '%';
     },
-    save: (name, value) => app.savePref(name, value),
+    save: (name, value) => app.prefs.save(name as PreferenceKey, value),
   };
   app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'sideRow', dragCtx) });
   // Mobile Tables view (#126): a Schema | Library segmented control at the top of
@@ -1621,7 +1609,7 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
   effect(() => {
     app.state.tabs.value;
     app.state.activeTabId.value;
-    app.revalidateSpecDrafts({ refreshUi: false });
+    app.queryDoc.revalidateSpecDrafts({ refreshUi: false });
     renderTabs(app);
     app.sqlEditor.syncFromState();
     app.specEditor.syncFromState();

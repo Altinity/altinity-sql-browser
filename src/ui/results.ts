@@ -37,6 +37,8 @@ import type { ResultSource } from '../core/query-source.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession } from '../application/connection-session.js';
+import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
+import type { AppPreferences, PreferenceKey } from '../application/app-preferences.js';
 
 // ── The Result contract (#267) ──────────────────────────────────────────────
 // `QueryTab.result` (state.ts) is deliberately opaque there
@@ -162,11 +164,13 @@ export interface ResultsApp {
   /** The shared request/stream/normalize service (#276 Phase 1) — this module
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
-  recordBoundParams(boundParams: Array<{ name: string; rawValue: unknown }>): void;
-  savePref(name: string, value: unknown): void;
-  saveVarValues(): void;
-  saveFilterActive(): void;
-  clearVarRecent(name: string): void;
+  /** #276 Phase 5: no flat `App` delegates for the params-group members this
+   *  module (and, via the `as FilterBarApp` cast below, filter-bar.ts) needs —
+   *  `app.params.*` directly. */
+  params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
+  /** #276 Phase 5: no flat `App.savePref` delegate — `app.prefs.save(name,
+   *  value)` directly (the cell-detail drawer's own resize persist). */
+  prefs: Pick<AppPreferences, 'save'>;
   updateSaveBtn(): void;
   updateEditorModeUi?(): void;
   openWindow?(url: string, target: string): DetachedWindowLike | null;
@@ -1010,7 +1014,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         if (result.error) { settle(result.error); return; }
         current = result;
         // #171: record the winning run's bound params via the shared recorder.
-        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
+        app.params.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
         settle('');
         paint();
       }
@@ -1133,7 +1137,7 @@ function attachDrawerResize(app: ResultsApp, panel: HTMLElement, doc: Document):
           state: app.state,
           rectFor: () => ({ width: win.innerWidth }),
           apply: (_axis, value) => { panel.style.width = value + 'px'; },
-          save: (name, value) => app.savePref(name, value),
+          save: (name, value) => app.prefs.save(name as PreferenceKey, value),
         },
       );
       cancelActive = () => { stopDrag(); app.state.cellDrawerPx = startPx; cancelActive = null; };

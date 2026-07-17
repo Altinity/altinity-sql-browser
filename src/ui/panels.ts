@@ -537,7 +537,7 @@ function writePanel(app: App, hooks: PanelHooks, payload: PanelWritePayload, act
     app.activateInvalidSpecDraft(result.invalidTab!);
     return;
   }
-  app.revalidateSpecDrafts();
+  app.queryDoc.revalidateSpecDrafts();
   app.specEditor.syncFromState();
   if (activate) app.state.resultView.value = 'panel';
   hooks.markDirty();
@@ -583,7 +583,7 @@ export function renderPanelTypePicker(app: App, r: PanelResult | null, hooks: Pa
         app.activateInvalidSpecDraft(result.invalidTab!);
         return;
       }
-      app.revalidateSpecDrafts();
+      app.queryDoc.revalidateSpecDrafts();
       app.specEditor.syncFromState();
       app.state.resultView.value = choice.kind === 'role' ? 'filter' : 'panel';
       hooks.markDirty();

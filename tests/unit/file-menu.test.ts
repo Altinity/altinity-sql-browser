@@ -93,7 +93,7 @@ describe('variable history (#171)', () => {
     checkbox.checked = false;
     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.state.varRecentDisabled).toBe(true);
-    expect(app.saveVarRecentDisabled).toHaveBeenCalled();
+    expect(app.params.saveVarRecentDisabled).toHaveBeenCalled();
   });
   it('starts unchecked when the preference is already disabled', () => {
     const app = mount();
@@ -101,11 +101,11 @@ describe('variable history (#171)', () => {
     openFileMenu(app);
     expect(document.querySelector<HTMLInputElement>('.fm-checkbox')!.checked).toBe(false);
   });
-  it('"Clear all recent values" calls app.clearAllVarRecent and toasts', () => {
+  it('"Clear all recent values" calls app.params.clearAllVarRecent and toasts', () => {
     const app = mount();
     openFileMenu(app);
     click(item(/Clear all recent values/)!);
-    expect(app.clearAllVarRecent).toHaveBeenCalled();
+    expect(app.params.clearAllVarRecent).toHaveBeenCalled();
     expect(toast()).toContain('Cleared recent variable values');
   });
 });

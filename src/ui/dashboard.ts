@@ -407,11 +407,11 @@ export function renderDashboard(app: App): Promise<void> {
       // optionality belongs to its persisted-state-shaped return interface,
       // not this value (a core/dashboard.ts return-type gap, reported).
       state.dashLayout = sel.dashLayout!;
-      app.savePref('dashLayout', sel.dashLayout);
+      app.prefs.save('dashLayout', sel.dashLayout);
     }
     if (sel.dashCols != null && sel.dashCols !== state.dashCols) {
       state.dashCols = sel.dashCols;
-      app.savePref('dashCols', sel.dashCols);
+      app.prefs.save('dashCols', sel.dashCols);
     }
     apply();
   }, 'Dashboard layout');
@@ -538,7 +538,7 @@ export function renderDashboard(app: App): Promise<void> {
     ensureFreshToken: () => app.conn.ensureFreshToken(),
     now: () => app.now(),
     wallNow: () => app.wallNow(),
-    recordBoundParams: (bp) => app.recordBoundParams(bp),
+    recordBoundParams: (bp) => app.params.recordBoundParams(bp),
     varValues: () => app.state.varValues,
     filterActive: () => app.state.filterActive,
     filterCuratedSeed,
@@ -548,7 +548,7 @@ export function renderDashboard(app: App): Promise<void> {
     },
     persistFilterActive: (active) => {
       state.filterActive = active;
-      app.saveFilterActive();
+      app.params.saveFilterActive();
     },
     hooks,
   };

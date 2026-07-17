@@ -364,7 +364,7 @@ describe('renderDashboard', () => {
     await renderDashboard(app);
     expect(app.state.varValues.origin).toBe('ATL');
     expect(app.state.filterActive.origin).toBe(false);
-    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(app.params.saveFilterActive).toHaveBeenCalled();
     expect(runTile.mock.calls.map(([sql]) => sql)).toEqual(['SELECT filter_options']);
     expect(qs(app.root, '.dash-tile-unfilled').textContent).toContain('origin');
     expect(qs<HTMLInputElement>(app.root, '.filter-select .var-input').placeholder).toBe('Not set');
@@ -453,7 +453,7 @@ describe('renderDashboard', () => {
     expect(app.conn.ensureFreshToken).toHaveBeenCalledTimes(3);
     expect(filterAttempt).toBe(2);
     expect(app.state.filterActive.x).toBe(false);
-    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(app.params.saveFilterActive).toHaveBeenCalled();
     expect(runTile).toHaveBeenCalledTimes(3);
     expect(qs(app.root, '.filter-select .var-input')).not.toBeNull();
   });
@@ -711,8 +711,8 @@ describe('renderDashboard', () => {
     expect(grid.classList.contains('is-wide')).toBe(true);
     expect(grid.classList.contains('is-report')).toBe(false);
     expect(app.state.dashLayout).toBe('wide');
-    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'wide');
-    expect(app.savePref).not.toHaveBeenCalledWith('dashCols', expect.anything());
+    expect(app.prefs.save).toHaveBeenCalledWith('dashLayout', 'wide');
+    expect(app.prefs.save).not.toHaveBeenCalledWith('dashCols', expect.anything());
   });
 
   it('Report stores dashLayout=report and toggles is-report', async () => {
@@ -722,7 +722,7 @@ describe('renderDashboard', () => {
     const grid = qs(app.root, '.dash-grid');
     expect(grid.classList.contains('is-report')).toBe(true);
     expect(app.state.dashLayout).toBe('report');
-    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'report');
+    expect(app.prefs.save).toHaveBeenCalledWith('dashLayout', 'report');
   });
 
   it('2 columns stores dashLayout=arrange + dashCols=2 (persisting both when both change)', async () => {
@@ -735,8 +735,8 @@ describe('renderDashboard', () => {
     expect(grid.style.getPropertyValue('--dash-cols')).toBe('2');
     expect(app.state.dashLayout).toBe('arrange');
     expect(app.state.dashCols).toBe(2);
-    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'arrange');
-    expect(app.savePref).toHaveBeenCalledWith('dashCols', 2);
+    expect(app.prefs.save).toHaveBeenCalledWith('dashLayout', 'arrange');
+    expect(app.prefs.save).toHaveBeenCalledWith('dashCols', 2);
   });
 
   it('3 columns stores dashLayout=arrange + dashCols=3', async () => {
@@ -747,23 +747,23 @@ describe('renderDashboard', () => {
     seg(app.root, '3 columns')!.dispatchEvent(new Event('click', { bubbles: true }));
     expect(app.state.dashLayout).toBe('arrange');
     expect(app.state.dashCols).toBe(3);
-    expect(app.savePref).toHaveBeenCalledWith('dashLayout', 'arrange');
-    expect(app.savePref).toHaveBeenCalledWith('dashCols', 3);
+    expect(app.prefs.save).toHaveBeenCalledWith('dashLayout', 'arrange');
+    expect(app.prefs.save).toHaveBeenCalledWith('dashCols', 3);
   });
 
   it('picking the same column count keeps dashLayout untouched (only dashCols persists)', async () => {
     const app = oneFav(); // default arrange + 3
     await renderDashboard(app);
     seg(app.root, '2 columns')!.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.savePref).toHaveBeenCalledWith('dashCols', 2);
-    expect(app.savePref).not.toHaveBeenCalledWith('dashLayout', expect.anything());
+    expect(app.prefs.save).toHaveBeenCalledWith('dashCols', 2);
+    expect(app.prefs.save).not.toHaveBeenCalledWith('dashLayout', expect.anything());
   });
 
   it('clicking the already-active view is a no-op (no persist)', async () => {
     const app = oneFav(); // default arrange + 3 → "3 columns" active
     await renderDashboard(app);
     seg(app.root, '3 columns')!.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.savePref).not.toHaveBeenCalled();
+    expect(app.prefs.save).not.toHaveBeenCalled();
   });
 
   it('changing layout never re-runs tile queries', async () => {
@@ -1044,7 +1044,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     // ≥2 rows so the tile renders a table (a 1-row unconfigured result is a KPI skip).
     resolvers.splice(0).forEach((r) => r({ columns: [{ name: 'k', type: 'String' }], rows: [['a'], ['a2']] }));
     await rendered;
-    app.recordBoundParams.mockClear();
+    app.params.recordBoundParams.mockClear();
     const input = yearInput(app.root);
     commit(input, '11'); // wave A (superseded below)
     await flush();
@@ -1057,7 +1057,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     await flush();
     expect(qs(app.root, '.dash-tile').textContent).toContain('B'); // B rendered
     expect(qs(app.root, '.dash-tile').textContent).not.toContain('A-stale');
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // only B recorded; the stale A did not
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1); // only B recorded; the stale A did not
   });
 
   it('never touches workbench run state — tiles own their own results (req: isolation)', async () => {
@@ -1405,7 +1405,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       expect(runTile).toHaveBeenCalledTimes(5); // only the 2 'year' tiles re-ran
       expect(runTile.mock.calls.filter((c) => c[0] === favorites[2].sql)).toHaveLength(1); // region tile untouched
       expect(app.state.varValues.year).toBe('2024'); // shared with the workbench's varValues
-      expect(app.saveVarValues).toHaveBeenCalled();
+      expect(app.params.saveVarValues).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -1626,7 +1626,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     const input = fieldInput(app.root, 'd');
     setInput(input, 'abc');
     expect(app.state.filterActive.d).toBe(true); // text control syncs activation
-    expect(app.saveFilterActive).toHaveBeenCalled();
+    expect(app.params.saveFilterActive).toHaveBeenCalled();
     pressEnter(input);
     await flush();
     expect(runTile).toHaveBeenCalledTimes(2);
@@ -1793,7 +1793,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       app.state.varValues = { from: '-1h' };
       await renderDashboard(app);
       expect(fieldInput(app.root, 'from').value).toBe('-1h');
-      expect(app.saveVarValues).not.toHaveBeenCalled(); // nothing edited yet — just restored
+      expect(app.params.saveVarValues).not.toHaveBeenCalled(); // nothing edited yet — just restored
     });
   });
 
@@ -1858,8 +1858,8 @@ describe('renderDashboard — recent values (#171)', () => {
     const app = dashApp(favorites, runTile);
     app.state.varValues = { year: '2024' };
     await renderDashboard(app);
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
-    expect(app.recordBoundParams.mock.calls[0][0]).toEqual([
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1);
+    expect(app.params.recordBoundParams.mock.calls[0][0]).toEqual([
       expect.objectContaining({ name: 'year', rawValue: '2024' }),
     ]);
   });
@@ -1870,7 +1870,7 @@ describe('renderDashboard — recent values (#171)', () => {
     const app = dashApp(favorites, runTile);
     app.state.varValues = { year: '2024' };
     await renderDashboard(app);
-    expect(app.recordBoundParams).not.toHaveBeenCalled();
+    expect(app.params.recordBoundParams).not.toHaveBeenCalled();
   });
 
   it('an omitted-optional-block param is never in the recorded boundParams', async () => {
@@ -1878,8 +1878,8 @@ describe('renderDashboard — recent values (#171)', () => {
     const runTile = tile(async () => chartResult());
     const app = dashApp(favorites, runTile);
     await renderDashboard(app); // d blank → block inactive → not bound at all
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
-    expect(app.recordBoundParams.mock.calls[0][0]).toEqual([]);
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1);
+    expect(app.params.recordBoundParams.mock.calls[0][0]).toEqual([]);
   });
 
   it('a non-date field shows recorded recents on focus, newest-first, filtered as you type', async () => {
@@ -1898,7 +1898,7 @@ describe('renderDashboard — recent values (#171)', () => {
     expect([...qsa(app.root, '[role="option"]')].map((o) => o.textContent)).toEqual(['us']);
   });
 
-  it('clicking a recent inserts it; "Clear recent" calls app.clearVarRecent(name)', async () => {
+  it('clicking a recent inserts it; "Clear recent" calls app.params.clearVarRecent(name)', async () => {
     const favorites = [paramFav('1', 'SELECT * FROM t WHERE r = {region:String}')];
     const app = dashApp(favorites, vi.fn(async () => chartResult()));
     app.state.varRecent = recordRecent(emptyRecentMap(), 'region', 'us');
@@ -1911,7 +1911,7 @@ describe('renderDashboard — recent values (#171)', () => {
     input.dispatchEvent(new Event('focus', { bubbles: true }));
     const clearBtn = qs(app.root, 'button.var-combo-clear');
     clearBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    expect(app.clearVarRecent).toHaveBeenCalledWith('region');
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('region');
   });
 
   it('a date-like field composes ONE dropdown: Recent first, then Presets (user decision, phase-7 feedback)', async () => {

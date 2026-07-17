@@ -9,7 +9,8 @@
 // each preference. Every write site except `toggleTheme` already mutates its
 // own state field itself (splitters.ts sets `ctx.state.sidebarPx` before
 // calling `ctx.save(...)`; dashboard.ts sets `state.dashLayout`/`dashCols`
-// before `app.savePref(...)`; app.ts's `setResultRowLimit` sets
+// before calling `app.prefs.save(...)` directly — #276 Phase 5 deleted the
+// flat `App.savePref` delegate; app.ts's `setResultRowLimit` sets
 // `state.resultRowLimit` first) — so `save(name, value)` is a pure typed
 // persist call, no state slice needed. `toggleTheme` is the one exception
 // (issue ruling): the state flip AND the persist happen together here: the
@@ -43,12 +44,12 @@ export interface AppPreferencesDeps {
 
 export interface AppPreferences {
   /** Generic persist-only setter — the exact `(name, value)` shape app.ts's
-   *  public `savePref` has always exposed (dashboard.ts/saved-history.ts/
-   *  splitters.ts call it through that unchanged delegate). This IS the
-   *  service's write API: per-key typed setters were considered and dropped
-   *  (review) — every real call site already holds a validated
-   *  `{name, value}` pair, so a per-key surface would ship with zero
-   *  callers (CLAUDE.md rule 5: no speculative primitives). */
+   *  former `App.savePref` delegate used to expose (#276 Phase 5 deleted it;
+   *  dashboard.ts/saved-history.ts/splitters.ts's callers call `app.prefs.save`
+   *  directly now). This IS the service's write API: per-key typed setters
+   *  were considered and dropped (review) — every real call site already
+   *  holds a validated `{name, value}` pair, so a per-key surface would ship
+   *  with zero callers (CLAUDE.md rule 5: no speculative primitives). */
   save(name: PreferenceKey, value: unknown): void;
   /** Flips `state.theme` light↔dark AND persists it in one call (issue
    *  ruling — the one preference whose state mutation moves here, not just

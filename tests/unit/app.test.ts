@@ -477,7 +477,6 @@ describe('renderApp shell', () => {
     const { app } = rendered();
     app.dom.themeBtn!.dispatchEvent(new Event('click')); // default light → dark
     expect(app.state.theme).toBe('dark');
-    expect(app.savePref).toBeUndefined; // savePref is internal; theme attr set
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
   it('user menu: open → Log out clears tokens and shows login', () => {
@@ -1055,12 +1054,12 @@ describe('query run', () => {
     input.dispatchEvent(new Event('input', { bubbles: true })); // still typing — 'input' mode
     expect(app.dom.runBtn!.disabled).toBe(false);
     expect(input.classList.contains('is-invalid')).toBe(false);
-    expect(app.hardenedVars.has('from')).toBe(false);
+    expect(app.params.hardenedVars.has('from')).toBe(false);
     input.dispatchEvent(new Event('blur', { bubbles: true })); // commits — 'execute' mode hardens it
     expect(app.dom.runBtn!.disabled).toBe(true);
     expect(input.classList.contains('is-invalid')).toBe(true);
-    expect(app.hardenedVars.has('from')).toBe(true);
-    // The hardened state (#170's app.hardenedVars mechanism) persists across
+    expect(app.params.hardenedVars.has('from')).toBe(true);
+    // The hardened state (#170's app.params.hardenedVars mechanism) persists across
     // an unrelated re-render — the same mechanism the type-validator's own
     // incomplete→invalid hardening already relies on, now also reached via
     // the relative-time near-miss path (review finding #2's whole point: it
@@ -2316,24 +2315,24 @@ describe('recent-value history (#171)', () => {
     expect([...qsa(app.dom.varStrip!, '[role="option"]')].map((o) => o.textContent)).toContain('-3h');
   });
 
-  it('app.clearVarRecent clears one name and is a no-op (no re-persist) for a name with no history', () => {
+  it('app.params.clearVarRecent clears one name and is a no-op (no re-persist) for a name with no history', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);
     app.state.varRecent = { version: 1, nextSeq: 2, byName: { a: [{ value: '1', seq: 1 }] } };
     app.saveVarRecent = vi.fn(app.saveVarRecent);
-    app.clearVarRecent('nope'); // no history for this name → no-op
+    app.params.clearVarRecent('nope'); // no history for this name → no-op
     expect(app.state.varRecent.byName.a).toBeDefined();
     expect(app.saveVarRecent).not.toHaveBeenCalled();
-    app.clearVarRecent('a');
+    app.params.clearVarRecent('a');
     expect(app.state.varRecent.byName.a).toBeUndefined();
     expect(app.saveVarRecent).toHaveBeenCalledTimes(1);
   });
 
-  it('app.clearAllVarRecent resets every name\'s history and persists', () => {
+  it('app.params.clearAllVarRecent resets every name\'s history and persists', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);
     app.state.varRecent = { version: 1, nextSeq: 3, byName: { a: [{ value: '1', seq: 1 }], b: [{ value: '2', seq: 2 }] } };
-    app.clearAllVarRecent();
+    app.params.clearAllVarRecent();
     expect(app.state.varRecent).toEqual({ version: 1, nextSeq: 1, byName: {} });
     expect(JSON.parse(globalThis.localStorage.getItem('asb:varRecent')!)).toEqual({ version: 1, nextSeq: 1, byName: {} });
   });
@@ -3007,7 +3006,7 @@ describe('share + star + columns', () => {
     app.specEditor.replaceDocument('{"name":"Fav","favorite":false,"items":[{"kind":"bad"}]}');
     const linked = app.activeTab();
     app.actions.newTab();
-    const unregister = app.registerSpecValidator(['items', 0, 'kind'], ({ value, path }) =>
+    const unregister = app.queryDoc.registerSpecValidator(['items', 0, 'kind'], ({ value, path }) =>
       value === 'ok' ? [] : [{ path, severity: 'warning', code: 'bad-kind', message: 'Unexpected kind' }]);
     expect(linked.specDiagnostics).toEqual([{
       path: ['items', 0, 'kind'], severity: 'warning', code: 'bad-kind', message: 'Unexpected kind',
@@ -3021,7 +3020,7 @@ describe('share + star + columns', () => {
     app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
     app.actions.setEditorMode('spec');
-    const warning = app.registerSpecValidator([], () => [
+    const warning = app.queryDoc.registerSpecValidator([], () => [
       { severity: 'warning', code: 'heads-up', message: 'Non-blocking warning' },
       { severity: 'info', code: 'note', message: 'Informational note' },
     ]);
@@ -3029,7 +3028,7 @@ describe('share + star + columns', () => {
     expect(app.dom.specStatus!.textContent).toBe('');
     expect(app.specBlocked(app.activeTab())).toBe(false);
 
-    const error = app.registerSpecValidator(['runtime'], () => [
+    const error = app.queryDoc.registerSpecValidator(['runtime'], () => [
       { severity: 'error', code: 'blocked', message: 'Blocking error' },
       { severity: 'error', code: 'also-blocked', message: 'Second blocking error' },
     ]);
@@ -3037,7 +3036,7 @@ describe('share + star + columns', () => {
     expect(app.dom.specStatus!.textContent).toBe('Blocking error — 2 errors');
     expect(app.specBlocked(app.activeTab())).toBe(true);
     const reveal = vi.spyOn(app.specEditor, 'revealDiagnostic');
-    app.revealFirstSpecError();
+    app.queryDoc.revealFirstSpecError();
     expect(reveal).toHaveBeenCalledWith(2);
     error(); warning();
     expect(app.dom.specStatus!.hidden).toBe(true);
@@ -3051,7 +3050,7 @@ describe('share + star + columns', () => {
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
     app.sqlEditor.replaceDocument('SELECT 10');
     app.specEditor.replaceDocument('{"name":"Fav","favorite":false,"runtime":{"blocked":true}}');
-    app.registerSpecValidator(['runtime'], ({ value }) => (value as { blocked?: boolean } | null)?.blocked
+    app.queryDoc.registerSpecValidator(['runtime'], ({ value }) => (value as { blocked?: boolean } | null)?.blocked
       ? [{ path: ['runtime', 'blocked'], severity: 'error', code: 'runtime-blocked', message: 'Runtime says no' }]
       : []);
     // Simulate stale presentation state: Save must not trust this array.

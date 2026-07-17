@@ -149,12 +149,11 @@ const catalogDefaults: SchemaCatalogService = {
 // A minimal `WorkbenchParameterSession` stub (#276 Phase 4B1) — no
 // render-module fixture exercises the session directly (that's
 // workbench-parameter-session.test.ts's job); this just satisfies the
-// `App.params` contract. `hardenedVars` is the SAME `Set` instance as
-// `appDefaults.hardenedVars` below (the production aliasing invariant —
-// app.ts assigns `app.hardenedVars = params.hardenedVars`).
-const paramsHardenedVarsDefault = new Set<string>();
+// `App.params` contract. No flat `App.hardenedVars` alias to also mirror
+// this onto (#276 Phase 5 deleted it) — a fixture reads `app.params.hardenedVars`
+// directly now.
 const paramsDefaults: WorkbenchParameterSession = {
-  hardenedVars: paramsHardenedVarsDefault,
+  hardenedVars: new Set<string>(),
   tabAnalysis: vi.fn(() => ({ fields: {}, sources: [], sourceErrors: {}, diagnostics: [] })),
   prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
@@ -234,9 +233,6 @@ const prefsDefaults: AppPreferences = {
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
-  // The SAME `Set` instance as `paramsDefaults.hardenedVars` — the production
-  // aliasing invariant (app.ts's `app.hardenedVars = params.hardenedVars`).
-  hardenedVars: paramsHardenedVarsDefault,
   matchMedia: null,
   build: 'v0.0.0-test',
   root: null,
@@ -270,14 +266,12 @@ const appDefaults: App = {
   FileReader: globalThis.FileReader,
   saveJSON: () => {},
   saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
+  // The one deliberate delegate survivor of #276 Phase 5's params-group
+  // cleanup — see `App.saveVarRecent`'s own doc comment (app.types.ts).
+  // Every OTHER params-group member (`saveVarValues`/`saveFilterActive`/
+  // `saveVarRecentDisabled`/`recordBoundParams`/`clearVarRecent`/
+  // `clearAllVarRecent`/`hardenedVars`) lives only on `paramsDefaults` above.
   saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
   recordHistory: () => {},
   downloadFile: () => {},
   editingLibrary: false,
@@ -301,10 +295,9 @@ const appDefaults: App = {
   setFmtBtn: () => {},
   specBlocked: () => false,
   updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({ parsed: null, diagnostics: [] }),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
+  // `evaluateSpecDraft`/`revalidateSpecDrafts`/`revealFirstSpecError`/
+  // `registerSpecValidator` have no flat `App` member (#276 Phase 5 deleted
+  // them) — a fixture reads `queryDocDefaults`/`app.queryDoc.*` for those now.
   activateInvalidSpecDraft: () => {},
   openSavePopover: () => {},
   openUserMenu: () => {},
@@ -405,12 +398,28 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       entityDoc: vi.fn(async () => ''),
     },
     toggleTheme: vi.fn(),
-    savePref: vi.fn(),
-    saveVarValues: vi.fn(),
-    saveFilterActive: vi.fn(),
+    // The one deliberate delegate survivor of #276 Phase 5's params-group
+    // cleanup — see `App.saveVarRecent`'s own doc comment.
     saveVarRecent: vi.fn(),
-    saveVarRecentDisabled: vi.fn(),
-    recordBoundParams: vi.fn(),
+    // `paramsDefaults`/`prefsDefaults` above are typed `: WorkbenchParameterSession`/
+    // `: AppPreferences` — module-scoped SINGLETONS shared by every `makeApp()`
+    // call in a test file. Widened members lose `.mock`/`.mockClear` the same
+    // way `catalog`/`conn`'s do (hence their own untyped `base` stub layers
+    // below); worse, since they're shared across every `it()` in the file, a
+    // default (non-overridden) `vi.fn()` there ACCUMULATES call counts across
+    // unrelated tests instead of resetting per `makeApp()` call. Every
+    // params-group/prefs member a fixture asserts `.toHaveBeenCalled*`/`.mock.*`
+    // against WITHOUT an explicit `overrides.params`/`.prefs` override gets its
+    // own FRESH-per-call `vi.fn()` here — same as `saveVarRecent` above.
+    params: {
+      recordBoundParams: vi.fn(),
+      clearVarRecent: vi.fn(),
+      clearAllVarRecent: vi.fn(),
+      saveVarValues: vi.fn(),
+      saveFilterActive: vi.fn(),
+      saveVarRecentDisabled: vi.fn(),
+    },
+    prefs: { save: vi.fn() },
     // #185 detached-read seam + #193 dashboard-tile transport + #83 script
     // transport, now the shared QueryExecutionService (#276 Phase 1):
     // `executeRead` is no-op by default (snapshot cases never call it);
@@ -420,14 +429,11 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       executeScript: vi.fn(async () => ({ entries: [], aborted: false })),
       kill: vi.fn(async () => {}),
     },
-    clearVarRecent: vi.fn(),
-    clearAllVarRecent: vi.fn(),
     saveJSON: vi.fn(),
     saveStr: vi.fn(),
     downloadFile: vi.fn(),
     updateSaveBtn: vi.fn(),
     updateEditorModeUi: vi.fn(),
-    revalidateSpecDrafts: vi.fn(),
     activateInvalidSpecDraft: vi.fn(),
     elapsedMs: () => 0,
     now: () => 0,
@@ -501,12 +507,12 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     conn: { ...connDefaults, ...base.conn, ...(overrides.conn ?? {}), chCtx },
     catalog: { ...catalogDefaults, ...base.catalog, ...(overrides.catalog ?? {}) },
     workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
-    params: { ...paramsDefaults, ...(overrides.params ?? {}) },
+    params: { ...paramsDefaults, ...base.params, ...(overrides.params ?? {}) },
     queryDoc: { ...queryDocDefaults, ...(overrides.queryDoc ?? {}) },
     saved: { ...savedDefaults, ...(overrides.saved ?? {}) },
     exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
-    prefs: { ...prefsDefaults, ...(overrides.prefs ?? {}) },
+    prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

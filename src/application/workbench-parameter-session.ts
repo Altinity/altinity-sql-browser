@@ -24,9 +24,10 @@
 //
 // `hardenedVars` (#170 review: names whose value hardened to invalid) is
 // owned here as a private `Set<string>`, exposed as a plain (never
-// reassigned, only mutated in place) property — `app.hardenedVars` in app.ts
-// is assigned this SAME instance (not a copy), so `app.hardenedVars.has(...)`
-// (app.test.ts) keeps working unchanged.
+// reassigned, only mutated in place) property — read directly as
+// `app.params.hardenedVars` (#276 Phase 5 deleted the flat `App.hardenedVars`
+// alias; `app.test.ts` reads this session's own instance through `app.params`
+// now).
 //
 // `saveVarRecent`'s two faces: `saveVarRecent()` (this session's own, real,
 // `saveJSON`-calling implementation — what `app.saveVarRecent`'s one-line
@@ -110,8 +111,8 @@ export interface WorkbenchParameterSessionDeps {
 export interface WorkbenchParameterSession {
   /** Names of `{name:Type}` variables whose value has hardened to invalid
    *  (#170 review) — a single `Set` instance, mutated in place (never
-   *  reassigned), so app.ts's `app.hardenedVars = session.hardenedVars`
-   *  aliases the SAME object other modules/tests read/mutate. */
+   *  reassigned). No flat `App` delegate (#276 Phase 5 deleted it) — other
+   *  modules/tests read/mutate this SAME object as `app.params.hardenedVars`. */
   readonly hardenedVars: Set<string>;
   tabAnalysis(sql: string): ParameterAnalysis;
   prepareAnalyzedBatch(analysis: ParameterAnalysis, wallNowMs: number, validationMode?: ValidationMode): PreparedBatch;

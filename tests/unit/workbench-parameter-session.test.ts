@@ -309,7 +309,7 @@ describe('inferredEnumOptions', () => {
 // ── hardenedVars aliasing ────────────────────────────────────────────────────
 
 describe('hardenedVars', () => {
-  it('is a single Set instance, mutated in place by hardenVar (the app.hardenedVars alias invariant)', () => {
+  it('is a single Set instance, mutated in place by hardenVar (the app.params.hardenedVars read invariant)', () => {
     const { deps } = makeDeps();
     const session = createWorkbenchParameterSession(deps);
     const ref = session.hardenedVars;
