@@ -26,7 +26,9 @@ export function explicitPanel(query: unknown): Panel | null {
 export interface PanelExecutionDefaults {
   format?: string;
   rowLimit?: number;
-  params?: Record<string, unknown>;
+  /** ClickHouse HTTP params — the strict wire shape (`param_<name>` bindings,
+   *  settings), so an execution seam can forward them without narrowing. */
+  params?: Record<string, string | number>;
   [k: string]: unknown;
 }
 
@@ -37,7 +39,7 @@ export interface PanelExecutionDefaults {
 export interface PanelExecutionResult {
   owned: boolean;
   error: string | null;
-  params: Record<string, unknown>;
+  params: Record<string, string | number>;
   format?: string;
   rowLimit?: number;
   [k: string]: unknown;

@@ -4,7 +4,7 @@
 // new schema. This module holds the route helpers and the tile result caps.
 // (Per-tile classification moved to core/panel-cfg.js's autoPanel/resolvePanel
 // in #166 — the panel union replaced classifyTile's chart-vs-skip ladder. The
-// tiles stream through the shared `app.runReadInto` seam as of #193, so the
+// tiles stream through the shared `app.exec.executeRead` seam as of #193/#276, so the
 // former `FORMAT JSON` → array-rows transform and its SQL prep were retired.)
 
 /**
@@ -116,7 +116,7 @@ export const DASH_TABLE_DISPLAY_CAP = 1000;
 
 // (The tiles' SQL prep + `FORMAT JSON` → array-rows transform — the former
 // `dashboardTileSql` / `parseJsonResult` — were retired in #193 when the tiles
-// moved onto the shared streaming `app.runReadInto` seam. The client row bound
+// moved onto the shared streaming `app.exec.executeRead` seam. The client row bound
 // is now `newResult('Table', DASH_TILE_ROW_CAP)`'s trim + `capped` flag, and
 // the tile result shape is pinned by `dashboardTileResult` in src/ui/dashboard.js.)
 

@@ -12,6 +12,7 @@ import { renderPanelView, renderPanelTypePicker, renderResolvedPanel } from './p
 import { renderGridView, resizeHandle, reapplyWidths, PLAIN_KEY, visCap } from './grid-render.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
+import type { ScriptEntry } from '../core/script-result.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import { RESULT_ROW_LIMIT_OPTIONS, tabPanel, effectiveFilterActive } from '../state.js';
 import type { AppState, QueryTab as Tab, ResultSort } from '../state.js';
@@ -34,6 +35,7 @@ import type { AppDom, App } from './app.types.js';
 import type { PanelResolution } from '../core/panel-cfg.js';
 import type { ResultSource } from '../core/query-source.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
+import type { QueryExecutionService } from '../application/query-execution-service.js';
 
 // ── The Result contract (#267) ──────────────────────────────────────────────
 // `QueryTab.result` (state.ts) is deliberately opaque there
@@ -48,24 +50,11 @@ import type { SchemaGraphFocus } from '../core/schema-graph.js';
 // non-empty-meaningful value — an array or object — so presence and
 // truthiness agree).
 
-/** One statement's outcome in a multiquery script run (#83) — one entry of
- *  `ScriptResult.script`. `sql`/`ms` ride on every status; the rest is
- *  per-status (a 'rows' entry is the only one carrying real data). */
-export type ScriptEntry = { sql?: string; ms?: number } & (
-  | { status: 'ok' }
-  | { status: 'error'; error?: string }
-  | {
-      status: 'rows';
-      columns: { name: string; type: string }[];
-      rows: unknown[][];
-      truncated?: boolean;
-      preview?: string;
-      /** Local sort/width state, lazily attached by openRowsViewer — persists
-       *  for the life of that statement's open rows pane. */
-      viewerSort?: ResultSort;
-      viewerWidths?: Record<string, number>;
-    }
-);
+// ScriptEntry moved to core/script-result.ts (#276 Phase 1) — re-exported
+// below so every existing importer of ScriptEntry-from-results keeps
+// compiling unchanged; this module keeps using the name internally via the
+// `import type` above.
+export type { ScriptEntry };
 
 /** A multiquery script run's `tab.result` shape (#83): one row per executed
  *  statement, replacing the ordinary StreamResult-based shape wholesale. */
@@ -169,13 +158,9 @@ export interface ResultsApp {
   elapsedMs(): number;
   wallNow(): number;
   ensureFreshToken(): Promise<boolean>;
-  runReadInto(
-    result: StreamResult,
-    opts: {
-      sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal;
-      queryId?: string; onChunk?: (chunk: unknown) => void;
-    },
-  ): Promise<StreamResult>;
+  /** The shared request/stream/normalize service (#276 Phase 1) — this module
+   *  only ever needs `executeRead` (the detached Data view's own re-run). */
+  exec: Pick<QueryExecutionService, 'executeRead'>;
   recordBoundParams(boundParams: Array<{ name: string; rawValue: unknown }>): void;
   savePref(name: string, value: unknown): void;
   saveVarValues(): void;
@@ -849,7 +834,7 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
  * reads/writes the SAME shared `state.varValues`/`filterActive` stores as the
  * SQL Browser and dashboards (a value entered anywhere is offered everywhere).
  * A committed filter (or the Refresh button) re-runs ONLY this detached query —
- * full streaming/cap/abort parity via the shared `app.runReadInto` seam, with
+ * full streaming/cap/abort parity via the shared `app.exec.executeRead` seam, with
  * its own AbortController + generation guard so a newer/stale response can never
  * overwrite the current result and closing aborts in flight. The main workbench
  * tab's result/view/sort/panel/history and global running state are untouched.
@@ -1000,7 +985,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         // `execution.format` is always populated whether or not the KPI arm
         // ends up owning transport (it overrides to 'KPI' rather than clearing it).
         const result = newResult(execution.format!, execution.rowLimit);
-        await app.runReadInto(result, {
+        await app.exec.executeRead(result, {
           sql: mergedSourceSql(src, source.sql),
           format: execution.format,
           rowLimit: execution.rowLimit,

@@ -63,11 +63,11 @@ interface StateOverride {
 }
 
 // `makeApp()`'s own generic `overrides` (fake-app.ts) keeps a passed mock's
-// precise call-site type (e.g. a real `runReadInto` 2-arg spy) directly
+// precise call-site type (e.g. a real `exec.executeRead` 2-arg spy) directly
 // readable off the returned fixture — `.mock.calls[...]` reads below rely on
 // that.
-type RunReadIntoResult = Parameters<App['runReadInto']>[0];
-type RunReadIntoOpts = Parameters<App['runReadInto']>[1];
+type ExecuteReadResult = Parameters<App['exec']['executeRead']>[0];
+type ExecuteReadOpts = Parameters<App['exec']['executeRead']>[1];
 
 function appWithResult(result: Record<string, unknown> | null, over: StateOverride = {}): FakeApp {
   const app = makeApp();
@@ -807,24 +807,24 @@ describe('expandDataPane', () => {
     expect(row).not.toBeNull();
     expect(qs(row, '.dash-filters[aria-label="Query filters"]')).not.toBeNull();
     expect(qsa(row, '.var-field')).toHaveLength(1);
-    expect(app.runReadInto).not.toHaveBeenCalled(); // open = snapshot, no request
+    expect(app.exec.executeRead).not.toHaveBeenCalled(); // open = snapshot, no request
   });
 
   it('Refresh re-runs via the shared read seam (params + no session), replaces the result, records recents', async () => {
-    const runReadInto = vi.fn(async (result: RunReadIntoResult, opts: RunReadIntoOpts = {} as RunReadIntoOpts) => {
+    const executeReadFn = vi.fn(async (result: ExecuteReadResult, opts: ExecuteReadOpts = {} as ExecuteReadOpts) => {
       result.columns = [{ name: 'n', type: 'UInt64' }];
       result.rows = [[(opts.params as Record<string, unknown>).param_level]];
-      opts.onChunk!(undefined); // a streamed chunk → progress-only status, no repaint (#198)
+      opts.onChunk!(); // a streamed chunk → progress-only status, no repaint (#198)
       return result;
     });
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
     click(refreshBtn(overlay));
     await tick();
-    expect(app.runReadInto).toHaveBeenCalledTimes(1);
-    const [, opts = {} as RunReadIntoOpts] = app.runReadInto.mock.calls[0];
+    expect(app.exec.executeRead).toHaveBeenCalledTimes(1);
+    const [, opts = {} as ExecuteReadOpts] = app.exec.executeRead.mock.calls[0];
     expect(opts.sql).toBe('SELECT n, s FROM t WHERE s = {level:String}');
     expect(opts.rowLimit).toBe(100);
     expect(opts.params).toEqual({ param_level: 'Warning' }); // no session_id — plain SELECT
@@ -838,8 +838,8 @@ describe('expandDataPane', () => {
   });
 
   it('Refresh gives an explicit KPI panel ownership of transport and the two-row guard', async () => {
-    const runReadInto = vi.fn(async (result: RunReadIntoResult, _opts: RunReadIntoOpts = {} as RunReadIntoOpts) => result);
-    const app = makeApp({ runReadInto });
+    const executeReadFn = vi.fn(async (result: ExecuteReadResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.activeTab().specParsed!.panel = { cfg: { type: 'kpi' } };
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
@@ -847,7 +847,7 @@ describe('expandDataPane', () => {
     click(refreshBtn(overlay));
     await tick();
 
-    const [, opts = {} as RunReadIntoOpts] = app.runReadInto.mock.calls[0];
+    const [, opts = {} as ExecuteReadOpts] = app.exec.executeRead.mock.calls[0];
     expect(opts.format).toBe('KPI');
     expect(opts.rowLimit).toBe(2);
     expect(opts.params).toEqual({
@@ -858,8 +858,8 @@ describe('expandDataPane', () => {
   });
 
   it('Refresh blocks authored FORMAT when an explicit KPI panel owns transport', async () => {
-    const runReadInto = vi.fn(async (result: RunReadIntoResult) => result);
-    const app = makeApp({ runReadInto });
+    const executeReadFn = vi.fn(async (result: ExecuteReadResult) => result);
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.activeTab().specParsed!.panel = { cfg: { type: 'kpi' } };
     const result = paramResult();
     result.source!.sql += ' FORMAT CSV';
@@ -869,32 +869,32 @@ describe('expandDataPane', () => {
     click(refreshBtn(overlay));
     await tick();
 
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     expect(qs(overlay, '.detached-status').textContent)
       .toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
   });
 
   it('blocks the rerun and keeps the previous result + a status when a required value is missing', async () => {
-    const app = makeApp(); // default no-op runReadInto
+    const app = makeApp(); // default no-op exec.executeRead
     expandDataPane(app, paramResult()); // level unset → missing
     const overlay = qs(document, '.graph-overlay');
     click(refreshBtn(overlay));
     await tick();
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     expect(qs(overlay, '.detached-status').textContent).toContain('Enter a value for: level');
     expect(qsa(overlay, '.res-table tbody tr')).toHaveLength(2); // previous snapshot intact
   });
 
   it('discards a stale response: a newer rerun wins even if it resolves first', async () => {
     const resolvers: (() => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts = {} as RunReadIntoOpts) => new Promise<RunReadIntoResult>((res) => {
+    const executeReadFn = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts = {} as ExecuteReadOpts) => new Promise<ExecuteReadResult>((res) => {
       resolvers.push(() => {
         result.columns = [{ name: 'n', type: 'String' }];
         result.rows = [[(opts.params as Record<string, unknown>).param_level]];
         res(result);
       });
     }));
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -911,11 +911,11 @@ describe('expandDataPane', () => {
 
   it('closing the view aborts the in-flight detached request', async () => {
     let signal: AbortSignal | undefined;
-    const runReadInto = vi.fn((_result: RunReadIntoResult, opts: RunReadIntoOpts = {} as RunReadIntoOpts) => {
+    const executeReadFn = vi.fn((_result: ExecuteReadResult, opts: ExecuteReadOpts = {} as ExecuteReadOpts) => {
       signal = opts.signal;
       return new Promise<QueryResult>(() => {});
     });
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -927,37 +927,40 @@ describe('expandDataPane', () => {
   });
 
   it('threads the originating tab session when the source depended on one', async () => {
-    const runReadInto = vi.fn(async (result: RunReadIntoResult, _opts: RunReadIntoOpts = {} as RunReadIntoOpts) => result);
-    const app = makeApp({ runReadInto });
+    const executeReadFn = vi.fn(async (result: ExecuteReadResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
+    const app = makeApp({ exec: { executeRead: executeReadFn } });
     app.activeTab().chSession = 'sess-abc'; // e.g. the source used a temp table / SET
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
     click(refreshBtn(overlay));
     await tick();
-    const [, opts = {} as RunReadIntoOpts] = app.runReadInto.mock.calls[0];
+    const [, opts = {} as ExecuteReadOpts] = app.exec.executeRead.mock.calls[0];
     expect((opts.params as Record<string, unknown>).session_id).toBe('sess-abc');
   });
 
   it('shows a status and does not run when the token cannot be refreshed', async () => {
-    const app = makeApp({
-      ensureFreshToken: vi.fn(async () => false),
-      runReadInto: vi.fn(async (result: QueryResult) => result),
-    });
+    // Every mock assigned to a const first: TS's generic inference for
+    // `makeApp<O>`'s `O` fails (collapses the whole overrides literal to
+    // `never`) when a `vi.fn` mock is written inline alongside a nested
+    // `exec: {...}` override — the same convention every OTHER
+    // `exec.executeRead` fixture in this suite uses.
+    const executeRead = vi.fn(async (result: QueryResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
+    const ensureFreshToken = vi.fn(async () => false);
+    const app = makeApp({ ensureFreshToken, exec: { executeRead } });
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
     click(refreshBtn(overlay));
     await tick();
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     expect(qs(overlay, '.detached-status').textContent).toBe('Not signed in');
     expect(refreshBtn(overlay)!.disabled).toBe(false); // re-enabled after the blocked attempt
   });
 
   it('shows a status and keeps the previous result when the rerun errors', async () => {
-    const app = makeApp({
-      runReadInto: vi.fn(async (result: QueryResult) => { result.error = 'Boom'; return result; }),
-    });
+    const executeRead = vi.fn(async (result: QueryResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => { result.error = 'Boom'; return result; });
+    const app = makeApp({ exec: { executeRead } });
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -970,7 +973,8 @@ describe('expandDataPane', () => {
   });
 
   it('re-enables Refresh when a blocked rerun supersedes an in-flight run', async () => {
-    const app = makeApp({ runReadInto: vi.fn((): Promise<RunReadIntoResult> => new Promise(() => {})) }); // never resolves
+    const executeRead = vi.fn((_result: ExecuteReadResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts): Promise<ExecuteReadResult> => new Promise(() => {}));
+    const app = makeApp({ exec: { executeRead } }); // never resolves
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -989,7 +993,7 @@ describe('expandDataPane', () => {
   });
 
   // ── commit-on-success streaming policy (#198) ──────────────────────────────
-  // A controllable runReadInto: captures the in-flight result + onChunk so a
+  // A controllable exec.executeRead: captures the in-flight result + onChunk so a
   // test can emit chunks and resolve on its own schedule. `chunk(patch)` merges
   // into the result then fires onChunk; `finish(patch)` merges then resolves.
   // The (possibly partial-`progress`) patch a test can push into an in-flight
@@ -1006,7 +1010,7 @@ describe('expandDataPane', () => {
     finish: (patch?: ResultPatch) => void;
   }
   interface DeferredRunController {
-    fn: (result: QueryResult, opts: RunReadIntoOpts) => Promise<QueryResult>;
+    fn: (result: QueryResult, opts: ExecuteReadOpts) => Promise<QueryResult>;
     runs: DeferredRun[];
     last?: DeferredRun;
   }
@@ -1014,10 +1018,10 @@ describe('expandDataPane', () => {
     // `!`: `fn` is assigned unconditionally on the very next line, before any
     // caller can observe the placeholder.
     const ctl = { runs: [] as DeferredRun[] } as DeferredRunController;
-    ctl.fn = vi.fn((result: QueryResult, opts: RunReadIntoOpts) => new Promise<QueryResult>((resolve) => {
+    ctl.fn = vi.fn((result: QueryResult, opts: ExecuteReadOpts) => new Promise<QueryResult>((resolve) => {
       const run: DeferredRun = {
         result,
-        chunk: (patch = {}) => { Object.assign(result, patch); opts.onChunk!(undefined); },
+        chunk: (patch = {}) => { Object.assign(result, patch); opts.onChunk!(); },
         finish: (patch = {}) => { Object.assign(result, patch); resolve(result); },
       };
       ctl.runs.push(run);
@@ -1036,7 +1040,7 @@ describe('expandDataPane', () => {
 
   it('keeps the previous committed result visible during streaming and never flashes "Query returned 0 rows."', async () => {
     const run = deferredRun();
-    const app = makeApp({ runReadInto: run.fn });
+    const app = makeApp({ exec: { executeRead: run.fn } });
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1064,7 +1068,7 @@ describe('expandDataPane', () => {
 
   it('commits exactly once on success: before completion Copy/recents target the OLD result, after they target the NEW', async () => {
     const run = deferredRun();
-    const app = makeApp({ runReadInto: run.fn });
+    const app = makeApp({ exec: { executeRead: run.fn } });
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1087,7 +1091,7 @@ describe('expandDataPane', () => {
 
   it('Panel: streaming chunks do not churn the chart; a successful one-row commit switches once to KPI', async () => {
     const run = deferredRun();
-    const app = makeApp({ runReadInto: run.fn });
+    const app = makeApp({ exec: { executeRead: run.fn } });
     const instances: FakeChart[] = [];
     const RealChart = app.Chart;
     class TrackingChart extends RealChart {
@@ -1118,7 +1122,7 @@ describe('expandDataPane', () => {
 
   it('a current-generation cancelled result never replaces the committed result and records nothing', async () => {
     const run = deferredRun();
-    const app = makeApp({ runReadInto: run.fn });
+    const app = makeApp({ exec: { executeRead: run.fn } });
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1136,7 +1140,7 @@ describe('expandDataPane', () => {
 
   it('a late chunk from a superseded run does not update the status; only the newest run controls it', async () => {
     const run = deferredRun();
-    const app = makeApp({ runReadInto: run.fn });
+    const app = makeApp({ exec: { executeRead: run.fn } });
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');

@@ -13,11 +13,11 @@
 //   2. the concrete stubs below (`state`/`root`/`sqlEditor`/the `vi.fn()`
 //      actions/…) — this helper's long-standing real fixture values.
 //   3. `overrides` — generic in `O`, so a caller's own mock keeps its exact
-//      call-site type (e.g. a 2-arg `runReadInto` spy) instead of collapsing
-///     to `App`'s declared (argument-erased) method signature.
-// `dom`/`chCtx`/`actions` are nested objects, merged the same three-way
+//      call-site type (e.g. a 2-arg `exec.executeRead` spy) instead of
+//      collapsing to `App`'s declared (argument-erased) method signature.
+// `dom`/`chCtx`/`actions`/`exec` are nested objects, merged the same three-way
 // (defaults, stubs, override) so a caller overriding e.g. `chCtx: { onSignedOut }`
-// never has to re-spread the other `ChCtx` fields itself.
+// or `exec: { executeRead }` never has to re-spread the other sibling fields.
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
@@ -29,6 +29,7 @@ import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js
 import type { StreamResult } from '../../src/core/stream.js';
 import type { ChartJsConfigResult } from '../../src/core/chart-data.js';
 import type { ChartInstance } from '../../src/ui/chart-render.js';
+import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
 // exposes a destroy() spy, so the chart glue is testable without a real
@@ -138,7 +139,11 @@ const appDefaults: App = {
   now: () => 0,
   elapsedMs: () => 0,
   tickElapsed: () => {},
-  runReadInto: async (result) => result,
+  exec: {
+    executeRead: async (result) => result,
+    executeScript: async () => ({ entries: [], aborted: false }),
+    kill: async () => {},
+  },
   setRunBtn: () => {},
   renderVarStrip: () => {},
   setExportBtn: () => {},
@@ -164,14 +169,18 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
+  /** Partial like `dom`/`chCtx`/`actions` above — most fixtures only care
+   *  about overriding `executeRead` (the #185 detached-read seam / dashboard
+   *  tile transport); `executeScript`/`kill` fall back to the base stubs. */
+  exec?: Partial<QueryExecutionService>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
-// type (e.g. a real 2-arg `runReadInto` mock) — a plain `Partial<App>`
+// type (e.g. a real 2-arg `exec.executeRead` mock) — a plain `Partial<App>`
 // parameter would widen every override to App's declared (argument-erased)
 // signature, losing `.mock`/`.mockClear` for the rest of the test. No
 // explicit return-type annotation: inferring it keeps every OTHER concrete
@@ -208,9 +217,15 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     saveVarRecent: vi.fn(),
     saveVarRecentDisabled: vi.fn(),
     recordBoundParams: vi.fn(),
-    // #185 detached-read seam: no-op by default (snapshot cases never call it);
+    // #185 detached-read seam + #193 dashboard-tile transport + #83 script
+    // transport, now the shared QueryExecutionService (#276 Phase 1):
+    // `executeRead` is no-op by default (snapshot cases never call it);
     // interactive-rerun tests override it to stream rows into the result.
-    runReadInto: vi.fn(async (result: StreamResult) => result),
+    exec: {
+      executeRead: vi.fn(async (result: StreamResult) => result),
+      executeScript: vi.fn(async () => ({ entries: [], aborted: false })),
+      kill: vi.fn(async () => {}),
+    },
     clearVarRecent: vi.fn(),
     clearAllVarRecent: vi.fn(),
     saveJSON: vi.fn(),
@@ -289,6 +304,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     dom: { ...appDefaults.dom, ...base.dom, ...(overrides.dom ?? {}) },
     chCtx: { ...appDefaults.chCtx, ...base.chCtx, ...(overrides.chCtx ?? {}) },
     actions: { ...appDefaults.actions, ...base.actions, ...(overrides.actions ?? {}) },
+    exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

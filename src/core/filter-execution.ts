@@ -58,7 +58,7 @@ export function filterSqlDiagnostics(sql?: string | null): FilterSqlDiagnostic[]
 /** `filterExecution`'s caller-supplied defaults — today just extra/overriding
  *  ClickHouse HTTP `params`. */
 export interface FilterExecutionDefaults {
-  params?: Record<string, unknown>;
+  params?: Record<string, string | number>;
 }
 
 /** `filterExecution`'s return shape: the owned, lossless, bounded structured
@@ -67,7 +67,7 @@ export interface FilterExecutionPlan {
   owned: true;
   format: 'Filter';
   rowLimit: number;
-  params: Record<string, unknown>;
+  params: Record<string, string | number>;
   diagnostics: FilterSqlDiagnostic[];
   error: string | null;
 }

@@ -22,7 +22,6 @@ import type {
   ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, BoundParamSnapshot, FieldControl,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
-import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, prepareExportSql, formatBytes, formatRows } from '../core/format.js';
@@ -32,8 +31,7 @@ import { buildCardGraph } from '../core/schema-cards.js';
 import type { SchemaCardColumnRow } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
-import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
-import type { StreamResult } from '../core/stream.js';
+import { newResult, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
 import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
@@ -99,6 +97,7 @@ import type { App, ActionsRegistry, SchemaFocus, ChCtx as AppChCtx } from './app
 import type { CreateAppEnv } from '../env.types.js';
 import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core/schema-graph.js';
 import type { LineageFocus } from '../net/ch-client.js';
+import { createQueryExecutionService } from '../application/query-execution-service.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -139,7 +138,7 @@ interface RunOpts {
 interface KpiExecutionTransport {
   format?: string;
   rowLimit?: number;
-  params: Record<string, unknown>;
+  params: Record<string, string | number>;
   error: string | null;
 }
 
@@ -172,16 +171,6 @@ interface FileHandleLike {
  *  resolved value. */
 interface DirectoryHandleLike {
   getFileHandle(name: string, opts?: { create?: boolean }): Promise<FileHandleLike>;
-}
-
-/** `attemptStatement`'s outcome — `ch.runQuery`'s own `RunQueryResult`
- *  (`{error?, raw?}`, `streamed` unused here), or one of the two classified
- *  failures the retry logic in `runScript` branches on. */
-interface AttemptResult {
-  raw?: string;
-  error?: string;
-  aborted?: boolean;
-  transient?: boolean;
 }
 
 interface WindowExtras {
@@ -800,9 +789,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // same-session requests of a script (env-injectable; tests set 0).
   const retryMs = env.retryMs != null ? env.retryMs : 250;
   const sleep = (ms: number): Promise<void> => new Promise((r) => win.setTimeout(r, ms));
-  // ClickHouse's transient "session is busy / locked by a concurrent client"
-  // (SESSION_IS_LOCKED, code 373) — retryable once the prior request releases it.
-  const SESSION_BUSY = /SESSION_IS_LOCKED|session .* is locked|locked by a concurrent/i;
+  // The shared request/stream/normalize + multiquery-script transport service
+  // (#276 Phase 1) — `run()`'s single read and `runScript()`'s per-statement
+  // retry/classify loop both delegate to it now; `ctx: () => chCtx` keeps the
+  // live (possibly refreshed) auth context rather than a stale snapshot.
+  const exec = createQueryExecutionService({
+    runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
+  });
+  app.exec = exec;
   // Milliseconds since the running query started (0 when idle). Used for the
   // live counter, computed fresh so each render/tick shows the current value.
   app.elapsedMs = () => (runState(app.state).runT0 != null ? now() - runState(app.state).runT0! : 0);
@@ -828,8 +822,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   // request, not the start) and cancels it while a query runs, so the default
   // (60s) never lapses between a script's back-to-back statements.
   function sessionParams(tab: QueryTab): { session_id: string } {
-    tab.chSession = (tab.chSession as string | undefined) || uid('sess-');
-    return { session_id: tab.chSession as string };
+    tab.chSession = tab.chSession || uid('sess-');
+    return { session_id: tab.chSession };
   }
   // Only TEMPORARY tables and session `SET`s need a session; permanent DDL/DML and
   // SELECTs are global. So we attach a session_id ONLY when the SQL needs one — or
@@ -898,49 +892,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
     return false;
   }
-
-  // Execute one already-prepared read request into a caller-owned `result`,
-  // with NO tab/global-state side effects. This is the request+stream+normalize
-  // core that the workbench run(), the dashboard tiles, and the detached Data
-  // view (#185) all perform identically: fold streamed lines into `result` via
-  // applyStreamLine, capture a raw (explicit-FORMAT/EXPLAIN) body, and classify
-  // an abort/network/other failure onto the result — never throwing. The caller
-  // owns token freshness (resolved before this call), the AbortController /
-  // query_id, parameter preparation, session_id, and any recent-value recording.
-  // `onChunk` is the per-read repaint hook (the workbench repaints its pane; a
-  // tile/detached view repaints its own surface). Returns the mutated `result`.
-  async function runReadInto(
-    result: StreamResult,
-    {
-      sql, format = 'Table', rowLimit = 0, params, signal, queryId, onChunk,
-    }: {
-      sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal; queryId?: string; onChunk?: (chunk: unknown) => void;
-    },
-  ): Promise<StreamResult> {
-    try {
-      const out = await ch.runQuery(chCtx, sql, {
-        format,
-        resultRowLimit: rowLimit,
-        queryId,
-        signal,
-        params: params as Record<string, string | number> | undefined,
-        onLine: (json) => applyStreamLine(json, result),
-        onChunk: onChunk ? () => onChunk(undefined) : undefined,
-      });
-      if (out.error != null) result.error = out.error;
-      else if (out.raw != null) {
-        result.rawText = out.raw;
-        result.progress.bytes = out.raw.length;
-      }
-    } catch (e) {
-      // Cancel = abort: keep whatever streamed in, flag it partial (no error).
-      if (e instanceof Error && e.name === 'AbortError') result.cancelled = true;
-      else if (e instanceof TypeError) result.error = 'Network error';
-      else result.error = String((e instanceof Error && e.message) || e);
-    }
-    return result;
-  }
-  app.runReadInto = runReadInto;
 
   async function run(opts?: RunOpts): Promise<void> {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
@@ -1064,7 +1015,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     });
 
     try {
-      await runReadInto(result, {
+      await exec.executeRead(result, {
         sql: runSql,
         format: fmt,
         rowLimit,
@@ -1138,19 +1089,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   }
 
-  // Run one script statement, classifying the outcome for the retry logic: a
-  // Cancel → { aborted }; a connection-level fetch failure → { error:'Network
-  // error', transient } (retryable); any other throw → { error }. Otherwise the
-  // runQuery result itself ({ raw } | { error }).
-  async function attemptStatement(stmt: string, opts: ch.RunQueryOptions): Promise<AttemptResult> {
-    try {
-      return await ch.runQuery(chCtx, stmt, opts);
-    } catch (e) {
-      if (e instanceof Error && e.name === 'AbortError') return { aborted: true };
-      return { error: e instanceof TypeError ? 'Network error' : String((e instanceof Error && e.message) || e), transient: e instanceof TypeError };
-    }
-  }
-
   // Run a `;`-separated script sequentially: one ClickHouse request per statement
   // (CH's HTTP interface runs exactly one statement per request), stopping on the
   // first failure. Row-returning statements (SELECT/WITH/SHOW/…) are fetched as
@@ -1189,63 +1127,39 @@ export function createApp(env: CreateAppEnv = {}): App {
     const sp = sessionParamsFor(tab, statements);
     app.state.running.value = true; // the results effect paints the (empty) grid
     try {
-      for (let i = 0; i < statements.length; i++) {
-        const stmt = statements[i];
-        // The wire text is the pipeline's per-statement execution view (#165):
-        // inactive optional blocks removed for row-returning statements,
-        // verbatim (byte-identical) for everything else and for block-free SQL.
-        // The result grid keeps showing the authored `stmt`.
-        const execStmt = paramSrc.statements[i].sql;
-        const rowReturning = isRowReturning(stmt);
-        // Over-fetch SELECTs by one past the display cap so a truncated result is
-        // detectable (at exactly the cap it isn't).
-        const opts: ch.RunQueryOptions = {
-          format: rowReturning ? 'JSONCompact' : 'TSV',
-          signal: app.state.abortController.signal,
+      // Transport/retry loop (one ClickHouse request per statement, the
+      // SESSION_IS_LOCKED / transient-network retry, stop-on-first-failure)
+      // now lives in application/query-execution-service.ts (#276 Phase 1) —
+      // this loop owns only orchestration: per-statement wire text (#165's
+      // execution view), the live query_id (for Cancel), pushing entries +
+      // repainting, and per-statement boundParams recording.
+      const res = await exec.executeScript({
+        statements: statements.map((stmt, i) => ({
+          sql: stmt,
+          // The wire text is the pipeline's per-statement execution view (#165):
+          // inactive optional blocks removed for row-returning statements,
+          // verbatim (byte-identical) for everything else and for block-free SQL.
+          // The result grid keeps showing the authored `stmt`.
+          execSql: paramSrc.statements[i].sql,
           // Per-statement prepared args (#134/#173): the pipeline binds only
           // row-returning statements, so a DDL / CREATE VIEW statement in the
           // script is sent with its {name:Type} placeholders intact.
-          params: { ...sp, ...paramSrc.statements[i].args, ...(rowReturning ? { max_result_rows: SELECT_ROW_CAP + 1, result_overflow_mode: 'break' } : {}) },
-        };
-        const s0 = now(); // this statement's own wall-clock (grid Time column)
+          params: { ...sp, ...paramSrc.statements[i].args },
+        })),
+        signal: app.state.abortController.signal,
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
-        rs.runQueryId = uid('q');
-        let out = await attemptStatement(execStmt, { ...opts, queryId: rs.runQueryId });
-        // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
-        // rejected before running → safe to retry (any statement). A connection
-        // reset (fetch TypeError → "Network error") leaves it UNKNOWN whether the
-        // statement ran, so only retry read-only statements — re-running an
-        // INSERT/DDL could double-apply it. (A mid-retry Cancel aborts the retry.)
-        const locked = out.error != null && SESSION_BUSY.test(out.error);
-        if (!out.aborted && (locked || (out.transient && rowReturning))) {
-          await sleep(retryMs);
-          rs.runQueryId = uid('q');
-          out = await attemptStatement(execStmt, { ...opts, queryId: rs.runQueryId });
-        }
-        if (out.aborted) { aborted = true; break; }
-        // A connection reset on a non-idempotent statement: don't silently retry —
-        // tell the user it may have run so they can decide whether to re-run.
-        if (out.transient && !rowReturning) out.error = 'Network error — the statement may have executed; re-run it manually if needed.';
-        const ms = now() - s0;
-        if (out.error != null) {
-          entries.push({ sql: stmt, status: 'error', error: out.error, ms });
+        onStatementStart: (_i, { queryId }) => { rs.runQueryId = queryId; },
+        onStatementResult: (i, entry) => {
+          entries.push(entry);
+          // #171: THIS statement succeeded — record its own boundParams (per
+          // statement, not per script: statement 1 of a later-failing script
+          // still records; an error entry stops the script and never records).
+          if (entry.status !== 'error') app.recordBoundParams([...paramSrc.statements[i].boundParams]);
           renderResults(app);
-          break; // stop-on-first-failure: skip the remaining statements
-        }
-        if (rowReturning) {
-          const sel = parseSelectResult(out.raw, SELECT_ROW_CAP);
-          entries.push({ sql: stmt, status: 'rows', columns: sel.columns, rows: sel.rows, truncated: sel.truncated, preview: firstRowPreview(sel.rows), ms });
-        } else {
-          entries.push({ sql: stmt, status: 'ok', ms });
-        }
-        // #171: THIS statement succeeded — record its own boundParams. Per
-        // statement, not per script: statement 1 of a later-failing script
-        // still records; the failed statement and anything after the `break`
-        // above never reaches this line.
-        app.recordBoundParams([...paramSrc.statements[i].boundParams]);
-        renderResults(app);
-      }
+        },
+      });
+      aborted = res.aborted;
     } finally {
       clearInterval(rs.runTick as ReturnType<typeof setInterval>);
       rs.runTick = null;
@@ -1299,7 +1213,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   function cancel(): void {
     if (!app.state.running.value) return;
     if (app.state.abortController) app.state.abortController.abort();
-    ch.killQuery(chCtx, runState(app.state).runQueryId, sqlString);
+    exec.kill(runState(app.state).runQueryId); // fire-and-forget, same as before
   }
   // Keep `app.hardenedVars` (#170 review) in sync with a field's just-computed
   // 'execute'-mode verdict: added when it's invalid, cleared otherwise — so a
@@ -2530,7 +2444,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.ensureFreshToken = ensureFreshToken;
 
   // Dashboard tiles stream their read-only SQL through the shared
-  // `app.runReadInto` seam directly (#193 — see src/ui/dashboard.js
+  // `app.exec.executeRead` seam directly (#193/#276 — see src/ui/dashboard.js
   // `runSlotTile`), the same path run() and the detached Data view use; the
   // former bespoke `runTile`/`queryDashboardTile`/`parseJsonResult` machinery
   // was retired so cap/settings fixes can't apply to only one path.

@@ -64,7 +64,7 @@ describe('configBase', () => {
 });
 
 // (dashboardTileSql + parseJsonResult were retired in #193 — the tiles stream
-// through the shared app.runReadInto seam, so SQL prep is now just the shared
+// through the shared app.exec.executeRead seam, so SQL prep is now just the shared
 // materialization (#165) and the client row bound is newResult's trim + `capped`
 // flag. The tile↔seam wiring is covered under `renderDashboard` below.)
 
@@ -226,7 +226,7 @@ describe('auth-handoff message predicates', () => {
 
 // ── ui/dashboard.js ──────────────────────────────────────────────────────────
 /** The logical tile outcome a `runTile` spy returns — folded onto the real
- * streaming `app.runReadInto` seam by `streamInto` below. */
+ * streaming `app.exec.executeRead` seam by `streamInto` below. */
 interface TileOutcome {
   columns?: Column[];
   rows?: unknown[][];
@@ -235,8 +235,8 @@ interface TileOutcome {
   cancelled?: boolean;
 }
 type TileSpy = (sql: string, params: Record<string, string>) => Promise<TileOutcome>;
-type RunReadIntoResult = Parameters<App['runReadInto']>[0];
-type RunReadIntoOpts = Parameters<App['runReadInto']>[1];
+type ExecuteReadResult = Parameters<App['exec']['executeRead']>[0];
+type ExecuteReadOpts = Parameters<App['exec']['executeRead']>[1];
 
 /** A saved-favorite fixture, loose enough for every shape this suite builds
  * (`spec`/extension fields ride through `savedQuery`'s own untyped rest). */
@@ -265,7 +265,7 @@ const kpiResult = (): TileOutcome =>
 // with (see `streamInto` below).
 const tile = (impl?: TileSpy): ReturnType<typeof vi.fn<TileSpy>> => vi.fn(impl);
 
-// Bridge the legacy tile-outcome fixtures onto the streaming `app.runReadInto`
+// Bridge the legacy tile-outcome fixtures onto the streaming `app.exec.executeRead`
 // seam (#193): `spy(sql, param_* args)` returns the logical tile outcome
 // ({columns, rows, meta} | {error, cancelled}); `streamInto` folds it into the
 // caller-owned result exactly as ClickHouse's JSONStrings…Progress stream would
@@ -273,9 +273,9 @@ const tile = (impl?: TileSpy): ReturnType<typeof vi.fn<TileSpy>> => vi.fn(impl);
 // then fires onChunk once. Keeping the spy's (sql, params) signature lets the
 // existing call-count/arg assertions ride unchanged — only the param_* subset
 // reaches the spy (the seam's readonly:2 / max_result_bytes / rowLimit are
-// asserted separately, on the runReadInto opts). Returns the runReadInto mock.
+// asserted separately, on the executeRead opts). Returns the executeRead mock.
 function streamInto(spy: TileSpy) {
-  return vi.fn(async (result: RunReadIntoResult, opts: RunReadIntoOpts = {} as RunReadIntoOpts) => {
+  return vi.fn(async (result: ExecuteReadResult, opts: ExecuteReadOpts = {} as ExecuteReadOpts) => {
     const params = (opts.params ?? {}) as Record<string, string>;
     const paramArgs = Object.fromEntries(Object.entries(params).filter(([k]) => k.startsWith('param_')));
     const out = await spy(opts.sql as string, paramArgs);
@@ -286,7 +286,7 @@ function streamInto(spy: TileSpy) {
     result.rows = rows;
     result.progress = { ...result.progress, rows: rows.length, bytes: (out.meta && out.meta.bytes) || 0 };
     result.capped = !!(out.meta && out.meta.truncated);
-    if (opts.onChunk) opts.onChunk(undefined);
+    if (opts.onChunk) opts.onChunk();
     return result;
   });
 }
@@ -295,8 +295,8 @@ function streamInto(spy: TileSpy) {
 // `runTile` spy is exposed as `app.tileSpy` for the few call-count assertions
 // that referenced the old `app.runTile`.
 function dashApp(favorites: FavoriteInput[], runTile: TileSpy) {
-  const runReadInto = streamInto(runTile);
-  const app = makeApp({ runReadInto }) as TestApp;
+  const executeRead = streamInto(runTile);
+  const app = makeApp({ exec: { executeRead } }) as TestApp;
   app.tileSpy = runTile;
   setSaved(app, favorites);
   return app;
@@ -545,7 +545,7 @@ describe('renderDashboard', () => {
 
   it('has a theme toggle wired to app.toggleTheme', async () => {
     const toggleTheme = vi.fn();
-    const app = makeApp({ runReadInto: streamInto(vi.fn(async () => chartResult())), toggleTheme });
+    const app = makeApp({ exec: { executeRead: streamInto(vi.fn(async () => chartResult())) }, toggleTheme });
     app.state.theme = 'dark'; // exercise the dark-theme icon branch
     setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     await renderDashboard(app);
@@ -559,7 +559,7 @@ describe('renderDashboard', () => {
     const onSignedOut = vi.fn();
     const ensureFreshToken = vi.fn(async () => false);
     const app = makeApp({
-      runReadInto: streamInto(vi.fn(async () => chartResult())),
+      exec: { executeRead: streamInto(vi.fn(async () => chartResult())) },
       ensureFreshToken,
       chCtx: { onSignedOut },
     });
@@ -569,7 +569,7 @@ describe('renderDashboard', () => {
     ]);
     await renderDashboard(app);
     expect(onSignedOut).toHaveBeenCalledTimes(1); // one redirect, not one per tile
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     expect(qsa(app.root, '.dash-tile').length).toBe(0);
   });
 
@@ -769,15 +769,15 @@ describe('renderDashboard', () => {
   it('changing layout never re-runs tile queries', async () => {
     const app = oneFav();
     await renderDashboard(app);
-    expect(app.runReadInto).toHaveBeenCalledTimes(1); // the initial render
+    expect(app.exec.executeRead).toHaveBeenCalledTimes(1); // the initial render
     seg(app.root, 'Full width')!.dispatchEvent(new Event('click', { bubbles: true }));
     seg(app.root, 'Report')!.dispatchEvent(new Event('click', { bubbles: true }));
     seg(app.root, '2 columns')!.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.runReadInto).toHaveBeenCalledTimes(1); // presentation-only — no refetch
+    expect(app.exec.executeRead).toHaveBeenCalledTimes(1); // presentation-only — no refetch
   });
 });
 
-// ── #193: tiles on the shared streaming app.runReadInto seam ─────────────────
+// ── #193: tiles on the shared streaming app.exec.executeRead seam ─────────────────
 describe('renderDashboard — streaming seam (#193)', () => {
   const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
   const yearInput = (root: ParentNode | null): HTMLInputElement => qs<HTMLInputElement>(root, '.var-field input[aria-label="year"]');
@@ -794,8 +794,8 @@ describe('renderDashboard — streaming seam (#193)', () => {
       vi.fn(async () => chartResult()));
     app.state.varValues = { year: '2024' };
     await renderDashboard(app);
-    expect(app.runReadInto).toHaveBeenCalledTimes(1);
-    const [result, opts = {} as RunReadIntoOpts] = app.runReadInto.mock.calls[0];
+    expect(app.exec.executeRead).toHaveBeenCalledTimes(1);
+    const [result, opts = {} as ExecuteReadOpts] = app.exec.executeRead.mock.calls[0];
     expect(opts.format).toBe('Table');
     expect(opts.rowLimit).toBe(DASH_TILE_ROW_CAP + 1); // server max_result_rows = CAP + 1 (sentinel)
     expect(result.rowLimit).toBe(DASH_TILE_ROW_CAP); // client-side trim = CAP
@@ -806,7 +806,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('uses the same owned typed transport and two-row sentinel for an explicit KPI, rendered in a KPI band (#240)', async () => {
     const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 42 AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn(async () => kpiResult()));
     await renderDashboard(app);
-    const [result, opts = {} as RunReadIntoOpts] = app.runReadInto.mock.calls[0];
+    const [result, opts = {} as ExecuteReadOpts] = app.exec.executeRead.mock.calls[0];
     expect(result.rawFormat).toBe('KPI');
     expect(result.rowLimit).toBe(2);
     expect(opts).toMatchObject({ format: 'KPI', rowLimit: 2 });
@@ -822,7 +822,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('uses the KPI-specific authored FORMAT diagnostic and sends no request, as an in-band state card (#240)', async () => {
     const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT 1 FORMAT CSV', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn());
     await renderDashboard(app);
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     const card = qs(app.root, '.dash-kpi-state-card');
     expect(card.getAttribute('role')).toBe('alert');
     expect(qs(card, '.dash-kpi-state-message').textContent)
@@ -832,7 +832,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('shows an in-band unfilled state card for an explicit KPI with a missing {name:Type} value, sending no request (#240)', async () => {
     const app = dashApp([{ id: '1', name: 'KPI', sql: 'SELECT {year:UInt16} AS n', favorite: true, panel: { cfg: { type: 'kpi' } } }], vi.fn());
     await renderDashboard(app);
-    expect(app.runReadInto).not.toHaveBeenCalled();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
     const card = qs(app.root, '.dash-kpi-state-card');
     expect(card.getAttribute('role')).toBe('status');
     expect(qs(card, '.dash-kpi-state-message').textContent).toBe('Enter a value for: year');
@@ -881,21 +881,21 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('exactly-CAP is not truncated; CAP+1 is trimmed AND flagged (req 1, via the real applyStreamLine)', async () => {
     // Stream N single-column rows through the REAL accumulator so the client cap
     // (newResult('Table', CAP)) trims + flags exactly as production would.
-    const streamN = (n: number) => vi.fn(async (result: RunReadIntoResult, opts: RunReadIntoOpts) => {
+    const streamN = (n: number) => vi.fn(async (result: ExecuteReadResult, opts: ExecuteReadOpts) => {
       applyStreamLine({ meta: [{ name: 'n', type: 'UInt64' }] }, result);
       for (let i = 0; i < n; i++) applyStreamLine({ row: { n: i } }, result);
       applyStreamLine({ progress: { read_rows: n, read_bytes: 10 } }, result);
-      opts.onChunk?.(undefined);
+      opts.onChunk?.();
       return result;
     });
     const fav: FavoriteInput[] = [{ id: '1', name: 'Q', sql: 'q', favorite: true, panel: { cfg: { type: 'table' } } }];
 
-    const exact = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP) });
+    const exact = makeApp({ exec: { executeRead: streamN(DASH_TILE_ROW_CAP) } });
     setSaved(exact, fav);
     await renderDashboard(exact);
     expect(qs(exact.root, '.dash-tile-foot').textContent).not.toContain('rows fetched');
 
-    const over = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP + 1) });
+    const over = makeApp({ exec: { executeRead: streamN(DASH_TILE_ROW_CAP + 1) } });
     setSaved(over, fav);
     await renderDashboard(over);
     const foot = qs(over.root, '.dash-tile-foot').textContent;
@@ -904,14 +904,14 @@ describe('renderDashboard — streaming seam (#193)', () => {
   });
 
   it('updates only the loading placeholder as rows stream — never classifies mid-stream (req 4)', async () => {
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => {
+    const executeRead = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts) => {
       applyStreamLine({ meta: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }] }, result);
       applyStreamLine({ row: { k: 'a', v: '1' } }, result);
       applyStreamLine({ progress: { read_rows: 1420, read_bytes: 10 } }, result);
-      opts.onChunk?.(undefined); // mid-stream repaint
-      return new Promise<RunReadIntoResult>(() => {}); // never settles — stay in the loading state
+      opts.onChunk?.(); // mid-stream repaint
+      return new Promise<ExecuteReadResult>(() => {}); // never settles — stay in the loading state
     });
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead } });
     setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     renderDashboard(app);
     await flush();
@@ -928,7 +928,7 @@ describe('renderDashboard — streaming seam (#193)', () => {
     await renderDashboard(app);
     expect(qs(app.root, '.dash-tile-error').textContent)
       .toContain('Remove the explicit FORMAT clause');
-    expect(app.runReadInto).not.toHaveBeenCalled(); // never mis-parsed as a structured stream
+    expect(app.exec.executeRead).not.toHaveBeenCalled(); // never mis-parsed as a structured stream
   });
 
   it('full Refresh performs exactly one token preflight before fanning out (req 2)', async () => {
@@ -945,23 +945,23 @@ describe('renderDashboard — streaming seam (#193)', () => {
     app.state.varValues = { year: '1' };
     await renderDashboard(app);
     expect(app.ensureFreshToken).toHaveBeenCalledTimes(1); // the initial refresh
-    app.runReadInto.mockClear();
+    app.exec.executeRead.mockClear();
     app.ensureFreshToken.mockResolvedValue(false); // session lost before the affected wave
     commit(yearInput(app.root), '2');
     await flush();
     expect(app.ensureFreshToken).toHaveBeenCalledTimes(2); // one preflight for the affected wave
     expect(app.chCtx.onSignedOut).toHaveBeenCalledTimes(1);
-    expect(app.runReadInto).not.toHaveBeenCalled(); // failed preflight → no tile requests
+    expect(app.exec.executeRead).not.toHaveBeenCalled(); // failed preflight → no tile requests
   });
 
   it('a newer wave aborts the previous slot request at wave creation (generation reserved up front, req 3/5)', async () => {
     const signals: (AbortSignal | undefined)[] = [];
     const resolvers: (() => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => {
+    const executeRead = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts) => {
       signals.push(opts.signal);
-      return new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+      return new Promise<ExecuteReadResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead } });
     setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -985,11 +985,11 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('a queued Refresh worker superseded by a newer wave discards itself without issuing (req 3/5/7)', async () => {
     const calls: string[] = [];
     const resolvers: (() => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => {
+    const executeRead = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts) => {
       calls.push((opts.params as Record<string, string>).param_year);
-      return new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+      return new Promise<ExecuteReadResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead } });
     setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app); // wave A (full Refresh)
@@ -1010,9 +1010,9 @@ describe('renderDashboard — streaming seam (#193)', () => {
 
   it('an affected wave is bounded to the same 6-way pool as full Refresh (req 7)', async () => {
     const resolvers: (() => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) =>
-      new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
-    const app = makeApp({ runReadInto });
+    const executeRead = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts) =>
+      new Promise<ExecuteReadResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
+    const app = makeApp({ exec: { executeRead } });
     setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -1020,10 +1020,10 @@ describe('renderDashboard — streaming seam (#193)', () => {
     expect(resolvers).toHaveLength(6); // initial full refresh caps at 6
     while (resolvers.length) { resolvers.splice(0).forEach((r) => r()); await flush(); }
     await rendered;
-    const before = runReadInto.mock.calls.length; // 8
+    const before = executeRead.mock.calls.length; // 8
     commit(yearInput(app.root), '2');
     await flush();
-    expect(runReadInto.mock.calls.length - before).toBe(6); // the affected wave also caps at 6 concurrent
+    expect(executeRead.mock.calls.length - before).toBe(6); // the affected wave also caps at 6 concurrent
     // …but every affected tile shows the loading placeholder up front (not just
     // the 6 in flight) — no queued tile lingers on stale content while waiting.
     expect(qsa(app.root, '.dash-tile-load')).toHaveLength(8);
@@ -1031,12 +1031,12 @@ describe('renderDashboard — streaming seam (#193)', () => {
   });
 
   it('a stale (superseded) response neither renders nor records recents (req 6)', async () => {
-    const resolvers: ((out: Partial<RunReadIntoResult>) => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => new Promise<RunReadIntoResult>((res) => resolvers.push((out) => {
+    const resolvers: ((out: Partial<ExecuteReadResult>) => void)[] = [];
+    const executeRead = vi.fn((result: ExecuteReadResult, opts: ExecuteReadOpts) => new Promise<ExecuteReadResult>((res) => resolvers.push((out) => {
       Object.assign(result, out);
       res(result);
     })));
-    const app = makeApp({ runReadInto });
+    const app = makeApp({ exec: { executeRead } });
     setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -1772,7 +1772,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
       // contextually dependent on O's unification — inference collapse);
       // resolving `vi.fn()`'s type first, standalone, sidesteps it.
       const wallNow = vi.fn(() => 1751200000000);
-      const app = makeApp({ runReadInto: streamInto(runTile), wallNow });
+      const app = makeApp({ exec: { executeRead: streamInto(runTile) }, wallNow });
       setSaved(app, favorites);
       app.state.varValues = { from: '-1h' };
       await renderDashboard(app);
@@ -2047,7 +2047,7 @@ describe('app config base on the dashboard route', () => {
 
 describe('app.renderDashboard', () => {
   it('renders the favorites dashboard into the root — streaming the tile through the real seam (#193)', async () => {
-    // End-to-end through createApp's real app.runReadInto → ch.runQuery → the
+    // End-to-end through createApp's real app.exec.executeRead → ch.runQuery → the
     // streaming JSONStringsEachRowWithProgress reader (not resp.json()), the
     // same transport run() and the detached view use.
     const fetch = makeFetch([[(u, sql) => /mychart/.test(sql || ''), resp({
