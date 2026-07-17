@@ -1063,6 +1063,12 @@ body.detached-tab .graph-overlay-panel {
   margin-left: auto; font-family: var(--mono);
   font-size: 10.5px; color: var(--fg-faint); white-space: nowrap;
 }
+/* On surfaces with no config bar to host it inline, the note is a standalone
+   block above the canvas — left-aligned, padded to match the canvas gutter. */
+.chart-cap-note--standalone {
+  margin-left: 0; flex-shrink: 0;
+  padding: 6px 14px 0; white-space: normal;
+}
 /* The canvas fills the remaining space; Chart.js is responsive within it. The
    min-height floor keeps it visible (and lets .chart-view scroll) when a tall
    wrapped config bar would otherwise leave it 0px. */

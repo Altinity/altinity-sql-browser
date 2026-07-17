@@ -4,7 +4,7 @@
 // pivot/scale layer is unit-testable at 100% and the DOM glue in
 // `ui/results.js` stays a thin wrapper around `new Chart(canvas, config)`.
 
-import { isNumericType } from './format.js';
+import { isNumericType, formatRows } from './format.js';
 import { hasFieldValueFormat, resolveFieldConfig } from './field-config.js';
 import type { FieldPresentation } from './field-config.js';
 import type {
@@ -522,23 +522,59 @@ export function visibleChartMeasures(columns: Column[], cfg: ChartConfig, fieldC
   }).filter((measure) => !measure.presentation.hidden);
 }
 
+/** The browser-side aggregation identity a chart grouped its fetched rows on:
+ *  raw `X` alone (`'x'`), or raw `(X, Series)` when a group-by is set. */
+export type ChartGroupKey = 'x' | 'x+series';
+
+/**
+ * Typed, explicit metadata about the browser-side transform `buildChartData`
+ * applied — how many rows/categories were fetched vs. displayed, and whether
+ * the visible chart combined duplicate aggregation cells. It describes only
+ * what the chart did; it makes no claim about whether the SQL pre-aggregated.
+ */
+export interface ChartDataMeta {
+  /** `rows.length` — every fetched row, before the category cap. */
+  totalRows: number;
+  /** Unique raw X values across the full fetched result. */
+  totalCategories: number;
+  /** Retained (displayed) X categories — `min(totalCategories, cap)`. */
+  shownCategories: number;
+  /** `shownCategories < totalCategories`. */
+  categoriesTruncated: boolean;
+  /** At least two fetched rows mapped to the same *displayed* aggregation
+   *  cell (X without Series, `(X, Series)` with Series). A duplicate that
+   *  occurs only in an omitted category never sets this. */
+  duplicateCellsSummed: boolean;
+  /** The aggregation identity — `'x'` when `cfg.series == null`, else `'x+series'`. */
+  groupKey: ChartGroupKey;
+}
+
 /** `buildChartData`'s library-agnostic result: labels + one dataset per
- *  measure or series value. */
+ *  measure or series value, plus explicit transform metadata. */
 export interface ChartDataResult {
   labels: string[];
   datasets: { label: string; data: (number | null)[] }[];
+  meta: ChartDataMeta;
 }
 
 /**
- * Transform `rows` (capped) + columns into a library-agnostic
- * { labels, datasets:[{label, data}] } per the encoding in `cfg`. Rows are
- * grouped on the *raw* X cell value (first-seen order) and the measure is
- * SUM-aggregated per cell, so multiple rows sharing an X bucket combine rather
- * than the last one silently winning. `chartLabel` is applied only to the
- * final tick text, never to the grouping identity.
- * - group-by (cfg.series set): one dataset per series value, aligned to the
- *   union of X categories, missing cell → null.
+ * Transform the *full* fetched `rows` + columns into a library-agnostic
+ * { labels, datasets:[{label, data}], meta } per the encoding in `cfg`.
+ *
+ * The row cap (`chartRowCap(cfg.type)`) limits the number of X *categories*,
+ * never the raw rows aggregated: pass 1 discovers unique raw X keys in
+ * first-seen order and retains the first `cap` of them; pass 2 aggregates
+ * every fetched row whose X is one of the retained categories, so a row that
+ * appears after the cap-th input row still contributes to its displayed
+ * category. Categories are neither value-ranked, sorted, nor folded into an
+ * `Other` bucket. Grouping identity is the *raw* X cell value (`String(...)`);
+ * `chartLabel` is applied only to the final tick text.
+ * - group-by (cfg.series set): one dataset per series value *encountered in a
+ *   displayed category*, aligned to the retained X categories, missing → null;
  * - otherwise: one dataset per visible measure in `cfg.y`.
+ * The measure is SUM-aggregated per cell, so multiple rows sharing a cell
+ * combine rather than the last one silently winning. `meta.duplicateCellsSummed`
+ * records whether that happened for a *displayed* cell.
  * `measures` defaults to `visibleChartMeasures(...)` but the caller
  * (`chartJsConfig`) passes the value it already resolved so a single render
  * doesn't resolve field metadata twice; direct/test callers may omit it.
@@ -550,7 +586,6 @@ export function buildChartData(
   fieldConfig: FieldConfig = {},
   measures: ChartMeasure[] = visibleChartMeasures(columns, cfg, fieldConfig),
 ): ChartDataResult {
-  const slice = rows.slice(0, chartRowCap(cfg.type));
   const num = (v: unknown): number | null => {
     if (v == null || v === '') return null;
     const parsed = Number(v);
@@ -560,40 +595,84 @@ export function buildChartData(
     const parsed = num(value);
     if (parsed != null) map.set(key, (map.get(key) || 0) + parsed);
   };
-  const cats: string[] = []; // raw X keys, first-seen order
-  const seen = new Set<string>();
-  const noteCat = (xk: string): void => { if (!seen.has(xk)) { seen.add(xk); cats.push(xk); } };
 
+  // Pass 1: discover unique raw X categories in first-seen order across the
+  // full fetched result, then retain the first `cap` for display.
+  const allCats: string[] = [];
+  const seenCat = new Set<string>();
+  for (const row of rows) {
+    const xk = String(row[cfg.x]);
+    if (!seenCat.has(xk)) { seenCat.add(xk); allCats.push(xk); }
+  }
+  const cats = allCats.slice(0, chartRowCap(cfg.type)); // displayed, first-seen order
+  const displayed = new Set(cats);
+  const groupKey: ChartGroupKey = cfg.series != null ? 'x+series' : 'x';
+  const meta = (duplicateCellsSummed: boolean): ChartDataMeta => ({
+    totalRows: rows.length,
+    totalCategories: allCats.length,
+    shownCategories: cats.length,
+    categoriesTruncated: cats.length < allCats.length,
+    duplicateCellsSummed,
+    groupKey,
+  });
+
+  // Pass 2: aggregate only rows whose X belongs to a displayed category.
   if (cfg.series != null) {
     const yi = measures[0]?.index;
-    if (yi == null) return { labels: [], datasets: [] };
+    if (yi == null) return { labels: [], datasets: [], meta: meta(false) };
     const groups = new Map<string, Map<string, number>>(); // seriesValue -> Map(xKey -> summed y)
-    for (const row of slice) {
+    const seenCells = new Map<string, Set<string>>(); // seriesValue -> Set(xKey) already seen
+    let dup = false;
+    for (const row of rows) {
       const xk = String(row[cfg.x]);
-      noteCat(xk);
+      if (!displayed.has(xk)) continue;
       const sk = String(row[cfg.series]);
+      let cellSet = seenCells.get(sk);
+      if (!cellSet) { cellSet = new Set(); seenCells.set(sk, cellSet); }
+      if (cellSet.has(xk)) dup = true; else cellSet.add(xk);
       if (!groups.has(sk)) groups.set(sk, new Map());
-      const byCat = groups.get(sk)!;
-      add(byCat, xk, row[yi]);
+      add(groups.get(sk)!, xk, row[yi]);
     }
     const datasets = [...groups.entries()].map(([name, byCat]) => ({
       label: name,
       data: cats.map((xk) => byCat.has(xk) ? byCat.get(xk)! : null),
     }));
-    return { labels: cats.map(chartLabel), datasets };
+    return { labels: cats.map(chartLabel), datasets, meta: meta(dup) };
   }
 
   const sums: Map<string, number>[] = measures.map(() => new Map()); // per measure: xKey -> summed y
-  for (const row of slice) {
+  const seenX = new Set<string>();
+  let dup = false;
+  for (const row of rows) {
     const xk = String(row[cfg.x]);
-    noteCat(xk);
+    if (!displayed.has(xk)) continue;
+    if (seenX.has(xk)) dup = true; else seenX.add(xk);
     measures.forEach(({ index }, mi) => add(sums[mi], xk, row[index]));
   }
   const datasets = measures.map(({ presentation }, mi) => ({
     label: presentation.displayName,
     data: cats.map((xk) => sums[mi].has(xk) ? sums[mi].get(xk)! : null),
   }));
-  return { labels: cats.map(chartLabel), datasets };
+  return { labels: cats.map(chartLabel), datasets, meta: meta(dup) };
+}
+
+/**
+ * The user-facing disclosure of the browser-side transform, or `null` when the
+ * chart displays every fetched category and summed no duplicate cell. Describes
+ * only what the chart did — never whether the SQL was pre-aggregated. Truncation
+ * and duplicate summing are independent facts, joined with `; ` when both hold.
+ */
+export function chartDataNote(meta: ChartDataMeta): string | null {
+  const clauses: string[] = [];
+  if (meta.categoriesTruncated) {
+    clauses.push('first ' + formatRows(meta.shownCategories) + ' of ' + formatRows(meta.totalCategories) + ' categories');
+  }
+  if (meta.duplicateCellsSummed) {
+    clauses.push(meta.groupKey === 'x+series'
+      ? 'duplicate X/series rows summed in the browser'
+      : 'duplicate X rows summed in the browser');
+  }
+  return clauses.length ? clauses.join('; ') : null;
 }
 
 const withAlpha = (hex: string, frac: number): string => {
@@ -609,6 +688,11 @@ export interface ChartJsConfigOptions {
   fieldConfig?: FieldConfig;
   hideGrid?: boolean;
   measures?: ChartMeasure[];
+  /** A pre-aggregated `buildChartData` result — the renderer computes it once
+   *  (it needs `.meta` for the disclosure note) and threads it here so a single
+   *  render aggregates the fetched rows exactly once. Omitted by direct/test
+   *  callers, which fall back to aggregating inline. */
+  data?: ChartDataResult;
 }
 
 /** One Chart.js dataset — the fields this module sets, plus whatever
@@ -705,7 +789,9 @@ export function chartJsConfig(
   // same array to buildChartData so a single config build resolves the metadata
   // once instead of three times (#254 review finding).
   const measures = opts.measures ?? visibleChartMeasures(columns, cfg, fieldConfig);
-  const { labels, datasets } = buildChartData(columns, rows, cfg, fieldConfig, measures);
+  // `opts.data` (when the renderer already aggregated for its note) avoids a
+  // second full aggregation per render; direct/test callers fall back inline.
+  const { labels, datasets } = opts.data ?? buildChartData(columns, rows, cfg, fieldConfig, measures);
   const pal = colors.palette;
   const horizontal = cfg.type === 'hbar';
   const isPie = cfg.type === 'pie';

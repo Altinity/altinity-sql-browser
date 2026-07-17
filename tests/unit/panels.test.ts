@@ -676,6 +676,20 @@ describe('renderResolvedPanel', () => {
     const out = PANEL_TYPES.logs.renderPanel({ app: app, result: r, cfg: { type: 'logs' }, cap: 10 });
     expect(out.node.textContent).toContain('No time + message columns');
   });
+  it('a Dashboard chart panel discloses the category cap despite hidden controls (#111)', () => {
+    const app = makeApp();
+    const r = newResult('Table');
+    r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+    r.rows = Array.from({ length: 40 }, (_, i) => ['k' + i, '1']); // 40 categories > pie cap 30
+    const out = PANEL_TYPES.pie.renderPanel({
+      app, result: r, cfg: { type: 'pie', x: 0, y: [1], series: null },
+      surface: 'dashboard', rerender: () => {}, readonly: true,
+    });
+    expect(qs(out.node, '.chart-config')).toBeNull(); // dashboard hides the config bar
+    const note = qs(out.node, '.chart-cap-note');
+    expect(note).not.toBeNull();
+    expect(note.textContent).toBe('first 30 of 40 categories'); // still disclosed
+  });
   it("the chart arm's destroy tears down its instance exactly once", () => {
     const app = makeApp();
     const r = chartResult();

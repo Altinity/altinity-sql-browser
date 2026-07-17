@@ -5,9 +5,9 @@ import {
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
   normalizeChartStyle, chartStylePresets, chartStylePreset,
   applyChartStylePreset, shouldShowChartPoints, formatChartValue, visibleChartMeasures,
-  CHART_STYLE_PRESETS,
+  CHART_STYLE_PRESETS, chartDataNote,
 } from '../../src/core/chart-data.js';
-import type { ChartConfig, ChartFamilyType, ChartMeasure, ChartStyle } from '../../src/core/chart-data.js';
+import type { ChartConfig, ChartFamilyType, ChartMeasure, ChartStyle, ChartDataMeta } from '../../src/core/chart-data.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 
 // A chart cfg literal, typed loosely enough for this suite's fixtures (many
@@ -397,11 +397,134 @@ describe('buildChartData', () => {
     const cfg = cc({ type: 'line', x: 0, y: [1], series: 3 });
     const fields = { columns: { flights: { displayName: 'Flight count' } } };
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, fields).datasets[0].label).toBe('East');
+    // A hidden measure leaves the series path with no plottable Y — labels and
+    // datasets are empty, but the metadata still reflects the discovered category.
+    const emptyMeta: ChartDataMeta = {
+      totalRows: 1, totalCategories: 1, shownCategories: 1,
+      categoriesTruncated: false, duplicateCellsSummed: false, groupKey: 'x+series',
+    };
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, { columns: { flights: { hidden: true } } }))
-      .toEqual({ labels: [], datasets: [] });
+      .toEqual({ labels: [], datasets: [], meta: emptyMeta });
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cc({
       type: 'line', x: 0, y: [1, 2], series: 3,
-    }), { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [] });
+    }), { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [], meta: emptyMeta });
+  });
+
+  // --- #111: the cap limits X categories (not raw rows), and typed metadata ---
+  const capCols = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+  it('a row after the old raw-row boundary still contributes to its displayed category', () => {
+    // Pie's cap is 30. Fill 30 distinct categories with one row each, then place
+    // a SECOND row for the first category ('k0') far past the 30-row boundary.
+    const rows: unknown[][] = Array.from({ length: 30 }, (_, i) => ['k' + i, '1']);
+    for (let i = 0; i < 40; i++) rows.push(['filler' + i, '1']); // never displayed (cap already hit)
+    rows.push(['k0', '100']); // late row for an early, displayed category
+    const out = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(out.labels[0]).toBe('k0');
+    expect(out.datasets[0].data[0]).toBe(101); // 1 + 100, not truncated away
+    expect(out.meta.totalCategories).toBe(70); // 30 real + 40 filler
+    expect(out.meta.shownCategories).toBe(30);
+  });
+  it('retains the first `cap` X categories in first-seen order', () => {
+    const rows: unknown[][] = Array.from({ length: 35 }, (_, i) => ['k' + i, '1']);
+    const out = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(out.labels).toEqual(Array.from({ length: 30 }, (_, i) => 'k' + i)); // first-seen, first 30
+  });
+  it('omits post-cap categories from labels and datasets', () => {
+    const rows: unknown[][] = Array.from({ length: 32 }, (_, i) => ['k' + i, '1']);
+    const out = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(out.labels).not.toContain('k30');
+    expect(out.labels).not.toContain('k31');
+    expect(out.datasets[0].data).toHaveLength(30);
+  });
+  it('metadata: truncation only (unique cells, more categories than the cap)', () => {
+    const rows: unknown[][] = Array.from({ length: 35 }, (_, i) => ['k' + i, '1']);
+    const { meta } = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(meta).toEqual({
+      totalRows: 35, totalCategories: 35, shownCategories: 30,
+      categoriesTruncated: true, duplicateCellsSummed: false, groupKey: 'x',
+    });
+  });
+  it('metadata: duplicate only (a repeated displayed X, category count at/below the cap)', () => {
+    const rows: unknown[][] = [['a', '1'], ['b', '2'], ['a', '3']];
+    const { meta } = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(meta.categoriesTruncated).toBe(false);
+    expect(meta.duplicateCellsSummed).toBe(true);
+    expect(meta.totalCategories).toBe(2);
+  });
+  it('metadata: both truncation and a duplicate displayed cell', () => {
+    const rows: unknown[][] = Array.from({ length: 35 }, (_, i) => ['k' + i, '1']);
+    rows.push(['k0', '9']); // duplicate of a displayed category
+    const { meta } = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(meta.categoriesTruncated).toBe(true);
+    expect(meta.duplicateCellsSummed).toBe(true);
+  });
+  it('unique multi-series cells (repeated X, distinct Series) are not summing', () => {
+    const rows = [
+      ['Jan', 'EU', '1'], ['Jan', 'US', '2'],
+      ['Feb', 'EU', '3'], ['Feb', 'US', '4'],
+    ];
+    const c = [{ name: 'month', type: 'String' }, { name: 'region', type: 'String' }, { name: 'rev', type: 'UInt64' }];
+    const { meta } = buildChartData(c, rows, { type: 'bar', x: 0, y: [2], series: 1 });
+    expect(meta.groupKey).toBe('x+series');
+    expect(meta.duplicateCellsSummed).toBe(false);
+  });
+  it('a repeated (X, Series) cell is summed and flagged', () => {
+    const rows = [['Jan', 'EU', '1'], ['Jan', 'EU', '5']]; // same (month, region)
+    const c = [{ name: 'month', type: 'String' }, { name: 'region', type: 'String' }, { name: 'rev', type: 'UInt64' }];
+    const out = buildChartData(c, rows, { type: 'bar', x: 0, y: [2], series: 1 });
+    expect(out.datasets).toEqual([{ label: 'EU', data: [6] }]); // 1 + 5
+    expect(out.meta.duplicateCellsSummed).toBe(true);
+  });
+  it('a duplicate confined to an omitted category does not flag the visible chart', () => {
+    // 30 unique displayed categories, then a duplicated pair in a 31st (omitted) one.
+    const rows: unknown[][] = Array.from({ length: 30 }, (_, i) => ['k' + i, '1']);
+    rows.push(['zz', '1'], ['zz', '2']); // 'zz' is category #31 → omitted by pie's cap
+    const { meta } = buildChartData(capCols, rows, { type: 'pie', x: 0, y: [1], series: null });
+    expect(meta.categoriesTruncated).toBe(true);
+    expect(meta.duplicateCellsSummed).toBe(false); // the duplicate is never displayed
+  });
+  it('a Series present only in omitted categories produces no all-null dataset', () => {
+    // 'US' appears only in the omitted category 'z'; it must not become a dataset.
+    const rows: unknown[][] = [];
+    for (let i = 0; i < 30; i++) rows.push(['k' + i, 'EU', '1']);
+    rows.push(['z', 'US', '9']); // category #31 → omitted
+    const c = [{ name: 'k', type: 'String' }, { name: 'region', type: 'String' }, { name: 'v', type: 'UInt64' }];
+    const out = buildChartData(c, rows, { type: 'pie', x: 0, y: [2], series: 1 });
+    expect(out.datasets.map((d) => d.label)).toEqual(['EU']); // no 'US' dataset
+    expect(out.datasets.every((d) => d.data.some((v) => v != null))).toBe(true);
+  });
+});
+
+describe('chartDataNote', () => {
+  const base: ChartDataMeta = {
+    totalRows: 10, totalCategories: 5, shownCategories: 5,
+    categoriesTruncated: false, duplicateCellsSummed: false, groupKey: 'x',
+  };
+  it('returns null when neither condition holds', () => {
+    expect(chartDataNote(base)).toBeNull();
+  });
+  it('truncation only → "first N of M categories"', () => {
+    expect(chartDataNote({ ...base, shownCategories: 30, totalCategories: 600, categoriesTruncated: true }))
+      .toBe('first 30 of 600 categories');
+  });
+  it('duplicate X only → browser-summed X note', () => {
+    expect(chartDataNote({ ...base, duplicateCellsSummed: true }))
+      .toBe('duplicate X rows summed in the browser');
+  });
+  it('duplicate X/series only → browser-summed X/series note', () => {
+    expect(chartDataNote({ ...base, groupKey: 'x+series', duplicateCellsSummed: true }))
+      .toBe('duplicate X/series rows summed in the browser');
+  });
+  it('both conditions → two clauses joined with "; "', () => {
+    expect(chartDataNote({
+      ...base, shownCategories: 30, totalCategories: 600, categoriesTruncated: true, duplicateCellsSummed: true,
+    })).toBe('first 30 of 600 categories; duplicate X rows summed in the browser');
+  });
+  it('both conditions with Series → the X/series clause', () => {
+    expect(chartDataNote({
+      ...base, groupKey: 'x+series', shownCategories: 30, totalCategories: 600,
+      categoriesTruncated: true, duplicateCellsSummed: true,
+    })).toBe('first 30 of 600 categories; duplicate X/series rows summed in the browser');
   });
 });
 
@@ -431,6 +554,21 @@ describe('chartJsConfig', () => {
     expect(cfg.options.scales!.x.beginAtZero).toBe(true); // value axis on x
     expect(cfg.options.scales!.y.grid.display).toBe(false); // category axis
     expect(cfg.data.datasets[0].backgroundColor).toBe(colors.palette[0]);
+  });
+  it('uses a precomputed opts.data verbatim instead of re-aggregating (#111 single-pass)', () => {
+    // A sentinel data result unrelated to `rows`: chartJsConfig must draw it as-is,
+    // proving the renderer's one aggregation is reused, not recomputed here.
+    const data = {
+      labels: ['only'], datasets: [{ label: 'precomputed', data: [42] }],
+      meta: {
+        totalRows: 2, totalCategories: 1, shownCategories: 1,
+        categoriesTruncated: false, duplicateCellsSummed: false, groupKey: 'x' as const,
+      },
+    };
+    const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors, { data });
+    expect(cfg.data.labels).toEqual(['only']);
+    expect(cfg.data.datasets[0].label).toBe('precomputed');
+    expect(cfg.data.datasets[0].data).toEqual([42]);
   });
   it('shows value-axis gridlines by default, hides them with opts.hideGrid (#149)', () => {
     const shown = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);

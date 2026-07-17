@@ -8,10 +8,10 @@
 
 import { h } from './dom.js';
 import { Icon } from './icons.js';
-import { formatRows } from '../core/format.js';
 import {
-  chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg, chartRowCap,
+  chartFieldOptions, chartColors, chartJsConfig, chartCfgValid, normalizeChartCfg,
   chartStylePresets, chartStylePreset, applyChartStylePreset, normalizeChartStyle, visibleChartMeasures,
+  buildChartData, chartDataNote,
 } from '../core/chart-data.js';
 import type { ChartConfig, ChartFamilyType, ChartFieldOption, ChartStyle } from '../core/chart-data.js';
 import type { Column } from '../core/panel-cfg.js';
@@ -123,6 +123,21 @@ export function renderChart(
   const cfg = chartCfgValid(opts.cfg, r.columns) ? normalizeChartCfg(opts.cfg as ChartConfig) : null;
   if (!cfg) return chartEmpty(Icon.chart(), 'These results aren’t chartable — add a numeric column to plot them.');
 
+  // Resolve the visible measures and aggregate the chart data ONCE per render:
+  // the aggregation's `.meta` drives the disclosure note (below) and the same
+  // result is threaded into `chartJsConfig` (via `data`), so a render never
+  // aggregates the fetched rows twice. When every selected field is hidden
+  // there's nothing to aggregate — the empty-state guard handles it below.
+  const measures = visibleChartMeasures(r.columns, cfg, opts.fieldConfig);
+  const chartData = measures.length
+    ? buildChartData(r.columns, r.rows, cfg, opts.fieldConfig || {}, measures)
+    : null;
+  // The disclosure note describes only the browser-side transform (category
+  // truncation and/or duplicate-cell summing) — never whether the SQL
+  // pre-aggregated. It must render on every surface, not only where the
+  // interactive controls do (Dashboard / read-only tiles pass controls:false).
+  const note = chartData ? chartDataNote(chartData.meta) : null;
+
   // `opts.controls === false` omits the interactive Type/X/Y config bar entirely
   // (the read-only dashboard tile — #149): the chart draws, but no field controls
   // are built, rather than building them and hiding them with CSS.
@@ -174,22 +189,16 @@ export function renderChart(
         changed(cfg);
       }));
     }
-    // The chart plots at most cap points for the current type; say so when the
-    // result is bigger (the table still shows everything) — no silent
-    // truncation. Recomputed on every rerender (the Type select's onChange),
-    // so switching type re-slices and updates the note in lockstep.
-    const cap = chartRowCap(cfg.type);
-    if (r.rows.length > cap) {
-      bar.appendChild(h('span', { class: 'chart-cap-note' },
-        'first ' + cap + ' of ' + formatRows(r.rows.length) + ' rows'));
-    }
+    // Disclose the browser-side transform inline in the config row when there
+    // is one (category truncation and/or duplicate-cell summing). Recomputed on
+    // every rerender (e.g. the Type select's onChange changes the category cap),
+    // so switching type updates the note in lockstep.
+    if (note) bar.appendChild(h('span', { class: 'chart-cap-note' }, note));
   }
 
-  // Resolve the visible measures once and reuse them for the chart config
-  // below (threaded through `chartJsConfig`), rather than re-resolving field
-  // metadata for the empty-state guard and again inside the renderer.
-  const measures = visibleChartMeasures(r.columns, cfg, opts.fieldConfig);
-  if (measures.length === 0) {
+  // `chartData` is null iff every selected field is hidden (no measures to
+  // aggregate) — the empty state, with no chart and no note.
+  if (!chartData) {
     return h('div', { class: 'chart-view' }, bar,
       chartEmpty(Icon.chart(), 'All selected chart fields are hidden by panel.fieldConfig.'));
   }
@@ -205,6 +214,7 @@ export function renderChart(
     fieldConfig: opts.fieldConfig,
     hideGrid: opts.hideGrid,
     measures,
+    data: chartData, // aggregated once above — don't re-aggregate for the config
   }));
   setChart(chart);
   // Chart.js's own responsive sizing reads layout through APIs (getComputedStyle,
@@ -226,6 +236,12 @@ export function renderChart(
   });
 
   const compactFrame = cfg.type === 'pie' && normalizeChartStyle(cfg.style, cfg.type).frame === 'compact';
-  return h('div', { class: 'chart-view' }, bar,
+  // Surfaces without the config bar (Dashboard / read-only / detached tiles,
+  // controls:false) still disclose the transform — as a small standalone block
+  // above the canvas, since there's no config row to host it inline.
+  const standaloneNote = opts.controls === false && note
+    ? h('div', { class: 'chart-cap-note chart-cap-note--standalone' }, note)
+    : null;
+  return h('div', { class: 'chart-view' }, bar, standaloneNote,
     h('div', { class: 'chart-canvas-wrap' + (compactFrame ? ' is-compact' : '') }, canvas));
 }

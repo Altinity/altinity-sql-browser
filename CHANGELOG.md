@@ -61,6 +61,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   behavior or schema change.
 
 ### Fixed
+- **Chart aggregation sums the whole fetched result, and the note is honest**
+  (#111, follow-up to #109). `buildChartData()` no longer slices the raw rows
+  before grouping — it discovers unique X categories across *all* fetched rows
+  (first-seen order), retains the first `chartRowCap(type)` of them, and
+  aggregates every fetched row whose X falls in a retained category. A row past
+  the old raw-row boundary now still contributes to its category, and a category
+  is no longer dropped merely because its first row arrived late. The result
+  carries typed `meta` (`totalRows`/`totalCategories`/`shownCategories`/
+  `categoriesTruncated`/`duplicateCellsSummed`/`groupKey`); a new pure
+  `chartDataNote(meta)` renders `first N of M categories` and/or
+  `duplicate X[/series] rows summed in the browser` — describing only the
+  browser-side transform, never whether the SQL pre-aggregated. Duplicate
+  detection keys on X (or `(X, series)`), so a normal multi-series result with
+  repeated X values is not reported as summing, and a duplicate confined to an
+  omitted category never flags the visible chart. The note now renders on every
+  surface — Dashboard and read-only/detached tiles (`controls:false`) disclose
+  category truncation and duplicate summing as a standalone block above the
+  canvas, instead of silently capping. Chart data is aggregated once per render
+  (`chartJsConfig` accepts the precomputed result).
 - **Share-link result view is validated before use** (#266). The share-link
   bootstrap (`src/main.ts`) now narrows `spec.view` against the `resultView`
   enum before assigning it — the v2 tagged decode passes `spec.view` through
