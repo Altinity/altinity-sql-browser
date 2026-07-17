@@ -160,11 +160,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   - A strengthened `check:arch` rule (plus a unit `dashboard-boundaries` test)
     proves the Dashboard model/application layers — including the viewer session
     — import no Workbench UI, `App`, `AppState`, editor, `src/application`, or
-    `src/net` module. This closes the analysis behind #235 and the reorder half
-    of #153 and dissolves #188 into the viewer's filter contract. Live DOM
-    integration (the viewer-driven render replacing `src/ui/dashboard.ts`'s
-    favorites path, the filter-bar affordances, and the a11y/drag controls) is
-    the remaining wiring step of this phase.
+    `src/net` module.
+  - **Live read-flip.** `src/ui/dashboard.ts` is rewritten to render from a
+    `DashboardViewerSession` bound to the persisted `StoredWorkspaceV1`
+    (`app.loadDashboardWorkspace()` → the phase-2 `WorkspaceRepository`, running
+    the one-shot legacy migration when no aggregate exists), reading membership
+    from **`dashboard.tiles[]`** — no longer `savedQueries.filter(queryFavorite)`.
+    The DOM reconciles from the session's `state` signal: `flow@1` rows/columns,
+    KPI bands (via `renderKpiCards`, preserving #240), per-tile
+    loading/unfilled/error/ready with chart-paint-once, mobile one-column
+    normalization at the 768px breakpoint, and the empty state. A migrated
+    Dashboard's implicit `{name:Type}` params are surfaced as runtime-only filter
+    definitions so the filter bar is not lost. The `spec.favorite` dual-WRITE
+    stays until GA (the Workbench star action); only the READ is flipped.
+  - **Filter-bar affordances** (`src/ui/filter-bar.ts`, shared): per-filter
+    clear, coalesced clear-all, "N active" count, and a never-hidden blocking
+    badge, driven by the viewer's `clearFilter`/`clearAllFilters`/
+    `activeFilterCount`/`blocking`.
+  - **Accessible reorder + sizing.** Keyboard Move-earlier/Move-later, span, and
+    height controls on every tile drive the phase-3 `move-tile`/
+    `update-placement` commands (mirrored into the viewer with `syncDocument`,
+    no re-execution, and best-effort persisted); focus stays on the moved tile
+    and an ARIA live region announces the new position. Pointer drag is an
+    equivalent alternative, never the only mechanism.
+  This closes **#235** (filter wave / panel parallelism) and the reorder half of
+  **#153** (open-in-window arrives in Phase 6), and dissolves **#188** into the
+  viewer's filter contract.
 
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The

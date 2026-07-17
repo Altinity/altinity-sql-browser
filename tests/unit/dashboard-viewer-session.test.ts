@@ -473,6 +473,36 @@ describe('per-tile control and lifecycle', () => {
     expect(session.state.value.updatedAt).toBeNull();
   });
 
+  it('syncDocument reorders/resizes in place without re-running tiles', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('a', 'qa'), tile('b', 'qb')],
+      layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('qa', 'SELECT 1'), query('qb', 'SELECT 2')],
+    }));
+    await session.start();
+    const base = calls.length;
+    expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a', 'b']);
+    // Reorder to [b, a] and give b a span of 2 — no re-execution.
+    session.syncDocument({
+      ...document,
+      tiles: [tile('b', 'qb'), tile('a', 'qa')],
+      layout: { type: 'flow', version: 1, preset: 'columns-2', items: { b: { span: 2 } } },
+    });
+    expect(calls.length).toBe(base);
+    expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['b', 'a']);
+    expect(session.state.value.tiles[0].status).toBe('ready'); // result preserved
+    expect(session.state.value.layout.rows[0].tiles[0]).toMatchObject({ tileId: 'b', span: 2 });
+    // An unknown tile id in the next document is dropped defensively.
+    session.syncDocument({ ...document, tiles: [tile('a', 'qa'), tile('ghostly', 'x')] });
+    expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a']);
+    session.destroy();
+    session.syncDocument(document); // no-op after destroy
+    expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a']);
+  });
+
   it('normalizes the flow layout on mobile and coerces filter values to strings', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     let mobile = true;

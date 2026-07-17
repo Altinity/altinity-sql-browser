@@ -86,6 +86,59 @@ const buildRecentField = _buildRecentField as (opts: {
   onValueInput: () => void; onCommit: () => void;
 }) => FilterBarComboField;
 
+// ── #188 filter-bar usability affordances (#286) ─────────────────────────────
+// Small, reusable DOM builders the Dashboard viewer drives from its filter
+// state (clearFilter / clearAllFilters / activeFilterCount / blocking). Kept
+// here, on the shared filter-bar module, so any filter surface can compose the
+// same affordances; they are pure element factories (no app/state coupling).
+
+/** A per-filter clear affordance (#188): a keyboard-focusable button that
+ *  deactivates one filter without discarding its value (reactivation restores
+ *  it). `label` names the filter for assistive tech. */
+export function filterClearButton(opts: { label: string; onClear: () => void }): HTMLButtonElement {
+  const btn = h('button', {
+    type: 'button', class: 'dash-filter-clear',
+    title: `Clear ${opts.label}`, 'aria-label': `Clear ${opts.label}`,
+    onclick: () => opts.onClear(),
+  }, '×');
+  return btn;
+}
+
+/** The toolbar clear-all affordance (#188): resets every filter in one wave.
+ *  Hidden (not just disabled) when nothing is active, so it never draws focus
+ *  to a no-op. */
+export function filterClearAllButton(opts: { active: boolean; onClearAll: () => void }): HTMLButtonElement {
+  const btn = h('button', {
+    type: 'button', class: 'dash-filter-clear-all',
+    title: 'Clear all filters', 'aria-label': 'Clear all filters',
+    onclick: () => opts.onClearAll(),
+  }, 'Clear all');
+  if (!opts.active) btn.style.display = 'none';
+  return btn;
+}
+
+/** The "N active" indicator (#188): counts ACTIVE filter definitions, readable
+ *  by assistive tech without a live-region announcement (a plain labeled
+ *  status node, not aria-live). Absent (empty) when nothing is active. */
+export function filterActiveCount(count: number): HTMLElement {
+  const node = h('span', {
+    class: 'dash-filter-count', role: 'status',
+    'aria-label': `${count} active filter${count === 1 ? '' : 's'}`,
+  });
+  if (count > 0) node.textContent = `${count} active`;
+  else node.style.display = 'none';
+  return node;
+}
+
+/** A visible blocking badge (#188): a filter whose state blocks a target panel
+ *  (invalid value / required-and-unset / source-query error) must never be
+ *  silently hidden — this badge states why. */
+export function filterBlockingBadge(reason: string): HTMLElement {
+  return h('span', {
+    class: 'dash-filter-blocking', role: 'alert', title: reason,
+  }, reason);
+}
+
 // Idle time after the last keystroke in a filter field before it triggers a
 // re-run (#149 D3) — longer than the FROM-scope column-load debounce
 // (codemirror-adapter.js) since this fires a real query, not a metadata fetch.

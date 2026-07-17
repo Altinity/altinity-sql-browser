@@ -19,6 +19,7 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { StoredWorkspaceV1 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
@@ -360,6 +361,11 @@ export interface App {
   renderApp(): void;
   renderDashboard(): void;
   openDashboard(): void;
+  /** #286 Phase 4: resolve the current StoredWorkspaceV1 for the Dashboard
+   *  viewer, running the one-shot legacy migration first when no aggregate
+   *  exists. Returns null when neither an aggregate nor a migratable legacy
+   *  workspace is available. */
+  loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
 
   actions: ActionsRegistry;
 }

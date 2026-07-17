@@ -128,7 +128,9 @@ export interface ViewerReadRequest {
   onChunk?: () => void;
 }
 export interface ViewerExecutor {
-  executeRead(result: StreamResult, request: ViewerReadRequest): Promise<void>;
+  // The real `QueryExecutionService.executeRead` returns the (mutated) result;
+  // the viewer only reads the `result` it passed in, so the return is ignored.
+  executeRead(result: StreamResult, request: ViewerReadRequest): Promise<unknown>;
 }
 
 /** The connection preflight seam (mirrors `ConnectionSession.ensureFreshToken`),
@@ -178,6 +180,11 @@ export interface DashboardViewerSession {
   clearAllFilters(): Promise<void>;
   /** Abort one tile's in-flight request. */
   cancelTile(tileId: string): void;
+  /** Adopt a layout/order-edited document (reorder, span/height, preset) WITHOUT
+   *  re-running any tile: existing tile results are preserved by tile ID and the
+   *  flow model is recomputed. The tile SET must be unchanged (a membership
+   *  change rebuilds the session). */
+  syncDocument(next: DashboardDocumentV1): void;
   /** Cancel all work and turn every later entry point into a no-op. */
   destroy(): void;
 }
@@ -249,8 +256,11 @@ function supersede(record: { gen: number; abortController: AbortController | nul
 
 /** Build a `DashboardViewerSession`. */
 export function createDashboardViewerSession(deps: DashboardViewerDeps): DashboardViewerSession {
-  const { document, queries } = deps;
+  const { queries } = deps;
   const registry = deps.registry;
+  // The active document — layout/order edits (`syncDocument`) replace it without
+  // re-running tiles; the initial tile SET is fixed for the session's analysis.
+  let documentRef: DashboardDocumentV1 = deps.document;
   let destroyed = false;
 
   const queryById = new Map<string, SavedQueryV2>();
@@ -261,11 +271,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // Structural presentation validation (the SAME shared resolver) — reported
   // up front so an invalid tile presentation is visible without executing.
   const presentationDiagnostics = resolveDashboardPresentations({
-    dashboard: document, queries, path: ['dashboard'],
+    dashboard: documentRef, queries, path: ['dashboard'],
   });
 
-  // One runtime record per tile, in semantic (dashboard.tiles) order.
-  const tiles: TileRuntime[] = (Array.isArray(document.tiles) ? document.tiles : []).map((tile) => {
+  function buildTileRuntime(tile: DashboardTileV1): TileRuntime {
     const query = typeof tile.queryId === 'string' ? queryById.get(tile.queryId) : undefined;
     let panel: Record<string, unknown> | null = null;
     let presentationError: WorkspaceDiagnostic | null = null;
@@ -290,10 +299,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       unfilled: [], progressRows: 0,
     };
     return { tile, query, panel, explicit, isKpi, isText, presentationError, gen: 0, abortController: null, state };
-  });
+  }
+
+  // One runtime record per tile, in semantic (dashboard.tiles) order.
+  const tiles: TileRuntime[] = (Array.isArray(documentRef.tiles) ? documentRef.tiles : []).map(buildTileRuntime);
 
   // Filter runtime records, in filter order.
-  const filters: FilterRuntime[] = (Array.isArray(document.filters) ? document.filters : []).map((def) => {
+  const filters: FilterRuntime[] = (Array.isArray(documentRef.filters) ? documentRef.filters : []).map((def) => {
     const source = typeof def.sourceQueryId === 'string' ? queryById.get(def.sourceQueryId) : undefined;
     const active = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
     const state: ViewerFilterState = {
@@ -356,7 +368,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return {
       tiles: tiles.map((runtime) => ({ ...runtime.state })),
       filters: filters.map((filter) => ({ ...filter.state })),
-      layout: computeFlowLayout({ tiles: visible, layout: document.layout, mobile }),
+      layout: computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }),
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
       running, updatedAt, diagnostics: presentationDiagnostics,
     };
@@ -653,6 +665,23 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     if (runtime.state.status === 'loading') { runtime.state.status = 'idle'; publish(); }
   }
 
+  function syncDocument(next: DashboardDocumentV1): void {
+    if (destroyed) return;
+    documentRef = next;
+    // Reorder the runtime records to the new tile order, preserving each tile's
+    // results by ID; unknown IDs are dropped (defensive — a membership change
+    // should rebuild the session, not sync).
+    const byId = new Map(tiles.map((runtime) => [runtime.tile.id, runtime]));
+    const reordered: TileRuntime[] = [];
+    for (const tile of Array.isArray(next.tiles) ? next.tiles : []) {
+      const runtime = byId.get(tile.id);
+      if (runtime) { runtime.tile = tile; reordered.push(runtime); }
+    }
+    tiles.length = 0;
+    tiles.push(...reordered);
+    publish();
+  }
+
   function destroy(): void {
     destroyed = true;
     for (const runtime of tiles) {
@@ -667,6 +696,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
-    start, refresh, refreshTile, setFilter, clearFilter, clearAllFilters, cancelTile, destroy,
+    start, refresh, refreshTile, setFilter, clearFilter, clearAllFilters, cancelTile, syncDocument, destroy,
   };
 }
