@@ -31,7 +31,13 @@ async function buildStamp() {
     commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim();
     // `git status --porcelain` is empty iff the tree exactly matches HEAD.
     if (execFileSync('git', ['status', '--porcelain'], { cwd: root }).toString().trim()) commit += '-dirty';
-  } catch { /* not a git checkout — fall back to version only */ }
+  } catch {
+    // Not a git checkout (e.g. the Docker build context ships no .git) — use an
+    // injected commit if one was passed, so the stamp stays `v<version> (<sha>)`
+    // instead of falling back to version-only. $ASB_COMMIT is the full sha;
+    // shorten to git's 7-char form.
+    if (process.env.ASB_COMMIT) commit = process.env.ASB_COMMIT.trim().slice(0, 7);
+  }
   return commit ? `v${version} (${commit})` : `v${version}`;
 }
 

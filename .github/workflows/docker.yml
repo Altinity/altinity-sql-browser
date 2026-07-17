@@ -60,8 +60,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          # Keep the in-app build stamp in lockstep with the image tag.
+          # Build stamp: version from package.json, commit from the sha (the
+          # build context has no .git) → `v<version> (<short-sha>)`.
           build-args: |
-            ASB_VERSION=${{ steps.meta.outputs.version }}
+            ASB_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

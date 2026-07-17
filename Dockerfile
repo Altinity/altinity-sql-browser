@@ -17,10 +17,15 @@ COPY schemas ./schemas
 COPY src ./src
 COPY THIRD-PARTY-NOTICES.md ./
 
-# Stamp the in-HTML build marker with the image version so the in-app build
-# stamp matches the published tag (build.mjs honours $ASB_VERSION over package.json).
+# In-HTML build stamp = `v<version> (<commit>)`. The build context ships no .git,
+# so pass the commit in via ASB_COMMIT (build.mjs shortens it); the version comes
+# from package.json unless ASB_VERSION overrides it (bundle.sh passes the release
+# tag). docker.yml passes ASB_COMMIT=${{ github.sha }} and leaves ASB_VERSION
+# unset so the stamp reads the package.json version, e.g. `v0.5.0 (6b360e8)`.
 ARG ASB_VERSION
-ENV ASB_VERSION=${ASB_VERSION}
+ARG ASB_COMMIT
+ENV ASB_VERSION=${ASB_VERSION} \
+    ASB_COMMIT=${ASB_COMMIT}
 
 RUN npm ci --no-audit --no-fund && npm run build
 
