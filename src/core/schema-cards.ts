@@ -232,7 +232,10 @@ export function buildCardGraph(
   const tablesByKey = new Map((d.tables || []).map((t) => [String(t.database) + '.' + String(t.name), t]));
   const colsByKey = d.columnsByKey || {};
   const nodes = (g.nodes || []).map((n) => {
-    const id = n.id ?? '';
+    // `!`: every real caller's node (SchemaGraphNode/ExpandLineageNode) requires
+    // `id`; only the loose CardGraphNode fixture type allows it absent — the
+    // original .js read `n.id` bare here.
+    const id = n.id!;
     return { ...n, card: buildCardModel(n, tablesByKey.get(id), colsByKey[id]) };
   });
   return { nodes, edges: g.edges || [] };

@@ -2,7 +2,8 @@
 
 - **Status:** Accepted — 2026-07-16; **migration COMPLETE** 2026-07-17 (#267,
   after phases 0–5 landed 2026-07-16 via #262): every hand-written module
-  under `src/` (108 files) and every unit test is strict TypeScript, converted
+  under `src/` (106 runtime modules + 6 type-only seam/contract files) and
+  every unit test is strict TypeScript, converted
   leaf-up in dependency-tier waves with zero behavior change. The only
   remaining `.js`: the two GENERATED runtime artifacts under `src/generated/`
   (Ajv standalone emits JS; `allowJs` stays for them), the Playwright e2e

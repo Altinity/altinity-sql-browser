@@ -288,7 +288,9 @@ export interface ScopeRef {
  * `events.` keeps working with no scope. Pure — `scope` is the
  * `{db, table, alias}[]` from core/from-scope.js (#84), or absent.
  */
-export function resolveScopeAlias(parent: string | null, scope?: ScopeRef[] | null): string | null {
+export function resolveScopeAlias(
+  parent: string | null | undefined, scope?: ScopeRef[] | null,
+): string | null | undefined {
   if (!scope || parent == null) return parent;
   for (const r of scope) if (r.alias === parent) return r.table;
   return parent;
@@ -330,7 +332,7 @@ export interface RankQuery {
 export function rankCompletions(items: CompletionItem[], ctx: RankQuery): CompletionItem[] {
   const w = ctx.word.toLowerCase();
   if (ctx.qualified) {
-    const target = resolveScopeAlias(ctx.parent ?? null, ctx.scope);
+    const target = resolveScopeAlias(ctx.parent, ctx.scope);
     const cols = items.filter((it) => it.kind === 'column' && it.parent === target);
     return (w ? cols.filter((c) => c.label.toLowerCase().includes(w)) : cols).slice(0, 50);
   }
@@ -349,7 +351,10 @@ export function rankCompletions(items: CompletionItem[], ctx: RankQuery): Comple
     if (it.kind === 'format') continue; // formats only inside a FORMAT clause
     // FROM-scoped: only columns of the statement's tables compete unqualified;
     // an unrelated loaded table's columns aren't suggested (#84). No scope → all.
-    if (it.kind === 'column' && scopeTables && !scopeTables.has(it.parent ?? '')) continue;
+    // `!`: this module's single column-item construction site above always
+    // sets `parent` to the table name — the original .js read `it.parent`
+    // bare against the Set here.
+    if (it.kind === 'column' && scopeTables && !scopeTables.has(it.parent!)) continue;
     const l = it.label.toLowerCase();
     const idx = l.indexOf(w);
     if (idx === -1) continue;

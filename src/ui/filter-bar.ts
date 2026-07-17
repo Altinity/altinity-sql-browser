@@ -181,7 +181,9 @@ export function buildFilterBar(
       app.saveVarValues();
       app.saveFilterActive();
       applyFieldState(input, getField(p.name, 'input'), baseTitle, combo?.previewEl);
-      if (timer != null) clearTimeout(timer);
+      // `!`: DOM's clearTimeout is a documented no-op on `null`/`undefined` —
+      // the original .js called it unconditionally (`timer` starts `null`).
+      clearTimeout(timer!);
       timer = setTimeout(commitNow, FILTER_DEBOUNCE_MS);
     };
     const onCommitHard = (): void => {

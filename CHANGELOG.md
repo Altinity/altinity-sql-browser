@@ -11,7 +11,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ### Changed
 - **ADR-0002 TypeScript migration complete** (#267). Every hand-written module
-  under `src/` (108 files) and every unit test is strict TypeScript, converted
+  under `src/` (106 runtime modules + 6 type-only seam files) and every unit
+  test is strict TypeScript, converted
   leaf-up in dependency-tier waves with zero behavior change — the tail
   covered `chart-data`, `ch-client`, the CM6 adapters, `explain-graph`,
   `results` (which now owns the canonical `Result` union), `app.ts` (declared

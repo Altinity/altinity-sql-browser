@@ -73,6 +73,10 @@ describe('buildCardModel', () => {
     expect(buildCardModel({ label: 'db.t' }, {}).comment).toBe('');
     expect(buildCardModel({ label: 'db.t' }, { comment: '   ' }).comment).toBe('');
   });
+  it('accepts total_rows/total_bytes as numeric strings (CH JSON encodes UInt64 that way)', () => {
+    const m = buildCardModel({ label: 'db.t' }, { engine: 'MergeTree', total_rows: '1500000', total_bytes: '2048' });
+    expect(m.summary).toBe('MergeTree · 1.5M rows · 2.0 KB');
+  });
   it('falls back through label → id → "" for the title, and kind → "table" for the engine', () => {
     expect(buildCardModel({ label: 'a.b' }).title).toBe('a.b');
     expect(buildCardModel({ id: 'a.b' }).title).toBe('a.b'); // no label → id
@@ -120,6 +124,13 @@ describe('cardSize', () => {
     const base = { title: '', summary: '', cols: [], overflow: 0 };
     const withOverflow = { ...base, overflow: 999 };
     expect(cardSize(withOverflow, { charW: 100 }).w).toBeGreaterThan(cardSize(base, { charW: 100 }).w);
+  });
+  it('accepts padX/badgeW overrides too (opts is fully overridable, used by tests)', () => {
+    const m = { title: '', summary: '', cols: [{ name: 'x', type: 'Int', roles: ['PK'] }], overflow: 0 };
+    const wide = cardSize(m, { padX: 500 });
+    expect(wide.w).toBeGreaterThan(cardSize(m).w);
+    const badged = cardSize(m, { badgeW: 500 });
+    expect(badged.w).toBeGreaterThan(cardSize(m).w);
   });
   it('an ignored legacy skipLine field can neither add height nor width (#179)', () => {
     const base = { title: 't', summary: 's', cols: [{ name: 'a', type: 'Int', roles: [] }], overflow: 0 };

@@ -147,6 +147,12 @@ describe('loadConfigDoc hosts', () => {
     expect(hosts[0]).toEqual({ label: 'http://h:8123', url: 'http://h:8123', auth: 'basic', user: '', password: '', idp: '', insecure: false });
   });
 
+  it('tolerates a malformed (null/empty) host entry, defaulting label and url to ""', async () => {
+    const { hosts } = await load({ idps: [], hosts: [null, {}] });
+    expect(hosts[0]).toEqual({ label: '', url: '', auth: 'basic', user: '', password: '', idp: '', insecure: false });
+    expect(hosts[1]).toEqual({ label: '', url: '', auth: 'basic', user: '', password: '', idp: '', insecure: false });
+  });
+
   it('carries the accept-invalid-certificate flag through as `insecure`', async () => {
     const { hosts } = await load({
       idps: [],

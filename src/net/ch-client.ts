@@ -45,12 +45,17 @@ type SqlStringFn = (s: unknown) => string;
 // is itself aborted — matching every `e.name === 'AbortError'` check below,
 // now that a caught value's static type is `unknown`.
 function isAbort(e: unknown, signal: AbortSignal | undefined): boolean {
-  return !!(signal && signal.aborted && e instanceof Error && e.name === 'AbortError');
+  // Duck-typed on purpose (`e && e.name`, not `instanceof Error`): the fetch
+  // seam is injected, and a shim's abort rejection may be a plain object.
+  return !!(signal && signal.aborted && (e as { name?: unknown } | null)?.name === 'AbortError');
 }
-// `e.message` when `e` is an Error, else its stringification — same fallback
-// shape as `(e && e.message) || e` in the original .js.
+// `e.message` when present, else the value's stringification — the exact
+// duck-typed `(e && e.message) || e` fallback of the original .js (a plain
+// non-Error rejection carrying `message` must keep matching the /Unknown
+// setting/ compat check below).
 function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  const message = (e as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && message ? message : String(e);
 }
 
 /** Generic ClickHouse `FORMAT JSON` response shape — only `.data` is ever

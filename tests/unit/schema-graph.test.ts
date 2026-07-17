@@ -77,6 +77,9 @@ describe('parseDictSource', () => {
     expect(parseDictSource('MySQL: host=db user=x')).toEqual({ external: 'MySQL' });
     expect(parseDictSource('', '')).toBeNull();
   });
+  it('leaves db null when the CREATE\'s SOURCE(CLICKHOUSE(…)) has no DB clause', () => {
+    expect(parseDictSource('', "CREATE DICTIONARY lin.dim_dict (`id` UInt64) PRIMARY KEY id SOURCE(CLICKHOUSE(TABLE 'dim')) LIFETIME(MIN 0 MAX 0) LAYOUT(HASHED())")).toEqual({ db: null, table: 'dim' });
+  });
 });
 
 describe('parseEngineRef', () => {
@@ -85,6 +88,10 @@ describe('parseEngineRef', () => {
     expect(parseEngineRef('Buffer', "Buffer('lin', 'events', 1, 10, 100, 10000, 1000000, 10000000, 100000000)")).toEqual({ kind: 'buffer', db: 'lin', table: 'events' });
     expect(parseEngineRef('Merge', "Merge('lin', '^events$')")).toEqual({ kind: 'merge', db: 'lin', regex: '^events$' });
     expect(parseEngineRef('MergeTree', 'MergeTree')).toBeNull();
+  });
+  it('tolerates a missing engine_full string', () => {
+    expect(parseEngineRef('Distributed', undefined)).toBeNull();
+    expect(parseEngineRef('MergeTree', null)).toBeNull();
   });
 });
 
@@ -335,6 +342,10 @@ describe('externalDbs', () => {
     expect(externalDbs(g, ['a']).sort()).toEqual(['b']);
     expect(externalDbs(g, []).sort()).toEqual(['a', 'b']);
     expect(externalDbs(null, ['a'])).toEqual([]);
+  });
+  it('defaults loadedDbs to none when omitted', () => {
+    const g = { nodes: [{ id: 'a.x', db: 'a' }] };
+    expect(externalDbs(g)).toEqual(['a']);
   });
 });
 

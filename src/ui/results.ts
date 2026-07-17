@@ -606,7 +606,9 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
         class: 'res-act cancel-act', title: 'Cancel schema graph',
         onclick: () => app.actions.cancelSchemaGraph({ clearResult: true }),
       }, Icon.close(), h('span', null, 'Cancel')));
-    } else if (!sg.loading && sg.nodes && sg.nodes.length) {
+      // `!`: a non-loading schemaGraph always carries its nodes array (every
+      // construction site sets it) — the original .js read `.length` bare.
+    } else if (!sg.loading && sg.nodes!.length) {
       // Expand is meaningless when there's nothing to draw (no connected
       // objects → the pane shows a message, not a graph).
       toolbar.appendChild(h('button', {

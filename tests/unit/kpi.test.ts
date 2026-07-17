@@ -21,6 +21,7 @@ describe('KPI ClickHouse types', () => {
     expect(parseKpiTupleType('Tuple(UInt64, Float64)')).toBeNull();
     expect(parseKpiTupleType('String')).toBeNull();
     expect(parseKpiTupleType('Tuple()')).toBeNull();
+    expect(parseKpiTupleType('')).toBeNull(); // unparseable type → no tuple members at all
   });
 });
 
@@ -74,6 +75,10 @@ describe('KPI presentation and formatting', () => {
     expect(kpiDeltaState(item(0, { positiveIsGood: false }))!.semantic).toBe('neutral');
     expect(kpiDeltaState(item(2))!.semantic).toBe('neutral');
     expect(kpiDeltaState(item('-9007199254740993'))).toEqual({ value: '-9007199254740993', direction: 'down', semantic: 'neutral' });
+    // A UInt64/Int64 tuple delta member streams as a JS bigint (readKpiFields
+    // never stringifies it) — formatKpiValue's own bigint values never reach
+    // numericValue (integerString claims them first), but a delta does.
+    expect(kpiDeltaState(item(5n))).toEqual({ value: 5n, direction: 'up', semantic: 'neutral' });
     expect(kpiDeltaState(item(null))).toBeNull();
     expect(kpiDeltaState(item('bad'))).toBeNull();
     expect(kpiDeltaState(item(2, { show: false }))).toBeNull();

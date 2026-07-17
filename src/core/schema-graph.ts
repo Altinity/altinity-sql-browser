@@ -216,7 +216,12 @@ export function buildSchemaGraph(
   // that same first pass, before any dependency processing.
   const node = (id: string, kind: string, db?: string, name?: string, comment?: string): SchemaGraphNode => {
     if (!nodes.has(id)) {
-      nodes.set(id, { id, label: id, kind, db: db || '', name: name || '', comment: (comment || '').trim() });
+      // `!`: every call site that can reach a not-yet-registered id passes real
+      // `db`/`name` strings (see the invariant above) — the one caller that
+      // omits them (the implicit `.inner` MV target) always targets an id the
+      // first pass already registered, so this branch never sees them absent.
+      // The original .js used the bare shorthand `db, name` here.
+      nodes.set(id, { id, label: id, kind, db: db!, name: name!, comment: (comment || '').trim() });
     }
     // `!`: the branch above guarantees `id` is present either way (just-created
     // or already there).

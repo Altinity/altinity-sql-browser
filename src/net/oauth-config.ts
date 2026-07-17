@@ -114,7 +114,10 @@ function idpLabel(e: RawIdpEntry): string {
     const c = String(conn).toLowerCase();
     return CONNECTION_NAMES[c] || (c.charAt(0).toUpperCase() + c.slice(1));
   }
-  const host = idpHost(e.issuer || '');
+  // `!`: `idpLabel` is only ever called from `normalizeEntry`, right after its
+  // own `!e.issuer` guard already confirmed a truthy issuer — the original
+  // .js read `e.issuer` bare here.
+  const host = idpHost(e.issuer!);
   return ISSUER_NAMES[host] || host;
 }
 

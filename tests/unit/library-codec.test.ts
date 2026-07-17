@@ -199,6 +199,29 @@ describe('decoding and migrations', () => {
     expect(failDiagnostics(migrateSavedQuerySpec({ ...source, extra: 'would be lost' }, 1))[0])
       .toMatchObject({ path: ['extra'], code: 'schema-unknown-property' });
   });
+
+  it('surfaces diagnostics when the migrated result itself fails validation, not just the source', () => {
+    const source = query('q');
+    // A source that passes the pre-migration check but a stubbed validation
+    // service that regresses on the post-migration re-check — proving the
+    // `after` guard is live, not just the `before` one (a codec bug that
+    // silently produces an invalid envelope must still be caught).
+    let savedQueryChecks = 0;
+    const validationService = {
+      getSchema: (schemaId: string) => jsonSchemaValidationService.getSchema(schemaId),
+      validate(schemaId: string, value: unknown) {
+        if (schemaId === SAVED_QUERY_V2_SCHEMA_ID) {
+          savedQueryChecks += 1;
+          if (savedQueryChecks > 1) {
+            return [{ path: [], severity: 'error' as const, code: 'stub-after-invalid', message: 'stubbed post-migration failure', keyword: 'stub' }];
+          }
+        }
+        return jsonSchemaValidationService.validate(schemaId, value);
+      },
+    };
+    const result = migrateSavedQuerySpec(source, 1, { validationService });
+    expect(failDiagnostics(result)[0].code).toBe('stub-after-invalid');
+  });
 });
 
 describe('encoding', () => {

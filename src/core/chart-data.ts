@@ -791,7 +791,10 @@ export function chartJsConfig(
         callbacks: {
           label: (context: TooltipContext): string => {
             const measure = tooltipMeasure(context);
-            const label = isPie ? context.label : context.dataset?.label;
+            // `!`: Chart.js always supplies `dataset` on a real tooltip
+            // context — the original .js read `.label` bare (a missing
+            // dataset should crash loudly, not render "undefined:").
+            const label = isPie ? context.label : context.dataset!.label;
             const value = measure?.authoredValueFormat
               ? formatChartValue(context.raw, measure.presentation)
               : context.formattedValue ?? formatChartValue(context.raw, measure?.presentation);

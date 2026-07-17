@@ -79,6 +79,20 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(fields.every((f) => f.classList.contains('is-curated'))).toBe(true);
   });
 
+  it('marks a curated field is-conflict when its declared type disagrees across favorites (#173)', () => {
+    const app = makeApp();
+    const params = fieldControls(analyzeParameterizedSources([
+      { id: 'A', kind: 'tab', sql: 'SELECT {x:UInt64}', bindPolicy: 'row-returning' },
+      { id: 'B', kind: 'tab', sql: 'SELECT {x:String}', bindPolicy: 'row-returning' },
+    ]));
+    const bar = buildFilterBar(app, params, () => {}, okField, {
+      curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
+    });
+    const input = bar.querySelector('input')!;
+    expect(input.classList.contains('is-conflict')).toBe(true);
+    expect(input.title).toContain('Conflicting type declarations: UInt64 vs String');
+  });
+
   it('applies the shared is-invalid affordance to a curated field, same as a plain one', () => {
     const app = makeApp();
     const invalidField = (): PreparedFieldState => ({ state: 'invalid', reason: 'Bad value' });

@@ -120,8 +120,12 @@ function validateLibraryV2Source(document: unknown, options?: unknown): LibraryD
   // which every codec-framework caller — `migrateSequential`,
   // `validateLibraryDocument` — invokes generically); narrowed here to what
   // this module actually passes.
+  // `!`: both real callers default their bag to `{}` before it ever reaches
+  // here, so `options` is never nullish in practice — the original .js's
+  // parameter-default destructuring covered exactly this same "always an
+  // object by the time it's read" case.
   const { validationService = jsonSchemaValidationService } =
-    (options ?? {}) as { validationService?: JsonSchemaValidationService };
+    options as { validationService?: JsonSchemaValidationService };
   // Ingress: `document` is arbitrary caller-supplied JSON — `queries` is read
   // defensively (present, an array, or not) rather than asserting a shape.
   const doc = document as { queries?: unknown } | null | undefined;
@@ -166,8 +170,11 @@ export const SPEC_CODECS: Map<number, SpecCodecEntry> = new Map([
   [1, {
     schemaId: QUERY_SPEC_V1_SCHEMA_ID,
     validateSource(value: unknown, options?: unknown): LibraryDiagnostic[] {
+      // `!`: reached only through `migrateSequential`, whose `context` bag
+      // always defaults to `{}` before it's passed down — never nullish here,
+      // same as `validateLibraryV2Source` above.
       const { validationService = jsonSchemaValidationService } =
-        (options ?? {}) as { validationService?: JsonSchemaValidationService };
+        options as { validationService?: JsonSchemaValidationService };
       return validationService.validate(QUERY_SPEC_V1_SCHEMA_ID, value);
     },
     migrateToNext: null,
@@ -185,12 +192,15 @@ export const LIBRARY_CODECS: Map<number, LibraryCodecEntry> = new Map([
   [1, {
     validateSource: validateLegacyLibraryV1,
     migrateToNext(document: unknown, context?: unknown): MigratedLibraryV2 {
-      // `context` is this codec framework's opaque per-call bag (`options`
-      // from `migrateLibraryDocument`/`decodeLibraryDocument`) — always a
-      // plain object in practice; `document` reaches here only after
-      // `validateLegacyLibraryV1` already confirmed a `{queries: [...]}`
-      // shape (`migrateSequential` validates before migrating).
-      const ctx = (context ?? {}) as Record<string, unknown>;
+      // `!`: `context` is this codec framework's opaque per-call bag —
+      // `migrateSequential` always defaults it to `{}` before calling
+      // `migrateToNext`, so it's never nullish here (the original .js spread
+      // `context` bare with no fallback at all — spreading `undefined` is a
+      // harmless no-op, so it never needed one either); `document` reaches
+      // here only after `validateLegacyLibraryV1` already confirmed a
+      // `{queries: [...]}` shape (`migrateSequential` validates before
+      // migrating).
+      const ctx = context as Record<string, unknown>;
       return migrateLibraryV1ToV2(document as { queries: unknown[] }, { ...ctx, schemaId: LIBRARY_V2_SCHEMA_ID });
     },
   }],
