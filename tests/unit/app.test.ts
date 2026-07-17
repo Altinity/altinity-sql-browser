@@ -362,7 +362,7 @@ describe('createApp basics', () => {
   });
   it('reads the stored token and derives identity', () => {
     const app = createApp(env());
-    expect(app.token).toBe(validToken);
+    expect(app.conn.token()).toBe(validToken);
     expect(app.isSignedIn()).toBe(true);
     expect(app.email()).toBe('me@example.com');
     expect(app.host()).toBe('ch.example');
@@ -493,7 +493,7 @@ describe('renderApp shell', () => {
     expect(qs(menu, '.um-id').textContent).toBe('me@example.com');
     expect(qs(menu, '.um-build').textContent).toBe(app.build); // build stamp ('dev' here)
     qs(menu, '.um-item.danger').dispatchEvent(new Event('click', { bubbles: true }));
-    expect(app.token).toBeNull();
+    expect(app.conn.token()).toBeNull();
     expect(e.sessionStorage!.getItem('oauth_id_token')).toBeNull();
     expect(qs(app.root, '.login-screen')).not.toBeNull();
     expect(qs(document, '.user-menu')).toBeNull(); // closed
@@ -525,7 +525,7 @@ describe('renderApp shell', () => {
     const e = env({ sessionStorage: memSession({ oauth_verifier: 'v', oauth_state: 's' }) });
     const app = createApp(e);
     app.setTokens('tok');
-    expect(app.token).toBe('tok');
+    expect(app.conn.token()).toBe('tok');
     expect(e.sessionStorage!.getItem('oauth_id_token')).toBe('tok');
     expect(e.sessionStorage!.getItem('oauth_verifier')).toBeNull();
     expect(e.sessionStorage!.getItem('oauth_state')).toBeNull();
@@ -2626,7 +2626,7 @@ describe('auth flows', () => {
     const app = createApp(e);
     const ok = await app.chCtx.refresh();
     expect(ok).toBe(true);
-    expect(app.token).toBe(validToken);
+    expect(app.conn.token()).toBe(validToken);
   });
   it('getToken returns null + clears when refresh fails', async () => {
     const e = env({
@@ -2683,7 +2683,7 @@ describe('credentials (basic) sign-in', () => {
 
   it('restores a basic session from sessionStorage', () => {
     const app = createApp(env({ sessionStorage: memSession(basicSession) }));
-    expect(app.authMode).toBe('basic');
+    expect(app.conn.authMode()).toBe('basic');
     expect(app.isSignedIn()).toBe(true);
     expect(app.email()).toBe('demo');
     expect(app.host()).toBe('gh.example:8443');
@@ -2721,9 +2721,9 @@ describe('credentials (basic) sign-in', () => {
       fetch: makeFetch([[(u, sql) => /SELECT 1/.test(sql), resp({ json: { data: [{ '1': 1 }] } })]]),
     });
     const app = createApp(e);
-    expect(app.authMode).toBe('oauth');
+    expect(app.conn.authMode()).toBe('oauth');
     await app.actions.connect({ username: 'demo', password: 'demo', host: '' });
-    expect(app.authMode).toBe('basic');
+    expect(app.conn.authMode()).toBe('basic');
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBe(creds);
     expect(e.sessionStorage!.getItem('ch_basic_user')).toBe('demo');
     expect(e.sessionStorage!.getItem('ch_basic_origin')).toBe('https://ch.example');
@@ -2749,7 +2749,7 @@ describe('credentials (basic) sign-in', () => {
     });
     const app = createApp(e);
     await expect(app.actions.connect({ username: 'demo', password: 'wrong', host: '' })).rejects.toThrow();
-    expect(app.authMode).toBe('oauth');
+    expect(app.conn.authMode()).toBe('oauth');
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBeNull();
   });
   it('signing out of a basic session resets mode, origin, and stored creds', () => {
@@ -2757,7 +2757,7 @@ describe('credentials (basic) sign-in', () => {
     const app = createApp(e);
     app.renderApp();
     app.signOut();
-    expect(app.authMode).toBe('oauth');
+    expect(app.conn.authMode()).toBe('oauth');
     expect(app.chCtx.origin).toBe('https://ch.example');
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBeNull();
     expect(qs(app.root, '.login-screen')).not.toBeNull();
@@ -3098,7 +3098,7 @@ describe('exhaustive controller coverage', () => {
     });
     const app = createApp(e);
     await app.chCtx.refresh();
-    expect(app.refreshToken).toBe('rt2');
+    expect(app.conn.refreshToken()).toBe('rt2');
     expect(e.sessionStorage!.getItem('oauth_refresh_token')).toBe('rt2');
   });
 
@@ -3319,7 +3319,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     await app.ensureConfig();
-    expect(app.chAuth).toBe('basic');
+    expect(app.conn.chAuth()).toBe('basic');
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const q = asMock(e.fetch!).mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1')!;
@@ -3342,7 +3342,7 @@ describe('exhaustive controller coverage', () => {
     const app = createApp(e);
     app.renderApp();
     await app.ensureConfig();
-    expect(app.basicUserClaim).toBe('nickname');
+    expect(app.conn.basicUserClaim()).toBe('nickname');
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     const q = asMock(e.fetch!).mock.calls.find((c) => c[1] && c[1].body === 'SELECT 1')!;

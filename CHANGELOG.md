@@ -10,6 +10,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Authentication and connection lifecycle extracted into `ConnectionSession`**
+  (#276 Phase 2). OAuth PKCE login/refresh, Basic-auth probing, IdP config
+  resolution, identity, sign-in/out, and the cross-tab dashboard auth handoff
+  now live in `src/application/connection-session.ts` — constructible without
+  `App`/`AppState`/DOM, with rendering inverted through an injected
+  `onAuthLost` shell callback (the session never renders or toasts). The app
+  exposes it as `app.conn`; `app.chCtx` remains the same single live ClickHouse
+  context object (now session-owned). The scalar auth fields
+  (`token`/`refreshToken`/`authMode`/`chAuth`/`basicUserClaim`/`idpId`) left
+  the `App` contract; view/bootstrap-consumed members stay as one-line
+  delegates slated for removal in the issue's Phase 5. Behavior, storage keys,
+  handoff message pinning, and error strings are byte-identical.
 - **Query execution extracted into an application service** (#276 Phases 0–1,
   the first step of the app.ts → services refactor). The shared
   request/stream/normalize core (`runReadInto`) and the multiquery-script

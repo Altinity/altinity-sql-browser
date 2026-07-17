@@ -23,13 +23,11 @@ import type {
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { decodeJwtPayload, isTokenExpired } from '../core/jwt.js';
 import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, prepareExportSql, formatBytes, formatRows } from '../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
 import type { SchemaCardColumnRow } from '../core/schema-cards.js';
-import { resolveTarget } from '../core/target.js';
 import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { newResult, parseErrorPos, findExceptionFrame } from '../core/stream.js';
 import { buildResultSource } from '../core/query-source.js';
@@ -45,14 +43,8 @@ import {
 import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
 import type { SpecDiagnostic } from '../editor/spec-editor.types.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
-import { generatePKCE, randomState } from '../core/pkce.js';
-import { configBase } from '../core/dashboard.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
-import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
-import type { AuthSnapshot } from '../core/auth-handoff.js';
-import * as oauthCfg from '../net/oauth-config.js';
-import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
@@ -93,11 +85,12 @@ import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { flashToast } from './toast.js';
-import type { App, ActionsRegistry, SchemaFocus, ChCtx as AppChCtx } from './app.types.js';
+import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
 import type { CreateAppEnv } from '../env.types.js';
 import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core/schema-graph.js';
 import type { LineageFocus } from '../net/ch-client.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
+import { createConnectionSession } from '../application/connection-session.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -224,8 +217,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     hardenedVars: new Set<string>(),
     root: env.root || doc.getElementById('root'),
     document: doc,
-    token: ss.getItem('oauth_id_token'),
-    refreshToken: ss.getItem('oauth_refresh_token'),
     // Charting seam: the Chart.js constructor (injected so tests stub it) and a
     // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
     Chart: env.Chart || win.Chart,
@@ -272,38 +263,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   // the button's own enabled/tooltip state stays gated on canExport, since every
   // browser with showSaveFilePicker also has showDirectoryPicker).
   app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
-
-  // Two ways to be signed in: OAuth (a JWT bearer, the default) or 'basic' —
-  // a ClickHouse username/password sent as Authorization: Basic, optionally
-  // against another host. A live basic session is restored from sessionStorage
-  // (ch_basic_*), mirroring how the OAuth token is restored above.
-  app.authMode = ss.getItem('ch_basic_auth') ? 'basic' : 'oauth';
-  const basicCreds = () => ss.getItem('ch_basic_auth');
-  const basicUser = () => ss.getItem('ch_basic_user') || '';
-  const originHost = (o: string): string => { try { return new URL(o).host; } catch { return ''; } };
-
-  // config.json may list several IdPs. Fetch the doc once; resolve OIDC
-  // discovery per selected IdP. The chosen IdP id is persisted so it survives
-  // the OAuth redirect (like oauth_state) and drives token exchange/refresh.
-  // configBase strips a trailing `/dashboard` so config.json / OAuth discovery
-  // resolve from the SPA base (`/sql/config.json`) on the dashboard route too.
-  // The same base is the single source of truth for the workbench↔dashboard
-  // links (openDashboard, the dashboard's Back link) rather than hardcoding
-  // `/sql` in several shapes.
-  app.basePath = configBase(loc.pathname);
-  const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, app.basePath));
-  const resolvedCache = new Map<string, Promise<oauthCfg.ResolvedIdpConfig>>();
-  app.idpId = ss.getItem('oauth_idp') || null;
-  function selectIdp(id: string): void { app.idpId = id; ss.setItem('oauth_idp', id); }
-  async function resolveConfig(): Promise<oauthCfg.ResolvedIdpConfig> {
-    const { idps } = await loadDoc();
-    const chosen = idps.find((i) => i.id === app.idpId) || idps[0];
-    app.idpId = chosen.id;
-    if (!resolvedCache.has(chosen.id)) resolvedCache.set(chosen.id, oauthCfg.resolveIdp(fetchFn, chosen));
-    return resolvedCache.get(chosen.id)!;
-  }
-  app.loadIdps = loadDoc;
-  app.selectIdp = selectIdp;
 
   // --- persistence -------------------------------------------------------
   app.saveJSON = saveJSON;
@@ -359,12 +318,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // libraryName/libraryDirty effect, so callers just mutate those signals.
   app.downloadFile = downloadFile;
 
-  // --- identity ----------------------------------------------------------
-  // The host queries actually go to. chCtx.origin already resolves to the basic
-  // target, the picked OAuth cluster (oauth_origin), or the serving origin — so a
-  // cross-origin OAuth connection shows the cluster, not localhost. (URL.host drops
-  // a default :443, so a 443 cluster shows a bare hostname; an 8443 one shows :8443.)
-  app.host = () => originHost(chCtx.origin) || 'clickhouse';
+  // --- identity ------------------------------------------------------------
+  // app.host is a Phase-2 delegate (conn.host) — assigned below, alongside the
+  // rest of the ConnectionSession delegates, once `conn` is constructed.
   app.activeTab = () => activeTab(app.state);
 
   // --- independent SQL + Spec editor seams (#143/#212) ---------------------
@@ -455,50 +411,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.revalidateSpecDrafts();
     return () => { unregister(); app.revalidateSpecDrafts(); };
   };
-  // A `?host=` query param pre-fills the credential server address on the login
-  // screen (and disables SSO, which only targets the serving host).
-  app.hostHint = new URLSearchParams(loc.search || '').get('host') || '';
-  app.isSignedIn = () => (app.authMode === 'basic'
-    ? !!basicCreds()
-    : !!app.token && !isTokenExpired(app.token, 0));
-  // The CH-facing identity for the current token — what currentUser() will be:
-  // for ch_auth=basic it's the Basic username (honouring basicUserClaim); for
-  // bearer it's the email the token-processor keys on. Shared by authHeader and
-  // the header display so the UI never shows a different claim than CH sees.
-  function chUsername(p: Record<string, unknown>): string {
-    return String((app.chAuth === 'basic' && app.basicUserClaim && p[app.basicUserClaim])
-      || p.email || p.preferred_username || p.sub || '');
-  }
-  app.chUsername = chUsername;
-  app.email = () => (app.authMode === 'basic'
-    ? basicUser()
-    : chUsername(decodeJwtPayload(app.token)));
-
-  function setTokens(id: string, refresh?: string): void {
-    app.token = id;
-    ss.setItem('oauth_id_token', id);
-    if (refresh) {
-      app.refreshToken = refresh;
-      ss.setItem('oauth_refresh_token', refresh);
-    }
-    // The PKCE verifier + CSRF state are one-shot — done with them once we hold
-    // tokens. (The refresh path also lands here; they're already gone → no-op.)
-    ss.removeItem('oauth_verifier');
-    ss.removeItem('oauth_state');
-  }
-  function clearTokens(): void {
-    app.token = null;
-    app.refreshToken = null;
-    app.idpId = null;
-    app.authMode = 'oauth';
-    chCtx.origin = loc.origin;
-    chCtx.authConfirmed = false; // a fresh sign-in starts unconfirmed again
-    ['oauth_id_token', 'oauth_refresh_token', 'oauth_verifier', 'oauth_state', 'oauth_idp', 'oauth_origin',
-      'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin'].forEach((k) => ss.removeItem(k));
-  }
-  app.setTokens = setTokens;
-  app.loadConfig = resolveConfig;
-
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
   // writes through it unconditionally); every real renderLogin() call below
@@ -507,132 +419,46 @@ export function createApp(env: CreateAppEnv = {}): App {
   // root would already throw inside login.ts's own `app.root.replaceChildren`
   // either way).
   const renderLoginApp = (msg?: string): void => renderLogin(app as App & { root: Element }, msg);
-  app.signOut = () => { clearTokens(); renderLoginApp(); };
-  app.showLogin = (msg) => renderLoginApp(msg);
+  // The auth + config + ClickHouse connection lifecycle (#276 Phase 2) — OAuth
+  // PKCE login/refresh, Basic probing, IdP config resolution, and cross-tab
+  // auth handoff all now live in `application/connection-session.ts`,
+  // constructible without App/AppState/DOM; this module wires it to the real
+  // browser env and to `renderLoginApp` (the one piece that IS this shell's
+  // job — the session only ever calls `onAuthLost`, never renders). The two
+  // handoff windows (how long the child waits for a grant vs. how long the
+  // opener keeps listening) are env-injectable seams whose defaults are
+  // documented in full on `ConnectionSessionDeps` itself.
+  const conn = createConnectionSession({
+    fetch: fetchFn, storage: ss, location: loc, crypto: cryptoObj, win,
+    queryJson: ch.queryJson,
+    handoffMs: env.handoffMs != null ? env.handoffMs : 4000,
+    handoffListenMs: env.handoffListenMs != null ? env.handoffListenMs : 30000,
+    onAuthLost: (detail) => renderLoginApp(detail),
+  });
+  app.conn = conn;
+  // THE single live ClickHouse context — owned by the session, aliased locally
+  // so every existing ch.* call site below keeps referencing the same mutated
+  // object (chCtx.origin/authConfirmed are mutated in place, never replaced).
+  const chCtx = conn.chCtx;
+  const getToken = conn.getToken;
+  const ensureConfig = conn.ensureConfig;
 
-  // --- OAuth -------------------------------------------------------------
-  async function login(idpId?: string, targetOrigin?: string): Promise<void> {
-    if (idpId) selectIdp(idpId);
-    // A picked saved-connection can target another cluster: stash its origin so
-    // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
-    // Survives the redirect like oauth_state/oauth_idp; cleared for serving-host SSO.
-    if (targetOrigin) ss.setItem('oauth_origin', targetOrigin);
-    else ss.removeItem('oauth_origin');
-    const cfg = await resolveConfig();
-    const { verifier, challenge } = await generatePKCE(cryptoObj);
-    const state = randomState(cryptoObj);
-    ss.setItem('oauth_verifier', verifier);
-    ss.setItem('oauth_state', state);
-    loc.href = oauth.buildAuthorizeUrl(cfg, {
-      redirectUri: loc.origin + loc.pathname,
-      challenge,
-      state,
-    });
-  }
-
-  async function refresh(): Promise<boolean> {
-    // Basic credentials don't expire and can't be refreshed; a surviving 401
-    // means the password is wrong → authedFetch falls through to onSignedOut.
-    if (app.authMode === 'basic') return false;
-    const cfg = await resolveConfig();
-    const tokens = await oauth.refreshTokens(fetchFn, cfg, app.refreshToken);
-    const bearer = oauth.bearerFromTokens(tokens, cfg.bearer);
-    if (!bearer) return false;
-    // `bearer` is only ever truthy when `tokens` (its own source) is non-null.
-    setTokens(bearer, tokens?.refresh_token);
-    return true;
-  }
-
-  async function getToken(): Promise<string | null> {
-    // In basic mode the stored credential is the "token" authedFetch carries.
-    if (app.authMode === 'basic') return basicCreds();
-    if (!app.token) return null;
-    if (!isTokenExpired(app.token)) return app.token;
-    if (await refresh()) return app.token;
-    clearTokens();
-    return null;
-  }
-
-  // --- ClickHouse context ------------------------------------------------
-  // How the token is presented to CH. 'bearer' (token_processor) or 'basic'
-  // (OSS + a verifier like ch-jwt-verify, where the JWT is the Basic password
-  // and the username is the token's email). Resolved from config by ensureConfig.
-  app.chAuth = 'bearer';
-  // Which claim becomes the Basic username (per-IdP, from config). Empty → the
-  // default chain. Lets one IdP map to a CH username distinct from another's.
-  app.basicUserClaim = '';
-  function authHeader(token: string): string {
-    // Basic mode: `token` is already base64(user:pass) — send it verbatim.
-    if (app.authMode === 'basic') return 'Basic ' + token;
-    if (app.chAuth !== 'basic') return 'Bearer ' + token;
-    const user = chUsername(decodeJwtPayload(token));
-    return 'Basic ' + btoa(unescape(encodeURIComponent(user + ':' + token)));
-  }
-  const chCtx: AppChCtx = {
-    fetch: fetchFn,
-    // Where queries POST: the serving origin for OAuth, or the (possibly
-    // cross-origin) target chosen at credential sign-in for basic mode.
-    origin: app.authMode === 'basic'
-      ? (ss.getItem('ch_basic_origin') || loc.origin)
-      : (ss.getItem('oauth_origin') || loc.origin),
-    // Flips true after the first 2xx; gates whether a later 401/403 is treated
-    // as a sign-in failure (only before auth is confirmed) or a query error.
-    authConfirmed: false,
-    getToken,
-    refresh,
-    authHeader,
-    // detail is set when CH rejects a *valid* login (authorization denial); the
-    // no-arg calls (no token / expired + refresh failed) fall back to expiry.
-    onSignedOut: (detail?: string) => {
-      clearTokens();
-      renderLoginApp(detail || 'Your session expired — please sign in again.');
-    },
-  };
+  // Phase-2 delegates — shells/bootstrap consume these; Phase 5 re-points them
+  // to app.conn directly.
+  app.basePath = conn.basePath;
+  app.hostHint = conn.hostHint;
+  app.host = conn.host;
+  app.isSignedIn = conn.isSignedIn;
+  app.email = conn.email;
+  app.setTokens = conn.setTokens;
+  app.loadConfig = conn.resolveConfig;
+  app.loadIdps = conn.loadIdps;
+  app.ensureConfig = conn.ensureConfig;
+  app.ensureFreshToken = conn.ensureFreshToken;
   app.chCtx = chCtx;
-
-  // Load config (once) and apply the CH auth mode before any query runs.
-  // Fail-soft: if config can't be loaded we keep the current mode (bearer)
-  // rather than blocking the query.
-  async function ensureConfig(): Promise<oauthCfg.ResolvedIdpConfig | null> {
-    // Basic mode needs no OAuth config — the auth scheme is fixed.
-    if (app.authMode === 'basic') return null;
-    try {
-      const cfg = await resolveConfig();
-      app.chAuth = cfg.chAuth;
-      app.basicUserClaim = cfg.basicUserClaim || '';
-      return cfg;
-    } catch {
-      return null;
-    }
-  }
-  app.ensureConfig = ensureConfig;
-
-  // --- credentials (HTTP Basic) sign-in ----------------------------------
-  // Validate a ClickHouse username/password against `host` (blank → the serving
-  // host) with a probe query, then commit the session and enter the workbench.
-  // The probe uses a throwaway ctx so a bad password surfaces CH's own reason
-  // here (rejected as a thrown Error) instead of auto-rendering the login.
-  async function connect({ username, password, host }: { username: string; password: string; host?: string }): Promise<void> {
-    const user = String(username || '').trim();
-    const target = resolveTarget(host, loc.origin);
-    const creds = btoa(unescape(encodeURIComponent(user + ':' + (password || ''))));
-    const probeCtx: ch.ChCtx = {
-      fetch: fetchFn,
-      origin: target,
-      getToken: async () => creds,
-      authHeader: () => 'Basic ' + creds,
-      refresh: async () => false,
-      onSignedOut: (detail?: string) => { throw new Error(detail || 'Authentication failed'); },
-    };
-    await ch.queryJson(probeCtx, 'SELECT 1');
-    // Probe passed → commit the session and switch the live ctx to the target.
-    app.authMode = 'basic';
-    ss.setItem('ch_basic_auth', creds);
-    ss.setItem('ch_basic_user', user);
-    ss.setItem('ch_basic_origin', target);
-    chCtx.origin = target;
-    app.renderApp();
-  }
+  app.signOut = () => { conn.signOut(); renderLoginApp(); };
+  app.showLogin = (msg) => renderLoginApp(msg);
+  app.receiveAuthHandoff = (handoffEnv) => conn.receiveAuthHandoff(handoffEnv);
 
   // --- data loaders ------------------------------------------------------
   app.loadVersion = async () => {
@@ -2431,18 +2257,6 @@ export function createApp(env: CreateAppEnv = {}): App {
   const toEditorOnMobile = (): void => { if (app.state.isMobile.value) app.state.mobileView.value = 'editor'; };
 
   // --- dashboard (#149 D1) ----------------------------------------------
-  // ensureConfig + getToken, resolving (and refreshing) the auth token ONCE.
-  // The dashboard calls this before fanning tiles out, so the tiles never each
-  // race an expired-token refresh (a rotating refresh token used N-ways at once
-  // would invalidate itself), and a single sign-out is handled by the caller
-  // instead of N tiles each firing onSignedOut. Also used by bootstrap to
-  // refresh a handed-off-but-expired token before falling back to login.
-  async function ensureFreshToken(): Promise<boolean> {
-    await ensureConfig();
-    return !!(await getToken());
-  }
-  app.ensureFreshToken = ensureFreshToken;
-
   // Dashboard tiles stream their read-only SQL through the shared
   // `app.exec.executeRead` seam directly (#193/#276 — see src/ui/dashboard.js
   // `runSlotTile`), the same path run() and the detached Data view use; the
@@ -2450,82 +2264,15 @@ export function createApp(env: CreateAppEnv = {}): App {
   // was retired so cap/settings fixes can't apply to only one path.
   app.renderDashboard = () => renderDashboard(app);
 
-  // One-time cross-tab auth handoff. The dashboard opens in a new same-origin
-  // tab whose sessionStorage starts empty; rather than force a second sign-in,
-  // this (opener) tab grants its live credentials once when the child asks.
-  // Both sides pin the target origin AND the peer window; a timeout stops the
-  // opener listening if the child never asks. Message contract: core/auth-handoff.
-  // Two windows: the child waits HANDOFF_MS for a grant once it *asks* (a
-  // same-origin reply is near-instant, so this is short); the opener listens far
-  // longer (HANDOFF_LISTEN_MS) because it must survive the child's cold JS load
-  // before the child can ask — a short opener window would drop a slow tab's
-  // request and force a needless re-login.
-  const HANDOFF_MS = env.handoffMs != null ? env.handoffMs : 4000;
-  const HANDOFF_LISTEN_MS = env.handoffListenMs != null ? env.handoffListenMs : 30000;
-  function sendAuthHandoff(child: Window): void {
-    const onMsg = (e: MessageEvent): void => {
-      if (!isAuthRequest(e, loc.origin, child)) return;
-      const creds = snapshotAuth(ss);
-      // Only grant when we actually hold credentials — never hand over an empty
-      // snapshot (which the child would have to reject anyway).
-      if (hasAuth(creds)) child.postMessage({ type: AUTH_GRANT, creds }, loc.origin);
-      win.removeEventListener('message', onMsg);
-    };
-    win.addEventListener('message', onMsg);
-    win.setTimeout(() => win.removeEventListener('message', onMsg), HANDOFF_LISTEN_MS);
-  }
-  // Open the dashboard in a new tab and stand ready to hand it our credentials.
+  // Open the dashboard in a new tab and stand ready to hand it our credentials
+  // — the cross-tab auth-handoff GRANT side itself is the session's job now
+  // (`conn.grantHandoffTo`, #276 Phase 2); this stays app-side only because
+  // opening the tab (window.open) is a DOM/browser concern.
   function openDashboard(): void {
-    const child = app.openWindow(loc.origin + app.basePath + '/dashboard');
-    if (child) sendAuthHandoff(child);
+    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard');
+    if (child) conn.grantHandoffTo(child);
   }
   app.openDashboard = openDashboard;
-
-  // Restore a handed-off credential snapshot into BOTH this tab's sessionStorage
-  // and the already-constructed in-memory auth fields — token/authMode/idp/origin
-  // were snapshotted from an empty ss at construction, so writing keys back alone
-  // wouldn't take effect until a reload.
-  function applyAuthSnapshot(creds: AuthSnapshot): void {
-    restoreAuth(ss, creds);
-    if (creds.ch_basic_auth) {
-      app.authMode = 'basic';
-      chCtx.origin = creds.ch_basic_origin || loc.origin;
-    } else {
-      if (creds.oauth_id_token) setTokens(creds.oauth_id_token, creds.oauth_refresh_token);
-      if (creds.oauth_idp) app.idpId = creds.oauth_idp;
-      chCtx.origin = creds.oauth_origin || loc.origin;
-    }
-  }
-  // Child side: ask the opener for credentials once. Resolves true once a valid
-  // grant is applied; false when there's no opener or the request times out (a
-  // cold/bookmarked visit → the caller falls through to the normal login flow).
-  app.receiveAuthHandoff = (handoffEnv) => new Promise((resolve) => {
-    const opener = handoffEnv.opener;
-    if (!opener) { resolve(false); return; }
-    let done = false;
-    const finish = (ok: boolean): void => {
-      if (done) return;
-      done = true;
-      win.removeEventListener('message', onMsg);
-      resolve(ok);
-    };
-    const onMsg = (e: MessageEvent): void => {
-      if (!isAuthGrant(e, loc.origin, opener)) return;
-      // `e.data` is a real handoff grant `{type, creds}` once isAuthGrant has
-      // confirmed `type` — `AuthMessageEvent`'s own contract type only pins
-      // `type` (the shared predicate's whole point); `creds` rides alongside.
-      const data = e.data as { type?: string; creds?: AuthSnapshot } | null;
-      // Ignore an empty grant (opener signed out / mid-sign-in) — keep waiting so
-      // the request times out into the normal login rather than falsely
-      // reporting success with no credentials applied.
-      if (!hasAuth(data?.creds)) return;
-      applyAuthSnapshot(data!.creds!);
-      finish(true);
-    };
-    win.addEventListener('message', onMsg);
-    opener.postMessage({ type: AUTH_REQUEST }, loc.origin);
-    win.setTimeout(() => finish(false), HANDOFF_MS);
-  });
 
   // --- actions registry --------------------------------------------------
   app.actions = {
@@ -2535,8 +2282,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
     loadIntoNewTab: (queryOrName, sql) => { loadIntoNewTab(app, queryOrName, sql); toEditorOnMobile(); },
-    login: (idpId, targetOrigin) => login(idpId, targetOrigin),
-    connect,
+    login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
+    connect: async (input) => { await conn.connectBasic(input); app.renderApp(); },
     share,
     copyResult,
     // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
