@@ -62,6 +62,52 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     schema keeps `favorite` only as an ignored legacy-compat field readable by
     old migrations.
 
+- **Dashboard authoring domain: atomic commands, presentation resolution, and
+  workspace-wide validation** (#285, phase 3 of #280). New pure/typed modules,
+  each 100%-covered, keeping the direction model/layouts ← application ← UI:
+  - `dashboard/model/json-merge-patch.ts` — an in-house RFC 7396 JSON Merge
+    Patch (no new dependency): objects merge recursively, a `null` member
+    deletes, arrays and non-objects replace wholesale, and the result shares no
+    structure with its inputs.
+  - `dashboard/model/presentation-resolver.ts` — the ONE canonical presentation
+    resolver (base panel → selected/`defaultVariant` variant patch → tile
+    override → final validation), shared by the authoring session, saved-query
+    mutation validation, and tests. Enforces the #280 rules: a missing selected
+    variant name fails (no silent fallback), neither a variant nor an override
+    may change `panel.cfg.type`, deleting a required field fails final
+    validation, and result-column role validation runs only when result
+    metadata is available.
+  - `dashboard/layouts/flow-layout.ts` — the minimal `flow@1` layout plugin the
+    authoring domain needs: placement validation (closed span/height contract),
+    document normalization (orphan-placement pruning), size-hint-derived initial
+    placement, and `resolveActiveLayoutPlugin` (flow@1, or an unsupported
+    primary with a valid flow@1 fallback, else a load failure).
+  - `dashboard/application/dashboard-authoring-session.ts` +
+    `dashboard-commands.ts` + `dashboard-query-resolver.ts` — a
+    `DashboardAuthoringSession` owning one editable draft (a signal), its
+    in-memory `draftVersion`, dirty/selection state, and commit/export. Every
+    membership/placement/layout change is a fallible, atomic typed command
+    (`add-query`, `add-query-instance`, `remove-tile`, `move-tile`,
+    `update-tile`, `update-placement`, `change-layout`): clone the draft → apply
+    to an isolated candidate → normalize through the layout plugin → validate
+    the whole candidate workspace (structure/references/roles/limits, then
+    presentation resolution) → replace the draft only when valid; a failed
+    command leaves the previous draft byte-for-byte unchanged. `draftVersion`
+    guards stale async commands (`dashboard-command-stale`) and is separate from
+    the persisted `revision`, which increments once per successful repository
+    commit (never on a command, preview, or export). The **star rewires** to
+    `toggleMembership`, which maps to an `add-query`/`remove-tile` command and
+    dual-writes `spec.favorite` — no direct signal/document mutation of
+    membership anywhere.
+  - `dashboard/application/saved-query-mutation.ts` — `planSavedQueryMutation`
+    constructs and validates a complete candidate workspace for every
+    saved-query mutation (delete or replace), rejecting an invalidating one
+    unless the caller supplies an atomic repair (remove affected tiles/filters,
+    switch to another variant, or remap references), then commits mutation +
+    repair as one candidate.
+  A new `check:arch` rule keeps `dashboard/application` off the Dashboard UI.
+  Live Workbench wiring of the session/star UI lands with the phase-4 viewer.
+
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
   temporary `App` delegates from Phases 2–4 are deleted — consumers read
