@@ -9,15 +9,15 @@ import { Icon } from './icons.js';
 import {
   createState, activeTab,
   savedForTab, tabPanel,
-  normalizeRowLimit, MOBILE_BREAKPOINT_PX,
+  normalizeRowLimit,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
-import { splitStatements, leadingKeyword } from '../core/sql-split.js';
+import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, formatBytes, formatRows } from '../core/format.js';
+import { sqlString, inferQueryName, shortVersion, withStatementBreak, formatBytes } from '../core/format.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
@@ -33,14 +33,13 @@ import { createNoopPort } from '../editor/editor-port.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
-import { SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import type { QueryOrName } from './tabs.js';
-import { effect, batch } from '@preact/signals-core';
-import { renderSchema } from './schema.js';
+import { batch } from '@preact/signals-core';
 import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
 import { renderDashboard } from './dashboard.js';
+import { toggleThemeDom } from './theme-toggle.js';
 import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
@@ -58,11 +57,9 @@ import type { ComboField } from './combobox.js';
 import { recentOptions } from '../core/recent-values.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
-import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
-import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { flashToast } from './toast.js';
 import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
 import type { CreateAppEnv } from '../env.types.js';
@@ -70,14 +67,15 @@ import { createQueryExecutionService } from '../application/query-execution-serv
 import { createConnectionSession } from '../application/connection-session.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
 import { createWorkbenchParameterSession } from '../application/workbench-parameter-session.js';
+import { createChSessionParams } from '../application/ch-session-params.js';
 import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
-import type { PreferenceKey } from '../application/app-preferences.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
+import { mountWorkbenchShell } from './workbench/workbench-shell.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -447,32 +445,13 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
   app.tickElapsed = tickElapsed;
 
-  // A ClickHouse HTTP session ties a tab's requests together so session state —
-  // temporary tables, SET settings — survives across the separate HTTP requests
-  // of a multiquery script (and across successive runs in the tab). ClickHouse's
-  // HTTP interface runs one statement per request and is otherwise stateless, so
-  // without this a `CREATE TEMPORARY TABLE …; INSERT …; SELECT …` script can't
-  // see its own temp table. The id is per-tab (lazily minted) so tabs don't share
-  // state and never collide on the per-session lock (only one query runs at a
-  // time, guarded by `running`). No `session_timeout` override is needed:
-  // ClickHouse resets the idle timer when each query is *released* (end of the
-  // request, not the start) and cancels it while a query runs, so the default
-  // (60s) never lapses between a script's back-to-back statements.
-  function sessionParams(tab: QueryTab): { session_id: string } {
-    tab.chSession = tab.chSession || uid('sess-');
-    return { session_id: tab.chSession };
-  }
-  // Only TEMPORARY tables and session `SET`s need a session; permanent DDL/DML and
-  // SELECTs are global. So we attach a session_id ONLY when the SQL needs one — or
-  // when the tab already opened one (sticky, so a temp table / SET from an earlier
-  // run stays visible to later runs in that tab). Ordinary scripts run session-LESS,
-  // which avoids the session lock / replica-affinity reset that intermittently
-  // surfaces as a "Network error". (Schema / reference loads are always
-  // session-less — they fan out in parallel and would deadlock on the lock.)
-  const needsSession = (sqls: string[]): boolean => sqls.some((s) => /\bTEMPORARY\b/i.test(s) || leadingKeyword(s) === 'SET');
-  function sessionParamsFor(tab: QueryTab, sqls: string[]): Record<string, string> {
-    return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
-  }
+  // The ClickHouse HTTP `session_id` policy (#276 Phase 5 final home) —
+  // `sessionParams`/`needsSession`/`sessionParamsFor` now live in
+  // `application/ch-session-params.ts` (see its header comment for the full
+  // rationale, ported byte-identical), so this file's own workbench-hook
+  // wiring and the `exportService` dep wiring below share ONE implementation
+  // instead of two independently-maintained copies.
+  const { sessionParamsFor } = createChSessionParams({ uid });
   // The `{name:Type}` query-variable POLICY — analyze/prepare/gate/execution-
   // view, the #170 hardening bookkeeping, the #172 v2 schema-cache enum-
   // suggestion inference, and the #171 recent-value + persistence policy —
@@ -481,9 +460,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // view, below) and the workbench-session hooks + export block (further
   // down) call its methods directly; `app.params.hardenedVars` reads this
   // session's own `Set` directly (#276 Phase 5 deleted the flat
-  // `App.hardenedVars` alias). `sessionParams`/`needsSession`/
-  // `sessionParamsFor` above stay HERE (they're `tab.chSession`/transport
-  // material, not parameter policy — Phase 4C's concern).
+  // `App.hardenedVars` alias). `sessionParamsFor` above is `ch-session-params.ts`'s
+  // `tab.chSession`/transport material, not parameter policy — Phase 4C's
+  // concern (or this one).
   const params = createWorkbenchParameterSession({
     varValues: () => app.state.varValues,
     filterActive: () => app.state.filterActive,
@@ -1323,12 +1302,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.openUserMenu = openUserMenu;
 
   function toggleTheme(): void {
-    // The state-flip + persist half lives in `prefs.toggleTheme()` (#276
-    // Phase 4D); the DOM half — the `data-theme` attribute + header icon
-    // swap — stays here.
-    const theme = prefs.toggleTheme();
-    doc.documentElement.setAttribute('data-theme', theme);
-    if (app.dom.themeBtn) app.dom.themeBtn.replaceChildren(theme === 'dark' ? Icon.sun() : Icon.moon());
+    // The shared DOM composition (state-flip + persist + `data-theme` +
+    // icon swap) now lives in `ui/theme-toggle.ts`'s `toggleThemeDom` (#276
+    // Phase 5) — both route shells (workbench header, dashboard) wire their
+    // own theme button to it; this thin wrapper is kept as `app.toggleTheme`
+    // solely for explain-graph.ts's detached schema-graph overlay, which
+    // takes it as an optional callback (see theme-toggle.ts's own header
+    // comment for why that one seam isn't mechanical to repoint).
+    toggleThemeDom({ prefs, document: doc, themeBtn: () => app.dom.themeBtn });
   }
   // Exposed so the schema-view overlay can drive the same toggle (keeps state +
   // saved pref + header icon in sync rather than flipping data-theme behind them).
@@ -1417,289 +1398,37 @@ export interface RenderAppHelpers {
   startDrag: typeof startDrag;
 }
 
-/** Build the signed-in shell and mount all regions. */
+
+/** Build the signed-in shell and mount all regions — a thin composition call
+ *  onto `ui/workbench/workbench-shell.ts`'s `mountWorkbenchShell` (#276 Phase
+ *  5): the entire former body (header/sidebar/splitters/workbench DOM/every
+ *  effect/`attachShell`/the catalog bootstrap tail) now lives there,
+ *  byte-identically, driven by a narrow `WorkbenchShellDeps` bag instead of
+ *  the full `App` — see that module's header comment for what stays coupled
+ *  to `app` and why. */
 export function renderApp(app: App, helpers: RenderAppHelpers): void {
-  const { state, document: doc } = app;
-  doc.documentElement.setAttribute('data-theme', state.theme);
-  doc.documentElement.setAttribute('data-density', state.density);
-
-  app.dom = {};
-  app.dom.connStatus = h('div', { class: 'conn-status dim' }, h('span', { class: 'ver' }, 'Connecting…'));
-  app.dom.themeBtn = h('button', { class: 'hd-btn', title: 'Toggle theme', onclick: helpers.toggleTheme });
-  app.dom.themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
-  app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: app.conn.email(), onclick: () => app.actions.openUserMenu() },
-    h('span', { class: 'user-short' }, userShortName(app.conn.email())), Icon.chevDown());
-  const header = h('div', { class: 'app-header' },
-    h('div', { class: 'logo-mark' }, Icon.brand()),
-    h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
-    h('div', { class: 'env-chip' }, app.conn.host()),
-    h('div', { class: 'hd-divider' }),
-    ...libraryControls(app),
-    h('div', { style: { flex: '1' } }),
-    app.dom.connStatus,
-    h('a', {
-      // hd-hide-mobile: decorative/desktop-only header items are hidden below the
-      // breakpoint (#126) so the essential controls (File menu, theme, user menu)
-      // fit a phone width instead of overflowing off-screen. See styles.css.
-      class: 'hd-btn hd-hide-mobile', href: 'https://github.com/Altinity/altinity-sql-browser/tree/main/examples',
-      target: '_blank', rel: 'noopener noreferrer', title: 'View examples',
-    }, Icon.github()),
-    h('button', { class: 'hd-btn hd-hide-mobile', title: 'Keyboard shortcuts (?)', onclick: () => app.actions.openShortcuts() }, Icon.shortcuts()),
-    app.dom.themeBtn,
-    app.dom.userBtn);
-
-  app.dom.schemaSearchInput = h('input', {
-    type: 'text', placeholder: 'Search tables, columns…',
-    oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
+  mountWorkbenchShell({
+    app,
+    root: app.root,
+    document: app.document,
+    state: app.state,
+    actions: app.actions,
+    conn: app.conn,
+    catalog: app.catalog,
+    sqlEditor: app.sqlEditor,
+    specEditor: app.specEditor,
+    workbench: app.workbench,
+    queryDoc: app.queryDoc,
+    prefs: app.prefs,
+    matchMedia: app.matchMedia,
+    activeTab: app.activeTab,
+    updateSaveBtn: app.updateSaveBtn,
+    specBlocked: app.specBlocked,
+    renderVarStrip: app.renderVarStrip,
+    updateBanner: app.updateBanner,
+    setRunBtn: app.setRunBtn,
+    setExportBtn: app.setExportBtn,
+    toggleTheme: helpers.toggleTheme,
+    startDrag: helpers.startDrag,
   });
-  app.dom.schemaList = h('div', { class: 'schema-list' });
-  const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
-    h('div', { class: 'schema-search' }, h('div', { class: 'search-wrap' }, Icon.search(), app.dom.schemaSearchInput)),
-    app.dom.schemaList);
-
-  app.dom.savedTabsRow = h('div', { class: 'side-tabs' });
-  app.dom.savedSearch = h('div', { class: 'saved-search' });
-  app.dom.savedList = h('div', { class: 'saved-list' });
-  const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
-
-  const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  const rectFor = (axis: SplitterAxis): DragRect => {
-    if (axis === 'sideRow') return sidebar.getBoundingClientRect();
-    return { top: app.dom.editorRegion!.getBoundingClientRect().top, bottom: app.dom.resultsRegion!.getBoundingClientRect().bottom };
-  };
-  const dragCtx: DragCtx = {
-    state,
-    rectFor,
-    apply: (axis, value) => {
-      if (axis === 'col') sidebar.style.width = value + 'px';
-      else if (axis === 'sideRow') schemaPane.style.height = value + '%';
-      else app.dom.editorRegion!.style.height = value + '%';
-    },
-    save: (name, value) => app.prefs.save(name as PreferenceKey, value),
-  };
-  app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'sideRow', dragCtx) });
-  // Mobile Tables view (#126): a Schema | Library segmented control at the top of
-  // the sidebar. CSS hides it above the breakpoint; below it, it swaps which pane
-  // shows (the sidebar's data-mobile-tab drives both the active-button style and
-  // the pane visibility — no JS effect needed for the active state).
-  app.dom.mobileSegmented = h('div', { class: 'mobile-segmented' },
-    h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Schema')),
-    h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
-  sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
-  const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'col', dragCtx) });
-
-  app.dom.qtabsInner = h('div', { class: 'qtabs-inner' });
-  const qtabsRow = h('div', { class: 'qtabs' }, app.dom.qtabsInner,
-    h('button', { class: 'new-tab', title: 'New query', onclick: () => app.actions.newTab() }, Icon.plus()));
-
-  app.dom.runBtn = h('button', { class: 'run-btn', onclick: () => app.actions.run() }, Icon.play(), h('span', null, 'Run'), h('kbd', null, '⌘↵'));
-  app.dom.fmtBtn = h('button', { class: 'tb-btn', title: 'Format SQL (⌘⇧↵)', onclick: () => app.actions.formatQuery() }, Icon.braces(), 'Format');
-  app.dom.explainBtn = h('button', { class: 'tb-btn', title: 'Explain this query (plan, indexes, pipeline, estimate)', onclick: () => app.actions.explainQuery() }, Icon.plan(), 'Explain');
-  app.dom.formatSpecBtn = h('button', { class: 'tb-btn spec-action', title: 'Format Spec JSON (⌘⇧↵)', onclick: () => app.actions.formatSpec() }, Icon.braces(), 'Format');
-  app.dom.saveBtn = h('button', { class: 'tb-btn save-btn', onclick: () => app.actions.save() });
-  app.dom.sqlModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('sql'), 'aria-pressed': 'true' }, 'SQL');
-  app.dom.specModeBtn = h('button', { class: 'editor-mode-btn', onclick: () => app.actions.setEditorMode('spec'), 'aria-pressed': 'false' }, 'Spec');
-  app.dom.editorModeSwitch = h('div', { class: 'editor-mode-switch', role: 'group', 'aria-label': 'Editor mode' }, app.dom.sqlModeBtn, app.dom.specModeBtn);
-  // Chromium + secure-context only (app.canExport), and disabled while one is
-  // already running (app.state.exporting — see setExportBtn's effect below).
-  // Aria-disabled with a tooltip rather than natively `disabled` — a natively
-  // disabled button swallows pointer events, so its title tooltip often never
-  // shows, exactly where a "why is this greyed out?" explanation matters most.
-  app.dom.exportBtn = h('button', {
-    class: 'tb-btn', onclick: () => app.actions.exportEntry(),
-  }, Icon.download(), 'Export');
-  app.dom.shareBtn = h('button', { class: 'tb-btn', title: 'Share query (copies link)', onclick: () => app.actions.share() }, Icon.share(), 'Share');
-
-  const editorToolbar = h('div', { class: 'ed-toolbar' },
-    app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn,
-    app.dom.formatSpecBtn,
-    app.dom.saveBtn, app.dom.editorModeSwitch,
-    h('div', { style: { flex: '1' } }), app.dom.exportBtn, app.dom.shareBtn);
-  // Query-variable strip (#134): one input per detected {name:Type} placeholder,
-  // in a single row that scrolls horizontally (never wraps) when there are many.
-  // Hidden (no vertical space) until the active tab has variables — see
-  // renderVarStrip. Sits below the toolbar so it doesn't compete with the
-  // splitter-sized editor for height.
-  app.dom.varStrip = h('div', { class: 'var-strip', style: { display: 'none' } });
-  app.dom.sqlEditorHost = h('div', { class: 'document-editor sql-document-editor' });
-  app.dom.specEditorHost = h('div', { class: 'document-editor spec-document-editor' });
-  app.dom.specStatus = h('div', { class: 'spec-status', role: 'status', 'aria-live': 'polite' });
-  app.dom.specPane = h('div', { class: 'spec-editor-pane' }, app.dom.specEditorHost, app.dom.specStatus);
-  app.dom.editorRegion = h('div', { class: 'editor-region', style: { height: state.editorPct + '%', minHeight: '0', overflow: 'hidden', flexShrink: '0' } },
-    app.dom.sqlEditorHost, app.dom.specPane);
-  app.dom.resultsRegion = h('div', { class: 'results-region', style: { flex: '1', minHeight: '0', overflow: 'hidden' } });
-  // Drop a database/table from the schema tree here → render its lineage graph.
-  // Disabled in mobile mode (#126): native drag doesn't fire from touch, and the
-  // schema tree drops its drag sources below the breakpoint, so accepting a drop
-  // here would be a dead affordance. (Clicking a db row still draws the graph via
-  // showSchemaGraph — #124's tap-native trigger — so nothing is lost.)
-  app.dom.resultsRegion.addEventListener('dragover', (e) => {
-    if (state.isMobile.value) return;
-    if (e.dataTransfer && [...e.dataTransfer.types].includes(SCHEMA_GRAPH_MIME)) e.preventDefault();
-  });
-  app.dom.resultsRegion.addEventListener('drop', (e) => {
-    if (state.isMobile.value) return;
-    const payload = e.dataTransfer && e.dataTransfer.getData(SCHEMA_GRAPH_MIME);
-    if (!payload) return;
-    e.preventDefault();
-    try { app.actions.showSchemaGraph(JSON.parse(payload)); } catch { /* malformed payload */ }
-  });
-  app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'row', dragCtx) });
-
-  const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.varStrip, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
-  app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
-  const mainRow = h('div', { class: 'main-row' }, sidebar, sideHandle, workbench);
-
-  // Mobile bottom-tab nav (#126): one full-screen panel at a time. CSS hides it
-  // above the breakpoint; below it, `mainRow[data-mobile-view]` (set by the
-  // effect below) picks which of sidebar / editor / results fills the screen.
-  // The Results tab carries a live badge (row count, or ● while a query streams).
-  app.dom.mobileBadge = h('span', { class: 'mnav-badge' });
-  const navBtn = (view: string, icon: SVGElement, label: string, extra?: HTMLElement): HTMLButtonElement => h('button', {
-    class: 'mobile-nav-btn', 'data-view': view, onclick: () => { state.mobileView.value = view as 'tables' | 'editor' | 'results'; },
-  }, h('span', { class: 'mnav-ic' }, icon, extra || null), h('span', { class: 'mnav-label' }, label));
-  app.dom.mobileNav = h('div', { class: 'mobile-nav' },
-    navBtn('tables', Icon.database(), 'Tables'),
-    navBtn('editor', Icon.code(), 'Editor'),
-    navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
-
-  app.root!.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
-
-  app.sqlEditor.mount(app.dom.sqlEditorHost!);
-  app.specEditor.mount(app.dom.specEditorHost!);
-  app.updateEditorModeUi = () => {
-    const tab = app.activeTab();
-    const linked = !!savedForTab(state, tab);
-    if (!linked && tab.editorMode === 'spec') tab.editorMode = 'sql';
-    const specMode = tab.editorMode === 'spec';
-    app.dom.sqlEditorHost!.hidden = specMode;
-    app.dom.specPane!.hidden = !specMode;
-    for (const button of [app.dom.runBtn!, app.dom.fmtBtn!, app.dom.explainBtn!]) button.hidden = specMode;
-    app.dom.formatSpecBtn!.hidden = !specMode;
-    for (const button of [app.dom.exportBtn!, app.dom.shareBtn!]) button.hidden = specMode;
-    app.dom.sqlModeBtn!.classList.toggle('active', !specMode);
-    app.dom.specModeBtn!.classList.toggle('active', specMode);
-    app.dom.sqlModeBtn!.setAttribute('aria-pressed', String(!specMode));
-    app.dom.specModeBtn!.setAttribute('aria-pressed', String(specMode));
-    app.dom.specModeBtn!.classList.toggle('is-disabled', !linked);
-    app.dom.specModeBtn!.setAttribute('aria-disabled', String(!linked));
-    app.dom.specModeBtn!.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
-    // `tab.specDiagnostics`'s declared `SpecDiagnostic` (editor/spec-editor.
-    // types.ts) doesn't carry `line`/`column` — but every diagnostic actually
-    // stored there came from `evaluateSpecText`'s real `SpecValidationDiagnostic`
-    // (core/spec-draft.js), which does (the JSON-syntax diagnostic in
-    // particular always sets them). Widened locally rather than touching that
-    // shared editor contract.
-    const errors = (tab.specDiagnostics as (SpecDiagnostic & { line?: number; column?: number })[] | undefined)
-      ?.filter((item) => item.severity === 'error') || [];
-    const diagnostic = errors[0];
-    app.dom.specStatus!.className = 'spec-status' + (diagnostic ? ' is-error' : '');
-    app.dom.specStatus!.hidden = !diagnostic;
-    app.dom.specStatus!.textContent = diagnostic
-      ? `${diagnostic.line ? `Line ${diagnostic.line}, column ${diagnostic.column}: ` : ''}${diagnostic.message}${errors.length > 1 ? ` — ${errors.length} errors` : ''}`
-      : '';
-    app.dom.shareBtn!.disabled = app.specBlocked(tab);
-    app.dom.shareBtn!.title = app.specBlocked(tab) ? 'Fix blocking Spec errors before sharing' : 'Share query (copies link)';
-    app.dom.varStrip!.hidden = specMode;
-    app.updateSaveBtn();
-  };
-  // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
-  // refresh(): re-runs whenever the tab list or active tab changes, so tab ops
-  // just mutate the signals.
-  effect(() => {
-    app.state.tabs.value;
-    app.state.activeTabId.value;
-    app.queryDoc.revalidateSpecDrafts({ refreshUi: false });
-    renderTabs(app);
-    app.sqlEditor.syncFromState();
-    app.specEditor.syncFromState();
-    app.updateSaveBtn();
-    app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
-    app.updateEditorModeUi!(); // assigned just above, unconditionally, before any effect can run
-  });
-  // The workbench's 3 run-coupled reactive effects (#276 Phase 3a — see
-  // workbench-session.ts's own `attachShell`): the results-pane repaint
-  // (re-runs on a tab switch, a Table/JSON/Chart view change, or a run-state
-  // flip — renderResults' activeTab() also reads tabs.value, so a tab-list
-  // change repaints here too; streaming-data repaints still call renderResults
-  // directly from the session's own onChunk), the Run button (label + disabled,
-  // reflecting the run state and the selection — Run ↔ Run selection), and the
-  // mobile Results-nav badge (● while a query streams, else the row count).
-  // Idempotent: re-registers (disposing the previous set) on every renderApp()
-  // re-run.
-  app.workbench.attachShell({
-    renderResults: () => renderResults(app),
-    setRunBtn: (running) => app.setRunBtn(running),
-    setMobileBadge: () => {
-      const r = app.activeTab().result as QueryResult | null;
-      app.dom.mobileBadge!.textContent = state.running.value
-        ? '●'
-        : (r && r.rawText == null && r.progress ? formatRows(r.progress.rows) : '');
-    },
-  });
-  // The Export button reflects the exporting state — set here (not just at
-  // click-time) so a second click while one export is already running is
-  // blocked visually too, not just by exportDirect's own re-entrance guard.
-  effect(() => { app.setExportBtn(app.state.exporting.value); });
-  // Track the editor's text selection into a signal so the Run button label and
-  // ⌘+Enter target just the highlighted text. `selectionchange` is the one event
-  // that fires for keyboard, mouse, and programmatic selection; gate on the
-  // editor being focused so selecting elsewhere (results, address bar) is ignored.
-  app.syncSelection = () => {
-    const sel = app.sqlEditor.hasFocus() ? app.sqlEditor.getSelection().text : '';
-    app.state.hasSelection.value = sel.trim() !== '';
-  };
-  app.document.addEventListener('selectionchange', app.syncSelection);
-  // Reactive repaint of the schema tree — replaces the scattered renderSchema()
-  // calls: re-runs on schema load, load error, filter text, or expand/collapse.
-  // Registered here (post-mount) so app.dom.schemaList already exists; the effect
-  // also runs once now for the initial paint.
-  effect(() => {
-    app.state.schema.value;
-    app.state.schemaError.value;
-    app.state.schemaFilter.value;
-    app.state.expanded.value;
-    // Crossing the mobile breakpoint (#126) adds/removes each row's drag source
-    // and hover title, so repaint the tree when isMobile flips.
-    app.state.isMobile.value;
-    renderSchema(app);
-  });
-  // The schema/auth-failure banner reflects schemaError (a separate surface).
-  effect(() => {
-    app.state.schemaError.value;
-    app.updateBanner();
-  });
-  // Reactive repaint of the side panel: re-runs when the active panel changes
-  // (Library ↔ History). Data-driven repaints (savedQueries/history mutations)
-  // still call renderSavedHistory directly until those slices are signals too.
-  effect(() => {
-    app.state.sidePanel.value;
-    renderSavedHistory(app);
-  });
-  // Reactive repaint of the header library title (name + unsaved-changes dot):
-  // re-runs when the name or dirty flag changes. The edit-mode toggle is driven
-  // separately (editingLibrary is not a signal — file-menu.js renders it directly).
-  effect(() => {
-    app.state.libraryName.value;
-    app.state.libraryDirty.value;
-    renderLibraryTitle(app);
-  });
-  // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
-  // schema tree's drag/hover affordances, the results drop target, and the
-  // auto-navigation in the action wrappers) via the injected matchMedia seam.
-  // When the platform has no matchMedia the app stays in desktop JS mode — the
-  // mobile CSS still applies, just without JS branching.
-  const mq = app.matchMedia && app.matchMedia('(max-width: ' + MOBILE_BREAKPOINT_PX + 'px)');
-  if (mq) {
-    state.isMobile.value = mq.matches;
-    mq.addEventListener('change', (e) => { state.isMobile.value = e.matches; });
-  }
-  // Bottom-nav view switching: reflect the active mobile panel + Tables segmented
-  // choice onto data-attributes the mobile CSS keys off (a no-op above the
-  // breakpoint). Each runs once now for the initial paint.
-  effect(() => { mainRow.dataset.mobileView = state.mobileView.value; });
-  effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; });
-  app.catalog.loadVersion();
-  app.catalog.loadSchema();
-  app.catalog.loadReference();
 }

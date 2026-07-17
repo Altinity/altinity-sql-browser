@@ -56,7 +56,12 @@ import type {
   TileSlot, DashSlot, TileResultMeta, FavoriteSourceResult,
 } from './dashboard/dashboard-session.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
-import type { App } from './app.types.js';
+import type { App, AppDom } from './app.types.js';
+import type { AppState } from '../state.js';
+import type { ConnectionSession } from '../application/connection-session.js';
+import type { AppPreferences } from '../application/app-preferences.js';
+import type { QueryExecutionService } from '../application/query-execution-service.js';
+import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 // ── Typed wrappers over still-untyped .js dependencies ──────────────────────
 // Each const/overload pins exactly the signature this module relies on,
@@ -315,8 +320,41 @@ function setSlotProgress(slot: { loadLabel: HTMLElement | null }, text: string):
   if (slot.loadLabel) slot.loadLabel.textContent = text;
 }
 
+// ── The narrow `app` surface this module reads directly ────────────────────
+// Not the full `App` contract (app.types.ts) — matches the convention
+// results.ts/filter-bar.ts/explain-graph.ts already established for their own
+// narrow app surfaces (#276 Phase 5). `renderTextSlot`/`applyTileResult`
+// (above) and the `buildFilterBar`/`applyKpiSourceResult` calls below still
+// want the literal `App` (panels.ts's shared registry — `renderResolvedPanel`
+// — takes it historically, and narrowing that registry's own signature isn't
+// mechanical: it reaches many more `App` fields across the chart/panel-editor
+// arms than this module ever touches); those four call sites cast
+// (`app as App`) at that one seam, same as results.ts's own documented cast.
+export interface DashboardApp {
+  document: Document;
+  state: AppState;
+  dom: AppDom;
+  root: Element | null;
+  /** Kept as the flat delegate (not re-pointed to the extracted
+   *  `toggleThemeDom` helper directly) — see the theme-toggle button's own
+   *  wiring comment below for why. */
+  toggleTheme(): void;
+  conn: Pick<ConnectionSession, 'basePath' | 'host' | 'ensureFreshToken' | 'chCtx'>;
+  prefs: Pick<AppPreferences, 'save'>;
+  /** The shared request/stream/normalize service (#276 Phase 1) — this module
+   *  only ever needs `executeRead` (every favorite/filter tile streams its SQL
+   *  read-only through it). */
+  exec: Pick<QueryExecutionService, 'executeRead'>;
+  now(): number;
+  wallNow(): number;
+  /** #276 Phase 5: no flat `App` delegates for the params-group members this
+   *  module needs — `app.params.*` directly. */
+  params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'saveFilterActive'>;
+  saveJSON(key: string, value: unknown): void;
+}
+
 /** Render the dashboard into `app.root`. */
-export function renderDashboard(app: App): Promise<void> {
+export function renderDashboard(app: DashboardApp): Promise<void> {
   const { document: doc, state } = app;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
@@ -349,9 +387,17 @@ export function renderDashboard(app: App): Promise<void> {
   const refreshBtn = h('button', {
     class: 'dash-btn dash-refresh', title: 'Re-run all tiles', 'aria-label': 'Refresh dashboard',
   }, Icon.refresh(), h('span', { class: 'dash-refresh-label' }, 'Refresh'));
-  // Theme toggle, mirroring the workbench header: reuse app.toggleTheme (persists
-  // the pref + flips data-theme), and register the button as app.dom.themeBtn so
-  // that helper repaints its icon on toggle.
+  // Theme toggle, mirroring the workbench header: reuse app.toggleTheme
+  // (persists the pref + flips data-theme via the shared `toggleThemeDom`
+  // composition, #276 Phase 5 — ui/theme-toggle.ts), and register the button
+  // as app.dom.themeBtn so that helper repaints its icon on toggle. Kept on
+  // the flat `app.toggleTheme` delegate rather than calling `toggleThemeDom`
+  // directly (unlike the workbench header, which is wired the same way for
+  // the same reason): this is the exact substitution seam
+  // dashboard.test.ts's own "has a theme toggle wired to app.toggleTheme"
+  // case exercises, and explain-graph.ts's detached overlay depends on the
+  // delegate surviving too (see theme-toggle.ts's header comment) — nothing
+  // left to gain by re-pointing this one call site.
   const themeBtn = h('button', {
     class: 'dash-icobtn', title: 'Toggle theme', 'aria-label': 'Toggle theme', onclick: () => app.toggleTheme(),
   });
@@ -438,7 +484,7 @@ export function renderDashboard(app: App): Promise<void> {
   const disposeCurrentFilterBar = (): void => { filterBarDispose?.(); };
   const renderFilterBar = (curatedFields: Record<string, unknown>): void => {
     disposeCurrentFilterBar();
-    const bar = buildFilterBar(app, session.controls, (name) => session.runAffected(name), session.getFilterField, { curatedFields });
+    const bar = buildFilterBar(app as App, session.controls, (name) => session.runAffected(name), session.getFilterField, { curatedFields });
     filterHost.replaceChildren(bar.el);
     filterBarDispose = bar.dispose;
   };
@@ -493,14 +539,14 @@ export function renderDashboard(app: App): Promise<void> {
     setUnfilled: setSlotUnfilled,
     setLoading: setSlotLoading,
     onProgress: setSlotProgress,
-    applyResult: (q, slot, r) => applyTileResult(app, q, slot, r),
-    renderText: (q, slot) => renderTextSlot(app, q, slot),
+    applyResult: (q, slot, r) => applyTileResult(app as App, q, slot, r),
+    renderText: (q, slot) => renderTextSlot(app as App, q, slot),
   };
   const kpiHooks: KpiSourceDomHooks = {
     setUnfilled: setKpiSourceUnfilled,
     setLoading: setKpiSourceLoading,
     onProgress: setSlotProgress,
-    applyResult: (explicit, slot, r) => applyKpiSourceResult(app, explicit, slot, r),
+    applyResult: (explicit, slot, r) => applyKpiSourceResult(app as App, explicit, slot, r),
     refreshBandWarnings,
   };
 
