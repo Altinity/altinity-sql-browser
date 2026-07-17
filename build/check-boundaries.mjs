@@ -64,6 +64,16 @@ const RULES = [
     why: 'issue #280 phase 1: dependency direction is model <- application <- UI adapters',
   },
   {
+    // Issue #280 phase 3 (#285): the Dashboard authoring/application layer may
+    // import the model, the layout plugins, and the workspace aggregate, but
+    // must NOT reach up into any UI adapter (the App, Workbench UI, editors,
+    // and global AppState are already forbidden by the `src/dashboard` rule
+    // above). This keeps the direction model/layouts <- application <- UI.
+    dir: 'src/dashboard/application',
+    forbidden: ['src/dashboard/ui'],
+    why: 'issue #280 phase 3: application must not import Dashboard UI adapters (model/layouts <- application <- UI)',
+  },
+  {
     dir: 'src/workspace',
     forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
     why: 'issue #280 phase 1: the workspace aggregate layer is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
