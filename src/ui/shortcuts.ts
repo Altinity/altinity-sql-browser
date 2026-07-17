@@ -2,6 +2,7 @@
 
 import { h, attachBackdropClose } from './dom.js';
 import type { ActionsRegistry, State, Tab } from './app.types.js';
+import type { ConnectionSession } from '../application/connection-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not
  *  the full ~50-member `App` contract (app.types.ts). A real `App` satisfies
@@ -11,7 +12,7 @@ import type { ActionsRegistry, State, Tab } from './app.types.js';
 export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running'>;
-  isSignedIn(): boolean;
+  conn: Pick<ConnectionSession, 'isSignedIn'>;
   activeTab(): Pick<Tab, 'editorMode'>;
   actions: Pick<
     ActionsRegistry,
@@ -103,7 +104,7 @@ export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): strin
   // trigger a global action like cancelling the running query.
   if (e.defaultPrevented) return null;
   const mod = e.metaKey || e.ctrlKey;
-  const signedIn = app.isSignedIn();
+  const signedIn = app.conn.isSignedIn();
   const editorMode = app.activeTab().editorMode || 'sql';
   // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
   if (e.key === 'Escape' && app.state.running.value) {

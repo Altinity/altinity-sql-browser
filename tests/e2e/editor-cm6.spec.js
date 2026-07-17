@@ -101,7 +101,7 @@ test.describe('CM6 editor', () => {
     // Seed the candidate pool with a column of `events` (as if its columns were
     // loaded) plus an unrelated table's column that must NOT surface for `e.`.
     await page.evaluate(() => {
-      window.__app.completions = window.__app.completions.concat([
+      window.__app.catalog.completions = window.__app.catalog.completions.concat([
         { label: 'user_id', kind: 'column', insert: 'user_id', detail: 'UInt64', parent: 'events' },
         { label: 'other_col', kind: 'column', insert: 'other_col', detail: 'String', parent: 'unrelated' },
       ]);

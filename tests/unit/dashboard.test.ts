@@ -450,7 +450,7 @@ describe('renderDashboard', () => {
     qs(app.root, '.dash-filter-diagnostics button').dispatchEvent(new Event('click', { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(app.ensureFreshToken).toHaveBeenCalledTimes(3);
+    expect(app.conn.ensureFreshToken).toHaveBeenCalledTimes(3);
     expect(filterAttempt).toBe(2);
     expect(app.state.filterActive.x).toBe(false);
     expect(app.saveFilterActive).toHaveBeenCalled();
@@ -560,7 +560,7 @@ describe('renderDashboard', () => {
     const ensureFreshToken = vi.fn(async () => false);
     const app = makeApp({
       exec: { executeRead: streamInto(vi.fn(async () => chartResult())) },
-      ensureFreshToken,
+      conn: { ensureFreshToken },
       chCtx: { onSignedOut },
     });
     setSaved(app, [
@@ -937,20 +937,20 @@ describe('renderDashboard — streaming seam (#193)', () => {
       { id: '2', name: 'B', sql: 'b', favorite: true },
     ], vi.fn(async () => chartResult()));
     await renderDashboard(app);
-    expect(app.ensureFreshToken).toHaveBeenCalledTimes(1); // once for the whole wave, not per tile
+    expect(app.conn.ensureFreshToken).toHaveBeenCalledTimes(1); // once for the whole wave, not per tile
   });
 
   it('an affected-filter wave preflights once; a failed preflight issues no requests and signs out (req 2)', async () => {
     const app = dashApp([paramFav('1', 't')], vi.fn(async () => chartResult()));
     app.state.varValues = { year: '1' };
     await renderDashboard(app);
-    expect(app.ensureFreshToken).toHaveBeenCalledTimes(1); // the initial refresh
+    expect(app.conn.ensureFreshToken).toHaveBeenCalledTimes(1); // the initial refresh
     app.exec.executeRead.mockClear();
-    app.ensureFreshToken.mockResolvedValue(false); // session lost before the affected wave
+    app.conn.ensureFreshToken.mockResolvedValue(false); // session lost before the affected wave
     commit(yearInput(app.root), '2');
     await flush();
-    expect(app.ensureFreshToken).toHaveBeenCalledTimes(2); // one preflight for the affected wave
-    expect(app.chCtx.onSignedOut).toHaveBeenCalledTimes(1);
+    expect(app.conn.ensureFreshToken).toHaveBeenCalledTimes(2); // one preflight for the affected wave
+    expect(app.conn.chCtx.onSignedOut).toHaveBeenCalledTimes(1);
     expect(app.exec.executeRead).not.toHaveBeenCalled(); // failed preflight → no tile requests
   });
 
@@ -1444,7 +1444,7 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
     const runTile = tile(async () => chartResult());
     const app = dashApp(favorites, runTile);
     app.state.varValues = { year: '2023' };
-    app.ensureFreshToken = vi.fn(async () => false); // session can't be refreshed — no slots built
+    app.conn.ensureFreshToken = vi.fn(async () => false); // session can't be refreshed — no slots built
     await renderDashboard(app);
     expect(runTile).not.toHaveBeenCalled();
     const input = fieldInput(app.root, 'year');
@@ -2040,7 +2040,7 @@ describe('app config base on the dashboard route', () => {
       fetch: asFetch(fetch),
       location: { host: 'ch.example', origin: 'https://ch.example', pathname: '/sql/dashboard', search: '', hash: '', href: 'https://ch.example/sql/dashboard' } as Location,
     }));
-    await app.ensureConfig();
+    await app.conn.ensureConfig();
     const urls = fetch.mock.calls.map((c) => c[0]);
     expect(urls.some((u) => /\/sql\/config\.json$/.test(u))).toBe(true);
     expect(urls.some((u) => /dashboard\/config\.json/.test(u))).toBe(false);
@@ -2095,39 +2095,39 @@ describe('app auth handoff', () => {
   });
   it('receiveAuthHandoff resolves false with no opener', async () => {
     const app = realApp(appEnv());
-    await expect(app.receiveAuthHandoff({})).resolves.toBe(false);
+    await expect(app.conn.receiveAuthHandoff({})).resolves.toBe(false);
   });
   it('applies an OAuth grant and re-seeds in-memory auth fields', async () => {
     const ss = memSession({});
     const app = realApp(appEnv({ sessionStorage: ss }));
     const opener = { postMessage: vi.fn() };
     const newTok = jwt({ email: 'x@y.com', exp: Math.floor(Date.now() / 1000) + 3600 });
-    const p = app.receiveAuthHandoff({ opener: asWindow(opener) });
+    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
     expect(opener.postMessage).toHaveBeenCalledWith({ type: AUTH_REQUEST }, 'https://ch.example');
     window.dispatchEvent(msg({ type: 'other' }, opener)); // ignored
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok, oauth_refresh_token: 'r', oauth_idp: 'g', oauth_origin: 'https://cluster' } }, opener));
     await expect(p).resolves.toBe(true);
     expect(app.conn.token()).toBe(newTok);
     expect(app.conn.idpId()).toBe('g');
-    expect(app.chCtx.origin).toBe('https://cluster');
+    expect(app.conn.chCtx.origin).toBe('https://cluster');
     expect(ss.getItem('oauth_id_token')).toBe(newTok);
   });
   it('applies a basic-auth grant', async () => {
     const ss = memSession({});
     const app = realApp(appEnv({ sessionStorage: ss }));
     const opener = { postMessage: vi.fn() };
-    const p = app.receiveAuthHandoff({ opener: asWindow(opener) });
+    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { ch_basic_auth: 'YmFzZQ==', ch_basic_user: 'u', ch_basic_origin: 'https://c2' } }, opener));
     await expect(p).resolves.toBe(true);
     expect(app.conn.authMode()).toBe('basic');
-    expect(app.chCtx.origin).toBe('https://c2');
+    expect(app.conn.chCtx.origin).toBe('https://c2');
     expect(ss.getItem('ch_basic_auth')).toBe('YmFzZQ==');
   });
   it('ignores an empty grant and applies a later valid one', async () => {
     const ss = memSession({});
     const app = realApp(appEnv({ sessionStorage: ss }));
     const opener = { postMessage: vi.fn() };
-    const p = app.receiveAuthHandoff({ opener: asWindow(opener) });
+    const p = app.conn.receiveAuthHandoff({ opener: asWindow(opener) });
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: {} }, opener)); // empty — ignored, keeps waiting
     const newTok = jwt({ email: 'z@z.com', exp: Math.floor(Date.now() / 1000) + 3600 });
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok } }, opener));
@@ -2136,6 +2136,6 @@ describe('app auth handoff', () => {
   });
   it('resolves false when the request times out', async () => {
     const app = realApp(appEnv({ handoffMs: 5 }));
-    await expect(app.receiveAuthHandoff({ opener: asWindow({ postMessage: vi.fn() }) })).resolves.toBe(false);
+    await expect(app.conn.receiveAuthHandoff({ opener: asWindow({ postMessage: vi.fn() }) })).resolves.toBe(false);
   });
 });

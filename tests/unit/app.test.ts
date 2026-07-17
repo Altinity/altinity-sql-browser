@@ -237,8 +237,8 @@ const schemaOf = (app: App): SchemaDb[] => app.state.schema.value as SchemaDb[];
 const asLegacyTab = (v: object): QueryTab => v as QueryTab;
 const asRefData = (v: object): AssembledReference => v as AssembledReference;
 const asCompletions = (v: object): CompletionItem[] => v as CompletionItem[];
-const refDataOf = (app: App): AssembledReference => asRefData(app.refData);
-const completionsOf = (app: App): CompletionItem[] => asCompletions(app.completions);
+const refDataOf = (app: App): AssembledReference => asRefData(app.catalog.refData);
+const completionsOf = (app: App): CompletionItem[] => asCompletions(app.catalog.completions);
 
 // Matches results.test.ts / login.test.ts's own `qs`/`qsa` convention: every
 // selector below targets a real, already-rendered element a passing test
@@ -358,9 +358,9 @@ describe('createApp basics', () => {
   it('reads the stored token and derives identity', () => {
     const app = createApp(env());
     expect(app.conn.token()).toBe(validToken);
-    expect(app.isSignedIn()).toBe(true);
-    expect(app.email()).toBe('me@example.com');
-    expect(app.host()).toBe('ch.example');
+    expect(app.conn.isSignedIn()).toBe(true);
+    expect(app.conn.email()).toBe('me@example.com');
+    expect(app.conn.host()).toBe('ch.example');
   });
   it('wires every document-toolbar control to its injected action', () => {
     const app = createApp(env());
@@ -387,12 +387,12 @@ describe('createApp basics', () => {
   });
   it('host falls back when location.host is empty', () => {
     const app = createApp(env({ location: { host: '', origin: 'o', pathname: '/sql' } as Location }));
-    expect(app.host()).toBe('clickhouse');
+    expect(app.conn.host()).toBe('clickhouse');
   });
-  it('reads the ?host= URL param into app.hostHint (empty when absent)', () => {
-    expect(createApp(env()).hostHint).toBe('');
+  it('reads the ?host= URL param into app.conn.hostHint (empty when absent)', () => {
+    expect(createApp(env()).conn.hostHint).toBe('');
     const app = createApp(env({ location: { host: 'h', origin: 'https://h', pathname: '/sql', search: '?host=antalya.demo:9000' } as Location }));
-    expect(app.hostHint).toBe('antalya.demo:9000');
+    expect(app.conn.hostHint).toBe('antalya.demo:9000');
   });
   it('openWindow + stylesText seams resolve from env, from window.open, and from the page <style>', () => {
     // env-provided seams win
@@ -519,7 +519,7 @@ describe('renderApp shell', () => {
   it('setTokens clears the one-shot pkce verifier and csrf state', () => {
     const e = env({ sessionStorage: memSession({ oauth_verifier: 'v', oauth_state: 's' }) });
     const app = createApp(e);
-    app.setTokens('tok');
+    app.conn.setTokens('tok');
     expect(app.conn.token()).toBe('tok');
     expect(e.sessionStorage!.getItem('oauth_id_token')).toBe('tok');
     expect(e.sessionStorage!.getItem('oauth_verifier')).toBeNull();
@@ -569,7 +569,7 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     ]) });
     const app = createApp(e);
     app.renderApp();
-    await app.loadReference();
+    await app.catalog.loadReference();
     expect(refDataOf(app).keywordSet.has('PREWHERE')).toBe(true); // drives the tokenizer too
     expect(refDataOf(app).funcSet.has('toDate')).toBe(true);
     expect(completionsOf(app).some((c) => c.label === 'PREWHERE')).toBe(true);
@@ -582,19 +582,19 @@ describe('loadReference / rebuildCompletions (#25)', () => {
   it('rebuildCompletions folds in already-loaded schema columns', () => {
     const app = createApp(env());
     app.state.schema.value = [{ db: 'd', tables: [{ name: 't', columns: [{ name: 'c', type: 'UInt8' }] }] }];
-    app.rebuildCompletions();
+    app.catalog.rebuildCompletions();
     expect(completionsOf(app).some((c) => c.kind === 'column' && c.label === 'c' && c.parent === 't')).toBe(true);
   });
   it('loadReference tolerates being called before the editor mounts', async () => {
     const app = createApp(env()); // no renderApp → refreshReference hits the unmounted guard
-    await expect(app.loadReference()).resolves.toBeUndefined();
-    expect(app.refData).toBeTruthy();
+    await expect(app.catalog.loadReference()).resolves.toBeUndefined();
+    expect(app.catalog.refData).toBeTruthy();
   });
   it('without env.Editor the noop port stands in — headless consumers stay callable (#143)', async () => {
     const e = env();
     delete e.Editor;
     const app = createApp(e);
-    await expect(app.loadReference()).resolves.toBeUndefined(); // refreshReference on the noop port
+    await expect(app.catalog.loadReference()).resolves.toBeUndefined(); // refreshReference on the noop port
     expect(app.sqlEditor.hasFocus()).toBe(false);
     expect(app.sqlEditor.getSelection()).toEqual({ start: 0, end: 0, text: '' });
     expect(() => app.actions.insertAtCursor('x')).not.toThrow();
@@ -614,8 +614,8 @@ describe('loadReference / rebuildCompletions (#25)', () => {
         resp({ json: { data: [{ description: '\nCounts rows.' }] } })],
     ]);
     const app = createApp(env({ fetch }));
-    const first = await app.entityDoc('count');
-    const second = await app.entityDoc('count'); // served from cache, no second query
+    const first = await app.catalog.entityDoc('count');
+    const second = await app.catalog.entityDoc('count'); // served from cache, no second query
     expect(first).toBe('Counts rows.'); // first non-empty line (CH leading blank stripped)
     expect(second).toBe('Counts rows.');
     const docQueries = asMock(fetch).mock.calls.filter(([, init]) => init && /system\.functions/.test(init.body) && /description/.test(init.body));
@@ -632,8 +632,8 @@ describe('loadReference / rebuildCompletions (#25)', () => {
       }],
     ]);
     const app = createApp(env({ fetch }));
-    expect(await app.entityDoc('count')).toBeNull(); // failed → null, not cached
-    expect(await app.entityDoc('count')).toBe('Now works.'); // retried, not served from a cached error
+    expect(await app.catalog.entityDoc('count')).toBeNull(); // failed → null, not cached
+    expect(await app.catalog.entityDoc('count')).toBe('Now works.'); // retried, not served from a cached error
     expect(calls).toBe(2);
   });
 });
@@ -658,7 +658,7 @@ describe('query run', () => {
     tab.specText = JSON.stringify(tab.specParsed);
     app.state.resultView.value = 'filter';
     await app.actions.run();
-    const request = asMock(app.chCtx.fetch).mock.calls.find(([, init]) => /SELECT \['ATL'\]/.test(init.body))!;
+    const request = asMock(app.conn.chCtx.fetch).mock.calls.find(([, init]) => /SELECT \['ATL'\]/.test(init.body))!;
     expect(request[0]).toContain('default_format=JSONEachRowWithProgress');
     expect(request[0]).toContain('max_result_rows=2');
     expect(request[0]).toContain('readonly=2');
@@ -715,7 +715,7 @@ describe('query run', () => {
     tab.specText = JSON.stringify(tab.specParsed);
     tab.sqlDraft = 'SELECT {x:String}; SELECT 2';
     await app.actions.run();
-    expect(asMock(app.chCtx.fetch).mock.calls.some(([, init]) => init?.body === tab.sqlDraft)).toBe(false);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.some(([, init]) => init?.body === tab.sqlDraft)).toBe(false);
     expect(result(tab).error).toContain('exactly one statement');
     expect(tab.filterPreview!.status).toBe('error');
     expect(app.state.resultView.value).toBe('filter');
@@ -732,7 +732,7 @@ describe('query run', () => {
     tab.specText = JSON.stringify(tab.specParsed);
     app.state.resultView.value = 'panel';
     await app.actions.run();
-    const request = asMock(app.chCtx.fetch).mock.calls.find(([, init]) => /SELECT 42/.test(init.body))!;
+    const request = asMock(app.conn.chCtx.fetch).mock.calls.find(([, init]) => /SELECT 42/.test(init.body))!;
     expect(request[0]).toContain('default_format=JSONEachRowWithProgress');
     expect(request[0]).toContain('output_format_json_named_tuples_as_objects=1');
     expect(request[0]).toContain('output_format_json_quote_decimals=1');
@@ -747,7 +747,7 @@ describe('query run', () => {
     tab.specParsed!.panel = { cfg: { type: 'kpi' } };
     tab.specText = JSON.stringify(tab.specParsed);
     await app.actions.run();
-    expect(asMock(app.chCtx.fetch).mock.calls.some(([, init]) => init?.body === 'SELECT 1 FORMAT CSV')).toBe(false);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.some(([, init]) => init?.body === 'SELECT 1 FORMAT CSV')).toBe(false);
     expect(result(tab).error).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
     expect(app.state.resultView.value).toBe('panel');
   });
@@ -761,7 +761,7 @@ describe('query run', () => {
     expect(app.activeTab().lastSuccessfulResultColumns).toEqual([{ name: 'a', type: 'UInt8' }]);
     expect(app.state.history.length).toBe(1);
     // a plain SELECT needs no session, so none is opened (avoids the session race)
-    expect(asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).some((u) => /session_id=/.test(u))).toBe(false);
   });
   it('captures result.source for a normal row-returning result (#185)', async () => {
     const { app } = appForRun([
@@ -804,13 +804,13 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]]);
     app.activeTab().sqlDraft = 'SET max_threads = 1';
     await app.actions.run(); // SET → opens a session
-    const setUrl = asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    const setUrl = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(setUrl).not.toMatch(/session_timeout/); // rely on the server default (60s) — see sessionParams
     const sid = /session_id=([^&]+)/.exec(setUrl)![1];
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT 1'; // plain SELECT now, but the tab already has a session
     await app.actions.run();
-    const selUrl = asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    const selUrl = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(/session_id=([^&]+)/.exec(selUrl)![1]).toBe(sid); // sticky: same session id
   });
   it('refreshes the schema after a successful schema-mutating statement (#diagnose-db-creation)', async () => {
@@ -818,7 +818,7 @@ describe('query run', () => {
       [(u, sql) => /CREATE DATABASE/.test(sql), resp({ body: streamBody([]) })],
     ]);
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = 'CREATE DATABASE t3';
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
@@ -828,7 +828,7 @@ describe('query run', () => {
       [(u, sql) => /SELECT 1/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })],
     ]);
     await new Promise((r) => setTimeout(r));
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
     expect(spy).not.toHaveBeenCalled();
@@ -874,10 +874,10 @@ describe('query run', () => {
     const { app } = appForRun([]);
     await new Promise((r) => setTimeout(r)); // let mount-time loadVersion/loadSchema/loadReference settle
     app.state.running.value = true;
-    const before = asMock(app.chCtx.fetch).mock.calls.length;
+    const before = asMock(app.conn.chCtx.fetch).mock.calls.length;
     await app.actions.run();
     // Guarded before any request goes out — no additional fetch/exec call.
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(before);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(before);
     expect(app.state.running.value).toBe(true);
   });
   it('setRunBtn: "Running…" with no trailing "null"; "Run" + kbd when idle', () => {
@@ -976,22 +976,22 @@ describe('query run', () => {
   it('query variables (#134): a run with an unfilled variable is blocked and toasts', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r)); // let the initial-mount fetches settle
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {id:UInt32}';
     await app.actions.run(); // ⌘↵/button path (runEntry) — bypasses the disabled button
     expect(app.activeTab().result).toBeNull(); // never executed
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('id');
   });
   it('query variables (#134): a filled SELECT is sent with native param_<name> args', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"meta":[{"name":"a","type":"UInt8"}]}\n', '{"row":{"a":"1"}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'WITH {database:String} AS d, {table:String} AS t SELECT 1';
     app.state.varValues = { database: 'default', table: 'events' };
     await app.actions.run();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(url).toMatch(/param_database=default/);
     expect(url).toMatch(/param_table=events/);
     // the SQL text itself is untouched — ClickHouse does the substitution
@@ -1096,30 +1096,30 @@ describe('query run', () => {
   it('relative time (#169): a filled relative expression resolves to epoch seconds on the wave clock and re-resolves on the next run', async () => {
     const { app, e } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'SELECT {from:DateTime}';
     app.state.varValues = { from: '-1h' };
     await app.actions.run();
-    const [url1] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url1] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(url1).toMatch(new RegExp(`param_from=${Math.round((1751200000000 - 3600000) / 1000)}(?:&|$)`));
     // advance the injected clock and re-run: the stored expression re-resolves
     // to a different absolute value (the moving window, #173's batch clock)
     e.wallNow = () => 1751200000000 + 3600000;
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     await app.actions.run();
-    const [url2] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url2] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(url2).toMatch(new RegExp(`param_from=${Math.round(1751200000000 / 1000)}(?:&|$)`));
   });
   it('relative time (#169): a Date var formats as a calendar date; non-date types are unaffected by a relative-looking value', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'SELECT {day:Date}, {tag:String}';
     app.state.varValues = { day: 'now', tag: '-1h' }; // a String var keeps a relative-looking value verbatim
     await app.actions.run();
-    const [url] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     const expectedDay = new Date(1751200000000).toISOString().slice(0, 10);
     expect(url).toMatch(new RegExp(`param_day=${expectedDay}(?:&|$)`));
     expect(url).toMatch(/param_tag=-1h(?:&|$)/);
@@ -1127,7 +1127,7 @@ describe('query run', () => {
   it('relative time (#169): composes with an optional /*[ ]*/ block (#165) — a relative value inside an active block resolves and binds', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d >= {from:DateTime} ]*/';
     app.renderVarStrip();
@@ -1135,19 +1135,19 @@ describe('query run', () => {
     input.value = '-1h';
     input.dispatchEvent(new Event('input', { bubbles: true })); // activates the block (#165) and stores the expression
     await app.actions.run();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(init.body).toContain('AND d >= {from:DateTime}'); // block materialized (active)
     expect(url).toMatch(new RegExp(`param_from=${Math.round((1751200000000 - 3600000) / 1000)}(?:&|$)`));
   });
   it('query variables (#134): a CREATE VIEW definition is sent unchanged (no substitution)', async () => {
     const { app } = appForRun([[(u, sql) => /CREATE VIEW/.test(sql), resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'CREATE VIEW v AS SELECT {x:String}';
     app.state.varValues = { x: 'default' }; // even with a value present, a view is not substituted
     await app.actions.run(); // not row-returning, no variables shown → runs freely
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(url).not.toMatch(/param_x/);
     expect(init.body).toContain('{x:String}');
   });
@@ -1157,70 +1157,70 @@ describe('query run', () => {
       [(u, sql) => /SELECT/.test(sql), resp({ text: '{"meta":[{"name":"id","type":"UInt32"}],"data":[["5"]]}' })],
     ]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     const tab = app.activeTab();
     tab.sqlDraft = 'CREATE VIEW v AS SELECT {x:String}; SELECT {id:UInt32}';
     app.state.varValues = { id: '5' }; // x is confined to the view → not required, not sent
     await app.actions.run(); // >1 statement → runScript
-    const viewCall = asMock(app.chCtx.fetch).mock.calls.find((c) => /CREATE VIEW/.test(c[1].body))!;
-    const selCall = asMock(app.chCtx.fetch).mock.calls.find((c) => /SELECT \{id/.test(c[1].body))!;
+    const viewCall = asMock(app.conn.chCtx.fetch).mock.calls.find((c) => /CREATE VIEW/.test(c[1].body))!;
+    const selCall = asMock(app.conn.chCtx.fetch).mock.calls.find((c) => /SELECT \{id/.test(c[1].body))!;
     expect(viewCall[0]).not.toMatch(/param_/);
     expect(selCall[0]).toMatch(/param_id=5/);
   });
   it('query variables (#134): the gate lives at the executor, so Explain is blocked too', async () => {
     const { app } = appForRun([[() => true, resp({ text: 'plan' })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {id:UInt32}';
     await app.actions.explainQuery(); // clicks Explain → run({explain}) → gate
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('id');
   });
   it('query variables (#134): a multi-statement script is blocked when a variable is unfilled', async () => {
     const { app } = appForRun([[() => true, resp({ text: '{"meta":[],"data":[]}' })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {a:String}; SELECT 1';
     await app.actions.run(); // >1 statement → runScript → gate
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('a');
   });
   it('query variables (#173): an Array(T) value binds as a ClickHouse array literal', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {xs:Array(String)}';
     app.state.varValues = asVarValues({ xs: ['a', "b'c"] });
     await app.actions.run();
-    const [url] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(decodeURIComponent(url)).toContain("param_xs=['a','b\\'c']");
   });
   it('query variables (#173): a value that cannot serialize for the declaration blocks the run and toasts', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {db:String}';
     app.state.varValues = asVarValues({ db: ['not', 'scalar'] }); // array value, scalar declaration → structural
     await app.actions.run();
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('array value');
   });
   it('optional blocks (#165): Run enables with the optional param blank; the block and its arg are omitted', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     expect(app.dom.runBtn!.disabled).toBe(false); // blank optional never gates
     await app.actions.run();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(init.body).toBe('SELECT * FROM t WHERE 1 '); // inactive block removed from the wire
     expect(url).not.toMatch(/param_d/); // its param is never sent
   });
   it('optional blocks (#165): typing a value activates the block — predicate included, param bound', async () => {
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.renderVarStrip();
     const input = qs<HTMLInputElement>(app.dom.varStrip!, '.var-input');
@@ -1228,7 +1228,7 @@ describe('query run', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(app.state.filterActive.d).toBe(true); // text control syncs activation
     await app.actions.run();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(init.body).toBe('SELECT * FROM t WHERE 1  AND d = {d:String} '); // markers stripped, content kept
     expect(url).toMatch(/param_d=abc/);
   });
@@ -1266,31 +1266,31 @@ describe('query run', () => {
     }));
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     await app.actions.run();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls[0];
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls[0];
     expect(init.body).toBe('SELECT * FROM t WHERE 1 '); // dormant value is inert
     expect(url).not.toMatch(/param_d/);
   });
   it('optional blocks (#165): a template error blocks the run with a toast', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT 1 /*[ AND 1 = 1 ]*/'; // parameterless block
     await app.actions.run();
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('optional block');
   });
   it('optional blocks (#165): Explain wraps the materialized statement, not the raw template', async () => {
     const { app } = appForRun([[() => true, resp({ text: 'plan' })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.state.varValues = { d: 'x' };
     app.state.filterActive = { d: true };
     await app.actions.explainQuery();
-    const [url, init] = asMock(app.chCtx.fetch).mock.calls.find((c) => c[1] && c[1].body)!;
+    const [url, init] = asMock(app.conn.chCtx.fetch).mock.calls.find((c) => c[1] && c[1].body)!;
     expect(init.body).toMatch(/^EXPLAIN/);
     expect(init.body).toContain('AND d = {d:String}'); // active block content in
     expect(init.body).not.toContain('/*['); // markers never reach the server
@@ -1299,17 +1299,17 @@ describe('query run', () => {
   it('optional blocks (#165): a script sends each statement materialized, args per statement', async () => {
     const { app } = appForRun([[() => true, resp({ text: '{"meta":[],"data":[]}' })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT 1 /*[ AND a = {a:String} ]*/; SELECT 2 /*[ AND b = {b:String} ]*/';
     app.state.varValues = { a: 'x' };
     app.state.filterActive = { a: true };
     await app.actions.run(); // >1 statement → runScript
-    const bodies = asMock(app.chCtx.fetch).mock.calls.map((c) => c[1] && c[1].body);
+    const bodies = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[1] && c[1].body);
     expect(bodies).toContain('SELECT 1  AND a = {a:String} '); // active block in
     expect(bodies).toContain('SELECT 2 '); // inactive block out
-    const aCall = asMock(app.chCtx.fetch).mock.calls.find((c) => /SELECT 1/.test(c[1].body))!;
+    const aCall = asMock(app.conn.chCtx.fetch).mock.calls.find((c) => /SELECT 1/.test(c[1].body))!;
     expect(aCall[0]).toMatch(/param_a=x/);
-    const bCall = asMock(app.chCtx.fetch).mock.calls.find((c) => /SELECT 2/.test(c[1].body))!;
+    const bCall = asMock(app.conn.chCtx.fetch).mock.calls.find((c) => /SELECT 2/.test(c[1].body))!;
     expect(bCall[0]).not.toMatch(/param_b/);
   });
   it('typed validation (#170): a clearly-invalid value shows the inline error immediately and disables Run', () => {
@@ -1418,11 +1418,11 @@ describe('query run', () => {
   it('typed validation (#170): a run is blocked and toasts for an invalid (not just missing) variable', async () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody([]) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {n:UInt8}';
     app.state.varValues = { n: '256' };
     await app.actions.run();
-    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(0);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.length).toBe(0);
     expect(qs(document.body, '.share-toast').textContent).toContain('n');
   });
   it('typed validation (#170): a persisted invalid value paints the affordance on strip (re)build, e.g. a tab switch', () => {
@@ -1587,7 +1587,7 @@ describe('query run', () => {
       [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
-    await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
+    await new Promise((r) => setTimeout(r)); // let app.catalog.loadVersion() resolve
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.explainQuery();
     expect(sentExplains(e)).toContain('EXPLAIN pretty = 1, compact = 1 SELECT 1');
@@ -1600,7 +1600,7 @@ describe('query run', () => {
       [(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })],
       [(u, sql) => /EXPLAIN/.test(sql), resp({ text: 'plan' })],
     ]);
-    await new Promise((r) => setTimeout(r)); // let app.loadVersion() resolve
+    await new Promise((r) => setTimeout(r)); // let app.catalog.loadVersion() resolve
     app.activeTab().sqlDraft = 'EXPLAIN SELECT 1';
     await app.actions.run();
     expect(sentExplains(e)).toContain('EXPLAIN SELECT 1'); // verbatim, no decoration
@@ -1635,7 +1635,7 @@ describe('query run', () => {
     expect(app.state.history[0].sql).toBe(SCRIPT);
     // SELECT statements are sent with the JSONCompact + row-cap params
     // (over-fetched by one past the display cap to detect truncation).
-    const urls = asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]);
+    const urls = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]);
     const selUrl = urls.find((u) => /max_result_rows=101/.test(u));
     expect(selUrl).toMatch(/result_overflow_mode=break/);
     // this script needs no session (permanent table) → session-less (no race)
@@ -1644,7 +1644,7 @@ describe('query run', () => {
   it('refreshes the schema once a script contains a schema-mutating statement that actually ran (#diagnose-db-creation)', async () => {
     const { app } = appForRun(scriptRoutes());
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = SCRIPT; // CREATE TABLE t; INSERT …; SELECT …
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
@@ -1655,7 +1655,7 @@ describe('query run', () => {
       [(u, sql) => /INSERT INTO t/.test(sql), resp({ ok: false, status: 500, text: 'DB::Exception: boom' })],
     ]);
     await new Promise((r) => setTimeout(r));
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = SCRIPT;
     await app.actions.run();
     expect(spy).toHaveBeenCalledTimes(1);
@@ -1665,7 +1665,7 @@ describe('query run', () => {
       [(u, sql) => /SELECT/.test(sql), resp({ text: JSON.stringify({ meta: [{ name: 'n', type: 'Int' }], data: [['1']] }) })],
     ]);
     await new Promise((r) => setTimeout(r));
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = 'SELECT 1; SELECT 2';
     await app.actions.run();
     expect(spy).not.toHaveBeenCalled();
@@ -1678,7 +1678,7 @@ describe('query run', () => {
     ]);
     app.activeTab().sqlDraft = 'CREATE TEMPORARY TABLE t (a Int8); INSERT INTO t VALUES (1); SELECT * FROM t';
     await app.actions.run();
-    const sids = asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]).filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)![1]);
+    const sids = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).filter((u) => /session_id=/.test(u)).map((u) => /session_id=([^&]+)/.exec(u)![1]);
     expect(sids).toHaveLength(3); // all three statements carry the session
     expect(new Set(sids).size).toBe(1); // and it's the same one (temp table persists)
   });
@@ -1703,7 +1703,7 @@ describe('query run', () => {
     await app.actions.run();
     expect(app.activeTab().result).toBeNull(); // no run started
     // the comment text was never POSTed to ClickHouse
-    expect(asMock(app.chCtx.fetch).mock.calls.some((c) => /just a note/.test(c[1] && c[1].body))).toBe(false);
+    expect(asMock(app.conn.chCtx.fetch).mock.calls.some((c) => /just a note/.test(c[1] && c[1].body))).toBe(false);
   });
 
   it('copyResult treats a script result as non-exportable (no throw)', async () => {
@@ -1821,7 +1821,7 @@ describe('query run', () => {
     const { app } = appForRun([[() => true, resp({ body: streamBody(['{"row":{}}\n']) })]], { crypto: noUuid });
     app.activeTab().sqlDraft = 'SET max_threads = 1'; // SET opens a session, so a session_id is sent
     await app.actions.run();
-    const url = asMock(app.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
+    const url = asMock(app.conn.chCtx.fetch).mock.calls.map((c) => c[0]).find((u) => /session_id=/.test(u));
     expect(decodeURIComponent(/session_id=([^&]+)/.exec(url)![1])).toMatch(/^sess-/); // collision-resistant fallback
   });
 
@@ -1932,7 +1932,7 @@ describe('query run', () => {
     const p = app.actions.run(); // runs synchronously through the gate + capture, suspends at ensureConfig/getToken
     app.state.varValues.id = 'second'; // the mid-await edit — must apply to the NEXT run only
     await p;
-    const urls = asMock(app.chCtx.fetch).mock.calls.map(([url]) => url);
+    const urls = asMock(app.conn.chCtx.fetch).mock.calls.map(([url]) => url);
     expect(urls.some((u) => /param_id=first/.test(u))).toBe(true); // the gate-time snapshot was sent
     expect(urls.some((u) => /param_id=second/.test(u))).toBe(false);
   });
@@ -2015,7 +2015,7 @@ describe('query run', () => {
       expect(input.classList.contains('is-invalid')).toBe(false);
       expect(app.dom.runBtn!.disabled).toBe(false);
       await app.actions.run();
-      expect(asMock(app.chCtx.fetch).mock.calls.some(([url]) => /param_s=not-a-member/.test(url))).toBe(true);
+      expect(asMock(app.conn.chCtx.fetch).mock.calls.some(([url]) => /param_s=not-a-member/.test(url))).toBe(true);
     });
     it('v1: Enter with no active option (list closed) falls through to the plain hard-commit/harden path', () => {
       const { app } = appForRun([]);
@@ -2150,7 +2150,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.state.varValues = { from: '-1h' };
     await app.actions.run();
@@ -2188,7 +2188,7 @@ describe('recent-value history (#171)', () => {
     }));
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     await app.actions.run();
     expect(app.state.varRecent.byName.d).toBeUndefined();
@@ -2198,7 +2198,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT * FROM t WHERE 1 /*[ AND d = {d:String} ]*/';
     app.state.varValues = { d: '' };
     app.state.filterActive = { d: true }; // explicitly active despite the blank value
@@ -2210,7 +2210,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
@@ -2225,7 +2225,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {id:String}';
     app.state.varValues = { id: 'first' };
     await app.actions.run();
@@ -2240,7 +2240,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', store);
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
@@ -2252,7 +2252,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.renderVarStrip();
     const input = qs<HTMLInputElement>(app.dom.varStrip!, '.var-input');
@@ -2284,7 +2284,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]]);
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {tenant:String}';
     app.state.varValues = { tenant: 'acme' };
     await app.actions.run();
@@ -2300,7 +2300,7 @@ describe('recent-value history (#171)', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([[(u, sql) => /SELECT/.test(sql), resp({ body: streamBody(['{"row":{}}\n']) })]], { wallNow: () => 1751200000000 });
     await new Promise((r) => setTimeout(r));
-    asMock(app.chCtx.fetch).mockClear();
+    asMock(app.conn.chCtx.fetch).mockClear();
     app.activeTab().sqlDraft = 'SELECT {from:DateTime}';
     app.renderVarStrip();
     const input = qs<HTMLInputElement>(app.dom.varStrip!, '.var-input');
@@ -2624,7 +2624,7 @@ describe('auth flows', () => {
       ]),
     });
     const app = createApp(e);
-    expect((await app.loadIdps()).idps).toHaveLength(2);
+    expect((await app.conn.loadIdps()).idps).toHaveLength(2);
     await app.actions.login('auth0');
     expect(loc.href).toContain('https://acme.auth0.com/authorize?');
     expect(loc.href).toContain('client_id=a');
@@ -2642,7 +2642,7 @@ describe('auth flows', () => {
       ]),
     });
     const app = createApp(e);
-    const ok = await app.chCtx.refresh();
+    const ok = await app.conn.chCtx.refresh();
     expect(ok).toBe(true);
     expect(app.conn.token()).toBe(validToken);
   });
@@ -2655,16 +2655,16 @@ describe('auth flows', () => {
       ]),
     });
     const app = createApp(e);
-    expect(await app.chCtx.getToken()).toBeNull();
+    expect(await app.conn.chCtx.getToken()).toBeNull();
   });
   it('onSignedOut shows the given message, else a session-expired default', async () => {
     const app = createApp(env());
     app.renderApp();
     // authorization denial: CH-supplied message is shown verbatim on the login screen
-    app.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
+    app.conn.chCtx.onSignedOut('ClickHouse denied your account (HTTP 403). Server: nope');
     expect(qs(app.root, '.login-error').textContent).toContain('denied your account');
     // genuine expiry: no detail → the reworded default
-    app.chCtx.onSignedOut();
+    app.conn.chCtx.onSignedOut();
     expect(qs(app.root, '.login-error').textContent).toContain('session expired');
   });
   it('login(idp, origin) stashes oauth_origin for a cross-origin cluster; sign-out clears it', async () => {
@@ -2685,13 +2685,13 @@ describe('auth flows', () => {
   });
   it('oauth mode posts queries to the stashed oauth_origin (cross-origin)', () => {
     const e = env({ sessionStorage: memSession({ oauth_id_token: validToken, oauth_origin: 'https://antalya.demo.altinity.cloud' }) });
-    expect(createApp(e).chCtx.origin).toBe('https://antalya.demo.altinity.cloud');
+    expect(createApp(e).conn.chCtx.origin).toBe('https://antalya.demo.altinity.cloud');
   });
   it('header shows the picked cluster, not the serving host, for cross-origin oauth', () => {
     // Serving host is ch.example; the picked cluster is antalya on :443 (default
     // https port → URL.host drops it, so the header is the bare cluster hostname).
     const e = env({ sessionStorage: memSession({ oauth_id_token: validToken, oauth_origin: 'https://antalya.demo.altinity.cloud:443' }) });
-    expect(createApp(e).host()).toBe('antalya.demo.altinity.cloud');
+    expect(createApp(e).conn.host()).toBe('antalya.demo.altinity.cloud');
   });
 });
 
@@ -2702,25 +2702,25 @@ describe('credentials (basic) sign-in', () => {
   it('restores a basic session from sessionStorage', () => {
     const app = createApp(env({ sessionStorage: memSession(basicSession) }));
     expect(app.conn.authMode()).toBe('basic');
-    expect(app.isSignedIn()).toBe(true);
-    expect(app.email()).toBe('demo');
-    expect(app.host()).toBe('gh.example:8443');
-    expect(app.chCtx.origin).toBe('https://gh.example:8443');
+    expect(app.conn.isSignedIn()).toBe(true);
+    expect(app.conn.email()).toBe('demo');
+    expect(app.conn.host()).toBe('gh.example:8443');
+    expect(app.conn.chCtx.origin).toBe('https://gh.example:8443');
   });
   it('falls back to the serving origin when no stored target is present', () => {
     const app = createApp(env({ sessionStorage: memSession({ ch_basic_auth: creds, ch_basic_user: 'demo' }) }));
-    expect(app.chCtx.origin).toBe('https://ch.example');
+    expect(app.conn.chCtx.origin).toBe('https://ch.example');
   });
   it('host falls back to "clickhouse" for an unparseable stored origin', () => {
     const app = createApp(env({ sessionStorage: memSession({ ...basicSession, ch_basic_origin: 'not a url' }) }));
-    expect(app.host()).toBe('clickhouse');
+    expect(app.conn.host()).toBe('clickhouse');
   });
   it('basic ctx seams: getToken=creds, authHeader=Basic, refresh=false, ensureConfig=no-op', async () => {
     const app = createApp(env({ sessionStorage: memSession(basicSession) }));
-    expect(await app.chCtx.getToken()).toBe(creds);
-    expect(app.chCtx.authHeader(creds)).toBe('Basic ' + creds);
-    expect(await app.chCtx.refresh()).toBe(false);
-    expect(await app.ensureConfig()).toBeNull();
+    expect(await app.conn.chCtx.getToken()).toBe(creds);
+    expect(app.conn.chCtx.authHeader(creds)).toBe('Basic ' + creds);
+    expect(await app.conn.chCtx.refresh()).toBe(false);
+    expect(await app.conn.ensureConfig()).toBeNull();
   });
   it('queries carry the Basic header to the target origin', async () => {
     const e = env({
@@ -2728,7 +2728,7 @@ describe('credentials (basic) sign-in', () => {
       fetch: makeFetch([[(u, sql) => /version\(\)/.test(sql), resp({ json: { data: [{ v: '26.3.1' }] } })]]),
     });
     const app = createApp(e);
-    await app.loadVersion();
+    await app.catalog.loadVersion();
     const [url, init] = asMock(e.fetch!).mock.calls[0];
     expect(url.startsWith('https://gh.example:8443')).toBe(true);
     expect(init.headers.Authorization).toBe('Basic ' + creds);
@@ -2745,7 +2745,7 @@ describe('credentials (basic) sign-in', () => {
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBe(creds);
     expect(e.sessionStorage!.getItem('ch_basic_user')).toBe('demo');
     expect(e.sessionStorage!.getItem('ch_basic_origin')).toBe('https://ch.example');
-    expect(app.chCtx.origin).toBe('https://ch.example');
+    expect(app.conn.chCtx.origin).toBe('https://ch.example');
     expect(qs(app.root, '.app-header')).not.toBeNull();
     const probe = asMock(e.fetch!).mock.calls.find(([, init]) => init && init.body === 'SELECT 1')!;
     expect(probe[1].headers.Authorization).toBe('Basic ' + creds);
@@ -2757,7 +2757,7 @@ describe('credentials (basic) sign-in', () => {
     });
     const app = createApp(e);
     await app.actions.connect({ username: 'u', password: 'p', host: 'other.example:9000' });
-    expect(app.chCtx.origin).toBe('https://other.example:9000');
+    expect(app.conn.chCtx.origin).toBe('https://other.example:9000');
     expect(e.sessionStorage!.getItem('ch_basic_origin')).toBe('https://other.example:9000');
   });
   it('connect() rejects on bad credentials without committing a session', async () => {
@@ -2776,7 +2776,7 @@ describe('credentials (basic) sign-in', () => {
     app.renderApp();
     app.signOut();
     expect(app.conn.authMode()).toBe('oauth');
-    expect(app.chCtx.origin).toBe('https://ch.example');
+    expect(app.conn.chCtx.origin).toBe('https://ch.example');
     expect(e.sessionStorage!.getItem('ch_basic_auth')).toBeNull();
     expect(qs(app.root, '.login-screen')).not.toBeNull();
   });
@@ -3115,7 +3115,7 @@ describe('exhaustive controller coverage', () => {
       ]),
     });
     const app = createApp(e);
-    await app.chCtx.refresh();
+    await app.conn.chCtx.refresh();
     expect(app.conn.refreshToken()).toBe('rt2');
     expect(e.sessionStorage!.getItem('oauth_refresh_token')).toBe('rt2');
   });
@@ -3204,14 +3204,14 @@ describe('exhaustive controller coverage', () => {
 
   it('email() falls back through preferred_username / sub / empty', () => {
     const mk = (p: Record<string, unknown>): App => createApp(env({ sessionStorage: memSession({ oauth_id_token: jwt({ exp: 9e9, ...p }) }) }));
-    expect(mk({ preferred_username: 'u' }).email()).toBe('u');
-    expect(mk({ sub: 's' }).email()).toBe('s');
-    expect(mk({}).email()).toBe('');
+    expect(mk({ preferred_username: 'u' }).conn.email()).toBe('u');
+    expect(mk({ sub: 's' }).conn.email()).toBe('s');
+    expect(mk({}).conn.email()).toBe('');
   });
 
   it('getToken: null token, and expired token refreshed', async () => {
     const e0 = env({ sessionStorage: memSession({}) });
-    expect(await createApp(e0).chCtx.getToken()).toBeNull();
+    expect(await createApp(e0).conn.chCtx.getToken()).toBeNull();
 
     const e1 = env({
       sessionStorage: memSession({ oauth_id_token: jwt({ exp: 1 }), oauth_refresh_token: 'rt' }),
@@ -3221,12 +3221,12 @@ describe('exhaustive controller coverage', () => {
         [(u) => u === 'https://t', resp({ json: { id_token: validToken } })],
       ]),
     });
-    expect(await createApp(e1).chCtx.getToken()).toBe(validToken);
+    expect(await createApp(e1).conn.chCtx.getToken()).toBe(validToken);
   });
 
   it('loaders + run guard tolerate being called before renderApp', async () => {
     const app = createApp(env({ fetch: makeFetch([[() => true, resp({ json: { data: [] } })]]) }));
-    await app.loadVersion(); // setConn guard: no connStatus
+    await app.catalog.loadVersion(); // setConn guard: no connStatus
     app.updateSaveBtn(); // guard: no starBtn
 
     // signed-out run with non-empty SQL exercises the getToken()→onSignedOut path
@@ -3336,7 +3336,7 @@ describe('exhaustive controller coverage', () => {
     });
     const app = createApp(e);
     app.renderApp();
-    await app.ensureConfig();
+    await app.conn.ensureConfig();
     expect(app.conn.chAuth()).toBe('basic');
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
@@ -3359,7 +3359,7 @@ describe('exhaustive controller coverage', () => {
     });
     const app = createApp(e);
     app.renderApp();
-    await app.ensureConfig();
+    await app.conn.ensureConfig();
     expect(app.conn.basicUserClaim()).toBe('nickname');
     app.activeTab().sqlDraft = 'SELECT 1';
     await app.actions.run();
@@ -3368,7 +3368,7 @@ describe('exhaustive controller coverage', () => {
     // username segment is the nickname claim, not the email
     expect(decodeURIComponent(escape(atob(auth.slice(6))))).toMatch(/^BorisT:/);
     // the header identity matches the CH user (nickname), not the email claim
-    expect(app.email()).toBe('BorisT');
+    expect(app.conn.email()).toBe('BorisT');
   });
 
   it('copyResult: TSV for structured, rawText as-is, nothing-to-copy when empty', async () => {
@@ -3655,7 +3655,7 @@ describe('script export (issue #99)', () => {
     const app = createApp(env({ window: fakeWin(), showDirectoryPicker, isSecureContext: true, fetch }));
     app.renderApp();
     await new Promise((r) => setTimeout(r)); // let the initial-mount loadSchema settle
-    const spy = vi.spyOn(app, 'loadSchema');
+    const spy = vi.spyOn(app.catalog, 'loadSchema');
     app.activeTab().sqlDraft = 'CREATE TABLE t (a Int8);\nSELECT 1;';
     await app.actions.exportEntry();
     expect(spy).toHaveBeenCalledTimes(1);

@@ -36,6 +36,7 @@ import type { PanelResolution } from '../core/panel-cfg.js';
 import type { ResultSource } from '../core/query-source.js';
 import type { SchemaGraphFocus } from '../core/schema-graph.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
+import type { ConnectionSession } from '../application/connection-session.js';
 
 // ── The Result contract (#267) ──────────────────────────────────────────────
 // `QueryTab.result` (state.ts) is deliberately opaque there
@@ -157,7 +158,7 @@ export interface ResultsApp {
   now(): number;
   elapsedMs(): number;
   wallNow(): number;
-  ensureFreshToken(): Promise<boolean>;
+  conn: Pick<ConnectionSession, 'ensureFreshToken'>;
   /** The shared request/stream/normalize service (#276 Phase 1) — this module
    *  only ever needs `executeRead` (the detached Data view's own re-run). */
   exec: Pick<QueryExecutionService, 'executeRead'>;
@@ -972,7 +973,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         running = true;
         setStatus('Running…');
         if (refreshBtn) refreshBtn.disabled = true;
-        if (!(await app.ensureFreshToken())) {
+        if (!(await app.conn.ensureFreshToken())) {
           if (myGen === gen && !closed) settle('Not signed in');
           return;
         }

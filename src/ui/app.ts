@@ -58,7 +58,6 @@ import type { ComboField } from './combobox.js';
 import { recentOptions } from '../core/recent-values.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { SchemaDb } from '../core/from-scope.js';
-import type { AssembledReference, CompletionItem } from '../core/completions.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
@@ -216,8 +215,8 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.downloadFile = downloadFile;
 
   // --- identity ------------------------------------------------------------
-  // app.host is a Phase-2 delegate (conn.host) — assigned below, alongside the
-  // rest of the ConnectionSession delegates, once `conn` is constructed.
+  // Identity/auth reads (host/email/isSignedIn/…) live on `app.conn` itself
+  // (assigned below, once `conn` is constructed) — no flat `App` delegate.
   app.activeTab = () => activeTab(app.state);
 
   // --- independent SQL + Spec editor seams (#143/#212) ---------------------
@@ -341,22 +340,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   const getToken = conn.getToken;
   const ensureConfig = conn.ensureConfig;
 
-  // Phase-2 delegates — shells/bootstrap consume these; Phase 5 re-points them
-  // to app.conn directly.
-  app.basePath = conn.basePath;
-  app.hostHint = conn.hostHint;
-  app.host = conn.host;
-  app.isSignedIn = conn.isSignedIn;
-  app.email = conn.email;
-  app.setTokens = conn.setTokens;
-  app.loadConfig = conn.resolveConfig;
-  app.loadIdps = conn.loadIdps;
-  app.ensureConfig = conn.ensureConfig;
-  app.ensureFreshToken = conn.ensureFreshToken;
-  app.chCtx = chCtx;
+  // Identity/auth/config all live on `conn` (see app.types.ts's own doc
+  // comment) — no flat `App` delegates (#276 Phase 5 deleted them).
+  // `showLogin`/`signOut` stay app.ts-owned: they compose rendering, not
+  // pure forwards.
   app.signOut = () => { conn.signOut(); renderLoginApp(); };
   app.showLogin = (msg) => renderLoginApp(msg);
-  app.receiveAuthHandoff = (handoffEnv) => conn.receiveAuthHandoff(handoffEnv);
 
   // --- data loaders --------------------------------------------------------
   // The server-metadata/reference lifecycle (#276 Phase 4A) — server-version
@@ -395,44 +384,11 @@ export function createApp(env: CreateAppEnv = {}): App {
     },
   });
   app.catalog = catalog;
-  app.loadVersion = () => catalog.loadVersion();
-  app.loadSchema = () => catalog.loadSchema();
-  app.loadReference = () => catalog.loadReference();
-  app.rebuildCompletions = () => catalog.rebuildCompletions();
-  app.entityDoc = (name) => catalog.entityDoc(name);
-  // `App.refData`/`App.completions` are deliberately loose (`Json`-shaped)
-  // placeholders — codemirror-adapter.ts's own narrow app slice reads the real
-  // `AssembledReference`/`CompletionItem[]` shapes via its own local `as`
-  // (documented there). The service owns the real precisely-typed values as
-  // its OWN get/set ACCESSORS (`catalog.refData`/`catalog.completions`,
-  // always current — see that interface's doc comment for why a setter
-  // exists, not just a getter). These `Object.defineProperty` accessors
-  // mirror BOTH directions onto `app`: a read observes the CURRENT value
-  // after a `loadReference()`/columns-load rebuild (no app.ts re-mirroring
-  // needed, unlike the pre-extraction `Object.assign(app, {refData})`
-  // pattern), and a write (e.g. a test overwriting `app.completions`
-  // directly, same as `tests/e2e/editor-cm6.spec.js` does) flows straight
-  // into the service's own live value, exactly as reassigning the plain
-  // property used to. `as never`/loose casts on the setter's incoming value
-  // sidestep the same declared-type mismatch `Object.assign` used to
-  // sidestep (see `App.refData`'s own loose `Json`-ish declared type).
-  Object.defineProperty(app, 'refData', {
-    get: () => catalog.refData,
-    set: (v) => { catalog.refData = v as AssembledReference; },
-    enumerable: true,
-    configurable: true,
-  });
-  Object.defineProperty(app, 'completions', {
-    get: () => catalog.completions,
-    set: (v) => { catalog.completions = v as CompletionItem[]; },
-    enumerable: true,
-    configurable: true,
-  });
-  // `docCache` is a single Map instance the service owns and only ever
-  // mutates in place (cleared/set), never reassigns — a direct property copy
-  // of the reference (not a getter) stays valid for the object's lifetime,
-  // matching the original `app.docCache = new Map()` assignment.
-  app.docCache = catalog.docCache;
+  // `loadVersion`/`loadSchema`/`loadReference`/`rebuildCompletions`/
+  // `entityDoc`/`refData`/`completions`/`docCache` all live on `catalog`
+  // itself now (#276 Phase 5 deleted the flat `App` delegates) —
+  // codemirror-adapter.ts and every other consumer reads `app.catalog.*`
+  // directly.
   // A prominent, dismissible banner for schema/auth failures — the schema-panel
   // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
   function updateBanner() {
@@ -602,7 +558,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       renderResults: () => renderResults(app),
       showExportProgress: (onCancel) => showExportProgress(onCancel),
       toast: (message) => flashToast(message, { document: doc }),
-      loadSchema: () => { void app.loadSchema(); },
+      loadSchema: () => { void catalog.loadSchema(); },
     },
   });
   app.exports = exportService;
@@ -624,7 +580,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       renderResults: () => renderResults(app),
       renderSavedHistory: () => renderSavedHistory(app),
       cancelSchemaGraph,
-      loadSchema: () => { void app.loadSchema(); },
+      loadSchema: () => { void catalog.loadSchema(); },
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
       recordBoundParams: (bp) => app.recordBoundParams([...bp]),
       prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked,
@@ -1370,7 +1326,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const logoutBtn = h('button', { class: 'um-item danger', onclick: () => { close(); app.signOut(); } }, Icon.logout(), h('span', null, 'Log out'));
     const menu = h('div', { class: 'user-menu' },
-      h('div', { class: 'um-id' }, app.email()),
+      h('div', { class: 'um-id' }, conn.email()),
       logoutBtn,
       h('div', { class: 'um-build', title: 'App version / build' }, app.build));
     ({ close } = anchoredPopover(menu, app.dom.userBtn!, 'userMenu'));
@@ -1483,12 +1439,12 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
   app.dom.connStatus = h('div', { class: 'conn-status dim' }, h('span', { class: 'ver' }, 'Connecting…'));
   app.dom.themeBtn = h('button', { class: 'hd-btn', title: 'Toggle theme', onclick: helpers.toggleTheme });
   app.dom.themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
-  app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: app.email(), onclick: () => app.actions.openUserMenu() },
-    h('span', { class: 'user-short' }, userShortName(app.email())), Icon.chevDown());
+  app.dom.userBtn = h('button', { class: 'hd-btn user-btn', title: app.conn.email(), onclick: () => app.actions.openUserMenu() },
+    h('span', { class: 'user-short' }, userShortName(app.conn.email())), Icon.chevDown());
   const header = h('div', { class: 'app-header' },
     h('div', { class: 'logo-mark' }, Icon.brand()),
     h('div', { class: 'logo-name' }, 'Altinity® SQL Browser'),
-    h('div', { class: 'env-chip' }, app.host()),
+    h('div', { class: 'env-chip' }, app.conn.host()),
     h('div', { class: 'hd-divider' }),
     ...libraryControls(app),
     h('div', { style: { flex: '1' } }),
@@ -1755,7 +1711,7 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
   // breakpoint). Each runs once now for the initial paint.
   effect(() => { mainRow.dataset.mobileView = state.mobileView.value; });
   effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; });
-  app.loadVersion();
-  app.loadSchema();
-  app.loadReference();
+  app.catalog.loadVersion();
+  app.catalog.loadSchema();
+  app.catalog.loadReference();
 }

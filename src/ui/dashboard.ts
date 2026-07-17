@@ -360,15 +360,15 @@ export function renderDashboard(app: App): Promise<void> {
 
   const header = h('div', { class: 'dash-header' },
     h('a', {
-      class: 'dash-back', href: app.basePath || '/sql', title: 'Back to SQL Browser',
+      class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser',
       'aria-label': 'Back to SQL Browser',
     }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
     h('div', { class: 'dash-title' }, state.libraryName.value),
     favChip,
     skipNote,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
-    h('span', { class: 'dash-chip dash-src', title: app.host() },
-      h('span', { class: 'dash-dot' }), app.host()),
+    h('span', { class: 'dash-chip dash-src', title: app.conn.host() },
+      h('span', { class: 'dash-dot' }), app.conn.host()),
     updated,
     themeBtn,
     refreshBtn);
@@ -520,7 +520,7 @@ export function renderDashboard(app: App): Promise<void> {
       }
     },
     disposeFilterBar: disposeCurrentFilterBar,
-    onAuthFailed: () => { app.chCtx.onSignedOut(); },
+    onAuthFailed: () => { app.conn.chCtx.onSignedOut(); },
     onRunAllStart: () => { refreshBtn.disabled = true; },
     onRunAllSettled: () => {
       updated.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -535,7 +535,7 @@ export function renderDashboard(app: App): Promise<void> {
   const filterCuratedSeed: Record<string, unknown> = state.filterCurated || {};
   const deps: DashboardSessionDeps = {
     exec: app.exec,
-    ensureFreshToken: () => app.ensureFreshToken(),
+    ensureFreshToken: () => app.conn.ensureFreshToken(),
     now: () => app.now(),
     wallNow: () => app.wallNow(),
     recordBoundParams: (bp) => app.recordBoundParams(bp),

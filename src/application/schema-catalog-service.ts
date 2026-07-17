@@ -139,9 +139,9 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // connection (the keystroke rule, #25): keywords/functions drive both
   // version-correct highlighting and the autocomplete list; completion then
   // runs client-side. `refData`/`completions` are private closure state —
-  // `app.catalog.refData`/`app.catalog.completions` (and app.ts's mirrored
-  // `app.refData`/`app.completions`) read them via the getters above/below,
-  // always the CURRENT value.
+  // `app.catalog.refData`/`app.catalog.completions` (#276 Phase 5 deleted the
+  // flat `App.refData`/`App.completions` delegates app.ts used to mirror them
+  // onto) read them via the getters above/below, always the CURRENT value.
   let refData: AssembledReference = assembleReferenceData(null); // built-in fallback until loaded
   let completions: CompletionItem[] = buildCompletions(refData, state.schema.value as SchemaDb[] | null);
 

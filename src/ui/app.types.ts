@@ -13,7 +13,6 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
-import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
@@ -212,37 +211,18 @@ export interface App {
   /** Ad-hoc, consumer-attached (chart-render.js), not initialized by createApp. */
   chart?: { destroy(): void };
 
-  // Identity / auth — Phase-2 delegates onto `conn` (see its doc comment
-  // above). `authMode`/`chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/
-  // `chUsername` moved onto `app.conn` itself (`conn.authMode()`/
-  // `conn.chAuth()`/`conn.basicUserClaim()`/`conn.idpId()`/`conn.selectIdp()`)
-  // — no other module read them off `App` directly (verified #276 Phase 2),
-  // so they aren't re-delegated here.
-  host(): string;
+  // Identity / auth — all live on `app.conn` (see its doc comment above),
+  // e.g. `conn.host()`/`conn.email()`/`conn.isSignedIn()`. `authMode`/
+  // `chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/`chUsername` likewise moved
+  // there in Phase 2; the flat `App` delegates that used to forward onto them
+  // (`isSignedIn`/`email`/`host`/`hostHint`/`basePath`/`setTokens`/
+  // `loadConfig`/`loadIdps`/`ensureConfig`/`ensureFreshToken`/`chCtx`/
+  // `receiveAuthHandoff`) were deleted in #276 Phase 5 — every consumer reads
+  // `app.conn.*` directly now. `showLogin`/`signOut` stay here: they compose
+  // rendering (`renderLoginApp`), not pure forwards.
   activeTab(): Tab;
-  isSignedIn(): boolean;
-  email(): string;
-  hostHint: string;
-  basePath: string;
-  setTokens(id: string, refresh?: string): void;
-  /** The real resolved shape (net/oauth-config.ts's `ResolvedIdpConfig`) — the
-   * previous opaque `Json` undersold it; main.js's OAuth-callback path reads
-   * `cfg.bearer` straight off this value. */
-  loadConfig(): Promise<ResolvedIdpConfig>;
-  /** The real resolved shape (net/oauth-config.ts's `ConfigDoc`) — the
-   * previous `{ idps: Array<{ id: string }> }` undersold it (no
-   * `basicLogin`/`hosts`, and each `idps[]` entry is a full `IdpDescriptor`,
-   * not just `{id}`); login.ts read the real shape all along behind its own
-   * `LoginIdpsResult` widening, now redundant (dropped there). */
-  loadIdps(): Promise<ConfigDoc>;
-  /** Same real shape as `loadConfig` (`null` when config couldn't be loaded —
-   * fail-soft, see app.ts's own `ensureConfig`). */
-  ensureConfig(): Promise<ResolvedIdpConfig | null>;
-  ensureFreshToken(): Promise<boolean>;
-  chCtx: ChCtx;
   showLogin(msg?: string): void;
   signOut(): void;
-  receiveAuthHandoff(handoffEnv: { opener?: Window | null }): Promise<boolean>;
   canExport(): boolean;
   canExportScript(): boolean;
   showSaveFilePicker: ((opts?: unknown) => Promise<unknown>) | null;
@@ -283,22 +263,12 @@ export interface App {
   // Data / schema loaders.
   /** The server-metadata/reference lifecycle service (#276 Phase 4A) —
    *  `src/application/schema-catalog-service.ts`, constructible without
-   *  App/AppState/DOM. The members below (`loadVersion`/`loadSchema`/
-   *  `loadReference`/`rebuildCompletions`/`entityDoc`/`docCache`/`refData`/
-   *  `completions`) are thin delegates to it, kept so no consumer needs to
-   *  change (mirrors `exec`/`conn`/`workbench`'s own extraction pattern). */
+   *  App/AppState/DOM: `loadVersion`/`loadSchema`/`loadReference`/
+   *  `rebuildCompletions`/`entityDoc`/`docCache`/`refData`/`completions` all
+   *  live on it now — the flat `App` delegates that used to forward onto
+   *  them were deleted in #276 Phase 5; every consumer reads `app.catalog.*`
+   *  directly. */
   catalog: SchemaCatalogService;
-  loadVersion(): Promise<void>;
-  loadSchema(): Promise<void>;
-  loadReference(): Promise<void>;
-  refData: { functions: unknown; keywordDocs: unknown } & Json;
-  completions: Json;
-  rebuildCompletions(): void;
-  /** A pending fetch while in flight; the resolved doc string once settled (a
-   * failed fetch, `null`, is dropped rather than cached — see entityDoc). */
-  docCache: Map<string, string | Promise<string | null>>;
-  /** Resolves to `null` on a failed fetch (not cached; retried next call). */
-  entityDoc(name: string): Promise<string | null>;
   updateBanner(): void;
 
   // Query-run / var-strip / editor-mode UI hooks.

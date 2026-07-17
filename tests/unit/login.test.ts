@@ -42,22 +42,31 @@ type FakeApp = ReturnType<typeof makeApp>;
 /** `appWith`'s override bag — a partial `FakeApp`, except `actions`, which is
  *  merged key-by-key against the real `makeApp()` defaults below (a plain
  *  top-level `{...over}` spread in fake-app.js would otherwise drop every
- *  other stubbed action). */
-interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'loadIdps'>> {
+ *  other stubbed action). `host`/`hostHint`/`loadIdps` are flat convenience
+ *  keys here (this suite's own long-standing call-site shape, kept as-is —
+ *  #276 Phase 5 moved the REAL fields onto `app.conn`) that `appWith` below
+ *  routes into `makeApp`'s `conn: {...}` override. */
+interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'conn'>> {
   actions?: Partial<FakeApp['actions']>;
+  host?: () => string;
   loadIdps?: () => Promise<TestIdpsResult>;
   // Not a base fake-app.js field (only ever supplied as an override, matching
-  // the real app's optional `hostHint` — app.types.ts / login.ts's `LoginApp`).
+  // the real app's optional `conn.hostHint` — app.types.ts / login.ts's
+  // `LoginApp`).
   hostHint?: string;
 }
 // makeApp defaults loadIdps → { idps: [], basicLogin: true }. Override per test.
 function appWith(over: AppOverrides = {}): FakeApp {
   const base = makeApp();
-  const { loadIdps, ...rest } = over;
+  const { loadIdps, host, hostHint, ...rest } = over;
   return makeApp({
     ...rest,
     actions: { ...base.actions, ...(over.actions || {}) },
-    ...(loadIdps ? { loadIdps: asLoadIdps(loadIdps) } : {}),
+    conn: {
+      ...(host ? { host } : {}),
+      ...(hostHint !== undefined ? { hostHint } : {}),
+      ...(loadIdps ? { loadIdps: asLoadIdps(loadIdps) } : {}),
+    },
   });
 }
 

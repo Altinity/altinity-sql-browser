@@ -947,7 +947,7 @@ describe('expandDataPane', () => {
     // `exec.executeRead` fixture in this suite uses.
     const executeRead = vi.fn(async (result: QueryResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
     const ensureFreshToken = vi.fn(async () => false);
-    const app = makeApp({ ensureFreshToken, exec: { executeRead } });
+    const app = makeApp({ conn: { ensureFreshToken }, exec: { executeRead } });
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');

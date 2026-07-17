@@ -41,9 +41,9 @@ import type { EditorPort, EditorSelection } from './editor-port.types.js';
 
 // ── Local typed contracts ───────────────────────────────────────────────────
 // core/completions.js's own `AssembledReference`/`CompletionContext` shapes
-// are imported directly (below) — this adapter's `app.refData` and the
-// completion-context plumbing match them exactly. `app.completions` keeps its
-// OWN wider local `CompletionItem` (kind: string, not the closed
+// are imported directly (below) — this adapter's `app.catalog.refData` and
+// the completion-context plumbing match them exactly. `app.catalog.completions`
+// keeps its OWN wider local `CompletionItem` (kind: string, not the closed
 // `CompletionKind` union): this adapter renders an unrecognized `kind` as a
 // bare CSS chip rather than rejecting it (see `completionSourceFor`'s
 // `type: it.kind` below), so its own candidate contract is deliberately more
@@ -71,7 +71,7 @@ interface InfoItem {
   fullType?: string;
 }
 
-/** The complete completion-candidate shape `app.completions` holds (built by
+/** The complete completion-candidate shape `app.catalog.completions` holds (built by
  *  core/completions.js's `buildCompletions`, which in practice never emits
  *  anything outside `CompletionKind` — but this adapter's own contract stays
  *  open on `kind`, see above). `completionSourceFor` reads every field;
@@ -97,16 +97,19 @@ export interface SqlCompletionContext {
 }
 
 /** `langExtensionFor`'s own narrow app slice — just the reference data (or
- *  its absence — no connection yet). Declared `unknown` (not
- *  `AssembledReference` directly) so the real, injected `app` controller's
- *  own placeholder type (`App.refData` in `ui/app.types.ts`, kept loose
- *  there since nothing else reads its actual shape) is assignable here too —
- *  `createCodeMirrorEditor` must stay assignable to `env.types.ts`'s
- *  `Editor?: (app: App) => EditorPort` seam. This adapter is the one real
- *  consumer of the precise shape, so it narrows with a local `as` at each
- *  read site instead. */
+ *  its absence — no connection yet), grouped under `catalog` (#276 Phase 5 —
+ *  `app.catalog` is `SchemaCatalogService`; `refData`/`completions`/
+ *  `entityDoc` no longer exist as flat `App` delegates). Declared `unknown`
+ *  (not `AssembledReference` directly) so the real, injected `app`
+ *  controller's own `SchemaCatalogService.refData` (always a real object,
+ *  never `null`/`undefined` in production — but this adapter's own tests
+ *  still exercise the "no reference data at all" defensive branch) is
+ *  assignable here too — `createCodeMirrorEditor` must stay assignable to
+ *  `env.types.ts`'s `Editor?: (app: App) => EditorPort` seam. This adapter is
+ *  the one real consumer of the precise shape, so it narrows with a local
+ *  `as` at each read site instead. */
 interface DialectApp {
-  refData?: unknown;
+  catalog?: { refData?: unknown };
 }
 
 /** `hoverSourceFor`/`infoFor`'s own narrow app slice: the reference data plus
@@ -114,7 +117,7 @@ interface DialectApp {
  *  `CodeMirrorEditorApp` the port itself needs (tests call these two
  *  directly with exactly this shape). */
 interface ReferenceApp extends DialectApp {
-  entityDoc?: (name: string) => Promise<string | null>;
+  catalog?: { refData?: unknown; entityDoc?: (name: string) => Promise<string | null> };
 }
 
 /** The subset of a DOM drag event `handleDrop` reads — real `DragEvent`s (the
@@ -136,10 +139,11 @@ export interface DropEvent {
 export interface CodeMirrorEditorApp extends ReferenceApp {
   state: AppState;
   dom: { sqlEditorView?: EditorView };
-  /** `unknown` for the same reason as `DialectApp.refData` above (matches
-   *  `App.completions`'s own loose `Json` placeholder); narrowed with a
-   *  local `as` in `completionSourceFor`. */
-  completions?: unknown;
+  /** `completions` stays `unknown` for the same reason as `DialectApp`'s
+   *  `catalog.refData` above (matches `SchemaCatalogService.completions`'s
+   *  real, always-populated shape); narrowed with a local `as` in
+   *  `completionSourceFor`. */
+  catalog?: { refData?: unknown; completions?: unknown; entityDoc?: (name: string) => Promise<string | null> };
   actions: { loadColumns(db: string, table: string): Promise<void> };
 }
 
@@ -171,9 +175,9 @@ const LITERAL_NODE = /String|Comment|QuotedIdentifier/;
  * deliberately doesn't pair (it would fight the #134 `{name:Type}` variables).
  */
 export function langExtensionFor(app: DialectApp): Extension[] {
-  // `as`: `app.refData` is `unknown` here (see `DialectApp`'s doc comment) —
-  // this adapter is the one real consumer of its actual shape.
-  const ref = app.refData as AssembledReference | null | undefined;
+  // `as`: `app.catalog.refData` is `unknown` here (see `DialectApp`'s doc
+  // comment) — this adapter is the one real consumer of its actual shape.
+  const ref = app.catalog?.refData as AssembledReference | null | undefined;
   const dialect = SQLDialect.define({
     keywords: (ref ? ref.keywords : []).join(' ').toLowerCase(),
     builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
@@ -239,9 +243,9 @@ export function inputGuards(view: EditorView, from: number, to: number, text: st
 /**
  * Completion source: CM6's UI over the pure core ranking (#26 parity v0).
  * `filter: false` keeps `rankCompletions`' order (CM6 would fuzzy-rescore and
- * dedup otherwise). Candidates come from `app.completions` at call time, so
+ * dedup otherwise). Candidates come from `app.catalog.completions` at call time, so
  * schema/reference updates need no reconfigure. Never queries — `info` resolves
- * through app.entityDoc's lazy cache, and only for the row the user rests on.
+ * through app.catalog.entityDoc's lazy cache, and only for the row the user rests on.
  */
 export function completionSourceFor(app: CodeMirrorEditorApp): (ctx: SqlCompletionContext) => CompletionResult | null {
   return (ctx) => {
@@ -260,14 +264,14 @@ export function completionSourceFor(app: CodeMirrorEditorApp): (ctx: SqlCompleti
     // lines before the caret, so a FROM above the caret is in view; a FROM below
     // it degrades gracefully to the global pool (no scope).
     c.scope = fromScopeAt(doc, ctx.pos, toks);
-    // `as`: `app.completions` is `unknown` here (see `CodeMirrorEditorApp`'s
-    // doc comment). Real values are always core/completions.ts's own
-    // `buildCompletions` output (`CompletionKind`-typed); this adapter's own
-    // `CompletionItem` deliberately keeps `kind: string` open for its
-    // pass-through rendering (see the top-of-file note), and
-    // `rankCompletions` only ever compares `kind` against its own known
-    // literals, so the cast is behaviorally safe either way.
-    const items = rankCompletions((app.completions as CompletionItem[] | undefined || []) as CoreCompletionItem[], c);
+    // `as`: `app.catalog.completions` is `unknown` here (see
+    // `CodeMirrorEditorApp`'s doc comment). Real values are always
+    // core/completions.ts's own `buildCompletions` output (`CompletionKind`-
+    // typed); this adapter's own `CompletionItem` deliberately keeps
+    // `kind: string` open for its pass-through rendering (see the top-of-file
+    // note), and `rankCompletions` only ever compares `kind` against its own
+    // known literals, so the cast is behaviorally safe either way.
+    const items = rankCompletions((app.catalog?.completions as CompletionItem[] | undefined || []) as CoreCompletionItem[], c);
     if (!items.length) return null;
     return {
       from: c.from,
@@ -309,26 +313,27 @@ export function applyFor(it: ApplyItem): Completion['apply'] {
 type InfoFn = () => Node | null | Promise<Node | null>;
 
 // The active row's description: static keyword docs immediately, function
-// docs lazily via app.entityDoc (cached, one query per name ever — #27).
+// docs lazily via app.catalog.entityDoc (cached, one query per name ever — #27).
 // CM6 shows it as a side tooltip (the old dropdown used a footer). An `info`
 // FUNCTION must yield a DOM node (a bare string is only legal when `info`
 // itself is the string) — CM6's addInfoPane appendChild()s the result.
 export function infoFor(app: ReferenceApp, it: InfoItem): InfoFn | undefined {
   const doc = (text: string | null | undefined): Node | null => (text ? h('div', null, text) : null);
   if (it.kind === 'keyword') {
-    // `as`: `app.refData` is `unknown` (see `DialectApp`'s doc comment); read
-    // fresh on every call (not hoisted) — CM6 may invoke this `info` callback
-    // well after refData has since changed (#25 load lands mid-session).
+    // `as`: `app.catalog.refData` is `unknown` (see `DialectApp`'s doc
+    // comment); read fresh on every call (not hoisted) — CM6 may invoke this
+    // `info` callback well after refData has since changed (#25 load lands
+    // mid-session).
     return () => {
-      const refData = app.refData as AssembledReference | null | undefined;
+      const refData = app.catalog?.refData as AssembledReference | null | undefined;
       return doc(refData && refData.keywordDocs[it.label.toUpperCase()]);
     };
   }
   if (it.kind === 'fn' || it.kind === 'agg' || it.kind === 'cast') {
-    if (!app.entityDoc) return undefined;
+    if (!app.catalog?.entityDoc) return undefined;
     // `!`: just checked above; a deferred closure doesn't retain that
     // narrowing across the function boundary, but the guard already ran.
-    return () => Promise.resolve(app.entityDoc!(it.label)).then(doc);
+    return () => Promise.resolve(app.catalog!.entityDoc!(it.label)).then(doc);
   }
   // A column whose `detail` is a compacted type summary (#177) exposes the full
   // declared type here — CM6's detail column has no native title fallback.
@@ -357,8 +362,8 @@ const lookupFn = (functions: Record<string, CompletionFunctionEntry>, word: stri
  */
 export function hoverSourceFor(app: ReferenceApp): (view: EditorView, pos: number) => Tooltip | null {
   return (view, pos) => {
-    // `as`: `app.refData` is `unknown` here (see `DialectApp`'s doc comment).
-    const refData = app.refData as AssembledReference | null | undefined;
+    // `as`: `app.catalog.refData` is `unknown` here (see `DialectApp`'s doc comment).
+    const refData = app.catalog?.refData as AssembledReference | null | undefined;
     if (!refData) return null;
     if (LITERAL_NODE.test(syntaxTree(view.state).resolveInner(pos, 0).name)) return null;
     // Identifiers can't span lines — scan the line, not the whole doc.
@@ -378,8 +383,8 @@ export function hoverSourceFor(app: ReferenceApp): (view: EditorView, pos: numbe
             fn.ret ? h('span', { class: 'hover-ret' }, ' → ' + fn.ret) : null));
           const doc = h('div', { class: 'hover-doc' }, fn.desc || '');
           dom.appendChild(doc);
-          if (!fn.desc && app.entityDoc) {
-            Promise.resolve(app.entityDoc(w.word)).then((d) => { if (d) doc.textContent = d; });
+          if (!fn.desc && app.catalog?.entityDoc) {
+            Promise.resolve(app.catalog.entityDoc(w.word)).then((d) => { if (d) doc.textContent = d; });
           }
         } else {
           dom.appendChild(h('div', { class: 'hover-doc' }, kwDoc));
@@ -446,7 +451,7 @@ const COLUMN_LOAD_DELAY_MS = 300;
  * FROM-driven lazy column loading (#84): parse the statement around the caret,
  * find its FROM/JOIN tables whose columns aren't loaded yet, and fetch them via
  * the app's existing `loadColumns` (which writes the `'loading'` sentinel to
- * dedupe, caches per connection, and rebuilds `app.completions`). Uses the whole
+ * dedupe, caches per connection, and rebuilds `app.catalog.completions`). Uses the whole
  * document (not the keystroke-path line slice) so a FROM below the caret still
  * prefetches. Resolves to whether it fetched anything — the caller refreshes an
  * open dropdown only after re-checking the view is still live (destroy race).
