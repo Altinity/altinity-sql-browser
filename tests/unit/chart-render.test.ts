@@ -301,7 +301,7 @@ describe('renderChart', () => {
     change(fieldSel(app.dom.resultsRegion!, 'Series'), '');
     expect(app.activeTab().panelCfg!.series).toBeNull();
   });
-  it('notes the row cap when the result is larger than the chart shows', () => {
+  it('notes the category cap when more categories exist than the chart shows', () => {
     const r = newResult('Table');
     r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
     r.rows = Array.from({ length: 600 }, (_, i) => ['k' + i, String(i)]);
@@ -310,32 +310,94 @@ describe('renderChart', () => {
     paintChart(app);
     const note = app.dom.resultsRegion!.querySelector('.chart-cap-note');
     expect(note).not.toBeNull();
-    expect(note!.textContent).toContain('first 500 of');
+    expect(note!.textContent).toBe('first 500 of 600 categories');
     // a small result shows no cap note
     const small = appWithResult(tableResult(), { resultView: 'chart' });
     paintChart(small);
     expect(small.dom.resultsRegion!.querySelector('.chart-cap-note')).toBeNull();
   });
-  it('switching chart type re-slices to the new type\'s cap and updates the note', () => {
+  it('switching chart type recalculates the category cap and updates the note', () => {
     const r = newResult('Table');
     r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
     r.rows = Array.from({ length: 600 }, (_, i) => ['k' + i, String(i)]);
     r.progress = { rows: 600, bytes: 100, elapsed_ns: 5e6 };
     const app = appWithResult(r, { resultView: 'chart' });
     paintChart(app);
-    // default (hbar, autoChart's categorical pick) cap is 500 < 600 rows
+    // default (hbar, autoChart's categorical pick) cap is 500 < 600 categories
     expect(app.activeTab().panelCfg!.type).toBe('hbar');
     expect(app.dom.resultsRegion!.querySelector('.chart-cap-note')!.textContent)
-      .toBe('first ' + chartRowCap('hbar') + ' of 600 rows');
+      .toBe('first ' + chartRowCap('hbar') + ' of 600 categories');
     expect(app.chart!.config.data.labels).toHaveLength(chartRowCap('hbar'));
-    // switch to pie: a much tighter legibility cap — re-slices and the note shrinks with it
+    // switch to pie: a much tighter legibility cap — re-caps and the note shrinks with it
     change(fieldSel(app.dom.resultsRegion!, 'Type'), 'pie');
-    expect(app.dom.resultsRegion!.querySelector('.chart-cap-note')!.textContent).toContain('first ' + chartRowCap('pie') + ' of');
+    expect(app.dom.resultsRegion!.querySelector('.chart-cap-note')!.textContent)
+      .toBe('first ' + chartRowCap('pie') + ' of 600 categories');
     expect(app.chart!.config.data.labels).toHaveLength(chartRowCap('pie'));
-    // switch to line: its cap (5000) exceeds the row count — no truncation, no note at all
+    // switch to line: its cap (5000) exceeds the category count — no truncation, no note at all
     change(fieldSel(app.dom.resultsRegion!, 'Type'), 'line');
     expect(app.dom.resultsRegion!.querySelector('.chart-cap-note')).toBeNull();
     expect(app.chart!.config.data.labels).toHaveLength(600);
+  });
+  it('shows the duplicate-X note when a displayed X repeats and nothing is truncated', () => {
+    const r = newResult('Table');
+    r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+    r.rows = [['a', '1'], ['a', '2'], ['b', '3']]; // 'a' repeats → summed in the browser
+    const app = appWithResult(r, { resultView: 'chart' });
+    paintChart(app);
+    const note = app.dom.resultsRegion!.querySelector('.chart-cap-note');
+    expect(note!.textContent).toBe('duplicate X rows summed in the browser');
+  });
+  it('shows the duplicate-X/series note for a repeated (X, series) cell', () => {
+    const r = newResult('Table');
+    r.columns = [{ name: 'carrier', type: 'String' }, { name: 'region', type: 'String' }, { name: 'flights', type: 'UInt64' }];
+    r.rows = [['B6', 'E', '10'], ['B6', 'E', '30']]; // same (carrier, region) → summed
+    const app = appWithResult(r);
+    const el = renderChart(app, r, { cfg: { type: 'bar', x: 0, y: [2], series: 1 } as ChartConfig, rerender: vi.fn() });
+    expect(el.querySelector('.chart-cap-note')!.textContent).toBe('duplicate X/series rows summed in the browser');
+  });
+  it('combines truncation and duplicate clauses when both hold', () => {
+    const r = newResult('Table');
+    r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+    r.rows = Array.from({ length: 30 }, (_, i) => ['k' + i, '1']);
+    r.rows.push(['k0', '9']); // duplicate of a displayed category
+    r.rows.push(['k30', '1']); // a 31st category → pie's cap of 30 truncates it
+    const app = appWithResult(r);
+    const el = renderChart(app, r, { cfg: { type: 'pie', x: 0, y: [1], series: null } as ChartConfig, rerender: vi.fn() });
+    expect(el.querySelector('.chart-cap-note')!.textContent)
+      .toBe('first 30 of 31 categories; duplicate X rows summed in the browser');
+  });
+  it('renders the note as a standalone block when the config bar is hidden (controls:false)', () => {
+    const r = newResult('Table');
+    r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+    r.rows = Array.from({ length: 32 }, (_, i) => ['k' + i, '1']); // 32 categories > pie cap 30
+    const app = appWithResult(r);
+    const el = renderChart(app, r, { cfg: { type: 'pie', x: 0, y: [1], series: null } as ChartConfig, controls: false });
+    expect(el.querySelector('.chart-config')).toBeNull(); // no config bar
+    const note = el.querySelector('.chart-cap-note.chart-cap-note--standalone');
+    expect(note).not.toBeNull();
+    expect(note!.textContent).toBe('first 30 of 32 categories');
+    // and it sits above the canvas
+    expect(note!.nextElementSibling!.classList.contains('chart-canvas-wrap')).toBe(true);
+  });
+  it('renders no note on a controls:false surface with no truncation or duplicate', () => {
+    const app = appWithResult(chartResult());
+    const r = app.activeTab().result as StreamResult;
+    const el = renderChart(app, r, { cfg: { type: 'bar', x: 0, y: [2], series: null } as ChartConfig, controls: false });
+    expect(el.querySelector('.chart-cap-note')).toBeNull();
+  });
+  it('aggregates the chart data once per render (note + Chart.js share one pass)', async () => {
+    const chartData = await import('../../src/core/chart-data.js');
+    const spy = vi.spyOn(chartData, 'buildChartData');
+    try {
+      const r = newResult('Table');
+      r.columns = [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }];
+      r.rows = Array.from({ length: 40 }, (_, i) => ['k' + i, '1']); // truncates → forces a note
+      const app = appWithResult(r);
+      renderChart(app, r, { cfg: { type: 'pie', x: 0, y: [1], series: null } as ChartConfig, rerender: vi.fn() });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
   it('destroys the previous Chart instance on re-render, and re-derives config on a new schema', () => {
     const app = appWithResult(chartResult(), { resultView: 'chart' });
