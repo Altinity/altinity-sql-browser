@@ -1029,6 +1029,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
       // Filter row (#185): only when the source declares `{name:Type}` fields —
       // omitted entirely otherwise (no empty toolbar). Committing a field or
       // clicking Refresh re-runs only this detached query.
+      let filterBarDispose: (() => void) | null = null;
       if (fields.length) {
         const getField = (name: string, mode: ValidationMode): PreparedFieldState => prepareParameterizedBatch(analysis, {
           values: app.state.varValues,
@@ -1039,12 +1040,13 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         // A committed field re-runs only this detached query (rerun ignores the
         // param name buildFilterBar passes — a single source re-runs wholesale).
         const filterBar = buildFilterBar(app as FilterBarApp, fields, rerun, getField, { document: doc, ariaLabel: 'Query filters' });
+        filterBarDispose = filterBar.dispose;
         refreshBtn = h('button', {
           class: 'res-act detached-refresh', title: 'Re-run this query with the current filter values',
           onclick: () => rerun(),
         }, Icon.play(), h('span', null, 'Refresh'));
         statusEl = h('div', { class: 'detached-status', role: 'status' });
-        pane.appendChild(h('div', { class: 'detached-filter-row' }, filterBar, refreshBtn, statusEl));
+        pane.appendChild(h('div', { class: 'detached-filter-row' }, filterBar.el, refreshBtn, statusEl));
       }
       pane.appendChild(inner);
       body.appendChild(pane);
@@ -1066,6 +1068,7 @@ export function expandDataPane(app: ResultsApp, r: QueryResult): DetachedView {
         closed = true;
         if (ac) ac.abort();
         if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+        filterBarDispose?.();
         if (!isTab) doc.removeEventListener('keydown', onKey, true);
       };
     },
