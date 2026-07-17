@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **The app.ts → services refactor is complete** (#276, Phase 5). The
+  temporary `App` delegates from Phases 2–4 are deleted — consumers read
+  `app.conn`/`app.catalog`/`app.params`/`app.queryDoc`/`app.prefs` directly
+  through narrow interfaces (`app.saveVarRecent` survives as the one
+  documented exception); the workbench DOM + effects moved into
+  `ui/workbench/workbench-shell.ts` behind a narrow deps bag, making
+  `renderApp` a thin composition call; the dashboard shell is typed against
+  a narrow `DashboardApp`; the per-tab ClickHouse `session_id` helpers got
+  their final home (`application/ch-session-params.ts`, one shared
+  implementation); the boundary guard now also forbids either shell from
+  importing `src/ui/app.ts`. **Behavior fix**: signing out now tears the
+  session down — an in-flight run is aborted and server-`KILL`ed, exports
+  and lineage fetches cancel, and the schema/reference caches invalidate
+  before the login screen renders (previously stale work could land after
+  sign-out and caches survived account switches).
+  `docs/ARCHITECTURE.md` rewritten to describe the actual modular-monolith
+  shape (it still documented the pre-refactor god object as the design).
 - **Phase 4 of the app.ts → services refactor complete** (#276): five more
   focused modules under `src/application/`, all constructible without
   `App`/`AppState`/DOM, behavior byte-identical. `WorkbenchParameterSession`
