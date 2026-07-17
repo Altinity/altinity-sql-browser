@@ -5,11 +5,15 @@ import {
 import { createWorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
+import { PORTABLE_LIMITS } from '../../src/dashboard/model/portable-limits.js';
 import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 
 const panelQuery = (id: string) => ({
   id, sql: 'SELECT a,b', specVersion: 1 as const,
   spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } } },
+});
+const filterQuery = (id: string) => ({
+  id, sql: "SELECT ['a','b'] AS c", specVersion: 1 as const, spec: { name: id, dashboard: { role: 'filter' } },
 });
 
 const emptyDash = () => ({
@@ -110,6 +114,45 @@ describe('DashboardAuthoringSession — atomic commands', () => {
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.diagnostics.some((d) => d.code === 'schema-required')).toBe(true);
     expect(JSON.stringify(session.state.value.document)).toBe(before);
+  });
+
+  // These prove the atomic guarantee for the DELEGATED-validation failure
+  // class — failures raised by validateStoredWorkspaceDocument (structural /
+  // role / reference / limit), i.e. the stage between applyCommand and
+  // presentation resolution.
+  it('rejects add-query on an incompatible-role query without mutating the draft', async () => {
+    const { session } = makeSession({ workspace: workspaceFixture({ queries: [panelQuery('q1'), filterQuery('f1')] as never }) });
+    const before = JSON.stringify(session.state.value.document);
+    const result = await session.execute({ type: 'add-query', queryId: 'f1' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.diagnostics.some((d) => d.code === 'dashboard-tile-role-incompatible')).toBe(true);
+    expect(JSON.stringify(session.state.value.document)).toBe(before);
+    expect(session.state.value.draftVersion).toBe(0);
+  });
+
+  it('rejects exceeding the tile limit without mutating the draft', async () => {
+    const full = Array.from({ length: PORTABLE_LIMITS.maxTilesPerDashboard }, (_, i) => ({ id: `t${i}`, queryId: 'q1' }));
+    const { session } = makeSession({ workspace: workspaceFixture({ dashboard: { ...emptyDash(), tiles: full } as never }) });
+    const before = JSON.stringify(session.state.value.document);
+    const result = await session.execute({ type: 'add-query-instance', queryId: 'q1' });
+    expect(result.ok).toBe(false);
+    // The tile-count bound is enforced first by the schema's maxItems
+    // (schema-array-size); the semantic limit-tile-count re-check backs it up.
+    if (!result.ok) {
+      expect(result.diagnostics.some((d) => d.code === 'schema-array-size' || d.code === 'limit-tile-count')).toBe(true);
+    }
+    expect(JSON.stringify(session.state.value.document)).toBe(before);
+    expect(session.state.value.draftVersion).toBe(0);
+  });
+
+  it('rejects add-query-instance with an undeclared variant name without mutating the draft', async () => {
+    const { session } = makeSession();
+    const before = JSON.stringify(session.state.value.document);
+    const result = await session.execute({ type: 'add-query-instance', queryId: 'q1', variant: 'nope' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.diagnostics.some((d) => d.code === 'dashboard-variant-missing')).toBe(true);
+    expect(JSON.stringify(session.state.value.document)).toBe(before);
+    expect(session.state.value.draftVersion).toBe(0);
   });
 
   it('fails a change-layout the plugin cannot load, leaving the previous layout intact', async () => {

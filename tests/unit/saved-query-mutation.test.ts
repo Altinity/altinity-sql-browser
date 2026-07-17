@@ -65,6 +65,30 @@ describe('planSavedQueryMutation — rejection without repair', () => {
     expect(codes(plan.diagnostics)).toContain('filter-source-role');
     expect(plan.repairs).toContain('remove-affected-filters');
   });
+
+  it('repairs a filter-source role change by removing the affected filter', () => {
+    const plan = planSavedQueryMutation(baseWorkspace(),
+      { type: 'replace-query', queryId: 'f1', query: panelQuery('f1', 'SELECT 1') },
+      { type: 'remove-affected-filters' });
+    expect(plan.ok).toBe(true);
+    expect(plan.candidate!.dashboard!.filters).toEqual([]); // flt sourced from f1 removed
+  });
+
+  it('remaps a filter source reference onto another filter query', () => {
+    const workspace: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'ws', name: 'WS',
+      queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1'), filterQuery('f2')],
+      dashboard: {
+        documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+        tiles: [{ id: 't1', queryId: 'p1' }],
+      },
+    } as StoredWorkspaceV1;
+    const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'f1' }, { type: 'remap-query', to: 'f2' });
+    expect(plan.ok).toBe(true);
+    expect(plan.candidate!.dashboard!.filters[0].sourceQueryId).toBe('f2');
+  });
 });
 
 describe('planSavedQueryMutation — atomic repair', () => {
@@ -139,12 +163,13 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
     queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } }), panelQuery('p2', 'SELECT a,b')],
     dashboard: {
       documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {}, t2: {}, t3: {} } },
+      layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {}, t2: {}, t3: {}, t4: {} } },
       filters: [{ id: 'flt', parameter: 'x' }], // no source, no targets
       tiles: [
-        { id: 't1', queryId: 'p1', presentation: { variant: 'alt' } },
+        { id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }, // has a presentation, gets switched
         { id: 't2', queryId: 'p2' }, // unaffected by p1 mutations
-        { id: 't3', queryId: 'p1' }, // affected, but no variant mapping in the repair
+        { id: 't3', queryId: 'p1' }, // affected, no presentation, gets switched (empty-presentation branch)
+        { id: 't4', queryId: 'p1' }, // affected but unmapped — left untouched
       ],
     },
   } as StoredWorkspaceV1);
@@ -159,8 +184,12 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
 
   it('switches only the mapped affected tile and skips unaffected ones', () => {
     const dropsAlt = { type: 'replace-query' as const, queryId: 'p1', query: panelQuery('p1', 'SELECT a,b', { variants: { other: {} } }) };
-    const plan = planSavedQueryMutation(multiTile(), dropsAlt, { type: 'switch-variant', tileVariants: { t1: 'other' } });
+    // t1 already has a presentation; t3 has none — switching it exercises the
+    // no-existing-presentation branch. t2 is unaffected and is skipped.
+    const plan = planSavedQueryMutation(multiTile(), dropsAlt, { type: 'switch-variant', tileVariants: { t1: 'other', t3: 'other' } });
     expect(plan.ok).toBe(true);
+    const tiles = plan.candidate!.dashboard!.tiles;
+    expect(tiles.find((t) => t.id === 't3')!.presentation).toEqual({ variant: 'other' });
   });
 
   it('remaps only affected tiles and leaves a source-less filter intact', () => {

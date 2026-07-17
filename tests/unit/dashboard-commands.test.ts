@@ -96,6 +96,32 @@ describe('applyCommand — update-tile', () => {
     expect(cleared.ok && cleared.dashboard.tiles[0]).toEqual({ id: 't1', queryId: 'q' });
   });
 
+  const seededPres = () => draft({
+    tiles: [{ id: 't1', queryId: 'q', presentation: { variant: 'alt', override: { cfg: { y: [0], series: null } } } }] as never,
+  });
+
+  it('merges presentation one level: setting variant preserves the override verbatim (nested nulls kept)', () => {
+    const result = run(seededPres(), { type: 'update-tile', tileId: 't1', patch: { presentation: { variant: 'other' } } }, [query('q')]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.dashboard.tiles[0]).toEqual({
+        id: 't1', queryId: 'q', presentation: { variant: 'other', override: { cfg: { y: [0], series: null } } },
+      });
+    }
+  });
+
+  it('clears only the override sub-field with presentation.override:null, leaving the variant', () => {
+    const result = run(seededPres(), { type: 'update-tile', tileId: 't1', patch: { presentation: { override: null } } }, [query('q')]);
+    expect(result.ok && result.dashboard.tiles[0]).toEqual({ id: 't1', queryId: 'q', presentation: { variant: 'alt' } });
+  });
+
+  it('clears the whole presentation field with presentation:null and replaces a non-object presentation wholesale', () => {
+    const cleared = run(seededPres(), { type: 'update-tile', tileId: 't1', patch: { presentation: null } }, [query('q')]);
+    expect(cleared.ok && cleared.dashboard.tiles[0]).toEqual({ id: 't1', queryId: 'q' });
+    const replaced = run(seededPres(), { type: 'update-tile', tileId: 't1', patch: { presentation: ['x'] as never } }, [query('q')]);
+    expect(replaced.ok && (replaced.dashboard.tiles[0] as { presentation: unknown }).presentation).toEqual(['x']);
+  });
+
   it('fails for a missing tile, a non-object patch, or a patch touching identity', () => {
     const missing = run(seeded(), { type: 'update-tile', tileId: 'z', patch: {} }, [query('q')]);
     expect(missing.ok).toBe(false);

@@ -104,6 +104,22 @@ describe('resolvePresentation', () => {
     if (!bad.ok) expect(has(bad.diagnostics, 'presentation-resolved-invalid-roles')).toBe(true);
   });
 
+  it('carries no resource on a structural failure for a tile without an id', () => {
+    const result = resolvePresentation({ query: makeQuery(), tile: { queryId: 'q', presentation: { override: { cfg: { x: null } } } } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(has(result.diagnostics, 'schema-required')).toBe(true);
+      expect(result.diagnostics.every((d) => d.resource === undefined)).toBe(true);
+    }
+  });
+
+  it('skips the result-column role check when the resolved panel has no cfg', () => {
+    const result = resolvePresentation({
+      query: makeQuery(undefined, {}), tile: tileFor(), resultColumns: [{ name: 'a', type: 'String' }],
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it('resolves an empty base panel and allows a patch to introduce a renderer type', () => {
     const emptyBase = resolvePresentation({ query: null, tile: null });
     expect(emptyBase.ok).toBe(true);
@@ -118,8 +134,9 @@ describe('resolvePresentation', () => {
 describe('resolveDashboardPresentations', () => {
   const filterQuery = { id: 'f', sql: "SELECT ['a'] c", specVersion: 1, spec: { dashboard: { role: 'filter' } } };
 
-  it('returns nothing for a non-object dashboard', () => {
+  it('returns nothing for a non-object dashboard or one without a tiles array', () => {
     expect(resolveDashboardPresentations({ dashboard: null, queries: [] })).toEqual([]);
+    expect(resolveDashboardPresentations({ dashboard: {}, queries: [] })).toEqual([]);
   });
 
   it('reports the diagnostics of each invalid panel-tile presentation', () => {

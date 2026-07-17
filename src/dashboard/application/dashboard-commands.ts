@@ -67,6 +67,23 @@ const missingTile = (tileId: string): WorkspaceDiagnostic =>
 const tileIndex = (tiles: unknown[], tileId: string): number =>
   tiles.findIndex((tile) => isObject(tile) && tile.id === tileId);
 
+/** One-level merge of an `update-tile` presentation patch onto the tile's
+ *  existing presentation. A non-object patch replaces the whole field; else
+ *  each patch sub-field replaces (or, when `null`, deletes) the same sub-field
+ *  on a clone of the existing presentation. Sub-field VALUES (notably
+ *  `override`, which is stored RFC 7396 patch data) are cloned verbatim — the
+ *  merge never recurses into them, so their nested `null`s survive. */
+function mergeTilePresentation(existing: unknown, patch: unknown): unknown {
+  if (!isObject(patch)) return cloneJson(patch);
+  const result: Record<string, unknown> = {};
+  if (isObject(existing)) for (const key of Object.keys(existing)) result[key] = cloneJson(existing[key]);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete result[key];
+    else result[key] = cloneJson(value);
+  }
+  return result;
+}
+
 /** Apply one command to an ISOLATED clone of `draft`, returning the candidate
  *  dashboard or command-level diagnostics. The input `draft` is never
  *  mutated. */
@@ -138,14 +155,19 @@ export function applyCommand(
         return failWith(diagnostic(['tiles', index], 'dashboard-command-invalid-patch',
           'Tile patch may not change tile id or queryId'));
       }
-      // A SHALLOW field patch: a `null` member deletes that tile field; any
-      // other member replaces it wholesale (cloned). Deliberately NOT a deep
-      // merge — `presentation.override` is itself stored RFC 7396 patch data,
-      // so a deep merge would consume its meaningful `null`s.
+      // A field patch on the tile: a top-level `null` member deletes that
+      // field; any other top-level member replaces it wholesale (cloned).
+      // `presentation` is the ONE exception — it is merged ONE LEVEL so a
+      // caller can set/clear `variant` and `override` independently without
+      // destroying the other: each sub-field is replaced wholesale (a `null`
+      // sub-field deletes it). Crucially the merge stops there — an `override`
+      // VALUE is stored verbatim (it is RFC 7396 patch data whose nested
+      // `null`s are meaningful and must NOT be consumed by a deeper merge).
       const patched = { ...(tiles[index] as Record<string, unknown>) };
       for (const [key, value] of Object.entries(patch)) {
-        if (value === null) delete patched[key];
-        else patched[key] = cloneJson(value);
+        if (value === null) { delete patched[key]; continue; }
+        if (key === 'presentation') { patched.presentation = mergeTilePresentation(patched.presentation, value); continue; }
+        patched[key] = cloneJson(value);
       }
       tiles[index] = patched;
       return { ok: true, dashboard, value: undefined };
