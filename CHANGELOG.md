@@ -108,6 +108,64 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   A new `check:arch` rule keeps `dashboard/application` off the Dashboard UI.
   Live Workbench wiring of the session/star UI lands with the phase-4 viewer.
 
+- **Dashboard read-only viewer runtime + normative `flow@1` layout** (#286,
+  phase 4 of #280). New pure/application modules, gated at the per-file
+  thresholds, all constructible and unit-tested with plain fakes — no Workbench,
+  no full `App`, no `AppState`, no editors:
+  - `dashboard/application/dashboard-viewer-session.ts` — the standalone
+    **`DashboardViewerSession`**: it takes an immutable `DashboardDocumentV1`
+    snapshot plus the workspace queries and runs the Dashboard end-to-end,
+    reading membership from **`dashboard.tiles[]`** (not `spec.favorite`) and
+    resolving every tile through the ONE shared `presentation-resolver`
+    (`resolveDashboardPresentations`/`resolvePresentation` — no copy). It owns
+    only runtime state — filter values/activation, per-tile results/errors/
+    progress, the resolved flow layout — published through one `state` signal a
+    renderer subscribes to; `start`/`refresh`/`refreshTile`/`setFilter`/
+    `cancelTile`/`destroy` plus `clearFilter`/`clearAllFilters`, with bounded
+    concurrency, per-tile `AbortController` cancellation, stale-wave generation
+    guards, and `destroy()` teardown. It depends only on narrow injected seams
+    (a query executor, a token-preflight connection, an optional layout
+    registry) declared locally, so it imports nothing from `src/application`,
+    `src/net`, `src/state.ts`, `src/ui`, or `src/editor`.
+  - **#235 resolved inside the execution planner**: panels whose declared params
+    cannot be affected by any filter **source** query run in PARALLEL with the
+    filter wave; panels a source-backed filter targets wait for the wave and see
+    the correct blanked/active values on the first pass. The overlap is computed
+    from the explicit `DashboardFilterDefinitionV1.parameter`/`targets` contract.
+  - **Filter usability semantics** (absorbing #188's kept scope): per-filter
+    clear that deactivates without discarding the last value (reactivation
+    restores it, one affected-panel wave), a coalesced clear-all resetting every
+    filter to its `defaultActive`/`defaultValue` in ONE wave, an
+    `activeFilterCount` counting active filter DEFINITIONS, and a per-filter
+    `blocking` reason (source-query error / required-and-unset / invalid value)
+    that is never silently hidden.
+  - `dashboard/layouts/flow-layout.ts` **extended** with the normative `flow@1`
+    render math (pure, 100%): `presetColumns`, `effectiveSpan`
+    (`min(storedSpan ?? 1, activeColumnCount)` — preset changes never rewrite
+    stored spans), `resolvePlacement` (defaults span 1 / medium), and
+    `computeFlowLayout` — deterministic row-major packing (no overlaps),
+    maximal-consecutive-KPI-run band grouping preserving #240, mobile
+    one-column normalization that never mutates persistence, and the order
+    equivalence `dashboard.tiles[] = DOM = keyboard = visual row-major =
+    print/export`.
+  - `dashboard/layouts/layout-registry.ts` — a compile-time-registered,
+    lazy-loadable **layout registry** (`DashboardLayoutRegistration` {id,
+    versions, load}), never arbitrary remote plugins, with the fallback
+    contract: a primary engine that cannot load falls back to a valid `flow@1`
+    fallback, and an unsupported primary without one fails closed.
+  - Accessible authoring (`moveTileEarlier`/`moveTileLater`/`setTileSpan`/
+    `setTileHeight`) is driven by the phase-3 `move-tile`/`update-placement`
+    commands; pointer drag (#153's reorder half) is an equivalent alternative,
+    never the only mechanism.
+  - A strengthened `check:arch` rule (plus a unit `dashboard-boundaries` test)
+    proves the Dashboard model/application layers — including the viewer session
+    — import no Workbench UI, `App`, `AppState`, editor, `src/application`, or
+    `src/net` module. This closes the analysis behind #235 and the reorder half
+    of #153 and dissolves #188 into the viewer's filter contract. Live DOM
+    integration (the viewer-driven render replacing `src/ui/dashboard.ts`'s
+    favorites path, the filter-bar affordances, and the a11y/drag controls) is
+    the remaining wiring step of this phase.
+
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
   temporary `App` delegates from Phases 2–4 are deleted — consumers read

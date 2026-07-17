@@ -15,7 +15,10 @@ import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { isSupportedLayout } from '../model/workspace-semantics.js';
 import { cloneJson } from '../../core/saved-query.js';
-import type { DashboardDocumentV1, FlowTilePlacementV1 } from '../../generated/json-schema.types.js';
+import { partitionKpiBands } from '../../core/dashboard.js';
+import type {
+  DashboardDocumentV1, FlowHeightV1, FlowPresetV1, FlowTilePlacementV1,
+} from '../../generated/json-schema.types.js';
 
 /** The flow@1 default placement (#280): span 1, medium height. */
 export const DEFAULT_FLOW_PLACEMENT: FlowTilePlacementV1 = { span: 1, height: 'medium' };
@@ -119,6 +122,162 @@ export const flowLayoutPlugin: DashboardLayoutPlugin = {
 export type LoadLayoutPluginResult =
   | { ok: true; plugin: DashboardLayoutPlugin }
   | { ok: false; diagnostics: WorkspaceDiagnostic[] };
+
+// ── Phase 4: the normative flow@1 render model (#280 "Normative flow@1
+// contract") ────────────────────────────────────────────────────────────────
+// Pure layout MATH shared by the viewer, the authoring preview, print/export,
+// and the tests — no DOM, no persistence. Exact pixels, gaps, and report width
+// stay renderer/theme concerns; this module owns column count, effective span,
+// deterministic row-major packing, KPI-band grouping, and mobile normalization.
+
+/** Desktop column count for each flow preset (#280 "Presets"). full-width and
+ *  report render one column (report centers a constrained-width column);
+ *  columns-2/columns-3 render two/three equal columns. */
+export const FLOW_PRESET_COLUMNS: Record<FlowPresetV1, number> = {
+  'full-width': 1, report: 1, 'columns-2': 2, 'columns-3': 3,
+};
+
+const FLOW_PRESETS = new Set<string>(Object.keys(FLOW_PRESET_COLUMNS));
+
+/** The mobile breakpoint (#280 "Responsive/mobile normalization"): at or below
+ *  this width the flow renders a single column with every effective span 1 and
+ *  the persisted preset/span/height untouched. */
+export const FLOW_MOBILE_BREAKPOINT = 768;
+
+/** The desktop column count for a preset; an unknown/absent preset falls back
+ *  to full-width (1). */
+export function presetColumns(preset: unknown): number {
+  return typeof preset === 'string' && Object.hasOwn(FLOW_PRESET_COLUMNS, preset)
+    ? FLOW_PRESET_COLUMNS[preset as FlowPresetV1] : 1;
+}
+
+/** The effective span for one tile (#280 "Preset changes"): `min(storedSpan ??
+ *  1, activeColumnCount)`. A stored span that is not 1|2|3 is treated as the
+ *  default 1; changing presets never rewrites the stored span. */
+export function effectiveSpan(storedSpan: unknown, activeColumnCount: number): number {
+  const span = VALID_SPANS.has(storedSpan) ? (storedSpan as number) : 1;
+  return Math.min(span, Math.max(1, activeColumnCount));
+}
+
+/** Merge one stored placement with `DEFAULT_FLOW_PLACEMENT` (#280 "Missing
+ *  placement defaults"): a missing/invalid span or height falls back to the
+ *  default, so the result is always a complete `{span, height}`. */
+export function resolvePlacement(placement: unknown): Required<FlowTilePlacementV1> {
+  const p = isObject(placement) ? placement : {};
+  return {
+    span: VALID_SPANS.has(p.span) ? (p.span as 1 | 2 | 3) : DEFAULT_FLOW_PLACEMENT.span!,
+    height: VALID_HEIGHTS.has(p.height) ? (p.height as FlowHeightV1) : DEFAULT_FLOW_PLACEMENT.height!,
+  };
+}
+
+/** The flow surface a layout document renders through (read-only, no mutation,
+ *  unlike `flowItemsHost`): the primary layout when it is flow@1, else a valid
+ *  flow@1 fallback, else `null`. */
+function flowSurface(layout: unknown): Record<string, unknown> | null {
+  if (!isObject(layout)) return null;
+  if (isSupportedLayout(layout.type, layout.version)) return layout;
+  const fallback = layout.fallback;
+  if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) return fallback;
+  return null;
+}
+
+/** One tile as placed for one render pass. `span` is already clamped to the
+ *  active column count (and 1 on mobile); `index` is the tile's position in the
+ *  visible-tiles input, which equals `dashboard.tiles[]` semantic order. */
+export interface FlowTileRender {
+  tileId: string;
+  index: number;
+  span: number;
+  height: FlowHeightV1;
+  isKpi: boolean;
+}
+
+/** One packed flow row: an ordinary run of tiles filling the active columns, or
+ *  a KPI band that starts its own full-width row (#280 "KPI bands"). */
+export interface FlowRow {
+  kind: 'tiles' | 'kpi-band';
+  columns: number;
+  tiles: FlowTileRender[];
+}
+
+/** The computed flow render model — enough for a renderer to lay tiles out and
+ *  for tests to assert the order equivalence, with no DOM involved. */
+export interface FlowLayoutModel {
+  preset: FlowPresetV1;
+  /** Effective columns: the preset's desktop columns, or 1 on mobile. */
+  columns: number;
+  mobile: boolean;
+  rows: FlowRow[];
+  /** Visible tile IDs in semantic order — equals DOM = keyboard traversal =
+   *  visual row-major = print/export order (#280 order equivalence). */
+  order: string[];
+}
+
+/** One visible tile the flow lays out, in `dashboard.tiles[]` semantic order.
+ *  `isKpi` marks an explicitly-configured KPI panel (band member). */
+export interface FlowVisibleTile {
+  id: string;
+  isKpi?: boolean;
+}
+
+export interface ComputeFlowLayoutInput {
+  tiles: readonly FlowVisibleTile[];
+  layout: unknown;
+  /** True at/below `FLOW_MOBILE_BREAKPOINT` — one column, every span 1, order
+   *  unchanged, persistence untouched. */
+  mobile?: boolean;
+}
+
+/**
+ * Compute the deterministic flow render model (#280 "Packing and collision
+ * rules", "KPI bands", "Responsive/mobile normalization"). Row-major packing:
+ * read the visible tiles in `dashboard.tiles[]` order, resolve each effective
+ * span, place it in the current row when it fits, else start the next row —
+ * tiles never overlap. A maximal consecutive run of KPI tiles becomes one
+ * full-width band row that occupies all active columns; the members keep
+ * semantic order. Mobile forces one column and every span to 1 WITHOUT
+ * touching the persisted preset/span/height. Pure and non-mutating.
+ */
+export function computeFlowLayout(input: ComputeFlowLayoutInput): FlowLayoutModel {
+  const { tiles, layout, mobile = false } = input;
+  const surface = flowSurface(layout);
+  const rawPreset = surface && typeof surface.preset === 'string' ? surface.preset : undefined;
+  const preset: FlowPresetV1 = rawPreset && FLOW_PRESETS.has(rawPreset) ? rawPreset as FlowPresetV1 : 'full-width';
+  const items = surface && isObject(surface.items) ? surface.items as Record<string, unknown> : {};
+  const columns = mobile ? 1 : presetColumns(preset);
+
+  const renders: FlowTileRender[] = tiles.map((tile, index) => {
+    const placement = resolvePlacement(items[tile.id]);
+    return {
+      tileId: tile.id, index, isKpi: !!tile.isKpi, height: placement.height,
+      span: mobile ? 1 : effectiveSpan(placement.span, columns),
+    };
+  });
+
+  // Reuse the #240 consecutive-KPI-run partition, then row-pack the ordinary
+  // tiles between bands. A band flushes the current tile row and starts fresh.
+  const rows: FlowRow[] = [];
+  let current: FlowRow | null = null;
+  let remaining = 0;
+  for (const item of partitionKpiBands(tiles.map((t) => !!t.isKpi))) {
+    if (item.kind === 'kpi-band') {
+      current = null;
+      remaining = 0;
+      rows.push({ kind: 'kpi-band', columns, tiles: item.indices.map((i) => renders[i]) });
+      continue;
+    }
+    const render = renders[item.index];
+    if (!current || remaining < render.span) {
+      current = { kind: 'tiles', columns, tiles: [] };
+      rows.push(current);
+      remaining = columns;
+    }
+    current.tiles.push(render);
+    remaining -= render.span;
+  }
+
+  return { preset, columns, mobile, rows, order: tiles.map((tile) => tile.id) };
+}
 
 /** Resolve the active layout plugin for one layout document. flow@1 primary →
  *  the flow plugin; an unsupported primary WITH a valid flow@1 fallback → the
