@@ -96,10 +96,6 @@ export interface ViewerFilterState {
   status: ViewerFilterStatus;
   /** Curated options from the filter's source query, when it has one. */
   options: FilterHelperOption[] | null;
-  /** A human reason this filter blocks a target panel (invalid value,
-   *  required-and-unset, or source-query error) — never silently hidden
-   *  (#188). `null` when the filter is not blocking. */
-  blocking: string | null;
 }
 
 export interface DashboardViewState {
@@ -321,7 +317,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const active = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
     const state: ViewerFilterState = {
       id: def.id, parameter: def.parameter, label: def.label || def.parameter,
-      active, value: def.defaultValue ?? '', status: 'idle', options: null, blocking: null,
+      active, value: def.defaultValue ?? '', status: 'idle', options: null,
     };
     return { def, source, gen: 0, abortController: null, provider: null, state };
   });
@@ -559,19 +555,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     applyFilterProviders(providers);
   }
 
-  // Recompute per-filter blocking (#188 never-silently-hide): a source error,
-  // a required-and-unset param, or an invalid value.
-  function recomputeBlocking(): void {
-    const prepared = prepareBatch('execute');
-    for (const filter of filters) {
-      const field = prepared.fields[filter.def.parameter];
-      if (filter.state.status === 'error') { filter.state.blocking = 'Filter source query failed.'; continue; }
-      if (!field) { filter.state.blocking = null; continue; }
-      if (field.state === 'missing') filter.state.blocking = 'Required filter value is not set.';
-      else if (field.state === 'invalid') filter.state.blocking = field.reason || 'Filter value is not valid.';
-      else filter.state.blocking = null;
-    }
-  }
 
   // ── Waves ─────────────────────────────────────────────────────────────────
 
@@ -605,7 +588,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const filterWave = runFilterWave();
     await filterWave;
     if (destroyed) { await unaffectedWave; return; }
-    recomputeBlocking();
     // Affected tiles run AFTER the filter wave, with the merged/blanked values.
     const secondBatch = sourcesById(prepareBatch('execute').sources);
     const affectedWave = runPool(affected, VIEWER_TILE_CONCURRENCY,
@@ -634,7 +616,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       if (!field) continue;
       for (const sourceId of field.requiredIn.concat(field.optionalIn)) affectedIds.add(sourceId);
     }
-    recomputeBlocking();
     const targets = runnableTiles().filter((runtime) => affectedIds.has(runtime.tile.id));
     const generations = new Map<string, number>(targets.map((runtime) => [runtime.tile.id, supersede(runtime)]));
     const prepared = sourcesById(prepareBatch('execute').sources);

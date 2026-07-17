@@ -261,7 +261,7 @@ describe('filters and the #235 execution planner', () => {
     expect(session.state.value.filters[0].options).toEqual([{ value: 'V', label: 'V' }]);
   });
 
-  it('marks a filter whose source SQL is invalid as an error and blocking', async () => {
+  it('marks a filter whose source SQL is invalid as an error', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const session = createDashboardViewerSession(makeDeps({
       document: doc({
@@ -273,7 +273,23 @@ describe('filters and the #235 execution planner', () => {
     }));
     await session.start();
     expect(session.state.value.filters[0].status).toBe('error');
-    expect(session.state.value.filters[0].blocking).toContain('source');
+  });
+
+  it('marks a filter whose source query returns a runtime error as an error', async () => {
+    const { exec } = makeExec((sql) => (sql.includes('badsrc') ? { error: 'src down' } : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t', 'qt')],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'srcq' }],
+      }),
+      exec,
+      queries: [
+        query('qt', 'SELECT {p:String} AS n'),
+        query('srcq', 'SELECT 1 AS p /* badsrc */', { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters[0].status).toBe('error');
   });
 
   it('blanks a curated-but-inactive parameter on the next wave', async () => {
@@ -359,32 +375,6 @@ describe('filters and the #235 execution planner', () => {
     expect(calls.length).toBe(base2);
   });
 
-  it('never silently hides a blocking filter (source error, required-unset, invalid, ok)', async () => {
-    const { exec } = makeExec((sql) => (sql.includes('badsrc') ? { error: 'src down' } : { columns: [{ name: 'n' }], rows: [[1]] }));
-    const session = createDashboardViewerSession(makeDeps({
-      document: doc({
-        tiles: [tile('t', 'qt')],
-        filters: [
-          { id: 'src', parameter: 'p', sourceQueryId: 'srcq' }, // source error
-          { id: 'req', parameter: 'r', defaultActive: true, defaultValue: '' }, // required-unset (declared, blank)
-          { id: 'inv', parameter: 'num', defaultActive: true, defaultValue: 'notnum' }, // invalid value
-          { id: 'ok', parameter: 'ok', defaultActive: true, defaultValue: '5' }, // ok
-          { id: 'undeclared', parameter: 'zzz', sourceQueryId: 'srcq' }, // not declared anywhere
-        ],
-      }),
-      exec,
-      queries: [
-        query('qt', 'SELECT {p:String}, {r:String}, {num:UInt8}, {ok:UInt8}'),
-        query('srcq', 'SELECT 1 AS p /* badsrc */', { dashboard: { role: 'filter' } }),
-      ],
-    }));
-    await session.start();
-    const blocking = Object.fromEntries(session.state.value.filters.map((f) => [f.id, f.blocking]));
-    expect(blocking.src).toContain('source');
-    expect(blocking.req).toContain('Required');
-    expect(blocking.inv).toBeTruthy();
-    expect(blocking.ok).toBeNull();
-  });
 });
 
 describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {

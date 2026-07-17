@@ -118,15 +118,6 @@ export function filterActiveCount(count: number): HTMLElement {
   return node;
 }
 
-/** A visible blocking badge (#188): a filter whose state blocks a target panel
- *  (invalid value / required-and-unset / source-query error) must never be
- *  silently hidden — this badge states why. */
-export function filterBlockingBadge(reason: string): HTMLElement {
-  return h('span', {
-    class: 'dash-filter-blocking', role: 'alert', title: reason,
-  }, reason);
-}
-
 // Idle time after the last keystroke in a filter field before it triggers a
 // re-run (#149 D3) — longer than the FROM-scope column-load debounce
 // (codemirror-adapter.js) since this fires a real query, not a metadata fetch.

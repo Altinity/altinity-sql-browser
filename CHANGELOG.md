@@ -135,10 +135,10 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   - **Filter usability semantics** (absorbing #188's kept scope): per-filter
     clear that deactivates without discarding the last value (reactivation
     restores it, one affected-panel wave), a coalesced clear-all resetting every
-    filter to its `defaultActive`/`defaultValue` in ONE wave, an
-    `activeFilterCount` counting active filter DEFINITIONS, and a per-filter
-    `blocking` reason (source-query error / required-and-unset / invalid value)
-    that is never silently hidden.
+    filter to its `defaultActive`/`defaultValue` in ONE wave, and an
+    `activeFilterCount` counting active filter DEFINITIONS. (The per-filter
+    "required/invalid" blocking badge was dropped as noise by owner decision —
+    an unfilled required filter just leaves its target tiles unfilled.)
   - `dashboard/layouts/flow-layout.ts` **extended** with the normative `flow@1`
     render math (pure, 100%): `presetColumns`, `effectiveSpan`
     (`min(storedSpan ?? 1, activeColumnCount)` — preset changes never rewrite
@@ -181,8 +181,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     on commit (which owns activation). Recents flow through the shim from the
     real app; the viewer never imports global `AppState` (check-boundaries keeps
     the phase-4 forbidden list intact). Toolbar affordances stay: a coalesced
-    clear-all (one wave), an "N active" count, and a never-hidden blocking badge
-    (invalid / required-and-unset / source-query error).
+    clear-all (one wave) and an "N active" count. (The per-filter blocking badge
+    was dropped as noise by owner decision.)
   - **Tile reordering is pointer DRAG ONLY** (owner override, final #286 scope).
     A drop persists the new `dashboard.tiles[]` order through the `move-tile`
     command. Note: #280's accessibility section says drag should not be the only

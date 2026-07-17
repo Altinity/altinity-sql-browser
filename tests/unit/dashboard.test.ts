@@ -613,7 +613,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
   });
 
-  it('never silently hides a blocking filter (required-and-unset carries a visible badge)', async () => {
+  it('renders no per-filter "required/invalid" badge (owner decision — dropped as noise)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE x = {p:String}')],
@@ -621,7 +621,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    expect(qs(app.root, '.dash-filter-blocking')?.textContent).toContain('p');
+    expect(qs(app.root, '.dash-filter-blocking')).toBeNull();
     expect((qs(app.root, '.dash-filter-count') as HTMLElement).style.display).toBe('none');
     expect((qs(app.root, '.dash-filter-clear-all') as HTMLElement).style.display).toBe('none');
   });

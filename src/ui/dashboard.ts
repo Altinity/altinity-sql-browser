@@ -42,7 +42,7 @@ import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeli
 import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import { buildFilterBar, filterClearAllButton, filterActiveCount, filterBlockingBadge } from './filter-bar.js';
+import { buildFilterBar, filterClearAllButton, filterActiveCount } from './filter-bar.js';
 import type { FilterBarApp } from './filter-bar.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
@@ -462,11 +462,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     filterCountNode.replaceChildren(filterActiveCount(sview.activeFilterCount));
     tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
     empty.style.display = sview.tiles.length ? 'none' : '';
-    // Never silently hide a blocking filter: a visible badge per blocking filter.
-    const blocking = sview.filters.filter((f) => f.blocking).map((f) => filterBlockingBadge(`${f.label}: ${f.blocking}`));
+    // Genuine dashboard-config diagnostics only (a tile whose presentation
+    // could not resolve, etc.). Per-filter "required/invalid" badges were
+    // dropped as noise (owner decision) — an unfilled required filter simply
+    // leaves its target tiles in their normal unfilled state.
     filterDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
-      ...blocking,
     );
     reconcileGrid(sview);
     refreshBtn.disabled = sview.running;
