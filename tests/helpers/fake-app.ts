@@ -31,7 +31,10 @@ import type { ChartJsConfigResult } from '../../src/core/chart-data.js';
 import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 import type { ConnectionSession } from '../../src/application/connection-session.js';
+import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
+import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
+import type { AssembledReference } from '../../src/core/completions.js';
 
 // Production invariant (#276 Phase 2): `app.chCtx` and `app.conn.chCtx` are
 // THE SAME live object (app.ts aliases `conn.chCtx`) — the defaults + the
@@ -114,6 +117,29 @@ const workbenchDefaults: WorkbenchSession = {
   destroy: vi.fn(),
 };
 
+// A minimal `SchemaCatalogService` stub (#276 Phase 4A) — no render-module
+// fixture exercises the service directly (that's schema-catalog-service.test.ts's
+// job); `App`'s own top-level `refData`/`completions`/`docCache`/`entityDoc`/
+// `loadVersion`/`loadSchema`/`loadReference` stubs below are independent of
+// this (same dual pattern as `conn` vs. the top-level auth delegates) — this
+// just satisfies the `App.catalog` contract. `refData`/`completions` use the
+// real built-in fallback (`assembleReferenceData(null)`/`buildCompletions`)
+// rather than a cast, so they stay structurally real `AssembledReference`/
+// `CompletionItem[]` values.
+const catalogRefDataDefault: AssembledReference = assembleReferenceData(null);
+const catalogDefaults: SchemaCatalogService = {
+  loadVersion: vi.fn(async () => {}),
+  loadSchema: vi.fn(async () => {}),
+  loadColumns: vi.fn(async () => {}),
+  loadReference: vi.fn(async () => {}),
+  rebuildCompletions: vi.fn(),
+  entityDoc: vi.fn(async () => null),
+  refData: catalogRefDataDefault,
+  completions: buildCompletions(catalogRefDataDefault, null),
+  docCache: new Map(),
+  invalidate: vi.fn(),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -129,6 +155,7 @@ const appDefaults: App = {
   root: null,
   document,
   conn: connDefaults,
+  catalog: catalogDefaults,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),

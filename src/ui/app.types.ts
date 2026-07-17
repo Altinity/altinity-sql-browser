@@ -16,6 +16,7 @@ import type { QueryTab as Tab, AppState as State, SpecValidationService } from '
 import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
+import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
@@ -266,6 +267,13 @@ export interface App {
   editingLibrary: boolean;
 
   // Data / schema loaders.
+  /** The server-metadata/reference lifecycle service (#276 Phase 4A) —
+   *  `src/application/schema-catalog-service.ts`, constructible without
+   *  App/AppState/DOM. The members below (`loadVersion`/`loadSchema`/
+   *  `loadReference`/`rebuildCompletions`/`entityDoc`/`docCache`/`refData`/
+   *  `completions`) are thin delegates to it, kept so no consumer needs to
+   *  change (mirrors `exec`/`conn`/`workbench`'s own extraction pattern). */
+  catalog: SchemaCatalogService;
   loadVersion(): Promise<void>;
   loadSchema(): Promise<void>;
   loadReference(): Promise<void>;
