@@ -13,8 +13,8 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
-import type { StreamResult } from '../core/stream.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
+import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
@@ -277,10 +277,11 @@ export interface App {
   now(): number;
   elapsedMs(): number;
   tickElapsed(): void;
-  runReadInto(
-    result: StreamResult,
-    opts: { sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal; queryId?: string; onChunk?: (chunk: unknown) => void },
-  ): Promise<StreamResult>;
+  /** The shared request/stream/normalize + multiquery-script transport
+   *  service (#276 Phase 1) — `src/application/query-execution-service.ts`,
+   *  constructible without App/AppState/DOM. `src/ui/**` may depend on
+   *  `src/application/**`, never the reverse. */
+  exec: QueryExecutionService;
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   renderVarStrip(): void;
   setExportBtn(exporting: boolean): void;

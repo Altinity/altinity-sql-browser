@@ -95,7 +95,7 @@ describe('chUrl', () => {
 });
 
 // (queryDashboardTile was retired in #193 — dashboard tiles now stream through
-// runQuery via the shared app.runReadInto seam, carrying readonly:2 /
+// runQuery via the shared app.exec.executeRead seam (#276), carrying readonly:2 /
 // max_result_bytes / param_* in `params` and capping with resultRowLimit. Its
 // URL-shaping is covered by runQuery's tests below; the dashboard's use of the
 // seam is covered in dashboard.test.js.)

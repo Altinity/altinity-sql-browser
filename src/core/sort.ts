@@ -1,6 +1,13 @@
 // Pure result-table sorting. Numeric when both cells parse as numbers,
 // lexicographic otherwise. Returns a new array; never mutates the input.
 
+/** The global results-table sort: a zero-based column index (grid-render.js
+ * sorts positionally), or `col: null` for the natural row order. */
+export interface ResultSort {
+  col: number | null;
+  dir: 'asc' | 'desc';
+}
+
 /** True when `v` is a string that is wholly a number literal. */
 function looksNumeric(v: unknown): boolean {
   const s = String(v);

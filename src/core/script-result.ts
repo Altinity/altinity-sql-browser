@@ -6,6 +6,7 @@
 // of the first row in column 2; clicking it opens the full table in a side pane.
 
 import { truncate } from './format.js';
+import type { ResultSort } from './sort.js';
 
 // The display cap for a script-mode SELECT. The runner asks the server for
 // SELECT_ROW_CAP + 1 rows (so it can tell a result was truncated — at exactly
@@ -60,6 +61,25 @@ export function parseSelectResult(rawText: unknown, cap: number = SELECT_ROW_CAP
   const data = json.data || [];
   return { columns, rows: data.slice(0, cap), truncated: data.length > cap };
 }
+
+/** One statement's outcome in a multiquery script run (#83) — one entry of
+ *  `ScriptResult.script`. `sql`/`ms` ride on every status; the rest is
+ *  per-status (a 'rows' entry is the only one carrying real data). */
+export type ScriptEntry = { sql?: string; ms?: number } & (
+  | { status: 'ok' }
+  | { status: 'error'; error?: string }
+  | {
+      status: 'rows';
+      columns: { name: string; type: string }[];
+      rows: unknown[][];
+      truncated?: boolean;
+      preview?: string;
+      /** Local sort/width state, lazily attached by openRowsViewer — persists
+       *  for the life of that statement's open rows pane. */
+      viewerSort?: ResultSort;
+      viewerWidths?: Record<string, number>;
+    }
+);
 
 /**
  * A compact, comma-joined preview of the first row's values (the normal case is

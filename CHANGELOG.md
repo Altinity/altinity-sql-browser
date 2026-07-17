@@ -9,6 +9,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **Query execution extracted into an application service** (#276 Phases 0–1,
+  the first step of the app.ts → services refactor). The shared
+  request/stream/normalize core (`runReadInto`) and the multiquery-script
+  transport loop (per-statement retry/classification, stop-on-first-failure,
+  per-attempt `query_id` publication for Cancel's `KILL QUERY`) now live in
+  `src/application/query-execution-service.ts` — constructible without
+  `App`/`AppState`/DOM, with every side effect (ch-client, clock, uid, timer)
+  injected. `app.runReadInto` is deleted; the workbench `run()`/`runScript()`,
+  dashboard tiles, and the detached Data view all execute through
+  `app.exec.executeRead`/`executeScript`, and `cancel()` uses the stateless
+  `app.exec.kill(queryId)`. Behavior, wire format, retry rules, and error
+  messages are byte-identical. A new architecture guard
+  (`build/check-boundaries.mjs`, wired into `pretest` as `check:arch`) enforces
+  the day-1 boundary rule: `src/application/**` must not import `src/ui/**` or
+  `src/editor/**`. Type homes tightened along the way: `ResultSort` moved to
+  `core/sort.ts` and `ScriptEntry` to `core/script-result.ts` (old import paths
+  re-exported), and the `filterExecution`/`panelExecution` params bags are now
+  the strict wire shape (`Record<string, string | number>`), deleting the
+  narrowing casts at every execution call site.
+
 ### Added
 - **Bundle-size report on every PR** (#275). `npm run size-report` builds the
   production artifact once (through the same `buildArtifact` the release uses, so

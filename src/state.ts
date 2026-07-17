@@ -16,6 +16,7 @@ import {
   loadStr as loadStrUntyped, saveStr as saveStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
+import type { ResultSort } from './core/sort.js';
 import {
   defaultSpecValidationService as defaultSpecValidationServiceUntyped,
   evaluateSpecText as evaluateSpecTextUntyped,
@@ -154,8 +155,9 @@ export interface QueryTab {
    *  adapter's dynamic sources. */
   lastSuccessfulResultColumns: { name: string; type?: string }[];
   savedId: string | null;
-  /** Set post-construction (app.js) once a query has run on this tab. */
-  chSession?: unknown;
+  /** ClickHouse HTTP session id (lazily minted `sess-…` uid) — set
+   *  post-construction (app.js) once a query has run on this tab. */
+  chSession?: string;
 }
 
 /** One executed-query history entry (most-recent first, capped at 50). */
@@ -168,12 +170,10 @@ export interface HistoryEntry {
   ms: number;
 }
 
-/** The global results-table sort: a zero-based column index (grid-render.js
- * sorts positionally), or `col: null` for the natural row order. */
-export interface ResultSort {
-  col: number | null;
-  dir: 'asc' | 'desc';
-}
+// The global results-table sort — moved to core/sort.ts (#276 Phase 1) so
+// the pure sort module owns its own type; re-exported here so every existing
+// importer of ResultSort-from-state keeps compiling unchanged.
+export type { ResultSort } from './core/sort.js';
 
 /** One recorded recent value for a variable (core/recent-values.js). */
 export interface RecentValueEntry {

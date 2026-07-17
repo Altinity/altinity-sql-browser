@@ -4,7 +4,7 @@
 // re-runs the data, it does not re-scan the Library). Favorites are
 // PARTITIONED BEFORE EXECUTION (#166): a text panel renders immediately with
 // zero queries; everything else streams its SQL read-only through the shared
-// `app.runReadInto` seam (#193 — full streaming transport, server-side row cap,
+// `app.exec.executeRead` seam (#193/#276 — full streaming transport, server-side row cap,
 // bounded client memory, and real per-tile AbortController cancellation, the
 // same path the workbench run() and the detached Data view use) and renders
 // through the shared panel registry (panels.js) — an explicit saved
@@ -270,7 +270,7 @@ function tileFooter(meta: TileResultMeta): HTMLElement[] {
 }
 
 /**
- * Adapt a streamed `result` (from `app.runReadInto`) to the tile result shape
+ * Adapt a streamed `result` (from `app.exec.executeRead`) to the tile result shape
  * `applyTileResult`/`tileFooter` expect (#193). `ms` is wall-clock (start→finish,
  * like run()'s finally), `bytes` is the streamed progress byte count, and
  * `truncated` reflects the client-side cap (`result.capped` — set once a row
@@ -494,7 +494,7 @@ function applyTileResult(app: App, q: SavedQueryV2, slot: TileSlot, r: FavoriteS
 // wrap; see param-validate.js), a per-source error (e.g. a value that can't
 // serialize for this tile's declaration) shows an error card — blocking only
 // this source, never its siblings — otherwise stream the SQL read-only through
-// the shared `app.runReadInto` seam (#193) and classify ONCE on completion.
+// the shared `app.exec.executeRead` seam (#193/#276) and classify ONCE on completion.
 // `onSettled()` fires after every transition (unfilled, errored or fetched) so
 // the caller can recompute the live "N not shown" count.
 //
@@ -556,7 +556,7 @@ async function runFavoriteSource<S extends DashSlot>(
   // `!`: format is always concrete here — the defaults above pin 'Table' and
   // panelExecution's owned KPI arm overrides it with 'KPI'.
   const result = newResult(execution.format!, hooks.rowCap);
-  await app.runReadInto(result, {
+  await app.exec.executeRead(result, {
     sql: execSql,
     format: execution.format,
     rowLimit: execution.rowLimit,
@@ -804,7 +804,7 @@ export function renderDashboard(app: App): Promise<void> {
     const result = newResult(execution.format, execution.rowLimit);
     const ac = new AbortController();
     slot.abortController = ac;
-    await app.runReadInto(result, {
+    await app.exec.executeRead(result, {
       sql: query.sql, format: execution.format, rowLimit: execution.rowLimit,
       params: execution.params, signal: ac.signal,
     });
@@ -938,7 +938,7 @@ export function renderDashboard(app: App): Promise<void> {
   async function runAffected(name: string): Promise<void[] | undefined> {
     if (!slots.length) return undefined;
     // Match full Refresh: ONE token preflight before the wave (#193 design
-    // req 2). `runReadInto` leaves token freshness to the caller, so without
+    // req 2). `exec.executeRead` leaves token freshness to the caller, so without
     // this each affected tile would independently race a rotating-token refresh
     // through authedFetch; a failed preflight issues no requests and drives
     // sign-out exactly once, exactly like Refresh.
