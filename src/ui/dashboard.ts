@@ -4,20 +4,26 @@
 // (via `app.loadDashboardWorkspace()` — the phase-2 repository, migrating the
 // legacy favorites/layout keys once when no aggregate exists), constructs a
 // standalone `DashboardViewerSession` over that document + the workspace
-// queries, and renders the DOM from the session's `state` signal. The
-// heavy runtime — presentation resolution, the filter/tile execution waves
-// (with #235 parallelism), bounded concurrency, per-tile cancellation, and the
+// queries, and renders the DOM from the session's `state` signal. The heavy
+// runtime — presentation resolution, the filter/tile execution waves (with
+// #235 parallelism), bounded concurrency, per-tile cancellation, and the
 // normative `flow@1` layout math — all live in the session and its pure
-// dependencies (each 100%-covered); this module is the render/interaction
-// shell over them.
+// dependencies; this module is the render/interaction shell over them.
 //
-// Structural edits (reorder, span/height, layout preset) go through the
-// phase-3 authoring commands (`applyCommand` — `move-tile`/`update-placement`/
-// `change-layout`), are mirrored into the viewer with `syncDocument` (no
-// re-execution), and best-effort persisted through the repository. Accessible
-// keyboard controls are the first-class reorder/resize mechanism; pointer drag
-// is an equivalent alternative. The `spec.favorite` dual-WRITE stays until GA
-// (the star action in the Workbench); only the READ is flipped here.
+// The filter bar is the SHARED `buildFilterBar` (the same rich field family the
+// Workbench var-strip and detached view use — relative-time presets, recents,
+// enum + curated comboboxes), driven over the viewer's filter model: a draft
+// value/active bag the bar mutates, `session.getFilterField` for live #170
+// validation, and `session.applyFilter` on commit (which owns activation).
+// Recents come from the real app (a cross-surface concern) through the shim —
+// the viewer never touches global AppState (check-boundaries keeps it that way).
+//
+// Tile reordering is pointer DRAG ONLY (owner override, #286 final scope — the
+// per-tile keyboard Move controls and the in-tile span/height buttons were
+// removed; span/height are tuned in the Spec editor). A drag persists the new
+// `dashboard.tiles[]` order through the `move-tile` authoring command. The
+// layout preset switcher drives `change-layout`. The `spec.favorite` dual-WRITE
+// stays until GA (the Workbench star); only the READ is flipped here.
 //
 // check-boundaries.mjs keeps this file off `src/ui/app.ts`; everything it needs
 // is injected on the `app` controller.
@@ -33,11 +39,11 @@ import {
   formatBytes as formatBytesUntyped, formatRows as formatRowsUntyped,
 } from '../core/format.js';
 import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeline.js';
+import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import {
-  filterClearButton, filterClearAllButton, filterActiveCount, filterBlockingBadge,
-} from './filter-bar.js';
+import { buildFilterBar, filterClearAllButton, filterActiveCount, filterBlockingBadge } from './filter-bar.js';
+import type { FilterBarApp } from './filter-bar.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardViewerSession, DashboardViewState, ViewerTileState, ViewerFilterState,
@@ -47,8 +53,7 @@ import { flowLayoutPlugin } from '../dashboard/layouts/flow-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import type {
-  DashboardDocumentV1, DashboardFilterDefinitionV1, FlowPresetV1, FlowHeightV1,
-  SavedQueryV2, StoredWorkspaceV1,
+  DashboardDocumentV1, DashboardFilterDefinitionV1, FlowPresetV1, SavedQueryV2, StoredWorkspaceV1,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom } from './app.types.js';
 import type { AppState } from '../state.js';
@@ -83,14 +88,13 @@ export interface DashboardApp {
   exec: Pick<QueryExecutionService, 'executeRead'>;
   now(): number;
   wallNow(): number;
-  params: Pick<WorkbenchParameterSession, 'recordBoundParams'>;
+  params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
   loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
 }
 
-const FLOW_HEIGHTS: FlowHeightV1[] = ['compact', 'medium', 'large'];
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === 'object' && !Array.isArray(value);
+const valueString = (value: unknown): string =>
+  (typeof value === 'string' ? value : value == null ? '' : String(value));
 
 /**
  * Build a segmented control (the flow preset switcher). `options` are
@@ -133,10 +137,6 @@ interface TileEl {
   card: HTMLElement;
   body: HTMLElement;
   foot: HTMLElement;
-  moveEarlier: HTMLButtonElement;
-  moveLater: HTMLButtonElement;
-  spanSel: HTMLSelectElement;
-  heightSel: HTMLSelectElement;
   panelState: { key: string;[k: string]: unknown } | null;
   destroy: (() => void) | null;
   paintedRows: unknown[][] | null;
@@ -237,104 +237,78 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   'Dashboard layout');
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, h('span', { class: 'dash-seg-label' }, 'Layout'), presetSeg.el);
 
-  // ── Filter bar (viewer-driven) ────────────────────────────────────────────
+  // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
   const filterHost = h('div', { class: 'dash-filter-host' });
   const filterCountNode = h('span', { class: 'dash-filter-count-host' });
   const clearAllNode = h('span', { class: 'dash-filter-clear-all-host' });
-  const filterFields = new Map<string, { input: HTMLInputElement | HTMLSelectElement; badgeHost: HTMLElement }>();
+  // The draft value/active bag the shared filter bar reads + mutates; re-seeded
+  // from committed filter state on each (re)build. Recents come from the real
+  // app — the viewer never touches AppState.
+  const draftValues: Record<string, string> = {};
+  const draftActive: Record<string, boolean> = {};
+  const filterBarApp: FilterBarApp = {
+    document: doc,
+    state: { varValues: draftValues, filterActive: draftActive, varRecent: state.varRecent },
+    params: {
+      saveVarValues: () => {},
+      saveFilterActive: () => {},
+      clearVarRecent: (name: string) => app.params.clearVarRecent(name),
+    },
+    wallNow: () => app.wallNow(),
+  };
+  let filterBarDispose: (() => void) | null = null;
 
-  function buildFilterBar(initial: ViewerFilterState[]): void {
-    filterFields.clear();
-    const fields = initial.map((f) => {
-      const badgeHost = h('span', { class: 'dash-filter-badge-host' });
-      let input: HTMLInputElement | HTMLSelectElement;
-      if (f.options && f.options.length) {
-        const sel = h('select', { class: 'var-input' },
-          h('option', { value: '' }, 'All'),
-          ...f.options.map((o) => h('option', { value: o.value }, o.label)));
-        sel.value = typeof f.value === 'string' ? f.value : '';
-        sel.onchange = () => { session.setFilter(f.id, sel.value); };
-        input = sel;
-      } else {
-        const inp = h('input', { class: 'var-input', type: 'text', 'aria-label': f.label });
-        inp.value = typeof f.value === 'string' ? f.value : '';
-        inp.onchange = () => { session.setFilter(f.id, inp.value); };
-        inp.onkeydown = (event: KeyboardEvent) => { if (event.key === 'Enter') session.setFilter(f.id, inp.value); };
-        input = inp;
-      }
-      const clear = filterClearButton({ label: f.label, onClear: () => session.clearFilter(f.id) });
-      filterFields.set(f.id, { input, badgeHost });
-      return h('label', { class: 'var-field' }, h('span', { class: 'var-name' }, f.label), input, clear, badgeHost);
-    });
-    filterHost.replaceChildren(...(fields.length ? [...fields, clearAllNode, filterCountNode] : []));
-  }
-
-  function updateFilterBar(sview: DashboardViewState): void {
-    // A text field upgrades to a select once its filter-source options land.
-    const needsRebuild = sview.filters.some((f) => {
-      const field = filterFields.get(f.id);
-      return !!field && !!f.options && f.options.length > 0 && field.input.tagName !== 'SELECT';
-    });
-    if (needsRebuild) buildFilterBar(sview.filters);
+  function rebuildFilterBar(sview: DashboardViewState): void {
+    filterBarDispose?.();
+    const idByParam = new Map<string, string>();
+    const curatedFields: Record<string, { options: ViewerFilterState['options'] }> = {};
     for (const f of sview.filters) {
-      const field = filterFields.get(f.id);
-      if (field) field.badgeHost.replaceChildren(...(f.blocking ? [filterBlockingBadge(f.blocking)] : []));
+      draftValues[f.parameter] = valueString(f.value);
+      draftActive[f.parameter] = f.active;
+      idByParam.set(f.parameter, f.id);
+      if (f.options && f.options.length) curatedFields[f.parameter] = { options: f.options };
     }
-    clearAllNode.replaceChildren(filterClearAllButton({ active: sview.activeFilterCount > 0, onClearAll: () => session.clearAllFilters() }));
-    filterCountNode.replaceChildren(filterActiveCount(sview.activeFilterCount));
+    const onCommit = (name: string): void => {
+      const id = idByParam.get(name);
+      if (id) session.applyFilter(id, draftValues[name] ?? '', !!draftActive[name]);
+    };
+    const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
+    const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc });
+    filterHost.replaceChildren(bar.el, clearAllNode, filterCountNode);
+    filterBarDispose = bar.dispose;
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
-  const liveRegion = h('div', {
-    class: 'dash-live', role: 'status', 'aria-live': 'polite',
-    style: { position: 'absolute', width: '1px', height: '1px', overflow: 'hidden' },
-  });
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
     'No tiles yet — star a query in the Library to add it to the dashboard.');
 
-  // ── Structural commands (reorder / resize / preset) ───────────────────────
+  // ── Structural commands (reorder via drag, preset) ────────────────────────
+  // move-tile / update-placement / change-layout are the phase-3 authoring
+  // commands; the dashboard UI drives only move-tile (drag) and change-layout
+  // (preset) — span/height (update-placement) is tuned in the Spec editor.
   function runCommand(command: Parameters<typeof applyCommand>[1]): void {
     const applied = applyCommand(currentDoc, command, {
       resolver: createQueryResolver(queries), genTileId: () => 'tile', plugin: flowLayoutPlugin,
     });
-    if (!applied.ok) return;
-    const normalized = flowLayoutPlugin.normalize(applied.dashboard);
-    currentDoc = normalized;
-    presetSeg.sync();
-    session.syncDocument({
-      ...normalized, filters: [...(normalized.filters || []), ...synthesizeImplicitFilters(normalized, queryById)],
-    });
-    // Best-effort persistence (revision increments once per successful commit).
-    if (workspace) {
-      const candidate: StoredWorkspaceV1 = {
-        storageVersion: 1, id: workspace.id, name: workspace.name, queries: workspace.queries,
-        dashboard: { ...normalized, revision: committedRevision + 1 },
-      };
-      app.workspace.commit(candidate).then((result) => { if (result.ok) committedRevision += 1; });
+    // A UI-driven command (drag move-tile, preset change-layout) is always
+    // valid; a rejected candidate is simply ignored (no draft change).
+    if (applied.ok) {
+      const normalized = flowLayoutPlugin.normalize(applied.dashboard);
+      currentDoc = normalized;
+      presetSeg.sync();
+      session.syncDocument({
+        ...normalized, filters: [...(normalized.filters || []), ...synthesizeImplicitFilters(normalized, queryById)],
+      });
+      // Best-effort persistence (revision increments once per successful commit).
+      if (workspace) {
+        const candidate: StoredWorkspaceV1 = {
+          storageVersion: 1, id: workspace.id, name: workspace.name, queries: workspace.queries,
+          dashboard: { ...normalized, revision: committedRevision + 1 },
+        };
+        app.workspace.commit(candidate).then((result) => { if (result.ok) committedRevision += 1; });
+      }
     }
-  }
-
-  function currentPlacement(tileId: string): { span?: number; height?: string } {
-    const items = isObject(currentDoc.layout.items) ? currentDoc.layout.items : {};
-    const placement = items[tileId];
-    return isObject(placement) ? placement as { span?: number; height?: string } : {};
-  }
-
-  function moveTile(tileId: string, delta: number): void {
-    const order = currentDoc.tiles.map((t) => t.id);
-    const index = order.indexOf(tileId);
-    const toIndex = index + delta;
-    if (index < 0 || toIndex < 0 || toIndex >= order.length) return;
-    runCommand({ type: 'move-tile', tileId, toIndex });
-    // Focus stays on the moved tile's control; announce the new position.
-    const tileEl = tileEls.get(tileId);
-    (delta < 0 ? tileEl?.moveEarlier : tileEl?.moveLater)?.focus();
-    liveRegion.textContent = `Moved tile to position ${toIndex + 1} of ${order.length}`;
-  }
-
-  function setPlacement(tileId: string, patch: { span?: number; height?: string }): void {
-    runCommand({ type: 'update-placement', tileId, placement: { ...currentPlacement(tileId), ...patch } });
   }
 
   // ── Tile DOM ──────────────────────────────────────────────────────────────
@@ -344,20 +318,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   function ensureTileEl(ts: ViewerTileState): TileEl {
     const existing = tileEls.get(ts.tileId);
     if (existing) return existing;
-    const titleEl = h('span', { class: 'dash-tile-name', title: ts.title }, ts.title);
-    const moveEarlier = h('button', { type: 'button', class: 'dash-tile-move', title: 'Move earlier', 'aria-label': `Move ${ts.title} earlier`, onclick: () => moveTile(ts.tileId, -1) }, '‹');
-    const moveLater = h('button', { type: 'button', class: 'dash-tile-move', title: 'Move later', 'aria-label': `Move ${ts.title} later`, onclick: () => moveTile(ts.tileId, 1) }, '›');
-    const spanSel = h('select', { class: 'dash-tile-span', 'aria-label': `${ts.title} width` },
-      ...[1, 2, 3].map((n) => h('option', { value: String(n) }, `${n}×`)));
-    spanSel.onchange = () => setPlacement(ts.tileId, { span: Number(spanSel.value) });
-    const heightSel = h('select', { class: 'dash-tile-height', 'aria-label': `${ts.title} height` },
-      ...FLOW_HEIGHTS.map((height) => h('option', { value: height }, height)));
-    heightSel.onchange = () => setPlacement(ts.tileId, { height: heightSel.value });
-    const controls = h('div', { class: 'dash-tile-controls' }, moveEarlier, moveLater, spanSel, heightSel);
-    const head = h('div', { class: 'dash-tile-head' }, titleEl, controls);
+    const head = h('div', { class: 'dash-tile-head' }, h('span', { class: 'dash-tile-name', title: ts.title }, ts.title));
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const card = h('div', { class: 'dash-tile', draggable: 'true' }, head, body, foot);
+    // Pointer drag is the sole reorder mechanism (#286 owner override): a drop
+    // persists the new dashboard.tiles[] order through the move-tile command.
     card.addEventListener('dragstart', () => { dragTileId = ts.tileId; });
     card.addEventListener('dragover', (event) => event.preventDefault());
     card.addEventListener('drop', (event) => {
@@ -367,7 +333,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       }
       dragTileId = null;
     });
-    const tileEl: TileEl = { card, body, foot, moveEarlier, moveLater, spanSel, heightSel, panelState: null, destroy: null, paintedRows: null };
+    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null };
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
@@ -375,8 +341,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   function destroyChart(tileEl: TileEl): void { if (tileEl.destroy) { tileEl.destroy(); tileEl.destroy = null; } }
 
   // Paint an ordinary (non-KPI) tile's result once per new result. Only ever
-  // called for a 'ready' tile, so columns/rows/meta/panel are all present (no
-  // defensive `|| []` — the viewer guarantees them on `ready`).
+  // called for a 'ready' tile, so columns/rows/meta/panel are all present.
   function paintPanel(ts: ViewerTileState, tileEl: TileEl): void {
     if (ts.rows === tileEl.paintedRows) return;
     destroyChart(tileEl);
@@ -406,10 +371,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   function reconcileTile(ts: ViewerTileState): void {
     const tileEl = ensureTileEl(ts);
-    const placement = currentPlacement(ts.tileId);
-    tileEl.spanSel.value = String(placement.span ?? 1);
-    tileEl.heightSel.value = String(placement.height ?? 'medium');
-    tileEl.card.dataset.height = String(placement.height ?? 'medium');
     if (ts.isKpi) return; // KPI tiles are rendered inside their band, not as a card
     if (ts.status === 'ready') { paintPanel(ts, tileEl); return; }
     destroyChart(tileEl);
@@ -454,8 +415,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       rows: sview.layout.rows.map((r) => ({ k: r.kind, t: r.tiles.map((t) => [t.tileId, t.span]) })),
     });
     // Rebuild the row STRUCTURE only when the flow model changes (a reorder,
-    // resize, preset, or mobile flip) — moving stable tile cards, so charts are
-    // never thrashed.
+    // preset, or mobile flip) — moving stable tile cards, so charts are never
+    // thrashed.
     if (sig !== lastLayoutSig) {
       lastLayoutSig = sig;
       grid.classList.toggle('is-report', sview.layout.preset === 'report');
@@ -484,6 +445,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // ── Effect: reconcile on every publish (and on the mobile-breakpoint flip) ─
   let lastMobile = state.isMobile.value;
+  let barSig = '';
   effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
@@ -491,11 +453,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // republish through the viewer (recomputes it with the new mobile flag).
     if (mobileNow !== lastMobile && mobileNow !== sview.layout.mobile) { lastMobile = mobileNow; session.syncDocument(currentDoc); return; }
     lastMobile = mobileNow;
-    if (filterFields.size === 0 && sview.filters.length) buildFilterBar(sview.filters);
-    updateFilterBar(sview);
+    // Rebuild the shared filter bar only when its field structure changes
+    // (activation, committed value, or curated options arriving) — not on tile
+    // progress ticks — so in-progress typing is not disturbed mid-wave.
+    const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length)]));
+    if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
+    clearAllNode.replaceChildren(filterClearAllButton({ active: sview.activeFilterCount > 0, onClearAll: () => session.clearAllFilters() }));
+    filterCountNode.replaceChildren(filterActiveCount(sview.activeFilterCount));
     tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
     empty.style.display = sview.tiles.length ? 'none' : '';
-    filterDiagnosticsHost.replaceChildren(...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)));
+    // Never silently hide a blocking filter: a visible badge per blocking filter.
+    const blocking = sview.filters.filter((f) => f.blocking).map((f) => filterBlockingBadge(`${f.label}: ${f.blocking}`));
+    filterDiagnosticsHost.replaceChildren(
+      ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
+      ...blocking,
+    );
     reconcileGrid(sview);
     refreshBtn.disabled = sview.running;
     if (!sview.running && sview.updatedAt != null) {
@@ -508,7 +480,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },
     h('div', { class: 'dash-topbar' }, header, toolbar),
-    liveRegion, filterDiagnosticsHost, empty, grid));
+    filterDiagnosticsHost, empty, grid));
 
   await session.start();
 }

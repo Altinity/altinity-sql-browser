@@ -92,18 +92,6 @@ const buildRecentField = _buildRecentField as (opts: {
 // here, on the shared filter-bar module, so any filter surface can compose the
 // same affordances; they are pure element factories (no app/state coupling).
 
-/** A per-filter clear affordance (#188): a keyboard-focusable button that
- *  deactivates one filter without discarding its value (reactivation restores
- *  it). `label` names the filter for assistive tech. */
-export function filterClearButton(opts: { label: string; onClear: () => void }): HTMLButtonElement {
-  const btn = h('button', {
-    type: 'button', class: 'dash-filter-clear',
-    title: `Clear ${opts.label}`, 'aria-label': `Clear ${opts.label}`,
-    onclick: () => opts.onClear(),
-  }, '×');
-  return btn;
-}
-
 /** The toolbar clear-all affordance (#188): resets every filter in one wave.
  *  Hidden (not just disabled) when nothing is active, so it never draws focus
  *  to a no-op. */

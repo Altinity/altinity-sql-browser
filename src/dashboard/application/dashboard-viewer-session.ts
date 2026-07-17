@@ -28,7 +28,7 @@ import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../../core/param-pipeline.js';
 import type {
-  FieldControl, ParameterAnalysis, PreparedSource, ValidationMode, BoundParamSnapshot,
+  FieldControl, ParameterAnalysis, PreparedSource, PreparedFieldState, ValidationMode, BoundParamSnapshot,
 } from '../../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../../core/optional-blocks.js';
 import { detectSqlFormat } from '../../core/format.js';
@@ -164,6 +164,13 @@ export interface DashboardViewerDeps {
 
 export interface DashboardViewerSession {
   readonly state: ReadonlySignal<DashboardViewState>;
+  /** The `{name:Type}` field controls the filter bar renders (structure only). */
+  readonly controls: FieldControl[];
+  /** One field's prepared #170 validation state against the filter bar's DRAFT
+   *  values/active (in-progress typing) — for the shared invalid-field affordance. */
+  getFilterField(
+    name: string, mode: ValidationMode, values: Record<string, unknown>, active: Record<string, boolean>,
+  ): PreparedFieldState;
   /** Run the whole Dashboard once (token preflight → filter wave + tile waves). */
   start(): Promise<void>;
   /** Re-run every tile and the filter wave. */
@@ -172,6 +179,10 @@ export interface DashboardViewerSession {
   refreshTile(tileId: string): Promise<void>;
   /** Set one filter's value (activates it) and run the one affected-panel wave. */
   setFilter(filterId: string, value: unknown): Promise<void>;
+  /** Set one filter's value AND activation explicitly (the filter bar's commit,
+   *  which owns activation for optional/curated fields), then run the one
+   *  affected-panel wave. */
+  applyFilter(filterId: string, value: unknown, active: boolean): Promise<void>;
   /** Deactivate one filter WITHOUT discarding its value (reactivation restores
    *  it); one affected-panel wave (#188 clear-one). */
   clearFilter(filterId: string): Promise<void>;
@@ -349,15 +360,25 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   const activeMap = (): Record<string, boolean> =>
     Object.fromEntries(filters.map((filter) => [filter.def.parameter, filter.state.active]));
 
-  const prepareBatch = (mode: ValidationMode = 'execute') => {
-    const active = activeMap();
-    return prepareParameterizedBatch(analysis, {
-      values: Object.fromEntries(Object.entries(rawValues()).map(([name, value]) =>
-        [name, curated[name] && !active[name] ? '' : value])),
-      active: effectiveActive(rawValues(), active),
-      wallNowMs: deps.wallNow(), validationMode: mode,
-    });
-  };
+  // Prepare a batch, optionally against a caller's DRAFT values/active (the
+  // filter bar's in-progress typing) rather than the committed filter state —
+  // so live #170 validation can run without mutating committed state.
+  const prepareBatch = (
+    mode: ValidationMode = 'execute',
+    values: Record<string, unknown> = rawValues(),
+    active: Record<string, boolean> = activeMap(),
+  ) => prepareParameterizedBatch(analysis, {
+    values: Object.fromEntries(Object.entries(values).map(([name, value]) =>
+      [name, curated[name] && !active[name] ? '' : value])),
+    active: effectiveActive(values, active),
+    wallNowMs: deps.wallNow(), validationMode: mode,
+  });
+
+  /** One field's prepared #170 state against the caller's draft values/active
+   *  (the filter bar reads this on every keystroke for the invalid affordance). */
+  const getFilterField = (
+    name: string, mode: ValidationMode, values: Record<string, unknown>, active: Record<string, boolean>,
+  ) => prepareBatch(mode, values, active).fields[name];
 
   // ── State signal ────────────────────────────────────────────────────────
   const stateSignal: Signal<DashboardViewState> = signal(buildState(false, null));
@@ -632,6 +653,18 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     await runAffectedWave([filter.def.parameter]);
   }
 
+  async function applyFilter(filterId: string, value: unknown, active: boolean): Promise<void> {
+    if (destroyed) return;
+    const filter = filterById.get(filterId);
+    if (!filter) return;
+    // The filter bar owns activation for optional/curated fields, so value and
+    // active are set independently (unlike setFilter's value-implies-active).
+    filter.state.value = value;
+    filter.state.active = active;
+    publish();
+    await runAffectedWave([filter.def.parameter]);
+  }
+
   async function clearFilter(filterId: string): Promise<void> {
     if (destroyed) return;
     const filter = filterById.get(filterId);
@@ -696,6 +729,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
-    start, refresh, refreshTile, setFilter, clearFilter, clearAllFilters, cancelTile, syncDocument, destroy,
+    controls, getFilterField,
+    start, refresh, refreshTile, setFilter, applyFilter, clearFilter, clearAllFilters, cancelTile, syncDocument, destroy,
   };
 }

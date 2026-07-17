@@ -387,6 +387,34 @@ describe('filters and the #235 execution planner', () => {
   });
 });
 
+describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {
+  it('exposes controls + a draft-aware field state, and applyFilter sets value AND active explicitly', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t', 'q')], filters: [{ id: 'f', parameter: 'p', defaultActive: false, defaultValue: '' }] }),
+      exec, queries: [query('q', 'SELECT {p:String} AS n')],
+    }));
+    await session.start();
+    expect(session.controls.map((c) => c.name)).toContain('p');
+    // Draft-aware #170 validation: empty required → not ok; a value → ok.
+    expect(session.getFilterField('p', 'execute', { p: '' }, { p: false }).state).not.toBe('ok');
+    expect(session.getFilterField('p', 'execute', { p: 'x' }, { p: true }).state).toBe('ok');
+    // applyFilter(value, active=true) → the affected tile re-runs with the value bound.
+    const before = calls.length;
+    await session.applyFilter('f', 'x', true);
+    expect(calls.slice(before).find((c) => 'param_p' in c.params)?.params.param_p).toBe('x');
+    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: true });
+    // applyFilter(value, active=false) keeps the value but deactivates it.
+    await session.applyFilter('f', 'x', false);
+    expect(session.state.value.filters[0]).toMatchObject({ value: 'x', active: false });
+    // Unknown filter id and post-destroy are no-ops.
+    await session.applyFilter('nope', 'y', true);
+    session.destroy();
+    await session.applyFilter('f', 'z', true);
+    expect(session.state.value.filters[0].value).toBe('x');
+  });
+});
+
 describe('per-tile control and lifecycle', () => {
   it('refreshTile re-runs one tile; refreshTile is a no-op for text/missing/invalid tiles', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));

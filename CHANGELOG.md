@@ -173,16 +173,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
     Dashboard's implicit `{name:Type}` params are surfaced as runtime-only filter
     definitions so the filter bar is not lost. The `spec.favorite` dual-WRITE
     stays until GA (the Workbench star action); only the READ is flipped.
-  - **Filter-bar affordances** (`src/ui/filter-bar.ts`, shared): per-filter
-    clear, coalesced clear-all, "N active" count, and a never-hidden blocking
-    badge, driven by the viewer's `clearFilter`/`clearAllFilters`/
-    `activeFilterCount`/`blocking`.
-  - **Accessible reorder + sizing.** Keyboard Move-earlier/Move-later, span, and
-    height controls on every tile drive the phase-3 `move-tile`/
-    `update-placement` commands (mirrored into the viewer with `syncDocument`,
-    no re-execution, and best-effort persisted); focus stays on the moved tile
-    and an ARIA live region announces the new position. Pointer drag is an
-    equivalent alternative, never the only mechanism.
+  - **Rich filter bar.** The Dashboard filter bar is the SHARED `buildFilterBar`
+    — the same rich field family the Workbench var-strip and detached view use
+    (relative-time presets, recents, enum + curated comboboxes) — driven over
+    the viewer's filter model: a draft value/active bag the bar mutates,
+    `session.getFilterField` for live #170 validation, and `session.applyFilter`
+    on commit (which owns activation). Recents flow through the shim from the
+    real app; the viewer never imports global `AppState` (check-boundaries keeps
+    the phase-4 forbidden list intact). Toolbar affordances stay: a coalesced
+    clear-all (one wave), an "N active" count, and a never-hidden blocking badge
+    (invalid / required-and-unset / source-query error).
+  - **Tile reordering is pointer DRAG ONLY** (owner override, final #286 scope).
+    A drop persists the new `dashboard.tiles[]` order through the `move-tile`
+    command. Note: #280's accessibility section says drag should not be the only
+    reorder mechanism — this is a deliberate product-owner override; the per-tile
+    keyboard Move controls were removed. The in-tile span/height buttons were
+    also removed (span/height are tuned in the Spec editor); the underlying
+    `update-placement`/`setTileSpan`/`setTileHeight` authoring commands stay in
+    the application layer. The per-filter "×" clear affordance was removed too.
   This closes **#235** (filter wave / panel parallelism) and the reorder half of
   **#153** (open-in-window arrives in Phase 6), and dissolves **#188** into the
   viewer's filter contract.
