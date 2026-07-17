@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json",
+  "title": "Altinity SQL Browser stored workspace v1",
+  "description": "The atomic browser-persistence aggregate: one workspace with an ordered saved-query collection and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
+  "x-altinity-kind": "stored-workspace",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": ["storageVersion", "id", "name", "queries", "dashboard"],
+  "properties": {
+    "storageVersion": {
+      "title": "Storage version",
+      "description": "Stored-workspace contract version; always 1 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "title": "Workspace identifier",
+      "description": "Stable generated workspace identity. Two files with the same name still produce distinct workspace IDs.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "name": {
+      "title": "Workspace name",
+      "description": "User-visible workspace name. Renaming the workspace does not rename its Dashboard.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Required even when empty.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "saved-query-v2.schema.json" }
+    },
+    "dashboard": {
+      "title": "Dashboard",
+      "description": "The zero-or-one editable Dashboard of this workspace; null when none exists.",
+      "oneOf": [
+        { "$ref": "dashboard-v1.schema.json" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": ["storageVersion", "id", "name", "queries", "dashboard"]
+}

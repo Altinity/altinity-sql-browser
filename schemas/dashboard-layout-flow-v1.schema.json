@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json",
+  "title": "Altinity SQL Browser Dashboard flow@1 layout",
+  "description": "The normative flow@1 Dashboard layout: deterministic row-major packing driven by dashboard.tiles order, one preset, and per-tile span/height placements keyed by tile ID. This document is also the only valid DashboardLayoutFallbackV1 shape.",
+  "x-altinity-kind": "dashboard-layout-flow",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": ["type", "version", "preset", "items"],
+  "properties": {
+    "type": {
+      "title": "Layout engine",
+      "description": "Layout engine identifier; always flow for this contract.",
+      "type": "string",
+      "const": "flow"
+    },
+    "version": {
+      "title": "Layout engine version",
+      "description": "flow contract version; always 1 for this contract.",
+      "type": "integer",
+      "const": 1
+    },
+    "preset": { "$ref": "#/$defs/flowPresetV1" },
+    "items": {
+      "title": "Tile placements",
+      "description": "Per-tile placement keyed by tile ID. A missing placement uses span 1 and medium height.",
+      "type": "object",
+      "maxProperties": 100,
+      "propertyNames": { "minLength": 1, "maxLength": 256 },
+      "additionalProperties": { "$ref": "#/$defs/flowTilePlacementV1" }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": ["type", "version", "preset", "items"],
+  "$defs": {
+    "flowPresetV1": {
+      "title": "Flow preset",
+      "description": "Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.",
+      "type": "string",
+      "enum": ["full-width", "report", "columns-2", "columns-3"]
+    },
+    "flowHeightV1": {
+      "title": "Tile height",
+      "description": "Normative height ordering is compact < medium < large; exact pixels are renderer-defined.",
+      "type": "string",
+      "enum": ["compact", "medium", "large"]
+    },
+    "flowTilePlacementV1": {
+      "title": "Tile placement",
+      "description": "Closed placement contract: unknown fields fail validation. Future extension requires flow@2 or an explicit extension namespace.",
+      "type": "object",
+      "properties": {
+        "span": {
+          "title": "Column span",
+          "description": "Columns the tile occupies; the effective span is clamped to the active column count.",
+          "type": "integer",
+          "enum": [1, 2, 3]
+        },
+        "height": { "$ref": "#/$defs/flowHeightV1" }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": ["span", "height"]
+    }
+  }
+}

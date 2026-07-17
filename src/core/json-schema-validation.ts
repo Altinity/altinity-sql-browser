@@ -31,6 +31,8 @@ export const JSON_SCHEMA_KEYWORD_CODES: Record<string, string> = {
   exclusiveMinimum: 'schema-number-range', exclusiveMaximum: 'schema-number-range',
   minLength: 'schema-invalid-string', maxLength: 'schema-invalid-string', pattern: 'schema-invalid-string',
   minItems: 'schema-array-size', maxItems: 'schema-array-size', uniqueItems: 'schema-array-duplicate',
+  minProperties: 'schema-object-size', maxProperties: 'schema-object-size',
+  propertyNames: 'schema-property-name',
   oneOf: 'schema-invalid-variant', anyOf: 'schema-invalid-variant', not: 'schema-invalid-variant',
   additionalProperties: 'schema-unknown-property', unevaluatedProperties: 'schema-unknown-property',
   format: 'schema-invalid-format', '$ref': 'schema-internal-reference',
@@ -93,6 +95,9 @@ function diagnosticMessage(
     case 'minItems': return `${at} must contain at least ${params.limit} item${params.limit === 1 ? '' : 's'}`;
     case 'maxItems': return `${at} must contain at most ${params.limit} item${params.limit === 1 ? '' : 's'}`;
     case 'uniqueItems': return `${at} must not contain duplicate items`;
+    case 'minProperties': return `${at} must contain at least ${params.limit} propert${params.limit === 1 ? 'y' : 'ies'}`;
+    case 'maxProperties': return `${at} must contain at most ${params.limit} properties`;
+    case 'propertyNames': return `${at} is an invalid property name`;
     case 'oneOf': return `${at} must match exactly one allowed variant`;
     case 'anyOf': return `${at} must match an allowed variant`;
     case 'additionalProperties':
@@ -129,6 +134,8 @@ export function normalizeJsonSchemaErrors({
       path.push(error.params.additionalProperty as string);
     } else if (error.keyword === 'unevaluatedProperties' && error.params?.unevaluatedProperty != null) {
       path.push(error.params.unevaluatedProperty as string);
+    } else if (error.keyword === 'propertyNames' && error.params?.propertyName != null) {
+      path.push(error.params.propertyName as string);
     }
     const diagnosticSchemaId = schemaIdFor(error, schemaId);
     return {

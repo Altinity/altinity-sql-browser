@@ -6,7 +6,7 @@
 // every helper clones recursively so reads followed by edits cannot alias the
 // Library entry and unknown objects/arrays survive every known-field patch.
 
-import type { Dashboard, Panel, QuerySpecV1 } from '../generated/json-schema.types.js';
+import type { Panel, QueryDashboardPresentationV1, QuerySpecV1 } from '../generated/json-schema.types.js';
 
 export const SPEC_VERSION = 1;
 
@@ -94,10 +94,10 @@ export function queryPanel(query: unknown): Panel | undefined {
   return isPlainObject(value) ? (value as Panel) : undefined;
 }
 
-export function queryDashboard(query: unknown): Dashboard | undefined {
+export function queryDashboard(query: unknown): QueryDashboardPresentationV1 | undefined {
   const value = andGet(andGet(query, 'spec'), 'dashboard');
   // Ingress — see queryPanel's comment; same only-isPlainObject-checked read.
-  return isPlainObject(value) ? (value as Dashboard) : undefined;
+  return isPlainObject(value) ? (value as QueryDashboardPresentationV1) : undefined;
 }
 
 /** Return a canonical cloned query with `nextSpec` as its complete Spec. */

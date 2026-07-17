@@ -35,12 +35,15 @@ describe('JSON Schema diagnostic normalization', () => {
       ['pattern', '/list/0', {}, 'schema-invalid-string', 'list[0] has an invalid string value'],
       ['minItems', '/list', { limit: 1 }, 'schema-array-size', 'list must contain at least 1 item'],
       ['maxItems', '/list', { limit: 2 }, 'schema-array-size', 'list must contain at most 2 items'],
+      ['minProperties', '/object', { limit: 1 }, 'schema-object-size', 'object must contain at least 1 property'],
+      ['maxProperties', '/object', { limit: 2 }, 'schema-object-size', 'object must contain at most 2 properties'],
       ['uniqueItems', '/list', { i: 0 }, 'schema-array-duplicate', 'list[0] must not contain duplicate items'],
       ['anyOf', '/list/0', {}, 'schema-invalid-variant', 'list[0] must match an allowed variant'],
       ['additionalProperties', '/object', { additionalProperty: 'extra' }, 'schema-unknown-property', 'object.extra is not an allowed property'],
       ['unevaluatedProperties', '/object', { unevaluatedProperty: 'extra' }, 'schema-unknown-property', 'object.extra is not an allowed property'],
       ['format', '/list/0', { format: 'date-time' }, 'schema-invalid-format', 'list[0] must match format "date-time"'],
       ['$ref', '/list/0', {}, 'schema-internal-reference', 'list[0] contains an unresolved schema reference'],
+      ['propertyNames', '/object', { propertyName: 'bad-key' }, 'schema-property-name', 'object["bad-key"] is an invalid property name'],
       ['custom', '/list/0', {}, 'schema-custom', 'list[0] failed custom validation'],
     ];
     for (const [keyword, instancePath, params, code, message] of cases) {
