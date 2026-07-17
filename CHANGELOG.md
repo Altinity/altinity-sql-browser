@@ -10,6 +10,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Workbench run lifecycle extracted into a route-scoped `WorkbenchSession`**
+  (#276 Phase 3a). `run`/`runScript`/`runEntry`/`cancel` orchestration now
+  lives in `src/ui/workbench/workbench-session.ts`; the run bookkeeping
+  fields (`runT0`/`runQueryId`/`runTick`) and the in-flight `AbortController`
+  are private session state (the `RunState` cast and `AppState.abortController`
+  are gone — issue rule 5: cancellation belongs to its owner). The session is
+  the sole production writer of the `running` signal; the three run-coupled
+  reactive effects register through `session.attachShell(...)` with captured
+  disposers (idempotent on re-render — also fixes a latent double-registration
+  on the connect → re-render path), and `destroy()` releases effects, the
+  elapsed ticker, and any in-flight operation (unit-proven; no production
+  caller until Phase 5's route shells). The architecture guard now carries a
+  rule list: route sessions (`ui/workbench` ↔ `ui/dashboard`) must not import
+  each other, and the dashboard route must not import the editor. Behavior
+  byte-identical.
 - **Authentication and connection lifecycle extracted into `ConnectionSession`**
   (#276 Phase 2). OAuth PKCE login/refresh, Basic-auth probing, IdP config
   resolution, identity, sign-in/out, and the cross-tab dashboard auth handoff

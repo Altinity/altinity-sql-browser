@@ -306,11 +306,6 @@ const schemaGraphOf = (tab: { result: Record<string, unknown> | null }): Indexed
 interface FilterPreviewNormalized { helpers: { options: { value: string; label: string }[] }[] }
 const filterPreviewNormalizedOf = (tab: { filterPreview: Record<string, unknown> | null }): FilterPreviewNormalized =>
   tab.filterPreview!.normalized as FilterPreviewNormalized;
-// `run()`/`runScript()`'s own bookkeeping on `app.state` (app.ts's own doc
-// comment on its `RunState` local interface + `runState()` helper) — not
-// part of the shared `state.ts` contract, narrowed the same way here.
-const runStateOf = (s: AppState): AppState & { runT0: number | null; runQueryId: string | null } =>
-  s as AppState & { runT0: number | null; runQueryId: string | null };
 // `outputFormat` is a stray, never-declared field the untyped JS original set
 // on `app.state` before a since-removed fallback path — inert today (no code
 // reads it), kept as the same harmless dead write via a local intersection
@@ -877,11 +872,12 @@ describe('query run', () => {
   });
   it('run() while already running is a no-op (cancel is separate)', async () => {
     const { app } = appForRun([]);
+    await new Promise((r) => setTimeout(r)); // let mount-time loadVersion/loadSchema/loadReference settle
     app.state.running.value = true;
-    const ac = { abort: vi.fn(), signal: {} as AbortSignal };
-    app.state.abortController = ac;
+    const before = asMock(app.chCtx.fetch).mock.calls.length;
     await app.actions.run();
-    expect(ac.abort).not.toHaveBeenCalled(); // re-running no longer aborts
+    // Guarded before any request goes out — no additional fetch/exec call.
+    expect(asMock(app.chCtx.fetch).mock.calls.length).toBe(before);
     expect(app.state.running.value).toBe(true);
   });
   it('setRunBtn: "Running…" with no trailing "null"; "Run" + kbd when idle', () => {
@@ -1445,28 +1441,50 @@ describe('query run', () => {
     expect(app2.wallNow()).toBeGreaterThan(1e12);
     expect(app2.now()).toBe(0);
   });
-  it('tickElapsed updates the live ms readout, and no-ops without the element', () => {
-    const { app } = appForRun([]);
-    runStateOf(app.state).runT0 = 0;
+  it('tickElapsed updates the live ms readout mid-run (via the workbench session), and no-ops without the element', async () => {
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    let n = 0;
+    const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => (init && /SELECT 1/.test(init.body || '')
+      ? new Promise<FakeResponse>((res) => { resolveRunFetch = res; })
+      : Promise.resolve(resp({ json: { data: [] } })))));
+    const { app } = appForRun([], { fetch, now: () => (n += 10) });
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r)); // let run() reach the in-flight request
     app.dom.runElapsedEl = document.createElement('span');
-    app.tickElapsed(); // env.now → 0
-    expect(app.dom.runElapsedEl!.textContent).toBe('0 ms');
+    app.tickElapsed();
+    const text = app.dom.runElapsedEl!.textContent!;
+    expect(text).toMatch(/^\d+ ms$/);
+    expect(parseInt(text, 10)).toBeGreaterThan(0);
     app.dom.runElapsedEl = undefined;
     expect(() => app.tickElapsed()).not.toThrow();
+    resolveRunFetch(resp({ body: streamBody([]) }));
+    await pending;
   });
   it('cancel() aborts + issues KILL QUERY when running; no-op when idle', async () => {
-    const { app, e } = appForRun([]);
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => (init && /SELECT 1/.test(init.body || '')
+      ? new Promise<FakeResponse>((res) => { resolveRunFetch = res; })
+      : Promise.resolve(resp({ json: { data: [] } })))));
+    const { app, e } = appForRun([], { fetch });
     app.actions.cancel(); // idle → no-op, no throw
-    const abort = vi.fn();
-    app.state.running.value = true;
-    app.state.abortController = { abort, signal: {} as AbortSignal };
-    runStateOf(app.state).runQueryId = 'qid-1';
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r)); // let run() reach the in-flight request, publishing its live query_id
+    expect(app.state.running.value).toBe(true);
+    const runCall = asMock(fetch).mock.calls.find((c) => c[1] && /SELECT 1/.test(c[1].body || ''))!;
+    // The live query_id (#276 Phase 3a: minted + tracked by the workbench
+    // session, no longer a state.ts field) rides on the run request's own URL.
+    const queryId = decodeURIComponent((runCall[0].match(/query_id=([^&]+)/) || [])[1] || '');
+    expect(queryId).toBeTruthy();
     app.actions.cancel();
-    expect(abort).toHaveBeenCalled();
+    expect((runCall[1].signal as AbortSignal).aborted).toBe(true);
     await new Promise((r) => setTimeout(r)); // let the fire-and-forget KILL QUERY run
     const kill = asMock(e.fetch!).mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''))!;
     expect(kill).toBeTruthy();
-    expect(kill[1].body).toContain("query_id = 'qid-1'");
+    expect(kill[1].body).toContain("query_id = '" + queryId + "'");
+    resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
   });
   it('surfaces a query error', async () => {
     const { app } = appForRun([
@@ -3703,7 +3721,7 @@ describe('streaming export (issue #87)', () => {
     const exportCall = asMock(fetch).mock.calls.find((c) => c[1] && c[1].body === EXPORT_BODY)!;
     expect(exportCall[1].signal.aborted).toBe(false);
 
-    app.actions.cancelExport(); // grid run's runQueryId/abortController is untouched — this is the export's own
+    app.actions.cancelExport(); // the workbench session's own run bookkeeping is untouched — this is the export's own
     expect(exportCall[1].signal.aborted).toBe(true);
     resolveExportFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
     await pending;

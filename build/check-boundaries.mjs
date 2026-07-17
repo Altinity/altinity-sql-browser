@@ -1,10 +1,13 @@
-// Architecture boundary guard (issue #276 Phase 0). Day-1 rule only: modules
-// under src/application/ must not import from src/ui/ or src/editor/ — the
-// route/session layer coordinates state and network, it does not reach into
-// DOM rendering or the CodeMirror editor adapters. `import type` counts too:
-// a type-only import still couples the layers at compile time. Later phases
-// (#276 Phases 3-5) extend the rule set (e.g. route sessions must not import
-// each other) — add checks here rather than growing a second script.
+// Architecture boundary guard (issue #276). Rule list, grown per phase:
+//   Phase 0 — src/application/ must not import src/ui/ or src/editor/: the
+//   service layer coordinates state and network, it does not reach into DOM
+//   rendering or the CodeMirror editor adapters.
+//   Phase 3 — the route sessions must not import each other's implementation
+//   modules (ui/workbench ↔ ui/dashboard), and the dashboard route must not
+//   depend on the editor ports at all.
+// `import type` counts too: a type-only import still couples the layers at
+// compile time. Extend RULES below in later phases rather than growing a
+// second script.
 //
 // Hand-rolled regex scan, no AST parser: the codebase has no exotic import
 // syntax, so scanning for import/export specifiers is enough and keeps this
@@ -15,9 +18,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const appDir = path.join(repoRoot, 'src', 'application');
-const FORBIDDEN = ['src/ui', 'src/editor'];
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
+
+/** Each rule: every source file under `dir` must not import anything that
+ *  resolves under any of `forbidden` (directories, repo-relative). */
+const RULES = [
+  { dir: 'src/application', forbidden: ['src/ui', 'src/editor'], why: 'issue #276 day-1 rule' },
+  { dir: 'src/ui/workbench', forbidden: ['src/ui/dashboard'], why: 'issue #276 Phase 3: route sessions must not import each other' },
+  { dir: 'src/ui/dashboard', forbidden: ['src/ui/workbench', 'src/editor'], why: 'issue #276 Phase 3: route sessions must not import each other; dashboard has no editor' },
+];
 
 function collectFiles(dir) {
   const out = [];
@@ -27,12 +36,6 @@ function collectFiles(dir) {
     else if (SOURCE_EXT.test(entry.name)) out.push(full);
   }
   return out;
-}
-
-const files = fs.existsSync(appDir) ? collectFiles(appDir) : [];
-if (files.length === 0) {
-  console.log('check-boundaries: no files under src/application/ yet');
-  process.exit(0);
 }
 
 // Matches, in order: static `import ... from '...'` (incl. `import type`),
@@ -71,25 +74,38 @@ function resolveRelative(fromFile, spec) {
 }
 
 const violations = [];
-for (const file of files) {
-  const source = fs.readFileSync(file, 'utf8');
-  for (const spec of extractSpecifiers(source)) {
-    if (!spec.startsWith('.')) continue; // bare/package specifiers can't reach src/ui or src/editor
-    const resolved = resolveRelative(file, spec);
-    const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
-    const inForbidden = FORBIDDEN.some((f) => relResolved === f || relResolved.startsWith(`${f}/`));
-    if (inForbidden) {
-      const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
-      violations.push(`${relFile} → ${spec} (resolved: ${relResolved})`);
+let checkedFiles = 0;
+let activeRules = 0;
+for (const rule of RULES) {
+  const ruleDir = path.join(repoRoot, rule.dir);
+  const files = fs.existsSync(ruleDir) ? collectFiles(ruleDir) : [];
+  if (files.length === 0) continue; // directory not born yet — rule activates with it
+  activeRules += 1;
+  checkedFiles += files.length;
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    for (const spec of extractSpecifiers(source)) {
+      if (!spec.startsWith('.')) continue; // bare/package specifiers can't reach src dirs
+      const resolved = resolveRelative(file, spec);
+      const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
+      const hit = rule.forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+      if (hit) {
+        const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
+        violations.push(`${relFile} → ${spec} (resolved: ${relResolved}; ${rule.dir} must not import ${hit} — ${rule.why})`);
+      }
     }
   }
 }
 
 if (violations.length) {
-  console.error('check-boundaries: src/application/ must not import src/ui/ or src/editor/ (issue #276, day-1 rule):');
+  console.error('check-boundaries: layer-boundary violations (issue #276):');
   for (const line of violations) console.error(`  ${line}`);
   process.exit(1);
 }
 
-console.log(`check-boundaries: OK (${files.length} file${files.length === 1 ? '' : 's'} under src/application/, no ui/editor imports)`);
+if (checkedFiles === 0) {
+  console.log('check-boundaries: no files under any guarded directory yet');
+  process.exit(0);
+}
+console.log(`check-boundaries: OK (${checkedFiles} file${checkedFiles === 1 ? '' : 's'} across ${activeRules} active rule${activeRules === 1 ? '' : 's'}, no violations)`);
 process.exit(0);

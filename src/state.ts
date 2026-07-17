@@ -210,7 +210,6 @@ export interface AppState {
   bannerDismissedFor: Signal<string | null>;
   serverVersion: string | null;
   running: Signal<boolean>;
-  abortController: AbortController | null;
   schemaGraphAbortController: AbortController | null;
   resultView: Signal<'table' | 'json' | 'panel' | 'filter'>;
   exporting: Signal<boolean>;
@@ -394,11 +393,10 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // Run state (signals): `running` flips the Run button + results pane via
     // effects; `resultView` is the active Table/JSON/Chart tab. Via `.value`.
     running: signal(false),
-    abortController: null,
     // In-flight schema-lineage fetch (issue #124's inline drawer graph) — its own
-    // AbortController, separate from `abortController` (run/script) and the
-    // export controllers, since a graph fetch isn't gated by `running` and a
-    // second click/drag must be able to supersede an in-flight one.
+    // AbortController, separate from the workbench session's own run/script
+    // controller and the export controllers, since a graph fetch isn't gated by
+    // `running` and a second click/drag must be able to supersede an in-flight one.
     schemaGraphAbortController: null,
     resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
     // True while a streaming Export (issue #87) is in flight — separate from
@@ -564,9 +562,12 @@ export function patchSpecDraft(
   return { ok: true, invalidTab: null, spec: tab.specParsed! };
 }
 
-/** The saved query a tab is linked to (via tab.savedId), or null. */
+/** The saved query a tab is linked to (via tab.savedId), or null. Narrowed to
+ *  exactly the slice it reads (`savedQueries`) — not the full `AppState` —
+ *  so a caller (e.g. `WorkbenchSession`'s own state slice) can pass a Pick
+ *  without a bridging cast. */
 export function savedForTab(
-  state: AppState, tab: Pick<QueryTab, 'savedId'> | null | undefined,
+  state: Pick<AppState, 'savedQueries'>, tab: Pick<QueryTab, 'savedId'> | null | undefined,
 ): SavedQueryV2 | null {
   return (tab && tab.savedId && state.savedQueries.find((q) => q.id === tab.savedId)) || null;
 }
@@ -851,9 +852,11 @@ export function markLibrarySaved(state: AppState): void {
 }
 
 // Push one history entry (most-recent first, capped at 50). Internal — the
-// exported recorders below supply the sql/rows/ms.
+// exported recorders below supply the sql/rows/ms. Narrowed to `history`
+// (the only field it reads/writes) so `recordScriptHistory` below can pass a
+// narrower-than-`AppState` slice through unchanged.
 function pushHistory(
-  state: AppState, sql: string | null | undefined, rows: number | null, ms: number,
+  state: Pick<AppState, 'history'>, sql: string | null | undefined, rows: number | null, ms: number,
   save: SaveJSON, now: number,
 ): void {
   const s = String(sql || '').trim();
@@ -890,9 +893,12 @@ export function recordHistory(
 }
 
 /** Record a successful multiquery script run as one history entry (the whole
- *  script text); per-statement row counts aren't meaningful, so rows is null. */
+ *  script text); per-statement row counts aren't meaningful, so rows is null.
+ *  Narrowed to `Pick<AppState, 'history'>` — the only field it reads/writes —
+ *  so a caller (e.g. `WorkbenchSession`'s own state slice) can pass a Pick
+ *  without a bridging cast. */
 export function recordScriptHistory(
-  state: AppState, sql: string, ms: number, save: SaveJSON = saveJSON, now: number = Date.now(),
+  state: Pick<AppState, 'history'>, sql: string, ms: number, save: SaveJSON = saveJSON, now: number = Date.now(),
 ): void {
   pushHistory(state, sql, null, Math.round(ms), save, now);
 }
