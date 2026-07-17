@@ -31,6 +31,7 @@ import type { ChartJsConfigResult } from '../../src/core/chart-data.js';
 import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 import type { ConnectionSession } from '../../src/application/connection-session.js';
+import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
 
 // Production invariant (#276 Phase 2): `app.chCtx` and `app.conn.chCtx` are
 // THE SAME live object (app.ts aliases `conn.chCtx`) — the defaults + the
@@ -95,6 +96,23 @@ export class FakeChart implements ChartInstance {
   update(mode: string): void { this.lastUpdateMode = mode; }
   destroy(): void { this.destroyed = true; }
 }
+
+// A minimal `WorkbenchSession` stub (#276 Phase 3a) — no render-module fixture
+// exercises the session's own run/cancel orchestration directly (that's
+// workbench-session.test.ts's job); this just satisfies the `App.workbench`
+// contract. const-first (not inlined below): a `vi.fn()` written directly
+// inside a nested object literal loses its mock-specific type to the
+// surrounding literal's contextual typing (a known inference footgun) — see
+// this file's own header note on `exec`/`chCtx`.
+const workbenchDefaults: WorkbenchSession = {
+  run: vi.fn(async () => {}),
+  runScript: vi.fn(async () => {}),
+  runEntry: vi.fn(),
+  cancel: vi.fn(),
+  elapsedMs: () => 0,
+  attachShell: vi.fn(),
+  destroy: vi.fn(),
+};
 
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
@@ -171,6 +189,7 @@ const appDefaults: App = {
   now: () => 0,
   elapsedMs: () => 0,
   tickElapsed: () => {},
+  workbench: workbenchDefaults,
   exec: {
     executeRead: async (result) => result,
     executeScript: async () => ({ entries: [], aborted: false }),
@@ -201,7 +220,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -214,6 +233,10 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
    *  (the production identity invariant); override `chCtx` at the top level
    *  and both aliases see it. */
   conn?: Partial<Omit<ConnectionSession, 'chCtx'>>;
+  /** Partial like the rest (#276 Phase 3a) — most fixtures never touch the
+   *  session directly; a test asserting `workbench.run`/`.cancel` was called
+   *  can override just that method. */
+  workbench?: Partial<WorkbenchSession>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -346,6 +369,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     actions: { ...appDefaults.actions, ...base.actions, ...(overrides.actions ?? {}) },
     exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
     conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
+    workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

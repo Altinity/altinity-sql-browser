@@ -19,6 +19,7 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
+import type { WorkbenchSession } from './workbench/workbench-session.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -283,6 +284,12 @@ export interface App {
   now(): number;
   elapsedMs(): number;
   tickElapsed(): void;
+  /** The route-scoped run/runScript/runEntry/cancel session (#276 Phase 3a —
+   *  `src/ui/workbench/workbench-session.ts`), constructed without App/DOM.
+   *  Owns the run bookkeeping and in-flight AbortController privately; the
+   *  Run/Cancel actions and the Explain/row-limit re-run paths delegate to it,
+   *  and `renderApp`'s `attachShell` call wires its 3 run-coupled effects. */
+  workbench: WorkbenchSession;
   /** The shared request/stream/normalize + multiquery-script transport
    *  service (#276 Phase 1) — `src/application/query-execution-service.ts`,
    *  constructible without App/AppState/DOM. `src/ui/**` may depend on

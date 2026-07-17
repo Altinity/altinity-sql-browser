@@ -19,23 +19,19 @@ import {
   fieldControls, fieldControlKind,
 } from '../core/param-pipeline.js';
 import type {
-  ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, BoundParamSnapshot, FieldControl,
+  ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, FieldControl,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
-import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, prepareExportSql, formatBytes, formatRows } from '../core/format.js';
-import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
+import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, isSchemaMutatingSql, prepareExportSql, formatBytes, formatRows } from '../core/format.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
 import type { SchemaCardColumnRow } from '../core/schema-cards.js';
 import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { newResult, parseErrorPos, findExceptionFrame } from '../core/stream.js';
-import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
 import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
-import { filterExecution } from '../core/filter-execution.js';
-import { readFilterOptions } from '../core/filter-options.js';
 import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
   hasBlockingSpecErrors,
@@ -44,7 +40,6 @@ import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spe
 import type { SpecDiagnostic } from '../editor/spec-editor.types.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
-import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
@@ -91,6 +86,7 @@ import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core
 import type { LineageFocus } from '../net/ch-client.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import { createWorkbenchSession } from './workbench/workbench-session.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -98,43 +94,6 @@ import { createConnectionSession } from '../application/connection-session.js';
  *  supplies `Chart`/`Dagre` (imported packages) via `env` directly. These are
  *  only the env-absent fallback reads below (`win.Chart`, `win.dagre`, …), kept
  *  narrow and all-optional so a plain `Window` still satisfies this widened type. */
-/** `run()`/`runScript()`'s own bookkeeping on `app.state` — a live query's
- *  wall-clock start (`runT0`), its ClickHouse `query_id` (`runQueryId`, for
- *  Cancel's KILL QUERY), and the live-elapsed-ms ticker's interval handle
- *  (`runTick`). `state.ts`'s own `AppState` doesn't declare these fields (set
- *  and read only by app.ts + tests exercising it directly) — narrowed locally
- *  via `runState(app.state)` rather than widening the shared state.ts contract
- *  for this single consumer. */
-interface RunState {
-  runT0: number | null;
-  runQueryId: string | null;
-  runTick: ReturnType<typeof setInterval> | null;
-}
-const runState = (s: AppState): AppState & RunState => s as AppState & RunState;
-
-/** `run()`'s own options bag — an explicit selection override (`sql`), the
- *  Explain button / EXPLAIN-view-switch flags, and a saved-query's remembered
- *  result view. Every real call site (`runEntry`, `explainQuery`,
- *  `setExplainView`, the saved-query open path) passes a subset of exactly
- *  these fields. */
-interface RunOpts {
-  sql?: string;
-  explain?: boolean;
-  explainView?: string;
-  view?: string;
-}
-
-/** The transport `run()` executes under for a KPI-owned panel — the shared
- *  read of `core/panel-execution.js`'s `PanelExecutionResult` (the non-Filter
- *  branch) and the plain Filter-role stand-in literal (the `isFilter` branch),
- *  narrowed to exactly the fields `run()` itself reads. */
-interface KpiExecutionTransport {
-  format?: string;
-  rowLimit?: number;
-  params: Record<string, string | number>;
-  error: string | null;
-}
-
 /** The var-strip's combobox-based field controller — whichever of
  *  `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` `ctl.kind`
  *  picks. Only `RelativeTimeField` actually declares `previewEl` (the #169
@@ -623,9 +582,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     runQuery: ch.runQuery, killQuery: ch.killQuery, ctx: () => chCtx, now, uid, retryMs, sleep, sqlString,
   });
   app.exec = exec;
-  // Milliseconds since the running query started (0 when idle). Used for the
-  // live counter, computed fresh so each render/tick shows the current value.
-  app.elapsedMs = () => (runState(app.state).runT0 != null ? now() - runState(app.state).runT0! : 0);
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
   app.now = now;
@@ -719,328 +675,37 @@ export function createApp(env: CreateAppEnv = {}): App {
     return false;
   }
 
-  async function run(opts?: RunOpts): Promise<void> {
-    if (app.state.running.value) return; // already running — cancel via cancel()/Esc
-    const tab = app.activeTab();
-    // `opts.sql` overrides the source SQL (a single selected statement); otherwise
-    // the whole tab runs, byte-for-byte as before (FORMAT / EXPLAIN detection,
-    // trailing `;`, history).
-    const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
-    if (!srcSql.trim()) return;
-    const isFilter = effectiveDashboardRole(tab.specParsed) === 'filter';
-    const filterRun = isFilter ? filterExecution(srcSql) : null;
-    if (filterRun?.error) {
-      const filterErrorResult: QueryResult = newResult('Filter', filterRun.rowLimit);
-      filterErrorResult.error = filterRun.error;
-      Object.assign(tab, { result: filterErrorResult });
-      tab.filterPreview = { status: 'error', error: filterRun.error };
-      app.state.resultView.value = 'filter';
-      renderResults(app);
-      return;
-    }
-    const waveMs = wallNow(); // one wall clock for this run wave: gate + args see the same instant
-    if (!isFilter && varGateBlocked(waveMs)) return; // Filter parameters fail statically above
-    // One prepared source for the whole run wave (#173), captured NOW —
-    // synchronously with the gate check above, BEFORE the auth awaits below
-    // (review F6 invariant, shared with runScript/exportDirect/exportScript):
-    // gate and args see the same varValues snapshot; a value edited while a
-    // token refresh is in flight applies to the NEXT run, and can never reach
-    // the server as a never-gate-checked binding. Reused on success for the
-    // recent-value recording (#171), so it reads exactly the boundParams that
-    // were sent.
-    const src = prepareTabSource(srcSql, waveMs);
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    cancelSchemaGraph(); // a Run/Explain takes over the result — don't leave a lineage fetch running
-
-    // EXPLAIN-view bookkeeping: the Explain button (opts.explain) forces any query
-    // into EXPLAIN-view mode; a normal Run clears that; switching an EXPLAIN tab
-    // (opts.explainView) preserves it.
-    if (opts && opts.explain) app.state.forceExplain = true;
-    else if (!(opts && opts.explainView != null)) app.state.forceExplain = false;
-
-    // Every downstream decision + the request itself operate on the statement's
-    // execution view (#165): inactive optional blocks removed, markers
-    // stripped — byte-identical to srcSql for SQL without blocks. History still
-    // records the template (srcSql / tab.sqlDraft).
-    const execSql = isFilter ? srcSql : execStatementSql(srcSql);
-
-    const kpiExecution: KpiExecutionTransport = isFilter
-      ? { format: 'Table', rowLimit: app.state.resultRowLimit, params: {}, error: null }
-      : panelExecution(tabPanel(tab), execSql, {
-        format: 'Table', rowLimit: app.state.resultRowLimit, params: {},
-      });
-    if (kpiExecution.error) {
-      const kpiErrorResult: QueryResult = newResult('KPI', 2);
-      kpiErrorResult.error = kpiExecution.error;
-      Object.assign(tab, { result: kpiErrorResult });
-      app.state.resultView.value = 'panel';
-      renderResults(app);
-      return;
-    }
-
-    // An explicit FORMAT clause runs raw and shows ClickHouse's response verbatim
-    // (single raw tab). Otherwise an EXPLAIN (typed, or forced by the button) gets
-    // the five EXPLAIN views; everything else streams structured (Table).
-    const panelIsKpi = !isFilter && isKpiPanel(tabPanel(tab));
-    const explicitFmt = isFilter || panelIsKpi ? null : detectSqlFormat(execSql);
-    const parsed = isFilter || explicitFmt ? null : parseExplain(execSql);
-    const explainMode = !isFilter && !explicitFmt && (parsed != null || app.state.forceExplain);
-    let runSql = execSql;
-    let fmt: string;
-    let explainView: string | null = null;
-    if (isFilter) {
-      fmt = filterRun!.format;
-    } else if (explainMode) {
-      // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
-      // is honored exactly (canonical match → its rich view, else the verbatim
-      // Explain view); the button-forced path falls through to Explain. We never
-      // inherit a stale view from a previous run/tab — typing a plain EXPLAIN must
-      // show the plan, not whatever view was last open.
-      explainView = (opts && opts.explainView)
-        || (parsed && detectExplainView(parsed))
-        || 'explain';
-      fmt = (EXPLAIN_VIEWS.find((v) => v.id === explainView) || EXPLAIN_VIEWS[0]).chFormat;
-      const inner = parsed ? parsed.inner : execSql;
-      const explainOpts = { pretty: supportsExplainPretty(app.state.serverVersion) };
-      runSql = explainView === 'explain' && parsed
-        ? execSql
-        : buildExplainQuery(inner, explainView, explainOpts);
-    } else {
-      fmt = panelIsKpi ? kpiExecution.format! : explicitFmt || 'Table';
-    }
-
-    // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
-    // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
-    // would truncate a plan oddly). The streaming guard reads it off the result;
-    // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = isFilter ? filterRun!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : app.state.resultRowLimit;
-    const t0 = now();
-    const result: QueryResult = newResult(fmt, rowLimit);
-    Object.assign(tab, { result });
-    if (isFilter) tab.filterPreview = { status: 'running' };
-    if (explainView) result.explainView = explainView;
-    app.state.resultSort = { col: null, dir: 'asc' };
-    const rs = runState(app.state);
-    rs.runT0 = t0;
-    rs.runQueryId = uid('q');
-    app.state.abortController = new AbortController();
-    rs.runTick = setInterval(tickElapsed, 100);
-    // Keep the current Table/JSON/Panel tab across re-runs (#34); a saved-query
-    // open passes its remembered view in opts.view to restore that instead
-    // (a stray legacy 'chart' value maps to 'panel' — #166).
-    const view = opts && opts.view === 'chart' ? 'panel' : opts && opts.view;
-    // Flip the run signals last, in one batch: the results + Run-button effects
-    // fire on this write and read runT0/elapsed, so the bookkeeping above must
-    // already be set. (The old explicit setRunBtn(true)/renderResults are now
-    // those effects' job.)
-    batch(() => {
-      app.state.resultView.value = view != null && ['table', 'json', 'panel', 'filter'].includes(view)
-        ? (view as 'table' | 'json' | 'panel' | 'filter') : app.state.resultView.value;
-      app.state.running.value = true;
-    });
-
-    try {
-      await exec.executeRead(result, {
-        sql: runSql,
-        format: fmt,
-        rowLimit,
-        queryId: rs.runQueryId,
-        signal: app.state.abortController.signal,
-        // Native ClickHouse query parameters (#134/#173): pass prepared values
-        // as param_<name> so the server substitutes them (only row-returning
-        // statements bind — a CREATE VIEW / DDL source stays verbatim).
-        params: isFilter
-          ? filterRun!.params
-          : { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
-        onChunk: () => renderResults(app),
-      });
-    } finally {
-      clearInterval(rs.runTick as ReturnType<typeof setInterval>);
-      rs.runTick = null;
-      app.state.abortController = null;
-      rs.runQueryId = null;
-      rs.runT0 = null;
-      result.progress.elapsed_ns = (now() - t0) * 1e6;
-      if (isFilter) {
-        tab.filterPreview = result.error || result.cancelled
-          ? { status: 'error', error: result.error || 'Filter query was cancelled.' }
-          : {
-              status: 'success',
-              normalized: readFilterOptions({
-                columns: result.columns,
-                row: result.rows[0],
-                rowCount: result.rows.length,
-              }),
-            };
-      }
-      // #185: capture the source that produced a normal, row-returning
-      // structured result (fmt 'Table', so raw FORMAT / EXPLAIN are excluded;
-      // empty results stay ineligible), so the Data Pane's Expand can open an
-      // interactive, independently re-runnable detached view. The authored
-      // template (srcSql — optional-block markers intact) and the run-time
-      // title/description are snapshotted here, never re-derived from the
-      // editor/Library at expand time (which may have changed). This MUST run
-      // BEFORE the running flip below: that flip fires the results effect that
-      // renders the toolbar + its Expand affordance, which gates on
-      // `result.source` — set it after and the button never appears until the
-      // next paint.
-      if (!result.error && !result.cancelled && (fmt === 'Table' || fmt === 'KPI') && result.rows.length > 0) {
-        result.source = buildResultSource({
-          srcSql,
-          tabId: tab.id,
-          rowLimit,
-          tabName: tab.name,
-          savedEntry: savedForTab(app.state, tab),
-        });
-      }
-      // Flip running off last: the results + Run-button effects fire here and
-      // render the final stats, so elapsed_ns must already be recorded. (Old
-      // explicit setRunBtn(false)/renderResults are now those effects' job.)
-      app.state.running.value = false;
-      if (!result.error && !result.cancelled) {
-        // Spec completion is intentionally stable during a run and survives a
-        // later failed/cancelled run. Snapshot only completed structured
-        // results; never expose partially streamed metadata to the editor.
-        tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter')
-          ? result.columns.map((column) => ({ ...column }))
-          : [];
-        app.recordHistory(tab, opts && opts.sql);
-        // #171: this statement succeeded — record its bound params (exactly
-        // what was actually sent; an omitted-optional-block param never
-        // reached `src.statements[*].boundParams` in the first place).
-        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
-        if (isSchemaMutatingSql(runSql)) app.loadSchema(); // not awaited — fire and forget
-      }
-    }
-  }
-
-  // Run a `;`-separated script sequentially: one ClickHouse request per statement
-  // (CH's HTTP interface runs exactly one statement per request), stopping on the
-  // first failure. Row-returning statements (SELECT/WITH/SHOW/…) are fetched as
-  // JSONCompact capped at 100 rows; everything else runs for effect and reports
-  // OK. The result is a per-statement summary grid (tab.result.script). The whole
-  // script is recorded as one history entry on a clean run. `originalInput` is the
-  // exact text that was split (the selection or the whole editor).
-  async function runScript(statements: string[], originalInput: string): Promise<void> {
-    if (app.state.running.value) return;
-    const waveMs = wallNow(); // one wall clock for the whole script wave
-    if (varGateBlocked(waveMs)) return; // block a script run with unfilled variables
-    // One prepared batch for the whole script (#173): `statements` came from
-    // splitStatements(originalInput), so the batch's statements align by index.
-    // Captured NOW — synchronously with the gate check above, BEFORE the auth
-    // awaits (review F6 invariant, shared with run/exportDirect/exportScript):
-    // gate and args see the same varValues snapshot; edits during the auth
-    // await apply to the next run.
-    const paramSrc = prepareTabSource(originalInput, waveMs);
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    cancelSchemaGraph(); // a script run takes over the result — don't leave a lineage fetch running
-    app.state.forceExplain = false;
-    const tab = app.activeTab();
-    const t0 = now();
-    const entries: ScriptEntry[] = [];
-    const scriptResult: ScriptResult = { script: entries };
-    Object.assign(tab, { result: scriptResult });
-    app.state.resultSort = { col: null, dir: 'asc' };
-    const rs = runState(app.state);
-    rs.runT0 = t0;
-    app.state.abortController = new AbortController();
-    rs.runTick = setInterval(tickElapsed, 100);
-    let aborted = false;
-    // Attach a session only if the script needs one (TEMPORARY / SET) or the tab
-    // already has one — same params for every statement, computed once.
-    const sp = sessionParamsFor(tab, statements);
-    app.state.running.value = true; // the results effect paints the (empty) grid
-    try {
-      // Transport/retry loop (one ClickHouse request per statement, the
-      // SESSION_IS_LOCKED / transient-network retry, stop-on-first-failure)
-      // now lives in application/query-execution-service.ts (#276 Phase 1) —
-      // this loop owns only orchestration: per-statement wire text (#165's
-      // execution view), the live query_id (for Cancel), pushing entries +
-      // repainting, and per-statement boundParams recording.
-      const res = await exec.executeScript({
-        statements: statements.map((stmt, i) => ({
-          sql: stmt,
-          // The wire text is the pipeline's per-statement execution view (#165):
-          // inactive optional blocks removed for row-returning statements,
-          // verbatim (byte-identical) for everything else and for block-free SQL.
-          // The result grid keeps showing the authored `stmt`.
-          execSql: paramSrc.statements[i].sql,
-          // Per-statement prepared args (#134/#173): the pipeline binds only
-          // row-returning statements, so a DDL / CREATE VIEW statement in the
-          // script is sent with its {name:Type} placeholders intact.
-          params: { ...sp, ...paramSrc.statements[i].args },
-        })),
-        signal: app.state.abortController.signal,
-        // Fresh query_id per attempt, published before the request so Cancel
-        // issues KILL QUERY against the statement that's actually running.
-        onStatementStart: (_i, { queryId }) => { rs.runQueryId = queryId; },
-        onStatementResult: (i, entry) => {
-          entries.push(entry);
-          // #171: THIS statement succeeded — record its own boundParams (per
-          // statement, not per script: statement 1 of a later-failing script
-          // still records; an error entry stops the script and never records).
-          if (entry.status !== 'error') app.recordBoundParams([...paramSrc.statements[i].boundParams]);
-          renderResults(app);
-        },
-      });
-      aborted = res.aborted;
-    } finally {
-      clearInterval(rs.runTick as ReturnType<typeof setInterval>);
-      rs.runTick = null;
-      app.state.abortController = null;
-      rs.runQueryId = null;
-      rs.runT0 = null;
-      scriptResult.elapsedMs = now() - t0;
-      if (aborted) scriptResult.cancelled = true;
-      app.state.running.value = false;
-      // A statement that actually ran (status !== 'error') and was schema-mutating
-      // refreshes the tree even if a later statement in the script failed — it
-      // already took effect server-side.
-      if (entries.some((e) => e.status !== 'error' && isSchemaMutatingSql(e.sql))) app.loadSchema();
-      // One history entry for the whole script — but only on a clean run (mirrors
-      // run(): no history for an aborted or failed script).
-      if (!aborted && !entries.some((e) => e.status === 'error')) {
-        recordScriptHistory(app.state, originalInput, scriptResult.elapsedMs!, saveJSON);
-        if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
-      }
-    }
-  }
-
-  // The Run button / ⌘+Enter entry point. A non-empty (non-whitespace) editor
-  // selection runs just that text; otherwise the whole tab. The chosen text is
-  // split: one statement keeps today's rich Table/Chart/EXPLAIN path (run());
-  // more than one runs sequentially as a script (runScript).
-  function runEntry(opts?: RunOpts): void | Promise<void> {
-    if (app.activeTab().editorMode !== 'sql') return;
-    if (app.state.running.value) return;
-    const sel = app.sqlEditor.getSelection().text;
-    const hasSel = sel.trim() !== '';
-    const input = hasSel ? sel : app.activeTab().sqlDraft;
-    const statements = splitStatements(input);
-    if (!statements.length) return; // nothing runnable (empty / comments-only)
-    // The unfilled-variable gate (#134) lives in run()/runScript() — the shared
-    // execution choke points — so Explain, row-limit re-runs, and Export are
-    // gated too, not just this path.
-    // Mobile (#126): a run jumps the bottom-nav to the Results panel so the data
-    // the user just asked for is what they see next.
-    if (app.state.isMobile.value) app.state.mobileView.value = 'results';
-    if (effectiveDashboardRole(app.activeTab().specParsed) === 'filter') {
-      return run(hasSel ? { ...opts, sql: input } : opts);
-    }
-    // >1 statement → script grid (a remembered single-result view doesn't apply).
-    if (statements.length > 1) return runScript(statements, input);
-    // 1 statement → today's rich path. Forward opts (e.g. a saved query's
-    // remembered view / Explain); a selection adds the sql override.
-    return run(hasSel ? { ...opts, sql: input } : opts);
-  }
-  // Stop an in-flight query: abort the stream and KILL QUERY on the server.
-  function cancel(): void {
-    if (!app.state.running.value) return;
-    if (app.state.abortController) app.state.abortController.abort();
-    exec.kill(runState(app.state).runQueryId); // fire-and-forget, same as before
-  }
+  // The run/runScript/runEntry/cancel orchestration (#276 Phase 3a) now lives
+  // in ui/workbench/workbench-session.ts — a route-scoped session that owns
+  // the run bookkeeping (runT0/runQueryId/runTick) and the in-flight
+  // AbortController privately (formerly this file's own `runState` cast +
+  // `app.state.abortController`). This shell supplies the DOM/render hooks
+  // (results/history repaint, schema reload, the selection/toast/tick seams)
+  // and the ClickHouse/param-pipeline dependencies the session's core logic
+  // needs; `renderApp`'s `attachShell` call wires the 3 run-coupled reactive
+  // effects (results repaint / Run button / mobile badge) the session owns.
+  const workbench = createWorkbenchSession({
+    exec, ensureConfig, getToken, now, wallNow, uid,
+    state: app.state, // AppState structurally satisfies WorkbenchStateSlice
+    activeTab: () => app.activeTab(),
+    hooks: {
+      renderResults: () => renderResults(app),
+      renderSavedHistory: () => renderSavedHistory(app),
+      cancelSchemaGraph,
+      loadSchema: () => { void app.loadSchema(); },
+      recordHistory: (tab, sql) => app.recordHistory(tab, sql),
+      recordBoundParams: (bp) => app.recordBoundParams([...bp]),
+      prepareTabSource, varGateBlocked, execStatementSql, sessionParamsFor,
+      getSelectionText: () => app.sqlEditor.getSelection().text,
+      tickElapsed,
+      saveJSON,
+      onAuthFailed: () => chCtx.onSignedOut(),
+    },
+  });
+  app.workbench = workbench;
+  // Milliseconds since the running query started (0 when idle) — delegates to
+  // the session's own private runT0 bookkeeping.
+  app.elapsedMs = () => workbench.elapsedMs();
   // Keep `app.hardenedVars` (#170 review) in sync with a field's just-computed
   // 'execute'-mode verdict: added when it's invalid, cleared otherwise — so a
   // corrected-then-reharded value, or a variable that simply stopped being
@@ -1577,12 +1242,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   // views (the editor SQL is left untouched; run() wraps it as needed).
   function explainQuery(): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
-    return explainMultiBlocked() ? undefined : run({ explain: true });
+    return explainMultiBlocked() ? undefined : workbench.run({ explain: true });
   }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
   function setExplainView(id: string): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
-    return explainMultiBlocked() ? undefined : run({ explainView: id });
+    return explainMultiBlocked() ? undefined : workbench.run({ explainView: id });
   }
   // Change the global result-row cap: persist the (normalized) preference and
   // re-run the current query so a raise genuinely fetches more (server-side cap),
@@ -1591,7 +1256,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   function setResultRowLimit(n: number): Promise<void> | undefined {
     app.state.resultRowLimit = normalizeRowLimit(n);
     app.savePref('resultRowLimit', app.state.resultRowLimit);
-    return app.activeTab().editorMode === 'sql' ? run() : undefined;
+    return app.activeTab().editorMode === 'sql' ? workbench.run() : undefined;
   }
 
   // Fetch the DDL for `target` (e.g. 'db.table' or 'DATABASE db') with
@@ -1706,13 +1371,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // --- streaming export (issue #87 single-file / #99 script) --------------
   // Full, uncapped export of a query — never the loaded grid — streamed
   // straight to a user-chosen file. Its own query_id + abort, kept separate
-  // from app.state.runQueryId/abortController so an export and a grid run
-  // never clobber each other's cancel state.
+  // from the workbench session's own private run bookkeeping so an export and
+  // a grid run never clobber each other's cancel state.
   let exportAbort: AbortController | null = null;
   let exportQueryId: string | null = null;
   // Script-export state (issue #99) — its own abort/query-id, reassigned each
   // iteration so Cancel reaches the in-flight statement, and kept distinct
-  // from both app.state.run* and the single-export state above.
+  // from both the workbench session's own run bookkeeping and the single-
+  // export state above.
   let exportScriptAbort: AbortController | null = null;
   let exportScriptQueryId: string | null = null;
   let exportScriptCancelled = false;
@@ -2276,8 +1942,8 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   // --- actions registry --------------------------------------------------
   app.actions = {
-    run: runEntry,
-    cancel,
+    run: (opts) => workbench.runEntry(opts),
+    cancel: () => workbench.cancel(),
     newTab: () => newTab(app),
     selectTab: (id) => selectTab(app, id),
     closeTab: (id) => closeTab(app, id),
@@ -2535,19 +2201,26 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
     app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
     app.updateEditorModeUi!(); // assigned just above, unconditionally, before any effect can run
   });
-  // Reactive repaint of the results pane: re-runs on a tab switch, a Table/JSON/
-  // Chart view change, or a run-state flip. (renderResults' activeTab() also
-  // reads tabs.value, so a tab-list change repaints here too.) Streaming-data
-  // repaints still call renderResults directly from run()'s onChunk.
-  effect(() => {
-    app.state.activeTabId.value;
-    app.state.resultView.value;
-    app.state.running.value;
-    renderResults(app);
+  // The workbench's 3 run-coupled reactive effects (#276 Phase 3a — see
+  // workbench-session.ts's own `attachShell`): the results-pane repaint
+  // (re-runs on a tab switch, a Table/JSON/Chart view change, or a run-state
+  // flip — renderResults' activeTab() also reads tabs.value, so a tab-list
+  // change repaints here too; streaming-data repaints still call renderResults
+  // directly from the session's own onChunk), the Run button (label + disabled,
+  // reflecting the run state and the selection — Run ↔ Run selection), and the
+  // mobile Results-nav badge (● while a query streams, else the row count).
+  // Idempotent: re-registers (disposing the previous set) on every renderApp()
+  // re-run.
+  app.workbench.attachShell({
+    renderResults: () => renderResults(app),
+    setRunBtn: (running) => app.setRunBtn(running),
+    setMobileBadge: () => {
+      const r = app.activeTab().result as QueryResult | null;
+      app.dom.mobileBadge!.textContent = state.running.value
+        ? '●'
+        : (r && r.rawText == null && r.progress ? formatRows(r.progress.rows) : '');
+    },
   });
-  // The Run button reflects the run state (label + disabled) and the selection
-  // (Run ↔ Run selection).
-  effect(() => { app.state.hasSelection.value; app.setRunBtn(app.state.running.value); });
   // The Export button reflects the exporting state — set here (not just at
   // click-time) so a second click while one export is already running is
   // blocked visually too, not just by exportDirect's own re-entrance guard.
@@ -2610,15 +2283,6 @@ export function renderApp(app: App, helpers: RenderAppHelpers): void {
   // breakpoint). Each runs once now for the initial paint.
   effect(() => { mainRow.dataset.mobileView = state.mobileView.value; });
   effect(() => { sidebar.dataset.mobileTab = state.mobileTab.value; });
-  // The Results nav badge: ● while a query streams, else the row count (blank for
-  // no/raw result). Same deps as the results repaint so it tracks run/tab/view.
-  effect(() => {
-    state.running.value; state.activeTabId.value; state.resultView.value;
-    const r = app.activeTab().result as QueryResult | null;
-    app.dom.mobileBadge!.textContent = state.running.value
-      ? '●'
-      : (r && r.rawText == null && r.progress ? formatRows(r.progress.rows) : '');
-  });
   app.loadVersion();
   app.loadSchema();
   app.loadReference();
