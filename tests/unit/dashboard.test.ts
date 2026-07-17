@@ -2012,11 +2012,13 @@ const msg = (data: unknown, source: unknown, origin = 'https://ch.example'): Fak
  * ensureConfig, chCtx, renderApp, receiveAuthHandoff, …) are attached via
  * later property assignment inside that same untyped function, invisible to
  * declaration inference, but genuinely present on the one real object at
- * runtime. Several of those methods are closures over THAT object (`app.token
- * = …` inside receiveAuthHandoff, not `this.token`), so returning a spread
- * COPY here (as `makeApp()` does for its stateless stub) would silently
- * detach every such mutation from what the test reads back — `asApp` only
- * reinterprets the type, preserving the one real reference. */
+ * runtime. Several of those methods are closures over `app.conn` — the real
+ * `ConnectionSession` (#276 Phase 2) createApp constructs and wires in place,
+ * whose own internal `token`/`authMode`/… locals mutate on
+ * `receiveAuthHandoff`/`setTokens`/etc. — so returning a spread COPY here (as
+ * `makeApp()` does for its stateless stub) would silently detach every such
+ * mutation from what the test reads back — `asApp` only reinterprets the
+ * type, preserving the one real reference. */
 const asApp = (v: object): App => v as App;
 function realApp(env: CreateAppEnv): App {
   return asApp(createApp(env));
@@ -2105,8 +2107,8 @@ describe('app auth handoff', () => {
     window.dispatchEvent(msg({ type: 'other' }, opener)); // ignored
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok, oauth_refresh_token: 'r', oauth_idp: 'g', oauth_origin: 'https://cluster' } }, opener));
     await expect(p).resolves.toBe(true);
-    expect(app.token).toBe(newTok);
-    expect(app.idpId).toBe('g');
+    expect(app.conn.token()).toBe(newTok);
+    expect(app.conn.idpId()).toBe('g');
     expect(app.chCtx.origin).toBe('https://cluster');
     expect(ss.getItem('oauth_id_token')).toBe(newTok);
   });
@@ -2117,7 +2119,7 @@ describe('app auth handoff', () => {
     const p = app.receiveAuthHandoff({ opener: asWindow(opener) });
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { ch_basic_auth: 'YmFzZQ==', ch_basic_user: 'u', ch_basic_origin: 'https://c2' } }, opener));
     await expect(p).resolves.toBe(true);
-    expect(app.authMode).toBe('basic');
+    expect(app.conn.authMode()).toBe('basic');
     expect(app.chCtx.origin).toBe('https://c2');
     expect(ss.getItem('ch_basic_auth')).toBe('YmFzZQ==');
   });
@@ -2130,7 +2132,7 @@ describe('app auth handoff', () => {
     const newTok = jwt({ email: 'z@z.com', exp: Math.floor(Date.now() / 1000) + 3600 });
     window.dispatchEvent(msg({ type: AUTH_GRANT, creds: { oauth_id_token: newTok } }, opener));
     await expect(p).resolves.toBe(true);
-    expect(app.token).toBe(newTok);
+    expect(app.conn.token()).toBe(newTok);
   });
   it('resolves false when the request times out', async () => {
     const app = realApp(appEnv({ handoffMs: 5 }));

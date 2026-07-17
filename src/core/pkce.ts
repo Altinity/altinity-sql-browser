@@ -7,13 +7,13 @@
  *  `ArrayBuffer`-backed form (`new Uint8Array(n)`'s actual type) since
  *  lib.dom's own `Crypto.getRandomValues` requires exactly that, not the
  *  wider `ArrayBufferLike` (which also admits `SharedArrayBuffer`). */
-interface RandomBytesSource {
+export interface RandomBytesSource {
   getRandomValues(array: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>;
 }
 
 /** The minimal Web Crypto surface `generatePKCE` uses — real Web Crypto (the
  *  global `crypto`, browser or Node's `webcrypto`) or an injectable stub. */
-interface PkceCrypto extends RandomBytesSource {
+export interface PkceCrypto extends RandomBytesSource {
   subtle: { digest(algorithm: string, data: BufferSource): Promise<ArrayBuffer> };
 }
 

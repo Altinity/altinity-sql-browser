@@ -30,6 +30,48 @@ import type { StreamResult } from '../../src/core/stream.js';
 import type { ChartJsConfigResult } from '../../src/core/chart-data.js';
 import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
+import type { ConnectionSession } from '../../src/application/connection-session.js';
+
+// Production invariant (#276 Phase 2): `app.chCtx` and `app.conn.chCtx` are
+// THE SAME live object (app.ts aliases `conn.chCtx`) — the defaults + the
+// makeApp merge below preserve that identity so a fixture mutation through
+// either alias observes shared state, exactly like the real app.
+const chCtxDefaults: ChCtx = {
+  fetch, origin: '', authConfirmed: true,
+  getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
+};
+
+// A minimal `ConnectionSession` stub (#276 Phase 2) — every render-module test
+// exercises `app.conn` only incidentally (through the `App`-level auth
+// delegates it backs, e.g. `isSignedIn`/`email`/`ensureConfig`), never
+// directly; this is inert, never-called-by-default plumbing so `appDefaults`
+// still satisfies the full `App` contract.
+const connDefaults: ConnectionSession = {
+  basePath: '',
+  hostHint: '',
+  chCtx: chCtxDefaults,
+  token: () => null,
+  refreshToken: () => null,
+  authMode: () => 'basic',
+  idpId: () => null,
+  chAuth: () => 'basic',
+  basicUserClaim: () => 'sub',
+  isSignedIn: () => true,
+  email: () => '',
+  host: () => '',
+  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as ConfigDoc,
+  selectIdp: () => {},
+  resolveConfig: async () => ({}) as ResolvedIdpConfig,
+  ensureConfig: async () => null,
+  setTokens: () => {},
+  getToken: async () => null,
+  beginOAuth: async () => {},
+  connectBasic: async () => {},
+  signOut: () => {},
+  ensureFreshToken: async () => true,
+  grantHandoffTo: () => {},
+  receiveAuthHandoff: async () => false,
+};
 
 // A stand-in for the Chart.js constructor: records its canvas + config and
 // exposes a destroy() spy, so the chart glue is testable without a real
@@ -68,8 +110,7 @@ const appDefaults: App = {
   build: 'v0.0.0-test',
   root: null,
   document,
-  token: null,
-  refreshToken: null,
+  conn: connDefaults,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
@@ -87,23 +128,14 @@ const appDefaults: App = {
   activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
   isSignedIn: () => true,
   email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
   hostHint: '',
   basePath: '',
   setTokens: () => {},
   loadConfig: async () => ({}) as ResolvedIdpConfig,
   loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as ConfigDoc,
-  selectIdp: () => {},
   ensureConfig: async () => null,
   ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
+  chCtx: chCtxDefaults,
   showLogin: () => {},
   signOut: () => {},
   receiveAuthHandoff: async () => false,
@@ -169,7 +201,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -177,6 +209,11 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec'>> & {
    *  about overriding `executeRead` (the #185 detached-read seam / dashboard
    *  tile transport); `executeScript`/`kill` fall back to the base stubs. */
   exec?: Partial<QueryExecutionService>;
+  /** Partial like the rest. `conn.chCtx` cannot be overridden here — the
+   *  merge below always re-points it at the shared merged `chCtx` object
+   *  (the production identity invariant); override `chCtx` at the top level
+   *  and both aliases see it. */
+  conn?: Partial<Omit<ConnectionSession, 'chCtx'>>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -297,14 +334,18 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       updateSaveBtn: vi.fn(),
     },
   };
+  // One merged chCtx object shared by BOTH aliases (app.chCtx and
+  // app.conn.chCtx) — the production identity invariant (#276 Phase 2).
+  const chCtx = { ...appDefaults.chCtx, ...base.chCtx, ...(overrides.chCtx ?? {}) };
   const merged = {
     ...appDefaults,
     ...base,
     ...overrides,
     dom: { ...appDefaults.dom, ...base.dom, ...(overrides.dom ?? {}) },
-    chCtx: { ...appDefaults.chCtx, ...base.chCtx, ...(overrides.chCtx ?? {}) },
+    chCtx,
     actions: { ...appDefaults.actions, ...base.actions, ...(overrides.actions ?? {}) },
     exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
+    conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

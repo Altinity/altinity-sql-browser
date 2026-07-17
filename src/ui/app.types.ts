@@ -15,6 +15,7 @@ import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
+import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
@@ -100,15 +101,14 @@ export interface AppDom {
   varStripDeferHooked?: boolean;
 }
 
-export interface ChCtx {
-  fetch: typeof fetch;
-  origin: string;
-  authConfirmed: boolean;
-  getToken(): Promise<string | null>;
-  refresh(): Promise<boolean>;
-  authHeader(token: string): string;
-  onSignedOut(detail?: string): void;
-}
+/** The live ClickHouse auth context every query call site reads/mutates —
+ * a structural alias of `application/connection-session.ts`'s own
+ * `SessionChCtx` (the session is the one place that constructs and mutates
+ * it now, #276 Phase 2) rather than a second, independently-maintained
+ * copy of the same shape. `src/ui/**` may depend on `src/application/**`,
+ * never the reverse — connection-session.ts redeclares this shape itself
+ * rather than importing it from here. */
+export type ChCtx = SessionChCtx;
 
 export interface ActionsRegistry {
   run(opts?: Json): void | Promise<void>;
@@ -167,8 +167,15 @@ export interface App {
   hardenedVars: Set<string>;
   root: Element | null;
   document: Document;
-  token: string | null;
-  refreshToken: string | null;
+
+  /** The auth + config + ClickHouse connection lifecycle (#276 Phase 2) —
+   *  OAuth PKCE login/refresh, Basic probing, IdP config resolution, and
+   *  cross-tab auth handoff, constructible without App/AppState/DOM
+   *  (`src/application/connection-session.ts`). The identity/auth members
+   *  below (`isSignedIn`/`email`/`host`/…) are Phase-2 delegates onto this —
+   *  shells/bootstrap consume those; a future phase re-points them to
+   *  `app.conn` directly. */
+  conn: ConnectionSession;
 
   // Editor ports (injected seams — #143/#212).
   sqlEditor: EditorPort;
@@ -196,16 +203,16 @@ export interface App {
   /** Ad-hoc, consumer-attached (chart-render.js), not initialized by createApp. */
   chart?: { destroy(): void };
 
-  // Identity / auth.
+  // Identity / auth — Phase-2 delegates onto `conn` (see its doc comment
+  // above). `authMode`/`chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/
+  // `chUsername` moved onto `app.conn` itself (`conn.authMode()`/
+  // `conn.chAuth()`/`conn.basicUserClaim()`/`conn.idpId()`/`conn.selectIdp()`)
+  // — no other module read them off `App` directly (verified #276 Phase 2),
+  // so they aren't re-delegated here.
   host(): string;
   activeTab(): Tab;
   isSignedIn(): boolean;
   email(): string;
-  chUsername(jwtPayload: Json): string;
-  authMode: 'oauth' | 'basic';
-  chAuth: 'bearer' | 'basic';
-  basicUserClaim: string;
-  idpId: string | null;
   hostHint: string;
   basePath: string;
   setTokens(id: string, refresh?: string): void;
@@ -219,7 +226,6 @@ export interface App {
    * not just `{id}`); login.ts read the real shape all along behind its own
    * `LoginIdpsResult` widening, now redundant (dropped there). */
   loadIdps(): Promise<ConfigDoc>;
-  selectIdp(id: string): void;
   /** Same real shape as `loadConfig` (`null` when config couldn't be loaded —
    * fail-soft, see app.ts's own `ensureConfig`). */
   ensureConfig(): Promise<ResolvedIdpConfig | null>;

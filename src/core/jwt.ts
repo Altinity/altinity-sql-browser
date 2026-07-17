@@ -4,7 +4,8 @@
 
 /** A decoded JWT payload — `exp` (seconds since epoch) is the one claim this
  *  module reads itself; other claims (email/preferred_username/sub/…) pass
- *  through untyped for `app.js`'s `chUsername`. */
+ *  through untyped for the ConnectionSession's `chUsername`
+ *  (`application/connection-session.ts`, #276 Phase 2). */
 export interface JwtPayload {
   exp?: number;
   [key: string]: unknown;
