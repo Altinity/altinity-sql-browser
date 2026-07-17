@@ -69,9 +69,21 @@ const RULES = [
     // must NOT reach up into any UI adapter (the App, Workbench UI, editors,
     // and global AppState are already forbidden by the `src/dashboard` rule
     // above). This keeps the direction model/layouts <- application <- UI.
+    //
+    // Issue #286 phase 4: the DashboardViewerSession lives here, so this rule
+    // also names the App/AppState/editor/service/network boundary EXPLICITLY
+    // (not just transitively via the `src/dashboard` rule) — the viewer session
+    // must be constructible and testable without the Workbench UI, the full
+    // `App` controller, global `AppState`, the CodeMirror editors, the
+    // `src/application` services, or the `src/net` client; it depends only on
+    // the narrow injected interfaces it declares. `main.ts` (the bootstrap) is
+    // named too so the application layer can never reach the composition root.
     dir: 'src/dashboard/application',
-    forbidden: ['src/dashboard/ui'],
-    why: 'issue #280 phase 3: application must not import Dashboard UI adapters (model/layouts <- application <- UI)',
+    forbidden: [
+      'src/dashboard/ui', 'src/ui', 'src/editor', 'src/application',
+      'src/state.ts', 'src/net', 'src/main.ts',
+    ],
+    why: 'issue #280 phase 3 / #286 phase 4: application (incl. DashboardViewerSession) must not import Dashboard UI adapters, Workbench UI, the App, global AppState, editors, src/application services, or the network layer',
   },
   {
     dir: 'src/workspace',
