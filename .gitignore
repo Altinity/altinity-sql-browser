@@ -1,6 +1,9 @@
 # Build output
 /dist/
 
+# Bundle-size report output (npm run size-report) — a CI artifact, not committed
+/bundle-report/
+
 # Test / coverage
 /coverage/
 /test-results/

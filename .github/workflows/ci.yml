@@ -28,6 +28,54 @@ jobs:
           path: dist/sql.html
           retention-days: 14
 
+  # Bundle-size report (#275): measure the self-contained artifact on every PR and
+  # upload it as an artifact — raw/gzip/Brotli, per-module + per-package attribution,
+  # and deltas vs. the PR base when a base report can be produced. Reporting only:
+  # it builds the same bytes as the release, never a budget that fails the build.
+  size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the PR base commit is present for the base report below.
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # Base report: check the PR base commit out into a worktree and run *its*
+      # size-report. Fully tolerant — the base predates this tooling on the first
+      # PR, so a failure here just means "no deltas", never a failed job.
+      - name: Base report (PR only, best-effort)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          set +e
+          base='${{ github.event.pull_request.base.sha }}'
+          git worktree add /tmp/base-tree "$base" || exit 0
+          ( cd /tmp/base-tree \
+            && npm ci --no-audit --no-fund \
+            && npm run size-report -- --out /tmp/base-report ) || exit 0
+          cp /tmp/base-report/bundle-size-report.json base-report.json 2>/dev/null || true
+      - name: Size report
+        run: |
+          set -euo pipefail
+          if [ -f base-report.json ]; then
+            npm run size-report -- --base base-report.json
+          else
+            echo "No base report available — emitting current report without deltas."
+            npm run size-report
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bundle-size-report
+          path: |
+            bundle-report/bundle-size-report.json
+            bundle-report/bundle-size-report.md
+            bundle-report/esbuild-meta.json
+          retention-days: 14
+
   # Release-bundle smoke test: assemble the curl|sh artifact, extract it, and boot
   # the zero-dep Python runner exactly as an end user would — proving the bundle
   # layout, the SPA-path discovery, and config.json generation all work before a

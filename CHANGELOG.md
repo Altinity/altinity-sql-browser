@@ -10,6 +10,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Bundle-size report on every PR** (#275). `npm run size-report` builds the
+  production artifact once (through the same `buildArtifact` the release uses, so
+  the measured bytes are byte-for-byte the shipped `dist/sql.html`) and emits a
+  machine-readable `bundle-size-report.json`, a human-readable
+  `bundle-size-report.md`, and the raw `esbuild-meta.json`. It records raw/gzip/
+  Brotli sizes for the artifact, JS bundle, and minified CSS; attributes JS output
+  bytes to input modules and npm packages (hand-written `src/**`, generated
+  `src/generated/**`, and each external package reported separately); lists the
+  top-30 modules and entry-point/chunk totals; and, given a base report
+  (`--base`), appends absolute + percentage deltas. A new CI `size` job produces
+  the report on every PR — with best-effort deltas vs. the PR base — and uploads
+  it as an artifact. Reporting only: no bundle-size budget fails the build yet
+  (thresholds are a follow-up once baseline variance is known). Pure attribution/
+  formatting lives in `build/size-report-lib.mjs`, unit-tested in
+  `tests/unit/size-report.test.js`.
 - **Helm chart.** A chart at `helm/altinity-sql-browser/` deploys the nginx image
   to Kubernetes (Deployment + ClusterIP Service + config ConfigMap + optional
   Ingress/HPA), non-root, config via `.Values.config` → `/sql/config.json`, CSP
