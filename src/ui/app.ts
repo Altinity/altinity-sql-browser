@@ -72,6 +72,8 @@ import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
+import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
+import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -190,6 +192,16 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
+  // Atomic StoredWorkspaceV1 persistence (#280 Phase 2 / #284): the injected
+  // IndexedDB factory seam (mirrors crypto/sessionStorage) backs a single-record
+  // WorkspaceStore, behind which the pure WorkspaceRepository does validate-then-
+  // atomically-replace commits. Constructed lazily — no database is opened until
+  // a workspace operation runs — so this never touches IndexedDB during
+  // bootstrap. The favorites-driven Dashboard render still reads legacy keys in
+  // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
+  app.workspace = createWorkspaceRepository({
+    store: createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB),
+  });
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them

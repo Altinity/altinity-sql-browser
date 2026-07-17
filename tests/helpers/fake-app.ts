@@ -242,6 +242,11 @@ const appDefaults: App = {
   params: paramsDefaults,
   graph: graphDefaults,
   prefs: prefsDefaults,
+  workspace: {
+    loadCurrent: async () => null,
+    commit: async () => ({ ok: true, workspace: {} as never, dashboardRevision: null }),
+    clearCurrent: async () => {},
+  },
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),

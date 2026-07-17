@@ -18,6 +18,7 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
+import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
@@ -238,6 +239,12 @@ export interface App {
    *  `App.savePref` delegate); `toggleTheme`'s preference-write half also
    *  delegates here, the DOM half stays in app.ts. */
   prefs: AppPreferences;
+  /** Atomic StoredWorkspaceV1 aggregate persistence (#280 Phase 2 / #284),
+   *  behind the injected IndexedDB seam (`env.indexedDB`). Pure/testable — no
+   *  App/AppState/DOM dependency. In this phase it is constructed but the
+   *  favorites-driven Dashboard render still reads legacy keys; Phases 3-6 of
+   *  #280 route reads/commits through it and retire the legacy keys. */
+  workspace: WorkspaceRepository;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
   /** The one deliberate delegate survivor of #276 Phase 5's params-group
