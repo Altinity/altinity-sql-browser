@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **ADR-0002 TypeScript migration complete** (#267). Every hand-written module
+  under `src/` (108 files) and every unit test is strict TypeScript, converted
+  leaf-up in dependency-tier waves with zero behavior change — the tail
+  covered `chart-data`, `ch-client`, the CM6 adapters, `explain-graph`,
+  `results` (which now owns the canonical `Result` union), `app.ts` (declared
+  against the `App` contract, with `app.types.ts` reconciled to reality:
+  `SchemaFocus.kind`, `specCompletionSources: DynamicSources`, corrected
+  `loadIdps`/`openNodeDetail` signatures), and `main.ts`.
+  `tests/helpers/fake-app.ts` satisfies the full `App` contract, deleting
+  ~1,080 lines of per-test stub scaffolding across eight specs. Still `.js`
+  by design: the two generated artifacts under `src/generated/`, the
+  Playwright e2e specs (outside the `tsc` gate), and two node-tooling unit
+  specs pending an `@types/node` decision — the vitest mixed-tree resolver
+  shim survives only for those two. The build and artifact are unchanged;
+  runtime deps stay four. The conversion surfaced and fixed two real dropped
+  `return`s (`exportEntry`, `renderDashboard` promises) and a latent
+  never-exercised completion-ranking branch.
 - **Chart style internals consolidated (post-#258 review).** The per-chart-type
   style surface (which fields each type owns, their accepted values, and their
   defaults) now lives in one `CHART_STYLE_SPEC` table that both
