@@ -526,11 +526,17 @@ export function allocTabId(state: AppState): string {
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
 const makeId = (prefix: string, now: number) => prefix + now + rnd();
-export const tabsForSaved = (state: AppState, id: string): QueryTab[] =>
+// Narrowed to `Pick<AppState, 'tabs'>` (#276 Phase 4C) — the only field read
+// — so `patchSavedSpec`'s own narrowed `state` param (below) can pass it
+// through unchanged; every real caller already passes a full `AppState`,
+// which satisfies this directly.
+export const tabsForSaved = (state: Pick<AppState, 'tabs'>, id: string): QueryTab[] =>
   state.tabs.value.filter((t) => t.savedId === id);
 
-/** First linked tab whose textual Spec is not currently parseable JSON. */
-export const invalidSpecTabForSaved = (state: AppState, id: string): QueryTab | null =>
+/** First linked tab whose textual Spec is not currently parseable JSON.
+ *  Narrowed to `Pick<AppState, 'tabs'>` for the same reason as
+ *  `tabsForSaved` above (which this delegates to). */
+export const invalidSpecTabForSaved = (state: Pick<AppState, 'tabs'>, id: string): QueryTab | null =>
   tabsForSaved(state, id).find((tab) =>
     tab.specDiagnostics?.some((diagnostic) => diagnostic.code === 'invalid-json')) || null;
 
@@ -575,9 +581,15 @@ export function savedForTab(
 /**
  * Create a saved query from an unsaved tab. Linked tabs use commitSavedQuery()
  * instead, so popover metadata can never compete with the textual Spec draft.
+ * Narrowed to `Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty'>`
+ * (#276 Phase 4C — the exact fields read/written) instead of full `AppState`,
+ * same convention as `savedForTab`/`recordScriptHistory` — every real caller
+ * (app.ts's own `SavedQueryService`) already has a full `AppState` to pass,
+ * which satisfies this directly.
  */
 export function createSavedQuery(
-  state: AppState, tab: QueryTab | null | undefined, name: unknown, description?: unknown,
+  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty'>,
+  tab: QueryTab | null | undefined, name: unknown, description?: unknown,
   save: SaveJSON = saveJSON, now: number = Date.now(),
   validationService: SpecValidationService = defaultSpecValidationService,
 ): SavedQueryV2 | null {
@@ -617,9 +629,11 @@ export function createSavedQuery(
   return entry;
 }
 
-/** Atomically persist both documents of a linked tab in one Library write. */
+/** Atomically persist both documents of a linked tab in one Library write.
+ *  Narrowed to `Pick<AppState, 'savedQueries' | 'libraryDirty'>` (#276 Phase
+ *  4C), same convention as `createSavedQuery` above. */
 export function commitSavedQuery(
-  state: AppState, tab: QueryTab, spec: QuerySpecDraft | null | undefined,
+  state: Pick<AppState, 'savedQueries' | 'libraryDirty'>, tab: QueryTab, spec: QuerySpecDraft | null | undefined,
   save: SaveJSON = saveJSON,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): SavedQueryV2 | null {
@@ -647,9 +661,14 @@ export function commitSavedQuery(
  * Generic committed-Spec writer for pencil/star/future controls. The patch is
  * applied independently to the persisted entry and every linked valid draft,
  * preserving unrelated unsaved fields. Invalid JSON blocks the whole write.
+ * Narrowed to `Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty'>`
+ * (#276 Phase 4C — `tabs` via `invalidSpecTabForSaved`/`tabsForSaved`, both
+ * narrowed the same way above), same convention as `createSavedQuery`/
+ * `commitSavedQuery`. `renameSaved`/`toggleFavorite` below keep passing a
+ * full `AppState` through unchanged (it satisfies this directly).
  */
 export function patchSavedSpec(
-  state: AppState, id: string, patch: SpecPatch,
+  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty'>, id: string, patch: SpecPatch,
   save: SaveJSON = saveJSON,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): PatchSavedResult {
@@ -877,9 +896,14 @@ export interface HistoryResultSnapshot {
 /**
  * Record a successful run in history. `sqlText` overrides the recorded SQL (used
  * when a selection — not the whole tab — was run); it defaults to `tab.sqlDraft`.
+ * Narrowed to `Pick<AppState, 'history'>` (#276 Phase 4C) — the only field
+ * read/written (via `pushHistory`, already narrowed this way) — same
+ * convention as `recordScriptHistory`; app.ts's own `SavedQueryService`
+ * passes a `Pick` that also carries `savedQueries`/`resultView`/
+ * `libraryDirty` for its other methods, which satisfies this directly.
  */
 export function recordHistory(
-  state: AppState,
+  state: Pick<AppState, 'history'>,
   tab: { sqlDraft: string | null; result: HistoryResultSnapshot },
   save: SaveJSON = saveJSON, now: number = Date.now(), sqlText?: string | null,
 ): void {

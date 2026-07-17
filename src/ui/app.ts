@@ -7,11 +7,11 @@
 import { h, fixedAnchor } from './dom.js';
 import { Icon } from './icons.js';
 import {
-  createState, activeTab, KEYS, recordHistory, recordScriptHistory,
-  createSavedQuery, commitSavedQuery, savedForTab, tabPanel,
+  createState, activeTab, KEYS, recordScriptHistory,
+  savedForTab, tabPanel,
   normalizeRowLimit, MOBILE_BREAKPOINT_PX,
 } from '../state.js';
-import type { QueryTab, AppState, SpecValidationService, HistoryResultSnapshot, QuerySpecDraft } from '../state.js';
+import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import { splitStatements, leadingKeyword } from '../core/sql-split.js';
 import { mergedSourceSql, analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
@@ -23,11 +23,10 @@ import { buildCardGraph } from '../core/schema-cards.js';
 import type { SchemaCardColumnRow } from '../core/schema-cards.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
-import { encodeShare } from '../core/share.js';
-import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
+import { queryName } from '../core/saved-query.js';
 import { effectiveDashboardRole } from '../core/result-choice.js';
 import {
-  CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
+  CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, formatSpecText,
   hasBlockingSpecErrors,
 } from '../core/spec-draft.js';
 import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
@@ -81,6 +80,8 @@ import { createWorkbenchParameterSession } from '../application/workbench-parame
 import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
+import { createQueryDocumentSession } from '../application/query-document-session.js';
+import { createSavedQueryService } from '../application/saved-query-service.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
  *  `<script>` tag might attach) can carry that aren't in the standard `Window`
@@ -234,6 +235,47 @@ export function createApp(env: CreateAppEnv = {}): App {
   }));
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
+  // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
+  // applySpecEvaluation/evaluateSpecDraft/revalidateSpecDrafts/
+  // revealFirstSpecError/registerSpecValidator, plus the editor-mode POLICY
+  // half of setEditorMode (below) — now lives in
+  // `application/query-document-session.ts`, constructible without
+  // App/AppState/DOM (check:arch bars it from importing `src/editor/**`; its
+  // diagnostics are typed as core/spec-draft.js's own `SpecValidationDiagnostic`,
+  // documented there as directly assignable to the editor's `SpecDiagnostic`).
+  // The hooks below are the session's only DOM/editor touch points — app.ts
+  // supplies them (some still guarded on an as-yet-unassigned `app.actions`/
+  // `app.updateSaveBtn`/`app.updateEditorModeUi`, exactly as the pre-extraction
+  // inline code guarded itself), the session itself never imports `src/ui/**`
+  // or `src/editor/**`.
+  const queryDoc = createQueryDocumentSession({
+    state: app.state,
+    activeTab: () => app.activeTab(),
+    specValidators,
+    hooks: {
+      setDiagnostics: (diagnostics) => app.specEditor.setDiagnostics(diagnostics),
+      revealDiagnostic: (index) => app.specEditor.revealDiagnostic(index),
+      rerenderTabs: () => { if (app.actions) app.actions.rerenderTabs(); },
+      updateSaveBtn: () => { if (app.updateSaveBtn) app.updateSaveBtn(); },
+      updateEditorModeUi: () => { if (app.updateEditorModeUi) app.updateEditorModeUi(); },
+    },
+  });
+  app.queryDoc = queryDoc;
+  // The saved-query create/commit policy, history recording, and share-URL
+  // building (#276 Phase 4C) now live in `application/saved-query-service.ts`,
+  // constructible without App/AppState/DOM — this shell sequences Spec
+  // evaluation (via `queryDoc` above) THEN calls this service; the two never
+  // call each other (see that module's header comment). `now: () =>
+  // Date.now()` is a genuine wall-clock read (NOT `app.now`/`app.wallNow` —
+  // unrelated clocks), matching `createSavedQuery`'s own pre-extraction
+  // inline `Date.now()` call exactly.
+  const saved = createSavedQueryService({
+    state: app.state,
+    saveJSON,
+    now: () => Date.now(),
+    specValidators,
+  });
+  app.saved = saved;
   app.sqlEditor.onDocChange((value) => {
     const tab = app.activeTab();
     tab.sqlDraft = value;
@@ -244,62 +286,22 @@ export function createApp(env: CreateAppEnv = {}): App {
     // SQL, so re-evaluating the whole validator graph on each keystroke is
     // wasted work — gate it to filter tabs.
     if (effectiveDashboardRole(tab.specParsed) === 'filter') {
-      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
+      queryDoc.applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
       app.specEditor.setDiagnostics(tab.specDiagnostics);
     }
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
   });
-  const applySpecEvaluation = (
-    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
-  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } => {
-    const evaluated = evaluateSpecText(text, specValidators, { sql: tab.sqlDraft, tab });
-    tab.specText = text;
-    tab.specParsed = evaluated.parsed as QueryTab['specParsed'];
-    tab.specDiagnostics = evaluated.diagnostics;
-    tab.dirtySpec = dirty;
-    return evaluated;
-  };
-  // Kept as its own named local (precise `{parsed, diagnostics}` return) as
-  // well as `app.evaluateSpecDraft` (the public, loosely-`Json`-typed
-  // property other modules read per app.types.ts) — every in-module caller
-  // that reads `.parsed`/`.diagnostics` off the result calls this directly to
-  // stay precisely typed instead of going through the public property.
-  function evaluateSpecDraft(
-    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
-  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } {
-    const evaluated = applySpecEvaluation(tab, text, { dirty });
-    if (tab === app.activeTab()) app.specEditor.setDiagnostics(tab.specDiagnostics);
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.updateEditorModeUi) app.updateEditorModeUi();
-    return evaluated;
-  }
-  app.evaluateSpecDraft = evaluateSpecDraft;
-  app.revalidateSpecDrafts = ({ refreshUi = true } = {}) => {
-    for (const tab of app.state.tabs.value) {
-      applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
-    }
-    if (!refreshUi) return;
-    const tab = app.activeTab();
-    app.specEditor.setDiagnostics(tab.specDiagnostics);
-    if (app.actions) app.actions.rerenderTabs();
-    if (app.updateSaveBtn) app.updateSaveBtn();
-    if (app.updateEditorModeUi) app.updateEditorModeUi();
-  };
-  app.revealFirstSpecError = (tab = app.activeTab()) => {
-    const index = tab.specDiagnostics?.findIndex((diagnostic) => diagnostic.severity === 'error') ?? -1;
-    if (index >= 0) app.specEditor.revealDiagnostic(index);
-  };
+  // Direct assignments (not one-line wrapper closures) — the session's own
+  // method signatures already match the public `App` contract exactly.
+  app.evaluateSpecDraft = queryDoc.evaluateSpecDraft;
+  app.revalidateSpecDrafts = queryDoc.revalidateSpecDrafts;
+  app.revealFirstSpecError = queryDoc.revealFirstSpecError;
   app.specEditor.onDocChange((value) => {
-    evaluateSpecDraft(app.activeTab(), value);
+    queryDoc.evaluateSpecDraft(app.activeTab(), value);
   });
-  app.registerSpecValidator = (path, validate) => {
-    const unregister = specValidators.register(path, validate);
-    app.revalidateSpecDrafts();
-    return () => { unregister(); app.revalidateSpecDrafts(); };
-  };
+  app.registerSpecValidator = queryDoc.registerSpecValidator;
   // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
   // `App.root`'s `Element | null`) — deliberate there (that module always
   // writes through it unconditionally); every real renderLogin() call below
@@ -1179,16 +1181,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   }
 
   // --- saved / history bridges ------------------------------------------
+  // The history-recording POLICY itself now lives in `saved.recordHistory`
+  // (#276 Phase 4C) — this wrapper's own conditional History-panel repaint is
+  // a rendering concern the service must never own (see its header comment),
+  // so it stays here, unchanged.
   app.recordHistory = (tab, sqlText) => {
-    // `tab.result` is state.ts's deliberately opaque `Record<string,unknown> |
-    // null` — by the time recordHistory is ever called (only after a
-    // successful run), it already holds a real `QueryResult`-shaped value
-    // (rawText/rows/progress.elapsed_ns), the exact fields `HistoryResultSnapshot`
-    // pins. `| null` on both sides of the cast keeps it a legal single-step
-    // widen; `!` then asserts the same "already ran successfully" guarantee
-    // the untyped original relied on implicitly.
-    const result = (tab.result as HistoryResultSnapshot | null)!;
-    recordHistory(app.state, { sqlDraft: tab.sqlDraft, result }, saveJSON, undefined, sqlText);
+    saved.recordHistory(tab, sqlText);
     if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
   };
 
@@ -1196,22 +1194,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   function share() {
     const tab = app.activeTab();
     if (tab.editorMode !== 'sql') return;
-    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
-      flashToast('Fix Spec errors before sharing', { document: doc });
+    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const result = saved.buildShareUrl({ tab, evaluated, origin: loc.origin, pathname: loc.pathname, search: loc.search });
+    if (!result.ok) {
+      // 'empty' matches the decode side (main.js): sql OR panel — a text
+      // panel legitimately has no SQL, and a sql-only check would make it
+      // unshareable — silently no-op, same as the pre-extraction inline code.
+      if (result.reason === 'invalid-spec') flashToast('Fix Spec errors before sharing', { document: doc });
       return;
     }
-    const sql = String(tab.sqlDraft || '');
-    const panel = queryPanel({ spec: evaluated.parsed });
-    // The gate matches the decode side (main.js): sql OR panel — a text panel
-    // legitimately has no SQL, and a sql-only check would make it unshareable.
-    if (!sql.trim() && !isQuerylessPanel(panel)) return;
-    const query = withQuerySpec({ id: tab.savedId, sql }, evaluated.parsed);
-    const url = loc.origin + loc.pathname + loc.search + '#' + encodeShare(query);
-    win.history && win.history.replaceState && win.history.replaceState(null, '', url);
+    win.history && win.history.replaceState && win.history.replaceState(null, '', result.url);
     const clip = (env.navigator || win.navigator || {}).clipboard;
     if (clip && clip.writeText) {
-      clip.writeText(loc.href || url)
+      clip.writeText(loc.href || result.url)
         .then(() => flashToast('Link copied to clipboard', { document: doc }))
         .catch(() => flashToast('Link in URL — copy manually', { document: doc }));
     } else {
@@ -1353,19 +1348,20 @@ export function createApp(env: CreateAppEnv = {}): App {
 
   function commitLinkedQuery(): SavedQueryV2 | null {
     const tab = app.activeTab();
-    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
-      app.revealFirstSpecError(tab);
-      flashToast('Fix Spec errors before saving', { document: doc });
+    const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const result = saved.commit(tab, evaluated);
+    if (!result.ok) {
+      // 'rejected' (commit's own defensive re-check inside the service) stays
+      // a silent no-op, same as the pre-extraction inline code's own bare
+      // `if (!entry) return null;`.
+      if (result.reason === 'invalid-spec') {
+        app.revealFirstSpecError(tab);
+        flashToast('Fix Spec errors before saving', { document: doc });
+      } else if (result.reason === 'empty') {
+        flashToast('Nothing to save', { document: doc });
+      }
       return null;
     }
-    const panel = queryPanel({ spec: evaluated.parsed });
-    if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(panel)) {
-      flashToast('Nothing to save', { document: doc });
-      return null;
-    }
-    const entry = commitSavedQuery(app.state, tab, evaluated.parsed as QuerySpecDraft | null, saveJSON, app.specValidators);
-    if (!entry) return null;
     app.revalidateSpecDrafts();
     app.specEditor.syncFromState();
     app.updateSaveBtn();
@@ -1374,7 +1370,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     renderResults(app);
     app.updateEditorModeUi!();
     flashToast('Saved', { document: doc });
-    return entry;
+    return result.entry;
   }
 
   function saveActiveQuery(): SavedQueryV2 | null | undefined {
@@ -1400,8 +1396,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = (): void => {
       if (!input.value.trim()) return;
-      const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON, Date.now(), app.specValidators);
-      if (!entry) return;
+      const result = saved.create(tab, input.value, descInput.value);
+      if (!result.ok) return;
       close();
       app.revalidateSpecDrafts();
       app.specEditor.syncFromState();
@@ -1432,20 +1428,24 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (tab.editorMode !== 'spec') return;
     const formatted = formatSpecText(tab.specText);
     if (formatted.diagnostic) {
-      evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+      queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
       app.specEditor.revealDiagnostic(0);
       return;
     }
     app.specEditor.replaceDocument(formatted.text);
   }
 
+  // The editor-mode-switch POLICY (whether `mode` is allowed right now) now
+  // lives in `queryDoc.resolveEditorMode` (#276 Phase 4C); this function keeps
+  // the DOM/focus half — assigning `tab.editorMode`, repainting the
+  // editor-mode chrome, focusing the target editor.
   function setEditorMode(mode: 'sql' | 'spec'): boolean {
     const tab = app.activeTab();
-    if (mode === 'spec' && !savedForTab(app.state, tab)) {
-      flashToast('Save this query to create an editable Spec.', { document: doc });
+    const gate = queryDoc.resolveEditorMode(tab, mode);
+    if (!gate.ok) {
+      if (gate.message) flashToast(gate.message, { document: doc });
       return false;
     }
-    if (mode !== 'sql' && mode !== 'spec') return false;
     tab.editorMode = mode;
     app.updateEditorModeUi!();
     const editor = mode === 'spec' ? app.specEditor : app.sqlEditor;

@@ -35,6 +35,10 @@ import type { SchemaCatalogService } from '../../src/application/schema-catalog-
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import type { ExportService } from '../../src/application/export-service.js';
+import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
+import type {
+  SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
+} from '../../src/application/saved-query-service.js';
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
 
@@ -179,6 +183,30 @@ const exportsDefaults: ExportService = {
   cancelExportScript: vi.fn(),
 };
 
+// A minimal `QueryDocumentSession` stub (#276 Phase 4C) — no render-module
+// fixture exercises the session directly (that's
+// query-document-session.test.ts's job); this just satisfies the
+// `App.queryDoc` contract.
+const queryDocDefaults: QueryDocumentSession = {
+  applySpecEvaluation: vi.fn(() => ({ parsed: null, diagnostics: [] })),
+  evaluateSpecDraft: vi.fn(() => ({ parsed: null, diagnostics: [] })),
+  revalidateSpecDrafts: vi.fn(),
+  revealFirstSpecError: vi.fn(),
+  registerSpecValidator: vi.fn(() => () => {}),
+  resolveEditorMode: vi.fn(() => ({ ok: true })),
+};
+
+// A minimal `SavedQueryService` stub (#276 Phase 4C) — no render-module
+// fixture exercises the service directly (that's
+// saved-query-service.test.ts's job); this just satisfies the `App.saved`
+// contract.
+const savedDefaults: SavedQueryService = {
+  create: vi.fn((): CreateSavedResult => ({ ok: false })),
+  commit: vi.fn((): CommitLinkedResult => ({ ok: false, reason: 'empty' })),
+  recordHistory: vi.fn(),
+  buildShareUrl: vi.fn((): ShareResult => ({ ok: false, reason: 'empty' })),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -260,6 +288,8 @@ const appDefaults: App = {
   tickElapsed: () => {},
   workbench: workbenchDefaults,
   exports: exportsDefaults,
+  queryDoc: queryDocDefaults,
+  saved: savedDefaults,
   exec: {
     executeRead: async (result) => result,
     executeScript: async () => ({ entries: [], aborted: false }),
@@ -271,7 +301,7 @@ const appDefaults: App = {
   setFmtBtn: () => {},
   specBlocked: () => false,
   updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
+  evaluateSpecDraft: () => ({ parsed: null, diagnostics: [] }),
   revalidateSpecDrafts: () => {},
   revealFirstSpecError: () => {},
   registerSpecValidator: () => () => {},
@@ -290,7 +320,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params' | 'queryDoc' | 'saved'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -311,6 +341,13 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
    *  touch the session directly; a test asserting e.g. `params.clearVarRecent`
    *  was called can override just that method. */
   params?: Partial<WorkbenchParameterSession>;
+  /** Partial like `workbench`/`params` above (#276 Phase 4C) — most fixtures
+   *  never touch the session directly; a test asserting e.g.
+   *  `queryDoc.resolveEditorMode`'s return can override just that method. */
+  queryDoc?: Partial<QueryDocumentSession>;
+  /** Partial like `queryDoc` above (#276 Phase 4C) — a test asserting e.g.
+   *  `saved.commit`'s return can override just that method. */
+  saved?: Partial<SavedQueryService>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -445,6 +482,8 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
     workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
     params: { ...paramsDefaults, ...(overrides.params ?? {}) },
+    queryDoc: { ...queryDocDefaults, ...(overrides.queryDoc ?? {}) },
+    saved: { ...savedDefaults, ...(overrides.saved ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type
