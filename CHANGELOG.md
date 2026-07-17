@@ -9,6 +9,28 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard v1 contracts, codecs, canonical encoding, and resource limits**
+  (#283, phase 1 of #280). New canonical JSON Schemas ship through the existing
+  manifest pipeline with generated types and Ajv-compiled validators:
+  `stored-workspace-v1`, `dashboard-v1` (with `DashboardTileV1`,
+  `DashboardFilterDefinitionV1`, `DashboardLayoutDocumentV1`, and the
+  `DashboardLayoutFallbackV1 = flow@1` fallback), `dashboard-layout-flow-v1`
+  (the normative `flow@1` contract with the closed `FlowTilePlacementV1` —
+  span 1|2|3, height compact|medium|large — and the presets
+  full-width|report|columns-2|columns-3), and `portable-bundle-v1`
+  (`queries` + `dashboards`, both required even when empty). `query-spec-v1`
+  gained the additive `QueryDashboardPresentationV1` (role/defaultVariant/
+  variants/sizeHints) plus `QueryPresentationPatchV1` (RFC 7396 merge-patch of
+  the panel spec) — a revision, not a new Spec version; the schema-driven Spec
+  editor autocomplete picks the new fields up automatically. Pure `src/`
+  additions: one canonical deterministic encoder (`dashboard/model/canonical-json.ts`,
+  shared by export/persistence/hashing/equality), a deterministic
+  numeric-aware diagnostic sorter, `PORTABLE_LIMITS` enforcement
+  (schema bounds + codec UTF-8-byte/depth guards + runtime re-checks), and
+  whole-workspace cross-resource semantic validation. No persistence, no UI,
+  no import planner yet (later phases of #280).
+
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
   temporary `App` delegates from Phases 2–4 are deleted — consumers read

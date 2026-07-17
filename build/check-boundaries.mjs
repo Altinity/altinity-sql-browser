@@ -49,6 +49,25 @@ const RULES = [
     forbidden: ['src/ui/app.ts'],
     why: 'issue #276 Phase 5: the dashboard shell must not reach back into app.ts (everything it needs is injected)',
   },
+  // Issue #280 phase 1 (#283): the Dashboard module keeps the dependency
+  // direction `model <- application <- UI adapters`, and neither the model
+  // nor the workspace aggregate may depend on the App controller, Workbench
+  // UI, editors, global AppState, or the network layer.
+  {
+    dir: 'src/dashboard',
+    forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
+    why: 'issue #280 phase 1: Dashboard model/application code is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
+  },
+  {
+    dir: 'src/dashboard/model',
+    forbidden: ['src/dashboard/application', 'src/dashboard/layouts', 'src/dashboard/ui'],
+    why: 'issue #280 phase 1: dependency direction is model <- application <- UI adapters',
+  },
+  {
+    dir: 'src/workspace',
+    forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
+    why: 'issue #280 phase 1: the workspace aggregate layer is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
+  },
 ];
 
 function collectFiles(target) {

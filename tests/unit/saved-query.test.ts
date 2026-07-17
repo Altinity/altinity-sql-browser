@@ -5,15 +5,15 @@ import {
   upgradeV1Query, cloneV2Query, upgradeSavedQuery, queryContentKey, isPlainObject,
 } from '../../src/core/saved-query.js';
 import type { QueryRoot } from '../../src/core/saved-query.js';
-import type { Dashboard, QuerySpecV1 } from '../../src/generated/json-schema.types.js';
+import type { QueryDashboardPresentationV1, QuerySpecV1 } from '../../src/generated/json-schema.types.js';
 
 const v2 = (spec: QuerySpecV1 = {}): QueryRoot => ({ id: 'q1', sql: 'SELECT 1', specVersion: 1, spec });
 
 describe('saved-query model', () => {
   it('patches dashboard fields without aliases and supports field/object removal', () => {
-    // A known runtime shape (Dashboard's own fields are all optional/index-signature
+    // A known runtime shape (QueryDashboardPresentationV1's own fields are all optional/index-signature
     // typed) — a single-level cast pins the fixture's actual `future` shape.
-    interface DashboardFixture extends Dashboard {
+    interface DashboardFixture extends QueryDashboardPresentationV1 {
       future: { values: number[] };
     }
     const query = v2({ dashboard: { role: 'filter', future: { values: [1] } }, panel: { cfg: { type: 'line' } } });
@@ -49,7 +49,7 @@ describe('saved-query model', () => {
 
   it('reads known fields with safe defaults without stripping extensions', () => {
     const panel = { cfg: { type: 'table' }, links: [{ url: '/x' }] };
-    const dashboard: Dashboard = { role: 'panel', future: { x: 1 } };
+    const dashboard: QueryDashboardPresentationV1 = { role: 'panel', future: { x: 1 } };
     const q = v2({ name: 'Q', description: 'D', favorite: true, view: 'panel', panel, dashboard });
     expect(queryName(q)).toBe('Q');
     expect(queryDescription(q)).toBe('D');

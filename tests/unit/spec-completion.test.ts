@@ -27,6 +27,18 @@ describe('pure Spec completion', () => {
       .toEqual(['description', 'favorite', 'view', 'dashboard']);
   });
 
+  it('picks up the QueryDashboardPresentationV1 fields under dashboard (#283)', () => {
+    // The Spec editor autocomplete (#221) derives from the schema, so the new
+    // additive dashboard presentation fields must surface without extra wiring.
+    expect(complete({ rootValue: { dashboard: {} }, path: ['dashboard'] }).map((item) => item.label))
+      .toEqual(['role', 'defaultVariant', 'variants', 'sizeHints']);
+    expect(complete({
+      rootValue: { dashboard: { role: '' } }, path: ['dashboard', 'role'], positionKind: 'property-value',
+    }).map((item) => item.insert)).toEqual(['"panel"', '"filter"', '"setup"']);
+    expect(complete({ rootValue: { dashboard: { sizeHints: {} } }, path: ['dashboard', 'sizeHints'] }).map((item) => item.label))
+      .toEqual(['preferred', 'minimum']);
+  });
+
   it('keeps unresolved discriminator keys quiet and selects branch-specific keys from siblings', () => {
     expect(complete({
       rootValue: { panel: { cfg: {} } }, path: ['panel', 'cfg'],

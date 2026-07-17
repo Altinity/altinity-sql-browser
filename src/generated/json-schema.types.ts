@@ -123,17 +123,64 @@ export interface FieldConfig {
 }
 
 /**
+ * Presentation patch
+ *
+ * RFC 7396 JSON Merge Patch applied over the saved query's base panel object. Object members merge recursively, arrays replace the previous array completely, and a null member deletes an optional property. A patch may not change panel.cfg.type, and the final resolved panel must validate like a normal saved-query panel.
+ */
+export type QueryPresentationPatchV1 = Record<string, unknown>;
+
+/**
+ * Size hints
+ *
+ * Layout-neutral tile size hints. Authoring may derive an initial placement from them; they never own actual Dashboard placement.
+ */
+export interface DashboardSizeHints {
+  /**
+   * Preferred size
+   *
+   * Preferred layout-neutral tile size.
+   */
+  preferred?: "compact" | "medium" | "wide";
+  /**
+   * Minimum size
+   *
+   * Smallest layout-neutral tile size that still renders usefully.
+   */
+  minimum?: "compact" | "medium" | "wide";
+  /**
+   * Aspect ratio
+   *
+   * Preferred width/height ratio hint.
+   */
+  aspectRatio?: number;
+  [k: string]: unknown;
+}
+
+/**
  * Dashboard configuration
  *
- * Dashboard participation metadata. Feature-specific extensions remain forward compatible.
+ * Reusable Dashboard presentation for this query: role, named presentation variants, and layout-neutral size hints. Actual Dashboard sequence, placement, and tile-local overrides live in the Dashboard document. Feature-specific extensions remain forward compatible.
  */
-export interface Dashboard {
+export interface QueryDashboardPresentationV1 {
   /**
    * Dashboard role (Panel, Filter, or Setup)
    *
    * How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.
    */
   role?: "panel" | "filter" | "setup";
+  /**
+   * Default presentation variant
+   *
+   * Variant applied when a tile does not select one. Must name an existing entry in variants.
+   */
+  defaultVariant?: string;
+  /**
+   * Presentation variants
+   *
+   * Named reusable presentation patches, each an RFC 7396 JSON Merge Patch over the base panel.
+   */
+  variants?: Record<string, QueryPresentationPatchV1>;
+  sizeHints?: DashboardSizeHints;
   [k: string]: unknown;
 }
 
@@ -510,7 +557,7 @@ export interface QuerySpecV1 {
    */
   view?: "table" | "json" | "panel";
   panel?: Panel;
-  dashboard?: Dashboard;
+  dashboard?: QueryDashboardPresentationV1;
   [k: string]: unknown;
 }
 
@@ -574,4 +621,347 @@ export interface LibraryV2 {
   exportedAt?: string;
   /** Saved queries */
   queries: SavedQueryV2[];
+}
+
+// dashboard-layout-flow v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json
+
+/**
+ * Flow preset
+ *
+ * Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.
+ */
+export type FlowPresetV1 = "full-width" | "report" | "columns-2" | "columns-3";
+
+/**
+ * Tile height
+ *
+ * Normative height ordering is compact < medium < large; exact pixels are renderer-defined.
+ */
+export type FlowHeightV1 = "compact" | "medium" | "large";
+
+/**
+ * Tile placement
+ *
+ * Closed placement contract: unknown fields fail validation. Future extension requires flow@2 or an explicit extension namespace.
+ */
+export interface FlowTilePlacementV1 {
+  /**
+   * Column span
+   *
+   * Columns the tile occupies; the effective span is clamped to the active column count.
+   */
+  span?: 1 | 2 | 3;
+  height?: FlowHeightV1;
+}
+
+/**
+ * Altinity SQL Browser Dashboard flow@1 layout
+ *
+ * The normative flow@1 Dashboard layout: deterministic row-major packing driven by dashboard.tiles order, one preset, and per-tile span/height placements keyed by tile ID. This document is also the only valid DashboardLayoutFallbackV1 shape.
+ */
+export interface FlowLayoutV1 {
+  /**
+   * Layout engine
+   *
+   * Layout engine identifier; always flow for this contract.
+   */
+  type: "flow";
+  /**
+   * Layout engine version
+   *
+   * flow contract version; always 1 for this contract.
+   */
+  version: 1;
+  preset: FlowPresetV1;
+  /**
+   * Tile placements
+   *
+   * Per-tile placement keyed by tile ID. A missing placement uses span 1 and medium height.
+   */
+  items: Record<string, FlowTilePlacementV1>;
+}
+
+// dashboard v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json
+
+/**
+ * Tile presentation selection
+ *
+ * Selected reusable variant and optional small tile-local override patch, both resolved over the saved query's base panel.
+ */
+export interface DashboardTilePresentationV1 {
+  /**
+   * Selected variant
+   *
+   * Name of a variant declared on the tile's saved query. A persisted name that no longer exists fails validation; there is no silent fallback.
+   */
+  variant?: string;
+  override?: QueryPresentationPatchV1;
+}
+
+/**
+ * Dashboard tile
+ *
+ * One query instance placed on this Dashboard: stable instance identity, query reference, selected presentation, and optional local title/description. Actual placement and size live in the layout document.
+ */
+export interface DashboardTileV1 {
+  /**
+   * Tile identifier
+   *
+   * Stable tile instance identity within this Dashboard.
+   */
+  id: string;
+  /**
+   * Saved-query reference
+   *
+   * ID of the saved query this tile renders. The query must exist and have Dashboard role panel.
+   */
+  queryId: string;
+  /**
+   * Tile title override
+   *
+   * Optional Dashboard-local title override.
+   */
+  title?: string;
+  /**
+   * Tile description override
+   *
+   * Optional Dashboard-local description override.
+   */
+  description?: string;
+  presentation?: DashboardTilePresentationV1;
+}
+
+/**
+ * Dashboard filter definition
+ *
+ * One Dashboard filter: the targeted parameter name, an optional filter-role source query providing options, and optional explicit target tiles. Runtime filter values are never persisted here.
+ */
+export interface DashboardFilterDefinitionV1 {
+  /**
+   * Filter identifier
+   *
+   * Stable filter identity within this Dashboard.
+   */
+  id: string;
+  /**
+   * Parameter name
+   *
+   * ClickHouse query parameter name this filter supplies. Target queries must declare the parameter with compatible types.
+   */
+  parameter: string;
+  /**
+   * Filter label
+   *
+   * Optional user-visible filter label.
+   */
+  label?: string;
+  /**
+   * Option source query
+   *
+   * ID of a filter-role saved query whose result provides the option list. The source query never creates a tile.
+   */
+  sourceQueryId?: string;
+  /**
+   * Target tiles
+   *
+   * Tile IDs this filter applies to. Absent means every compatible panel tile.
+   */
+  targets?: string[];
+  /**
+   * Default value
+   *
+   * Optional default parameter value; any JSON value.
+   */
+  defaultValue?: unknown;
+  /**
+   * Active by default
+   *
+   * Whether the filter starts active.
+   */
+  defaultActive?: boolean;
+}
+
+/**
+ * Layout fallback
+ *
+ * A complete valid flow@1 layout rendered when the primary layout engine cannot load. Fallback placement keys resolve against the same dashboard.tiles.
+ */
+export type DashboardLayoutFallbackV1 = FlowLayoutV1;
+
+/**
+ * Dashboard layout document
+ *
+ * Versioned, engine-specific placement document. An unsupported type/version must carry a valid flow@1 fallback or the Dashboard fails before execution.
+ */
+export interface DashboardLayoutDocumentV1 {
+  /**
+   * Layout engine
+   *
+   * Layout engine identifier, e.g. flow.
+   */
+  type: string;
+  /**
+   * Layout engine version
+   *
+   * Layout engine contract version.
+   */
+  version: number;
+  /**
+   * Layout preset
+   *
+   * Engine-specific preset identifier.
+   */
+  preset?: string;
+  /**
+   * Engine configuration
+   *
+   * Open engine-specific configuration object; recursively key-sorted by the canonical encoder.
+   */
+  config?: Record<string, unknown>;
+  /**
+   * Placement entries
+   *
+   * Engine-specific placement objects keyed by tile ID. Every key must reference an existing tile and the entry count must not exceed the tile count.
+   */
+  items?: Record<string, Record<string, unknown>>;
+  fallback?: DashboardLayoutFallbackV1;
+}
+
+/**
+ * Altinity SQL Browser Dashboard document v1
+ *
+ * One explicit Dashboard aggregate: tile instances, semantic tile order, layout, filter definitions, and persistence revision. Runtime values and result caches are never persisted here. Unknown future documentVersion values fail closed.
+ */
+export interface DashboardDocumentV1 {
+  /**
+   * Dashboard document version
+   *
+   * Dashboard document contract version; always 1 for this contract.
+   */
+  documentVersion: 1;
+  /**
+   * Dashboard identifier
+   *
+   * Stable application-managed Dashboard identity.
+   */
+  id: string;
+  /**
+   * Dashboard title
+   *
+   * User-visible Dashboard title.
+   */
+  title: string;
+  /**
+   * Dashboard description
+   *
+   * Optional authoring note shown with the Dashboard.
+   */
+  description?: string;
+  /**
+   * Persistence revision
+   *
+   * Incremented once for each successfully committed Dashboard document mutation. Validation, preview, and export never increment it. Starts at 1.
+   */
+  revision: number;
+  layout: DashboardLayoutDocumentV1;
+  /**
+   * Filter definitions
+   *
+   * Dashboard filter definitions in filter order. Required even when empty.
+   */
+  filters: DashboardFilterDefinitionV1[];
+  /**
+   * Tiles
+   *
+   * Tile instances in canonical semantic order: execution planning, DOM and keyboard traversal, fallback rendering, print/export, and serialization all follow this order. Required even when empty.
+   */
+  tiles: DashboardTileV1[];
+}
+
+// stored-workspace v1 — https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json
+
+/**
+ * Altinity SQL Browser stored workspace v1
+ *
+ * The atomic browser-persistence aggregate: one workspace with an ordered saved-query collection and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.
+ */
+export interface StoredWorkspaceV1 {
+  /**
+   * Storage version
+   *
+   * Stored-workspace contract version; always 1 for this contract. Unknown future versions fail closed.
+   */
+  storageVersion: 1;
+  /**
+   * Workspace identifier
+   *
+   * Stable generated workspace identity. Two files with the same name still produce distinct workspace IDs.
+   */
+  id: string;
+  /**
+   * Workspace name
+   *
+   * User-visible workspace name. Renaming the workspace does not rename its Dashboard.
+   */
+  name: string;
+  /**
+   * Saved queries
+   *
+   * The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Required even when empty.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboard
+   *
+   * The zero-or-one editable Dashboard of this workspace; null when none exists.
+   */
+  dashboard: DashboardDocumentV1 | null;
+}
+
+// portable-bundle v1 — https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json
+
+/**
+ * Altinity SQL Browser portable bundle v1
+ *
+ * The one canonical portable interchange format: saved queries plus zero or more Dashboard documents. All newly written importable/exportable JSON uses this format; legacy Library v1/v2 files remain readable through compatibility decoders.
+ */
+export interface PortableBundleV1 {
+  /**
+   * Schema identifier
+   *
+   * Optional schema hint for editors, agents, and third-party tools.
+   */
+  $schema?: "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json";
+  /** Format identifier */
+  format: "altinity-sql-browser/portable-bundle";
+  /**
+   * Bundle format version
+   *
+   * Portable bundle contract version; always 1 for this contract. Unknown future versions fail closed.
+   */
+  version: 1;
+  /**
+   * Export timestamp
+   *
+   * RFC 3339 timestamp indicating when this portable bundle was created.
+   */
+  exportedAt: string;
+  /**
+   * Bundle metadata
+   *
+   * Optional human-readable bundle name and description.
+   */
+  metadata?: { name?: string; description?: string; };
+  /**
+   * Saved queries
+   *
+   * Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.
+   */
+  queries: SavedQueryV2[];
+  /**
+   * Dashboard documents
+   *
+   * Bundled Dashboard documents. The v1 Workbench manages at most one Dashboard; multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.
+   */
+  dashboards: DashboardDocumentV1[];
 }

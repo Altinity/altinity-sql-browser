@@ -44,7 +44,7 @@ export const querySpecV1Schema = {
       "$ref": "#/$defs/panel"
     },
     "dashboard": {
-      "$ref": "#/$defs/dashboard"
+      "$ref": "#/$defs/queryDashboardPresentationV1"
     }
   },
   "additionalProperties": true,
@@ -215,9 +215,54 @@ export const querySpecV1Schema = {
         "columns"
       ]
     },
-    "dashboard": {
+    "queryPresentationPatchV1": {
+      "title": "Presentation patch",
+      "description": "RFC 7396 JSON Merge Patch applied over the saved query's base panel object. Object members merge recursively, arrays replace the previous array completely, and a null member deletes an optional property. A patch may not change panel.cfg.type, and the final resolved panel must validate like a normal saved-query panel.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "dashboardSizeHints": {
+      "title": "Size hints",
+      "description": "Layout-neutral tile size hints. Authoring may derive an initial placement from them; they never own actual Dashboard placement.",
+      "type": "object",
+      "properties": {
+        "preferred": {
+          "title": "Preferred size",
+          "description": "Preferred layout-neutral tile size.",
+          "type": "string",
+          "enum": [
+            "compact",
+            "medium",
+            "wide"
+          ]
+        },
+        "minimum": {
+          "title": "Minimum size",
+          "description": "Smallest layout-neutral tile size that still renders usefully.",
+          "type": "string",
+          "enum": [
+            "compact",
+            "medium",
+            "wide"
+          ]
+        },
+        "aspectRatio": {
+          "title": "Aspect ratio",
+          "description": "Preferred width/height ratio hint.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": [
+        "preferred",
+        "minimum",
+        "aspectRatio"
+      ]
+    },
+    "queryDashboardPresentationV1": {
       "title": "Dashboard configuration",
-      "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.",
+      "description": "Reusable Dashboard presentation for this query: role, named presentation variants, and layout-neutral size hints. Actual Dashboard sequence, placement, and tile-local overrides live in the Dashboard document. Feature-specific extensions remain forward compatible.",
       "type": "object",
       "properties": {
         "role": {
@@ -233,11 +278,37 @@ export const querySpecV1Schema = {
           "examples": [
             "filter"
           ]
+        },
+        "defaultVariant": {
+          "title": "Default presentation variant",
+          "description": "Variant applied when a tile does not select one. Must name an existing entry in variants.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "variants": {
+          "title": "Presentation variants",
+          "description": "Named reusable presentation patches, each an RFC 7396 JSON Merge Patch over the base panel.",
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/queryPresentationPatchV1"
+          }
+        },
+        "sizeHints": {
+          "$ref": "#/$defs/dashboardSizeHints"
         }
       },
       "additionalProperties": true,
       "x-altinity-order": [
-        "role"
+        "role",
+        "defaultVariant",
+        "variants",
+        "sizeHints"
       ]
     },
     "panel": {
@@ -1126,8 +1197,565 @@ export const libraryV2Schema = {
   "additionalProperties": false
 };
 
+export const flowLayoutV1Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json",
+  "title": "Altinity SQL Browser Dashboard flow@1 layout",
+  "description": "The normative flow@1 Dashboard layout: deterministic row-major packing driven by dashboard.tiles order, one preset, and per-tile span/height placements keyed by tile ID. This document is also the only valid DashboardLayoutFallbackV1 shape.",
+  "x-altinity-kind": "dashboard-layout-flow",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": [
+    "type",
+    "version",
+    "preset",
+    "items"
+  ],
+  "properties": {
+    "type": {
+      "title": "Layout engine",
+      "description": "Layout engine identifier; always flow for this contract.",
+      "type": "string",
+      "const": "flow"
+    },
+    "version": {
+      "title": "Layout engine version",
+      "description": "flow contract version; always 1 for this contract.",
+      "type": "integer",
+      "const": 1
+    },
+    "preset": {
+      "$ref": "#/$defs/flowPresetV1"
+    },
+    "items": {
+      "title": "Tile placements",
+      "description": "Per-tile placement keyed by tile ID. A missing placement uses span 1 and medium height.",
+      "type": "object",
+      "maxProperties": 100,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/flowTilePlacementV1"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "type",
+    "version",
+    "preset",
+    "items"
+  ],
+  "$defs": {
+    "flowPresetV1": {
+      "title": "Flow preset",
+      "description": "Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.",
+      "type": "string",
+      "enum": [
+        "full-width",
+        "report",
+        "columns-2",
+        "columns-3"
+      ]
+    },
+    "flowHeightV1": {
+      "title": "Tile height",
+      "description": "Normative height ordering is compact < medium < large; exact pixels are renderer-defined.",
+      "type": "string",
+      "enum": [
+        "compact",
+        "medium",
+        "large"
+      ]
+    },
+    "flowTilePlacementV1": {
+      "title": "Tile placement",
+      "description": "Closed placement contract: unknown fields fail validation. Future extension requires flow@2 or an explicit extension namespace.",
+      "type": "object",
+      "properties": {
+        "span": {
+          "title": "Column span",
+          "description": "Columns the tile occupies; the effective span is clamped to the active column count.",
+          "type": "integer",
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "height": {
+          "$ref": "#/$defs/flowHeightV1"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "span",
+        "height"
+      ]
+    }
+  }
+};
+
+export const dashboardV1Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json",
+  "title": "Altinity SQL Browser Dashboard document v1",
+  "description": "One explicit Dashboard aggregate: tile instances, semantic tile order, layout, filter definitions, and persistence revision. Runtime values and result caches are never persisted here. Unknown future documentVersion values fail closed.",
+  "x-altinity-kind": "dashboard",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": [
+    "documentVersion",
+    "id",
+    "title",
+    "revision",
+    "layout",
+    "filters",
+    "tiles"
+  ],
+  "properties": {
+    "documentVersion": {
+      "title": "Dashboard document version",
+      "description": "Dashboard document contract version; always 1 for this contract.",
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "title": "Dashboard identifier",
+      "description": "Stable application-managed Dashboard identity.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "title": {
+      "title": "Dashboard title",
+      "description": "User-visible Dashboard title.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "description": {
+      "title": "Dashboard description",
+      "description": "Optional authoring note shown with the Dashboard.",
+      "type": "string",
+      "maxLength": 16384
+    },
+    "revision": {
+      "title": "Persistence revision",
+      "description": "Incremented once for each successfully committed Dashboard document mutation. Validation, preview, and export never increment it. Starts at 1.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "layout": {
+      "$ref": "#/$defs/dashboardLayoutDocumentV1"
+    },
+    "filters": {
+      "title": "Filter definitions",
+      "description": "Dashboard filter definitions in filter order. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/dashboardFilterDefinitionV1"
+      }
+    },
+    "tiles": {
+      "title": "Tiles",
+      "description": "Tile instances in canonical semantic order: execution planning, DOM and keyboard traversal, fallback rendering, print/export, and serialization all follow this order. Required even when empty.",
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/dashboardTileV1"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "documentVersion",
+    "id",
+    "title",
+    "description",
+    "revision",
+    "layout",
+    "filters",
+    "tiles"
+  ],
+  "$defs": {
+    "dashboardTilePresentationV1": {
+      "title": "Tile presentation selection",
+      "description": "Selected reusable variant and optional small tile-local override patch, both resolved over the saved query's base panel.",
+      "type": "object",
+      "properties": {
+        "variant": {
+          "title": "Selected variant",
+          "description": "Name of a variant declared on the tile's saved query. A persisted name that no longer exists fails validation; there is no silent fallback.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "override": {
+          "$ref": "query-spec-v1.schema.json#/$defs/queryPresentationPatchV1"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "variant",
+        "override"
+      ]
+    },
+    "dashboardTileV1": {
+      "title": "Dashboard tile",
+      "description": "One query instance placed on this Dashboard: stable instance identity, query reference, selected presentation, and optional local title/description. Actual placement and size live in the layout document.",
+      "type": "object",
+      "required": [
+        "id",
+        "queryId"
+      ],
+      "properties": {
+        "id": {
+          "title": "Tile identifier",
+          "description": "Stable tile instance identity within this Dashboard.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        },
+        "queryId": {
+          "title": "Saved-query reference",
+          "description": "ID of the saved query this tile renders. The query must exist and have Dashboard role panel.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        },
+        "title": {
+          "title": "Tile title override",
+          "description": "Optional Dashboard-local title override.",
+          "type": "string",
+          "maxLength": 512
+        },
+        "description": {
+          "title": "Tile description override",
+          "description": "Optional Dashboard-local description override.",
+          "type": "string",
+          "maxLength": 16384
+        },
+        "presentation": {
+          "$ref": "#/$defs/dashboardTilePresentationV1"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "id",
+        "queryId",
+        "title",
+        "description",
+        "presentation"
+      ]
+    },
+    "dashboardFilterDefinitionV1": {
+      "title": "Dashboard filter definition",
+      "description": "One Dashboard filter: the targeted parameter name, an optional filter-role source query providing options, and optional explicit target tiles. Runtime filter values are never persisted here.",
+      "type": "object",
+      "required": [
+        "id",
+        "parameter"
+      ],
+      "properties": {
+        "id": {
+          "title": "Filter identifier",
+          "description": "Stable filter identity within this Dashboard.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        },
+        "parameter": {
+          "title": "Parameter name",
+          "description": "ClickHouse query parameter name this filter supplies. Target queries must declare the parameter with compatible types.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "label": {
+          "title": "Filter label",
+          "description": "Optional user-visible filter label.",
+          "type": "string",
+          "maxLength": 512
+        },
+        "sourceQueryId": {
+          "title": "Option source query",
+          "description": "ID of a filter-role saved query whose result provides the option list. The source query never creates a tile.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "targets": {
+          "title": "Target tiles",
+          "description": "Tile IDs this filter applies to. Absent means every compatible panel tile.",
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "defaultValue": {
+          "title": "Default value",
+          "description": "Optional default parameter value; any JSON value."
+        },
+        "defaultActive": {
+          "title": "Active by default",
+          "description": "Whether the filter starts active.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "id",
+        "parameter",
+        "label",
+        "sourceQueryId",
+        "targets",
+        "defaultValue",
+        "defaultActive"
+      ]
+    },
+    "dashboardLayoutFallbackV1": {
+      "title": "Layout fallback",
+      "description": "A complete valid flow@1 layout rendered when the primary layout engine cannot load. Fallback placement keys resolve against the same dashboard.tiles.",
+      "$ref": "dashboard-layout-flow-v1.schema.json"
+    },
+    "dashboardLayoutDocumentV1": {
+      "title": "Dashboard layout document",
+      "description": "Versioned, engine-specific placement document. An unsupported type/version must carry a valid flow@1 fallback or the Dashboard fails before execution.",
+      "type": "object",
+      "required": [
+        "type",
+        "version"
+      ],
+      "properties": {
+        "type": {
+          "title": "Layout engine",
+          "description": "Layout engine identifier, e.g. flow.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "version": {
+          "title": "Layout engine version",
+          "description": "Layout engine contract version.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "preset": {
+          "title": "Layout preset",
+          "description": "Engine-specific preset identifier.",
+          "type": "string",
+          "maxLength": 256
+        },
+        "config": {
+          "title": "Engine configuration",
+          "description": "Open engine-specific configuration object; recursively key-sorted by the canonical encoder.",
+          "type": "object"
+        },
+        "items": {
+          "title": "Placement entries",
+          "description": "Engine-specific placement objects keyed by tile ID. Every key must reference an existing tile and the entry count must not exceed the tile count.",
+          "type": "object",
+          "maxProperties": 100,
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
+        "fallback": {
+          "$ref": "#/$defs/dashboardLayoutFallbackV1"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "type",
+        "version",
+        "preset",
+        "config",
+        "items",
+        "fallback"
+      ]
+    }
+  }
+};
+
+export const storedWorkspaceV1Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json",
+  "title": "Altinity SQL Browser stored workspace v1",
+  "description": "The atomic browser-persistence aggregate: one workspace with an ordered saved-query collection and zero or one Dashboard. Internal persistence contract; portable interchange uses portable-bundle-v1 instead.",
+  "x-altinity-kind": "stored-workspace",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": [
+    "storageVersion",
+    "id",
+    "name",
+    "queries",
+    "dashboard"
+  ],
+  "properties": {
+    "storageVersion": {
+      "title": "Storage version",
+      "description": "Stored-workspace contract version; always 1 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "title": "Workspace identifier",
+      "description": "Stable generated workspace identity. Two files with the same name still produce distinct workspace IDs.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "\\S"
+    },
+    "name": {
+      "title": "Workspace name",
+      "description": "User-visible workspace name. Renaming the workspace does not rename its Dashboard.",
+      "type": "string",
+      "maxLength": 512
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "The ordered saved-query collection in catalog/authoring order, independent of Dashboard tile order. Required even when empty.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "saved-query-v2.schema.json"
+      }
+    },
+    "dashboard": {
+      "title": "Dashboard",
+      "description": "The zero-or-one editable Dashboard of this workspace; null when none exists.",
+      "oneOf": [
+        {
+          "$ref": "dashboard-v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "storageVersion",
+    "id",
+    "name",
+    "queries",
+    "dashboard"
+  ]
+};
+
+export const portableBundleV1Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "title": "Altinity SQL Browser portable bundle v1",
+  "description": "The one canonical portable interchange format: saved queries plus zero or more Dashboard documents. All newly written importable/exportable JSON uses this format; legacy Library v1/v2 files remain readable through compatibility decoders.",
+  "x-altinity-kind": "portable-bundle",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": [
+    "format",
+    "version",
+    "exportedAt",
+    "queries",
+    "dashboards"
+  ],
+  "properties": {
+    "$schema": {
+      "title": "Schema identifier",
+      "description": "Optional schema hint for editors, agents, and third-party tools.",
+      "const": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json"
+    },
+    "format": {
+      "title": "Format identifier",
+      "const": "altinity-sql-browser/portable-bundle"
+    },
+    "version": {
+      "title": "Bundle format version",
+      "description": "Portable bundle contract version; always 1 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 1
+    },
+    "exportedAt": {
+      "title": "Export timestamp",
+      "description": "RFC 3339 timestamp indicating when this portable bundle was created.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "title": "Bundle metadata",
+      "description": "Optional human-readable bundle name and description.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "title": "Bundle name",
+          "type": "string",
+          "maxLength": 512
+        },
+        "description": {
+          "title": "Bundle description",
+          "type": "string",
+          "maxLength": 16384
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "name",
+        "description"
+      ]
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "saved-query-v2.schema.json"
+      }
+    },
+    "dashboards": {
+      "title": "Dashboard documents",
+      "description": "Bundled Dashboard documents. The v1 Workbench manages at most one Dashboard; multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "$ref": "dashboard-v1.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "$schema",
+    "format",
+    "version",
+    "exportedAt",
+    "metadata",
+    "queries",
+    "dashboards"
+  ]
+};
+
 export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json": querySpecV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json": savedQueryV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json": libraryV2Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": flowLayoutV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": dashboardV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json": storedWorkspaceV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": portableBundleV1Schema,
 };

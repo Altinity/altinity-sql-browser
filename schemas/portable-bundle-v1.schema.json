@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "title": "Altinity SQL Browser portable bundle v1",
+  "description": "The one canonical portable interchange format: saved queries plus zero or more Dashboard documents. All newly written importable/exportable JSON uses this format; legacy Library v1/v2 files remain readable through compatibility decoders.",
+  "x-altinity-kind": "portable-bundle",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": ["format", "version", "exportedAt", "queries", "dashboards"],
+  "properties": {
+    "$schema": {
+      "title": "Schema identifier",
+      "description": "Optional schema hint for editors, agents, and third-party tools.",
+      "const": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json"
+    },
+    "format": {
+      "title": "Format identifier",
+      "const": "altinity-sql-browser/portable-bundle"
+    },
+    "version": {
+      "title": "Bundle format version",
+      "description": "Portable bundle contract version; always 1 for this contract. Unknown future versions fail closed.",
+      "type": "integer",
+      "const": 1
+    },
+    "exportedAt": {
+      "title": "Export timestamp",
+      "description": "RFC 3339 timestamp indicating when this portable bundle was created.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "metadata": {
+      "title": "Bundle metadata",
+      "description": "Optional human-readable bundle name and description.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "title": "Bundle name",
+          "type": "string",
+          "maxLength": 512
+        },
+        "description": {
+          "title": "Bundle description",
+          "type": "string",
+          "maxLength": 16384
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": ["name", "description"]
+    },
+    "queries": {
+      "title": "Saved queries",
+      "description": "Every query referenced by the bundled dashboards plus any standalone queries; each query appears exactly once. Required even when empty.",
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "saved-query-v2.schema.json" }
+    },
+    "dashboards": {
+      "title": "Dashboard documents",
+      "description": "Bundled Dashboard documents. The v1 Workbench manages at most one Dashboard; multi-dashboard bundles are import-resolution input for tooling and forward compatibility. Required even when empty.",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "dashboard-v1.schema.json" }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": ["$schema", "format", "version", "exportedAt", "metadata", "queries", "dashboards"]
+}
