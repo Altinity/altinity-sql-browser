@@ -14,31 +14,22 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import type { ActionsRegistry } from './app.types.js';
-import type { HostDescriptor, IdpDescriptor } from '../net/oauth-config.js';
-
-/** `app.loadIdps()`'s resolved shape — the real one (oauth-config.ts's
- *  `ConfigDoc`, `basicLogin`/`hosts` included): app.types.ts's `App.loadIdps`
- *  only describes `{ idps: Array<{id}> }`, a stale narrower contract another
- *  consumer settled for — not accurate for what this module actually reads
- *  off the resolved value (flagged, not fixed here — out of scope for this
- *  change). Only `id`/`label` are read off each IdP entry, so that field
- *  stays a `Pick`, matching every test fixture's minimal `{id, label}`. */
-export interface LoginIdpsResult {
-  idps: Pick<IdpDescriptor, 'id' | 'label'>[];
-  basicLogin?: boolean;
-  hosts?: HostDescriptor[];
-}
+import type { ConfigDoc, HostDescriptor, IdpDescriptor } from '../net/oauth-config.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). `root` is narrowed to a
  *  non-null `Element` (vs. `App.root`'s `Element | null`): this module always
- *  writes through it unconditionally, exactly as it already did pre-#262. */
+ *  writes through it unconditionally, exactly as it already did pre-#262.
+ *  `loadIdps` now matches `App.loadIdps`'s real resolved shape (oauth-config.ts's
+ *  `ConfigDoc`) directly — #267 fixed the contract that used to undersell it
+ *  as `{ idps: Array<{id}> }`, so the local `LoginIdpsResult` widening this
+ *  module needed for that gap is gone. */
 export interface LoginApp {
   root: Element;
   host(): string;
   hostHint?: string;
   actions: Pick<ActionsRegistry, 'login' | 'connect'>;
-  loadIdps(): Promise<LoginIdpsResult>;
+  loadIdps(): Promise<ConfigDoc>;
   showLogin(msg?: string): void;
 }
 

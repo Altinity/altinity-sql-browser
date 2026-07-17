@@ -20,6 +20,7 @@ import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
+import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
 
 // ── Typed test-app scaffolding ───────────────────────────────────────────────
 // tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
@@ -40,6 +41,9 @@ type FakeApp = ReturnType<typeof makeApp>;
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
+  hardenedVars: new Set(),
+  matchMedia: null,
+  build: 'v0.0.0-test',
   root: null,
   document,
   token: null,
@@ -69,8 +73,8 @@ const appDefaults: App = {
   hostHint: '',
   basePath: '',
   setTokens: () => {},
-  loadConfig: async () => ({}),
-  loadIdps: async () => ({ idps: [] }),
+  loadConfig: async () => ({}) as ResolvedIdpConfig,
+  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as ConfigDoc,
   selectIdp: () => {},
   ensureConfig: async () => null,
   ensureFreshToken: async () => true,
@@ -117,6 +121,7 @@ const appDefaults: App = {
   setRunBtn: () => {},
   renderVarStrip: () => {},
   setExportBtn: () => {},
+  setFmtBtn: () => {},
   specBlocked: () => false,
   updateSaveBtn: () => {},
   evaluateSpecDraft: () => ({}),
@@ -2118,6 +2123,12 @@ function makeFetch(routes: FetchRoute[]) {
     return resp({ json: { data: [] } });
   });
 }
+// Widened to the plain `Clipboard.writeText` signature (not vitest's own
+// `Mock<...>` wrapper type) so `{ writeText } as Clipboard` is a legal
+// single-step cast — Clipboard's real `writeText` is otherwise not comparable
+// to a `Mock<...>`-typed property (extra mock-only members on neither side
+// overlap). Never asserted on directly in this suite.
+const clipboardWriteText: (data: string) => Promise<void> = vi.fn(async () => {});
 function appEnv(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
   const root = document.createElement('div');
   document.body.appendChild(root);
@@ -2127,7 +2138,7 @@ function appEnv(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: globalThis.crypto, Editor: createCodeMirrorEditor, Chart: FakeChart,
     fetch: asFetch(makeFetch([])), now: () => 0, retryMs: 0, handoffMs: 10, handoffListenMs: 10,
-    navigator: { clipboard: { writeText: vi.fn(async () => {}) } },
+    navigator: { clipboard: { writeText: clipboardWriteText } as Clipboard },
     ...over,
   };
 }

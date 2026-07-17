@@ -1,8 +1,9 @@
-// Phase-0 typed contract for the `app` controller (src/ui/app.js). Describes
-// the surface OTHER modules read/call — not createApp's full internal
-// ~290-property implementation — verified against real usage across
-// src/ui/*.js, src/editor/*.js and src/main.js (ADR-0002 phase 0 / #262). No
-// behavior change: app.js stays untouched `.js`.
+// Phase-final typed contract for the `app` controller (src/ui/app.ts).
+// Describes the surface OTHER modules read/call — not createApp's full
+// internal ~290-property implementation — verified against real usage across
+// src/ui/*.ts, src/editor/*.ts and src/main.js (ADR-0002 phase 0 / #262, #267).
+// app.ts's own `createApp` return value is declared against this contract
+// directly (`const app = {} as App;` + property assignment — see app.ts).
 //
 // `State`/`Tab` are the real src/state.ts types (ADR-0002 phase 2), re-exported
 // under the names this contract has always used.
@@ -13,26 +14,40 @@ import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
 import type { StreamResult } from '../core/stream.js';
+import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
+import type { SpecValidatorFn } from '../core/spec-draft.js';
+import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
 type Json = Record<string, unknown>;
 
-export interface SavedQuery extends Json {
-  id: string;
-  sql: string;
-  specVersion: number;
-  spec: Json;
-}
-
-/** A schema entity reference, e.g. the click target of a schema-graph node. */
+/** A schema entity reference — three real runtime shapes share this one loose
+ * contract: `showSchemaGraph`/`expandSchemaGraph`'s FOCUS payload (schema.ts's
+ * drag/click sources always send `{kind, db}` or `{kind, db, table}` —
+ * `core/schema-graph.ts`'s own `SchemaGraphFocus`, whose own `db` is likewise
+ * optional); a resolved lineage-graph NODE a click passes to `openNodeDetail`
+ * (`{db, name}`, `id` optional — schema-detail.ts's `DetailNode` requires it,
+ * but a caller/test may omit it, same as node.id ever being read as
+ * `undefined` there); `kind` (missing pre-#267) and `table`/`id` cover all
+ * three without a cast at any one call site. `db` is optional too — all three
+ * real consumers (`showSchemaGraph`/`expandSchemaGraph`/`openNodeDetail`,
+ * app.ts) guard `if (!focus.db) return;` before using it, a no-db focus
+ * (e.g. a test exercising that guard) is a legitimate call. */
 export interface SchemaFocus {
-  db: string;
+  db?: string;
   name?: string;
+  table?: string;
+  kind?: string;
+  id?: string;
 }
 
 /** `app.dom` is reset wholesale (`{}`) at the top of every renderApp() call —
- * a stable dictionary of known-consumed keys, not a closed interface. */
+ * a stable dictionary of known-consumed keys, not a closed interface. Beyond
+ * the keys other modules read (documented individually below), it also carries
+ * every DOM ref + var-strip rebuild bookkeeping field app.ts's own renderApp()/
+ * renderVarStrip() attach to `app.dom` (never read outside app.ts, but typed
+ * here since AppDom is the one place `app.dom`'s shape is described). */
 export interface AppDom {
   fileBtn?: HTMLElement;
   fileDialog?: HTMLElement;
@@ -49,6 +64,39 @@ export interface AppDom {
   specEditorView?: EditorView;
   sqlEditorView?: EditorView;
   themeBtn?: HTMLElement;
+
+  // app.ts-internal only (renderApp()'s own mounted chrome + renderVarStrip()'s
+  // rebuild bookkeeping) — not read by any other module.
+  banner?: HTMLElement;
+  connStatus?: HTMLElement;
+  editorModeSwitch?: HTMLElement;
+  editorRegion?: HTMLElement;
+  editorResultsSplit?: HTMLElement;
+  exportBtn?: HTMLButtonElement;
+  explainBtn?: HTMLButtonElement;
+  fmtBtn?: HTMLButtonElement;
+  formatSpecBtn?: HTMLButtonElement;
+  mobileBadge?: HTMLElement;
+  mobileNav?: HTMLElement;
+  mobileSegmented?: HTMLElement;
+  runBtn?: HTMLButtonElement;
+  saveBtn?: HTMLButtonElement;
+  savePopover?: HTMLElement;
+  schemaSearchInput?: HTMLInputElement;
+  shareBtn?: HTMLButtonElement;
+  sideSplit?: HTMLElement;
+  specEditorHost?: HTMLElement;
+  specModeBtn?: HTMLButtonElement;
+  specPane?: HTMLElement;
+  specStatus?: HTMLElement;
+  sqlEditorHost?: HTMLElement;
+  sqlModeBtn?: HTMLButtonElement;
+  userBtn?: HTMLButtonElement;
+  userMenu?: HTMLElement;
+  varStrip?: HTMLElement;
+  varStripSig?: string;
+  varStripRerenderPending?: boolean;
+  varStripDeferHooked?: boolean;
 }
 
 export interface ChCtx {
@@ -73,12 +121,15 @@ export interface ActionsRegistry {
   share(): void;
   copyResult(): void;
   copySnapshot(result: Json | null, targetDoc?: Document): void;
-  exportEntry(): void;
+  exportEntry(): Promise<void> | undefined;
   exportDirect(sqlInput: string, waveMs: number): Promise<void>;
   cancelExport(): void;
   cancelExportScript(): void;
-  /** null: nothing to save (empty draft); undefined: the create-popover opened instead of returning a result. */
-  save(): Json | null | undefined;
+  /** null: nothing to save (empty draft); undefined: the create-popover opened
+   * instead of returning a result. A committed/created save resolves the real
+   * generated `SavedQueryV2` entry (state.ts's `commitSavedQuery`/
+   * `createSavedQuery`) — `Json` undersold it as opaque. */
+  save(): SavedQueryV2 | null | undefined;
   openUserMenu(): void;
   formatQuery(): Promise<void>;
   formatSpec(): void;
@@ -89,7 +140,11 @@ export interface ActionsRegistry {
   showSchemaGraph(focus: SchemaFocus): Promise<void>;
   cancelSchemaGraph(opts?: { clearResult?: boolean }): void;
   expandSchemaGraph(focus: SchemaFocus): Promise<void>;
-  openNodeDetail(node: Required<SchemaFocus>, targetDoc?: Document): Promise<void>;
+  /** `node.db`/`node.name` are both checked at runtime (a node missing either
+   * is a silent no-op) — `Required<SchemaFocus>` overstated that as a caller
+   * guarantee; real callers (schema-detail.ts's clicked card, tests exercising
+   * the guard) can and do omit `name`. */
+  openNodeDetail(node: SchemaFocus, targetDoc?: Document): Promise<void>;
   insertCreate(target: string): Promise<void>;
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
@@ -105,6 +160,10 @@ export interface ActionsRegistry {
 export interface App {
   state: State;
   dom: AppDom;
+  /** Names of `{name:Type}` variables whose value has hardened to invalid
+   * (#170 review — see app.ts's construction-site comment). Read directly by
+   * tests; otherwise app.ts-internal bookkeeping. */
+  hardenedVars: Set<string>;
   root: Element | null;
   document: Document;
   token: string | null;
@@ -145,10 +204,20 @@ export interface App {
   hostHint: string;
   basePath: string;
   setTokens(id: string, refresh?: string): void;
-  loadConfig(): Promise<Json>;
-  loadIdps(): Promise<{ idps: Array<{ id: string }> }>;
+  /** The real resolved shape (net/oauth-config.ts's `ResolvedIdpConfig`) — the
+   * previous opaque `Json` undersold it; main.js's OAuth-callback path reads
+   * `cfg.bearer` straight off this value. */
+  loadConfig(): Promise<ResolvedIdpConfig>;
+  /** The real resolved shape (net/oauth-config.ts's `ConfigDoc`) — the
+   * previous `{ idps: Array<{ id: string }> }` undersold it (no
+   * `basicLogin`/`hosts`, and each `idps[]` entry is a full `IdpDescriptor`,
+   * not just `{id}`); login.ts read the real shape all along behind its own
+   * `LoginIdpsResult` widening, now redundant (dropped there). */
+  loadIdps(): Promise<ConfigDoc>;
   selectIdp(id: string): void;
-  ensureConfig(): Promise<Json | null>;
+  /** Same real shape as `loadConfig` (`null` when config couldn't be loaded —
+   * fail-soft, see app.ts's own `ensureConfig`). */
+  ensureConfig(): Promise<ResolvedIdpConfig | null>;
   ensureFreshToken(): Promise<boolean>;
   chCtx: ChCtx;
   showLogin(msg?: string): void;
@@ -160,6 +229,12 @@ export interface App {
   showDirectoryPicker: ((opts?: unknown) => Promise<unknown>) | null;
   isSecureContext: boolean;
   FileReader: typeof FileReader;
+  /** Mobile-breakpoint seam (#126), app.ts-internal (renderApp seeds/tracks
+   * `state.isMobile` against it) — not read by any other module. */
+  matchMedia: ((query: string) => MediaQueryList) | null;
+  /** Build stamp shown in the user menu (app.ts's own openUserMenu) — not read
+   * by any other module. */
+  build: string;
 
   // Persistence.
   saveJSON(key: string, value: unknown): void;
@@ -204,6 +279,9 @@ export interface App {
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   renderVarStrip(): void;
   setExportBtn(exporting: boolean): void;
+  /** Format-button busy/spinner toggle (app.ts-internal — not read by any
+   * other module, but directly exercised by tests). */
+  setFmtBtn(busy: boolean): void;
   specBlocked(tab: Tab): boolean;
   updateSaveBtn(): void;
   /** Only present after the first renderApp() call. */
@@ -212,8 +290,14 @@ export interface App {
   evaluateSpecDraft(tab: Tab, text: string, opts?: { dirty?: boolean }): Json;
   revalidateSpecDrafts(opts?: { refreshUi?: boolean }): void;
   revealFirstSpecError(tab?: Tab): void;
-  registerSpecValidator(path: string, validate: (...args: unknown[]) => unknown): () => void;
-  activateInvalidSpecDraft(tab: Tab): void;
+  /** `path` is a JSON-path segment list (array index / object key per
+   * segment), not a single string — every real call site (including tests)
+   * passes e.g. `['items', 0, 'kind']`, matching `core/spec-draft.js`'s own
+   * `SpecValidatorEntry.path`. */
+  registerSpecValidator(path: (string | number)[], validate: SpecValidatorFn): () => void;
+  /** `tab` is a defensive no-op-on-falsy read (`if (!tab) return;`, app.ts) —
+   *  a test exercising a no-linked-tab call site passes `null` directly. */
+  activateInvalidSpecDraft(tab: Tab | null): void;
   openSavePopover(): void;
   openUserMenu(): void;
 

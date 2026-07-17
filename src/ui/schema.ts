@@ -19,16 +19,11 @@ import type { AppDom, ActionsRegistry } from './app.types.js';
 export interface SchemaApp {
   dom: Pick<AppDom, 'schemaList'>;
   state: AppState;
-  actions: Pick<ActionsRegistry, 'insertCreate' | 'insertAtCursor' | 'loadIntoNewTab' | 'loadColumns' | 'openCreateInNewTab'> & {
-    /** `ActionsRegistry.showSchemaGraph`'s own `SchemaFocus` type covers only
-     *  `{db, name?}` (the shape `openNodeDetail`'s node needs) — the real
-     *  runtime payload for a schema-graph draw always carries `kind` too
-     *  (app.js only reads `focus.db` and forwards `focus` verbatim to
-     *  ch.loadSchemaLineage/loadLineageTransitive; this module — the only
-     *  production caller, below — always sends `{kind, db}`). Widened locally
-     *  rather than touching the shared app.types.ts contract. */
-    showSchemaGraph(focus: { kind: string; db: string }): Promise<void> | void;
-  };
+  // `ActionsRegistry.showSchemaGraph`'s `SchemaFocus` now carries `kind?`
+  // directly (#267 fixed the contract — every real showSchemaGraph payload,
+  // including this module's own `{kind, db}` sends below, has always carried
+  // it), so the local widening this module previously needed is gone.
+  actions: Pick<ActionsRegistry, 'insertCreate' | 'insertAtCursor' | 'loadIntoNewTab' | 'loadColumns' | 'openCreateInNewTab' | 'showSchemaGraph'>;
   /** Same-row double-click tracking (see `isDoubleClick` below) — own,
    *  module-private mutable state stashed on the app instance (per instance →
    *  tests stay isolated) rather than a dedicated signal. */

@@ -11,10 +11,15 @@ import {
   createSavedQuery, commitSavedQuery, savedForTab, tabPanel,
   normalizeRowLimit, MOBILE_BREAKPOINT_PX, effectiveFilterActive,
 } from '../state.js';
+import type { QueryTab, AppState, SpecValidationService, HistoryResultSnapshot, QuerySpecDraft } from '../state.js';
+import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import { splitStatements, isRowReturning, leadingKeyword } from '../core/sql-split.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, executionView, analysisView,
   fieldControls, fieldControlKind,
+} from '../core/param-pipeline.js';
+import type {
+  ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, BoundParamSnapshot, FieldControl,
 } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
@@ -24,9 +29,11 @@ import { sqlString, inferQueryName, shortVersion, supportsExplainPretty, userSho
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../core/explain.js';
 import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
 import { buildCardGraph } from '../core/schema-cards.js';
+import type { SchemaCardColumnRow } from '../core/schema-cards.js';
 import { resolveTarget } from '../core/target.js';
 import { toTSV, formatFileMeta, exportFilename, scriptExportName } from '../core/export.js';
 import { newResult, applyStreamLine, parseErrorPos, findExceptionFrame } from '../core/stream.js';
+import type { StreamResult } from '../core/stream.js';
 import { buildResultSource } from '../core/query-source.js';
 import { encodeShare } from '../core/share.js';
 import { queryName, queryPanel, withQuerySpec } from '../core/saved-query.js';
@@ -37,51 +44,182 @@ import {
   CORE_SPEC_VALIDATORS, createSpecValidatorRegistry, evaluateSpecText, formatSpecText,
   hasBlockingSpecErrors,
 } from '../core/spec-draft.js';
+import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
+import type { SpecDiagnostic } from '../editor/spec-editor.types.js';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { generatePKCE, randomState } from '../core/pkce.js';
 import { configBase } from '../core/dashboard.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { isKpiPanel, panelExecution } from '../core/panel-execution.js';
 import { snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant, AUTH_REQUEST, AUTH_GRANT } from '../core/auth-handoff.js';
+import type { AuthSnapshot } from '../core/auth-handoff.js';
 import * as oauthCfg from '../net/oauth-config.js';
 import * as oauth from '../net/oauth.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
+import type { EditorPort } from '../editor/editor-port.types.js';
 import { createNoopSpecEditor } from '../editor/spec-editor.js';
 import { createSpecCompletionSources } from '../editor/spec-completion-adapter.js';
 import { SCHEMA_GRAPH_MIME } from './dnd-mime.js';
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
+import type { QueryOrName } from './tabs.js';
 import { effect, batch } from '@preact/signals-core';
 import { renderSchema } from './schema.js';
 import { renderResults } from './results.js';
+import type { Result, QueryResult, ScriptResult, ScriptEntry, ScriptExportEntry, ScriptExportResult, ResultSchemaGraph } from './results.js';
 import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
+import type { SchemaLineageGraph, SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
+import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
+import type { RelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
+import type { RecentField } from './recent-field.js';
 import { buildEnumField } from './enum-field.js';
+import type { EnumField } from './enum-field.js';
 import { wireComboInput } from './combobox.js';
+import type { ComboField } from './combobox.js';
 import { recordRecent, clearRecent, clearAllRecent, recentOptions } from '../core/recent-values.js';
 import { enumValues, parseParamType } from '../core/param-type.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
+import type { ParamComparisonEntry } from '../core/param-comparison.js';
 import { resolveComparisonColumnType } from '../core/from-scope.js';
+import type { SchemaDb, SchemaTable, SchemaColumn } from '../core/from-scope.js';
+import type { AssembledReference } from '../core/completions.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
 import { startDrag } from './splitters.js';
+import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitters.js';
 import { flashToast } from './toast.js';
+import type { App, ActionsRegistry, SchemaFocus, ChCtx as AppChCtx } from './app.types.js';
+import type { CreateAppEnv } from '../env.types.js';
+import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core/schema-graph.js';
+import type { LineageFocus } from '../net/ch-client.js';
 
-export function createApp(env = {}) {
+/** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
+ *  `<script>` tag might attach) can carry that aren't in the standard `Window`
+ *  type — none of `main.js`'s real production wiring relies on these; it always
+ *  supplies `Chart`/`Dagre` (imported packages) via `env` directly. These are
+ *  only the env-absent fallback reads below (`win.Chart`, `win.dagre`, …), kept
+ *  narrow and all-optional so a plain `Window` still satisfies this widened type. */
+/** `run()`/`runScript()`'s own bookkeeping on `app.state` — a live query's
+ *  wall-clock start (`runT0`), its ClickHouse `query_id` (`runQueryId`, for
+ *  Cancel's KILL QUERY), and the live-elapsed-ms ticker's interval handle
+ *  (`runTick`). `state.ts`'s own `AppState` doesn't declare these fields (set
+ *  and read only by app.ts + tests exercising it directly) — narrowed locally
+ *  via `runState(app.state)` rather than widening the shared state.ts contract
+ *  for this single consumer. */
+interface RunState {
+  runT0: number | null;
+  runQueryId: string | null;
+  runTick: ReturnType<typeof setInterval> | null;
+}
+const runState = (s: AppState): AppState & RunState => s as AppState & RunState;
+
+/** `run()`'s own options bag — an explicit selection override (`sql`), the
+ *  Explain button / EXPLAIN-view-switch flags, and a saved-query's remembered
+ *  result view. Every real call site (`runEntry`, `explainQuery`,
+ *  `setExplainView`, the saved-query open path) passes a subset of exactly
+ *  these fields. */
+interface RunOpts {
+  sql?: string;
+  explain?: boolean;
+  explainView?: string;
+  view?: string;
+}
+
+/** The transport `run()` executes under for a KPI-owned panel — the shared
+ *  read of `core/panel-execution.js`'s `PanelExecutionResult` (the non-Filter
+ *  branch) and the plain Filter-role stand-in literal (the `isFilter` branch),
+ *  narrowed to exactly the fields `run()` itself reads. */
+interface KpiExecutionTransport {
+  format?: string;
+  rowLimit?: number;
+  params: Record<string, unknown>;
+  error: string | null;
+}
+
+/** The var-strip's combobox-based field controller — whichever of
+ *  `buildEnumField`/`buildRelativeTimeField`/`buildRecentField` `ctl.kind`
+ *  picks. Only `RelativeTimeField` actually declares `previewEl` (the #169
+ *  live date preview `applyFieldState` points `aria-describedby` at); the
+ *  intersection makes reading it a safe optional no-op for the other two
+ *  control kinds, which never populate it. */
+type VarStripCombo = (EnumField | RecentField | RelativeTimeField) & { previewEl?: HTMLElement };
+
+/** A `FileSystemWritableFileStream`-shaped handle — narrower than the DOM
+ *  lib's own (this project's lib.dom build doesn't carry the File System
+ *  Access API at all, hence `env.showSaveFilePicker`/`showDirectoryPicker`
+ *  being typed `unknown` seams in the first place). */
+interface WritableFileStreamLike {
+  write(chunk: Uint8Array): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+}
+/** A `FileSystemFileHandle`-shaped handle — `showSaveFilePicker`'s resolved
+ *  value, and `getFileHandle`'s. `move` (Chrome 110+) is optional — feature-
+ *  detected at the one call site that uses it. */
+interface FileHandleLike {
+  name: string;
+  createWritable(): Promise<WritableFileStreamLike>;
+  move?(name: string): Promise<void>;
+}
+/** A `FileSystemDirectoryHandle`-shaped handle — `showDirectoryPicker`'s
+ *  resolved value. */
+interface DirectoryHandleLike {
+  getFileHandle(name: string, opts?: { create?: boolean }): Promise<FileHandleLike>;
+}
+
+/** `attemptStatement`'s outcome — `ch.runQuery`'s own `RunQueryResult`
+ *  (`{error?, raw?}`, `streamed` unused here), or one of the two classified
+ *  failures the retry logic in `runScript` branches on. */
+interface AttemptResult {
+  raw?: string;
+  error?: string;
+  aborted?: boolean;
+  transient?: boolean;
+}
+
+interface WindowExtras {
+  Chart?: unknown;
+  dagre?: unknown;
+  showSaveFilePicker?: (opts?: unknown) => Promise<unknown>;
+  showDirectoryPicker?: (opts?: unknown) => Promise<unknown>;
+  webkitURL?: typeof URL;
+  FileReader?: typeof FileReader;
+  URL?: typeof URL;
+  Blob?: typeof Blob;
+}
+
+/** `app.specValidators`'s full internal shape: the canonical schema +
+ *  registered-rules service (core/spec-draft.js's `QuerySpecValidationService`
+ *  — assignable to the narrower public `SpecValidationService` read-surface,
+ *  app.types.ts, without a cast, same as state.ts's own
+ *  `defaultSpecValidationService`). `.register` is app.ts-internal wiring (the
+ *  `registerSpecValidator` action) that other modules never call directly. */
+type AppSpecValidators = QuerySpecValidationService;
+
+export function createApp(env: CreateAppEnv = {}): App {
   const doc = env.document || document;
-  const win = env.window || window;
+  const win = (env.window || window) as Window & WindowExtras;
   const loc = env.location || win.location;
   const fetchFn = env.fetch || win.fetch.bind(win);
   const cryptoObj = env.crypto || win.crypto;
   const ss = env.sessionStorage || win.sessionStorage;
 
-  const app = {
+  // Built up as a `Partial<App>` first (every field below has a real,
+  // App-typed value already — `Partial` just lets this literal typecheck
+  // without every OTHER `App` member also being present yet), then widened to
+  // `App` in one step: every member this function doesn't assign inline below
+  // is attached via a later `app.foo = …` statement (the closures those
+  // values need aren't defined until further down this function), exactly
+  // like tests/unit/dashboard.test.ts's own `asApp` helper reinterprets a real
+  // `createApp(env)` object as `App` without copying it.
+  const appBase: Partial<App> = {
     state: createState(),
     dom: {},
     // #170 review: names of `{name:Type}` variables whose value has hardened
@@ -94,7 +232,7 @@ export function createApp(env = {}) {
     // that recompute would silently re-enable Run while the field itself
     // still paints red. Editing the field's value again (its own `oninput`)
     // clears the name here, returning it to normal lenient behavior.
-    hardenedVars: new Set(),
+    hardenedVars: new Set<string>(),
     root: env.root || doc.getElementById('root'),
     document: doc,
     token: ss.getItem('oauth_id_token'),
@@ -102,7 +240,7 @@ export function createApp(env = {}) {
     // Charting seam: the Chart.js constructor (injected so tests stub it) and a
     // CSS-custom-property reader (canvas needs real colors, not `var(--x)`).
     Chart: env.Chart || win.Chart,
-    cssVar: env.cssVar || ((name) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
+    cssVar: env.cssVar || ((name: string) => win.getComputedStyle(doc.documentElement).getPropertyValue(name)),
     // Pipeline-graph layout seam: dagre (injected like Chart). The DOT parser and
     // SVG drawer are ours; dagre only computes node positions + edge bend points.
     Dagre: env.Dagre || win.dagre,
@@ -110,10 +248,10 @@ export function createApp(env = {}) {
     // three are injected seams: openWindow so tests can stub window.open,
     // stylesText/faviconHref so the child tab can inline the page's CSS and
     // favicon (about:blank ships neither).
-    openWindow: env.openWindow || ((...a) => win.open(...a)),
-    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style').textContent : ''),
+    openWindow: env.openWindow || ((...a: Parameters<Window['open']>) => win.open(...a)),
+    stylesText: env.stylesText || (doc.querySelector('style') ? doc.querySelector('style')!.textContent || '' : ''),
     faviconHref: env.faviconHref
-      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]').getAttribute('href') : ''),
+      || (doc.querySelector('link[rel~="icon"]') ? doc.querySelector('link[rel~="icon"]')!.getAttribute('href') || '' : ''),
     // Streaming Export (issue #87) needs the File System Access API and a
     // secure context; both are injected seams (like openWindow) so tests can
     // stub them without a real browser. Fixed for the session (browser +
@@ -136,6 +274,7 @@ export function createApp(env = {}) {
     // always-desktop — the mobile CSS still applies, just no JS branching).
     matchMedia: env.matchMedia || (typeof win.matchMedia === 'function' ? win.matchMedia.bind(win) : null),
   };
+  const app = appBase as App;
   // Chromium (+ a secure context) only — Firefox/Safari and plain-HTTP have no
   // File System Access API. The Export button feature-detects this at build
   // time and renders aria-disabled + a tooltip rather than hiding outright.
@@ -152,7 +291,7 @@ export function createApp(env = {}) {
   app.authMode = ss.getItem('ch_basic_auth') ? 'basic' : 'oauth';
   const basicCreds = () => ss.getItem('ch_basic_auth');
   const basicUser = () => ss.getItem('ch_basic_user') || '';
-  const originHost = (o) => { try { return new URL(o).host; } catch { return ''; } };
+  const originHost = (o: string): string => { try { return new URL(o).host; } catch { return ''; } };
 
   // config.json may list several IdPs. Fetch the doc once; resolve OIDC
   // discovery per selected IdP. The chosen IdP id is persisted so it survives
@@ -164,15 +303,15 @@ export function createApp(env = {}) {
   // `/sql` in several shapes.
   app.basePath = configBase(loc.pathname);
   const loadDoc = oauthCfg.memoizeConfig(() => oauthCfg.loadConfigDoc(fetchFn, app.basePath));
-  const resolvedCache = new Map();
+  const resolvedCache = new Map<string, Promise<oauthCfg.ResolvedIdpConfig>>();
   app.idpId = ss.getItem('oauth_idp') || null;
-  function selectIdp(id) { app.idpId = id; ss.setItem('oauth_idp', id); }
-  async function resolveConfig() {
+  function selectIdp(id: string): void { app.idpId = id; ss.setItem('oauth_idp', id); }
+  async function resolveConfig(): Promise<oauthCfg.ResolvedIdpConfig> {
     const { idps } = await loadDoc();
     const chosen = idps.find((i) => i.id === app.idpId) || idps[0];
     app.idpId = chosen.id;
     if (!resolvedCache.has(chosen.id)) resolvedCache.set(chosen.id, oauthCfg.resolveIdp(fetchFn, chosen));
-    return resolvedCache.get(chosen.id);
+    return resolvedCache.get(chosen.id)!;
   }
   app.loadIdps = loadDoc;
   app.selectIdp = selectIdp;
@@ -180,7 +319,7 @@ export function createApp(env = {}) {
   // --- persistence -------------------------------------------------------
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  app.savePref = (name, value) => saveStr(KEYS[name], String(value));
+  app.savePref = (name, value) => saveStr(KEYS[name as keyof typeof KEYS], String(value));
   // Persist the shared query-variable values (#134) after each edit.
   app.saveVarValues = () => saveJSON(KEYS.varValues, app.state.varValues);
   // Persist the optional-block activation map (#165) alongside varValues.
@@ -225,7 +364,7 @@ export function createApp(env = {}) {
     app.state.varRecent = clearAllRecent();
     app.saveVarRecent();
   };
-  app.FileReader = env.FileReader || win.FileReader;
+  app.FileReader = (env.FileReader || win.FileReader) as typeof FileReader;
   // Exposed seam for the header File menu (file-menu.js): the file-download
   // helper (defined below). The library title (name + dirty dot) repaints via a
   // libraryName/libraryDirty effect, so callers just mutate those signals.
@@ -240,17 +379,27 @@ export function createApp(env = {}) {
   app.activeTab = () => activeTab(app.state);
 
   // --- independent SQL + Spec editor seams (#143/#212) ---------------------
-  app.Editor = env.Editor || createNoopPort;
-  app.SpecEditor = env.SpecEditor || createNoopSpecEditor;
-  app.specValidators = env.specValidators && typeof env.specValidators.validate === 'function'
+  const Editor = env.Editor || createNoopPort;
+  const SpecEditor = env.SpecEditor || createNoopSpecEditor;
+  // `env.specValidators`'s two accepted runtime shapes: a full validator
+  // service (already exposing `validate` — used as-is) or an initial entry
+  // list for `createSpecValidatorRegistry` to build one from. Kept as its own
+  // local (not `app.specValidators`, typed to the narrower `SpecValidationService`
+  // read-shape other modules rely on — see app.types.ts) so this module's own
+  // `.register` calls below stay typed too; `register` is app.ts-internal
+  // wiring, outside the public contract.
+  const hasValidate = (v: unknown): v is AppSpecValidators =>
+    !!v && typeof (v as { validate?: unknown }).validate === 'function';
+  const specValidators: AppSpecValidators = hasValidate(env.specValidators)
     ? env.specValidators
-    : createSpecValidatorRegistry(env.specValidators || CORE_SPEC_VALIDATORS);
-  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources();
+    : createSpecValidatorRegistry((env.specValidators as readonly SpecValidatorEntry[] | undefined) || CORE_SPEC_VALIDATORS);
+  app.specValidators = specValidators;
+  app.specCompletionSources = (env.specCompletionSources || createSpecCompletionSources()) as unknown[];
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));
-  app.sqlEditor = app.Editor(app);
-  app.specEditor = app.SpecEditor(app);
+  app.sqlEditor = Editor(app);
+  app.specEditor = SpecEditor(app);
   app.sqlEditor.onDocChange((value) => {
     const tab = app.activeTab();
     tab.sqlDraft = value;
@@ -268,22 +417,32 @@ export function createApp(env = {}) {
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.renderVarStrip) app.renderVarStrip();
   });
-  const applySpecEvaluation = (tab, text, { dirty = true } = {}) => {
-    const evaluated = evaluateSpecText(text, app.specValidators, { sql: tab.sqlDraft, tab });
+  const applySpecEvaluation = (
+    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
+  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } => {
+    const evaluated = evaluateSpecText(text, specValidators, { sql: tab.sqlDraft, tab });
     tab.specText = text;
-    tab.specParsed = evaluated.parsed;
+    tab.specParsed = evaluated.parsed as QueryTab['specParsed'];
     tab.specDiagnostics = evaluated.diagnostics;
     tab.dirtySpec = dirty;
     return evaluated;
   };
-  app.evaluateSpecDraft = (tab, text, { dirty = true } = {}) => {
+  // Kept as its own named local (precise `{parsed, diagnostics}` return) as
+  // well as `app.evaluateSpecDraft` (the public, loosely-`Json`-typed
+  // property other modules read per app.types.ts) — every in-module caller
+  // that reads `.parsed`/`.diagnostics` off the result calls this directly to
+  // stay precisely typed instead of going through the public property.
+  function evaluateSpecDraft(
+    tab: QueryTab, text: string, { dirty = true }: { dirty?: boolean } = {},
+  ): { parsed: unknown; diagnostics: SpecDiagnostic[] } {
     const evaluated = applySpecEvaluation(tab, text, { dirty });
     if (tab === app.activeTab()) app.specEditor.setDiagnostics(tab.specDiagnostics);
     if (app.actions) app.actions.rerenderTabs();
     if (app.updateSaveBtn) app.updateSaveBtn();
     if (app.updateEditorModeUi) app.updateEditorModeUi();
     return evaluated;
-  };
+  }
+  app.evaluateSpecDraft = evaluateSpecDraft;
   app.revalidateSpecDrafts = ({ refreshUi = true } = {}) => {
     for (const tab of app.state.tabs.value) {
       applySpecEvaluation(tab, tab.specText, { dirty: tab.dirtySpec });
@@ -300,10 +459,10 @@ export function createApp(env = {}) {
     if (index >= 0) app.specEditor.revealDiagnostic(index);
   };
   app.specEditor.onDocChange((value) => {
-    app.evaluateSpecDraft(app.activeTab(), value);
+    evaluateSpecDraft(app.activeTab(), value);
   });
   app.registerSpecValidator = (path, validate) => {
-    const unregister = app.specValidators.register(path, validate);
+    const unregister = specValidators.register(path, validate);
     app.revalidateSpecDrafts();
     return () => { unregister(); app.revalidateSpecDrafts(); };
   };
@@ -317,16 +476,16 @@ export function createApp(env = {}) {
   // for ch_auth=basic it's the Basic username (honouring basicUserClaim); for
   // bearer it's the email the token-processor keys on. Shared by authHeader and
   // the header display so the UI never shows a different claim than CH sees.
-  function chUsername(p) {
-    return (app.chAuth === 'basic' && app.basicUserClaim && p[app.basicUserClaim])
-      || p.email || p.preferred_username || p.sub || '';
+  function chUsername(p: Record<string, unknown>): string {
+    return String((app.chAuth === 'basic' && app.basicUserClaim && p[app.basicUserClaim])
+      || p.email || p.preferred_username || p.sub || '');
   }
   app.chUsername = chUsername;
   app.email = () => (app.authMode === 'basic'
     ? basicUser()
     : chUsername(decodeJwtPayload(app.token)));
 
-  function setTokens(id, refresh) {
+  function setTokens(id: string, refresh?: string): void {
     app.token = id;
     ss.setItem('oauth_id_token', id);
     if (refresh) {
@@ -338,7 +497,7 @@ export function createApp(env = {}) {
     ss.removeItem('oauth_verifier');
     ss.removeItem('oauth_state');
   }
-  function clearTokens() {
+  function clearTokens(): void {
     app.token = null;
     app.refreshToken = null;
     app.idpId = null;
@@ -349,14 +508,21 @@ export function createApp(env = {}) {
       'ch_basic_auth', 'ch_basic_user', 'ch_basic_origin'].forEach((k) => ss.removeItem(k));
   }
   app.setTokens = setTokens;
-  app.clearTokens = clearTokens;
   app.loadConfig = resolveConfig;
 
-  app.signOut = () => { clearTokens(); renderLogin(app); };
-  app.showLogin = (msg) => renderLogin(app, msg);
+  // login.ts's `LoginApp.root` is narrowed to a non-null `Element` (vs.
+  // `App.root`'s `Element | null`) — deliberate there (that module always
+  // writes through it unconditionally); every real renderLogin() call below
+  // fires only once the app has mounted into a real `#root`, so this is a
+  // structural-only reinterpretation, not a new runtime assumption (a null
+  // root would already throw inside login.ts's own `app.root.replaceChildren`
+  // either way).
+  const renderLoginApp = (msg?: string): void => renderLogin(app as App & { root: Element }, msg);
+  app.signOut = () => { clearTokens(); renderLoginApp(); };
+  app.showLogin = (msg) => renderLoginApp(msg);
 
   // --- OAuth -------------------------------------------------------------
-  async function login(idpId, targetOrigin) {
+  async function login(idpId?: string, targetOrigin?: string): Promise<void> {
     if (idpId) selectIdp(idpId);
     // A picked saved-connection can target another cluster: stash its origin so
     // the rebuilt chCtx (after the redirect reload) POSTs the bearer there.
@@ -375,7 +541,7 @@ export function createApp(env = {}) {
     });
   }
 
-  async function refresh() {
+  async function refresh(): Promise<boolean> {
     // Basic credentials don't expire and can't be refreshed; a surviving 401
     // means the password is wrong → authedFetch falls through to onSignedOut.
     if (app.authMode === 'basic') return false;
@@ -383,11 +549,12 @@ export function createApp(env = {}) {
     const tokens = await oauth.refreshTokens(fetchFn, cfg, app.refreshToken);
     const bearer = oauth.bearerFromTokens(tokens, cfg.bearer);
     if (!bearer) return false;
-    setTokens(bearer, tokens.refresh_token);
+    // `bearer` is only ever truthy when `tokens` (its own source) is non-null.
+    setTokens(bearer, tokens?.refresh_token);
     return true;
   }
 
-  async function getToken() {
+  async function getToken(): Promise<string | null> {
     // In basic mode the stored credential is the "token" authedFetch carries.
     if (app.authMode === 'basic') return basicCreds();
     if (!app.token) return null;
@@ -405,14 +572,14 @@ export function createApp(env = {}) {
   // Which claim becomes the Basic username (per-IdP, from config). Empty → the
   // default chain. Lets one IdP map to a CH username distinct from another's.
   app.basicUserClaim = '';
-  function authHeader(token) {
+  function authHeader(token: string): string {
     // Basic mode: `token` is already base64(user:pass) — send it verbatim.
     if (app.authMode === 'basic') return 'Basic ' + token;
     if (app.chAuth !== 'basic') return 'Bearer ' + token;
     const user = chUsername(decodeJwtPayload(token));
     return 'Basic ' + btoa(unescape(encodeURIComponent(user + ':' + token)));
   }
-  const chCtx = {
+  const chCtx: AppChCtx = {
     fetch: fetchFn,
     // Where queries POST: the serving origin for OAuth, or the (possibly
     // cross-origin) target chosen at credential sign-in for basic mode.
@@ -427,9 +594,9 @@ export function createApp(env = {}) {
     authHeader,
     // detail is set when CH rejects a *valid* login (authorization denial); the
     // no-arg calls (no token / expired + refresh failed) fall back to expiry.
-    onSignedOut: (detail) => {
+    onSignedOut: (detail?: string) => {
       clearTokens();
-      renderLogin(app, detail || 'Your session expired — please sign in again.');
+      renderLoginApp(detail || 'Your session expired — please sign in again.');
     },
   };
   app.chCtx = chCtx;
@@ -437,7 +604,7 @@ export function createApp(env = {}) {
   // Load config (once) and apply the CH auth mode before any query runs.
   // Fail-soft: if config can't be loaded we keep the current mode (bearer)
   // rather than blocking the query.
-  async function ensureConfig() {
+  async function ensureConfig(): Promise<oauthCfg.ResolvedIdpConfig | null> {
     // Basic mode needs no OAuth config — the auth scheme is fixed.
     if (app.authMode === 'basic') return null;
     try {
@@ -456,17 +623,17 @@ export function createApp(env = {}) {
   // host) with a probe query, then commit the session and enter the workbench.
   // The probe uses a throwaway ctx so a bad password surfaces CH's own reason
   // here (rejected as a thrown Error) instead of auto-rendering the login.
-  async function connect({ username, password, host }) {
+  async function connect({ username, password, host }: { username: string; password: string; host?: string }): Promise<void> {
     const user = String(username || '').trim();
     const target = resolveTarget(host, loc.origin);
     const creds = btoa(unescape(encodeURIComponent(user + ':' + (password || ''))));
-    const probeCtx = {
+    const probeCtx: ch.ChCtx = {
       fetch: fetchFn,
       origin: target,
       getToken: async () => creds,
       authHeader: () => 'Basic ' + creds,
       refresh: async () => false,
-      onSignedOut: (detail) => { throw new Error(detail || 'Authentication failed'); },
+      onSignedOut: (detail?: string) => { throw new Error(detail || 'Authentication failed'); },
     };
     await ch.queryJson(probeCtx, 'SELECT 1');
     // Probe passed → commit the session and switch the live ctx to the target.
@@ -488,7 +655,7 @@ export function createApp(env = {}) {
       setConn(false);
     }
   };
-  function setConn(online) {
+  function setConn(online: boolean): void {
     if (!app.dom.connStatus) return;
     app.dom.connStatus.classList.toggle('dim', !online);
     const full = app.state.serverVersion;
@@ -506,16 +673,28 @@ export function createApp(env = {}) {
       // react to these signals; no manual renderSchema/updateBanner needed).
       batch(() => { app.state.schema.value = schema; app.state.schemaError.value = null; });
     } catch (e) {
-      app.state.schemaError.value = String((e && e.message) || e);
+      app.state.schemaError.value = String((e instanceof Error && e.message) || e);
     }
     app.rebuildCompletions();
   };
   // Editor reference data + autocomplete candidates. Loaded once per connection
   // (the keystroke rule, #25): keywords/functions drive both version-correct
   // highlighting and the autocomplete list; completion then runs client-side.
-  app.refData = assembleReferenceData(null); // built-in fallback until loaded
+  // `App.refData`/`App.completions` are deliberately loose (`Json`-shaped)
+  // placeholders — codemirror-adapter.ts's own narrow app slice reads the real
+  // `AssembledReference`/`CompletionItem[]` shapes via its own local `as`
+  // (documented there). This closure keeps its own precisely-typed `refData`
+  // (the real value `app.refData` always holds) and mirrors it onto `app` via
+  // `Object.assign`, which — unlike a direct property write — doesn't require
+  // the assigned value to match `app.refData`'s own (deliberately loose)
+  // declared type; every OTHER fixture across the test suite still constructs
+  // `App.refData`/`App.completions` against today's loose shape.
+  let refData: AssembledReference = assembleReferenceData(null); // built-in fallback until loaded
+  Object.assign(app, { refData });
   app.rebuildCompletions = () => {
-    app.completions = buildCompletions(app.refData, app.state.schema.value);
+    Object.assign(app, {
+      completions: buildCompletions(refData, app.state.schema.value as SchemaDb[] | null),
+    });
   };
   app.rebuildCompletions();
   // Hover docs (#27) are fetched on demand per entity and cached for reuse —
@@ -525,7 +704,7 @@ export function createApp(env = {}) {
   // to dedupe concurrent hovers of the same word.
   app.docCache = new Map();
   app.entityDoc = (name) => {
-    if (app.docCache.has(name)) return Promise.resolve(app.docCache.get(name));
+    if (app.docCache.has(name)) return Promise.resolve(app.docCache.get(name)!);
     const p = ensureConfig().then(() => ch.loadEntityDoc(chCtx, name, sqlString));
     app.docCache.set(name, p); // dedupe concurrent hovers of the same name
     p.then((doc) => {
@@ -538,7 +717,8 @@ export function createApp(env = {}) {
   };
   app.loadReference = async () => {
     await ensureConfig();
-    app.refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
+    refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
+    Object.assign(app, { refData });
     app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
     app.rebuildCompletions();
     app.sqlEditor.refreshReference(); // re-highlight with server keywords
@@ -570,11 +750,16 @@ export function createApp(env = {}) {
   // 'loading' is written synchronously (before the await) so the schema effect
   // paints the spinner immediately; the result/[] write repaints with the data.
   // `tb.columns` stays the completion cache that buildCompletions reads.
-  async function loadColumns(db, table) {
-    const setCols = (cols) => {
-      app.state.schema.value = app.state.schema.value.map((d) =>
+  async function loadColumns(db: string, table: string): Promise<void> {
+    const setCols = (cols: SchemaColumn[] | 'loading'): void => {
+      // `.value` is asserted non-null (matches the original untyped
+      // behavior verbatim: a null schema here throws, exactly as
+      // `null.map(...)` always did) — loadColumns only ever fires from a
+      // click on an already-rendered schema-tree row, i.e. after the schema
+      // itself has loaded.
+      app.state.schema.value = (app.state.schema.value as SchemaDb[]).map((d) =>
         (d.db === db
-          ? { ...d, tables: d.tables.map((t) => (t.name === table ? { ...t, columns: cols } : t)) }
+          ? { ...d, tables: (d.tables as SchemaTable[]).map((t): SchemaTable => (t.name === table ? { ...t, columns: cols } : t)) }
           : d));
     };
     setCols('loading');
@@ -596,37 +781,37 @@ export function createApp(env = {}) {
   }
 
   // --- query run ---------------------------------------------------------
-  const now = () => (env.now || (() => win.performance.now()))();
+  const now = (): number => (env.now || (() => win.performance.now()))();
   // The *wall* clock for the parameter pipeline (#173) — epoch ms, injected
   // separately from `now` above: performance.now() measures durations and is
   // wrong for epoch-relative values (#169's `now-1h`). Callers resolve one
   // wallNow() per execution wave and thread it through every prepare of that
   // wave; debounce/coalescing also live in the callers, never in the pipeline.
-  const wallNow = () => (env.wallNow || (() => Date.now()))();
+  const wallNow = (): number => (env.wallNow || (() => Date.now()))();
   app.wallNow = wallNow;
   // A unique id for a query_id / session_id. Prefer crypto.randomUUID; its
   // fallback (non-secure context, where randomUUID is undefined) must still be
   // unique across tabs sharing one time origin — so mix in Math.random, not just
   // `now()` (performance.now is coarsened and can repeat for back-to-back calls).
-  const uid = (prefix) => (cryptoObj.randomUUID
+  const uid = (prefix: string): string => (cryptoObj.randomUUID
     ? cryptoObj.randomUUID()
     : prefix + now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
   // One retry after this delay (ms) smooths a transient failure on the rapid,
   // same-session requests of a script (env-injectable; tests set 0).
   const retryMs = env.retryMs != null ? env.retryMs : 250;
-  const sleep = (ms) => new Promise((r) => win.setTimeout(r, ms));
+  const sleep = (ms: number): Promise<void> => new Promise((r) => win.setTimeout(r, ms));
   // ClickHouse's transient "session is busy / locked by a concurrent client"
   // (SESSION_IS_LOCKED, code 373) — retryable once the prior request releases it.
   const SESSION_BUSY = /SESSION_IS_LOCKED|session .* is locked|locked by a concurrent/i;
   // Milliseconds since the running query started (0 when idle). Used for the
   // live counter, computed fresh so each render/tick shows the current value.
-  app.elapsedMs = () => (app.state.runT0 != null ? now() - app.state.runT0 : 0);
+  app.elapsedMs = () => (runState(app.state).runT0 != null ? now() - runState(app.state).runT0! : 0);
   // Exposed so results.js can compute a script-export row's live elapsed time
   // (now() - e.startedAt) with the same injected clock as exportScript itself.
   app.now = now;
   // Update only the live elapsed-ms readout (no table re-render). Driven by an
   // interval while running so it ticks even for queries that emit no rows (sleep).
-  function tickElapsed() {
+  function tickElapsed(): void {
     if (app.dom.runElapsedEl) app.dom.runElapsedEl.textContent = app.elapsedMs().toFixed(0) + ' ms';
   }
   app.tickElapsed = tickElapsed;
@@ -642,9 +827,9 @@ export function createApp(env = {}) {
   // ClickHouse resets the idle timer when each query is *released* (end of the
   // request, not the start) and cancels it while a query runs, so the default
   // (60s) never lapses between a script's back-to-back statements.
-  function sessionParams(tab) {
-    tab.chSession = tab.chSession || uid('sess-');
-    return { session_id: tab.chSession };
+  function sessionParams(tab: QueryTab): { session_id: string } {
+    tab.chSession = (tab.chSession as string | undefined) || uid('sess-');
+    return { session_id: tab.chSession as string };
   }
   // Only TEMPORARY tables and session `SET`s need a session; permanent DDL/DML and
   // SELECTs are global. So we attach a session_id ONLY when the SQL needs one — or
@@ -653,19 +838,19 @@ export function createApp(env = {}) {
   // which avoids the session lock / replica-affinity reset that intermittently
   // surfaces as a "Network error". (Schema / reference loads are always
   // session-less — they fan out in parallel and would deadlock on the lock.)
-  const needsSession = (sqls) => sqls.some((s) => /\bTEMPORARY\b/i.test(s) || leadingKeyword(s) === 'SET');
-  function sessionParamsFor(tab, sqls) {
+  const needsSession = (sqls: string[]): boolean => sqls.some((s) => /\bTEMPORARY\b/i.test(s) || leadingKeyword(s) === 'SET');
+  function sessionParamsFor(tab: QueryTab, sqls: string[]): Record<string, string> {
     return tab.chSession != null || needsSession(sqls) ? sessionParams(tab) : {};
   }
   // The workbench SQL as the pipeline's single parameterized source (#173).
-  function tabAnalysis(sql) {
+  function tabAnalysis(sql: string): ParameterAnalysis {
     return analyzeParameterizedSources([
       { id: 'tab', label: 'editor tab', kind: 'tab', sql, bindPolicy: 'row-returning' },
     ]);
   }
   // The optional-block activation map (#165): explicit filterActive entries
   // win; params without one derive activation from their stored value.
-  const activeMap = () => effectiveFilterActive(app.state.varValues, app.state.filterActive);
+  const activeMap = (): Record<string, boolean> => effectiveFilterActive(app.state.varValues, app.state.filterActive);
   // Analyze + prepare `sql` as the workbench's single parameterized source
   // (#173): one call per SQL string per wave, drawing values from the shared
   // varValues (+ the #165 activation map). Returns the full prepared batch
@@ -675,21 +860,21 @@ export function createApp(env = {}) {
   // Args for a request come from a source's statements (or mergedSourceArgs
   // when the SQL ships as one request); each statement's `sql` is its
   // execution view (#165) — byte-identical for SQL without optional blocks.
-  function prepareAnalyzedBatch(analysis, wallNowMs, validationMode = 'execute') {
+  function prepareAnalyzedBatch(analysis: ParameterAnalysis, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedBatch {
     return prepareParameterizedBatch(analysis, {
       values: app.state.varValues, active: activeMap(), wallNowMs, validationMode,
     });
   }
-  function prepareTabBatch(sql, wallNowMs, validationMode = 'execute') {
+  function prepareTabBatch(sql: string, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedBatch {
     return prepareAnalyzedBatch(tabAnalysis(sql), wallNowMs, validationMode);
   }
-  function prepareTabSource(sql, wallNowMs, validationMode = 'execute') {
+  function prepareTabSource(sql: string, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedSource {
     return prepareTabBatch(sql, wallNowMs, validationMode).sources[0];
   }
   // The execution text of one statement (#165): only active optional blocks
   // retained, markers stripped — byte-identical for SQL without blocks. Follows
   // the #134 bind gate: a non-row-returning statement passes through verbatim.
-  function execStatementSql(stmt) {
+  function execStatementSql(stmt: string): string {
     return isRowReturning(stmt) ? executionView(stmt, activeMap()) : stmt;
   }
   // Block execution while any {name:Type} variable in the active tab is unfilled
@@ -698,7 +883,7 @@ export function createApp(env = {}) {
   // tab.sqlDraft — the exact set the variable strip shows — keeps every execution
   // path consistent: the Run button (setRunBtn), the Run/⌘↵ path, Explain, and
   // Export all agree. `wallNowMs` is the caller's wave clock.
-  function varGateBlocked(wallNowMs = wallNow()) {
+  function varGateBlocked(wallNowMs: number = wallNow()): boolean {
     const tab = app.activeTab();
     const src = tab ? prepareTabSource(tab.sqlDraft, wallNowMs) : null;
     if (!src) return false;
@@ -724,16 +909,23 @@ export function createApp(env = {}) {
   // query_id, parameter preparation, session_id, and any recent-value recording.
   // `onChunk` is the per-read repaint hook (the workbench repaints its pane; a
   // tile/detached view repaints its own surface). Returns the mutated `result`.
-  async function runReadInto(result, { sql, format = 'Table', rowLimit = 0, params = {}, signal, queryId, onChunk } = {}) {
+  async function runReadInto(
+    result: StreamResult,
+    {
+      sql, format = 'Table', rowLimit = 0, params, signal, queryId, onChunk,
+    }: {
+      sql: string; format?: string; rowLimit?: number; params?: unknown; signal?: AbortSignal; queryId?: string; onChunk?: (chunk: unknown) => void;
+    },
+  ): Promise<StreamResult> {
     try {
       const out = await ch.runQuery(chCtx, sql, {
         format,
         resultRowLimit: rowLimit,
         queryId,
         signal,
-        params,
+        params: params as Record<string, string | number> | undefined,
         onLine: (json) => applyStreamLine(json, result),
-        onChunk,
+        onChunk: onChunk ? () => onChunk(undefined) : undefined,
       });
       if (out.error != null) result.error = out.error;
       else if (out.raw != null) {
@@ -742,15 +934,15 @@ export function createApp(env = {}) {
       }
     } catch (e) {
       // Cancel = abort: keep whatever streamed in, flag it partial (no error).
-      if (e.name === 'AbortError') result.cancelled = true;
+      if (e instanceof Error && e.name === 'AbortError') result.cancelled = true;
       else if (e instanceof TypeError) result.error = 'Network error';
-      else result.error = String((e && e.message) || e);
+      else result.error = String((e instanceof Error && e.message) || e);
     }
     return result;
   }
   app.runReadInto = runReadInto;
 
-  async function run(opts) {
+  async function run(opts?: RunOpts): Promise<void> {
     if (app.state.running.value) return; // already running — cancel via cancel()/Esc
     const tab = app.activeTab();
     // `opts.sql` overrides the source SQL (a single selected statement); otherwise
@@ -761,8 +953,9 @@ export function createApp(env = {}) {
     const isFilter = effectiveDashboardRole(tab.specParsed) === 'filter';
     const filterRun = isFilter ? filterExecution(srcSql) : null;
     if (filterRun?.error) {
-      tab.result = newResult('Filter', filterRun.rowLimit);
-      tab.result.error = filterRun.error;
+      const filterErrorResult: QueryResult = newResult('Filter', filterRun.rowLimit);
+      filterErrorResult.error = filterRun.error;
+      Object.assign(tab, { result: filterErrorResult });
       tab.filterPreview = { status: 'error', error: filterRun.error };
       app.state.resultView.value = 'filter';
       renderResults(app);
@@ -795,13 +988,15 @@ export function createApp(env = {}) {
     // records the template (srcSql / tab.sqlDraft).
     const execSql = isFilter ? srcSql : execStatementSql(srcSql);
 
-    const kpiExecution = isFilter ? { format: 'Table', rowLimit: app.state.resultRowLimit, params: {}, error: null }
+    const kpiExecution: KpiExecutionTransport = isFilter
+      ? { format: 'Table', rowLimit: app.state.resultRowLimit, params: {}, error: null }
       : panelExecution(tabPanel(tab), execSql, {
-      format: 'Table', rowLimit: app.state.resultRowLimit, params: {},
+        format: 'Table', rowLimit: app.state.resultRowLimit, params: {},
       });
     if (kpiExecution.error) {
-      tab.result = newResult('KPI', 2);
-      tab.result.error = kpiExecution.error;
+      const kpiErrorResult: QueryResult = newResult('KPI', 2);
+      kpiErrorResult.error = kpiExecution.error;
+      Object.assign(tab, { result: kpiErrorResult });
       app.state.resultView.value = 'panel';
       renderResults(app);
       return;
@@ -815,10 +1010,10 @@ export function createApp(env = {}) {
     const parsed = isFilter || explicitFmt ? null : parseExplain(execSql);
     const explainMode = !isFilter && !explicitFmt && (parsed != null || app.state.forceExplain);
     let runSql = execSql;
-    let fmt;
-    let explainView = null;
+    let fmt: string;
+    let explainView: string | null = null;
     if (isFilter) {
-      fmt = filterRun.format;
+      fmt = filterRun!.format;
     } else if (explainMode) {
       // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
       // is honored exactly (canonical match → its rich view, else the verbatim
@@ -835,23 +1030,25 @@ export function createApp(env = {}) {
         ? execSql
         : buildExplainQuery(inner, explainView, explainOpts);
     } else {
-      fmt = panelIsKpi ? kpiExecution.format : explicitFmt || 'Table';
+      fmt = panelIsKpi ? kpiExecution.format! : explicitFmt || 'Table';
     }
 
     // Cap a normal result query (Table or explicit-FORMAT SELECT) at the global
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
     // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = isFilter ? filterRun.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit : app.state.resultRowLimit;
+    const rowLimit = isFilter ? filterRun!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : app.state.resultRowLimit;
     const t0 = now();
-    tab.result = newResult(fmt, rowLimit);
+    const result: QueryResult = newResult(fmt, rowLimit);
+    Object.assign(tab, { result });
     if (isFilter) tab.filterPreview = { status: 'running' };
-    if (explainView) tab.result.explainView = explainView;
+    if (explainView) result.explainView = explainView;
     app.state.resultSort = { col: null, dir: 'asc' };
-    app.state.runT0 = t0;
-    app.state.runQueryId = uid('q');
+    const rs = runState(app.state);
+    rs.runT0 = t0;
+    rs.runQueryId = uid('q');
     app.state.abortController = new AbortController();
-    app.state.runTick = setInterval(tickElapsed, 100);
+    rs.runTick = setInterval(tickElapsed, 100);
     // Keep the current Table/JSON/Panel tab across re-runs (#34); a saved-query
     // open passes its remembered view in opts.view to restore that instead
     // (a stray legacy 'chart' value maps to 'panel' — #166).
@@ -861,41 +1058,42 @@ export function createApp(env = {}) {
     // already be set. (The old explicit setRunBtn(true)/renderResults are now
     // those effects' job.)
     batch(() => {
-      app.state.resultView.value = ['table', 'json', 'panel', 'filter'].includes(view) ? view : app.state.resultView.value;
+      app.state.resultView.value = view != null && ['table', 'json', 'panel', 'filter'].includes(view)
+        ? (view as 'table' | 'json' | 'panel' | 'filter') : app.state.resultView.value;
       app.state.running.value = true;
     });
 
     try {
-      await runReadInto(tab.result, {
+      await runReadInto(result, {
         sql: runSql,
         format: fmt,
         rowLimit,
-        queryId: app.state.runQueryId,
+        queryId: rs.runQueryId,
         signal: app.state.abortController.signal,
         // Native ClickHouse query parameters (#134/#173): pass prepared values
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: isFilter
-          ? filterRun.params
+          ? filterRun!.params
           : { ...sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => renderResults(app),
       });
     } finally {
-      clearInterval(app.state.runTick);
-      app.state.runTick = null;
+      clearInterval(rs.runTick as ReturnType<typeof setInterval>);
+      rs.runTick = null;
       app.state.abortController = null;
-      app.state.runQueryId = null;
-      app.state.runT0 = null;
-      tab.result.progress.elapsed_ns = (now() - t0) * 1e6;
+      rs.runQueryId = null;
+      rs.runT0 = null;
+      result.progress.elapsed_ns = (now() - t0) * 1e6;
       if (isFilter) {
-        tab.filterPreview = tab.result.error || tab.result.cancelled
-          ? { status: 'error', error: tab.result.error || 'Filter query was cancelled.' }
+        tab.filterPreview = result.error || result.cancelled
+          ? { status: 'error', error: result.error || 'Filter query was cancelled.' }
           : {
               status: 'success',
               normalized: readFilterOptions({
-                columns: tab.result.columns,
-                row: tab.result.rows[0],
-                rowCount: tab.result.rows.length,
+                columns: result.columns,
+                row: result.rows[0],
+                rowCount: result.rows.length,
               }),
             };
       }
@@ -910,8 +1108,8 @@ export function createApp(env = {}) {
       // renders the toolbar + its Expand affordance, which gates on
       // `result.source` — set it after and the button never appears until the
       // next paint.
-      if (!tab.result.error && !tab.result.cancelled && (fmt === 'Table' || fmt === 'KPI') && tab.result.rows.length > 0) {
-        tab.result.source = buildResultSource({
+      if (!result.error && !result.cancelled && (fmt === 'Table' || fmt === 'KPI') && result.rows.length > 0) {
+        result.source = buildResultSource({
           srcSql,
           tabId: tab.id,
           rowLimit,
@@ -923,18 +1121,18 @@ export function createApp(env = {}) {
       // render the final stats, so elapsed_ns must already be recorded. (Old
       // explicit setRunBtn(false)/renderResults are now those effects' job.)
       app.state.running.value = false;
-      if (!tab.result.error && !tab.result.cancelled) {
+      if (!result.error && !result.cancelled) {
         // Spec completion is intentionally stable during a run and survives a
         // later failed/cancelled run. Snapshot only completed structured
         // results; never expose partially streamed metadata to the editor.
         tab.lastSuccessfulResultColumns = (fmt === 'Table' || fmt === 'KPI' || fmt === 'Filter')
-          ? tab.result.columns.map((column) => ({ ...column }))
+          ? result.columns.map((column) => ({ ...column }))
           : [];
         app.recordHistory(tab, opts && opts.sql);
         // #171: this statement succeeded — record its bound params (exactly
         // what was actually sent; an omitted-optional-block param never
         // reached `src.statements[*].boundParams` in the first place).
-        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams));
+        app.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
         if (isSchemaMutatingSql(runSql)) app.loadSchema(); // not awaited — fire and forget
       }
     }
@@ -944,12 +1142,12 @@ export function createApp(env = {}) {
   // Cancel → { aborted }; a connection-level fetch failure → { error:'Network
   // error', transient } (retryable); any other throw → { error }. Otherwise the
   // runQuery result itself ({ raw } | { error }).
-  async function attemptStatement(stmt, opts) {
+  async function attemptStatement(stmt: string, opts: ch.RunQueryOptions): Promise<AttemptResult> {
     try {
       return await ch.runQuery(chCtx, stmt, opts);
     } catch (e) {
-      if (e.name === 'AbortError') return { aborted: true };
-      return { error: e instanceof TypeError ? 'Network error' : String((e && e.message) || e), transient: e instanceof TypeError };
+      if (e instanceof Error && e.name === 'AbortError') return { aborted: true };
+      return { error: e instanceof TypeError ? 'Network error' : String((e instanceof Error && e.message) || e), transient: e instanceof TypeError };
     }
   }
 
@@ -960,7 +1158,7 @@ export function createApp(env = {}) {
   // OK. The result is a per-statement summary grid (tab.result.script). The whole
   // script is recorded as one history entry on a clean run. `originalInput` is the
   // exact text that was split (the selection or the whole editor).
-  async function runScript(statements, originalInput) {
+  async function runScript(statements: string[], originalInput: string): Promise<void> {
     if (app.state.running.value) return;
     const waveMs = wallNow(); // one wall clock for the whole script wave
     if (varGateBlocked(waveMs)) return; // block a script run with unfilled variables
@@ -977,12 +1175,14 @@ export function createApp(env = {}) {
     app.state.forceExplain = false;
     const tab = app.activeTab();
     const t0 = now();
-    const entries = [];
-    tab.result = { script: entries };
+    const entries: ScriptEntry[] = [];
+    const scriptResult: ScriptResult = { script: entries };
+    Object.assign(tab, { result: scriptResult });
     app.state.resultSort = { col: null, dir: 'asc' };
-    app.state.runT0 = t0;
+    const rs = runState(app.state);
+    rs.runT0 = t0;
     app.state.abortController = new AbortController();
-    app.state.runTick = setInterval(tickElapsed, 100);
+    rs.runTick = setInterval(tickElapsed, 100);
     let aborted = false;
     // Attach a session only if the script needs one (TEMPORARY / SET) or the tab
     // already has one — same params for every statement, computed once.
@@ -999,7 +1199,7 @@ export function createApp(env = {}) {
         const rowReturning = isRowReturning(stmt);
         // Over-fetch SELECTs by one past the display cap so a truncated result is
         // detectable (at exactly the cap it isn't).
-        const opts = {
+        const opts: ch.RunQueryOptions = {
           format: rowReturning ? 'JSONCompact' : 'TSV',
           signal: app.state.abortController.signal,
           // Per-statement prepared args (#134/#173): the pipeline binds only
@@ -1010,8 +1210,8 @@ export function createApp(env = {}) {
         const s0 = now(); // this statement's own wall-clock (grid Time column)
         // Fresh query_id per attempt, published before the request so Cancel
         // issues KILL QUERY against the statement that's actually running.
-        app.state.runQueryId = uid('q');
-        let out = await attemptStatement(execStmt, { ...opts, queryId: app.state.runQueryId });
+        rs.runQueryId = uid('q');
+        let out = await attemptStatement(execStmt, { ...opts, queryId: rs.runQueryId });
         // Retry ONLY when it's safe. SESSION_IS_LOCKED means the statement was
         // rejected before running → safe to retry (any statement). A connection
         // reset (fetch TypeError → "Network error") leaves it UNKNOWN whether the
@@ -1020,8 +1220,8 @@ export function createApp(env = {}) {
         const locked = out.error != null && SESSION_BUSY.test(out.error);
         if (!out.aborted && (locked || (out.transient && rowReturning))) {
           await sleep(retryMs);
-          app.state.runQueryId = uid('q');
-          out = await attemptStatement(execStmt, { ...opts, queryId: app.state.runQueryId });
+          rs.runQueryId = uid('q');
+          out = await attemptStatement(execStmt, { ...opts, queryId: rs.runQueryId });
         }
         if (out.aborted) { aborted = true; break; }
         // A connection reset on a non-idempotent statement: don't silently retry —
@@ -1043,17 +1243,17 @@ export function createApp(env = {}) {
         // statement, not per script: statement 1 of a later-failing script
         // still records; the failed statement and anything after the `break`
         // above never reaches this line.
-        app.recordBoundParams(paramSrc.statements[i].boundParams);
+        app.recordBoundParams([...paramSrc.statements[i].boundParams]);
         renderResults(app);
       }
     } finally {
-      clearInterval(app.state.runTick);
-      app.state.runTick = null;
+      clearInterval(rs.runTick as ReturnType<typeof setInterval>);
+      rs.runTick = null;
       app.state.abortController = null;
-      app.state.runQueryId = null;
-      app.state.runT0 = null;
-      tab.result.elapsedMs = now() - t0;
-      if (aborted) tab.result.cancelled = true;
+      rs.runQueryId = null;
+      rs.runT0 = null;
+      scriptResult.elapsedMs = now() - t0;
+      if (aborted) scriptResult.cancelled = true;
       app.state.running.value = false;
       // A statement that actually ran (status !== 'error') and was schema-mutating
       // refreshes the tree even if a later statement in the script failed — it
@@ -1062,7 +1262,7 @@ export function createApp(env = {}) {
       // One history entry for the whole script — but only on a clean run (mirrors
       // run(): no history for an aborted or failed script).
       if (!aborted && !entries.some((e) => e.status === 'error')) {
-        recordScriptHistory(app.state, originalInput, tab.result.elapsedMs, saveJSON);
+        recordScriptHistory(app.state, originalInput, scriptResult.elapsedMs!, saveJSON);
         if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
       }
     }
@@ -1072,7 +1272,7 @@ export function createApp(env = {}) {
   // selection runs just that text; otherwise the whole tab. The chosen text is
   // split: one statement keeps today's rich Table/Chart/EXPLAIN path (run());
   // more than one runs sequentially as a script (runScript).
-  function runEntry(opts) {
+  function runEntry(opts?: RunOpts): void | Promise<void> {
     if (app.activeTab().editorMode !== 'sql') return;
     if (app.state.running.value) return;
     const sel = app.sqlEditor.getSelection().text;
@@ -1096,10 +1296,10 @@ export function createApp(env = {}) {
     return run(hasSel ? { ...opts, sql: input } : opts);
   }
   // Stop an in-flight query: abort the stream and KILL QUERY on the server.
-  function cancel() {
+  function cancel(): void {
     if (!app.state.running.value) return;
     if (app.state.abortController) app.state.abortController.abort();
-    ch.killQuery(chCtx, app.state.runQueryId, sqlString);
+    ch.killQuery(chCtx, runState(app.state).runQueryId, sqlString);
   }
   // Keep `app.hardenedVars` (#170 review) in sync with a field's just-computed
   // 'execute'-mode verdict: added when it's invalid, cleared otherwise — so a
@@ -1107,7 +1307,7 @@ export function createApp(env = {}) {
   // invalid, doesn't linger in the set. Shared by every place that commits a
   // strict verdict for a field (blur, Enter, and the strip's initial/rebuild
   // paint, which is itself an 'execute'-mode read of the persisted value).
-  function hardenVar(name, field) {
+  function hardenVar(name: string, field?: PreparedFieldState): void {
     if (field && field.state === 'invalid') app.hardenedVars.add(name);
     else app.hardenedVars.delete(name);
   }
@@ -1122,13 +1322,13 @@ export function createApp(env = {}) {
   // `!src.invalid.includes` filter just avoids listing a name twice. Shared
   // by setRunBtn's own fallback and renderVarStrip's tail (review F9: one
   // analysis per strip repaint feeds both consumers).
-  function inputGate(analysis) {
-    const batch = prepareAnalyzedBatch(analysis, wallNow(), 'input');
-    const src = batch.sources[0];
-    const hardened = [...app.hardenedVars].filter((name) => name in batch.fields && !src.invalid.includes(name));
+  function inputGate(analysis: ParameterAnalysis): { missing: string[]; invalid: string[]; errors: string[] } {
+    const gateBatch = prepareAnalyzedBatch(analysis, wallNow(), 'input');
+    const src = gateBatch.sources[0];
+    const hardened = [...app.hardenedVars].filter((name) => name in gateBatch.fields && !src.invalid.includes(name));
     return { missing: src.missing, invalid: src.invalid.concat(hardened), errors: src.errors };
   }
-  function setRunBtn(running, gate) {
+  function setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void {
     if (!app.dom.runBtn) return;
     // Disabled while running, or while any detected {name:Type} query variable
     // is missing, invalid (#170), or fails to serialize (#170 review finding:
@@ -1147,17 +1347,17 @@ export function createApp(env = {}) {
         : inputGate(tabAnalysis(tab.sqlDraft));
     }
     const blockers = gate.missing.concat(gate.invalid);
-    app.dom.runBtn.disabled = running || blockers.length > 0 || gate.errors.length > 0;
-    app.dom.runBtn.title = blockers.length
+    app.dom.runBtn!.disabled = running || blockers.length > 0 || gate.errors.length > 0;
+    app.dom.runBtn!.title = blockers.length
       ? 'Enter a value for: ' + blockers.join(', ')
       : gate.errors.length ? gate.errors[0] : '';
     // "Run selection" while the editor has a non-empty selection (so the mode is
     // discoverable); plain "Run" otherwise. Build the children and drop the null
     // (replaceChildren would coerce a null arg into a "null" text node).
     const label = running ? 'Running…' : (app.state.hasSelection.value ? 'Run selection' : 'Run');
-    app.dom.runBtn.replaceChildren(
+    app.dom.runBtn!.replaceChildren(
       ...[Icon.play(), h('span', null, label),
-        running ? null : h('kbd', null, '⌘↵')].filter(Boolean));
+        running ? null : h('kbd', null, '⌘↵')].filter((c): c is SVGElement | HTMLElement => c != null));
   }
   app.setRunBtn = setRunBtn;
   // Repaint the query-variable strip (#134) for the active tab. Values live in
@@ -1181,17 +1381,19 @@ export function createApp(env = {}) {
   // already-loaded schema cache (`paramComparisonColumns` +
   // `resolveComparisonColumnType`), never a new query, and the declared type
   // stays String, so #170 never blocks on a non-member.
-  function inferredEnumOptions(v, sql, comparisonColumns) {
+  function inferredEnumOptions(
+    v: FieldControl, sql: string, comparisonColumns: Record<string, ParamComparisonEntry>,
+  ): string[] | null {
     // `.base` is value-transparent (#238): a `LowCardinality(String)` param
     // reaches this suggestion tier too, same as plain `String` — intentional,
     // since LowCardinality is just a storage encoding of String values.
     if (parseParamType(v.type).base !== 'String') return null;
     const cmp = comparisonColumns[v.name];
     if (!cmp) return null;
-    const colType = resolveComparisonColumnType(sql, cmp.pos, cmp, app.state.schema.value);
+    const colType = resolveComparisonColumnType(sql, cmp.pos, cmp, app.state.schema.value as SchemaDb[] | null);
     return colType ? enumValues(colType) : null;
   }
-  function renderVarStrip() {
+  function renderVarStrip(): void {
     const strip = app.dom.varStrip;
     if (!strip) return;
     const tab = app.activeTab();
@@ -1245,9 +1447,9 @@ export function createApp(env = {}) {
           // never replaced, only its children). `focusout` bubbles; when
           // focus merely moves BETWEEN fields of the strip, relatedTarget is
           // still inside it and the deferral holds.
-          strip.addEventListener('focusout', (e) => {
+          strip.addEventListener('focusout', (e: FocusEvent) => {
             if (!app.dom.varStripRerenderPending) return;
-            if (e.relatedTarget && strip.contains(e.relatedTarget)) return;
+            if (e.relatedTarget && strip.contains(e.relatedTarget as Node)) return;
             app.dom.varStripRerenderPending = false;
             renderVarStrip();
           });
@@ -1265,7 +1467,7 @@ export function createApp(env = {}) {
         // The freshly-(re)built strip paints each field's already-committed
         // state ('execute' mode — no field is mid-typing right after a
         // rebuild, e.g. a tab switch restoring a previously-invalid value).
-        const initialFields = prepareAnalyzedBatch(analysis, wallNow(), 'execute').fields;
+        const initialFields = prepareAnalyzedBatch(analysis!, wallNow(), 'execute').fields;
         strip.replaceChildren(...vars.map((v, i) => {
           // controls[i] (fieldControlKind above) picks the field's control:
           // #172 enum members (v1 declared or v2 inferred) > #169 date-like
@@ -1286,9 +1488,9 @@ export function createApp(env = {}) {
           const baseTitle = v.name + ': ' + v.type
             + (v.optional ? ' — optional: blank leaves its filter block out' : '')
             + (conflictNote ? ' — ' + conflictNote : '');
-          let combo = null;
-          let input;
-          const onValueInput = () => {
+          let combo: VarStripCombo;
+          let input: HTMLInputElement;
+          const onValueInput = (): void => {
             app.state.varValues[v.name] = input.value;
             // Text controls sync activation with the value (#165).
             app.state.filterActive[v.name] = input.value !== '';
@@ -1300,16 +1502,16 @@ export function createApp(env = {}) {
             // 'input' mode (#170): a plausible prefix stays neutral while
             // the field is focused — only a value that's already certainly
             // wrong shows the inline error here.
-            const batch = prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
-            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
-            setRunBtn(app.state.running.value, batch.sources[0]);
+            const inputBatch = prepareTabBatch(tab.sqlDraft, wallNow(), 'input');
+            applyFieldState(input, inputBatch.fields[v.name], baseTitle, combo?.previewEl);
+            setRunBtn(app.state.running.value, inputBatch.sources[0]);
           };
-          const onCommitHard = () => {
+          const onCommitHard = (): void => {
             // Hardens 'incomplete' → 'invalid' on commit (#170).
-            const batch = prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
-            hardenVar(v.name, batch.fields[v.name]);
-            applyFieldState(input, batch.fields[v.name], baseTitle, combo && combo.previewEl);
-            setRunBtn(app.state.running.value, batch.sources[0]);
+            const commitBatch = prepareTabBatch(tab.sqlDraft, wallNow(), 'execute');
+            hardenVar(v.name, commitBatch.fields[v.name]);
+            applyFieldState(input, commitBatch.fields[v.name], baseTitle, combo?.previewEl);
+            setRunBtn(app.state.running.value, commitBatch.sources[0]);
           };
           // #171: live-filtered recents for this field (type + typed text),
           // called fresh on every dropdown open/keystroke — never a snapshot
@@ -1317,20 +1519,20 @@ export function createApp(env = {}) {
           // the strip's {name:Type} signature is never stale. (#160's
           // curated-param opt-out hook: nothing to check yet — no curated
           // param exists before #160 lands.)
-          const getRecents = (text) => recentOptions(app.state.varRecent, v.name, v.type, text);
-          const onClearRecent = () => app.clearVarRecent(v.name);
+          const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, v.name, v.type, text);
+          const onClearRecent = (): void => app.clearVarRecent(v.name);
           const fieldOpts = {
             document: doc, name: v.name, type: v.type, value: app.state.varValues[v.name] || '',
             baseTitle, onValueInput, onCommit: onCommitHard, getRecents, onClearRecent,
           };
-          if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions });
+          if (ctl.kind === 'enum') combo = buildEnumField({ ...fieldOpts, values: ctl.enumOptions! });
           else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow });
           else combo = buildRecentField(fieldOpts);
           input = combo.input;
           wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
           if (conflictNote) input.classList.add('is-conflict');
           hardenVar(v.name, initialFields[v.name]);
-          applyFieldState(input, initialFields[v.name], baseTitle, combo && combo.previewEl);
+          applyFieldState(input, initialFields[v.name], baseTitle, combo?.previewEl);
           return h('label', { class: 'var-field' + (v.optional ? ' is-optional' : '') },
             h('span', { class: 'var-name' }, v.name), combo.el);
         }));
@@ -1342,7 +1544,7 @@ export function createApp(env = {}) {
   // The Export button reflects both browser support (canExport) and whether an
   // export is already running — the button stays aria-disabled (not natively
   // disabled) in either case so its tooltip still shows on hover.
-  function setExportBtn(exporting) {
+  function setExportBtn(exporting: boolean): void {
     if (!app.dom.exportBtn) return;
     const can = app.canExport();
     const disabled = exporting || !can;
@@ -1357,7 +1559,7 @@ export function createApp(env = {}) {
   app.setExportBtn = setExportBtn;
   // Busy state for the Format button — formatting a multi-statement script is one
   // request per statement, so it can take a moment; show a spinner + disable.
-  function setFmtBtn(busy) {
+  function setFmtBtn(busy: boolean): void {
     if (!app.dom.fmtBtn) return;
     app.dom.fmtBtn.disabled = busy;
     app.dom.fmtBtn.replaceChildren(
@@ -1377,12 +1579,12 @@ export function createApp(env = {}) {
     if (tab.result && tab.result.formatError) { tab.result = null; renderResults(app); }
   }
   // Format one statement via ClickHouse's formatQuery(); returns the formatted text.
-  const formatOne = async (s) => {
-    const json = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(s) + ') AS q FORMAT JSON');
+  const formatOne = async (s: string): Promise<string> => {
+    const json = await ch.queryJson<{ q: string }>(chCtx, 'SELECT formatQuery(' + sqlString(s) + ') AS q FORMAT JSON');
     return (json.data && json.data[0] && json.data[0].q) || '';
   };
 
-  async function formatQuery() {
+  async function formatQuery(): Promise<void> {
     if (app.activeTab().editorMode !== 'sql') return;
     const raw = app.activeTab().sqlDraft || '';
     if (!raw.trim()) return;
@@ -1423,10 +1625,12 @@ export function createApp(env = {}) {
         if (q) app.sqlEditor.replaceDocument(withStatementBreak(q));
         clearFormatError();
       } catch (e) {
-        const msg = String((e && e.message) || e);
-        tab.result = newResult('Table');
-        tab.result.error = msg;
-        tab.result.formatError = true; // a format error, not a run result (so success can clear just this)
+        const msg = String((e instanceof Error && e.message) || e);
+        // `formatError` (not a run result, so a later successful format can
+        // clear just this — see clearFormatError) is app.ts/test-only, not
+        // part of results.ts's own canonical `QueryResult` contract.
+        const formatErrorResult: QueryResult & { formatError: true } = { ...newResult('Table'), error: msg, formatError: true };
+        Object.assign(tab, { result: formatErrorResult });
         app.state.resultView.value = 'table';
         renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
         const pos = parseErrorPos(msg);
@@ -1449,12 +1653,13 @@ export function createApp(env = {}) {
   // Phase A (the free-edges graph) had already drawn, keep it on screen marked
   // `partial` (its view/MV source edges may be incomplete); otherwise there's
   // nothing worth keeping, so drop back to the normal empty-results placeholder.
-  function cancelSchemaGraph({ clearResult = false } = {}) {
+  function cancelSchemaGraph({ clearResult = false }: { clearResult?: boolean } = {}): void {
     if (app.state.schemaGraphAbortController) app.state.schemaGraphAbortController.abort();
     app.state.schemaGraphAbortController = null;
     if (!clearResult) return;
     const tab = app.activeTab();
-    const sg = tab.result && tab.result.schemaGraph;
+    const result = tab.result as QueryResult | null;
+    const sg = result?.schemaGraph;
     if (!sg || !sg.loading) return;
     if (sg.nodes && sg.nodes.length) {
       sg.loading = false;
@@ -1474,7 +1679,7 @@ export function createApp(env = {}) {
   // AST_PROGRESSIVE_THRESHOLD view/MV objects, loadSchemaLineage skips straight
   // to one draw instead (onBase/onProgress never fire) — a visible first paint
   // is just flicker when the whole fetch settles almost as fast anyway.
-  async function showSchemaGraph(focus) {
+  async function showSchemaGraph(focus: SchemaFocus): Promise<void> {
     if (!focus || !focus.db) return;
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return; }
@@ -1482,13 +1687,18 @@ export function createApp(env = {}) {
     const tab = app.activeTab();
     // Show a loading placeholder first — even Phase A (system.tables +
     // system.dictionaries) is a network round trip.
-    tab.result = newResult('Table');
-    tab.result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+    const result: QueryResult = newResult('Table');
+    result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+    Object.assign(tab, { result });
     // `result` is the stale-write guard (mirrors #97's identity-guard shape):
     // captured once, checked before every later write, so a Run/Explain or a
     // second graph request that replaces tab.result mid-fetch can never have
     // this call's (Phase A or Phase B) result land on the new tab.result.
-    const result = tab.result;
+    // `tab.result`'s declared type (state.ts's opaque `Record<string,unknown>
+    // | null`) has no overlap with `QueryResult` for a direct `!==` — widen
+    // `result` to `unknown` (not a further cast to another concrete type) for
+    // the comparison only; the identity check itself is unaffected.
+    const superseded = (): boolean => tab.result !== (result as unknown);
     renderResults(app);
     const controller = new AbortController();
     app.state.schemaGraphAbortController = controller;
@@ -1496,28 +1706,29 @@ export function createApp(env = {}) {
       const lineage = await ch.loadSchemaLineage(chCtx, focus, {
         signal: controller.signal,
         onBase: (base) => {
-          if (tab.result !== result) return; // superseded before Phase A even landed
+          if (superseded()) return; // superseded before Phase A even landed
           const g = buildSchemaGraph(base, focus);
           result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
           renderResults(app);
         },
         onProgress: (done, total) => {
-          if (tab.result !== result || !result.schemaGraph || !result.schemaGraph.loading) return;
+          if (superseded() || !result.schemaGraph || !result.schemaGraph.loading) return;
           result.schemaGraph.progress = { done, total };
           renderResults(app);
         },
       });
-      if (tab.result !== result) return; // superseded while Phase B was resolving
+      if (superseded()) return; // superseded while Phase B was resolving
       const g = buildSchemaGraph(lineage, focus);
       // tableCount lets the renderer explain an empty result ("N tables, none linked").
       result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
     } catch (e) {
       // AbortError means cancelSchemaGraph() already left the pane in a clean
       // state (partial graph or the empty placeholder) — nothing more to do.
-      if (e.name === 'AbortError') return;
-      if (tab.result !== result) return;
-      tab.result = newResult('Table');
-      tab.result.error = String((e && e.message) || e);
+      if (e instanceof Error && e.name === 'AbortError') return;
+      if (superseded()) return;
+      const errorResult: QueryResult = newResult('Table');
+      errorResult.error = String((e instanceof Error && e.message) || e);
+      Object.assign(tab, { result: errorResult });
     } finally {
       if (app.state.schemaGraphAbortController === controller) app.state.schemaGraphAbortController = null;
     }
@@ -1529,15 +1740,26 @@ export function createApp(env = {}) {
   // lineage + the per-table column / skip-index metadata (best-effort), attaches a
   // card model to each node, then opens the overlay. Re-fetch (vs reusing the inline
   // result) keeps the inline path's shape frozen and the card data off the hot path.
-  async function expandSchemaGraph(focus) {
+  // net/ch-client.ts's `CardColumnRow` (the real loader shape) has no index
+  // signature; core/schema-cards.ts's `SchemaCardColumnRow` (the shape
+  // `buildCardGraph` needs) does — reconstructing each row as a fresh object
+  // literal satisfies it directly (every field the card model reads is
+  // already there; nothing here changes what's read or its values).
+  const toCardColumns = (byKey: Record<string, ch.CardColumnRow[]>): Record<string, SchemaCardColumnRow[]> => {
+    const out: Record<string, SchemaCardColumnRow[]> = {};
+    for (const [key, rows] of Object.entries(byKey)) out[key] = rows.map((row) => ({ ...row }));
+    return out;
+  };
+  async function expandSchemaGraph(focus: SchemaFocus): Promise<void> {
     if (!focus || !focus.db) return;
     // Pin the result whose Expand was clicked NOW: a tab switch during the async
     // fetch must not redirect the saved-positions map to a different tab's result.
     const clickedTab = app.activeTab();
-    const sg = (clickedTab && clickedTab.result && clickedTab.result.schemaGraph) || null;
+    const clickedResult = clickedTab.result as QueryResult | null;
+    const sg = clickedResult?.schemaGraph || null;
     // Open the view synchronously so a real tab survives the click gesture (a
     // pop-up opened after an await is blocked); fill it once the lineage loads.
-    const view = openSchemaView(app);
+    const view = openSchemaView(app as DetachedGraphApp);
     // Everything after the synchronous open is wrapped: a token-refresh rejection,
     // a lineage/cards fetch failure, or a graph-build throw must surface in the view
     // (fail) instead of leaving the just-opened tab/overlay stranded on "Loading…".
@@ -1548,19 +1770,32 @@ export function createApp(env = {}) {
       // objects an other database references, instead of dead-ending at the edge.
       const lineage = await ch.loadLineageTransitive(chCtx, focus);
       const g = buildSchemaGraph(lineage.rows, focus);
-      const ex = expandLineage(g, focus.db); // closure around focus.db, tags external nodes
+      // Fresh node/edge literals (`{...n}`): `SchemaGraphNode` (buildSchemaGraph's
+      // fixed-field output) has no index signature; `ExpandLineageNode` (what
+      // expandLineage's graph needs) does — every field it reads is already there.
+      const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db); // closure around focus.db, tags external nodes
       // Card metadata for every database the expansion reached (external nodes too).
       const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
       const cards = await ch.loadSchemaCards(chCtx, dbs);
       const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
-        { tables: lineage.rows.tables, columnsByKey: cards.columnsByKey });
+        { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
       // Persist manually-moved node positions per result: the map hangs off the live
       // schemaGraph result (captured above) so re-opening keeps the layout.
       const positions = (sg && sg.savedPositions) || {};
       if (sg) sg.savedPositions = positions;
+      // Every real lineage/expansion node always carries `id`/`label` (schema-
+      // graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both required there);
+      // schema-cards.ts's own `CardGraphNode` widens them to optional for a
+      // bare test fixture — reasserted here to match explain-graph.ts's
+      // `SchemaLineageNode` (also required, for the SVG drawer's own layout).
+      const nodes: SchemaLineageNode[] = cardGraph.nodes.map((n) => ({ ...n, id: n.id!, label: n.label! }));
+      // `tableCount` isn't part of `SchemaViewController.render`'s
+      // `SchemaLineageGraph` contract — only results.ts's OWN inline-pane
+      // progress bookkeeping (`ResultSchemaGraph.tableCount`) reads it; the
+      // fullscreen `render()`/`makeController` never did, so it never
+      // travelled past this call.
       view.render({
-        nodes: cardGraph.nodes, edges: cardGraph.edges, focus,
-        tableCount: (lineage.rows.tables || []).length,
+        nodes, edges: cardGraph.edges, focus,
         truncated: lineage.truncated || ex.truncated,
         savedPositions: positions,
       });
@@ -1574,33 +1809,38 @@ export function createApp(env = {}) {
   // Keyed per overlay document (same resolution as openDetailPane's own `doc`) so a
   // slow fetch for an earlier click can't clobber a newer pane once it resolves —
   // last-clicked wins, not last-resolved (#97).
-  const latestDetailRequest = new WeakMap();
-  async function openNodeDetail(node, targetDoc) {
+  const latestDetailRequest = new WeakMap<Document, SchemaFocus>();
+  async function openNodeDetail(node: SchemaFocus, targetDoc?: Document): Promise<void> {
     if (!node || !node.db || !node.name) return;
     const overlayDoc = targetDoc || (app && app.document) || document;
     latestDetailRequest.set(overlayDoc, node);
-    openDetailPane(app, node, { columns: 'loading' }, targetDoc);
+    openDetailPane(app, node as DetailNode, { columns: 'loading' }, targetDoc);
     const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
     if (latestDetailRequest.get(overlayDoc) !== node) return; // superseded by a later click
-    openDetailPane(app, node, detail, targetDoc);
+    // `columns` remapped through a fresh per-row spread: net/ch-client.ts's
+    // `ColumnDetailRow` (the real loader shape) has no index signature;
+    // schema-detail.ts's `DetailColumn` (via `ColumnRoleFlags`) does — every
+    // field the pane reads is already there.
+    const nodeDetail: NodeDetail = { ...detail, columns: detail.columns.map((c) => ({ ...c })) };
+    openDetailPane(app, node as DetailNode, nodeDetail, targetDoc);
   }
 
   // EXPLAIN wraps the whole editor as a single statement, so it can't run against a
   // `;`-separated script (ClickHouse would reject `EXPLAIN a; b; …` with a confusing
   // parse error). Say so with our own message instead.
-  function explainMultiBlocked() {
+  function explainMultiBlocked(): boolean {
     if (splitStatements(app.activeTab().sqlDraft).length <= 1) return false;
     flashToast('Explain isn’t available for a multi-statement script — run one statement at a time.', { document: doc });
     return true;
   }
   // Explain the current query without editing it: run it through the EXPLAIN
   // views (the editor SQL is left untouched; run() wraps it as needed).
-  function explainQuery() {
+  function explainQuery(): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
     return explainMultiBlocked() ? undefined : run({ explain: true });
   }
   // Switch the active EXPLAIN view (re-runs the derived query, keeps the mode).
-  function setExplainView(id) {
+  function setExplainView(id: string): Promise<void> | undefined {
     if (app.activeTab().editorMode !== 'sql') return undefined;
     return explainMultiBlocked() ? undefined : run({ explainView: id });
   }
@@ -1608,7 +1848,7 @@ export function createApp(env = {}) {
   // re-run the current query so a raise genuinely fetches more (server-side cap),
   // a lower one stops sooner. run() no-ops on an empty editor, so changing the
   // limit with nothing typed just saves the preference.
-  function setResultRowLimit(n) {
+  function setResultRowLimit(n: number): Promise<void> | undefined {
     app.state.resultRowLimit = normalizeRowLimit(n);
     app.savePref('resultRowLimit', app.state.resultRowLimit);
     return app.activeTab().editorMode === 'sql' ? run() : undefined;
@@ -1619,40 +1859,48 @@ export function createApp(env = {}) {
   // by design; if formatting fails the raw DDL is returned. Returns null on
   // failure or an empty statement (having already surfaced the toast), so
   // callers can no-op without inspecting the error themselves.
-  async function fetchCreateSql(target) {
+  async function fetchCreateSql(target: string): Promise<string | null> {
     await ensureConfig();
     if (!(await getToken())) { chCtx.onSignedOut(); return null; }
     try {
-      const show = await ch.queryJson(chCtx, 'SHOW CREATE ' + target + ' FORMAT JSON');
+      const show = await ch.queryJson<{ statement: string }>(chCtx, 'SHOW CREATE ' + target + ' FORMAT JSON');
       const stmt = (show.data && show.data[0] && show.data[0].statement) || '';
       if (!stmt) return null;
       try {
-        const fmt = await ch.queryJson(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
+        const fmt = await ch.queryJson<{ q: string }>(chCtx, 'SELECT formatQuery(' + sqlString(stmt) + ') AS q FORMAT JSON');
         return (fmt.data && fmt.data[0] && fmt.data[0].q) || stmt;
       } catch { return stmt; /* formatting is best-effort — fall back to the raw DDL */ }
     } catch (e) {
-      flashToast('SHOW CREATE failed: ' + String((e && e.message) || e), { document: doc });
+      flashToast('SHOW CREATE failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
       return null;
     }
   }
 
   // Replaces the active editor's content (undo restores the prior query).
-  async function insertCreate(target) {
+  async function insertCreate(target: string): Promise<void> {
     const sql = await fetchCreateSql(target);
     if (sql != null) app.sqlEditor.replaceDocument(sql);
   }
 
   // Opens the DDL in a new tab, leaving the active tab untouched.
-  async function openCreateInNewTab(target, name) {
+  async function openCreateInNewTab(target: string, name?: string): Promise<void> {
     const sql = await fetchCreateSql(target);
     if (sql == null) return;
-    loadIntoNewTab(app, name, sql);
+    loadIntoNewTab(app, name || '', sql); // falsy → loadIntoNewTab's own 'Untitled' fallback, same as omitting name
     toEditorOnMobile();
   }
 
   // --- saved / history bridges ------------------------------------------
   app.recordHistory = (tab, sqlText) => {
-    recordHistory(app.state, tab, saveJSON, undefined, sqlText);
+    // `tab.result` is state.ts's deliberately opaque `Record<string,unknown> |
+    // null` — by the time recordHistory is ever called (only after a
+    // successful run), it already holds a real `QueryResult`-shaped value
+    // (rawText/rows/progress.elapsed_ns), the exact fields `HistoryResultSnapshot`
+    // pins. `| null` on both sides of the cast keeps it a legal single-step
+    // widen; `!` then asserts the same "already ran successfully" guarantee
+    // the untyped original relied on implicitly.
+    const result = (tab.result as HistoryResultSnapshot | null)!;
+    recordHistory(app.state, { sqlDraft: tab.sqlDraft, result }, saveJSON, undefined, sqlText);
     if (app.state.sidePanel.value === 'history') renderSavedHistory(app);
   };
 
@@ -1660,7 +1908,7 @@ export function createApp(env = {}) {
   function share() {
     const tab = app.activeTab();
     if (tab.editorMode !== 'sql') return;
-    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
       flashToast('Fix Spec errors before sharing', { document: doc });
       return;
@@ -1684,8 +1932,13 @@ export function createApp(env = {}) {
   }
   // --- copy / export results --------------------------------------------
   // A result is exportable once it has raw text or at least one row.
-  function exportableResult() {
-    const r = app.activeTab().result;
+  function exportableResult(): QueryResult | null {
+    // `tab.result` is opaque `Record<string,unknown> | null` at the state.ts
+    // boundary; a script/scriptExport result never reaches this far in
+    // practice (`script`/`scriptExport` are widened in, unused, purely so a
+    // per-statement grid result reads as excluded here exactly like the
+    // original untyped property read did — never actually a `QueryResult`).
+    const r = app.activeTab().result as (QueryResult & { script?: unknown }) | null;
     // A script result is a per-statement grid, not a single exportable table.
     return r && !r.error && !r.script && (r.rawText != null || r.rows.length > 0) ? r : null;
   }
@@ -1696,7 +1949,7 @@ export function createApp(env = {}) {
   // from a different (same-origin) top-level browsing context. `env.navigator`
   // still wins first so tests can inject a stub regardless of which doc they
   // simulate.
-  function copySnapshot(r, targetDoc) {
+  function copySnapshot(r: QueryResult | null, targetDoc?: Document): void {
     const d = targetDoc || doc;
     if (!r) { flashToast('Nothing to copy', { document: d }); return; }
     const text = r.rawText != null ? r.rawText : toTSV(r.columns, r.rows);
@@ -1709,39 +1962,39 @@ export function createApp(env = {}) {
       flashToast('Copy not supported', { document: d });
     }
   }
-  function copyResult() { copySnapshot(exportableResult(), doc); }
+  function copyResult(): void { copySnapshot(exportableResult(), doc); }
   // --- streaming export (issue #87 single-file / #99 script) --------------
   // Full, uncapped export of a query — never the loaded grid — streamed
   // straight to a user-chosen file. Its own query_id + abort, kept separate
   // from app.state.runQueryId/abortController so an export and a grid run
   // never clobber each other's cancel state.
-  let exportAbort = null;
-  let exportQueryId = null;
+  let exportAbort: AbortController | null = null;
+  let exportQueryId: string | null = null;
   // Script-export state (issue #99) — its own abort/query-id, reassigned each
   // iteration so Cancel reaches the in-flight statement, and kept distinct
   // from both app.state.run* and the single-export state above.
-  let exportScriptAbort = null;
-  let exportScriptQueryId = null;
+  let exportScriptAbort: AbortController | null = null;
+  let exportScriptQueryId: string | null = null;
   let exportScriptCancelled = false;
-  let exportScriptTick = null;
+  let exportScriptTick: ReturnType<typeof setInterval> | null = null;
 
   // The Export button dispatches by statement count: one statement keeps the
   // rich single-file flow below; more than one opens the script-export flow
   // (its own directory + per-statement log, since one file per script makes
   // no sense). Mirrors runEntry's split/branch.
-  function exportEntry() {
-    if (app.activeTab().editorMode !== 'sql') return;
-    if (app.state.exporting.value) return;
+  function exportEntry(): Promise<void> | undefined {
+    if (app.activeTab().editorMode !== 'sql') return undefined;
+    if (app.state.exporting.value) return undefined;
     const waveMs = wallNow(); // one wall clock for this export wave (gate + args)
-    if (varGateBlocked(waveMs)) return; // don't export with unfilled variables (#134)
+    if (varGateBlocked(waveMs)) return undefined; // don't export with unfilled variables (#134)
     const input = app.activeTab().sqlDraft;
     const statements = splitStatements(input);
-    if (!statements.length) { flashToast('Nothing to export', { document: doc }); return; }
+    if (!statements.length) { flashToast('Nothing to export', { document: doc }); return undefined; }
     if (statements.length === 1) return exportDirect(statements[0], waveMs);
     return exportScriptEntry(statements, input, waveMs);
   }
 
-  async function exportDirect(sqlInput, waveMs) {
+  async function exportDirect(sqlInput: string, waveMs: number): Promise<void> {
     if (app.activeTab().editorMode !== 'sql') return;
     if (app.state.exporting.value) return;
     if (!app.canExport()) return; // aria-disabled button; defensive guard
@@ -1766,15 +2019,17 @@ export function createApp(env = {}) {
       // Picker FIRST, before any await: showSaveFilePicker requires the click's
       // transient activation, which a prior await (e.g. a token refresh in
       // ensureConfig/getToken can be a network round trip) would forfeit.
-      let handle;
+      // `!`: app.canExport() above already gated on this being non-null.
+      const pickFile = app.showSaveFilePicker!;
+      let handle: FileHandleLike;
       try {
-        handle = await app.showSaveFilePicker({
+        handle = (await pickFile({
           suggestedName: exportFilename(tab.name, Date.now(), ext),
           types: [{ description: format + ' data', accept: { [mime]: ['.' + ext] } }],
-        });
+        })) as FileHandleLike;
       } catch (e) {
-        if (e && e.name === 'AbortError') return; // user dismissed the picker
-        flashToast('Save dialog failed: ' + String((e && e.message) || e), { document: doc });
+        if (e instanceof Error && e.name === 'AbortError') return; // user dismissed the picker
+        flashToast('Save dialog failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
         return;
       }
 
@@ -1802,8 +2057,8 @@ export function createApp(env = {}) {
         // AbortError (cancelled) and 'signed out' (chCtx.onSignedOut already
         // rendered the login screen) both already have their own signal — an
         // extra toast on top would just be a confusing second message.
-        const msg = String((e && e.message) || e);
-        if (!(e && e.name === 'AbortError') && msg !== 'signed out') {
+        const msg = String((e instanceof Error && e.message) || e);
+        if (!(e instanceof Error && e.name === 'AbortError') && msg !== 'signed out') {
           flashToast('Export failed: ' + msg, { document: doc });
         }
       } finally {
@@ -1825,10 +2080,13 @@ export function createApp(env = {}) {
   // result size. Reads the stream directly (not via a TransformStream) because
   // the write is conditional (withhold, inspect, commit) — a passthrough
   // transform can't un-write. Returns the CH error message, or null when clean.
-  async function streamToFile(resp, handle, { signal, tag, onProgress }) {
+  async function streamToFile(
+    resp: Response, handle: FileHandleLike,
+    { signal, tag, onProgress }: { signal: AbortSignal; tag: string | null; onProgress: (bytes: number) => void },
+  ): Promise<string | null> {
     const writable = await handle.createWritable();
     const HOLDBACK = 32 * 1024; // >= ClickHouse's MAX_EXCEPTION_SIZE (16 KiB) + margin
-    const reader = resp.body.getReader();
+    const reader = resp.body!.getReader();
     let held = new Uint8Array(0);
     let written = 0;
     try {
@@ -1875,10 +2133,10 @@ export function createApp(env = {}) {
       reader.releaseLock();
     }
   }
-  const latin1 = (bytes) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return s; };
+  const latin1 = (bytes: Uint8Array): string => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return s; };
 
   // Mirrors cancel() (the grid run) but on the export's own id/abort.
-  function cancelExport() {
+  function cancelExport(): void {
     if (exportAbort) exportAbort.abort();
     ch.killQuery(chCtx, exportQueryId, sqlString);
   }
@@ -1886,7 +2144,7 @@ export function createApp(env = {}) {
   // Directory picker first (transient-activation rule, same as exportDirect's
   // save-file picker), and skip the prompt entirely when there's nothing to
   // export — no point asking for a folder a script will never write into.
-  async function exportScriptEntry(statements, originalInput, waveMs) {
+  async function exportScriptEntry(statements: string[], originalInput: string, waveMs: number): Promise<void> {
     if (!app.canExportScript()) {
       flashToast('Script export requires Chrome/Edge directory access over HTTPS', { document: doc });
       return;
@@ -1908,12 +2166,14 @@ export function createApp(env = {}) {
     // those awaits, which would otherwise leave a re-entrancy window open.
     app.state.exporting.value = true;
     try {
-      let dir;
+      // `!`: app.canExportScript() above already gated on this being non-null.
+      const pickDir = app.showDirectoryPicker!;
+      let dir: DirectoryHandleLike;
       try {
-        dir = await app.showDirectoryPicker({ mode: 'readwrite' });
+        dir = (await pickDir({ mode: 'readwrite' })) as DirectoryHandleLike;
       } catch (e) {
-        if (e && e.name === 'AbortError') return; // dismissed → silent no-op
-        flashToast('Folder dialog failed: ' + String((e && e.message) || e), { document: doc });
+        if (e instanceof Error && e.name === 'AbortError') return; // dismissed → silent no-op
+        flashToast('Folder dialog failed: ' + String((e instanceof Error && e.message) || e), { document: doc });
         return;
       }
       await ensureConfig();
@@ -1936,21 +2196,22 @@ export function createApp(env = {}) {
   // (statements run one-at-a-time in a single session, so SESSION_IS_LOCKED
   // can't self-collide, and a partially-written file shouldn't be silently
   // re-attempted).
-  async function exportScript(statements, dir, paramSrc) {
+  async function exportScript(statements: string[], dir: DirectoryHandleLike, paramSrc: PreparedSource): Promise<void> {
     const tab = app.activeTab();
     const t0 = now();
     const sp = sessionParamsFor(tab, statements);
     // `paramSrc` is the wave's prepared batch (#173), captured by
     // exportScriptEntry at wave start, before its awaits (review F6).
-    const entries = statements.map((sql, i) => ({
+    const entries: ScriptExportEntry[] = statements.map((sql, i) => ({
       i, sql, type: isRowReturning(sql) ? 'rows' : 'effect',
       status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,
     }));
-    tab.result = { scriptExport: entries, startedAt: t0 };
+    const scriptExportResult: ScriptExportResult = { scriptExport: entries, startedAt: t0 };
+    Object.assign(tab, { result: scriptExportResult });
     app.state.resultSort = { col: null, dir: 'asc' };
     exportScriptCancelled = false;
     app.state.exporting.value = true;
-    const taken = new Set();
+    const taken = new Set<string>();
     try {
       // Live elapsed for the running row (bytes tick via onProgress; this ticks
       // time). Started inside the try so a throw here still clears it below —
@@ -1981,7 +2242,7 @@ export function createApp(env = {}) {
             e.status = 'ok';
           } else {
             const { ext } = formatFileMeta(format);
-            const name = scriptExportName(e.i, e.sql, ext, taken);
+            const name = scriptExportName(e.i, e.sql || '', ext, taken);
             taken.add(name);
             e.file = name;
             const fileHandle = await dir.getFileHandle(name, { create: true });
@@ -1993,27 +2254,27 @@ export function createApp(env = {}) {
             if (midErr) {
               e.status = 'failed';
               e.error = 'File may be incomplete; server failed after streaming started. ' + midErr;
-              e.ms = now() - e.startedAt;
+              e.ms = now() - e.startedAt!;
               break; // stop-on-first-failure
             }
             e.status = 'ok';
           }
-          e.ms = now() - e.startedAt;
+          e.ms = now() - e.startedAt!;
           renderResults(app);
         } catch (ex) {
-          e.ms = now() - e.startedAt;
-          if (ex && ex.name === 'AbortError') { e.status = 'cancelled'; exportScriptCancelled = true; }
-          else { e.status = 'failed'; e.error = String((ex && ex.message) || ex); }
+          e.ms = now() - e.startedAt!;
+          if (ex instanceof Error && ex.name === 'AbortError') { e.status = 'cancelled'; exportScriptCancelled = true; }
+          else { e.status = 'failed'; e.error = String((ex instanceof Error && ex.message) || ex); }
           break; // stop-on-first-failure
         }
       }
       for (const e of entries) if (e.status === 'pending') e.status = 'skipped';
     } finally {
-      clearInterval(exportScriptTick); exportScriptTick = null;
+      clearInterval(exportScriptTick as ReturnType<typeof setInterval>); exportScriptTick = null;
       exportScriptAbort = null;
       exportScriptQueryId = null;
       app.state.exporting.value = false;
-      tab.result.elapsedMs = now() - t0;
+      scriptExportResult.elapsedMs = now() - t0;
       // A schema-mutating effect statement that actually ran refreshes the tree
       // (mirrors runScript) even though this export ran outside runScript.
       if (entries.some((e) => e.status === 'ok' && isSchemaMutatingSql(e.sql))) app.loadSchema();
@@ -2022,7 +2283,7 @@ export function createApp(env = {}) {
   }
 
   // Mirrors cancelExport but on the script's own active id/abort.
-  function cancelExportScript() {
+  function cancelExportScript(): void {
     exportScriptCancelled = true; // stops the loop from starting the next statement
     if (exportScriptAbort) exportScriptAbort.abort();
     ch.killQuery(chCtx, exportScriptQueryId, sqlString);
@@ -2030,7 +2291,7 @@ export function createApp(env = {}) {
 
   // Inline progress banner (bytes written + elapsed, with Cancel) — no extra
   // tab/window; see the issue's "Why inline, not a child tab" rationale.
-  function showExportProgress(onCancel) {
+  function showExportProgress(onCancel: () => void): { update(bytes: number): void; remove(): void } {
     const t0 = now();
     const stat = h('span', { class: 'exp-stat' }, formatBytes(0) + ' · 0s');
     const el = h('div', { class: 'export-progress' },
@@ -2040,17 +2301,18 @@ export function createApp(env = {}) {
       h('button', { class: 'exp-cancel', title: 'Cancel export', onclick: onCancel }, Icon.close(), h('span', null, 'Cancel')));
     doc.body.appendChild(el);
     return {
-      update(bytes) {
+      update(bytes: number) {
         stat.textContent = formatBytes(bytes) + ' · ' + ((now() - t0) / 1000).toFixed(0) + 's';
       },
       remove() { el.remove(); },
     };
   }
   // Trigger a browser download. Injectable via env.download for tests.
-  function downloadFile(filename, mime, content) {
+  function downloadFile(filename: string, mime: string, content: BlobPart): void {
     if (env.download) { env.download(filename, mime, content); return; }
-    const url = win.URL || win.webkitURL;
-    const href = url.createObjectURL(new win.Blob([content], { type: mime }));
+    const url = (win.URL || win.webkitURL)!;
+    const BlobCtor = win.Blob!;
+    const href = url.createObjectURL(new BlobCtor([content], { type: mime }));
     const a = doc.createElement('a');
     a.href = href;
     a.download = filename;
@@ -2060,7 +2322,7 @@ export function createApp(env = {}) {
     url.revokeObjectURL(href);
   }
 
-  const specBlocked = (tab) => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
+  const specBlocked = (tab: QueryTab): boolean => !tab.specParsed || hasBlockingSpecErrors(tab.specDiagnostics);
   app.specBlocked = specBlocked;
 
   app.updateSaveBtn = () => {
@@ -2079,20 +2341,22 @@ export function createApp(env = {}) {
   // Open `node` as a popover anchored under `anchorEl`: fixed-position below the
   // button, Esc + click-outside close (capture listeners), stored at
   // app.dom[refKey] and cleared on close. Returns { close }.
-  function anchoredPopover(node, anchorEl, refKey) {
-    const close = () => {
+  function anchoredPopover(
+    node: HTMLElement, anchorEl: HTMLElement, refKey: 'savePopover' | 'userMenu',
+  ): { close: () => void } {
+    const close = (): void => {
       doc.removeEventListener('keydown', onKey, true);
       doc.removeEventListener('mousedown', onOutside, true);
-      if (app.dom[refKey]) { app.dom[refKey].remove(); app.dom[refKey] = null; }
+      if (app.dom[refKey]) { app.dom[refKey]!.remove(); app.dom[refKey] = undefined; }
     };
-    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-    const onOutside = (e) => {
-      if (app.dom[refKey] && !node.contains(e.target) && !anchorEl.contains(e.target)) close();
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    const onOutside = (e: MouseEvent): void => {
+      if (app.dom[refKey] && !node.contains(e.target as Node) && !anchorEl.contains(e.target as Node)) close();
     };
     app.dom[refKey] = node;
     const r = anchorEl.getBoundingClientRect();
     // Right-align under the button.
-    const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 });
+    const a = fixedAnchor(r, { viewportW: win.innerWidth || 0 }) as { top: number; right: number };
     node.style.position = 'fixed';
     node.style.top = a.top + 'px';
     if (app.state.isMobile.value) {
@@ -2111,9 +2375,9 @@ export function createApp(env = {}) {
     return { close };
   }
 
-  function commitLinkedQuery() {
+  function commitLinkedQuery(): SavedQueryV2 | null {
     const tab = app.activeTab();
-    const evaluated = app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+    const evaluated = evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
     if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
       app.revealFirstSpecError(tab);
       flashToast('Fix Spec errors before saving', { document: doc });
@@ -2124,7 +2388,7 @@ export function createApp(env = {}) {
       flashToast('Nothing to save', { document: doc });
       return null;
     }
-    const entry = commitSavedQuery(app.state, tab, evaluated.parsed, saveJSON, app.specValidators);
+    const entry = commitSavedQuery(app.state, tab, evaluated.parsed as QuerySpecDraft | null, saveJSON, app.specValidators);
     if (!entry) return null;
     app.revalidateSpecDrafts();
     app.specEditor.syncFromState();
@@ -2132,18 +2396,20 @@ export function createApp(env = {}) {
     app.actions.rerenderTabs();
     renderSavedHistory(app);
     renderResults(app);
-    app.updateEditorModeUi();
+    app.updateEditorModeUi!();
     flashToast('Saved', { document: doc });
     return entry;
   }
 
-  function saveActiveQuery() {
-    return savedForTab(app.state, app.activeTab()) ? commitLinkedQuery() : openSavePopover();
+  function saveActiveQuery(): SavedQueryV2 | null | undefined {
+    if (savedForTab(app.state, app.activeTab())) return commitLinkedQuery();
+    openSavePopover();
+    return undefined;
   }
 
   // Creation-only Name/Description popover. Once linked, the textual Spec is
   // authoritative and Save bypasses this UI entirely.
-  function openSavePopover() {
+  function openSavePopover(): void {
     const tab = app.activeTab();
     // A queryless panel (text, #166) is authored entirely in its cfg, so it
     // saves with empty SQL — the same per-type relaxation saveQuery applies.
@@ -2155,8 +2421,8 @@ export function createApp(env = {}) {
     const prefill = tab.name && tab.name !== 'Untitled' ? tab.name : inferQueryName(tab.sqlDraft);
     const input = h('input', { class: 'sp-input', value: prefill });
     const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
-    let close;
-    const commit = () => {
+    let close: () => void;
+    const commit = (): void => {
       if (!input.value.trim()) return;
       const entry = createSavedQuery(app.state, tab, input.value, descInput.value, saveJSON, Date.now(), app.specValidators);
       if (!entry) return;
@@ -2164,7 +2430,7 @@ export function createApp(env = {}) {
       app.revalidateSpecDrafts();
       app.specEditor.syncFromState();
       app.updateSaveBtn();
-      app.updateEditorModeUi();
+      app.updateEditorModeUi!();
       app.actions.rerenderTabs();
       renderSavedHistory(app);
       flashToast('Saved', { document: doc });
@@ -2180,24 +2446,24 @@ export function createApp(env = {}) {
       h('div', { class: 'sp-actions' },
         h('button', { class: 'sp-cancel', onclick: () => close() }, 'Cancel'),
         h('button', { class: 'sp-save', onclick: commit }, 'Save')));
-    ({ close } = anchoredPopover(pop, app.dom.saveBtn, 'savePopover'));
+    ({ close } = anchoredPopover(pop, app.dom.saveBtn!, 'savePopover'));
     setTimeout(() => { input.focus(); input.select(); });
   }
   app.openSavePopover = openSavePopover;
 
-  function formatSpec() {
+  function formatSpec(): void {
     const tab = app.activeTab();
     if (tab.editorMode !== 'spec') return;
     const formatted = formatSpecText(tab.specText);
     if (formatted.diagnostic) {
-      app.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
+      evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
       app.specEditor.revealDiagnostic(0);
       return;
     }
     app.specEditor.replaceDocument(formatted.text);
   }
 
-  function setEditorMode(mode) {
+  function setEditorMode(mode: 'sql' | 'spec'): boolean {
     const tab = app.activeTab();
     if (mode === 'spec' && !savedForTab(app.state, tab)) {
       flashToast('Save this query to create an editable Spec.', { document: doc });
@@ -2205,9 +2471,9 @@ export function createApp(env = {}) {
     }
     if (mode !== 'sql' && mode !== 'spec') return false;
     tab.editorMode = mode;
-    app.updateEditorModeUi();
+    app.updateEditorModeUi!();
     const editor = mode === 'spec' ? app.specEditor : app.sqlEditor;
-    editor.requestMeasure?.();
+    (editor as EditorPort & { requestMeasure?: () => void }).requestMeasure?.();
     editor.focus();
     return true;
   }
@@ -2216,27 +2482,27 @@ export function createApp(env = {}) {
     if (!tab) return;
     batch(() => { app.state.activeTabId.value = tab.id; });
     tab.editorMode = 'spec';
-    app.updateEditorModeUi();
+    app.updateEditorModeUi!();
     app.specEditor.focus();
     flashToast('Fix Spec JSON first', { document: doc });
   };
 
   // User menu: dropdown under the header user button, holding the identity and
   // a Log out item. Same close model as the save popover (Esc + outside click).
-  function openUserMenu() {
+  function openUserMenu(): void {
     if (app.dom.userMenu) return;
-    let close;
+    let close: () => void;
     const logoutBtn = h('button', { class: 'um-item danger', onclick: () => { close(); app.signOut(); } }, Icon.logout(), h('span', null, 'Log out'));
     const menu = h('div', { class: 'user-menu' },
       h('div', { class: 'um-id' }, app.email()),
       logoutBtn,
       h('div', { class: 'um-build', title: 'App version / build' }, app.build));
-    ({ close } = anchoredPopover(menu, app.dom.userBtn, 'userMenu'));
+    ({ close } = anchoredPopover(menu, app.dom.userBtn!, 'userMenu'));
     setTimeout(() => logoutBtn.focus());
   }
   app.openUserMenu = openUserMenu;
 
-  function toggleTheme() {
+  function toggleTheme(): void {
     app.state.theme = app.state.theme === 'dark' ? 'light' : 'dark';
     app.savePref('theme', app.state.theme);
     doc.documentElement.setAttribute('data-theme', app.state.theme);
@@ -2248,7 +2514,7 @@ export function createApp(env = {}) {
 
   // On mobile (#126), jump the bottom-nav to the Editor panel after an action
   // that changes the editor content; a no-op on desktop.
-  const toEditorOnMobile = () => { if (app.state.isMobile.value) app.state.mobileView.value = 'editor'; };
+  const toEditorOnMobile = (): void => { if (app.state.isMobile.value) app.state.mobileView.value = 'editor'; };
 
   // --- dashboard (#149 D1) ----------------------------------------------
   // ensureConfig + getToken, resolving (and refreshing) the auth token ONCE.
@@ -2257,7 +2523,7 @@ export function createApp(env = {}) {
   // would invalidate itself), and a single sign-out is handled by the caller
   // instead of N tiles each firing onSignedOut. Also used by bootstrap to
   // refresh a handed-off-but-expired token before falling back to login.
-  async function ensureFreshToken() {
+  async function ensureFreshToken(): Promise<boolean> {
     await ensureConfig();
     return !!(await getToken());
   }
@@ -2282,8 +2548,8 @@ export function createApp(env = {}) {
   // request and force a needless re-login.
   const HANDOFF_MS = env.handoffMs != null ? env.handoffMs : 4000;
   const HANDOFF_LISTEN_MS = env.handoffListenMs != null ? env.handoffListenMs : 30000;
-  function sendAuthHandoff(child) {
-    const onMsg = (e) => {
+  function sendAuthHandoff(child: Window): void {
+    const onMsg = (e: MessageEvent): void => {
       if (!isAuthRequest(e, loc.origin, child)) return;
       const creds = snapshotAuth(ss);
       // Only grant when we actually hold credentials — never hand over an empty
@@ -2295,7 +2561,7 @@ export function createApp(env = {}) {
     win.setTimeout(() => win.removeEventListener('message', onMsg), HANDOFF_LISTEN_MS);
   }
   // Open the dashboard in a new tab and stand ready to hand it our credentials.
-  function openDashboard() {
+  function openDashboard(): void {
     const child = app.openWindow(loc.origin + app.basePath + '/dashboard');
     if (child) sendAuthHandoff(child);
   }
@@ -2305,7 +2571,7 @@ export function createApp(env = {}) {
   // and the already-constructed in-memory auth fields — token/authMode/idp/origin
   // were snapshotted from an empty ss at construction, so writing keys back alone
   // wouldn't take effect until a reload.
-  function applyAuthSnapshot(creds) {
+  function applyAuthSnapshot(creds: AuthSnapshot): void {
     restoreAuth(ss, creds);
     if (creds.ch_basic_auth) {
       app.authMode = 'basic';
@@ -2323,19 +2589,23 @@ export function createApp(env = {}) {
     const opener = handoffEnv.opener;
     if (!opener) { resolve(false); return; }
     let done = false;
-    const finish = (ok) => {
+    const finish = (ok: boolean): void => {
       if (done) return;
       done = true;
       win.removeEventListener('message', onMsg);
       resolve(ok);
     };
-    const onMsg = (e) => {
+    const onMsg = (e: MessageEvent): void => {
       if (!isAuthGrant(e, loc.origin, opener)) return;
+      // `e.data` is a real handoff grant `{type, creds}` once isAuthGrant has
+      // confirmed `type` — `AuthMessageEvent`'s own contract type only pins
+      // `type` (the shared predicate's whole point); `creds` rides alongside.
+      const data = e.data as { type?: string; creds?: AuthSnapshot } | null;
       // Ignore an empty grant (opener signed out / mid-sign-in) — keep waiting so
       // the request times out into the normal login rather than falsely
       // reporting success with no credentials applied.
-      if (!hasAuth(e.data.creds)) return;
-      applyAuthSnapshot(e.data.creds);
+      if (!hasAuth(data?.creds)) return;
+      applyAuthSnapshot(data!.creds!);
       finish(true);
     };
     win.addEventListener('message', onMsg);
@@ -2355,7 +2625,14 @@ export function createApp(env = {}) {
     connect,
     share,
     copyResult,
-    copySnapshot,
+    // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser
+    // than the real always-`QueryResult`-shaped value every caller (results.ts's
+    // Copy button, the detached Data view) actually passes — `Json`'s index
+    // signature can't guarantee `QueryResult`'s required fields, so a wrapper
+    // (not the function reference directly) bridges the two: `| null` on both
+    // sides of the cast keeps it a single legal step (same pattern as
+    // `recordHistory`'s above).
+    copySnapshot: (result, targetDoc) => copySnapshot(result as QueryResult | null, targetDoc),
     exportEntry,
     exportDirect,
     cancelExport,
@@ -2390,8 +2667,15 @@ export function createApp(env = {}) {
   return app;
 }
 
+/** `renderApp`'s second argument — the two closures it can't rebuild itself
+ *  (both defined inside `createApp`, over that same `app`). */
+export interface RenderAppHelpers {
+  toggleTheme: () => void;
+  startDrag: typeof startDrag;
+}
+
 /** Build the signed-in shell and mount all regions. */
-export function renderApp(app, helpers) {
+export function renderApp(app: App, helpers: RenderAppHelpers): void {
   const { state, document: doc } = app;
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
@@ -2423,7 +2707,7 @@ export function renderApp(app, helpers) {
 
   app.dom.schemaSearchInput = h('input', {
     type: 'text', placeholder: 'Search tables, columns…',
-    oninput: (e) => { state.schemaFilter.value = e.target.value; },
+    oninput: (e: Event) => { state.schemaFilter.value = (e.target as HTMLInputElement).value; },
   });
   app.dom.schemaList = h('div', { class: 'schema-list' });
   const schemaPane = h('div', { class: 'side-pane schema-pane', style: { height: state.sideSplitPct + '%', flexShrink: '0', minHeight: '0' } },
@@ -2436,21 +2720,21 @@ export function renderApp(app, helpers) {
   const savedPane = h('div', { class: 'side-pane saved-pane', style: { flex: '1', minHeight: '0' } }, app.dom.savedTabsRow, app.dom.savedSearch, app.dom.savedList);
 
   const sidebar = h('div', { class: 'sidebar', style: { width: state.sidebarPx + 'px' } });
-  const rectFor = (axis) => {
+  const rectFor = (axis: SplitterAxis): DragRect => {
     if (axis === 'sideRow') return sidebar.getBoundingClientRect();
-    return { top: app.dom.editorRegion.getBoundingClientRect().top, bottom: app.dom.resultsRegion.getBoundingClientRect().bottom };
+    return { top: app.dom.editorRegion!.getBoundingClientRect().top, bottom: app.dom.resultsRegion!.getBoundingClientRect().bottom };
   };
-  const dragCtx = {
+  const dragCtx: DragCtx = {
     state,
     rectFor,
     apply: (axis, value) => {
       if (axis === 'col') sidebar.style.width = value + 'px';
       else if (axis === 'sideRow') schemaPane.style.height = value + '%';
-      else app.dom.editorRegion.style.height = value + '%';
+      else app.dom.editorRegion!.style.height = value + '%';
     },
     save: (name, value) => app.savePref(name, value),
   };
-  app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e) => helpers.startDrag(e, 'sideRow', dragCtx) });
+  app.dom.sideSplit = h('div', { class: 'row-resize side-split', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'sideRow', dragCtx) });
   // Mobile Tables view (#126): a Schema | Library segmented control at the top of
   // the sidebar. CSS hides it above the breakpoint; below it, it swaps which pane
   // shows (the sidebar's data-mobile-tab drives both the active-button style and
@@ -2459,7 +2743,7 @@ export function renderApp(app, helpers) {
     h('button', { class: 'mseg-btn', 'data-seg': 'schema', onclick: () => { state.mobileTab.value = 'schema'; } }, Icon.database(), h('span', null, 'Schema')),
     h('button', { class: 'mseg-btn', 'data-seg': 'library', onclick: () => { state.mobileTab.value = 'library'; } }, Icon.layers(), h('span', null, 'Queries')));
   sidebar.append(app.dom.mobileSegmented, schemaPane, app.dom.sideSplit, savedPane);
-  const sideHandle = h('div', { class: 'col-resize', onmousedown: (e) => helpers.startDrag(e, 'col', dragCtx) });
+  const sideHandle = h('div', { class: 'col-resize', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'col', dragCtx) });
 
   app.dom.qtabsInner = h('div', { class: 'qtabs-inner' });
   const qtabsRow = h('div', { class: 'qtabs' }, app.dom.qtabsInner,
@@ -2517,7 +2801,7 @@ export function renderApp(app, helpers) {
     e.preventDefault();
     try { app.actions.showSchemaGraph(JSON.parse(payload)); } catch { /* malformed payload */ }
   });
-  app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e) => helpers.startDrag(e, 'row', dragCtx) });
+  app.dom.editorResultsSplit = h('div', { class: 'row-resize', onmousedown: (e: DragStartEvent) => helpers.startDrag(e, 'row', dragCtx) });
 
   const workbench = h('div', { class: 'workbench' }, qtabsRow, editorToolbar, app.dom.varStrip, app.dom.editorRegion, app.dom.editorResultsSplit, app.dom.resultsRegion);
   app.dom.banner = h('div', { class: 'auth-banner', style: { display: 'none' } });
@@ -2528,45 +2812,52 @@ export function renderApp(app, helpers) {
   // effect below) picks which of sidebar / editor / results fills the screen.
   // The Results tab carries a live badge (row count, or ● while a query streams).
   app.dom.mobileBadge = h('span', { class: 'mnav-badge' });
-  const navBtn = (view, icon, label, extra) => h('button', {
-    class: 'mobile-nav-btn', 'data-view': view, onclick: () => { state.mobileView.value = view; },
+  const navBtn = (view: string, icon: SVGElement, label: string, extra?: HTMLElement): HTMLButtonElement => h('button', {
+    class: 'mobile-nav-btn', 'data-view': view, onclick: () => { state.mobileView.value = view as 'tables' | 'editor' | 'results'; },
   }, h('span', { class: 'mnav-ic' }, icon, extra || null), h('span', { class: 'mnav-label' }, label));
   app.dom.mobileNav = h('div', { class: 'mobile-nav' },
     navBtn('tables', Icon.database(), 'Tables'),
     navBtn('editor', Icon.code(), 'Editor'),
     navBtn('results', Icon.table2(), 'Results', app.dom.mobileBadge));
 
-  app.root.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
+  app.root!.replaceChildren(header, app.dom.banner, mainRow, app.dom.mobileNav);
 
-  app.sqlEditor.mount(app.dom.sqlEditorHost);
-  app.specEditor.mount(app.dom.specEditorHost);
+  app.sqlEditor.mount(app.dom.sqlEditorHost!);
+  app.specEditor.mount(app.dom.specEditorHost!);
   app.updateEditorModeUi = () => {
     const tab = app.activeTab();
     const linked = !!savedForTab(state, tab);
     if (!linked && tab.editorMode === 'spec') tab.editorMode = 'sql';
     const specMode = tab.editorMode === 'spec';
-    app.dom.sqlEditorHost.hidden = specMode;
-    app.dom.specPane.hidden = !specMode;
-    for (const button of [app.dom.runBtn, app.dom.fmtBtn, app.dom.explainBtn]) button.hidden = specMode;
-    app.dom.formatSpecBtn.hidden = !specMode;
-    for (const button of [app.dom.exportBtn, app.dom.shareBtn]) button.hidden = specMode;
-    app.dom.sqlModeBtn.classList.toggle('active', !specMode);
-    app.dom.specModeBtn.classList.toggle('active', specMode);
-    app.dom.sqlModeBtn.setAttribute('aria-pressed', String(!specMode));
-    app.dom.specModeBtn.setAttribute('aria-pressed', String(specMode));
-    app.dom.specModeBtn.classList.toggle('is-disabled', !linked);
-    app.dom.specModeBtn.setAttribute('aria-disabled', String(!linked));
-    app.dom.specModeBtn.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
-    const errors = tab.specDiagnostics?.filter((item) => item.severity === 'error') || [];
+    app.dom.sqlEditorHost!.hidden = specMode;
+    app.dom.specPane!.hidden = !specMode;
+    for (const button of [app.dom.runBtn!, app.dom.fmtBtn!, app.dom.explainBtn!]) button.hidden = specMode;
+    app.dom.formatSpecBtn!.hidden = !specMode;
+    for (const button of [app.dom.exportBtn!, app.dom.shareBtn!]) button.hidden = specMode;
+    app.dom.sqlModeBtn!.classList.toggle('active', !specMode);
+    app.dom.specModeBtn!.classList.toggle('active', specMode);
+    app.dom.sqlModeBtn!.setAttribute('aria-pressed', String(!specMode));
+    app.dom.specModeBtn!.setAttribute('aria-pressed', String(specMode));
+    app.dom.specModeBtn!.classList.toggle('is-disabled', !linked);
+    app.dom.specModeBtn!.setAttribute('aria-disabled', String(!linked));
+    app.dom.specModeBtn!.title = linked ? 'Edit saved-query Spec JSON' : 'Save this query to create an editable Spec.';
+    // `tab.specDiagnostics`'s declared `SpecDiagnostic` (editor/spec-editor.
+    // types.ts) doesn't carry `line`/`column` — but every diagnostic actually
+    // stored there came from `evaluateSpecText`'s real `SpecValidationDiagnostic`
+    // (core/spec-draft.js), which does (the JSON-syntax diagnostic in
+    // particular always sets them). Widened locally rather than touching that
+    // shared editor contract.
+    const errors = (tab.specDiagnostics as (SpecDiagnostic & { line?: number; column?: number })[] | undefined)
+      ?.filter((item) => item.severity === 'error') || [];
     const diagnostic = errors[0];
-    app.dom.specStatus.className = 'spec-status' + (diagnostic ? ' is-error' : '');
-    app.dom.specStatus.hidden = !diagnostic;
-    app.dom.specStatus.textContent = diagnostic
+    app.dom.specStatus!.className = 'spec-status' + (diagnostic ? ' is-error' : '');
+    app.dom.specStatus!.hidden = !diagnostic;
+    app.dom.specStatus!.textContent = diagnostic
       ? `${diagnostic.line ? `Line ${diagnostic.line}, column ${diagnostic.column}: ` : ''}${diagnostic.message}${errors.length > 1 ? ` — ${errors.length} errors` : ''}`
       : '';
-    app.dom.shareBtn.disabled = app.specBlocked(tab);
-    app.dom.shareBtn.title = app.specBlocked(tab) ? 'Fix blocking Spec errors before sharing' : 'Share query (copies link)';
-    app.dom.varStrip.hidden = specMode;
+    app.dom.shareBtn!.disabled = app.specBlocked(tab);
+    app.dom.shareBtn!.title = app.specBlocked(tab) ? 'Fix blocking Spec errors before sharing' : 'Share query (copies link)';
+    app.dom.varStrip!.hidden = specMode;
     app.updateSaveBtn();
   };
   // Reactive repaint of the tab-dependent surface — replaces the old tabs.js
@@ -2581,7 +2872,7 @@ export function renderApp(app, helpers) {
     app.specEditor.syncFromState();
     app.updateSaveBtn();
     app.renderVarStrip(); // switching tabs / opening a saved query re-detects variables
-    app.updateEditorModeUi();
+    app.updateEditorModeUi!(); // assigned just above, unconditionally, before any effect can run
   });
   // Reactive repaint of the results pane: re-runs on a tab switch, a Table/JSON/
   // Chart view change, or a run-state flip. (renderResults' activeTab() also
@@ -2662,8 +2953,8 @@ export function renderApp(app, helpers) {
   // no/raw result). Same deps as the results repaint so it tracks run/tab/view.
   effect(() => {
     state.running.value; state.activeTabId.value; state.resultView.value;
-    const r = app.activeTab().result;
-    app.dom.mobileBadge.textContent = state.running.value
+    const r = app.activeTab().result as QueryResult | null;
+    app.dom.mobileBadge!.textContent = state.running.value
       ? '●'
       : (r && r.rawText == null && r.progress ? formatRows(r.progress.rows) : '');
   });

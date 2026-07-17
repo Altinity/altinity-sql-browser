@@ -121,6 +121,8 @@ type TestApp = Omit<FakeApp, 'activeTab' | 'chart'> & { activeTab(): TestTab; ch
 const asApp = (app: FakeApp): App => {
   const stub: App = {
   ...app,
+  hardenedVars: new Set(),
+  matchMedia: null,
   actions: { ...app.actions, openUserMenu: () => {}, openDashboard: () => {} },
   chCtx: {
     ...app.chCtx, fetch, origin: '', authConfirmed: true,
@@ -144,7 +146,7 @@ const asApp = (app: FakeApp): App => {
   idpId: null,
   hostHint: '',
   setTokens: () => {},
-  loadConfig: async () => ({}),
+  loadConfig: async () => ({}) as App['loadConfig'] extends () => Promise<infer T> ? T : never,
   selectIdp: () => {},
   ensureConfig: async () => null,
   receiveAuthHandoff: async () => false,
@@ -165,6 +167,7 @@ const asApp = (app: FakeApp): App => {
   setRunBtn: () => {},
   renderVarStrip: () => {},
   setExportBtn: () => {},
+  setFmtBtn: () => {},
   specBlocked: () => false,
   evaluateSpecDraft: () => ({}),
   revealFirstSpecError: () => {},

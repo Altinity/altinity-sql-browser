@@ -1,8 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderLogin } from '../../src/ui/login.js';
-import type { LoginIdpsResult } from '../../src/ui/login.js';
 import { makeApp } from '../helpers/fake-app.js';
-import type { HostDescriptor } from '../../src/net/oauth-config.js';
+import type { HostDescriptor, IdpDescriptor } from '../../src/net/oauth-config.js';
+
+/** This suite's own `loadIdps()` fixture shape — every test constructs a
+ *  partial `ConfigDoc` (login.ts's `LoginApp.loadIdps` now returns the real
+ *  `ConfigDoc` directly, #267), but only ever fills in the fields it actually
+ *  exercises (`hosts`/`basicLogin` are frequently omitted) — mirrors the
+ *  `Pick<IdpDescriptor,'id'|'label'>` narrowing login.ts's own doc comment
+ *  describes for what `renderLogin` reads off each entry. */
+interface TestIdpsResult {
+  idps: Pick<IdpDescriptor, 'id' | 'label'>[];
+  basicLogin?: boolean;
+  hosts?: HostDescriptor[];
+}
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
 const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] =>
@@ -27,7 +38,7 @@ type FakeApp = ReturnType<typeof makeApp>;
  *  other stubbed action). */
 interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'loadIdps'>> {
   actions?: Partial<FakeApp['actions']>;
-  loadIdps?: () => Promise<LoginIdpsResult>;
+  loadIdps?: () => Promise<TestIdpsResult>;
   // Not a base fake-app.js field (only ever supplied as an override, matching
   // the real app's optional `hostHint` — app.types.ts / login.ts's `LoginApp`).
   hostHint?: string;

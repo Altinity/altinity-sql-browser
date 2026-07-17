@@ -39,7 +39,11 @@ export interface CreateAppEnv {
   now?: () => number;
   wallNow?: () => number;
   retryMs?: number;
-  navigator?: { clipboard?: unknown } & Record<string, unknown>;
+  /** `unknown`'s only real reader (app.ts's share()/copySnapshot()) always
+   * narrows to `.clipboard.writeText` — typed as the real `Clipboard` shape so
+   * that narrowing needs no cast; every test fixture already supplies
+   * `{ clipboard: { writeText } }` or omits the field entirely. */
+  navigator?: { clipboard?: Clipboard } & Record<string, unknown>;
   download?: (filename: string, mime: string, content: BlobPart) => void;
   handoffMs?: number;
   handoffListenMs?: number;
