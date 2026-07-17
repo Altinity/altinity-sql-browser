@@ -10,6 +10,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Server metadata and reference lifecycle extracted into
+  `SchemaCatalogService`** (#276 Phase 4A). Version probe, schema tree
+  loading, lazy column loading, SQL reference/completions assembly, and the
+  entity-documentation cache now live in
+  `src/application/schema-catalog-service.ts` (`app.catalog`), constructible
+  without `App`/`AppState`/DOM; the connection status chip and auth banner
+  stay UI, driven by the same signals. `app.refData`/`app.completions` remain
+  writable through forwarding accessors (the CM6 harness mutates them
+  directly), and the service gains `invalidate()` for the Phase-5 connection
+  lifecycle wiring. Behavior byte-identical.
 - **Dashboard tile/filter runtime extracted into a route-scoped
   `DashboardSession`** (#276 Phase 3b). Wave generations, per-slot
   cancellation, the 6-way tile pool, filter waves/merging, and the retry

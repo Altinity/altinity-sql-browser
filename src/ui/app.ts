@@ -38,7 +38,6 @@ import {
 } from '../core/spec-draft.js';
 import type { SpecValidatorEntry, QuerySpecValidationService } from '../core/spec-draft.js';
 import type { SpecDiagnostic } from '../editor/spec-editor.types.js';
-import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import * as ch from '../net/ch-client.js';
 import { createNoopPort } from '../editor/editor-port.js';
@@ -72,8 +71,8 @@ import { enumValues, parseParamType } from '../core/param-type.js';
 import { paramComparisonColumns } from '../core/param-comparison.js';
 import type { ParamComparisonEntry } from '../core/param-comparison.js';
 import { resolveComparisonColumnType } from '../core/from-scope.js';
-import type { SchemaDb, SchemaTable, SchemaColumn } from '../core/from-scope.js';
-import type { AssembledReference } from '../core/completions.js';
+import type { SchemaDb } from '../core/from-scope.js';
+import type { AssembledReference, CompletionItem } from '../core/completions.js';
 import { libraryControls, renderLibraryTitle } from './file-menu.js';
 import { renderLogin } from './login.js';
 import { openShortcuts } from './shortcuts.js';
@@ -86,6 +85,7 @@ import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core
 import type { LineageFocus } from '../net/ch-client.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
+import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 
 /** Optional globals a plain browser page (or the CM6/Chart/dagre UMD bundles a
@@ -419,16 +419,16 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.showLogin = (msg) => renderLoginApp(msg);
   app.receiveAuthHandoff = (handoffEnv) => conn.receiveAuthHandoff(handoffEnv);
 
-  // --- data loaders ------------------------------------------------------
-  app.loadVersion = async () => {
-    try {
-      await ensureConfig();
-      app.state.serverVersion = await ch.loadServerVersion(chCtx);
-      setConn(true);
-    } catch {
-      setConn(false);
-    }
-  };
+  // --- data loaders --------------------------------------------------------
+  // The server-metadata/reference lifecycle (#276 Phase 4A) — server-version
+  // probe, schema-tree load, lazy per-table column load, editor reference
+  // data + completions, hover-doc cache — now lives in
+  // `application/schema-catalog-service.ts`, constructible without
+  // App/AppState/DOM (see that file for the ported bodies, byte-identical to
+  // this file's history). `setConn`/`updateBanner` (DOM) and the schema/
+  // banner effects stay HERE, driven by the same `state.serverVersion`/
+  // `state.schemaError` the service writes — those signals/effects are
+  // exactly as before.
   function setConn(online: boolean): void {
     if (!app.dom.connStatus) return;
     app.dom.connStatus.classList.toggle('dim', !online);
@@ -439,64 +439,61 @@ export function createApp(env: CreateAppEnv = {}): App {
     app.dom.connStatus.replaceChildren(h('span', { class: 'ver' },
       online ? 'ClickHouse ' + shortVersion(full) : 'offline'));
   }
-  app.loadSchema = async () => {
-    try {
-      await ensureConfig();
-      const schema = await ch.loadSchema(chCtx);
-      // One batched write → one repaint (the schema effect + the banner effect
-      // react to these signals; no manual renderSchema/updateBanner needed).
-      batch(() => { app.state.schema.value = schema; app.state.schemaError.value = null; });
-    } catch (e) {
-      app.state.schemaError.value = String((e instanceof Error && e.message) || e);
-    }
-    app.rebuildCompletions();
-  };
-  // Editor reference data + autocomplete candidates. Loaded once per connection
-  // (the keystroke rule, #25): keywords/functions drive both version-correct
-  // highlighting and the autocomplete list; completion then runs client-side.
+  const catalog = createSchemaCatalogService({
+    loadServerVersion: ch.loadServerVersion,
+    loadSchema: ch.loadSchema,
+    loadColumns: ch.loadColumns,
+    loadReferenceData: ch.loadReferenceData,
+    loadEntityDoc: ch.loadEntityDoc,
+    ctx: () => chCtx,
+    ensureConfig,
+    sqlString,
+    state: app.state,
+    hooks: {
+      onConnStatusChanged: setConn,
+      renderVarStrip: () => app.renderVarStrip(),
+      refreshEditorReference: () => app.sqlEditor.refreshReference(),
+    },
+  });
+  app.catalog = catalog;
+  app.loadVersion = () => catalog.loadVersion();
+  app.loadSchema = () => catalog.loadSchema();
+  app.loadReference = () => catalog.loadReference();
+  app.rebuildCompletions = () => catalog.rebuildCompletions();
+  app.entityDoc = (name) => catalog.entityDoc(name);
   // `App.refData`/`App.completions` are deliberately loose (`Json`-shaped)
   // placeholders — codemirror-adapter.ts's own narrow app slice reads the real
   // `AssembledReference`/`CompletionItem[]` shapes via its own local `as`
-  // (documented there). This closure keeps its own precisely-typed `refData`
-  // (the real value `app.refData` always holds) and mirrors it onto `app` via
-  // `Object.assign`, which — unlike a direct property write — doesn't require
-  // the assigned value to match `app.refData`'s own (deliberately loose)
-  // declared type; every OTHER fixture across the test suite still constructs
-  // `App.refData`/`App.completions` against today's loose shape.
-  let refData: AssembledReference = assembleReferenceData(null); // built-in fallback until loaded
-  Object.assign(app, { refData });
-  app.rebuildCompletions = () => {
-    Object.assign(app, {
-      completions: buildCompletions(refData, app.state.schema.value as SchemaDb[] | null),
-    });
-  };
-  app.rebuildCompletions();
-  // Hover docs (#27) are fetched on demand per entity and cached for reuse —
-  // descriptions are large, so they stay out of the bulk reference load. The
-  // cache holds the resolved string (incl. '' for no-doc / error) so each entity
-  // is queried at most once per connection; an in-flight promise is cached too
-  // to dedupe concurrent hovers of the same word.
-  app.docCache = new Map();
-  app.entityDoc = (name) => {
-    if (app.docCache.has(name)) return Promise.resolve(app.docCache.get(name)!);
-    const p = ensureConfig().then(() => ch.loadEntityDoc(chCtx, name, sqlString));
-    app.docCache.set(name, p); // dedupe concurrent hovers of the same name
-    p.then((doc) => {
-      // Cache a resolved doc ('' included = genuinely no doc), but DROP a failed
-      // fetch (null) so a transient error doesn't suppress it for the session (#8).
-      if (doc === null) app.docCache.delete(name);
-      else app.docCache.set(name, doc);
-    });
-    return p;
-  };
-  app.loadReference = async () => {
-    await ensureConfig();
-    refData = assembleReferenceData(await ch.loadReferenceData(chCtx));
-    Object.assign(app, { refData });
-    app.docCache.clear(); // re-fetch hover docs against the (possibly new) connection
-    app.rebuildCompletions();
-    app.sqlEditor.refreshReference(); // re-highlight with server keywords
-  };
+  // (documented there). The service owns the real precisely-typed values as
+  // its OWN get/set ACCESSORS (`catalog.refData`/`catalog.completions`,
+  // always current — see that interface's doc comment for why a setter
+  // exists, not just a getter). These `Object.defineProperty` accessors
+  // mirror BOTH directions onto `app`: a read observes the CURRENT value
+  // after a `loadReference()`/columns-load rebuild (no app.ts re-mirroring
+  // needed, unlike the pre-extraction `Object.assign(app, {refData})`
+  // pattern), and a write (e.g. a test overwriting `app.completions`
+  // directly, same as `tests/e2e/editor-cm6.spec.js` does) flows straight
+  // into the service's own live value, exactly as reassigning the plain
+  // property used to. `as never`/loose casts on the setter's incoming value
+  // sidestep the same declared-type mismatch `Object.assign` used to
+  // sidestep (see `App.refData`'s own loose `Json`-ish declared type).
+  Object.defineProperty(app, 'refData', {
+    get: () => catalog.refData,
+    set: (v) => { catalog.refData = v as AssembledReference; },
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(app, 'completions', {
+    get: () => catalog.completions,
+    set: (v) => { catalog.completions = v as CompletionItem[]; },
+    enumerable: true,
+    configurable: true,
+  });
+  // `docCache` is a single Map instance the service owns and only ever
+  // mutates in place (cleared/set), never reassigns — a direct property copy
+  // of the reference (not a getter) stays valid for the object's lifetime,
+  // matching the original `app.docCache = new Map()` assignment.
+  app.docCache = catalog.docCache;
   // A prominent, dismissible banner for schema/auth failures — the schema-panel
   // text alone is easy to miss on first deploy. Driven by app.state.schemaError.
   function updateBanner() {
@@ -519,39 +516,12 @@ export function createApp(env: CreateAppEnv = {}): App {
     );
   }
   app.updateBanner = updateBanner;
-  // Lazily load a table's columns into the schema signal by REFERENCE (no
-  // in-place mutation): replace the target table object with `{...tb, columns}`.
-  // 'loading' is written synchronously (before the await) so the schema effect
-  // paints the spinner immediately; the result/[] write repaints with the data.
-  // `tb.columns` stays the completion cache that buildCompletions reads.
-  async function loadColumns(db: string, table: string): Promise<void> {
-    const setCols = (cols: SchemaColumn[] | 'loading'): void => {
-      // `.value` is asserted non-null (matches the original untyped
-      // behavior verbatim: a null schema here throws, exactly as
-      // `null.map(...)` always did) — loadColumns only ever fires from a
-      // click on an already-rendered schema-tree row, i.e. after the schema
-      // itself has loaded.
-      app.state.schema.value = (app.state.schema.value as SchemaDb[]).map((d) =>
-        (d.db === db
-          ? { ...d, tables: (d.tables as SchemaTable[]).map((t): SchemaTable => (t.name === table ? { ...t, columns: cols } : t)) }
-          : d));
-    };
-    setCols('loading');
-    try {
-      await ensureConfig();
-      setCols(await ch.loadColumns(chCtx, db, table, sqlString));
-    } catch {
-      setCols([]);
-    }
-    app.rebuildCompletions(); // newly-loaded columns become completion candidates (#26)
-    // #172 v2: a newly-loaded column may now resolve a String var's schema-
-    // cache-inferred enum suggestion (paramComparisonColumns +
-    // resolveComparisonColumnType) — repaint so it can upgrade from a plain
-    // input the moment the idle-tick load lands, not just on the next
-    // keystroke/tab-switch. renderVarStrip's own signature guard (which now
-    // folds in each var's resolved enum options, see below) skips the actual
-    // DOM rebuild when nothing changed, so this is a cheap no-op otherwise.
-    app.renderVarStrip();
+  // Lazily load a table's columns (#26/#172 v2) — actions.loadColumns' target
+  // below delegates to the service; kept as a local function (rather than
+  // inlining `catalog.loadColumns` at the actions-registry call site) so that
+  // registry entry is untouched.
+  function loadColumns(db: string, table: string): Promise<void> {
+    return catalog.loadColumns(db, table);
   }
 
   // --- query run ---------------------------------------------------------
