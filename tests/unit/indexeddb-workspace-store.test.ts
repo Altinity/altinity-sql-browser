@@ -133,6 +133,43 @@ describe('createIndexedDbWorkspaceStore', () => {
     await expect(silent.read()).rejects.toThrow('IndexedDB open failed');
   });
 
+  it('does not poison the store when an open fails — a same-session retry can reopen', async () => {
+    // A factory whose first open rejects, then succeeds — proving the failed
+    // open promise is never cached (no permanent poison).
+    const db = new FakeDB({});
+    db.stores.set('workspace', new Map());
+    let attempt = 0;
+    const factory = {
+      open() {
+        const req = new FakeRequest();
+        const failThis = attempt++ === 0;
+        queueMicrotask(() => {
+          if (failThis) { req.error = new Error('transient open'); req.onerror?.(); return; }
+          req.result = db;
+          req.onsuccess?.();
+        });
+        return req as unknown as IDBOpenDBRequest;
+      },
+    } as unknown as IDBFactory;
+    const store = createIndexedDbWorkspaceStore(factory);
+    await expect(store.read()).rejects.toThrow('transient open');
+    // Second call reopens (cache was cleared on the rejection) and succeeds.
+    expect(await store.read()).toBeNull();
+    expect(attempt).toBe(2);
+  });
+
+  it('rejects the open when it is blocked (unreachable at version 1; guarded defensively)', async () => {
+    const factory = {
+      open() {
+        const req = new FakeRequest();
+        queueMicrotask(() => { (req as unknown as { onblocked?: () => void }).onblocked?.(); });
+        return req as unknown as IDBOpenDBRequest;
+      },
+    } as unknown as IDBFactory;
+    const store = createIndexedDbWorkspaceStore(factory);
+    await expect(store.read()).rejects.toThrow('IndexedDB open blocked');
+  });
+
   it('rejects when the get request fails (with and without a request error)', async () => {
     const boom = createIndexedDbWorkspaceStore(fakeFactory({ failGet: true, getError: new Error('get boom') }));
     await expect(boom.read()).rejects.toThrow('get boom');

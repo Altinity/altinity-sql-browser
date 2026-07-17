@@ -59,7 +59,7 @@ export function createIndexedDbWorkspaceStore(
 
   function openDb(): Promise<IDBDatabase> {
     if (dbPromise) return dbPromise;
-    dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    const pending = new Promise<IDBDatabase>((resolve, reject) => {
       if (!factory) {
         reject(new Error('IndexedDB is unavailable'));
         return;
@@ -71,8 +71,18 @@ export function createIndexedDbWorkspaceStore(
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed'));
+      // Dormant at version 1 (no upgrade can block a fresh open), but an
+      // unhandled `blocked` event would hang the open forever — reject so the
+      // no-cache-on-failure path below reopens on the next call.
+      request.onblocked = () => reject(new Error('IndexedDB open blocked'));
     });
-    return dbPromise;
+    // Cache only a SUCCESSFUL open. A rejected open must not poison the store
+    // for the page's lifetime (one createApp() builds one long-lived store):
+    // drop the cached promise on failure so a same-session retry can reopen,
+    // matching the repository's "failed write leaves a draft to retry" contract.
+    dbPromise = pending;
+    pending.catch(() => { if (dbPromise === pending) dbPromise = null; });
+    return pending;
   }
 
   async function read(): Promise<string | null> {
