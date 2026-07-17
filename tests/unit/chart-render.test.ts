@@ -7,7 +7,7 @@ import {
   autoChart, chartCfgValid, schemaKey, chartRowCap, CHART_STYLE_PRESETS, chartStylePresets,
 } from '../../src/core/chart-data.js';
 import type { ChartConfig } from '../../src/core/chart-data.js';
-import type { App, Tab } from '../../src/ui/app.types.js';
+import type { Tab } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 
@@ -41,55 +41,17 @@ type FakeApp = ReturnType<typeof makeApp>;
  *  in isolation without going through the Panel registry (panels.ts) at all.
  *  A genuine subtype of `Tab`: the properties really are set on the object
  *  below, so casting the real `activeTab()` return to it is an ordinary
- *  single-step narrowing, not an `unknown` bridge. */
-type TestTab = Tab & { panelCfg: ChartConfig | null; panelKey: string | null };
+ *  single-step narrowing, not an `unknown` bridge. Optional (not required):
+ *  a plain `QueryTab` structurally lacks both, and marking them required
+ *  would make `TestApp` fail TS's whole-object "sufficiently overlaps" cast
+ *  check against `App`'s own `activeTab(): Tab`. */
+type TestTab = Tab & { panelCfg?: ChartConfig | null; panelKey?: string | null };
 
 /** `renderChart` wants the full `App` contract (panels.ts's own wrapper pins
- *  it exactly that way); tests/helpers/fake-app.js's `makeApp()` is a
- *  long-standing untyped test double implementing only the handful of
- *  members this file's direct (registry-free) exercise of renderChart
- *  actually reads — not the whole ~50-member interface (fake-app.js isn't
- *  one of this change's files; see panels.test.ts for the same convention).
- *  `chart` widens fake-app.js's `null` "no chart yet" sentinel to
- *  `undefined` (App.chart's own shape for the same state) and `activeTab`
- *  to `TestTab` (above) — both genuine narrowings of what the fixture
- *  already holds, not a fiction. */
-type TestApp = Omit<App, 'chart' | 'activeTab'> & { chart: FakeChart | undefined; activeTab(): TestTab };
-
-/** Adapts one `makeApp()` fixture into `TestApp` by filling every `App`
- *  member the fixture doesn't provide with an inert stub (never read by the
- *  paths this file exercises — renderChart only ever touches
- *  app.Chart/app.cssVar/app.chart). `Object.assign` mutates the SAME
- *  reference (not a spread copy), so a later `app.chart = c` write inside
- *  renderChart is visible through the original `app` this file keeps
- *  asserting against. */
-function asApp(app: FakeApp): TestApp {
-  const patch = {
-    chart: (app.chart ?? undefined) as FakeChart | undefined,
-    token: null, refreshToken: null,
-    CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-    specValidators: { validate: () => [], register: () => () => {} } as App['specValidators'],
-    specCompletionSources: [] as unknown[],
-    openWindow: () => null, stylesText: '', faviconHref: '',
-    chUsername: () => '', authMode: 'basic' as const, chAuth: 'basic' as const, basicUserClaim: 'sub',
-    idpId: null, hostHint: '',
-    setTokens: () => {}, loadConfig: async () => ({}), selectIdp: () => {}, ensureConfig: async () => null,
-    receiveAuthHandoff: async () => false, canExport: () => false, canExportScript: () => false,
-    showSaveFilePicker: null, showDirectoryPicker: null, isSecureContext: true, FileReader: globalThis.FileReader,
-    editingLibrary: false, loadReference: async () => {}, refData: { functions: {}, keywordDocs: {} },
-    completions: {}, rebuildCompletions: () => {}, docCache: new Map<string, string | Promise<string | null>>(),
-    updateBanner: () => {}, tickElapsed: () => {}, setRunBtn: () => {}, renderVarStrip: () => {},
-    setExportBtn: () => {}, specBlocked: () => false, evaluateSpecDraft: () => ({}),
-    revealFirstSpecError: () => {}, registerSpecValidator: () => () => {}, openSavePopover: () => {},
-    renderApp: () => {}, renderDashboard: () => {}, openDashboard: () => {}, recordHistory: () => {},
-    actions: { ...app.actions, openUserMenu: () => {}, openDashboard: () => {} },
-    chCtx: {
-      ...app.chCtx, fetch, origin: '', authConfirmed: true,
-      getToken: async () => null, refresh: async () => false, authHeader: () => '',
-    },
-  };
-  return Object.assign(app, patch) as TestApp;
-}
+ *  it exactly that way); `makeApp()` already satisfies it — this only narrows
+ *  `chart`/`activeTab` to their more specific real shapes for this file's own
+ *  reads (`chart.config...`, `activeTab().panelCfg`). */
+type TestApp = Omit<FakeApp, 'chart' | 'activeTab'> & { chart: FakeChart | undefined; activeTab(): TestTab };
 
 /** The historical `resultView` values this file's fixtures set — 'chart'
  *  predates #166 (superseded by the Panel registry's 'panel' view) and is
@@ -102,7 +64,7 @@ interface StateOverride {
 }
 
 function appWithResult(result: StreamResult, over: StateOverride = {}): TestApp {
-  const app = asApp(makeApp());
+  const app = makeApp() as TestApp;
   app.activeTab().result = result;
   if (over.resultView !== undefined) app.state.resultView.value = over.resultView as AppState['resultView']['value'];
   if (over.running !== undefined) app.state.running.value = over.running;
@@ -402,7 +364,7 @@ describe('renderChart', () => {
       fieldConfig: { columns: { flights: { displayName: 'Flights', unit: ' trips', decimals: 0 } } },
     });
     expect(app.chart!.config.data.datasets[0].label).toBe('Flights');
-    expect(app.chart!.config.options.scales.y.ticks.callback(12)).toBe('12 trips');
+    expect(app.chart!.config.options.scales!.y.ticks.callback!(12)).toBe('12 trips');
   });
   it('keeps authoring controls but shows an empty state when every selected field is hidden', () => {
     const app = appWithResult(chartResult());

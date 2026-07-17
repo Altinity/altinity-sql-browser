@@ -4,185 +4,16 @@ import { SUBQUERY_MIME } from '../../src/ui/dnd-mime.js';
 import { queryDescription, queryFavorite, queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import { setTabSpecDraft } from '../../src/state.js';
-import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { App } from '../../src/ui/app.types.js';
 import type { AppState, HistoryEntry } from '../../src/state.js';
-import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
-// ── Typed test-app scaffolding ───────────────────────────────────────────────
-// tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
-// double that predates ADR-0002's `App` contract (app.types.ts) — it
-// implements the handful of members this file's render path actually reads,
-// not the whole ~50-member interface (out of scope here — fake-app.js isn't
-// one of this change's files; same convention as dashboard.test.ts /
-// panels.test.ts). `appDefaults` fills every member `makeApp()` doesn't
-// provide with an inert placeholder (never read by the paths this file
-// exercises); spreading `...app` OVER those defaults (not `Object.assign`'s
-// `T & U` intersection) lets a later key's REAL, often Mock-typed, shape win
-// on both value AND type — so `app.actions.loadIntoNewTab.mockReturnValue(…)`
-// below still sees the concrete `vi.fn()` mock, not App's argument-erased
-// method signature.
-type FakeApp = ReturnType<typeof makeApp>;
 type ResultView = AppState['resultView']['value'];
 
-const appDefaults: App = {
-  state: {} as AppState,
-  dom: {},
-  hardenedVars: new Set(),
-  matchMedia: null,
-  build: 'v0.0.0-test',
-  root: null,
-  document,
-  token: null,
-  refreshToken: null,
-  sqlEditor: {} as App['sqlEditor'],
-  specEditor: {} as App['specEditor'],
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [] },
-  specCompletionSources: [],
-  Chart: undefined,
-  cssVar: () => '',
-  Dagre: undefined,
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  toggleTheme: () => {},
-  chart: undefined,
-  host: () => '',
-  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as App['loadConfig'] extends () => Promise<infer T> ? T : never,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as App['loadIdps'] extends () => Promise<infer T> ? T : never,
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
-  showLogin: () => {},
-  signOut: () => {},
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  saveJSON: () => {},
-  saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
-  saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
-  recordHistory: () => {},
-  downloadFile: () => {},
-  editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
-  updateBanner: () => {},
-  wallNow: () => 0,
-  now: () => 0,
-  elapsedMs: () => 0,
-  tickElapsed: () => {},
-  runReadInto: async (result) => result,
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  setFmtBtn: () => {},
-  specBlocked: () => false,
-  updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  actions: {} as ActionsRegistry,
-};
-
-/** A `FakeApp` fixture, widened to satisfy `App` for `renderSavedHistory`
- *  while keeping every concrete `makeApp()` mock directly readable/spyable
- *  off the SAME object. No explicit return-type annotation: inferring it
- *  (rather than pinning to `App`) keeps every `makeApp()` mock's own precise
- *  type (`actions.loadIntoNewTab.mockReturnValue`, …). */
-function withApp(base: FakeApp) {
-  // fake-app.js's default `chart: null` predates App.chart's `undefined`-only
-  // optional shape (the field it models, chart-render.js's ad-hoc instance,
-  // is simply absent until a chart renders — never explicitly `null`); this
-  // file never touches charts, so it's always the "absent" default.
-  const merged = {
-    ...appDefaults, ...base, chart: base.chart ?? undefined,
-    // fake-app.js's `dom` stub holds concrete `<div>`s for every key it sets
-    // (narrower-but-always-present), while `AppDom`'s real members are all
-    // optional (a fresh renderApp() run resets `app.dom` to `{}` — see its
-    // own doc comment); widen so a "no mount" test can null one back out.
-    dom: base.dom as App['dom'],
-    // fake-app.js's own `chCtx` only ever stubs `onSignedOut` (the one member
-    // this file's render path reads) — narrower than the full `ChCtx`
-    // contract; keep the rest of the default's members, letting only
-    // `onSignedOut` win.
-    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
-    // fake-app.js's own `actions` predates two ActionsRegistry members
-    // (openUserMenu/openDashboard) added since — same "keep the rest, let
-    // fake-app.js's real spies win" merge.
-    actions: { ...appDefaults.actions, ...base.actions },
-  };
-  // Assignability check only (a variable reference, not a fresh literal, so
-  // this never trips an excess-property error) — `merged`'s own inferred
-  // type (every field's real, often Mock-typed, shape) is what callers
-  // actually get back, not this widened annotation.
-  const check: App = merged;
-  void check;
-  return merged;
-}
-
-// tests/helpers/saved-query.js is plain JS with no default for its `id`
-// param; TS's inference over its destructured signature therefore omits `id`
-// from the parameter type it derives, rejecting every fixture literal below
-// with an excess-property error. Pin the honest fixture shape it accepts
-// (same "typed wrapper over a still-untyped .js dependency" convention as
-// panels.test.ts's own `newResult` wrapper).
-interface SavedQueryFixture {
-  id: string;
-  sql?: string;
-  name?: string;
-  favorite?: boolean;
-  description?: string;
-  view?: string;
-  panel?: unknown;
-  dashboard?: unknown;
-  spec?: Record<string, unknown>;
-  [k: string]: unknown;
-}
-const savedQueryFixture = savedQuery as (fixture: SavedQueryFixture) => SavedQueryV2;
-
 const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
-const setSaved = (app: ReturnType<typeof withApp>, queries: SavedQueryFixture[]) => {
-  app.state.savedQueries = queries.map(savedQueryFixture);
+const setSaved = (app: App, queries: SavedQueryFixture[]) => {
+  app.state.savedQueries = queries.map((q) => savedQuery(q));
 };
 const dragStart = (el: Element) => {
   const setData = vi.fn();
@@ -196,29 +27,32 @@ const qsa = <T extends Element = HTMLElement>(root: ParentNode, selector: string
   [...root.querySelectorAll(selector)] as T[];
 const byTitle = (root: ParentNode, t: string): HTMLElement =>
   qsa(root, '.sv-act').find((b) => b.title === t) as HTMLElement;
-/** `app.dom.*` mounts are always present once `withApp` merges in real
- *  `<div>`s (fake-app.js's own dom stubs), or are deliberately cleared in a
- *  no-mount test — those tests never read through this helper. */
+/** `app.dom.*` mounts are always present (`makeApp()`'s own dom stubs), or
+ *  are deliberately cleared in a no-mount test — those tests never read
+ *  through this helper. */
 const savedList = (app: App): HTMLElement => app.dom.savedList!;
 const savedTabsRow = (app: App): HTMLElement => app.dom.savedTabsRow!;
 const savedSearch = (app: App): HTMLElement => app.dom.savedSearch!;
 
 describe('renderSavedHistory', () => {
   it('no-ops without mounts', () => {
-    const app = withApp(makeApp());
-    app.dom.savedTabsRow = undefined;
+    const app = makeApp();
+    // `as`: fake-app's `dom.savedTabsRow` is a real HTMLElement in the fixture
+    // literal (never absent in practice) — this test exercises the defensive
+    // "no mount point" guard renderSavedHistory itself keeps.
+    (app.dom as { savedTabsRow: HTMLElement | undefined }).savedTabsRow = undefined;
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
   it('saved: empty state', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     expect(savedList(app).textContent).toContain('No saved queries yet.');
   });
 
   it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false, panel, view: 'panel' }]);
@@ -239,7 +73,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: an effectful query loads into the editor but does NOT auto-run', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Setup', sql: 'CREATE TABLE t (a Int8)', favorite: false }]);
     renderSavedHistory(app);
@@ -249,7 +83,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: opens a Filter badge directly in Spec at the role', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
     const loaded = app.activeTab();
@@ -267,7 +101,7 @@ describe('renderSavedHistory', () => {
   it.each(['table', 'json', 'panel'] as ResultView[])(
     'saved: a Filter-role query always launches into the Filter preview, independent of the current result view (was %s) (#244)',
     (previousView) => {
-      const app = withApp(makeApp());
+      const app = makeApp();
       app.state.sidePanel.value = 'saved';
       app.state.resultView.value = previousView;
       setSaved(app, [{ id: 'f', name: 'Options', sql: 'SELECT 1', dashboard: { role: 'filter' } }]);
@@ -278,7 +112,7 @@ describe('renderSavedHistory', () => {
   );
 
   it('saved: Filter role takes precedence over a dormant persisted spec.view and Panel config, without touching either (#244)', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 'f1', name: 'No persisted view', sql: 'SELECT 1', dashboard: { role: 'filter' } },
@@ -308,7 +142,7 @@ describe('renderSavedHistory', () => {
     // enforces. The role must still win the launch view: `SAVED_VIEWS`
     // deliberately excludes 'filter' (it's never persisted), so this only
     // opens correctly if the role bypasses that persisted-view check.
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     app.state.resultView.value = 'table';
     setSaved(app, [
@@ -330,7 +164,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 'a', name: 'A', sql: '1', favorite: false },
@@ -348,7 +182,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: favorite merges into a linked dirty valid Spec draft', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
@@ -363,7 +197,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: pencil focuses an invalid linked Spec draft instead of opening', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
@@ -379,7 +213,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: favorite blocks on invalid JSON without persistence', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     const tab = app.activeTab();
@@ -396,7 +230,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
     renderSavedHistory(app);
@@ -426,7 +260,7 @@ describe('renderSavedHistory', () => {
     expect(queryName(app.state.savedQueries[0])).toBe('New');
   });
   it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }]);
     renderSavedHistory(app);
@@ -464,7 +298,7 @@ describe('renderSavedHistory', () => {
     expect(queryName(app.state.savedQueries[0])).toBe('Old');
   });
   it('saved: renders a 2-line description preview when present, omits it otherwise', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 's1', name: 'A', sql: '1', favorite: false, description: 'explains A' },
@@ -477,7 +311,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
@@ -490,14 +324,14 @@ describe('renderSavedHistory', () => {
     expect(savedList(app).querySelector('.sv-io')).toBeNull();
   });
   it('history: empty state', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     renderSavedHistory(app);
     expect(savedList(app).textContent).toContain('No history yet.');
   });
 
   it('history: lists rows (with + without row count) and loads on click', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
@@ -514,7 +348,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('history: an effectful entry loads into the editor but does NOT auto-run', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'DROP TABLE t', ts: Date.now(), rows: null, ms: 1 }];
     renderSavedHistory(app);
@@ -524,7 +358,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('history: per-row delete removes just that entry without loading it', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 3, ms: 4 },
@@ -538,7 +372,7 @@ describe('renderSavedHistory', () => {
   });
 
   it('switching panels persists the choice', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     const [savedBtn, histBtn] = qsa(savedTabsRow(app), '.side-tab');
@@ -553,7 +387,7 @@ describe('renderSavedHistory', () => {
 
 describe('renderSavedHistory — search/filter', () => {
   const savedApp = () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
       { id: 's1', name: 'Carrier delays', sql: 'SELECT carrier FROM flights', favorite: false, description: 'worst delays' },
@@ -569,12 +403,13 @@ describe('renderSavedHistory — search/filter', () => {
 
   it('tolerates a missing search mount', () => {
     const app = savedApp();
-    app.dom.savedSearch = undefined;
+    // `as`: same "defensive no-mount guard" convention as above.
+    (app.dom as { savedSearch: HTMLElement | undefined }).savedSearch = undefined;
     expect(() => renderSavedHistory(app)).not.toThrow();
   });
 
   it('collapses the search box when the active list is empty', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     renderSavedHistory(app);
     expect(savedSearch(app).children.length).toBe(0); // :empty → hidden via CSS
@@ -618,7 +453,7 @@ describe('renderSavedHistory — search/filter', () => {
   });
 
   it('filters history by sql with its own no-match message', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     app.state.history = [
       { id: 'h1', sql: 'SELECT 1', ts: Date.now(), rows: 1, ms: 1 },
@@ -644,7 +479,7 @@ describe('renderSavedHistory — search/filter', () => {
 
 describe('drag a row into the editor', () => {
   it('a saved row is draggable and carries its SQL as a subquery payload', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Q1', sql: 'SELECT 1\n-- more', favorite: false }]);
     renderSavedHistory(app);
@@ -654,7 +489,7 @@ describe('drag a row into the editor', () => {
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 1\n-- more');
   });
   it('a history row is draggable and carries its SQL as a subquery payload', () => {
-    const app = withApp(makeApp());
+    const app = makeApp();
     app.state.sidePanel.value = 'history';
     app.state.history = [{ id: 'h1', sql: 'SELECT 2', ts: Date.now(), rows: 1, ms: 1 }];
     renderSavedHistory(app);

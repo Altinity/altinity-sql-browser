@@ -394,7 +394,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     ? env.specValidators
     : createSpecValidatorRegistry((env.specValidators as readonly SpecValidatorEntry[] | undefined) || CORE_SPEC_VALIDATORS);
   app.specValidators = specValidators;
-  app.specCompletionSources = (env.specCompletionSources || createSpecCompletionSources()) as unknown[];
+  app.specCompletionSources = env.specCompletionSources || createSpecCompletionSources();
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));

@@ -3,158 +3,8 @@ import { libraryControls, renderLibraryTitle, openFileMenu } from '../../src/ui/
 import { queryName } from '../../src/core/saved-query.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
-import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
-import type { AppState } from '../../src/state.js';
-import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
-
-// ── Typed test-app scaffolding ───────────────────────────────────────────────
-// tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
-// double that predates ADR-0002's `App` contract (app.types.ts) — it
-// implements the handful of members this file's render path actually reads,
-// not the whole ~50-member interface (out of scope here — fake-app.js isn't
-// one of this change's files; same convention as saved-history.test.ts /
-// dashboard.test.ts / panels.test.ts). `appDefaults` fills every member
-// `makeApp()` doesn't provide with an inert placeholder (never read by the
-// paths this file exercises); spreading `...app` OVER those defaults (not
-// `Object.assign`'s `T & U` intersection) lets a later key's REAL, often
-// Mock-typed, shape win on both value AND type.
-type FakeApp = ReturnType<typeof makeApp>;
-
-const appDefaults: App = {
-  state: {} as AppState,
-  dom: {},
-  hardenedVars: new Set(),
-  matchMedia: null,
-  build: 'v0.0.0-test',
-  root: null,
-  document,
-  token: null,
-  refreshToken: null,
-  sqlEditor: {} as App['sqlEditor'],
-  specEditor: {} as App['specEditor'],
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [] },
-  specCompletionSources: [],
-  Chart: undefined,
-  cssVar: () => '',
-  Dagre: undefined,
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  toggleTheme: () => {},
-  chart: undefined,
-  host: () => '',
-  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as App['loadConfig'] extends () => Promise<infer T> ? T : never,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as App['loadIdps'] extends () => Promise<infer T> ? T : never,
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
-  showLogin: () => {},
-  signOut: () => {},
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  saveJSON: () => {},
-  saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
-  saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
-  recordHistory: () => {},
-  downloadFile: () => {},
-  editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
-  updateBanner: () => {},
-  wallNow: () => 0,
-  now: () => 0,
-  elapsedMs: () => 0,
-  tickElapsed: () => {},
-  runReadInto: async (result) => result,
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  setFmtBtn: () => {},
-  specBlocked: () => false,
-  updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  actions: {} as ActionsRegistry,
-};
-
-/** A `FakeApp` fixture, widened to satisfy `App` for this file's render path
- *  while keeping every concrete `makeApp()` mock directly readable/spyable
- *  off the SAME object (same convention as saved-history.test.ts). */
-function withApp(base: FakeApp) {
-  const merged = {
-    ...appDefaults, ...base, chart: base.chart ?? undefined,
-    dom: base.dom as App['dom'],
-    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
-    // fake-app.js's own `actions` predates ActionsRegistry's `openDashboard` —
-    // same "keep the rest, let fake-app.js's real spies win" merge; every
-    // test that clicks "Open as dashboard" overrides it with its own vi.fn().
-    actions: { ...appDefaults.actions, ...base.actions },
-  };
-  const check: App = merged;
-  void check;
-  return merged;
-}
-
-// tests/helpers/saved-query.js is plain JS with no default for its `id`
-// param; TS's inference over its destructured signature therefore omits `id`
-// from the parameter type it derives, rejecting every fixture literal below
-// with an excess-property error. Pin the honest fixture shape it accepts
-// (same convention as saved-history.test.ts).
-interface SavedQueryFixture {
-  id: string;
-  sql?: string;
-  name?: string;
-  favorite?: boolean;
-  description?: string;
-  view?: string;
-  panel?: unknown;
-  dashboard?: unknown;
-  spec?: Record<string, unknown>;
-  [k: string]: unknown;
-}
-const savedQueryFixture = savedQuery as (fixture: SavedQueryFixture) => SavedQueryV2;
+import type { SavedQueryFixture } from '../helpers/saved-query.js';
+import type { App } from '../../src/ui/app.types.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -162,8 +12,8 @@ const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): bool
 const item = (re: RegExp): HTMLElement | undefined =>
   [...document.querySelectorAll<HTMLElement>('.fm-item')].find((b) => re.test(b.textContent || ''));
 const toast = (): string | null => document.querySelector('.share-toast')!.textContent;
-const setSaved = (app: ReturnType<typeof withApp>, queries: SavedQueryFixture[]): void => {
-  app.state.savedQueries = queries.map(savedQueryFixture);
+const setSaved = (app: App, queries: SavedQueryFixture[]): void => {
+  app.state.savedQueries = queries.map((q) => savedQuery(q));
 };
 
 // A FileReader stub: readAsText resolves synchronously with `content` (or errors).
@@ -199,14 +49,8 @@ const fakeReader = (content: string, fail?: boolean): typeof FileReader => class
 const envFile = (queries: unknown[]): string => JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
 
 // Build an app with the header controls mounted (File button + title slot in the DOM).
-// `FileReader` isn't one of fake-app.js's own named defaults (out of scope —
-// not one of this change's files), so `makeApp()`'s inferred `over` parameter
-// type doesn't recognize it as an override key; split it out and assign it
-// directly onto the (fully `App`-shaped, post-`withApp`) result instead.
-function mount(over: Partial<FakeApp> & { FileReader?: typeof FileReader } = {}) {
-  const { FileReader: fileReader, ...rest } = over;
-  const app = withApp(makeApp(rest));
-  if (fileReader) app.FileReader = fileReader;
+function mount<O extends Partial<App> = Record<string, never>>(over: O = {} as O) {
+  const app = makeApp(over);
   for (const node of libraryControls(app)) document.body.appendChild(node);
   return app;
 }
@@ -315,7 +159,7 @@ describe('library title', () => {
   });
 
   it('renderLibraryTitle no-ops without a slot', () => {
-    expect(() => renderLibraryTitle(withApp(makeApp()))).not.toThrow();
+    expect(() => renderLibraryTitle(makeApp())).not.toThrow();
   });
 });
 

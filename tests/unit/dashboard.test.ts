@@ -16,168 +16,18 @@ import { makeApp, FakeChart } from '../helpers/fake-app.js';
 import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { savedQuery } from '../helpers/saved-query.js';
-import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { SavedQueryFixture } from '../helpers/saved-query.js';
+import type { App } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
 
-// ── Typed test-app scaffolding ───────────────────────────────────────────────
-// tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
-// double that predates ADR-0002's `App` contract (app.types.ts) — it
-// implements the handful of members each render path actually reads, not the
-// whole ~50-member interface (out of scope here — fake-app.js isn't one of
-// this change's files; see panels.test.ts / dashboard-kpi-band.test.ts for the
-// same convention). `appDefaults` fills every member `makeApp()` doesn't
-// provide with an inert placeholder (never read by the paths this file
-// exercises); `withApp` layers a real `makeApp()` fixture (whose concrete
-// mocks — savePref, ensureFreshToken, runReadInto, etc. — this file asserts
-// against) over those defaults via plain object-literal spread, so a later
-// key always wins on both value AND type — never `Object.assign`'s `T & U`
-// intersection, which would keep fake-app.js's looser inferred `runReadInto`
-// signature instead of replacing it.
 type FakeApp = ReturnType<typeof makeApp>;
 
-const appDefaults: App = {
-  state: {} as AppState,
-  dom: {},
-  hardenedVars: new Set(),
-  matchMedia: null,
-  build: 'v0.0.0-test',
-  root: null,
-  document,
-  token: null,
-  refreshToken: null,
-  sqlEditor: {} as App['sqlEditor'],
-  specEditor: {} as App['specEditor'],
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [] },
-  specCompletionSources: [],
-  Chart: undefined,
-  cssVar: () => '',
-  Dagre: undefined,
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  toggleTheme: () => {},
-  chart: undefined,
-  host: () => '',
-  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as ResolvedIdpConfig,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as ConfigDoc,
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
-  showLogin: () => {},
-  signOut: () => {},
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  saveJSON: () => {},
-  saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
-  saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
-  recordHistory: () => {},
-  downloadFile: () => {},
-  editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
-  updateBanner: () => {},
-  wallNow: () => 0,
-  now: () => 0,
-  elapsedMs: () => 0,
-  tickElapsed: () => {},
-  runReadInto: async (result) => result,
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  setFmtBtn: () => {},
-  specBlocked: () => false,
-  updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  actions: {} as ActionsRegistry,
-};
-
-/** A `FakeApp` fixture, widened to satisfy `App` for the render calls under
- * test (`renderDashboard`, `createApp(...).renderDashboard`, …) while keeping
- * every concrete `makeApp()` mock (and any test-only extra like `tileSpy`)
- * directly readable off the SAME object — no separate wrapper to keep in
- * sync with the fixture the test still mutates afterward. */
-type TestApp = App & { tileSpy?: unknown; Chart: typeof FakeChart };
-// `overrides` is generic so its properties keep their OWN precise call-site
-// type (e.g. `streamInto(...)`'s real 2-arg `runReadInto` mock) — a plain
-// `Partial<App>` parameter would widen every override to App's declared
-// (argument-erased) signature, losing `.mock`/`.mockClear` for the rest of
-// the test.
-// No explicit return-type annotation: inferring it (rather than pinning to
-// `TestApp & O`) keeps every OTHER `makeApp()` mock's own precise type too
-// (ensureFreshToken, recordBoundParams, …) — annotating would widen all of
-// them to App's argument-erased method signatures, the same loss `O` exists
-// to avoid for the explicit overrides.
-function withApp<O extends Partial<App> = Record<string, never>>(base: FakeApp, overrides: O = {} as O) {
-  // fake-app.js's default `chart: null` predates App.chart's `undefined`-only
-  // optional shape (the field it models, chart-render.js's ad-hoc instance, is
-  // simply absent until a chart renders — never explicitly `null`).
-  // Likewise fake-app.js's own `chCtx` only ever stubs `onSignedOut` (the one
-  // member the Dashboard render path reads) — narrower than the full `ChCtx`
-  // contract; keep the rest of the default's members, letting only
-  // `onSignedOut` (and any test override) win.
-  // ...and fake-app.js's `actions` predates two ActionsRegistry members
-  // (openUserMenu/openDashboard) added since — same "keep the rest, let
-  // fake-app.js's real spies win" merge.
-  const merged = {
-    ...appDefaults, ...base, chart: base.chart ?? undefined, tileSpy: undefined as unknown,
-    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
-    actions: { ...appDefaults.actions, ...base.actions },
-    ...overrides,
-  };
-  // Assignability check only (a variable reference, not a fresh literal, so
-  // this never trips an excess-property error over `tileSpy`) — `merged`'s
-  // own inferred type (every field's REAL, often Mock-typed, shape) is what
-  // callers actually get back, not this widened annotation.
-  const asApp: App = merged;
-  void asApp;
-  return merged;
-}
+/** `makeApp()` already satisfies `App` in full; this only adds the test-only
+ * `tileSpy` extra `dashApp` attaches after construction. */
+type TestApp = FakeApp & { tileSpy?: unknown; Chart: typeof FakeChart };
 
 const qs = <T extends Element = HTMLElement>(root: ParentNode | null, selector: string): T =>
   (root as ParentNode).querySelector(selector) as T;
@@ -446,13 +296,13 @@ function streamInto(spy: TileSpy) {
 // that referenced the old `app.runTile`.
 function dashApp(favorites: FavoriteInput[], runTile: TileSpy) {
   const runReadInto = streamInto(runTile);
-  const app = withApp(makeApp({ runReadInto }), { runReadInto });
+  const app = makeApp({ runReadInto }) as TestApp;
   app.tileSpy = runTile;
   setSaved(app, favorites);
   return app;
 }
 const setSaved = (app: App, queries: FavoriteInput[]): void => {
-  app.state.savedQueries = queries.map(savedQuery) as AppState['savedQueries'];
+  app.state.savedQueries = queries.map((q) => savedQuery(q as SavedQueryFixture)) as AppState['savedQueries'];
 };
 
 describe('renderDashboard', () => {
@@ -695,7 +545,7 @@ describe('renderDashboard', () => {
 
   it('has a theme toggle wired to app.toggleTheme', async () => {
     const toggleTheme = vi.fn();
-    const app = withApp(makeApp({ runReadInto: streamInto(vi.fn(async () => chartResult())), toggleTheme }), { toggleTheme });
+    const app = makeApp({ runReadInto: streamInto(vi.fn(async () => chartResult())), toggleTheme });
     app.state.theme = 'dark'; // exercise the dark-theme icon branch
     setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     await renderDashboard(app);
@@ -708,12 +558,10 @@ describe('renderDashboard', () => {
   it('redirects to login once (no tiles) when the session cannot be refreshed', async () => {
     const onSignedOut = vi.fn();
     const ensureFreshToken = vi.fn(async () => false);
-    const app = withApp(makeApp({
+    const app = makeApp({
       runReadInto: streamInto(vi.fn(async () => chartResult())),
       ensureFreshToken,
-    }), {
-      ensureFreshToken,
-      chCtx: { ...appDefaults.chCtx, onSignedOut },
+      chCtx: { onSignedOut },
     });
     setSaved(app, [
       { id: '1', name: 'Q', sql: 'q', favorite: true },
@@ -729,7 +577,7 @@ describe('renderDashboard', () => {
     const charts: FakeChart[] = [];
     const app = dashApp([{ id: '1', name: 'Q', sql: 'q', favorite: true }], vi.fn(async () => chartResult()));
     const Base = app.Chart;
-    app.Chart = class extends Base { constructor(...a: unknown[]) { super(...a); charts.push(this); } };
+    app.Chart = class extends Base { constructor(...a: ConstructorParameters<typeof FakeChart>) { super(...a); charts.push(this); } };
     await renderDashboard(app);
     expect(charts).toHaveLength(1);
     await runOnclick(qs(app.root, '.dash-btn'));
@@ -1042,12 +890,12 @@ describe('renderDashboard — streaming seam (#193)', () => {
     });
     const fav: FavoriteInput[] = [{ id: '1', name: 'Q', sql: 'q', favorite: true, panel: { cfg: { type: 'table' } } }];
 
-    const exact = withApp(makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP) }));
+    const exact = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP) });
     setSaved(exact, fav);
     await renderDashboard(exact);
     expect(qs(exact.root, '.dash-tile-foot').textContent).not.toContain('rows fetched');
 
-    const over = withApp(makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP + 1) }));
+    const over = makeApp({ runReadInto: streamN(DASH_TILE_ROW_CAP + 1) });
     setSaved(over, fav);
     await renderDashboard(over);
     const foot = qs(over.root, '.dash-tile-foot').textContent;
@@ -1061,9 +909,9 @@ describe('renderDashboard — streaming seam (#193)', () => {
       applyStreamLine({ row: { k: 'a', v: '1' } }, result);
       applyStreamLine({ progress: { read_rows: 1420, read_bytes: 10 } }, result);
       opts.onChunk?.(undefined); // mid-stream repaint
-      return new Promise(() => {}); // never settles — stay in the loading state
+      return new Promise<RunReadIntoResult>(() => {}); // never settles — stay in the loading state
     });
-    const app = withApp(makeApp({ runReadInto }));
+    const app = makeApp({ runReadInto });
     setSaved(app, [{ id: '1', name: 'Q', sql: 'q', favorite: true }]);
     renderDashboard(app);
     await flush();
@@ -1111,9 +959,9 @@ describe('renderDashboard — streaming seam (#193)', () => {
     const resolvers: (() => void)[] = [];
     const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => {
       signals.push(opts.signal);
-      return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+      return new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
-    const app = withApp(makeApp({ runReadInto }));
+    const app = makeApp({ runReadInto });
     setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -1139,9 +987,9 @@ describe('renderDashboard — streaming seam (#193)', () => {
     const resolvers: (() => void)[] = [];
     const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => {
       calls.push((opts.params as Record<string, string>).param_year);
-      return new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
+      return new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); }));
     });
-    const app = withApp(makeApp({ runReadInto }));
+    const app = makeApp({ runReadInto });
     setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app); // wave A (full Refresh)
@@ -1163,8 +1011,8 @@ describe('renderDashboard — streaming seam (#193)', () => {
   it('an affected wave is bounded to the same 6-way pool as full Refresh (req 7)', async () => {
     const resolvers: (() => void)[] = [];
     const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) =>
-      new Promise((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
-    const app = withApp(makeApp({ runReadInto }));
+      new Promise<RunReadIntoResult>((res) => resolvers.push(() => { result.columns = [{ name: 'k', type: 'String' }]; result.rows = [['a']]; res(result); })));
+    const app = makeApp({ runReadInto });
     setSaved(app, Array.from({ length: 8 }, (_, i) => paramFav(String(i), 't' + i)));
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -1184,11 +1032,11 @@ describe('renderDashboard — streaming seam (#193)', () => {
 
   it('a stale (superseded) response neither renders nor records recents (req 6)', async () => {
     const resolvers: ((out: Partial<RunReadIntoResult>) => void)[] = [];
-    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => new Promise((res) => resolvers.push((out) => {
+    const runReadInto = vi.fn((result: RunReadIntoResult, opts: RunReadIntoOpts) => new Promise<RunReadIntoResult>((res) => resolvers.push((out) => {
       Object.assign(result, out);
       res(result);
     })));
-    const app = withApp(makeApp({ runReadInto }));
+    const app = makeApp({ runReadInto });
     setSaved(app, [paramFav('1', 't')]);
     app.state.varValues = { year: '1' };
     const rendered = renderDashboard(app);
@@ -1278,7 +1126,7 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
         scale: 'zero', legend: 'show', grid: 'show', axes: 'hide' },
     } } });
     const Base = app.Chart;
-    app.Chart = class extends Base { constructor(...args: unknown[]) { super(...args); charts.push(this); } };
+    app.Chart = class extends Base { constructor(...args: ConstructorParameters<typeof FakeChart>) { super(...args); charts.push(this); } };
     await renderDashboard(app);
     expect(charts).toHaveLength(1);
     expect(charts[0].config.data.datasets[0]).toMatchObject({
@@ -1286,7 +1134,7 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
       pointRadius: 0, pointHoverRadius: 3, pointHitRadius: 8, fill: true, stack: 'chart',
     });
     expect(charts[0].config.options.plugins.legend.display).toBe(true);
-    expect(charts[0].config.options.scales.y).toMatchObject({
+    expect(charts[0].config.options.scales!.y).toMatchObject({
       display: false, beginAtZero: true, grid: { display: true }, stacked: true,
     });
   });
@@ -1298,7 +1146,7 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
       fieldConfig: { columns: { v: { displayName: 'Requests', unit: ' req', decimals: 0 } } },
     } });
     const Base = app.Chart;
-    app.Chart = class extends Base { constructor(...args: unknown[]) { super(...args); charts.push(this); } };
+    app.Chart = class extends Base { constructor(...args: ConstructorParameters<typeof FakeChart>) { super(...args); charts.push(this); } };
     await renderDashboard(app);
     expect(charts).toHaveLength(1);
     expect(charts[0].config.data.datasets[0].label).toBe('Requests');
@@ -1313,7 +1161,7 @@ describe('renderDashboard — panel tiles (#166, absorbs #164 D9)', () => {
     const panel = { fieldConfig: { columns: { v: { displayName: 'Requests', unit: ' req', decimals: 0 } } } };
     const app = oneFav(vi.fn(async () => chartResult()), { panel });
     const Base = app.Chart;
-    app.Chart = class extends Base { constructor(...args: unknown[]) { super(...args); charts.push(this); } };
+    app.Chart = class extends Base { constructor(...args: ConstructorParameters<typeof FakeChart>) { super(...args); charts.push(this); } };
     await renderDashboard(app);
     expect(charts).toHaveLength(1);
     expect(charts[0].config.data.datasets[0].label).toBe('Requests');
@@ -1917,14 +1765,21 @@ describe('renderDashboard — global filter bar (#149 D3)', () => {
         paramFav('2', 'SELECT * FROM u WHERE d >= {from:DateTime}'),
       ];
       const runTile = tile(async () => chartResult());
-      const app = withApp(makeApp({ runReadInto: streamInto(runTile), wallNow: vi.fn(() => 1751200000000) }));
+      // `wallNow` pre-declared (not inlined): an inline `vi.fn()` sibling to
+      // another generic call (`streamInto(...)`) in the SAME `makeApp(...)`
+      // argument defeats TS's generic inference for `makeApp`'s own
+      // `overrides` type parameter (a doubly-generic — vi.fn()'s own T,
+      // contextually dependent on O's unification — inference collapse);
+      // resolving `vi.fn()`'s type first, standalone, sidesteps it.
+      const wallNow = vi.fn(() => 1751200000000);
+      const app = makeApp({ runReadInto: streamInto(runTile), wallNow });
       setSaved(app, favorites);
       app.state.varValues = { from: '-1h' };
       await renderDashboard(app);
       const expected1 = String(Math.round((1751200000000 - 3600000) / 1000));
       expect(runTile.mock.calls[0][1]).toEqual({ param_from: expected1 });
       expect(runTile.mock.calls[1][1]).toEqual({ param_from: expected1 }); // same instant, both tiles
-      app.wallNow = () => 1751200000000 + 3600000; // advance the clock, then Refresh
+      app.wallNow = vi.fn(() => 1751200000000 + 3600000); // advance the clock, then Refresh
       const refreshBtn = qs(app.root, '.dash-btn');
       refreshBtn.click();
       await flush();
@@ -2151,16 +2006,16 @@ const msg = (data: unknown, source: unknown, origin = 'https://ch.example'): Fak
   return e;
 };
 /** `realApp` retypes a real `createApp(env)` object as `App` WITHOUT copying
- * it (unlike `withApp`'s spread over `makeApp()`): createApp's *inferred*
- * return type only reflects the initial object-literal fields app.js builds
- * (state/dom/root/…) — the ~270 other members (actions, ensureConfig, chCtx,
- * renderApp, receiveAuthHandoff, …) are attached via later property
- * assignment inside that same untyped function, invisible to declaration
- * inference, but genuinely present on the one real object at runtime. Several
- * of those methods are closures over THAT object (`app.token = …` inside
- * receiveAuthHandoff, not `this.token`), so returning a spread COPY here (as
- * `withApp` does for the stateless `makeApp()` stub) would silently detach
- * every such mutation from what the test reads back — `asApp` only
+ * it (unlike `makeApp()`'s own internal defaults-then-overrides spread):
+ * createApp's *inferred* return type only reflects the initial object-literal
+ * fields app.js builds (state/dom/root/…) — the ~270 other members (actions,
+ * ensureConfig, chCtx, renderApp, receiveAuthHandoff, …) are attached via
+ * later property assignment inside that same untyped function, invisible to
+ * declaration inference, but genuinely present on the one real object at
+ * runtime. Several of those methods are closures over THAT object (`app.token
+ * = …` inside receiveAuthHandoff, not `this.token`), so returning a spread
+ * COPY here (as `makeApp()` does for its stateless stub) would silently
+ * detach every such mutation from what the test reads back — `asApp` only
  * reinterprets the type, preserving the one real reference. */
 const asApp = (v: object): App => v as App;
 function realApp(env: CreateAppEnv): App {

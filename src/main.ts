@@ -17,8 +17,39 @@ import { isDashboardRoute } from './core/dashboard.js';
 import { rolePreviewView } from './core/result-choice.js';
 import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft } from './state.js';
+import type { State } from './ui/app.types.js';
+import type { BootstrapEnv } from './env.types.js';
+import type { ResolvedIdpConfig } from './net/oauth-config.js';
+import type { SpecEditorApp } from './editor/spec-editor.js';
+import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
 
-export async function bootstrap(app, env) {
+/** The narrow slice of the real `app` controller `bootstrap` reads — not the
+ *  full ~50-member `App` contract (app.types.ts). A real `App` (this module's
+ *  own `createApp()` call below) satisfies this directly, and so does
+ *  tests/unit/main.test.ts's long-standing minimal `fakeApp()` fixture — no
+ *  cast needed on either side (same convention as ui/shortcuts.ts's
+ *  ShortcutsApp). */
+export interface BootstrapApp {
+  state: Pick<State, 'tabs' | 'resultView'>;
+  isSignedIn(): boolean;
+  loadConfig(): Promise<ResolvedIdpConfig>;
+  setTokens(id: string, refresh?: string): void;
+  receiveAuthHandoff(handoffEnv: { opener?: Window | null }): Promise<boolean>;
+  ensureFreshToken(): Promise<boolean>;
+  ensureConfig(): Promise<ResolvedIdpConfig | null>;
+  renderDashboard(): void;
+  renderApp(): void;
+  /** The real `App.showLogin` is `(msg?: string) => void` — every other real
+   *  caller (ui/login.ts) always passes a string. `callbackError` below is
+   *  main.ts's own `string | null` sentinel (`null` means "no callback
+   *  error"), so this contract states what's actually passed here. */
+  showLogin(msg?: string | null): void;
+}
+
+/** `app.state.resultView`'s value union, reused at the one cast below. */
+type ResultView = State['resultView']['value'];
+
+export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{ callbackError: string | null; signedIn: boolean }> {
   const loc = env.location;
   const ss = env.sessionStorage;
   const hist = env.history;
@@ -30,7 +61,7 @@ export async function bootstrap(app, env) {
   const code = u.searchParams.get('code');
   const stateParam = u.searchParams.get('state');
   const errorParam = u.searchParams.get('error');
-  let callbackError = null;
+  let callbackError: string | null = null;
 
   if (errorParam) {
     // The IdP bounced back with an error (e.g. ?error=access_denied) instead of
@@ -44,14 +75,18 @@ export async function bootstrap(app, env) {
         const cfg = await app.loadConfig();
         const tokens = await exchangeCodeForTokens(env.fetch, cfg, {
           code,
-          verifier: ss.getItem('oauth_verifier'),
+          // `verifier` is written to sessionStorage just before the redirect;
+          // CodeExchangeParams' field is non-nullable, but a cast (not a
+          // behavior guard) keeps the exact pre-existing pass-through-null
+          // runtime shape for a stale/direct hit with no stashed verifier.
+          verifier: ss.getItem('oauth_verifier') as string,
           redirectUri: loc.origin + loc.pathname,
         });
         const bearer = bearerFromTokens(tokens, cfg.bearer);
         if (!bearer) throw new Error('Token response missing bearer token');
         app.setTokens(bearer, tokens.refresh_token);
       } catch (e) {
-        callbackError = 'OAuth token exchange failed: ' + ((e && e.message) || e);
+        callbackError = 'OAuth token exchange failed: ' + ((e instanceof Error && e.message) || e);
       }
     }
   }
@@ -75,7 +110,10 @@ export async function bootstrap(app, env) {
       // The stash is a second deserialization point that bypasses decodeShare —
       // it may hold a pre-#166 `{sql, chart}` stash, so upgrade applies here too.
       try {
-        const raw = JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '' };
+        // `JSON.parse`'s own return is untyped; the ingress shape here is the
+        // same loosely-checked `Record<string, unknown>` saved-query.js's own
+        // helpers (isPlainObject et al.) treat arbitrary stored JSON as.
+        const raw = (JSON.parse(ss.getItem('oauth_shared') || 'null') || { sql: '' }) as Record<string, unknown>;
         shared = upgradeSavedQuery(raw.specVersion == null
           ? { name: 'Shared query', ...raw }
           : raw);
@@ -94,7 +132,12 @@ export async function bootstrap(app, env) {
       // SQL to run — a SQL-bearing share never auto-runs here, so this only
       // pre-selects the drawer the recipient lands on before they click Run.
       const launchView = rolePreviewView(shared.spec) || queryView(shared);
-      if (launchView) app.state.resultView.value = launchView === 'chart' ? 'panel' : launchView;
+      // `as`: unlike ui/saved-history.ts's restore path (which gates on
+      // `SAVED_VIEWS.has(launchView)`/`rolePreview` before this same
+      // assignment), this one doesn't validate `launchView` against the
+      // resultView union before restoring it — a pre-existing gap (#266),
+      // not fixed here. The cast preserves that exact (unvalidated) behavior.
+      if (launchView) app.state.resultView.value = (launchView === 'chart' ? 'panel' : launchView) as ResultView;
       // A queryless panel with no role/persisted view (no SQL to run) still
       // needs the Panel drawer open, or the recipient lands on an empty Table
       // view and sees nothing.
@@ -129,13 +172,34 @@ export async function bootstrap(app, env) {
   return { callbackError, signedIn: app.isSignedIn() };
 }
 
+// Set once by tests/setup.js to keep the browser-only autostart block below
+// from running under happy-dom.
+declare global {
+  // eslint-disable-next-line no-var
+  var __ASB_NO_AUTOSTART__: boolean | undefined;
+}
+
 /* c8 ignore start -- browser entry side-effect, exercised via the live app */
+// `createSpecEditor`'s own `SpecEditorApp` param (spec-editor.ts) is a real,
+// pre-existing mismatch against `App` (`App.specValidators` is
+// `SpecValidationService`, `SpecEditorApp` wants the differently-shaped
+// `SpecValidatorsLike` — a "weak type" with zero overlapping property names)
+// — out of this task's file scope to widen; bridged the same `object`-param
+// way as tests/unit/app.test.ts's own `asSpecEditorApp`.
+const asSpecEditorApp = (v: object): SpecEditorApp => v as SpecEditorApp;
+// `KeyboardEvent.target`'s real DOM type (`EventTarget | null`) doesn't
+// structurally satisfy `ShortcutKeydownEvent`'s `target` (shortcuts.ts's own
+// doc comment says a real `KeyboardEvent` "satisfies it directly", true at
+// runtime but not for TS's structural check on `target`) — same bridge.
+const asShortcutEvent = (v: object): ShortcutKeydownEvent => v as ShortcutKeydownEvent;
+
 if (typeof document !== 'undefined' && !globalThis.__ASB_NO_AUTOSTART__) {
   const app = createApp({
-    Chart, Dagre, Editor: createCodeMirrorEditor, SpecEditor: createSpecEditor,
+    Chart, Dagre, Editor: createCodeMirrorEditor,
+    SpecEditor: (app) => createSpecEditor(asSpecEditorApp(app)),
     CodeViewer: createCodeViewer, build: '__ASB_BUILD__',
   });
-  document.addEventListener('keydown', (e) => handleKeydown(e, app));
+  document.addEventListener('keydown', (e) => handleKeydown(asShortcutEvent(e), app));
   bootstrap(app, {
     location: window.location,
     sessionStorage: window.sessionStorage,

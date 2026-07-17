@@ -4,116 +4,16 @@ import {
   setKpiSourceLoading, setKpiSourceUnfilled,
 } from '../../src/ui/dashboard-kpi-band.js';
 import type { KpiSourceWarning } from '../../src/ui/dashboard-kpi-band.js';
-import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { App } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { FieldConfig, Panel } from '../../src/generated/json-schema.types.js';
+import { makeApp } from '../helpers/fake-app.js';
 
 // applyKpiSourceResult reads exactly `app.state.serverVersion` (see
 // dashboard-kpi-band.ts) — everything else on the real `App` contract is
-// irrelevant to this suite. The stub below fills the rest with inert
-// placeholders (never read) so the fixture structurally satisfies `App`
-// without an `unknown` bridge; `{} as T` is a valid single-step cast for
-// every all-optional or method-only sub-shape here since `T` is always
-// assignable to `{}`.
-const testApp = (serverVersion?: string): App => ({
-  state: { serverVersion } as AppState,
-  dom: {},
-  hardenedVars: new Set(),
-  matchMedia: null,
-  build: 'v0.0.0-test',
-  root: null,
-  document,
-  token: null,
-  refreshToken: null,
-  sqlEditor: {} as App['sqlEditor'],
-  specEditor: {} as App['specEditor'],
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [] },
-  specCompletionSources: [],
-  Chart: undefined,
-  cssVar: () => '',
-  Dagre: undefined,
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  toggleTheme: () => {},
-  chart: undefined,
-  host: () => '',
-  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as App['loadConfig'] extends () => Promise<infer T> ? T : never,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as App['loadIdps'] extends () => Promise<infer T> ? T : never,
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
-  showLogin: () => {},
-  signOut: () => {},
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  saveJSON: () => {},
-  saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
-  saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
-  recordHistory: () => {},
-  downloadFile: () => {},
-  editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
-  updateBanner: () => {},
-  wallNow: () => 0,
-  now: () => 0,
-  elapsedMs: () => 0,
-  tickElapsed: () => {},
-  runReadInto: async (result) => result,
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  setFmtBtn: () => {},
-  specBlocked: () => false,
-  updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  actions: {} as ActionsRegistry,
-});
+// irrelevant to this suite; `makeApp()`'s own inert defaults cover it.
+const testApp = (serverVersion?: string): App => makeApp({ state: { serverVersion } as AppState });
 
 const kpiExplicit = (fieldConfig?: FieldConfig): Panel => ({ cfg: { type: 'kpi' }, fieldConfig });
 // core/kpi.js's readKpiFields reads a row either positionally

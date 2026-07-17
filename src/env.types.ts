@@ -8,6 +8,7 @@ import type { App } from './ui/app.types.js';
 import type { EditorPort } from './editor/editor-port.types.js';
 import type { SpecEditorPort } from './editor/spec-editor.types.js';
 import type { CodeViewerFactory } from './editor/code-viewer.types.js';
+import type { DynamicSources } from './core/spec-completion.js';
 
 /** The env param of `createApp(env = {})`. Every field is optional — each has
  * a real-browser fallback (`win.*`) inside createApp. */
@@ -34,7 +35,7 @@ export interface CreateAppEnv {
   Editor?: (app: App) => EditorPort;
   SpecEditor?: (app: App) => SpecEditorPort;
   specValidators?: unknown; // {validate, register} — see core/spec-draft.js
-  specCompletionSources?: unknown[]; // CM6 completion sources
+  specCompletionSources?: DynamicSources; // CM6 completion sources
   CodeViewer?: CodeViewerFactory;
   now?: () => number;
   wallNow?: () => number;

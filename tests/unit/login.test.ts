@@ -1,19 +1,26 @@
 import { describe, it, expect, vi } from 'vitest';
 import { renderLogin } from '../../src/ui/login.js';
 import { makeApp } from '../helpers/fake-app.js';
-import type { HostDescriptor, IdpDescriptor } from '../../src/net/oauth-config.js';
+import type { ConfigDoc, HostDescriptor, IdpDescriptor } from '../../src/net/oauth-config.js';
 
 /** This suite's own `loadIdps()` fixture shape — every test constructs a
  *  partial `ConfigDoc` (login.ts's `LoginApp.loadIdps` now returns the real
  *  `ConfigDoc` directly, #267), but only ever fills in the fields it actually
- *  exercises (`hosts`/`basicLogin` are frequently omitted) — mirrors the
- *  `Pick<IdpDescriptor,'id'|'label'>` narrowing login.ts's own doc comment
- *  describes for what `renderLogin` reads off each entry. */
+ *  exercises (`hosts`/`basicLogin` are frequently omitted, and each `idps[]`
+ *  entry only ever needs `id`/`label` — the `Pick<IdpDescriptor,'id'|'label'>`
+ *  narrowing login.ts's own doc comment describes for what `renderLogin`
+ *  reads off each entry). `App.loadIdps` (fake-app.ts's `makeApp`) wants the
+ *  real, fully-fielded `ConfigDoc` — `asLoadIdps` bridges this suite's
+ *  intentionally-thinner fixture the same "widen the PARAMETER to `object`
+ *  first" way as this file's other seam bridges, since every real IdpDescriptor
+ *  field beyond id/label is simply unread by the render path this suite
+ *  exercises. */
 interface TestIdpsResult {
   idps: Pick<IdpDescriptor, 'id' | 'label'>[];
   basicLogin?: boolean;
   hosts?: HostDescriptor[];
 }
+const asLoadIdps = (fn: object): (() => Promise<ConfigDoc>) => fn as () => Promise<ConfigDoc>;
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
 const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] =>
@@ -46,7 +53,12 @@ interface AppOverrides extends Partial<Omit<FakeApp, 'actions' | 'loadIdps'>> {
 // makeApp defaults loadIdps → { idps: [], basicLogin: true }. Override per test.
 function appWith(over: AppOverrides = {}): FakeApp {
   const base = makeApp();
-  return makeApp({ ...over, actions: { ...base.actions, ...(over.actions || {}) } });
+  const { loadIdps, ...rest } = over;
+  return makeApp({
+    ...rest,
+    actions: { ...base.actions, ...(over.actions || {}) },
+    ...(loadIdps ? { loadIdps: asLoadIdps(loadIdps) } : {}),
+  });
 }
 
 describe('renderLogin — structure', () => {
@@ -187,7 +199,7 @@ describe('renderLogin — insecure (accept-invalid-certificate) hosts', () => {
 
   it('oauth insecure host: Continue guards against double-submit (disables itself + busy gate)', async () => {
     // login stays pending so `busy` is still 'sso' on the second click.
-    const login = vi.fn(() => new Promise(() => {}));
+    const login = vi.fn(() => new Promise<void>(() => {}));
     const app = withInsecure({ actions: { login } });
     renderLogin(app); await tick();
     selectHost(app.root, '1');

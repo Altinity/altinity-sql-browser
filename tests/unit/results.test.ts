@@ -11,7 +11,7 @@ import { newResult as newResultUntyped } from '../../src/core/stream.js';
 import { formatRows } from '../../src/core/format.js';
 import { queryPanel } from '../../src/core/saved-query.js';
 import type { AppState, ResultSort } from '../../src/state.js';
-import type { App, ActionsRegistry } from '../../src/ui/app.types.js';
+import type { App } from '../../src/ui/app.types.js';
 
 // tests/helpers/fake-app.js's `makeApp()` is a long-standing untyped test
 // double implementing exactly the members results.ts's own narrow `ResultsApp`
@@ -62,144 +62,12 @@ interface StateOverride {
   exporting?: boolean;
 }
 
-// ── Typed test-app scaffolding for the few tests that read a `runReadInto`
-// mock's own call args back (`.mock.calls[...]`) ────────────────────────────
-// `makeApp({ someMock })`'s override isn't visible in `ReturnType<typeof
-// makeApp>` — fake-app.js's `over` parameter carries no type, so TypeScript
-// statically infers every fixture's shape from the function's own default
-// object literal, never from a caller's override; even re-spreading the
-// override on a plain `{ ...makeApp(), ...over }` wrapper still collapses two
-// DIFFERENT Mock call signatures (fake-app.js's default single-arg mock vs. a
-// test's real 2-arg one) to an uncallable `never` once merged through a
-// generic function. `appDefaults`/`withApp` (same convention as
-// dashboard.test.ts / saved-history.test.ts) sidesteps this: seeding every
-// `App` member with a plain (non-Mock) placeholder FIRST, then `base` (the
-// real `makeApp()` fixture), then `overrides` LAST resolves cleanly — a later
-// key's own precise (often Mock-typed) shape wins, never an intersection.
+// `makeApp()`'s own generic `overrides` (fake-app.ts) keeps a passed mock's
+// precise call-site type (e.g. a real `runReadInto` 2-arg spy) directly
+// readable off the returned fixture — `.mock.calls[...]` reads below rely on
+// that.
 type RunReadIntoResult = Parameters<App['runReadInto']>[0];
 type RunReadIntoOpts = Parameters<App['runReadInto']>[1];
-
-const appDefaults: App = {
-  state: {} as AppState,
-  dom: {},
-  hardenedVars: new Set(),
-  matchMedia: null,
-  build: 'v0.0.0-test',
-  root: null,
-  document,
-  token: null,
-  refreshToken: null,
-  sqlEditor: {} as App['sqlEditor'],
-  specEditor: {} as App['specEditor'],
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  specValidators: { validate: () => [] },
-  specCompletionSources: [],
-  Chart: undefined,
-  cssVar: () => '',
-  Dagre: undefined,
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  toggleTheme: () => {},
-  chart: undefined,
-  host: () => '',
-  activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as App['loadConfig'] extends () => Promise<infer T> ? T : never,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as App['loadIdps'] extends () => Promise<infer T> ? T : never,
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: {
-    fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
-  },
-  showLogin: () => {},
-  signOut: () => {},
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  saveJSON: () => {},
-  saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
-  saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
-  recordHistory: () => {},
-  downloadFile: () => {},
-  editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
-  updateBanner: () => {},
-  wallNow: () => 0,
-  now: () => 0,
-  elapsedMs: () => 0,
-  tickElapsed: () => {},
-  runReadInto: async (result) => result,
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  setFmtBtn: () => {},
-  specBlocked: () => false,
-  updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({}),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  activateInvalidSpecDraft: () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  actions: {} as ActionsRegistry,
-};
-
-// `overrides` is generic so its properties keep their OWN precise call-site
-// type (a real `runReadInto` mock's 2-arg signature) — a plain `Partial<App>`
-// parameter would widen every override to App's declared (argument-erased)
-// signature, losing `.mock`/`.mockClear` for the rest of the test. No explicit
-// return-type annotation: inferring it keeps every OTHER `makeApp()` mock's
-// own precise type too (ensureFreshToken, recordBoundParams, …) — annotating
-// would widen all of them to App's argument-erased method signatures, the
-// same loss `O` exists to avoid for the explicit overrides.
-function withApp<O extends Partial<App> = Record<string, never>>(base: FakeApp, overrides: O = {} as O) {
-  const merged = {
-    ...appDefaults, ...base, chart: base.chart ?? undefined,
-    chCtx: { ...appDefaults.chCtx, ...base.chCtx },
-    actions: { ...appDefaults.actions, ...base.actions },
-    ...overrides,
-  };
-  // Assignability check only (a variable reference, not a fresh literal) —
-  // `merged`'s own inferred type (every field's REAL, often Mock-typed, shape)
-  // is what callers actually get back, not this widened annotation.
-  const asApp: App = merged;
-  void asApp;
-  return merged;
-}
 
 function appWithResult(result: Record<string, unknown> | null, over: StateOverride = {}): FakeApp {
   const app = makeApp();
@@ -719,6 +587,12 @@ describe('cell-detail drawer resize (#101)', () => {
 });
 
 describe('expandDataPane', () => {
+  // A window/fetch-tab stub only ever needs the few members real code reads
+  // (document/close/focus/addEventListener) — never the real `Window`
+  // interface's hundred-odd other members, so widening the PARAMETER to
+  // `object` (assignable both ways) makes the cast a genuine single-level
+  // one, not an `unknown` bridge (same convention as app.test.ts's `asWindow`).
+  const asWindow = (v: object): Window => v as Window;
   const makeWin = () => {
     const childDoc = document.implementation.createHTMLDocument('');
     const ls: Record<string, () => void> = {};
@@ -759,7 +633,7 @@ describe('expandDataPane', () => {
 
   it('real tab: builds the grid + toolbar in the child document, Copy targets that document', () => {
     const win = makeWin();
-    const app = makeApp({ openWindow: () => win });
+    const app = makeApp({ openWindow: () => asWindow(win) });
     const r = tableResult();
     expandDataPane(app, r);
     expect(qs(win.document, '.data-pane-body')).not.toBeNull();
@@ -803,7 +677,7 @@ describe('expandDataPane', () => {
 
   it('real tab: no ✕ button, and Escape is a no-op (browser tab-close serves that)', () => {
     const win = makeWin();
-    const app = makeApp({ openWindow: () => win });
+    const app = makeApp({ openWindow: () => asWindow(win) });
     expandDataPane(app, tableResult());
     expect(qs(win.document, '.graph-overlay-close')).toBeNull();
     win.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
@@ -848,7 +722,7 @@ describe('expandDataPane', () => {
     expect(qs(overlay, '.chart-config')).toBeNull(); // readonly — no editor (v1 scope)
     expect(qs(overlay, '.panel-config')).toBeNull();
     expect(queryPanel(app.activeTab())).toBeUndefined(); // the live tab's own config is untouched
-    expect(app.chart).toBeNull(); // the snapshot's chart never occupies the shared app.chart slot
+    expect(app.chart).toBeUndefined(); // the snapshot's chart never occupies the shared app.chart slot
   });
   it("the snapshot honours the source tab's saved panel type (a table panel renders the grid)", () => {
     const app = makeApp();
@@ -907,7 +781,7 @@ describe('expandDataPane', () => {
 
   it('renders the captured title as a heading + description, and sets the tab title', () => {
     const win = makeWin();
-    const app = makeApp({ openWindow: () => win });
+    const app = makeApp({ openWindow: () => asWindow(win) });
     expandDataPane(app, paramResult());
     const h2 = qs(win.document, 'h2.detached-title');
     expect(h2.textContent).toBe('Filtered');
@@ -943,7 +817,7 @@ describe('expandDataPane', () => {
       opts.onChunk!(undefined); // a streamed chunk → progress-only status, no repaint (#198)
       return result;
     });
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -965,7 +839,7 @@ describe('expandDataPane', () => {
 
   it('Refresh gives an explicit KPI panel ownership of transport and the two-row guard', async () => {
     const runReadInto = vi.fn(async (result: RunReadIntoResult, _opts: RunReadIntoOpts = {} as RunReadIntoOpts) => result);
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.activeTab().specParsed!.panel = { cfg: { type: 'kpi' } };
     app.state.varValues.level = 'Warning';
     expandDataPane(app, paramResult());
@@ -985,7 +859,7 @@ describe('expandDataPane', () => {
 
   it('Refresh blocks authored FORMAT when an explicit KPI panel owns transport', async () => {
     const runReadInto = vi.fn(async (result: RunReadIntoResult) => result);
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.activeTab().specParsed!.panel = { cfg: { type: 'kpi' } };
     const result = paramResult();
     result.source!.sql += ' FORMAT CSV';
@@ -1020,7 +894,7 @@ describe('expandDataPane', () => {
         res(result);
       });
     }));
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1041,7 +915,7 @@ describe('expandDataPane', () => {
       signal = opts.signal;
       return new Promise<QueryResult>(() => {});
     });
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -1054,7 +928,7 @@ describe('expandDataPane', () => {
 
   it('threads the originating tab session when the source depended on one', async () => {
     const runReadInto = vi.fn(async (result: RunReadIntoResult, _opts: RunReadIntoOpts = {} as RunReadIntoOpts) => result);
-    const app = withApp(makeApp(), { runReadInto });
+    const app = makeApp({ runReadInto });
     app.activeTab().chSession = 'sess-abc'; // e.g. the source used a temp table / SET
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
@@ -1096,7 +970,7 @@ describe('expandDataPane', () => {
   });
 
   it('re-enables Refresh when a blocked rerun supersedes an in-flight run', async () => {
-    const app = makeApp({ runReadInto: vi.fn(() => new Promise(() => {})) }); // never resolves
+    const app = makeApp({ runReadInto: vi.fn((): Promise<RunReadIntoResult> => new Promise(() => {})) }); // never resolves
     app.state.varValues.level = 'A';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');

@@ -17,6 +17,7 @@ import type { StreamResult } from '../core/stream.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { DynamicSources } from '../core/spec-completion.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -177,8 +178,12 @@ export interface App {
    *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
    *  is app.js-internal wiring, outside this contract. */
   specValidators: SpecValidationService;
-  /** CM6 completion sources for the Spec JSON editor. */
-  specCompletionSources: unknown[];
+  /** CM6 completion sources for the Spec JSON editor — the `resultColumns`/
+   *  `resultColumnIndexes`/`queryParameters` bag `spec-completion-adapter.ts`'s
+   *  `createSpecCompletionSources()` builds (or an injected replacement),
+   *  keyed by source name (`core/spec-completion.ts`'s own `DynamicSources`).
+   *  Previously `unknown[]` — undersold app.ts's real assignment (#267). */
+  specCompletionSources: DynamicSources;
 
   // Charting / graph / window seams (pass-through from env).
   Chart: unknown;

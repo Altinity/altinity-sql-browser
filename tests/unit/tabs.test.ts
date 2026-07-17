@@ -4,31 +4,18 @@ import { tabPanel } from '../../src/state.js';
 import type { QueryTab } from '../../src/state.js';
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import type { SavedQueryFixture } from '../helpers/saved-query.js';
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
 
-// tests/helpers/saved-query.js is a still-untyped .js dependency (out of
-// scope here — not one of this change's files): its destructured params
-// without defaults (id, description, view, panel, dashboard) infer as `any`
-// and drop out of TS's view of the parameter shape entirely, so a fresh
-// object literal passed straight to `savedQuery(...)` fails the excess-
-// property check. `sq()` is the typed wrapper (same convention panels.test.ts
-// documents for stream.js's `newResult`): its own parameter type describes
-// every field this suite's fixtures actually pass, and — since it's no
-// longer a fresh literal by the time it reaches `savedQuery` — only
-// ordinary (permissive) assignability applies there.
-interface SavedQueryFixture {
-  id?: string;
-  sql?: string;
-  name?: string;
-  favorite?: boolean;
-  description?: string;
-  view?: string;
-  panel?: Record<string, unknown>;
-  dashboard?: Record<string, unknown>;
-  spec?: Record<string, unknown>;
-}
-const sq = (over: SavedQueryFixture): Record<string, unknown> => savedQuery(over);
+// `loadIntoNewTab`'s own `QueryOrName` (tabs.ts) is `string | Record<string,
+// unknown>` — looser than `savedQuery`'s real `SavedQueryV2` return (no index
+// signature), so this suite's fixtures still go through a thin wrapper.
+// Widening the PARAMETER to `object` first (same convention as app.test.ts's
+// `asWindow`/`asClipboard`) makes the cast a genuine single-level one, not an
+// `unknown` bridge.
+const asRecord = (v: object): Record<string, unknown> => v as Record<string, unknown>;
+const sq = (over: SavedQueryFixture): Record<string, unknown> => asRecord(savedQuery(over));
 
 describe('renderTabs', () => {
   it('no-ops without a mount point', () => {
