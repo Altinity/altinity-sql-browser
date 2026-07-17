@@ -9,6 +9,7 @@
 
 import { build, transform } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -41,8 +42,13 @@ async function buildStamp() {
   return commit ? `v${version} (${commit})` : `v${version}`;
 }
 
-async function main() {
-  const result = await build({
+// The esbuild options for the single production entry point. Shared verbatim by
+// the release build (`main`) and the bundle-size report (build/size-report.mjs)
+// so the report measures the artifact users actually receive. `metafile` is the
+// only knob: the report needs esbuild's input→output byte attribution, and it is
+// pure metadata that never changes the emitted bytes.
+export function esbuildOptions({ metafile = false } = {}) {
+  return {
     entryPoints: [resolve(root, 'src/main.ts')],
     bundle: true,
     format: 'iife',
@@ -50,7 +56,18 @@ async function main() {
     minify: true,
     write: false,
     legalComments: 'none',
-  });
+    metafile,
+  };
+}
+
+// Produce the exact bytes that ship in dist/sql.html without writing anything, so
+// callers (the release build, the size report) share one source of truth. Returns
+// the assembled `html` plus its three inlined parts — `script` (JS bundle, stamp
+// substituted), `styles` (minified CSS), `thirdParty` (the notices comment) — and
+// the esbuild `metafile` when requested (undefined otherwise). Keeping this the
+// single builder is what guarantees the report and the release stay byte-identical.
+export async function buildArtifact({ metafile = false } = {}) {
+  const result = await build(esbuildOptions({ metafile }));
   // Replace the `__ASB_BUILD__` placeholder (a string literal in src/main.ts)
   // with the build stamp before the bundle is inlined — same token-replace seam
   // as the styles/script splices below. replaceAll is robust to either quote
@@ -74,12 +91,25 @@ async function main() {
     .replace('/*__STYLES__*/', () => styles)
     .replace('/*__SCRIPT__*/', () => script);
 
+  return { html, script, styles, thirdParty, metafile: result.metafile };
+}
+
+async function main() {
+  const { html } = await buildArtifact();
   await mkdir(resolve(root, 'dist'), { recursive: true });
   await writeFile(resolve(root, 'dist/sql.html'), html);
   console.log('built dist/sql.html (' + html.length + ' bytes)');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only run the release build when invoked as a script, not when imported for its
+// exports (build/size-report.mjs, tests). Compare *realpaths*: Node sets
+// import.meta.url to the symlink-resolved location, so a plain resolve() of
+// argv[1] (which doesn't follow symlinks) would miscompare when the checkout sits
+// under a symlinked path — silently skipping the release build. realpathSync on
+// argv[1] closes that gap.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
