@@ -105,79 +105,11 @@ type FakeApp = ReturnType<typeof makeApp>;
  *  documents them for the type checker: it's a genuine subtype of `Tab`
  *  (the properties really are installed on the object below), so casting a
  *  plain `Tab` to it is an ordinary single-step narrowing, not an `unknown`
- *  bridge. */
-type TestTab = Tab & { panelCfg: PanelCfg | null; panelKey: string | null };
-type TestApp = Omit<FakeApp, 'activeTab' | 'chart'> & { activeTab(): TestTab; chart: FakeChart | null };
-
-/** `renderResolvedPanel`/`PANEL_TYPES[...].renderPanel` want the full `App`
- *  contract; tests/helpers/fake-app.js's `makeApp()` is a long-standing
- *  untyped test double that implements the handful of members these panel
- *  arms actually read (state/activeTab/chart/specValidators/…) — not the
- *  whole ~50-member interface, since it long predates ADR-0002's App
- *  contract (out of scope here — fake-app.js isn't one of this change's
- *  files). The stub fields below are never read by the panel arms these 4
- *  tests exercise; they exist only so the real fixture's value structurally
- *  satisfies `App` without an `unknown` bridge. */
-const asApp = (app: FakeApp): App => {
-  const stub: App = {
-  ...app,
-  actions: { ...app.actions, openUserMenu: () => {}, openDashboard: () => {} },
-  chCtx: {
-    ...app.chCtx, fetch, origin: '', authConfirmed: true,
-    getToken: async () => null, refresh: async () => false, authHeader: () => '',
-  },
-  chart: undefined,
-  token: null,
-  refreshToken: null,
-  CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
-  // `register` is app.js-internal wiring beyond the SpecValidationService
-  // contract — kept on the stub (fake-app parity), hence the cast.
-  specValidators: { validate: () => [], register: () => () => {} } as App['specValidators'],
-  specCompletionSources: [],
-  openWindow: () => null,
-  stylesText: '',
-  faviconHref: '',
-  chUsername: () => '',
-  authMode: 'basic',
-  chAuth: 'basic',
-  basicUserClaim: 'sub',
-  idpId: null,
-  hostHint: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}),
-  selectIdp: () => {},
-  ensureConfig: async () => null,
-  receiveAuthHandoff: async () => false,
-  canExport: () => false,
-  canExportScript: () => false,
-  showSaveFilePicker: null,
-  showDirectoryPicker: null,
-  isSecureContext: true,
-  FileReader: globalThis.FileReader,
-  editingLibrary: false,
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  updateBanner: () => {},
-  tickElapsed: () => {},
-  setRunBtn: () => {},
-  renderVarStrip: () => {},
-  setExportBtn: () => {},
-  specBlocked: () => false,
-  evaluateSpecDraft: () => ({}),
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
-  openSavePopover: () => {},
-  openUserMenu: () => {},
-  renderApp: () => {},
-  renderDashboard: () => {},
-  openDashboard: () => {},
-  recordHistory: () => {},
-  };
-  return stub;
-};
+ *  bridge. Optional (not required): a plain `QueryTab` structurally lacks
+ *  both, and marking them required would make `TestApp` fail TS's whole-object
+ *  "sufficiently overlaps" cast check against `App`'s own `activeTab(): Tab`. */
+type TestTab = Tab & { panelCfg?: PanelCfg | null; panelKey?: string | null };
+type TestApp = Omit<FakeApp, 'activeTab' | 'chart'> & { activeTab(): TestTab; chart: FakeChart | undefined };
 
 const qs = <T extends Element = Element>(root: ParentNode, selector: string): T => root.querySelector(selector) as T;
 const qsa = <T extends Element = Element>(root: ParentNode, selector: string): T[] =>
@@ -720,7 +652,7 @@ describe('renderResolvedPanel', () => {
     const app = makeApp();
     const r = chartResult();
     const resolved = resolvePanel({ cfg: { type: 'gauge' } }, r.columns); // unknown type
-    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
+    const { node } = renderResolvedPanel(app, resolved, r, {
       surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
     });
     expect(qs(node, '.panel-note.is-fallback').textContent).toContain('gauge');
@@ -730,7 +662,7 @@ describe('renderResolvedPanel', () => {
     const app = makeApp();
     const r = logsResult();
     const resolved = resolvePanel({ cfg: { type: 'logs', msg: 'renamed_away' } }, r.columns);
-    const { node } = renderResolvedPanel(asApp(app), resolved, r, {
+    const { node } = renderResolvedPanel(app, resolved, r, {
       surface: 'workbench', state: {}, rerender: () => {}, readonly: true, onCell: () => {},
     });
     const note = node.querySelector('.panel-note')!;
@@ -741,7 +673,7 @@ describe('renderResolvedPanel', () => {
   it('the logs arm renders the pick-columns hint when even re-derive found no shape', () => {
     const app = makeApp();
     const r = chartResult();
-    const out = PANEL_TYPES.logs.renderPanel({ app: asApp(app), result: r, cfg: { type: 'logs' }, cap: 10 });
+    const out = PANEL_TYPES.logs.renderPanel({ app: app, result: r, cfg: { type: 'logs' }, cap: 10 });
     expect(out.node.textContent).toContain('No time + message columns');
   });
   it("the chart arm's destroy tears down its instance exactly once", () => {
@@ -749,7 +681,7 @@ describe('renderResolvedPanel', () => {
     const r = chartResult();
     let inst: FakeChart | null = null;
     const out = PANEL_TYPES.bar.renderPanel({
-      app: asApp(app), result: r, cfg: { type: 'bar', x: 0, y: [1], series: null },
+      app: app, result: r, cfg: { type: 'bar', x: 0, y: [1], series: null },
       surface: 'dashboard', rerender: () => {}, readonly: true, setChart: (c) => { inst = c as FakeChart; },
     });
     expect(inst).not.toBeNull();

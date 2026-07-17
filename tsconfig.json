@@ -1,6 +1,10 @@
 {
   "compilerOptions": {
     "strict": true,
+    // allowJs stays after #267 for the two GENERATED runtime artifacts
+    // (src/generated/json-schemas.js, json-schema-validators.js — Ajv
+    // standalone emits JS) that .ts modules import; checkJs:false keeps them
+    // resolve-only. Every hand-written module is strict .ts.
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,

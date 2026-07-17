@@ -8,6 +8,7 @@ import type { App } from './ui/app.types.js';
 import type { EditorPort } from './editor/editor-port.types.js';
 import type { SpecEditorPort } from './editor/spec-editor.types.js';
 import type { CodeViewerFactory } from './editor/code-viewer.types.js';
+import type { DynamicSources } from './core/spec-completion.js';
 
 /** The env param of `createApp(env = {})`. Every field is optional — each has
  * a real-browser fallback (`win.*`) inside createApp. */
@@ -34,12 +35,16 @@ export interface CreateAppEnv {
   Editor?: (app: App) => EditorPort;
   SpecEditor?: (app: App) => SpecEditorPort;
   specValidators?: unknown; // {validate, register} — see core/spec-draft.js
-  specCompletionSources?: unknown[]; // CM6 completion sources
+  specCompletionSources?: DynamicSources; // CM6 completion sources
   CodeViewer?: CodeViewerFactory;
   now?: () => number;
   wallNow?: () => number;
   retryMs?: number;
-  navigator?: { clipboard?: unknown } & Record<string, unknown>;
+  /** `unknown`'s only real reader (app.ts's share()/copySnapshot()) always
+   * narrows to `.clipboard.writeText` — typed as the real `Clipboard` shape so
+   * that narrowing needs no cast; every test fixture already supplies
+   * `{ clipboard: { writeText } }` or omits the field entirely. */
+  navigator?: { clipboard?: Clipboard } & Record<string, unknown>;
   download?: (filename: string, mime: string, content: BlobPart) => void;
   handoffMs?: number;
   handoffListenMs?: number;

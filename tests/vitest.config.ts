@@ -6,15 +6,14 @@ import { existsSync } from 'node:fs';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
 
-// ADR-0002 mixed-tree resolver shim. TypeScript, esbuild, and Node all resolve
-// an explicit `./x.js` specifier to `x.ts` when only the `.ts` file exists —
-// which is what keeps importers untouched as modules convert leaf-up. Vite's
-// resolver, however, only tries the `.js`→`.ts` swap when the *importer* is
-// itself a TS file (`isFromTsImporter`), so a still-unconverted `.js` module or
-// test importing a converted `.ts` module fails to resolve under vitest alone.
-// This plugin fills exactly that gap: relative `.js` specifier, target `.js`
-// missing, sibling `.ts` present → resolve to the `.ts` file. No effect on the
-// production build (esbuild already does this natively).
+// ADR-0002 mixed-tree resolver shim, nearly retired (#267). TypeScript,
+// esbuild, and Node all resolve an explicit `./x.js` specifier to `x.ts` when
+// only the `.ts` file exists; Vite only does that swap when the IMPORTER is
+// itself TS. Every runtime module and almost every unit test is TypeScript
+// now — the shim survives solely for the two node-tooling specs that stay .js
+// (schema-build.test.js, spec-examples.test.js: typing them needs @types/node,
+// a deliberate global-types decision deferred to a follow-up) and imports of
+// src/*.ts from them. Delete this plugin when those two convert.
 const jsToTsInMixedTree: Plugin = {
   name: 'adr-0002-js-to-ts-mixed-tree',
   enforce: 'pre',
@@ -41,7 +40,7 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     include: ['tests/unit/**/*.test.{js,ts}'],
-    setupFiles: ['tests/setup.js'],
+    setupFiles: ['tests/setup.ts'],
     // Run workers as threads, not child processes. Vitest 2.x defaults to
     // `pool: 'forks'`, which fans out to (cpus-1) child *node processes* via
     // tinypool; on normal exit those should be reaped, but a detached swarm can

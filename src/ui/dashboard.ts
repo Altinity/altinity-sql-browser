@@ -30,7 +30,8 @@ import {
   formatBytes as formatBytesUntyped, formatRows as formatRowsUntyped,
   detectSqlFormat as detectSqlFormatUntyped,
 } from '../core/format.js';
-import { newResult as newResultUntyped } from '../core/stream.js';
+import { newResult } from '../core/stream.js';
+import type { StreamResult } from '../core/stream.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
 } from '../core/param-pipeline.js';
@@ -87,22 +88,6 @@ const formatBytes: (n: number | null | undefined) => string = formatBytesUntyped
 // chart-data.js is unconverted — the same wrapper panels.ts pins for schemaKey.
 const schemaKey: (columns: Column[] | null | undefined) => string = schemaKeyUntyped;
 
-/** The mutable streamed-result accumulator `newResult` (stream.js,
- *  unconverted) returns and `app.runReadInto` fills, narrowed to the fields
- *  this module reads — verified against the wrapped body. A type alias (not
- *  an interface) so it keeps TS's implicit index signature and stays
- *  assignable to `runReadInto`'s `Record<string, unknown>` result param. */
-type StreamResult = {
-  columns: Column[];
-  rows: unknown[][];
-  rawFormat: string;
-  progress: { rows: number; bytes: number; elapsed_ns: number };
-  error: string | null;
-  cancelled: boolean;
-  rowLimit: number;
-  capped: boolean;
-};
-const newResult: (fmt: string, rowLimit?: number) => StreamResult = newResultUntyped;
 
 // filter-bar.js is unconverted — buildFilterBar(app, params, onCommit,
 // getField, options) builds one field per `fieldControls` entry, reading the

@@ -1,18 +1,17 @@
 # ADR-0002: Static typing — incremental strict TypeScript, dev-time only
 
-- **Status:** Accepted — 2026-07-16; **phases 0–5 landed** 2026-07-16 (#262,
-  one PR): the `tsc --noEmit` gate + typed seam interfaces (phase 0);
-  generated persisted-data types from the canonical schemas via
-  `build/emit-schema-types.mjs` (phase 1 — see the emitter addendum below);
-  `src/state.ts` (phase 2); the saved-query/panel/dashboard contract spine and
-  the parameter/filter/execution pipeline in `src/core/` (phases 3–4); and the
-  dashboard runtime slice `src/ui/{dashboard,dashboard-kpi-band,panels}.ts`
-  (phase 5) — 19 runtime modules strict (the 16-module slice plus the dom.js/
-  param-scan.js/diagnostics.js leaves whose typed wrappers it would otherwise
-  have duplicated), their unit tests converted as a
-  second wave, zero behavior change. Remaining `.js` (app.js glue, net/,
-  editor adapters, the rest of ui/ and core/) converts leaf-up as feature
-  work touches it, per decision item 4.
+- **Status:** Accepted — 2026-07-16; **migration COMPLETE** 2026-07-17 (#267,
+  after phases 0–5 landed 2026-07-16 via #262): every hand-written module
+  under `src/` (106 runtime modules + 6 type-only seam/contract files) and
+  every unit test is strict TypeScript, converted
+  leaf-up in dependency-tier waves with zero behavior change. The only
+  remaining `.js`: the two GENERATED runtime artifacts under `src/generated/`
+  (Ajv standalone emits JS; `allowJs` stays for them), the Playwright e2e
+  specs (run by Playwright's own loader, outside the `tsc` gate), and two
+  node-tooling unit specs (`schema-build`, `spec-examples`) whose typing waits
+  on a deliberate `@types/node` decision — the vitest mixed-tree resolver shim
+  survives solely for those two. `tests/helpers/fake-app.ts` satisfies the
+  full `App` contract; the per-test stub copies are gone.
 - **Date:** 2026-07-16
 - **Context tracking:** roadmap #68; phase 0 #262
 - **Related:** ADR-0001 (the slice-by-slice migration playbook this reuses)

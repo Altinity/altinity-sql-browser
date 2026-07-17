@@ -1,4 +1,4 @@
-// Build the single-file SPA: esbuild bundles src/main.js into one IIFE, which
+// Build the single-file SPA: esbuild bundles src/main.ts into one IIFE, which
 // is inlined (with the stylesheet) into build/template.html → dist/sql.html.
 //
 // esbuild is the only build-time tool; the bundled runtime dependencies are
@@ -37,7 +37,7 @@ async function buildStamp() {
 
 async function main() {
   const result = await build({
-    entryPoints: [resolve(root, 'src/main.js')],
+    entryPoints: [resolve(root, 'src/main.ts')],
     bundle: true,
     format: 'iife',
     target: 'es2020',
@@ -45,7 +45,7 @@ async function main() {
     write: false,
     legalComments: 'none',
   });
-  // Replace the `__ASB_BUILD__` placeholder (a string literal in src/main.js)
+  // Replace the `__ASB_BUILD__` placeholder (a string literal in src/main.ts)
   // with the build stamp before the bundle is inlined — same token-replace seam
   // as the styles/script splices below. replaceAll is robust to either quote
   // style minify may emit around the literal.
