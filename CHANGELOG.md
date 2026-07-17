@@ -31,6 +31,37 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   whole-workspace cross-resource semantic validation. No persistence, no UI,
   no import planner yet (later phases of #280).
 
+- **Atomic `StoredWorkspaceV1` persistence and one-shot legacy migration**
+  (#284, phase 2 of #280). New pure `src/workspace/` modules: a
+  `WorkspaceRepository` (`loadCurrent`/`commit`/`clearCurrent`) that
+  validates the complete candidate through phase-1 whole-workspace validation
+  **before** writing and then atomically replaces the aggregate in one
+  transaction — a failed write leaves the previously stored workspace intact,
+  never increments Dashboard revision, and never produces a partially-mixed
+  workspace (multi-tab policy: last successful commit wins, atomic replacement,
+  not compare-and-swap). Persistence is **IndexedDB** (chosen over a single
+  localStorage key: the 10 MiB `maxDecodedJsonBytes` aggregate exceeds the
+  ~5 MB localStorage quota, and phase 6 needs IndexedDB anyway) behind an
+  injected `WorkspaceStore` seam (`env.indexedDB`, mirroring the crypto/storage
+  seams) so the repository unit-tests against a plain in-memory fake. The
+  one-shot legacy migration builds one candidate `StoredWorkspaceV1` from the
+  flat `asb:*` keys — the initial Dashboard from `spec.favorite` (panel-role
+  favorites become tiles in catalog order), `asb:dashLayout`/`asb:dashCols`
+  converted to a valid `flow@1` layout — validates the whole candidate, and
+  persists it atomically; it runs only when no aggregate record exists and
+  never deletes or modifies legacy keys. Repository + operation semantics only;
+  no authoring commands, viewer, or import UI yet (later phases of #280).
+  - **`spec.favorite` dual-write removal path.** During phases 2-4 `spec.favorite`
+    stays the membership source the existing favorites-driven Dashboard render
+    reads, while `dashboard.tiles` becomes the canonical membership going
+    forward; phase 3's star command dual-writes both. Membership **reads** flip
+    to `dashboard.tiles` when phase 4's `DashboardViewerSession` + `flow@1`
+    viewer replace `src/ui/dashboard.ts`'s `savedQueries.filter(queryFavorite)`
+    render; the `spec.favorite` **dual-write** is then deleted in the v1
+    Dashboard GA release (the release closing #280), after phase 5 lands — the
+    schema keeps `favorite` only as an ignored legacy-compat field readable by
+    old migrations.
+
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
   temporary `App` delegates from Phases 2–4 are deleted — consumers read

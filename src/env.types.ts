@@ -19,6 +19,13 @@ export interface CreateAppEnv {
   fetch?: typeof fetch;
   crypto?: Crypto;
   sessionStorage?: Storage;
+  /** IndexedDB factory seam (#280 Phase 2 / #284) — injected like crypto/
+   * sessionStorage so the atomic `WorkspaceRepository` (app.workspace) has a
+   * real backing store in the browser and an in-memory fake in tests.
+   * Resolves to `win.indexedDB` when omitted; may be absent entirely on a
+   * platform without IndexedDB, in which case workspace operations reject
+   * (caught by the repository) rather than throwing at construction. */
+  indexedDB?: IDBFactory;
   root?: Element | null;
   Chart?: unknown; // Chart.js constructor — new app.Chart(canvas, cfg)
   cssVar?: (name: string) => string;
