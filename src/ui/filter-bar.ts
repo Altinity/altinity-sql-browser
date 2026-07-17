@@ -91,6 +91,17 @@ const buildRecentField = _buildRecentField as (opts: {
 // Enter/blur bypass this entirely for a fast explicit-commit path.
 export const FILTER_DEBOUNCE_MS = 500;
 
+/** `buildFilterBar`'s return value (#276 Phase 3b filter-bar dispose seam):
+ *  `el` is the bar's root node; `dispose()` clears every field's pending
+ *  debounce timer. A caller that rebuilds the bar (a filter-value merge
+ *  repaint) must dispose the previous bar first — and dispose on its own
+ *  teardown — so an in-flight debounce never fires against a detached field
+ *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave). */
+export interface FilterBarHandle {
+  el: HTMLElement;
+  dispose(): void;
+}
+
 /**
  * Build a filter bar: one field per `{name:Type}` parameter in `params` (the
  * shape from `fieldControls(analysis)`), sharing `app.state.varValues` /
@@ -107,6 +118,9 @@ export const FILTER_DEBOUNCE_MS = 500;
  * the detached Data view passes its child-tab document so the comboboxes anchor
  * in the right realm — #185). `options.ariaLabel`, when set, names the bar as a
  * labeled group for assistive tech (the detached view labels it "Query filters").
+ *
+ * Returns `{ el, dispose }` (#276 Phase 3b) rather than the bare root node —
+ * see `FilterBarHandle`.
  */
 export function buildFilterBar(
   app: FilterBarApp,
@@ -114,13 +128,15 @@ export function buildFilterBar(
   onCommit: (name: string) => void,
   getField: (name: string, mode: ValidationMode) => PreparedFieldState,
   options: BuildFilterBarOptions = {},
-): HTMLElement {
+): FilterBarHandle {
   const document = options.document || app.document;
   const attrs: Record<string, unknown> = { class: 'dash-filters' };
   if (options.ariaLabel) { attrs.role = 'group'; attrs['aria-label'] = options.ariaLabel; }
-  if (!params.length) return h('div', { ...attrs, style: { display: 'none' } });
-  return h('div', attrs, ...params.map((p) => {
+  if (!params.length) return { el: h('div', { ...attrs, style: { display: 'none' } }), dispose: () => {} };
+  const timerClears: Array<() => void> = [];
+  const el = h('div', attrs, ...params.map((p) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
     // #173 acceptance (review F1): a type-conflicted param (declared with
     // disagreeing types across favorites) degrades to the plain text control
     // (fieldControlKind below) and says so visibly — a warning style distinct
@@ -221,4 +237,5 @@ export function buildFilterBar(
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), combo.el);
   }));
+  return { el, dispose: () => timerClears.forEach((clear) => clear()) };
 }

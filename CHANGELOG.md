@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Dashboard tile/filter runtime extracted into a route-scoped
+  `DashboardSession`** (#276 Phase 3b). Wave generations, per-slot
+  cancellation, the 6-way tile pool, filter waves/merging, and the retry
+  cascade now live in `src/ui/dashboard/dashboard-session.ts` — constructible
+  without the `App` object, fed an explicit `DashboardRuntimeInput` (built by
+  the shell from the favorites list, so a stored dashboard document can
+  replace that source later), with every DOM write behind injected shell
+  hooks. `renderDashboard(app)` keeps its signature as the integration entry
+  (the existing DOM-driven dashboard suite passed unmodified). `destroy()`
+  aborts all in-flight tile/KPI/filter work, tears down chart instances,
+  disposes the filter bar, and turns later entry points into no-ops — closing
+  the orphaned-debounce-timer gap (`buildFilterBar` now returns
+  `{ el, dispose }`; both the dashboard and the detached Data view dispose the
+  previous bar on re-render). A stale-generation guard on streamed progress
+  keeps a superseded request's last buffered chunk from touching the newer
+  wave's live label. Tile supersede remains client-abort only (no server
+  `KILL`) by design. Behavior byte-identical.
 - **Workbench run lifecycle extracted into a route-scoped `WorkbenchSession`**
   (#276 Phase 3a). `run`/`runScript`/`runEntry`/`cancel` orchestration now
   lives in `src/ui/workbench/workbench-session.ts`; the run bookkeeping
