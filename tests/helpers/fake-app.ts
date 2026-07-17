@@ -34,6 +34,7 @@ import type { ConnectionSession } from '../../src/application/connection-session
 import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
+import type { ExportService } from '../../src/application/export-service.js';
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
 
@@ -168,6 +169,16 @@ const paramsDefaults: WorkbenchParameterSession = {
   saveVarRecentDisabled: vi.fn(),
 };
 
+// A minimal `ExportService` stub (#276 Phase 4B2) — no render-module fixture
+// exercises the service directly (that's export-service.test.ts's job); this
+// just satisfies the `App.exports` contract.
+const exportsDefaults: ExportService = {
+  exportEntry: vi.fn(),
+  exportDirect: vi.fn(async () => {}),
+  cancelExport: vi.fn(),
+  cancelExportScript: vi.fn(),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -248,6 +259,7 @@ const appDefaults: App = {
   elapsedMs: () => 0,
   tickElapsed: () => {},
   workbench: workbenchDefaults,
+  exports: exportsDefaults,
   exec: {
     executeRead: async (result) => result,
     executeScript: async () => ({ entries: [], aborted: false }),

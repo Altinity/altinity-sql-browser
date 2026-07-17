@@ -22,6 +22,7 @@ import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
+import type { ExportService } from '../application/export-service.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -312,6 +313,16 @@ export interface App {
    *  `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent` (declared
    *  below, under Persistence) are one-line delegates onto this. */
   params: WorkbenchParameterSession;
+  /** The streaming single-file export (issue #87) + multi-statement script
+   *  export (issue #99) POLICY (#276 Phase 4B2 —
+   *  `src/application/export-service.ts`), constructible without
+   *  App/AppState/DOM. `actions.exportEntry`/`.exportDirect`/`.cancelExport`/
+   *  `.cancelExportScript` are one-line delegates onto this; `state.exporting`
+   *  stays an `AppState` signal this service is the sole writer of.
+   *  `canExport`/`canExportScript` (env capability checks) and
+   *  `showExportProgress` (the DOM progress banner) stay app.ts-owned,
+   *  injected into this service. */
+  exports: ExportService;
   /** The shared request/stream/normalize + multiquery-script transport
    *  service (#276 Phase 1) — `src/application/query-execution-service.ts`,
    *  constructible without App/AppState/DOM. `src/ui/**` may depend on
