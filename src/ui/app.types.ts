@@ -21,6 +21,7 @@ import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
+import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
 
@@ -164,8 +165,9 @@ export interface App {
   state: State;
   dom: AppDom;
   /** Names of `{name:Type}` variables whose value has hardened to invalid
-   * (#170 review — see app.ts's construction-site comment). Read directly by
-   * tests; otherwise app.ts-internal bookkeeping. */
+   * (#170 review — owned by `params`, see below; this is the SAME `Set`
+   * instance, aliased, not copied — app.ts's construction-site comment).
+   * Read directly by tests; otherwise app.ts-internal bookkeeping. */
   hardenedVars: Set<string>;
   root: Element | null;
   document: Document;
@@ -298,6 +300,18 @@ export interface App {
    *  Run/Cancel actions and the Explain/row-limit re-run paths delegate to it,
    *  and `renderApp`'s `attachShell` call wires its 3 run-coupled effects. */
   workbench: WorkbenchSession;
+  /** The `{name:Type}` query-variable POLICY (#276 Phase 4B1 —
+   *  `src/application/workbench-parameter-session.ts`), constructible
+   *  without App/AppState/DOM: analyze/prepare/gate/execution-view, the #170
+   *  hardening bookkeeping, the #172 v2 schema-cache enum-suggestion
+   *  inference, and the #171 recent-value + persistence policy.
+   *  `renderVarStrip`/`setRunBtn` (DOM) stay in app.ts, calling this
+   *  session's methods directly; the workbench-session hooks + the export
+   *  block's direct calls are re-pointed here too. `saveVarValues`/
+   *  `saveFilterActive`/`saveVarRecent`/`saveVarRecentDisabled`/
+   *  `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent` (declared
+   *  below, under Persistence) are one-line delegates onto this. */
+  params: WorkbenchParameterSession;
   /** The shared request/stream/normalize + multiquery-script transport
    *  service (#276 Phase 1) — `src/application/query-execution-service.ts`,
    *  constructible without App/AppState/DOM. `src/ui/**` may depend on

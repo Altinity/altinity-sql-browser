@@ -33,6 +33,7 @@ import type { QueryExecutionService } from '../../src/application/query-executio
 import type { ConnectionSession } from '../../src/application/connection-session.js';
 import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
+import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
 
@@ -140,6 +141,33 @@ const catalogDefaults: SchemaCatalogService = {
   invalidate: vi.fn(),
 };
 
+// A minimal `WorkbenchParameterSession` stub (#276 Phase 4B1) — no
+// render-module fixture exercises the session directly (that's
+// workbench-parameter-session.test.ts's job); this just satisfies the
+// `App.params` contract. `hardenedVars` is the SAME `Set` instance as
+// `appDefaults.hardenedVars` below (the production aliasing invariant —
+// app.ts assigns `app.hardenedVars = params.hardenedVars`).
+const paramsHardenedVarsDefault = new Set<string>();
+const paramsDefaults: WorkbenchParameterSession = {
+  hardenedVars: paramsHardenedVarsDefault,
+  tabAnalysis: vi.fn(() => ({ fields: {}, sources: [], sourceErrors: {}, diagnostics: [] })),
+  prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
+  prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
+  prepareTabSource: vi.fn(() => ({ id: 'tab', statements: [], missing: [], invalid: [], errors: [], runnable: true })),
+  execStatementSql: vi.fn((stmt: string) => stmt),
+  varGateBlocked: vi.fn(() => false),
+  hardenVar: vi.fn(),
+  inputGate: vi.fn(() => ({ missing: [], invalid: [], errors: [] })),
+  inferredEnumOptions: vi.fn(() => null),
+  recordBoundParams: vi.fn(),
+  clearVarRecent: vi.fn(),
+  clearAllVarRecent: vi.fn(),
+  saveVarValues: vi.fn(),
+  saveFilterActive: vi.fn(),
+  saveVarRecent: vi.fn(),
+  saveVarRecentDisabled: vi.fn(),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -149,13 +177,16 @@ const catalogDefaults: SchemaCatalogService = {
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
-  hardenedVars: new Set(),
+  // The SAME `Set` instance as `paramsDefaults.hardenedVars` — the production
+  // aliasing invariant (app.ts's `app.hardenedVars = params.hardenedVars`).
+  hardenedVars: paramsHardenedVarsDefault,
   matchMedia: null,
   build: 'v0.0.0-test',
   root: null,
   document,
   conn: connDefaults,
   catalog: catalogDefaults,
+  params: paramsDefaults,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
@@ -247,7 +278,7 @@ const appDefaults: App = {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
  * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -264,6 +295,10 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
    *  session directly; a test asserting `workbench.run`/`.cancel` was called
    *  can override just that method. */
   workbench?: Partial<WorkbenchSession>;
+  /** Partial like `workbench` above (#276 Phase 4B1) — most fixtures never
+   *  touch the session directly; a test asserting e.g. `params.clearVarRecent`
+   *  was called can override just that method. */
+  params?: Partial<WorkbenchParameterSession>;
 };
 
 // `overrides` is generic so its properties keep their OWN precise call-site
@@ -397,6 +432,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
     conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
     workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
+    params: { ...paramsDefaults, ...(overrides.params ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type
