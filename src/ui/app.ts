@@ -18,9 +18,6 @@ import { mergedSourceSql, analysisView, fieldControls, fieldControlKind } from '
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
 import { saveJSON, saveStr } from '../core/storage.js';
 import { sqlString, inferQueryName, shortVersion, userShortName, withStatementBreak, formatBytes, formatRows } from '../core/format.js';
-import { buildSchemaGraph, expandLineage } from '../core/schema-graph.js';
-import { buildCardGraph } from '../core/schema-cards.js';
-import type { SchemaCardColumnRow } from '../core/schema-cards.js';
 import { toTSV } from '../core/export.js';
 import { newResult, parseErrorPos } from '../core/stream.js';
 import { queryName } from '../core/saved-query.js';
@@ -46,7 +43,7 @@ import { renderResults } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry, ResultSchemaGraph } from './results.js';
 import { renderDashboard } from './dashboard.js';
 import { openSchemaView } from './explain-graph.js';
-import type { SchemaLineageGraph, SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
+import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { renderSavedHistory } from './saved-history.js';
@@ -71,14 +68,15 @@ import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from './splitter
 import { flashToast } from './toast.js';
 import type { App, ActionsRegistry, SchemaFocus } from './app.types.js';
 import type { CreateAppEnv } from '../env.types.js';
-import type { SchemaGraphFocus, SchemaGraphNode, SchemaGraphEdge } from '../core/schema-graph.js';
-import type { LineageFocus } from '../net/ch-client.js';
 import { createQueryExecutionService } from '../application/query-execution-service.js';
 import { createConnectionSession } from '../application/connection-session.js';
 import { createSchemaCatalogService } from '../application/schema-catalog-service.js';
 import { createWorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
+import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
+import { createAppPreferences } from '../application/app-preferences.js';
+import type { PreferenceKey } from '../application/app-preferences.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -192,9 +190,19 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.canExportScript = () => !!app.showDirectoryPicker && app.isSecureContext;
 
   // --- persistence -------------------------------------------------------
+  // The true-preference persist service (#276 Phase 4D) — theme/sidebarPx/
+  // editorPct/sideSplitPct/cellDrawerPx/sidePanel/resultRowLimit/dashLayout/
+  // dashCols, constructible without App/AppState/DOM. `savePref` below is a
+  // thin delegate (dashboard.ts/saved-history.ts/splitters.ts keep calling it
+  // unchanged); `toggleTheme` below composes `prefs.toggleTheme()` (the
+  // state-flip + persist) with its own DOM half.
+  const prefs = createAppPreferences({ saveStr, state: app.state });
+  app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
-  app.savePref = (name, value) => saveStr(KEYS[name as keyof typeof KEYS], String(value));
+  // Typed preference persistence (#276 Phase 4D) — `prefs` is constructed
+  // below; this closure only reads it at call time.
+  app.savePref = (name, value) => prefs.save(name as PreferenceKey, value);
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -931,182 +939,75 @@ export function createApp(env: CreateAppEnv = {}): App {
     }
   }
 
-  // Abort any in-flight schema-lineage fetch. Called both as a manual Cancel
-  // (clearResult: true — the user asked to stop) and automatically whenever a
-  // new operation takes over the drawer (a fresh graph request, or Run/Explain
-  // replacing the tab's result outright) — in the automatic case the caller
-  // overwrites tab.result itself right after, so aborting the network request
-  // is all that's needed there (the identity guard in showSchemaGraph makes
-  // this belt-and-suspenders, not load-bearing, for correctness).
-  //
-  // With clearResult, the visible result depends on how far the fetch got: if
-  // Phase A (the free-edges graph) had already drawn, keep it on screen marked
-  // `partial` (its view/MV source edges may be incomplete); otherwise there's
-  // nothing worth keeping, so drop back to the normal empty-results placeholder.
-  function cancelSchemaGraph({ clearResult = false }: { clearResult?: boolean } = {}): void {
-    if (app.state.schemaGraphAbortController) app.state.schemaGraphAbortController.abort();
-    app.state.schemaGraphAbortController = null;
-    if (!clearResult) return;
-    const tab = app.activeTab();
-    const result = tab.result as QueryResult | null;
-    const sg = result?.schemaGraph;
-    if (!sg || !sg.loading) return;
-    if (sg.nodes && sg.nodes.length) {
-      sg.loading = false;
-      sg.partial = true;
-    } else {
-      tab.result = null;
-    }
-    renderResults(app);
+  // Inline schema-lineage drawer + fullscreen expand/detail flow (#276 Phase
+  // 4D) — the two-phase progressive draw (#124), the stale-write guard, the
+  // rich-card expand fetch, and the last-clicked-wins node-detail bookkeeping
+  // all now live in `application/schema-graph-session.ts`, constructible
+  // without App/AppState/DOM (byte-for-byte port — see that file for the
+  // ported bodies). This shell wraps it: `cancelSchemaGraph`/`showSchemaGraph`
+  // delegate straight through (the session's own `renderResults` hook below
+  // repaints); `expandSchemaGraph`/`openNodeDetail` own the DOM the session
+  // never sees — the fullscreen view object (opened synchronously, before the
+  // session's async fetch, so it survives the click gesture) and the
+  // detail-pane mount.
+  const graph = createSchemaGraphSession({
+    ensureConfig, getToken, ctx: () => chCtx,
+    loadSchemaLineage: ch.loadSchemaLineage,
+    loadLineageTransitive: ch.loadLineageTransitive,
+    loadSchemaCards: ch.loadSchemaCards,
+    loadTableDetail: ch.loadTableDetail,
+    activeTab: () => app.activeTab(),
+    hooks: {
+      renderResults: () => renderResults(app),
+      onAuthFailed: () => chCtx.onSignedOut(),
+    },
+  });
+  app.graph = graph;
+
+  function cancelSchemaGraph(opts?: { clearResult?: boolean }): void {
+    graph.cancel(opts);
   }
 
-  // Render the ClickHouse object-lineage graph for a dropped/clicked
-  // database/table into the data pane (queries system.* + EXPLAIN AST; the
-  // editor SQL is untouched). Two-phase on a large schema (#124): draws as soon
-  // as the free edges (dependencies/target/engine-arg/dictionary) are known,
-  // then a single second layout merges in view/MV source edges once EXPLAIN AST
-  // settles — so the pane isn't blank for the whole round trip. Below
-  // AST_PROGRESSIVE_THRESHOLD view/MV objects, loadSchemaLineage skips straight
-  // to one draw instead (onBase/onProgress never fire) — a visible first paint
-  // is just flicker when the whole fetch settles almost as fast anyway.
-  async function showSchemaGraph(focus: SchemaFocus): Promise<void> {
-    if (!focus || !focus.db) return;
-    await ensureConfig();
-    if (!(await getToken())) { chCtx.onSignedOut(); return; }
-    cancelSchemaGraph(); // a new click/drag replaces whatever graph was in flight
-    const tab = app.activeTab();
-    // Show a loading placeholder first — even Phase A (system.tables +
-    // system.dictionaries) is a network round trip.
-    const result: QueryResult = newResult('Table');
-    result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
-    Object.assign(tab, { result });
-    // `result` is the stale-write guard (mirrors #97's identity-guard shape):
-    // captured once, checked before every later write, so a Run/Explain or a
-    // second graph request that replaces tab.result mid-fetch can never have
-    // this call's (Phase A or Phase B) result land on the new tab.result.
-    // `tab.result`'s declared type (state.ts's opaque `Record<string,unknown>
-    // | null`) has no overlap with `QueryResult` for a direct `!==` — widen
-    // `result` to `unknown` (not a further cast to another concrete type) for
-    // the comparison only; the identity check itself is unaffected.
-    const superseded = (): boolean => tab.result !== (result as unknown);
-    renderResults(app);
-    const controller = new AbortController();
-    app.state.schemaGraphAbortController = controller;
-    try {
-      const lineage = await ch.loadSchemaLineage(chCtx, focus, {
-        signal: controller.signal,
-        onBase: (base) => {
-          if (superseded()) return; // superseded before Phase A even landed
-          const g = buildSchemaGraph(base, focus);
-          result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (base.tables || []).length, loading: true };
-          renderResults(app);
-        },
-        onProgress: (done, total) => {
-          if (superseded() || !result.schemaGraph || !result.schemaGraph.loading) return;
-          result.schemaGraph.progress = { done, total };
-          renderResults(app);
-        },
-      });
-      if (superseded()) return; // superseded while Phase B was resolving
-      const g = buildSchemaGraph(lineage, focus);
-      // tableCount lets the renderer explain an empty result ("N tables, none linked").
-      result.schemaGraph = { focus, nodes: g.nodes, edges: g.edges, tableCount: (lineage.tables || []).length };
-    } catch (e) {
-      // AbortError means cancelSchemaGraph() already left the pane in a clean
-      // state (partial graph or the empty placeholder) — nothing more to do.
-      if (e instanceof Error && e.name === 'AbortError') return;
-      if (superseded()) return;
-      const errorResult: QueryResult = newResult('Table');
-      errorResult.error = String((e instanceof Error && e.message) || e);
-      Object.assign(tab, { result: errorResult });
-    } finally {
-      if (app.state.schemaGraphAbortController === controller) app.state.schemaGraphAbortController = null;
-    }
-    renderResults(app);
+  function showSchemaGraph(focus: SchemaFocus): Promise<void> {
+    return graph.show(focus);
   }
 
-  // Open the schema lineage fullscreen with RICH cards. Lazily fetches a separate
-  // enriched dataset (the inline pane stays compact and untouched): re-loads
-  // lineage + the per-table column / skip-index metadata (best-effort), attaches a
-  // card model to each node, then opens the overlay. Re-fetch (vs reusing the inline
-  // result) keeps the inline path's shape frozen and the card data off the hot path.
-  // net/ch-client.ts's `CardColumnRow` (the real loader shape) has no index
-  // signature; core/schema-cards.ts's `SchemaCardColumnRow` (the shape
-  // `buildCardGraph` needs) does — reconstructing each row as a fresh object
-  // literal satisfies it directly (every field the card model reads is
-  // already there; nothing here changes what's read or its values).
-  const toCardColumns = (byKey: Record<string, ch.CardColumnRow[]>): Record<string, SchemaCardColumnRow[]> => {
-    const out: Record<string, SchemaCardColumnRow[]> = {};
-    for (const [key, rows] of Object.entries(byKey)) out[key] = rows.map((row) => ({ ...row }));
-    return out;
-  };
+  // Open the schema lineage fullscreen with RICH cards. The view is opened
+  // synchronously (a pop-up opened after an await is blocked) so it survives
+  // the click gesture; `graph.expand` never sees it — this wrapper alone
+  // calls `view.render`/`view.fail`.
   async function expandSchemaGraph(focus: SchemaFocus): Promise<void> {
     if (!focus || !focus.db) return;
-    // Pin the result whose Expand was clicked NOW: a tab switch during the async
-    // fetch must not redirect the saved-positions map to a different tab's result.
-    const clickedTab = app.activeTab();
-    const clickedResult = clickedTab.result as QueryResult | null;
-    const sg = clickedResult?.schemaGraph || null;
-    // Open the view synchronously so a real tab survives the click gesture (a
-    // pop-up opened after an await is blocked); fill it once the lineage loads.
     const view = openSchemaView(app as DetachedGraphApp);
-    // Everything after the synchronous open is wrapped: a token-refresh rejection,
-    // a lineage/cards fetch failure, or a graph-build throw must surface in the view
-    // (fail) instead of leaving the just-opened tab/overlay stranded on "Loading…".
     try {
-      await ensureConfig();
-      if (!(await getToken())) { chCtx.onSignedOut(); view.fail('Sign in to view the schema graph.'); return; }
-      // Walk lineage transitively across DB boundaries (soft-capped) — pulls in
-      // objects an other database references, instead of dead-ending at the edge.
-      const lineage = await ch.loadLineageTransitive(chCtx, focus);
-      const g = buildSchemaGraph(lineage.rows, focus);
-      // Fresh node/edge literals (`{...n}`): `SchemaGraphNode` (buildSchemaGraph's
-      // fixed-field output) has no index signature; `ExpandLineageNode` (what
-      // expandLineage's graph needs) does — every field it reads is already there.
-      const ex = expandLineage({ nodes: g.nodes.map((n) => ({ ...n })), edges: g.edges }, focus.db); // closure around focus.db, tags external nodes
-      // Card metadata for every database the expansion reached (external nodes too).
-      const dbs = [...new Set(ex.nodes.map((n) => n.db).filter(Boolean))];
-      const cards = await ch.loadSchemaCards(chCtx, dbs);
-      const cardGraph = buildCardGraph({ nodes: ex.nodes, edges: ex.edges },
-        { tables: lineage.rows.tables, columnsByKey: toCardColumns(cards.columnsByKey) });
-      // Persist manually-moved node positions per result: the map hangs off the live
-      // schemaGraph result (captured above) so re-opening keeps the layout.
-      const positions = (sg && sg.savedPositions) || {};
-      if (sg) sg.savedPositions = positions;
-      // Every real lineage/expansion node always carries `id`/`label` (schema-
-      // graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both required there);
-      // schema-cards.ts's own `CardGraphNode` widens them to optional for a
-      // bare test fixture — reasserted here to match explain-graph.ts's
-      // `SchemaLineageNode` (also required, for the SVG drawer's own layout).
-      const nodes: SchemaLineageNode[] = cardGraph.nodes.map((n) => ({ ...n, id: n.id!, label: n.label! }));
-      // `tableCount` isn't part of `SchemaViewController.render`'s
-      // `SchemaLineageGraph` contract — only results.ts's OWN inline-pane
-      // progress bookkeeping (`ResultSchemaGraph.tableCount`) reads it; the
-      // fullscreen `render()`/`makeController` never did, so it never
-      // travelled past this call.
+      const data = await graph.expand(focus);
+      // Every real lineage/expansion node always carries `id`/`label`
+      // (schema-graph.ts's `SchemaGraphNode`/`ExpandLineageNode`, both
+      // required there); schema-cards.ts's own `CardGraphNode` widens them to
+      // optional for a bare test fixture — reasserted here to match
+      // explain-graph.ts's `SchemaLineageNode` (also required, for the SVG
+      // drawer's own layout).
+      const nodes: SchemaLineageNode[] = data.nodes.map((n) => ({ ...n, id: n.id!, label: n.label! }));
       view.render({
-        nodes, edges: cardGraph.edges, focus,
-        truncated: lineage.truncated || ex.truncated,
-        savedPositions: positions,
+        nodes, edges: data.edges, focus: data.focus,
+        truncated: data.truncated, savedPositions: data.savedPositions,
       });
-    } catch {
-      view.fail('Could not load the schema graph');
+    } catch (e) {
+      view.fail(e instanceof SchemaGraphAuthRequiredError ? e.message : 'Could not load the schema graph');
     }
   }
 
-  // Open the detail pane for a clicked fullscreen node: lazily load the table's full
-  // columns / partitions / DDL (best-effort) and mount the pane in the overlay.
-  // Keyed per overlay document (same resolution as openDetailPane's own `doc`) so a
-  // slow fetch for an earlier click can't clobber a newer pane once it resolves —
-  // last-clicked wins, not last-resolved (#97).
-  const latestDetailRequest = new WeakMap<Document, SchemaFocus>();
+  // Open the detail pane for a clicked fullscreen node: mount a loading
+  // placeholder synchronously (so it's visible immediately), then fill it
+  // once `graph.loadNodeDetail` resolves — `null` means a later click on the
+  // same overlay superseded this one (last-clicked wins, not last-resolved —
+  // #97), so no mount happens.
   async function openNodeDetail(node: SchemaFocus, targetDoc?: Document): Promise<void> {
     if (!node || !node.db || !node.name) return;
     const overlayDoc = targetDoc || (app && app.document) || document;
-    latestDetailRequest.set(overlayDoc, node);
     openDetailPane(app, node as DetailNode, { columns: 'loading' }, targetDoc);
-    const detail = await ch.loadTableDetail(chCtx, node.db, node.name);
-    if (latestDetailRequest.get(overlayDoc) !== node) return; // superseded by a later click
+    const detail = await graph.loadNodeDetail(node, overlayDoc);
+    if (detail == null) return; // superseded by a later click
     // `columns` remapped through a fresh per-row spread: net/ch-client.ts's
     // `ColumnDetailRow` (the real loader shape) has no index signature;
     // schema-detail.ts's `DetailColumn` (via `ColumnRoleFlags`) does — every
@@ -1479,10 +1380,12 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.openUserMenu = openUserMenu;
 
   function toggleTheme(): void {
-    app.state.theme = app.state.theme === 'dark' ? 'light' : 'dark';
-    app.savePref('theme', app.state.theme);
-    doc.documentElement.setAttribute('data-theme', app.state.theme);
-    if (app.dom.themeBtn) app.dom.themeBtn.replaceChildren(app.state.theme === 'dark' ? Icon.sun() : Icon.moon());
+    // The state-flip + persist half lives in `prefs.toggleTheme()` (#276
+    // Phase 4D); the DOM half — the `data-theme` attribute + header icon
+    // swap — stays here.
+    const theme = prefs.toggleTheme();
+    doc.documentElement.setAttribute('data-theme', theme);
+    if (app.dom.themeBtn) app.dom.themeBtn.replaceChildren(theme === 'dark' ? Icon.sun() : Icon.moon());
   }
   // Exposed so the schema-view overlay can drive the same toggle (keeps state +
   // saved pref + header icon in sync rather than flipping data-theme behind them).

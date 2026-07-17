@@ -32,6 +32,8 @@ import type { ChartInstance } from '../../src/ui/chart-render.js';
 import type { QueryExecutionService } from '../../src/application/query-execution-service.js';
 import type { ConnectionSession } from '../../src/application/connection-session.js';
 import type { SchemaCatalogService } from '../../src/application/schema-catalog-service.js';
+import type { SchemaGraphSession } from '../../src/application/schema-graph-session.js';
+import type { AppPreferences } from '../../src/application/app-preferences.js';
 import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import type { ExportService } from '../../src/application/export-service.js';
@@ -207,6 +209,33 @@ const savedDefaults: SavedQueryService = {
   buildShareUrl: vi.fn((): ShareResult => ({ ok: false, reason: 'empty' })),
 };
 
+// A minimal `SchemaGraphSession` stub (#276 Phase 4D) — no render-module
+// fixture exercises the session directly (that's schema-graph-session.test.ts's
+// job); this just satisfies the `App.graph` contract.
+const graphDefaults: SchemaGraphSession = {
+  show: vi.fn(async () => {}),
+  cancel: vi.fn(),
+  expand: vi.fn(async () => ({ nodes: [], edges: [], focus: {}, truncated: false, savedPositions: {} })),
+  loadNodeDetail: vi.fn(async () => null),
+};
+
+// A minimal `AppPreferences` stub (#276 Phase 4D) — no render-module fixture
+// exercises the service directly (that's app-preferences.test.ts's job); this
+// just satisfies the `App.prefs` contract.
+const prefsDefaults: AppPreferences = {
+  save: vi.fn(),
+  setTheme: vi.fn(),
+  toggleTheme: vi.fn(() => 'light'),
+  setSidebarPx: vi.fn(),
+  setEditorPct: vi.fn(),
+  setSideSplitPct: vi.fn(),
+  setCellDrawerPx: vi.fn(),
+  setSidePanel: vi.fn(),
+  setResultRowLimit: vi.fn(),
+  setDashLayout: vi.fn(),
+  setDashCols: vi.fn(),
+};
+
 // Every `App` member this file's own concrete stubs (below) don't cover,
 // filled with an inert placeholder never read by a fixture that doesn't
 // override it — same convention as (and previously duplicated by) each of
@@ -226,6 +255,8 @@ const appDefaults: App = {
   conn: connDefaults,
   catalog: catalogDefaults,
   params: paramsDefaults,
+  graph: graphDefaults,
+  prefs: prefsDefaults,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),

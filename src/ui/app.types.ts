@@ -17,6 +17,8 @@ import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
+import type { SchemaGraphSession } from '../application/schema-graph-session.js';
+import type { AppPreferences } from '../application/app-preferences.js';
 import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
@@ -255,6 +257,13 @@ export interface App {
   build: string;
 
   // Persistence.
+  /** The true-preference persist service (#276 Phase 4D —
+   *  `src/application/app-preferences.ts`), constructible without
+   *  App/AppState/DOM. `savePref` below is a thin delegate onto it (kept so
+   *  no consumer — dashboard.ts/saved-history.ts/splitters.ts — needs to
+   *  change); `toggleTheme`'s preference-write half also delegates here, the
+   *  DOM half stays in app.ts. */
+  prefs: AppPreferences;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
   savePref(name: string, value: unknown): void;
@@ -330,6 +339,13 @@ export interface App {
    *  constructible without App/AppState/DOM. `src/ui/**` may depend on
    *  `src/application/**`, never the reverse. */
   exec: QueryExecutionService;
+  /** The inline schema-lineage drawer + fullscreen expand/detail session
+   *  (#276 Phase 4D — `src/application/schema-graph-session.ts`),
+   *  constructible without App/AppState/DOM. `actions.showSchemaGraph`/
+   *  `cancelSchemaGraph`/`expandSchemaGraph`/`openNodeDetail` delegate to it;
+   *  the DOM (the fullscreen view object, the node-detail pane mount) stays
+   *  in app.ts — this session never sees either. */
+  graph: SchemaGraphSession;
   setRunBtn(running: boolean, gate?: { missing: string[]; invalid: string[]; errors: string[] }): void;
   renderVarStrip(): void;
   setExportBtn(exporting: boolean): void;
