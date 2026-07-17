@@ -24,21 +24,32 @@ import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mi
 // reference data, and NO entityDoc by default (infoFor treats a missing
 // loader as "no info"). Self-contained (not tests/helpers/fake-app.js, which
 // isn't one of this change's files and doesn't statically declare the
-// refData/completions members this adapter needs) — mirrors
+// catalog.refData/completions/entityDoc members this adapter needs) — mirrors
 // spec-editor.test.ts's own minimal `makeApp` for the same editor/* seam.
-const makeApp = (over: Partial<CodeMirrorEditorApp> = {}): CodeMirrorEditorApp => ({
-  state: createState({ loadStr: (key, fallback) => fallback, loadJSON: (key, fallback) => fallback }),
-  dom: {},
-  refData: assembleReferenceData(null),
-  completions: [],
-  entityDoc: undefined,
-  actions: { loadColumns: vi.fn() },
-  ...over,
-});
+// `catalog` overrides merge onto the default stub (not a full-object
+// replace), same convention as tests/helpers/fake-app.ts's own nested
+// `conn`/`chCtx` merges — a caller overriding just `refData` (the common
+// case) doesn't have to re-supply `completions`/`entityDoc` too.
+type Catalog = NonNullable<CodeMirrorEditorApp['catalog']>;
+const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog?: Partial<Catalog> } = {}): CodeMirrorEditorApp => {
+  const { catalog: catalogOver, ...rest } = over;
+  return {
+    state: createState({ loadStr: (key, fallback) => fallback, loadJSON: (key, fallback) => fallback }),
+    dom: {},
+    catalog: {
+      refData: assembleReferenceData(null),
+      completions: [],
+      entityDoc: undefined,
+      ...catalogOver,
+    },
+    actions: { loadColumns: vi.fn() },
+    ...rest,
+  };
+};
 
 // Mount a fresh port + view; subscribe like app.js does (#143) so tab.sqlDraft
 // tracks the view.
-function mounted(over: Partial<CodeMirrorEditorApp> = {}) {
+function mounted(over: Parameters<typeof makeApp>[0] = {}) {
   const app = makeApp(over);
   const port = createCodeMirrorEditor(app);
   const changes: string[] = [];
@@ -315,7 +326,7 @@ describe('per-tab EditorState (syncFromState)', () => {
     app.state.tabs.value = [...app.state.tabs.value, t2];
     app.state.activeTabId.value = 't2';
     port.syncFromState(); // t1 parked with the OLD dialect
-    app.refData = assembleReferenceData({
+    app.catalog!.refData = assembleReferenceData({
       keywords: ['MAGICWORD', 'SELECT', 'FROM'],
       functions: { magicfn: { kind: 'fn', sig: 'magicfn()', ret: '', desc: '' } },
       formats: ['CSV'],
@@ -332,7 +343,7 @@ describe('per-tab EditorState (syncFromState)', () => {
 
 describe('langExtensionFor', () => {
   it('builds an empty-set dialect when refData is absent', () => {
-    const ext = langExtensionFor({ refData: null });
+    const ext = langExtensionFor({ catalog: { refData: null } });
     expect(Array.isArray(ext)).toBe(true);
     const st = EditorState.create({ doc: 'x', extensions: ext });
     expect(st.languageDataAt('closeBrackets', 0)[0]).toEqual({ brackets: ['(', '[', "'", '"', '`'] }); // quotes pair (editor-brackets.js parity)
@@ -340,7 +351,7 @@ describe('langExtensionFor', () => {
 });
 
 describe('langExtensionFor — ClickHouse dialect flags (#182)', () => {
-  const ext = langExtensionFor({ refData: assembleReferenceData(null) });
+  const ext = langExtensionFor({ catalog: { refData: assembleReferenceData(null) } });
   const nodesOf = (doc: string): { name: string; from: number; to: number }[] => {
     const st = EditorState.create({ doc, extensions: ext });
     const out: { name: string; from: number; to: number }[] = [];
@@ -388,14 +399,16 @@ describe('langExtensionFor — ClickHouse dialect flags (#182)', () => {
 describe('completionSourceFor', () => {
   const ref = assembleReferenceData(null);
   const app = makeApp({
-    completions: [
-      { label: 'SELECT', kind: 'keyword', insert: 'SELECT', detail: 'keyword' },
-      { label: 'sum', kind: 'agg', insert: 'sum()', caretBack: 1, detail: '()' },
-      { label: 'trips', kind: 'table', insert: 'trips', detail: 'table', parent: 'db1' },
-      { label: 'fare', kind: 'column', insert: 'fare', parent: 'trips' },
-      { label: 'odd', kind: 'mystery', insert: 'odd' },
-    ],
-    refData: ref,
+    catalog: {
+      completions: [
+        { label: 'SELECT', kind: 'keyword', insert: 'SELECT', detail: 'keyword' },
+        { label: 'sum', kind: 'agg', insert: 'sum()', caretBack: 1, detail: '()' },
+        { label: 'trips', kind: 'table', insert: 'trips', detail: 'table', parent: 'db1' },
+        { label: 'fare', kind: 'column', insert: 'fare', parent: 'trips' },
+        { label: 'odd', kind: 'mystery', insert: 'odd' },
+      ],
+      refData: ref,
+    },
   });
   const src = completionSourceFor(app);
   const ctx = (doc: string, pos: number, explicit = false): SqlCompletionContext => ({ state: EditorState.create({ doc }), pos, explicit });
@@ -437,16 +450,18 @@ describe('completionSourceFor', () => {
 
   it('returns null when nothing matches', () => {
     expect(src(ctx('zzzznope', 8))).toBe(null);
-    expect(completionSourceFor(makeApp({ completions: undefined }))(ctx('se', 2))).toBe(null);
+    expect(completionSourceFor(makeApp({ catalog: { completions: undefined } }))(ctx('se', 2))).toBe(null);
   });
 
   it('is FROM-aware: an alias resolves to its table columns (#84)', () => {
     const scoped = makeApp({
-      completions: [
-        { label: 'ts', kind: 'column', insert: 'ts', parent: 'events' },
-        { label: 'other', kind: 'column', insert: 'other', parent: 'unrelated' },
-      ],
-      refData: ref,
+      catalog: {
+        completions: [
+          { label: 'ts', kind: 'column', insert: 'ts', parent: 'events' },
+          { label: 'other', kind: 'column', insert: 'other', parent: 'unrelated' },
+        ],
+        refData: ref,
+      },
     });
     const s = completionSourceFor(scoped);
     // `e.` with `FROM events e` on the same line → events' columns, not unrelated
@@ -477,15 +492,15 @@ describe('applyFor', () => {
 describe('infoFor', () => {
   const ref = assembleReferenceData(null);
   it('keywords resolve the static doc as a DOM node (CM6 appendChild()s an info fn result)', () => {
-    const app = makeApp({ refData: ref });
+    const app = makeApp({ catalog: { refData: ref } });
     const node = infoFor(app, { kind: 'keyword', label: 'FORMAT' })!() as Node;
     expect(node.nodeType).toBe(1); // a bare string would throw in CM6's addInfoPane
     expect(node.textContent).toMatch(/output format/);
     expect(infoFor(app, { kind: 'keyword', label: 'ZZZ' })!()).toBe(null);
-    expect(infoFor(makeApp({ refData: null }), { kind: 'keyword', label: 'FORMAT' })!()).toBe(null);
+    expect(infoFor(makeApp({ catalog: { refData: null } }), { kind: 'keyword', label: 'FORMAT' })!()).toBe(null);
   });
   it('functions fetch lazily through app.entityDoc; empty doc → null', async () => {
-    const app = makeApp({ entityDoc: vi.fn(async (n: string) => (n === 'sum' ? 'adds things' : '')) });
+    const app = makeApp({ catalog: { entityDoc: vi.fn(async (n: string) => (n === 'sum' ? 'adds things' : '')) } });
     const node = (await infoFor(app, { kind: 'agg', label: 'sum' })!()) as Node;
     expect(node.nodeType).toBe(1);
     expect(node.textContent).toBe('adds things');
@@ -518,16 +533,16 @@ describe('hoverSourceFor', () => {
   });
 
   it('returns null off-word or without refData', () => {
-    const { view } = mounted({ refData: ref });
-    const hover = hoverSourceFor({ refData: ref });
+    const { view } = mounted({ catalog: { refData: ref } });
+    const hover = hoverSourceFor({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: '   ' } });
     expect(hover(view, 1)).toBe(null); // whitespace
-    expect(hoverSourceFor({ refData: null })(view, 1)).toBe(null);
+    expect(hoverSourceFor({ catalog: { refData: null } })(view, 1)).toBe(null);
   });
 
   it('unknown words get no tooltip; keywords get their static doc (multi-line offsets)', () => {
-    const { view } = mounted({ refData: ref });
-    const hover = hoverSourceFor({ refData: ref });
+    const { view } = mounted({ catalog: { refData: ref } });
+    const hover = hoverSourceFor({ catalog: { refData: ref } });
     // Line 3 — pins the line.from offset arithmetic (word lookup AND tooltip range)
     view.dispatch({ changes: { from: 0, to: 0, insert: '\n\nmystery PREWHERE' } });
     expect(hover(view, 4)).toBe(null);
@@ -539,8 +554,8 @@ describe('hoverSourceFor', () => {
 
   it('functions show sig → ret + description; missing desc fetches via entityDoc', async () => {
     const entityDoc = vi.fn(async () => 'fetched doc');
-    const { view } = mounted({ refData: ref });
-    const hover = hoverSourceFor({ refData: ref, entityDoc });
+    const { view } = mounted({ catalog: { refData: ref } });
+    const hover = hoverSourceFor({ catalog: { refData: ref, entityDoc } });
     view.dispatch({ changes: { from: 0, to: 0, insert: 'described bare' } });
     const rich = hover(view, 3)!.create(view).dom;
     expect(rich.textContent).toContain('described(x)');
@@ -552,7 +567,7 @@ describe('hoverSourceFor', () => {
     await Promise.resolve();
     expect(lazy.querySelector('.hover-doc')!.textContent).toBe('fetched doc');
     // no entityDoc injected → the empty desc just stays empty
-    const noFetch = hoverSourceFor({ refData: ref })(view, 12)!.create(view).dom;
+    const noFetch = hoverSourceFor({ catalog: { refData: ref } })(view, 12)!.create(view).dom;
     expect(noFetch.querySelector('.hover-doc')!.textContent).toBe('');
   });
 });
@@ -674,9 +689,9 @@ describe('handleDrop', () => {
 
 describe('reference-data lifecycle', () => {
   it('mount resolves the dialect lazily — refData assigned after the factory still paints (createApp order)', () => {
-    const app = makeApp({ refData: null });
+    const app = makeApp({ catalog: { refData: null } });
     const port = createCodeMirrorEditor(app); // createApp builds the port BEFORE assembling refData
-    app.refData = assembleReferenceData(null); // …then assigns the built-in fallback pre-render
+    app.catalog!.refData = assembleReferenceData(null); // …then assigns the built-in fallback pre-render
     activeTab(app.state).sqlDraft = 'select 1 from t';
     const host = document.createElement('div');
     document.body.appendChild(host);
@@ -687,11 +702,13 @@ describe('reference-data lifecycle', () => {
 
   it('camelCase server function names highlight (dialect words are lowercased on both sides)', () => {
     const app = makeApp({
-      refData: assembleReferenceData({
-        keywords: ['SELECT', 'FROM'],
-        functions: { toDateTime: { kind: 'fn', sig: 'toDateTime(x)', ret: '', desc: '' } },
-        formats: ['CSV'],
-      }),
+      catalog: {
+        refData: assembleReferenceData({
+          keywords: ['SELECT', 'FROM'],
+          functions: { toDateTime: { kind: 'fn', sig: 'toDateTime(x)', ret: '', desc: '' } },
+          formats: ['CSV'],
+        }),
+      },
     });
     const port = createCodeMirrorEditor(app);
     activeTab(app.state).sqlDraft = 'select toDateTime(x) from t';
@@ -758,9 +775,9 @@ describe('input guards (the old editor-brackets.js role)', () => {
 
   it('hover stays quiet inside strings and comments (no phantom docs over prose)', () => {
     const ref = assembleReferenceData(null);
-    const { view } = mounted({ refData: ref });
+    const { view } = mounted({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'count' -- count rows" } });
-    const hover = hoverSourceFor({ refData: ref });
+    const hover = hoverSourceFor({ catalog: { refData: ref } });
     expect(hover(view, 10)).toBe(null); // 'count' inside the string
     expect(hover(view, 20)).toBe(null); // 'count' inside the comment
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT count(x)' } });
@@ -773,9 +790,9 @@ describe('input guards (the old editor-brackets.js role)', () => {
       functions: { sum: { kind: 'agg', sig: 'sum(x)', ret: '', desc: 'adds' } },
       formats: ['CSV'],
     });
-    const { view } = mounted({ refData: ref });
+    const { view } = mounted({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT SUM(x)' } });
-    const tip = hoverSourceFor({ refData: ref })(view, 9);
+    const tip = hoverSourceFor({ catalog: { refData: ref } })(view, 9);
     expect(tip).not.toBe(null);
     expect(tip!.create(view).dom.textContent).toContain('sum(x)');
   });
@@ -783,7 +800,7 @@ describe('input guards (the old editor-brackets.js role)', () => {
 
 describe('FROM-scope column loading (#84)', () => {
   // A schema with one FROM-able table whose columns aren't loaded yet.
-  const withSchema = (over: Partial<CodeMirrorEditorApp> = {}) => {
+  const withSchema = (over: Parameters<typeof makeApp>[0] = {}) => {
     const app = makeApp(over);
     app.state.schema.value = [{ db: 'app', tables: [{ name: 'events', columns: null }] }];
     return app;
@@ -814,7 +831,7 @@ describe('FROM-scope column loading (#84)', () => {
     vi.useFakeTimers();
     try {
       const app = withSchema({
-        completions: [{ label: 'ts', kind: 'column', insert: 'ts', parent: 'events' }],
+        catalog: { completions: [{ label: 'ts', kind: 'column', insert: 'ts', parent: 'events' }] },
       });
       const port = createCodeMirrorEditor(app);
       const host = document.createElement('div');

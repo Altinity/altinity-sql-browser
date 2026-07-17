@@ -15,9 +15,11 @@
 //   3. `overrides` — generic in `O`, so a caller's own mock keeps its exact
 //      call-site type (e.g. a 2-arg `exec.executeRead` spy) instead of
 //      collapsing to `App`'s declared (argument-erased) method signature.
-// `dom`/`chCtx`/`actions`/`exec` are nested objects, merged the same three-way
-// (defaults, stubs, override) so a caller overriding e.g. `chCtx: { onSignedOut }`
-// or `exec: { executeRead }` never has to re-spread the other sibling fields.
+// `dom`/`conn`/`catalog`/`actions`/`exec` are nested objects, merged the same
+// three-way (defaults, stubs, override) so a caller overriding e.g.
+// `chCtx: { onSignedOut }` (feeds `conn.chCtx` — #276 Phase 5 deleted the flat
+// `App.chCtx` alias) or `exec: { executeRead }` never has to re-spread the
+// other sibling fields.
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
@@ -44,19 +46,17 @@ import type {
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
 
-// Production invariant (#276 Phase 2): `app.chCtx` and `app.conn.chCtx` are
-// THE SAME live object (app.ts aliases `conn.chCtx`) — the defaults + the
-// makeApp merge below preserve that identity so a fixture mutation through
-// either alias observes shared state, exactly like the real app.
+// `app.conn.chCtx`'s defaults (#276 Phase 2; Phase 5 deleted the flat
+// `App.chCtx` alias this file used to also mirror it onto).
 const chCtxDefaults: ChCtx = {
   fetch, origin: '', authConfirmed: true,
   getToken: async () => null, refresh: async () => false, authHeader: () => '', onSignedOut: () => {},
 };
 
-// A minimal `ConnectionSession` stub (#276 Phase 2) — every render-module test
-// exercises `app.conn` only incidentally (through the `App`-level auth
-// delegates it backs, e.g. `isSignedIn`/`email`/`ensureConfig`), never
-// directly; this is inert, never-called-by-default plumbing so `appDefaults`
+// A minimal `ConnectionSession` stub (#276 Phase 2) — most render-module
+// tests read `app.conn.isSignedIn`/`.email`/`.ensureConfig`/etc. only
+// incidentally, never directly; this is inert, never-called-by-default
+// plumbing so `appDefaults`
 // still satisfies the full `App` contract.
 const connDefaults: ConnectionSession = {
   basePath: '',
@@ -127,13 +127,11 @@ const workbenchDefaults: WorkbenchSession = {
 
 // A minimal `SchemaCatalogService` stub (#276 Phase 4A) — no render-module
 // fixture exercises the service directly (that's schema-catalog-service.test.ts's
-// job); `App`'s own top-level `refData`/`completions`/`docCache`/`entityDoc`/
-// `loadVersion`/`loadSchema`/`loadReference` stubs below are independent of
-// this (same dual pattern as `conn` vs. the top-level auth delegates) — this
-// just satisfies the `App.catalog` contract. `refData`/`completions` use the
-// real built-in fallback (`assembleReferenceData(null)`/`buildCompletions`)
-// rather than a cast, so they stay structurally real `AssembledReference`/
-// `CompletionItem[]` values.
+// job); this just satisfies the `App.catalog` contract (Phase 5 deleted the
+// flat `App` delegates this file used to also mirror it onto). `refData`/
+// `completions` use the real built-in fallback (`assembleReferenceData(null)`/
+// `buildCompletions`) rather than a cast, so they stay structurally real
+// `AssembledReference`/`CompletionItem[]` values.
 const catalogRefDataDefault: AssembledReference = assembleReferenceData(null);
 const catalogDefaults: SchemaCatalogService = {
   loadVersion: vi.fn(async () => {}),
@@ -151,12 +149,11 @@ const catalogDefaults: SchemaCatalogService = {
 // A minimal `WorkbenchParameterSession` stub (#276 Phase 4B1) — no
 // render-module fixture exercises the session directly (that's
 // workbench-parameter-session.test.ts's job); this just satisfies the
-// `App.params` contract. `hardenedVars` is the SAME `Set` instance as
-// `appDefaults.hardenedVars` below (the production aliasing invariant —
-// app.ts assigns `app.hardenedVars = params.hardenedVars`).
-const paramsHardenedVarsDefault = new Set<string>();
+// `App.params` contract. No flat `App.hardenedVars` alias to also mirror
+// this onto (#276 Phase 5 deleted it) — a fixture reads `app.params.hardenedVars`
+// directly now.
 const paramsDefaults: WorkbenchParameterSession = {
-  hardenedVars: paramsHardenedVarsDefault,
+  hardenedVars: new Set<string>(),
   tabAnalysis: vi.fn(() => ({ fields: {}, sources: [], sourceErrors: {}, diagnostics: [] })),
   prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
@@ -236,9 +233,6 @@ const prefsDefaults: AppPreferences = {
 const appDefaults: App = {
   state: {} as AppState,
   dom: {},
-  // The SAME `Set` instance as `paramsDefaults.hardenedVars` — the production
-  // aliasing invariant (app.ts's `app.hardenedVars = params.hardenedVars`).
-  hardenedVars: paramsHardenedVarsDefault,
   matchMedia: null,
   build: 'v0.0.0-test',
   root: null,
@@ -261,21 +255,9 @@ const appDefaults: App = {
   faviconHref: '',
   toggleTheme: () => {},
   chart: undefined,
-  host: () => '',
   activeTab: () => ({}) as App['activeTab'] extends () => infer T ? T : never,
-  isSignedIn: () => true,
-  email: () => '',
-  hostHint: '',
-  basePath: '',
-  setTokens: () => {},
-  loadConfig: async () => ({}) as ResolvedIdpConfig,
-  loadIdps: async () => ({ idps: [], basicLogin: true, hosts: [] }) as ConfigDoc,
-  ensureConfig: async () => null,
-  ensureFreshToken: async () => true,
-  chCtx: chCtxDefaults,
   showLogin: () => {},
   signOut: () => {},
-  receiveAuthHandoff: async () => false,
   canExport: () => false,
   canExportScript: () => false,
   showSaveFilePicker: null,
@@ -284,25 +266,15 @@ const appDefaults: App = {
   FileReader: globalThis.FileReader,
   saveJSON: () => {},
   saveStr: () => {},
-  savePref: () => {},
-  saveVarValues: () => {},
-  saveFilterActive: () => {},
+  // The one deliberate delegate survivor of #276 Phase 5's params-group
+  // cleanup — see `App.saveVarRecent`'s own doc comment (app.types.ts).
+  // Every OTHER params-group member (`saveVarValues`/`saveFilterActive`/
+  // `saveVarRecentDisabled`/`recordBoundParams`/`clearVarRecent`/
+  // `clearAllVarRecent`/`hardenedVars`) lives only on `paramsDefaults` above.
   saveVarRecent: () => {},
-  saveVarRecentDisabled: () => {},
-  recordBoundParams: () => {},
-  clearVarRecent: () => {},
-  clearAllVarRecent: () => {},
   recordHistory: () => {},
   downloadFile: () => {},
   editingLibrary: false,
-  loadVersion: async () => {},
-  loadSchema: async () => {},
-  loadReference: async () => {},
-  refData: { functions: {}, keywordDocs: {} },
-  completions: {},
-  rebuildCompletions: () => {},
-  docCache: new Map(),
-  entityDoc: async () => null,
   updateBanner: () => {},
   wallNow: () => 0,
   now: () => 0,
@@ -323,10 +295,9 @@ const appDefaults: App = {
   setFmtBtn: () => {},
   specBlocked: () => false,
   updateSaveBtn: () => {},
-  evaluateSpecDraft: () => ({ parsed: null, diagnostics: [] }),
-  revalidateSpecDrafts: () => {},
-  revealFirstSpecError: () => {},
-  registerSpecValidator: () => () => {},
+  // `evaluateSpecDraft`/`revalidateSpecDrafts`/`revealFirstSpecError`/
+  // `registerSpecValidator` have no flat `App` member (#276 Phase 5 deleted
+  // them) — a fixture reads `queryDocDefaults`/`app.queryDoc.*` for those now.
   activateInvalidSpecDraft: () => {},
   openSavePopover: () => {},
   openUserMenu: () => {},
@@ -341,8 +312,11 @@ const appDefaults: App = {
  * alone only shallowly optionalizes App's OWN members, so `chCtx: {
  * onSignedOut }` (a caller overriding one ChCtx member, not the whole
  * service) would otherwise fail the constraint even though the nested merge
- * below happily accepts a partial sub-object. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'conn' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs'>> & {
+ * below happily accepts a partial sub-object. `chCtx` is a fake-app-only
+ * convenience key (#276 Phase 5 deleted `App.chCtx` — `app.conn.chCtx` is
+ * the only live alias now), kept so existing `makeApp({ chCtx: {...} })`
+ * call sites don't all need to become `conn: { chCtx: {...} }`. */
+type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs'>> & {
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -352,9 +326,13 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'chCtx' | 'actions' | 'exec' | 'co
   exec?: Partial<QueryExecutionService>;
   /** Partial like the rest. `conn.chCtx` cannot be overridden here — the
    *  merge below always re-points it at the shared merged `chCtx` object
-   *  (the production identity invariant); override `chCtx` at the top level
-   *  and both aliases see it. */
+   *  built from the top-level `chCtx` override above. */
   conn?: Partial<Omit<ConnectionSession, 'chCtx'>>;
+  /** Partial like `conn` above (#276 Phase 5 — `SchemaCatalogService` no
+   *  longer has flat `App` delegates); most fixtures never touch it, a test
+   *  asserting e.g. `catalog.loadSchema` was called can override just that
+   *  method. */
+  catalog?: Partial<SchemaCatalogService>;
   /** Partial like the rest (#276 Phase 3a) — most fixtures never touch the
    *  session directly; a test asserting `workbench.run`/`.cancel` was called
    *  can override just that method. */
@@ -396,25 +374,52 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     Chart: FakeChart,
     Dagre: dagre, // real dagre — it's pure (no DOM), so tests use it directly
     cssVar: () => '', // blank → chartColors() uses its dark-theme fallbacks
-    host: () => 'test.host',
     build: 'v0.0.0-test',
     activeTab: () => activeTab(state),
     sqlEditor: createNoopPort(),
     specEditor: createNoopSpecEditor(),
-    isSignedIn: () => true,
-    // Dashboard (#149) surface: auth is resolved once before tiles fan out, the
-    // Back link derives from the SPA base, and onSignedOut redirects on failure.
-    ensureFreshToken: vi.fn(async () => true),
-    chCtx: { onSignedOut: vi.fn() },
-    basePath: '/sql',
+    // Identity/auth (#276 Phase 5 — all live on `conn` now, no flat `App`
+    // delegates). Dashboard (#149) surface: auth is resolved once before
+    // tiles fan out, the Back link derives from the SPA base, and
+    // onSignedOut redirects on failure.
+    conn: {
+      host: () => 'test.host',
+      isSignedIn: () => true,
+      ensureFreshToken: vi.fn(async () => true),
+      basePath: '/sql',
+      email: () => 'me@example.com',
+      loadIdps: async (): Promise<ConfigDoc> => ({ idps: [], basicLogin: true, hosts: [] }),
+    },
+    // The server-metadata/reference lifecycle (#276 Phase 4A) — no flat `App`
+    // delegates (Phase 5 deleted them); `entityDoc` overridden per test (#27).
+    catalog: {
+      loadVersion: vi.fn(),
+      loadSchema: vi.fn(),
+      entityDoc: vi.fn(async () => ''),
+    },
     toggleTheme: vi.fn(),
-    email: () => 'me@example.com',
-    savePref: vi.fn(),
-    saveVarValues: vi.fn(),
-    saveFilterActive: vi.fn(),
+    // The one deliberate delegate survivor of #276 Phase 5's params-group
+    // cleanup — see `App.saveVarRecent`'s own doc comment.
     saveVarRecent: vi.fn(),
-    saveVarRecentDisabled: vi.fn(),
-    recordBoundParams: vi.fn(),
+    // `paramsDefaults`/`prefsDefaults` above are typed `: WorkbenchParameterSession`/
+    // `: AppPreferences` — module-scoped SINGLETONS shared by every `makeApp()`
+    // call in a test file. Widened members lose `.mock`/`.mockClear` the same
+    // way `catalog`/`conn`'s do (hence their own untyped `base` stub layers
+    // below); worse, since they're shared across every `it()` in the file, a
+    // default (non-overridden) `vi.fn()` there ACCUMULATES call counts across
+    // unrelated tests instead of resetting per `makeApp()` call. Every
+    // params-group/prefs member a fixture asserts `.toHaveBeenCalled*`/`.mock.*`
+    // against WITHOUT an explicit `overrides.params`/`.prefs` override gets its
+    // own FRESH-per-call `vi.fn()` here — same as `saveVarRecent` above.
+    params: {
+      recordBoundParams: vi.fn(),
+      clearVarRecent: vi.fn(),
+      clearAllVarRecent: vi.fn(),
+      saveVarValues: vi.fn(),
+      saveFilterActive: vi.fn(),
+      saveVarRecentDisabled: vi.fn(),
+    },
+    prefs: { save: vi.fn() },
     // #185 detached-read seam + #193 dashboard-tile transport + #83 script
     // transport, now the shared QueryExecutionService (#276 Phase 1):
     // `executeRead` is no-op by default (snapshot cases never call it);
@@ -424,24 +429,17 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       executeScript: vi.fn(async () => ({ entries: [], aborted: false })),
       kill: vi.fn(async () => {}),
     },
-    clearVarRecent: vi.fn(),
-    clearAllVarRecent: vi.fn(),
     saveJSON: vi.fn(),
     saveStr: vi.fn(),
     downloadFile: vi.fn(),
     updateSaveBtn: vi.fn(),
     updateEditorModeUi: vi.fn(),
-    revalidateSpecDrafts: vi.fn(),
     activateInvalidSpecDraft: vi.fn(),
     elapsedMs: () => 0,
     now: () => 0,
     wallNow: () => 0, // the #173 wave wall clock (epoch ms; fixed in tests)
     showLogin: vi.fn(),
     signOut: vi.fn(),
-    loadVersion: vi.fn(),
-    loadSchema: vi.fn(),
-    entityDoc: vi.fn(async () => ''), // lazy hover-doc loader (#27); overridden per test
-    loadIdps: async (): Promise<ConfigDoc> => ({ idps: [], basicLogin: true, hosts: [] }),
     // Concrete (non-optional) elements — most consumers read these
     // unconditionally; a test that clears one back to `undefined` (a "no
     // mount point" guard) widens its own local read, same convention as
@@ -495,25 +493,26 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       updateSaveBtn: vi.fn(),
     },
   };
-  // One merged chCtx object shared by BOTH aliases (app.chCtx and
-  // app.conn.chCtx) — the production identity invariant (#276 Phase 2).
-  const chCtx = { ...appDefaults.chCtx, ...base.chCtx, ...(overrides.chCtx ?? {}) };
+  // `app.conn.chCtx` — built from the defaults + this fixture's own
+  // `onSignedOut` mock + a caller's top-level `chCtx` override (#276 Phase 5:
+  // no more flat `App.chCtx` alias to also mirror it onto).
+  const chCtx = { ...chCtxDefaults, onSignedOut: vi.fn(), ...(overrides.chCtx ?? {}) };
   const merged = {
     ...appDefaults,
     ...base,
     ...overrides,
     dom: { ...appDefaults.dom, ...base.dom, ...(overrides.dom ?? {}) },
-    chCtx,
     actions: { ...appDefaults.actions, ...base.actions, ...(overrides.actions ?? {}) },
     exec: { ...appDefaults.exec, ...base.exec, ...(overrides.exec ?? {}) },
-    conn: { ...connDefaults, ...(overrides.conn ?? {}), chCtx },
+    conn: { ...connDefaults, ...base.conn, ...(overrides.conn ?? {}), chCtx },
+    catalog: { ...catalogDefaults, ...base.catalog, ...(overrides.catalog ?? {}) },
     workbench: { ...workbenchDefaults, ...(overrides.workbench ?? {}) },
-    params: { ...paramsDefaults, ...(overrides.params ?? {}) },
+    params: { ...paramsDefaults, ...base.params, ...(overrides.params ?? {}) },
     queryDoc: { ...queryDocDefaults, ...(overrides.queryDoc ?? {}) },
     saved: { ...savedDefaults, ...(overrides.saved ?? {}) },
     exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
-    prefs: { ...prefsDefaults, ...(overrides.prefs ?? {}) },
+    prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

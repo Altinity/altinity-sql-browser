@@ -19,7 +19,7 @@ import { isQuerylessPanel } from './core/panel-cfg.js';
 import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
 import type { State } from './ui/app.types.js';
 import type { BootstrapEnv } from './env.types.js';
-import type { ResolvedIdpConfig } from './net/oauth-config.js';
+import type { ConnectionSession } from './application/connection-session.js';
 import type { SpecEditorApp } from './editor/spec-editor.js';
 import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
 
@@ -28,15 +28,13 @@ import type { ShortcutKeydownEvent } from './ui/shortcuts.js';
  *  own `createApp()` call below) satisfies this directly, and so does
  *  tests/unit/main.test.ts's long-standing minimal `fakeApp()` fixture — no
  *  cast needed on either side (same convention as ui/shortcuts.ts's
- *  ShortcutsApp). */
+ *  ShortcutsApp). Identity/auth reads go through `conn` (#276 Phase 5 —
+ *  the flat `App` delegates were deleted; `loadConfig` is now `resolveConfig`,
+ *  its real name on `ConnectionSession`). */
 export interface BootstrapApp {
   state: Pick<State, 'tabs' | 'resultView'>;
-  isSignedIn(): boolean;
-  loadConfig(): Promise<ResolvedIdpConfig>;
-  setTokens(id: string, refresh?: string): void;
-  receiveAuthHandoff(handoffEnv: { opener?: Window | null }): Promise<boolean>;
-  ensureFreshToken(): Promise<boolean>;
-  ensureConfig(): Promise<ResolvedIdpConfig | null>;
+  conn: Pick<ConnectionSession,
+    'isSignedIn' | 'resolveConfig' | 'setTokens' | 'receiveAuthHandoff' | 'ensureFreshToken' | 'ensureConfig'>;
   renderDashboard(): void;
   renderApp(): void;
   /** The real `App.showLogin` is `(msg?: string) => void` — every other real
@@ -72,7 +70,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       callbackError = 'OAuth state mismatch — please try again.';
     } else {
       try {
-        const cfg = await app.loadConfig();
+        const cfg = await app.conn.resolveConfig();
         const tokens = await exchangeCodeForTokens(env.fetch, cfg, {
           code,
           // `verifier` is written to sessionStorage just before the redirect;
@@ -84,7 +82,7 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
         });
         const bearer = bearerFromTokens(tokens, cfg.bearer);
         if (!bearer) throw new Error('Token response missing bearer token');
-        app.setTokens(bearer, tokens.refresh_token);
+        app.conn.setTokens(bearer, tokens.refresh_token);
       } catch (e) {
         callbackError = 'OAuth token exchange failed: ' + ((e instanceof Error && e.message) || e);
       }
@@ -155,26 +153,26 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
   // one-time credential handoff from the opener before deciding what to render.
   // A cold/bookmarked visit has no opener → falls through to the login screen,
   // which after sign-in returns to /sql/dashboard and renders the dashboard.
-  if (dash && !app.isSignedIn()) {
-    await app.receiveAuthHandoff(env);
+  if (dash && !app.conn.isSignedIn()) {
+    await app.conn.receiveAuthHandoff(env);
     // The opener may hand over an *expired* id_token whose refresh token is still
     // good (an idle opener refreshes only lazily). Attempt a refresh before
     // giving up — otherwise a valid handoff would still bounce to a full re-login.
-    if (!app.isSignedIn()) await app.ensureFreshToken();
+    if (!app.conn.isSignedIn()) await app.conn.ensureFreshToken();
   }
 
-  if (app.isSignedIn()) {
+  if (app.conn.isSignedIn()) {
     // Signed in either via a valid OAuth token or a restored basic session.
     ss.removeItem('oauth_shared'); // consumed
     // Resolve config first so the header shows the real CH identity (the
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
-    await app.ensureConfig();
+    await app.conn.ensureConfig();
     if (dash) app.renderDashboard(); else app.renderApp();
   } else {
     app.showLogin(callbackError);
   }
-  return { callbackError, signedIn: app.isSignedIn() };
+  return { callbackError, signedIn: app.conn.isSignedIn() };
 }
 
 // Set once by tests/setup.js to keep the browser-only autostart block below

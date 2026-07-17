@@ -23,6 +23,7 @@ import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildFilterOptionField } from './filter-option-field.js';
 import type { FilterFieldOption } from './filter-option-field.js';
+import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). A real `App` satisfies this
@@ -36,9 +37,9 @@ export interface FilterBarApp {
     filterActive: Record<string, boolean>;
     varRecent: RecentMap;
   };
-  saveVarValues(): void;
-  saveFilterActive(): void;
-  clearVarRecent(name: string): void;
+  /** #276 Phase 5: no flat `App.saveVarValues`/`saveFilterActive`/
+   *  `clearVarRecent` delegates — this module reads `app.params.*` directly. */
+  params: Pick<WorkbenchParameterSession, 'saveVarValues' | 'saveFilterActive' | 'clearVarRecent'>;
   wallNow(): number;
 }
 
@@ -156,8 +157,8 @@ export function buildFilterBar(
         onValueChange: (value, active) => {
           app.state.varValues[p.name] = value;
           app.state.filterActive[p.name] = active;
-          app.saveVarValues();
-          app.saveFilterActive();
+          app.params.saveVarValues();
+          app.params.saveFilterActive();
         },
         onCommit: () => onCommit(p.name),
       });
@@ -194,8 +195,8 @@ export function buildFilterBar(
       // flip re-runs affected tiles exactly like a value change (same
       // debounce + generation guard downstream).
       app.state.filterActive[p.name] = input.value !== '';
-      app.saveVarValues();
-      app.saveFilterActive();
+      app.params.saveVarValues();
+      app.params.saveFilterActive();
       applyFieldState(input, getField(p.name, 'input'), baseTitle, combo?.previewEl);
       // `!`: DOM's clearTimeout is a documented no-op on `null`/`undefined` —
       // the original .js called it unconditionally (`timer` starts `null`).
@@ -211,7 +212,7 @@ export function buildFilterBar(
     // header comment). (#160's curated-param opt-out hook: nothing to check
     // yet — no curated param exists before #160 lands.)
     const getRecents = (text: string): string[] => recentOptions(app.state.varRecent, p.name, p.type, text);
-    const onClearRecent = (): void => app.clearVarRecent(p.name);
+    const onClearRecent = (): void => app.params.clearVarRecent(p.name);
     // A preset/recent pick is a deliberate, complete action (like Enter) —
     // run immediately, bypassing the debounce `onValueInput` just armed,
     // rather than waiting out FILTER_DEBOUNCE_MS for an explicit choice.

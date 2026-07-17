@@ -15,21 +15,23 @@ import { h } from './dom.js';
 import { Icon } from './icons.js';
 import type { ActionsRegistry } from './app.types.js';
 import type { ConfigDoc, HostDescriptor, IdpDescriptor } from '../net/oauth-config.js';
+import type { ConnectionSession } from '../application/connection-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). `root` is narrowed to a
  *  non-null `Element` (vs. `App.root`'s `Element | null`): this module always
  *  writes through it unconditionally, exactly as it already did pre-#262.
- *  `loadIdps` now matches `App.loadIdps`'s real resolved shape (oauth-config.ts's
- *  `ConfigDoc`) directly — #267 fixed the contract that used to undersell it
- *  as `{ idps: Array<{id}> }`, so the local `LoginIdpsResult` widening this
- *  module needed for that gap is gone. */
+ *  `conn.loadIdps` matches `ConnectionSession.loadIdps`'s real resolved shape
+ *  (oauth-config.ts's `ConfigDoc`) directly — #267 fixed the contract that
+ *  used to undersell it as `{ idps: Array<{id}> }`, so the local
+ *  `LoginIdpsResult` widening this module needed for that gap is gone.
+ *  `host`/`hostHint`/`loadIdps` moved onto `app.conn` in #276 Phase 5 (the
+ *  flat `App` delegates were deleted); `showLogin` stays App-level — it
+ *  composes rendering, not a pure forward. */
 export interface LoginApp {
   root: Element;
-  host(): string;
-  hostHint?: string;
+  conn: Pick<ConnectionSession, 'host' | 'hostHint' | 'loadIdps'>;
   actions: Pick<ActionsRegistry, 'login' | 'connect'>;
-  loadIdps(): Promise<ConfigDoc>;
   showLogin(msg?: string): void;
 }
 
@@ -43,20 +45,20 @@ function errMsg(err: unknown): string {
 
 /**
  * Render the login screen into `app.root`. `app` provides:
- *   host()                     — the serving host (where SSO authenticates)
+ *   conn.host()                — the serving host (where SSO authenticates)
  *   actions.login(id?)         — start the OAuth flow for IdP `id` (async)
  *   actions.connect({...})     — credential sign-in; renders the app on success
- *   loadIdps()                 — resolve { idps, basicLogin } (async)
+ *   conn.loadIdps()            — resolve { idps, basicLogin } (async)
  *   showLogin(msg)             — re-render with an error message
  */
 export function renderLogin(app: LoginApp, errorMsg?: string): void {
-  const cur = app.host();
+  const cur = app.conn.host();
   let busy: 'sso' | 'creds' | null = null; // guards against double-submit
   let showPw = false;
   // A `?host=` URL param pre-fills the credential server address. A non-empty
   // host means credential-only (SSO can only target the serving host), so
   // Advanced opens and the SSO buttons disable.
-  const hostHint = app.hostHint || '';
+  const hostHint = app.conn.hostHint || '';
   let advOpen = !!hostHint;
   let ssoBtns: HTMLButtonElement[] = [];
 
@@ -160,7 +162,7 @@ export function renderLogin(app: LoginApp, errorMsg?: string): void {
   // Resolve the configured IdPs (and the basic_login flag) and reconcile which
   // sections are shown. On failure keep credentials visible (fail-open — OAuth
   // can't work without config anyway) and show no SSO.
-  app.loadIdps().then(({ idps, basicLogin, hosts }) => {
+  app.conn.loadIdps().then(({ idps, basicLogin, hosts }) => {
     const credsShown = basicLogin !== false;
     if (!credsShown) credSection.remove();
     populateHosts(hosts);

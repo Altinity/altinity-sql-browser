@@ -76,7 +76,7 @@ describe('handleKeydown', () => {
     ({ preventDefault: vi.fn(), key: '', metaKey: false, ctrlKey: false, shiftKey: false, target: {}, ...over });
 
   it('⌘Enter runs (even when signed out)', () => {
-    const app = makeApp({ isSignedIn: () => false });
+    const app = makeApp({ conn: { isSignedIn: () => false } });
     expect(handleKeydown(ev({ metaKey: true, key: 'Enter' }), app)).toBe('run');
     expect(app.actions.run).toHaveBeenCalled();
   });
@@ -112,7 +112,7 @@ describe('handleKeydown', () => {
     expect(app.actions.formatQuery).toHaveBeenCalled();
     expect(app.actions.run).not.toHaveBeenCalled();
     expect(e.preventDefault).toHaveBeenCalled();
-    const out = makeApp({ isSignedIn: () => false });
+    const out = makeApp({ conn: { isSignedIn: () => false } });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 'Enter' }), out)).toBeNull();
   });
   it('Spec mode blocks Run and routes document formatting to the Spec editor', () => {
@@ -144,7 +144,7 @@ describe('handleKeydown', () => {
     expect(app.actions.share).toHaveBeenCalledTimes(1);
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), app)).toBe('save');
     expect(app.actions.save).toHaveBeenCalledTimes(2);
-    const out = makeApp({ isSignedIn: () => false });
+    const out = makeApp({ conn: { isSignedIn: () => false } });
     expect(handleKeydown(ev({ metaKey: true, shiftKey: true, key: 's' }), out)).toBeNull();
     expect(handleKeydown(ev({ metaKey: true, key: 's' }), out)).toBeNull();
   });
@@ -153,7 +153,7 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: '?' }), app)).toBe('shortcuts');
     expect(handleKeydown(ev({ key: '?', target: { tagName: 'INPUT' } }), app)).toBeNull();
     expect(handleKeydown(ev({ key: '?', target: { isContentEditable: true } }), app)).toBeNull();
-    const out = makeApp({ isSignedIn: () => false });
+    const out = makeApp({ conn: { isSignedIn: () => false } });
     expect(handleKeydown(ev({ key: '?' }), out)).toBeNull();
   });
   it('returns null for unhandled keys', () => {

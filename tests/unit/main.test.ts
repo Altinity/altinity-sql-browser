@@ -28,26 +28,35 @@ const asFetch = (v: object): typeof fetch => v as typeof fetch;
 
 type FakeApp = BootstrapApp & { token: string | null };
 
-function fakeApp(over: Partial<FakeApp> = {}): FakeApp {
-  return {
-    token: null,
+// `conn` overrides are merged onto the default stub (not a full-object
+// replace) so a test can override e.g. just `isSignedIn` without losing the
+// other conn defaults — `rest` (everything else) still spreads directly.
+function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp['conn']> } = {}): FakeApp {
+  const { conn: connOver, ...rest } = over;
+  const self = {
+    token: null as string | null,
     state: {
       tabs: signal([newTabObj('t1')]),
       resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'),
     },
-    loadConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' }) as ResolvedIdpConfig),
-    ensureConfig: vi.fn(async () => ({}) as ResolvedIdpConfig),
-    setTokens: vi.fn(function (this: FakeApp, id: string) { this.token = id; }),
+    conn: {
+      resolveConfig: vi.fn(async () => ({ clientId: 'c', tokenUri: 'https://t', clientSecret: '' }) as ResolvedIdpConfig),
+      ensureConfig: vi.fn(async () => ({}) as ResolvedIdpConfig),
+      setTokens: vi.fn((id: string) => { self.token = id; }),
+      receiveAuthHandoff: vi.fn(async () => false),
+      ensureFreshToken: vi.fn(async () => false),
+      // Default mirrors the real controller: signed in iff a token is held.
+      // Tests that exercise a basic session (or a dynamic token check)
+      // override this directly, either here or post-construction.
+      isSignedIn: () => !!self.token,
+      ...connOver,
+    },
     renderApp: vi.fn(),
     renderDashboard: vi.fn(),
-    receiveAuthHandoff: vi.fn(async () => false),
-    ensureFreshToken: vi.fn(async () => false),
     showLogin: vi.fn(),
-    // Default mirrors the real controller: signed in iff a token is held.
-    // Tests that exercise a basic session override this directly.
-    isSignedIn(this: FakeApp) { return !!this.token; },
-    ...over,
+    ...rest,
   } as FakeApp;
+  return self;
 }
 
 // `over` only ever supplies `location`/`fetch`/`opener` at real call sites below;
@@ -94,16 +103,16 @@ describe('bootstrap', () => {
   });
 
   it('renders the app when already signed in', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv());
     expect(app.renderApp).toHaveBeenCalled();
   });
 
   it('renders the app for a restored basic session (no token)', async () => {
     // A credentials session has no OAuth token; isSignedIn() carries it.
-    const app = fakeApp({ token: null, isSignedIn: () => true });
+    const app = fakeApp({ token: null, conn: { isSignedIn: () => true } });
     const out = await bootstrap(app, fakeEnv());
-    expect(app.ensureConfig).toHaveBeenCalled();
+    expect(app.conn.ensureConfig).toHaveBeenCalled();
     expect(app.renderApp).toHaveBeenCalled();
     expect(out.signedIn).toBe(true);
   });
@@ -117,7 +126,7 @@ describe('bootstrap', () => {
     env.sessionStorage.setItem('oauth_state', 'st');
     env.sessionStorage.setItem('oauth_verifier', 'v');
     await bootstrap(app, env);
-    expect(app.setTokens).toHaveBeenCalledWith(valid, undefined);
+    expect(app.conn.setTokens).toHaveBeenCalledWith(valid, undefined);
     expect(env.history.replaceState).toHaveBeenCalled();
     expect(app.renderApp).toHaveBeenCalled();
   });
@@ -175,7 +184,7 @@ describe('bootstrap', () => {
   });
 
   it('stringifies a non-Error thrown during exchange', async () => {
-    const app = fakeApp({ loadConfig: vi.fn(async () => { throw 'plain failure'; }) });
+    const app = fakeApp({ conn: { resolveConfig: vi.fn(async () => { throw 'plain failure'; }) } });
     const env = fakeEnv({
       location: asLocation({ href: 'https://ch/sql?code=abc&state=st', origin: 'https://ch', pathname: '/sql', search: '?code=abc&state=st', hash: '' }),
     });
@@ -279,7 +288,7 @@ describe('bootstrap', () => {
   });
 
   it('restores Filter for a Filter-role share stashed through the OAuth round-trip (#244)', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' }) });
     env.sessionStorage.setItem('oauth_shared', JSON.stringify({
       sql: 'SELECT 1', specVersion: 1, spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } },
@@ -315,7 +324,7 @@ describe('bootstrap', () => {
 
   it('restores a shared query (SQL + chart) from sessionStorage after the OAuth round-trip', async () => {
     // The hash is gone after the IdP redirect; the stash carries it through.
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' }) });
     const chart = { cfg: {
       type: 'line', x: 0, y: [1], series: null,
@@ -334,7 +343,7 @@ describe('bootstrap', () => {
   });
 
   it('falls back to no shared query when the sessionStorage stash is corrupt', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({ location: asLocation({ href: 'https://ch/sql', origin: 'https://ch', pathname: '/sql', search: '', hash: '' }) });
     env.sessionStorage.setItem('oauth_shared', '{not json');
     await bootstrap(app, env);
@@ -345,7 +354,7 @@ describe('bootstrap', () => {
   const dashLoc = (over: Partial<Location> = {}): Location => asLocation({ href: 'https://ch/sql/dashboard', origin: 'https://ch', pathname: '/sql/dashboard', search: '', hash: '', ...over });
 
   it('renders the dashboard when signed in on the /sql/dashboard route', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     await bootstrap(app, fakeEnv({ location: dashLoc() }));
     expect(app.renderDashboard).toHaveBeenCalled();
     expect(app.renderApp).not.toHaveBeenCalled();
@@ -353,10 +362,10 @@ describe('bootstrap', () => {
 
   it('attempts the auth handoff, then renders the dashboard once it signs the tab in', async () => {
     const app = fakeApp();
-    app.receiveAuthHandoff = vi.fn(async () => { app.token = valid; return true; });
+    app.conn.receiveAuthHandoff = vi.fn(async () => { app.token = valid; return true; });
     const env = fakeEnv({ location: dashLoc(), opener: asWindow({ postMessage: vi.fn() }) });
     await bootstrap(app, env);
-    expect(app.receiveAuthHandoff).toHaveBeenCalledWith(env);
+    expect(app.conn.receiveAuthHandoff).toHaveBeenCalledWith(env);
     expect(app.renderDashboard).toHaveBeenCalled();
     expect(app.showLogin).not.toHaveBeenCalled();
   });
@@ -364,8 +373,8 @@ describe('bootstrap', () => {
   it('falls back to login on a cold dashboard visit with no handoff', async () => {
     const app = fakeApp();
     await bootstrap(app, fakeEnv({ location: dashLoc() }));
-    expect(app.receiveAuthHandoff).toHaveBeenCalled();
-    expect(app.ensureFreshToken).toHaveBeenCalled(); // tried a refresh before giving up
+    expect(app.conn.receiveAuthHandoff).toHaveBeenCalled();
+    expect(app.conn.ensureFreshToken).toHaveBeenCalled(); // tried a refresh before giving up
     expect(app.showLogin).toHaveBeenCalledWith(null);
     expect(app.renderDashboard).not.toHaveBeenCalled();
   });
@@ -373,17 +382,18 @@ describe('bootstrap', () => {
   it('refreshes an expired handed-off token before falling back to login', async () => {
     // The handoff applies an expired id_token (isSignedIn() still false); a
     // refresh via ensureFreshToken recovers a valid one, so we render — not login.
-    const app = fakeApp({ isSignedIn(this: FakeApp) { return this.token === valid; } });
-    app.receiveAuthHandoff = vi.fn(async () => { app.token = 'expired'; return true; });
-    app.ensureFreshToken = vi.fn(async () => { app.token = valid; return true; });
+    const app = fakeApp();
+    app.conn.isSignedIn = () => app.token === valid;
+    app.conn.receiveAuthHandoff = vi.fn(async () => { app.token = 'expired'; return true; });
+    app.conn.ensureFreshToken = vi.fn(async () => { app.token = valid; return true; });
     await bootstrap(app, fakeEnv({ location: dashLoc(), opener: asWindow({ postMessage: vi.fn() }) }));
-    expect(app.ensureFreshToken).toHaveBeenCalled();
+    expect(app.conn.ensureFreshToken).toHaveBeenCalled();
     expect(app.renderDashboard).toHaveBeenCalled();
     expect(app.showLogin).not.toHaveBeenCalled();
   });
 
   it('skips editor share-link seeding on the dashboard route', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const sql = 'SELECT 1';
     const hash = '#' + btoa(unescape(encodeURIComponent(sql)));
     await bootstrap(app, fakeEnv({ location: dashLoc({ href: 'https://ch/sql/dashboard' + hash, hash }) }));
@@ -392,7 +402,7 @@ describe('bootstrap', () => {
   });
 
   it('preserves extra query params while stripping oauth ones', async () => {
-    const app = fakeApp({ token: valid, isSignedIn: () => true });
+    const app = fakeApp({ token: valid, conn: { isSignedIn: () => true } });
     const env = fakeEnv({
       location: asLocation({ href: 'https://ch/sql?code=c&state=st&keep=1', origin: 'https://ch', pathname: '/sql', search: '?code=c&state=st&keep=1', hash: '' }),
       fetch: asFetch(vi.fn(async () => ({ ok: true, json: async () => ({ id_token: valid, refresh_token: 'r' }), text: async () => '' }))),

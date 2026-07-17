@@ -13,19 +13,17 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
-import type { ConfigDoc, ResolvedIdpConfig } from '../net/oauth-config.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
-import type { SpecValidatorFn } from '../core/spec-draft.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
 import type { WorkbenchSession } from './workbench/workbench-session.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 import type { ExportService } from '../application/export-service.js';
-import type { QueryDocumentSession, SpecEvaluationResult } from '../application/query-document-session.js';
+import type { QueryDocumentSession } from '../application/query-document-session.js';
 import type { SavedQueryService } from '../application/saved-query-service.js';
 
 export type { QueryTab as Tab, AppState as State } from '../state.js';
@@ -169,11 +167,6 @@ export interface ActionsRegistry {
 export interface App {
   state: State;
   dom: AppDom;
-  /** Names of `{name:Type}` variables whose value has hardened to invalid
-   * (#170 review — owned by `params`, see below; this is the SAME `Set`
-   * instance, aliased, not copied — app.ts's construction-site comment).
-   * Read directly by tests; otherwise app.ts-internal bookkeeping. */
-  hardenedVars: Set<string>;
   root: Element | null;
   document: Document;
 
@@ -212,37 +205,18 @@ export interface App {
   /** Ad-hoc, consumer-attached (chart-render.js), not initialized by createApp. */
   chart?: { destroy(): void };
 
-  // Identity / auth — Phase-2 delegates onto `conn` (see its doc comment
-  // above). `authMode`/`chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/
-  // `chUsername` moved onto `app.conn` itself (`conn.authMode()`/
-  // `conn.chAuth()`/`conn.basicUserClaim()`/`conn.idpId()`/`conn.selectIdp()`)
-  // — no other module read them off `App` directly (verified #276 Phase 2),
-  // so they aren't re-delegated here.
-  host(): string;
+  // Identity / auth — all live on `app.conn` (see its doc comment above),
+  // e.g. `conn.host()`/`conn.email()`/`conn.isSignedIn()`. `authMode`/
+  // `chAuth`/`basicUserClaim`/`idpId`/`selectIdp`/`chUsername` likewise moved
+  // there in Phase 2; the flat `App` delegates that used to forward onto them
+  // (`isSignedIn`/`email`/`host`/`hostHint`/`basePath`/`setTokens`/
+  // `loadConfig`/`loadIdps`/`ensureConfig`/`ensureFreshToken`/`chCtx`/
+  // `receiveAuthHandoff`) were deleted in #276 Phase 5 — every consumer reads
+  // `app.conn.*` directly now. `showLogin`/`signOut` stay here: they compose
+  // rendering (`renderLoginApp`), not pure forwards.
   activeTab(): Tab;
-  isSignedIn(): boolean;
-  email(): string;
-  hostHint: string;
-  basePath: string;
-  setTokens(id: string, refresh?: string): void;
-  /** The real resolved shape (net/oauth-config.ts's `ResolvedIdpConfig`) — the
-   * previous opaque `Json` undersold it; main.js's OAuth-callback path reads
-   * `cfg.bearer` straight off this value. */
-  loadConfig(): Promise<ResolvedIdpConfig>;
-  /** The real resolved shape (net/oauth-config.ts's `ConfigDoc`) — the
-   * previous `{ idps: Array<{ id: string }> }` undersold it (no
-   * `basicLogin`/`hosts`, and each `idps[]` entry is a full `IdpDescriptor`,
-   * not just `{id}`); login.ts read the real shape all along behind its own
-   * `LoginIdpsResult` widening, now redundant (dropped there). */
-  loadIdps(): Promise<ConfigDoc>;
-  /** Same real shape as `loadConfig` (`null` when config couldn't be loaded —
-   * fail-soft, see app.ts's own `ensureConfig`). */
-  ensureConfig(): Promise<ResolvedIdpConfig | null>;
-  ensureFreshToken(): Promise<boolean>;
-  chCtx: ChCtx;
   showLogin(msg?: string): void;
   signOut(): void;
-  receiveAuthHandoff(handoffEnv: { opener?: Window | null }): Promise<boolean>;
   canExport(): boolean;
   canExportScript(): boolean;
   showSaveFilePicker: ((opts?: unknown) => Promise<unknown>) | null;
@@ -259,21 +233,24 @@ export interface App {
   // Persistence.
   /** The true-preference persist service (#276 Phase 4D —
    *  `src/application/app-preferences.ts`), constructible without
-   *  App/AppState/DOM. `savePref` below is a thin delegate onto it (kept so
-   *  no consumer — dashboard.ts/saved-history.ts/splitters.ts — needs to
-   *  change); `toggleTheme`'s preference-write half also delegates here, the
-   *  DOM half stays in app.ts. */
+   *  App/AppState/DOM. Consumers (dashboard.ts/saved-history.ts/splitters.ts)
+   *  call `prefs.save(name, value)` directly (#276 Phase 5 deleted the flat
+   *  `App.savePref` delegate); `toggleTheme`'s preference-write half also
+   *  delegates here, the DOM half stays in app.ts. */
   prefs: AppPreferences;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
-  savePref(name: string, value: unknown): void;
-  saveVarValues(): void;
-  saveFilterActive(): void;
+  /** The one deliberate delegate survivor of #276 Phase 5's params-group
+   *  cleanup (`saveVarValues`/`saveFilterActive`/`saveVarRecentDisabled`/
+   *  `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent`/`hardenedVars`
+   *  all moved to `app.params.*` with no flat delegate) — kept as a mutable
+   *  property because `WorkbenchParameterSession`'s internal hook reads the
+   *  LIVE `app.saveVarRecent` on every call (not `params.saveVarRecent`
+   *  directly), so a caller that substitutes it (`app.saveVarRecent =
+   *  vi.fn(app.saveVarRecent)`, app.test.ts) still observes every automatic
+   *  persist `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent`
+   *  performs — see workbench-parameter-session.ts's header comment. */
   saveVarRecent(): void;
-  saveVarRecentDisabled(): void;
-  recordBoundParams(boundParams: Array<{ name: string; rawValue: unknown }>): void;
-  clearVarRecent(name: string): void;
-  clearAllVarRecent(): void;
   recordHistory(tab: Tab, sqlText?: string): void;
   downloadFile(filename: string, mime: string, content: BlobPart): void;
   /** Whether the header library-name field is in its inline-edit state. Not a
@@ -283,22 +260,12 @@ export interface App {
   // Data / schema loaders.
   /** The server-metadata/reference lifecycle service (#276 Phase 4A) —
    *  `src/application/schema-catalog-service.ts`, constructible without
-   *  App/AppState/DOM. The members below (`loadVersion`/`loadSchema`/
-   *  `loadReference`/`rebuildCompletions`/`entityDoc`/`docCache`/`refData`/
-   *  `completions`) are thin delegates to it, kept so no consumer needs to
-   *  change (mirrors `exec`/`conn`/`workbench`'s own extraction pattern). */
+   *  App/AppState/DOM: `loadVersion`/`loadSchema`/`loadReference`/
+   *  `rebuildCompletions`/`entityDoc`/`docCache`/`refData`/`completions` all
+   *  live on it now — the flat `App` delegates that used to forward onto
+   *  them were deleted in #276 Phase 5; every consumer reads `app.catalog.*`
+   *  directly. */
   catalog: SchemaCatalogService;
-  loadVersion(): Promise<void>;
-  loadSchema(): Promise<void>;
-  loadReference(): Promise<void>;
-  refData: { functions: unknown; keywordDocs: unknown } & Json;
-  completions: Json;
-  rebuildCompletions(): void;
-  /** A pending fetch while in flight; the resolved doc string once settled (a
-   * failed fetch, `null`, is dropped rather than cached — see entityDoc). */
-  docCache: Map<string, string | Promise<string | null>>;
-  /** Resolves to `null` on a failed fetch (not cached; retried next call). */
-  entityDoc(name: string): Promise<string | null>;
   updateBanner(): void;
 
   // Query-run / var-strip / editor-mode UI hooks.
@@ -320,9 +287,11 @@ export interface App {
    *  `renderVarStrip`/`setRunBtn` (DOM) stay in app.ts, calling this
    *  session's methods directly; the workbench-session hooks + the export
    *  block's direct calls are re-pointed here too. `saveVarValues`/
-   *  `saveFilterActive`/`saveVarRecent`/`saveVarRecentDisabled`/
-   *  `recordBoundParams`/`clearVarRecent`/`clearAllVarRecent` (declared
-   *  below, under Persistence) are one-line delegates onto this. */
+   *  `saveFilterActive`/`saveVarRecentDisabled`/`recordBoundParams`/
+   *  `clearVarRecent`/`clearAllVarRecent`/`hardenedVars` have no flat `App`
+   *  delegate (#276 Phase 5 deleted them) — every consumer reads
+   *  `app.params.*` directly. `saveVarRecent` is the one exception (see its
+   *  own doc comment under Persistence). */
   params: WorkbenchParameterSession;
   /** The streaming single-file export (issue #87) + multi-statement script
    *  export (issue #99) POLICY (#276 Phase 4B2 —
@@ -360,23 +329,13 @@ export interface App {
   /** The Spec-evaluation/document lifecycle (#276 Phase 4C —
    *  `src/application/query-document-session.ts`), constructible without
    *  App/AppState/DOM. `evaluateSpecDraft`/`revalidateSpecDrafts`/
-   *  `revealFirstSpecError`/`registerSpecValidator` below are direct
-   *  assignments onto this session's own identically-shaped methods
-   *  (app.ts's `setEditorMode` also calls `queryDoc.resolveEditorMode` for
-   *  the editor-mode-switch POLICY half, keeping the DOM/focus half itself). */
+   *  `revealFirstSpecError`/`registerSpecValidator` have no flat `App`
+   *  delegate (#276 Phase 5 deleted them — every consumer reads
+   *  `app.queryDoc.*` directly); `activateInvalidSpecDraft` below stays
+   *  shell-owned (DOM/focus — app.ts's `setEditorMode` also calls
+   *  `queryDoc.resolveEditorMode` for the editor-mode-switch POLICY half,
+   *  keeping the DOM/focus half itself). */
   queryDoc: QueryDocumentSession;
-  /** The precise `{parsed, diagnostics}` shape `QueryDocumentSession.
-   *  evaluateSpecDraft` returns — previously the looser `Json` placeholder,
-   *  now typed exactly since this is a direct assignment onto that session's
-   *  own method (#276 Phase 4C). */
-  evaluateSpecDraft(tab: Tab, text: string, opts?: { dirty?: boolean }): SpecEvaluationResult;
-  revalidateSpecDrafts(opts?: { refreshUi?: boolean }): void;
-  revealFirstSpecError(tab?: Tab): void;
-  /** `path` is a JSON-path segment list (array index / object key per
-   * segment), not a single string — every real call site (including tests)
-   * passes e.g. `['items', 0, 'kind']`, matching `core/spec-draft.js`'s own
-   * `SpecValidatorEntry.path`. */
-  registerSpecValidator(path: (string | number)[], validate: SpecValidatorFn): () => void;
   /** `tab` is a defensive no-op-on-falsy read (`if (!tab) return;`, app.ts) —
    *  a test exercising a no-linked-tab call site passes `null` directly. */
   activateInvalidSpecDraft(tab: Tab | null): void;

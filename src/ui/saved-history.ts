@@ -46,7 +46,7 @@ export function renderSavedHistory(app: App): void {
   // re-render call: the effect in createApp() repaints.
   const switchTo = (panel: string): void => {
     state.libraryFilter = '';
-    app.savePref('sidePanel', panel);
+    app.prefs.save('sidePanel', panel);
     state.sidePanel.value = panel;
   };
 
@@ -138,7 +138,7 @@ function renderSaved(app: App, list: HTMLElement): void {
         const result = toggleFavorite(state, q.id, app.saveJSON, app.specValidators);
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
-          app.revalidateSpecDrafts();
+          app.queryDoc.revalidateSpecDrafts();
           app.specEditor.syncFromState();
         }
         renderSavedHistory(app);
@@ -218,7 +218,7 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
       const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON, app.specValidators);
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
       else {
-        app.revalidateSpecDrafts();
+        app.queryDoc.revalidateSpecDrafts();
         app.specEditor.syncFromState();
         app.actions.rerenderTabs();
       }

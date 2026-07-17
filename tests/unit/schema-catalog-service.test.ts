@@ -258,6 +258,10 @@ describe('entityDoc', () => {
 
     expect(await svc.entityDoc('count')).toBe('the doc'); // served from cache
     expect(loadEntityDoc).toHaveBeenCalledTimes(1);
+    // `docCache` itself is a live, read-only exposed accessor (`app.catalog.docCache`
+    // in production, #276 Phase 5 — no more `app.docCache` mirror) — the resolved
+    // doc really lands in the SAME map `entityDoc` consults, not a private copy.
+    expect(svc.docCache.get('count')).toBe('the doc');
   });
 
   it('drops a failed fetch (null) rather than caching it, and retries on the next call', async () => {

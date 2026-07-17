@@ -5,6 +5,10 @@
 //   Phase 3 — the route sessions must not import each other's implementation
 //   modules (ui/workbench ↔ ui/dashboard), and the dashboard route must not
 //   depend on the editor ports at all.
+//   Phase 5 — neither route shell (ui/workbench/**, ui/dashboard.ts +
+//   ui/dashboard/**) may import src/ui/app.ts: both receive everything they
+//   need injected (a narrow deps bag / the App type only) — reaching back
+//   into app.ts itself would recreate the coupling this phase removes.
 // `import type` counts too: a type-only import still couples the layers at
 // compile time. Extend RULES below in later phases rather than growing a
 // second script.
@@ -21,17 +25,37 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
 
 /** Each rule: every source file under `dir` must not import anything that
- *  resolves under any of `forbidden` (directories, repo-relative). */
+ *  resolves under any of `forbidden` (directories OR single files,
+ *  repo-relative — `dir` itself may also name a single file, e.g.
+ *  `src/ui/dashboard.ts`, since that route shell has no dedicated directory
+ *  of its own the way `src/ui/workbench/**`/`src/ui/dashboard/**` do). */
 const RULES = [
   { dir: 'src/application', forbidden: ['src/ui', 'src/editor'], why: 'issue #276 day-1 rule' },
-  { dir: 'src/ui/workbench', forbidden: ['src/ui/dashboard'], why: 'issue #276 Phase 3: route sessions must not import each other' },
-  { dir: 'src/ui/dashboard', forbidden: ['src/ui/workbench', 'src/editor'], why: 'issue #276 Phase 3: route sessions must not import each other; dashboard has no editor' },
+  {
+    dir: 'src/ui/workbench',
+    forbidden: ['src/ui/dashboard', 'src/ui/app.ts'],
+    why: 'issue #276 Phase 3/5: route sessions must not import each other, and the shell must not reach back into app.ts (everything it needs is injected)',
+  },
+  {
+    dir: 'src/ui/dashboard',
+    forbidden: ['src/ui/workbench', 'src/editor', 'src/ui/app.ts'],
+    why: 'issue #276 Phase 3/5: route sessions must not import each other, dashboard has no editor, and the shell must not reach back into app.ts',
+  },
+  {
+    // The dashboard route's own shell file (no dedicated directory, unlike
+    // its `dashboard-session.ts` runtime under `src/ui/dashboard/`) — same
+    // Phase 5 rule as the workbench shell above.
+    dir: 'src/ui/dashboard.ts',
+    forbidden: ['src/ui/app.ts'],
+    why: 'issue #276 Phase 5: the dashboard shell must not reach back into app.ts (everything it needs is injected)',
+  },
 ];
 
-function collectFiles(dir) {
+function collectFiles(target) {
+  if (fs.statSync(target).isFile()) return SOURCE_EXT.test(target) ? [target] : [];
   const out = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const full = path.join(target, entry.name);
     if (entry.isDirectory()) out.push(...collectFiles(full));
     else if (SOURCE_EXT.test(entry.name)) out.push(full);
   }

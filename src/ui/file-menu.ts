@@ -109,13 +109,13 @@ export function openFileMenu(app: App): void {
       checked: !app.state.varRecentDisabled,
       onchange: (e: Event) => {
         app.state.varRecentDisabled = !(e.target as HTMLInputElement).checked;
-        app.saveVarRecentDisabled();
+        app.params.saveVarRecentDisabled();
       },
     }),
     h('span', { class: 'fm-label' }, 'Remember recent variable values'));
   const clearAllRecentItem = item(Icon.trash(), 'Clear all recent values', null, () => {
     close();
-    app.clearAllVarRecent();
+    app.params.clearAllVarRecent();
     flashToast('Cleared recent variable values', { document: app.document });
   });
   const menu = h('div', { class: 'file-menu' },

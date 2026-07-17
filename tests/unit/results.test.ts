@@ -526,7 +526,7 @@ describe('cell-detail drawer resize (#101)', () => {
     expect(panel.style.width).toBe('524px');
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     expect(app.state.cellDrawerPx).toBe(524);
-    expect(app.savePref).toHaveBeenCalledWith('cellDrawerPx', 524);
+    expect(app.prefs.save).toHaveBeenCalledWith('cellDrawerPx', 524);
     qs(document, '.cd-backdrop').remove();
   });
   it('clamps mid-drag width to [320, 92vw]', () => {
@@ -577,7 +577,7 @@ describe('cell-detail drawer resize (#101)', () => {
     window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }));
     window.dispatchEvent(new MouseEvent('mouseup', {}));
     expect(app.state.cellDrawerPx).toBe(560); // a stray mouseup doesn't resurrect + persist the drag
-    expect(app.savePref).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
+    expect(app.prefs.save).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
 
     openCellDetail(app, 'c2', 'String', 'y'); // an unrelated, later click must work normally
     const backdrop2 = qs(document, '.cd-backdrop');
@@ -828,7 +828,7 @@ describe('expandDataPane', () => {
     expect(opts.sql).toBe('SELECT n, s FROM t WHERE s = {level:String}');
     expect(opts.rowLimit).toBe(100);
     expect(opts.params).toEqual({ param_level: 'Warning' }); // no session_id — plain SELECT
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1);
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1);
     // the detached grid now shows the refreshed result, and global state is untouched
     expect(qs(overlay, '.res-table tbody td.cell').textContent).toBe('Warning');
     expect(app.state.running.value).toBe(false);
@@ -906,7 +906,7 @@ describe('expandDataPane', () => {
     resolvers[1](); await tick(); // newer resolves first → current = B
     resolvers[0](); await tick(); // older resolves late → discarded by the generation guard
     expect(qs(overlay, '.res-table tbody td.cell').textContent).toBe('B');
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // only the winning run recorded
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1); // only the winning run recorded
   });
 
   it('closing the view aborts the in-flight detached request', async () => {
@@ -947,7 +947,7 @@ describe('expandDataPane', () => {
     // `exec.executeRead` fixture in this suite uses.
     const executeRead = vi.fn(async (result: QueryResult, _opts: ExecuteReadOpts = {} as ExecuteReadOpts) => result);
     const ensureFreshToken = vi.fn(async () => false);
-    const app = makeApp({ ensureFreshToken, exec: { executeRead } });
+    const app = makeApp({ conn: { ensureFreshToken }, exec: { executeRead } });
     app.state.varValues.level = 'X';
     expandDataPane(app, paramResult());
     const overlay = qs(document, '.graph-overlay');
@@ -968,7 +968,7 @@ describe('expandDataPane', () => {
     await tick();
     expect(qs(overlay, '.detached-status').textContent).toBe('Boom');
     expect(qsa(overlay, '.res-table tbody tr')).toHaveLength(2); // previous result preserved
-    expect(app.recordBoundParams).not.toHaveBeenCalled(); // errors never record recents
+    expect(app.params.recordBoundParams).not.toHaveBeenCalled(); // errors never record recents
     expect(refreshBtn(overlay)!.disabled).toBe(false); // re-enabled after the error
   });
 
@@ -1077,14 +1077,14 @@ describe('expandDataPane', () => {
     // in-flight rows exist, but nothing is committed yet.
     run.last!.chunk({ columns: [{ name: 'n', type: 'UInt64' }], rows: [['NEW']], progress: { rows: 1, bytes: 0, elapsed_ns: 0 } });
     expect(qs(overlay, '.res-table tbody td.cell').textContent).toBe('2'); // still the old snapshot
-    expect(app.recordBoundParams).not.toHaveBeenCalled();
+    expect(app.params.recordBoundParams).not.toHaveBeenCalled();
     click([...qsa(overlay, '.res-act')].find((b) => b.textContent!.includes('Copy')));
     expect(app.actions.copySnapshot.mock.calls.at(-1)![0].rows).toEqual([['2', 'b'], ['1', null]]); // Copy = OLD result
     // resolve → commit.
     run.last!.finish();
     await tick();
     expect(qs(overlay, '.res-table tbody td.cell').textContent).toBe('NEW');
-    expect(app.recordBoundParams).toHaveBeenCalledTimes(1); // recents recorded exactly once, on success
+    expect(app.params.recordBoundParams).toHaveBeenCalledTimes(1); // recents recorded exactly once, on success
     click([...qsa(overlay, '.res-act')].find((b) => b.textContent!.includes('Copy')));
     expect(app.actions.copySnapshot.mock.calls.at(-1)![0].rows).toEqual([['NEW']]); // Copy = NEW result
   });
@@ -1133,7 +1133,7 @@ describe('expandDataPane', () => {
     await tick();
     expect(qsa(overlay, '.res-table tbody tr')).toHaveLength(2); // previous result kept
     expect(qs(overlay, '.res-table tbody td.cell').textContent).toBe('2');
-    expect(app.recordBoundParams).not.toHaveBeenCalled();
+    expect(app.params.recordBoundParams).not.toHaveBeenCalled();
     expect(qs(overlay, '.detached-status').textContent).toBe(''); // cancel clears the status
     expect(refreshBtn(overlay)!.disabled).toBe(false);
   });

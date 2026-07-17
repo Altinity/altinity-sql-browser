@@ -48,7 +48,7 @@ describe('Filter preview', () => {
     cells[4].querySelector('[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(app.state.varValues).toEqual({});
     expect(app.state.filterActive).toEqual({});
-    expect(app.saveVarValues).not.toHaveBeenCalled();
+    expect(app.params.saveVarValues).not.toHaveBeenCalled();
     // Diagnostics render below the grid.
     expect(out.querySelector('.filter-preview-diagnostic.is-warning')!.textContent).toBe('limited');
   });

@@ -178,7 +178,7 @@ describe('renderSavedHistory', () => {
     stars[1].dispatchEvent(new Event('click', { bubbles: true })); // favorite B
     expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'b'))).toBe(true);
     expect(names()).toEqual(['B', 'A']);
-    expect(app.revalidateSpecDrafts).toHaveBeenCalled();
+    expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
   });
 
   it('saved: favorite merges into a linked dirty valid Spec draft', () => {
@@ -246,7 +246,7 @@ describe('renderSavedHistory', () => {
     expect(app.state.savedQueries[0].spec).toMatchObject({ name: 'New', description: 'a description' });
     expect(app.state.editingSavedId.value).toBeNull();
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
-    expect(app.revalidateSpecDrafts).toHaveBeenCalled();
+    expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
     // a second commit on the now-detached field is a no-op (the `done` guard)
     nameInput.value = 'AGAIN';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -378,10 +378,10 @@ describe('renderSavedHistory', () => {
     const [savedBtn, histBtn] = qsa(savedTabsRow(app), '.side-tab');
     click(histBtn);
     expect(app.state.sidePanel.value).toBe('history');
-    expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'history');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'history');
     click(savedBtn);
     expect(app.state.sidePanel.value).toBe('saved');
-    expect(app.savePref).toHaveBeenCalledWith('sidePanel', 'saved');
+    expect(app.prefs.save).toHaveBeenCalledWith('sidePanel', 'saved');
   });
 });
 
