@@ -1485,6 +1485,51 @@ describe('query run', () => {
     resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
     await pending;
   });
+  // #276 Phase 5: signOut is the first production wiring of the sessions'
+  // teardown surfaces — an in-flight run must be aborted + server-killed and
+  // the catalog caches dropped BEFORE the login screen appears, and the
+  // workbench must come back fully usable after a re-render (destroy() is
+  // not one-way for the workbench session: attachShell re-attaches).
+  it('signOut() aborts an in-flight run, kills the server query, invalidates the catalog, and still allows a run after re-render', async () => {
+    let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
+    const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => {
+      const sql = (init && init.body) || '';
+      if (/SELECT 1\b/.test(sql)) return new Promise<FakeResponse>((res) => { resolveRunFetch = res; });
+      if (/SELECT 2\b/.test(sql)) {
+        return Promise.resolve(resp({ body: streamBody([
+          '{"meta":[{"name":"x","type":"String"}]}\n',
+          '{"row":{"x":"ok"}}\n',
+        ]) }));
+      }
+      return Promise.resolve(resp({ json: { data: [] } })); // version/schema/reference background loads
+    }));
+    const { app, e } = appForRun([], { fetch });
+    app.catalog.docCache.set('system.one', 'cached doc');
+    app.activeTab().sqlDraft = 'SELECT 1';
+    const pending = app.actions.run();
+    await new Promise((r) => setTimeout(r));
+    expect(app.state.running.value).toBe(true);
+    const runCall = asMock(fetch).mock.calls.find((c) => c[1] && /SELECT 1\b/.test(c[1].body || ''))!;
+    app.signOut();
+    // Teardown fired before login rendered: stream aborted, caches dropped.
+    expect((runCall[1].signal as AbortSignal).aborted).toBe(true);
+    expect(app.catalog.docCache.size).toBe(0);
+    expect(qs(app.root!, '.login-card')).toBeTruthy();
+    await new Promise((r) => setTimeout(r));
+    const kill = asMock(e.fetch!).mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''));
+    expect(kill).toBeTruthy();
+    resolveRunFetch(Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    await pending;
+    // Re-entry: sign back in (signOut cleared the tokens — that's the point),
+    // then a fresh renderApp re-attaches the shell effects and the same
+    // session runs again (destroy() left it reusable).
+    app.conn.setTokens(validToken);
+    app.renderApp();
+    app.activeTab().sqlDraft = 'SELECT 2';
+    await app.actions.run();
+    expect(result(app.activeTab()).rows).toEqual([['ok']]);
+    expect(app.state.running.value).toBe(false);
+  });
   it('surfaces a query error', async () => {
     const { app } = appForRun([
       [(u, sql) => /bad/.test(sql), resp({ ok: false, status: 500, text: '{"exception":"DB::Exception: nope"}' })],

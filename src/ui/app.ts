@@ -332,7 +332,26 @@ export function createApp(env: CreateAppEnv = {}): App {
   // comment) — no flat `App` delegates (#276 Phase 5 deleted them).
   // `showLogin`/`signOut` stay app.ts-owned: they compose rendering, not
   // pure forwards.
-  app.signOut = () => { conn.signOut(); renderLoginApp(); };
+  // Sign-out is the one real end-of-session event in a single-route tab —
+  // the first production wiring of the sessions' teardown surfaces (#276
+  // Phase 5). Order matters: cancel/tear down every in-flight operation
+  // BEFORE clearing credentials and rendering login, so a mid-flight
+  // query/export/lineage stream can never land (or repaint) after the login
+  // screen is showing; invalidate the catalog so a later sign-in (possibly a
+  // different server) never sees stale schema/reference caches. The
+  // workbench session stays reusable after destroy(): the next renderApp
+  // re-attaches its shell effects.
+  app.signOut = () => {
+    workbench.destroy();
+    // Plain abort (no clearResult settle) — the login render replaces the
+    // whole DOM next, so settling the visible result would be a wasted paint.
+    graph.cancel();
+    exportService.cancelExport();
+    exportService.cancelExportScript();
+    catalog.invalidate();
+    conn.signOut();
+    renderLoginApp();
+  };
   app.showLogin = (msg) => renderLoginApp(msg);
 
   // --- data loaders --------------------------------------------------------
