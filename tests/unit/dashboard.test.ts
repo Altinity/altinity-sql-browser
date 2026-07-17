@@ -403,7 +403,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
     expect(commit).toHaveBeenCalled();
   });
 
-  it('defaults preset and placement when the layout omits them', async () => {
+  it('defaults the preset to full-width when the layout omits it', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')],
@@ -413,10 +413,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
     });
     await render(app);
     expect(seg(app.root, 'Full width')?.getAttribute('aria-pressed')).toBe('true');
-    // Resize with no items map present exercises the placement fallback.
-    const spanSel = qsa<HTMLSelectElement>(app.root, '.dash-tile-span')[0];
-    spanSel.value = '2';
-    spanSel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
   });
 
@@ -440,7 +437,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
   });
 });
 
-describe('renderDashboard — accessible reorder + sizing (#153/#280)', () => {
+describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
   const twoTiles = () => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
     tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
@@ -448,52 +445,24 @@ describe('renderDashboard — accessible reorder + sizing (#153/#280)', () => {
   });
   const order = (app: TestApp): string[] => qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent || '');
 
-  it('Move later / Move earlier reorder tiles, keep focus, and announce the new position', async () => {
+  it('has no in-tile move / span / height chrome (owner override — drag only)', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    expect(qsa(app.root, '.dash-tile-move').length).toBe(0);
+    expect(qsa(app.root, '.dash-tile-span').length).toBe(0);
+    expect(qsa(app.root, '.dash-tile-height').length).toBe(0);
+  });
+
+  it('pointer drag reorders tiles and persists the new dashboard.tiles[] order', async () => {
     const { app, commit } = dashApp({ workspace: twoTiles() });
     await render(app);
     expect(order(app)).toEqual(['q1', 'q2']);
-    const laterBtns = qsa<HTMLButtonElement>(app.root, '.dash-tile-move[title="Move later"]');
-    laterBtns[0].dispatchEvent(new Event('click', { bubbles: true }));
-    expect(order(app)).toEqual(['q2', 'q1']);
-    expect(qs(app.root, '.dash-live')?.textContent).toContain('position 2 of 2');
-    expect(commit).toHaveBeenCalled();
-    // Move earlier back.
-    qsa<HTMLButtonElement>(app.root, '.dash-tile-move[title="Move earlier"]')[1].dispatchEvent(new Event('click', { bubbles: true }));
-    expect(order(app)).toEqual(['q1', 'q2']);
-    // Move earlier on the FIRST tile is a no-op (out of range → command rejected).
-    const live = qs(app.root, '.dash-live')?.textContent;
-    qsa<HTMLButtonElement>(app.root, '.dash-tile-move[title="Move earlier"]')[0].dispatchEvent(new Event('click', { bubbles: true }));
-    expect(order(app)).toEqual(['q1', 'q2']);
-    expect(qs(app.root, '.dash-live')?.textContent).toBe(live);
-  });
-
-  it('span and height controls drive update-placement', async () => {
-    const { app } = dashApp({
-      workspace: wsWith({
-        queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
-        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
-        layout: { type: 'flow', version: 1, preset: 'columns-3', items: {} },
-      }),
-    });
-    await render(app);
-    const spanSel = qsa<HTMLSelectElement>(app.root, '.dash-tile-span')[0];
-    spanSel.value = '2';
-    spanSel.dispatchEvent(new Event('change', { bubbles: true }));
-    expect((qsa(app.root, '.dash-tile')[0].style as CSSStyleDeclaration).gridColumn).toContain('span 2');
-    const heightSel = qsa<HTMLSelectElement>(app.root, '.dash-tile-height')[0];
-    heightSel.value = 'large';
-    heightSel.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(qsa(app.root, '.dash-tile')[0].dataset.height).toBe('large');
-  });
-
-  it('pointer drag reorders as an equivalent alternative', async () => {
-    const { app } = dashApp({ workspace: twoTiles() });
-    await render(app);
     const cards = qsa(app.root, '.dash-tile');
     cards[1].dispatchEvent(new Event('dragstart', { bubbles: true }));
     cards[0].dispatchEvent(new Event('dragover', { bubbles: true }));
     cards[0].dispatchEvent(new Event('drop', { bubbles: true }));
-    expect(order(app)).toEqual(['q2', 'q1']);
+    expect(order(app)).toEqual(['q2', 'q1']); // move-tile applied
+    expect(commit).toHaveBeenCalled(); // new order persisted
     // A drop with no active drag is a harmless no-op.
     qsa(app.root, '.dash-tile')[0].dispatchEvent(new Event('drop', { bubbles: true }));
     expect(order(app)).toEqual(['q2', 'q1']);
@@ -509,9 +478,32 @@ describe('renderDashboard — accessible reorder + sizing (#153/#280)', () => {
     qsa(app.root, '.res-table th')[1].dispatchEvent(new Event('click', { bubbles: true }));
     expect(calls.length).toBe(before); // local re-paint (rerender → paintForce), no re-query
     expect(qs(app.root, '.res-table .h-sort')).not.toBeNull(); // sort applied locally
-    // A cell click is a harmless no-op (onCell).
-    qsa(app.root, '.res-table tbody td')[0]?.dispatchEvent(new Event('click', { bubbles: true }));
+    // A value-cell click is a harmless no-op (onCell).
+    qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new Event('click', { bubbles: true }));
     expect(calls.length).toBe(before);
+  });
+
+  it('drives the shared rich fields: relative-time preview (wallNow) and Clear recent', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE s = {s:String} AND d > {d:Date}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    app.state.varRecent = recordRecent(emptyRecentMap(), 's', 'foo');
+    await render(app);
+    const fieldFor = (name: string) => qsa(app.root, '.dash-filter-host .var-field')
+      .find((f) => qs(f, '.var-name')?.textContent === name)!;
+    // Type a relative value into the Date field so its preview reads the shim wallNow.
+    const dInput = qs<HTMLInputElement>(fieldFor('d'), 'input');
+    dInput.dispatchEvent(new Event('focus'));
+    dInput.value = 'now-1h';
+    dInput.dispatchEvent(new Event('input', { bubbles: true }));
+    // Focus the recents (String) field and Clear recent → shim clearVarRecent.
+    const sField = fieldFor('s');
+    qs<HTMLInputElement>(sField, 'input').dispatchEvent(new Event('focus'));
+    qs(sField, '.var-combo-footer button')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('s');
   });
 });
 
@@ -559,58 +551,24 @@ describe('renderDashboard — KPI bands (#240)', () => {
   });
 });
 
-describe('renderDashboard — filter bar affordances (#188)', () => {
-  const filterWs = () => wsWith({
-    queries: [q('q1', 'SELECT k, v FROM a WHERE x = {p:String}')],
-    tiles: [{ id: 't1', queryId: 'q1' }],
-  });
-
-  it('surfaces an implicit param filter with a blocking badge, clear, count, and clear-all', async () => {
-    const { app, calls } = dashApp({ workspace: filterWs() });
-    await render(app);
-    // A required, unset param blocks the panel — the filter stays visible with a badge.
-    expect(qs(app.root, '.dash-filter-blocking')).not.toBeNull();
-    expect(qs(app.root, '.var-field .var-name')?.textContent).toBe('p');
-    // Nothing active yet → count/clear-all hidden.
-    expect((qs(app.root, '.dash-filter-count') as HTMLElement).style.display).toBe('none');
-    expect((qs(app.root, '.dash-filter-clear-all') as HTMLElement).style.display).toBe('none');
-    // Type a value + commit → one affected-panel wave, filter active.
-    const input = qs<HTMLInputElement>(app.root, '.var-field .var-input');
-    const before = calls.length;
-    input.value = 'foo';
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await Promise.resolve(); await Promise.resolve();
-    expect(calls.length).toBeGreaterThan(before);
-    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
-    expect((qs(app.root, '.dash-filter-clear-all') as HTMLElement).style.display).toBe('');
-    // Clear one → deactivates (value retained), one wave.
-    (qs(app.root, '.dash-filter-clear') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
-    await Promise.resolve();
-    expect(qs(app.root, '.dash-filter-count')?.textContent).toBeFalsy();
-    // Enter commits too.
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    await Promise.resolve();
-    // Clear all resets everything in one wave.
-    (qs(app.root, '.dash-filter-clear-all') as HTMLElement).dispatchEvent(new Event('click', { bubbles: true }));
-    await Promise.resolve();
-  });
-
-  it('renders a source-less filter with a numeric default active by default', async () => {
+describe('renderDashboard — shared rich filter bar over the viewer (#188)', () => {
+  it('renders the shared rich field family — one var-field per declared param type', async () => {
     const { app } = dashApp({
       workspace: wsWith({
-        queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
+        queries: [q('q1', "SELECT k, v FROM a WHERE s = {s:String} AND e = {e:Enum('a','b')} AND d > {d:Date}")],
         tiles: [{ id: 't1', queryId: 'q1' }],
-        filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
       }),
     });
     await render(app);
-    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
-    // A numeric default is not a string → the text input starts blank.
-    expect(qs<HTMLInputElement>(app.root, '.var-field .var-input').value).toBe('');
+    const names = qsa(app.root, '.dash-filter-host .var-field .var-name').map((n) => n.textContent);
+    expect(names).toEqual(expect.arrayContaining(['s', 'e', 'd']));
+    // Every field is a combobox-backed input (the shared rich field builders —
+    // recents / enum / relative-time), not the old bare text/select swap.
+    expect(qsa(app.root, '.dash-filter-host .var-field input').length).toBeGreaterThanOrEqual(3);
   });
 
-  it('upgrades a source-backed filter field to a select once its options arrive', async () => {
-    const { app } = dashApp({
+  it('commits a curated (source-backed) selection through the viewer in one affected-panel wave', async () => {
+    const { app, calls } = dashApp({
       responder: (sql) => (sql.includes('opts')
         ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
         : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
@@ -624,11 +582,48 @@ describe('renderDashboard — filter bar affordances (#188)', () => {
       }),
     });
     await render(app);
-    expect(qs(app.root, '.var-field select.var-input')).not.toBeNull();
-    const sel = qs<HTMLSelectElement>(app.root, '.var-field select.var-input');
-    sel.value = 'x';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    // The source query's options upgraded the field to the curated combobox.
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(field).not.toBeNull();
+    const before = calls.length;
+    qs<HTMLInputElement>(field, 'input').dispatchEvent(new Event('focus'));
+    qs(field, '[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await Promise.resolve(); await Promise.resolve();
+    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(added.length).toBe(1); // one affected-panel wave, tile re-run with the picked value
+    expect(added[0].params.param_p).toBe('x');
+  });
+
+  it('shows the N-active count and clear-all when a filter is active; both hidden otherwise', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
+    const clearAll = qs<HTMLElement>(app.root, '.dash-filter-clear-all');
+    expect(clearAll.style.display).toBe('');
+    // Clear-all resets to defaults (one coalesced wave; a no-op here since the
+    // filter is already at its default) — exercises the toolbar action.
+    clearAll.dispatchEvent(new Event('click', { bubbles: true }));
     await Promise.resolve();
+    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
+  });
+
+  it('never silently hides a blocking filter (required-and-unset carries a visible badge)', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE x = {p:String}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-filter-blocking')?.textContent).toContain('p');
+    expect((qs(app.root, '.dash-filter-count') as HTMLElement).style.display).toBe('none');
+    expect((qs(app.root, '.dash-filter-clear-all') as HTMLElement).style.display).toBe('none');
   });
 });
 
