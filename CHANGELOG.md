@@ -60,6 +60,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `chartJsConfig` into `buildChartData`) instead of three times. No user-facing
   behavior or schema change.
 
+### Fixed
+- **Share-link result view is validated before use** (#266). The share-link
+  bootstrap (`src/main.ts`) now narrows `spec.view` against the `resultView`
+  enum before assigning it — the v2 tagged decode passes `spec.view` through
+  verbatim, so a crafted link could previously set `resultView` to an arbitrary
+  string. Legacy `view: "chart"` still maps to `panel` and a Filter-role
+  preview still wins; any other value silently falls back to the default view,
+  matching the Library-activation path (`ui/saved-history.ts`).
+
 ### Added
 - **ADR-0002 phases 1–5: the TypeScript migration slice lands whole** (#262,
   same PR as phase 0). Phase 1: `build/emit-schema-types.mjs`, a hand-rolled

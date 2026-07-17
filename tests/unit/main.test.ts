@@ -296,6 +296,16 @@ describe('bootstrap', () => {
     expect(app.state.resultView.value).toBe('panel');
   });
 
+  it('ignores an out-of-enum spec.view from a crafted share, keeping the default (#266)', async () => {
+    // The v2 tagged decode passes `spec.view` through verbatim, so a share link
+    // can carry any string; it must not reach the resultView signal.
+    const app = fakeApp();
+    const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, view: 'javascript:alert(1)' } });
+    await bootstrap(app, env);
+    expect(app.state.tabs.value[0].sqlDraft).toBe('SELECT 1'); // the share still seeds
+    expect(app.state.resultView.value).toBe('table'); // but the bogus view is dropped
+  });
+
   it('never persists a transient view:"filter" into the restored tab Spec (#244)', async () => {
     const app = fakeApp();
     const env = v2Env({ sql: 'SELECT 1', spec: { name: 'Shared query', favorite: false, dashboard: { role: 'filter' } } });

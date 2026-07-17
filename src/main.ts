@@ -16,7 +16,7 @@ import { cloneJson, queryName, queryPanel, queryView, upgradeSavedQuery } from '
 import { isDashboardRoute } from './core/dashboard.js';
 import { rolePreviewView } from './core/result-choice.js';
 import { isQuerylessPanel } from './core/panel-cfg.js';
-import { setTabSpecDraft } from './state.js';
+import { setTabSpecDraft, SAVED_VIEWS } from './state.js';
 import type { State } from './ui/app.types.js';
 import type { BootstrapEnv } from './env.types.js';
 import type { ResolvedIdpConfig } from './net/oauth-config.js';
@@ -131,13 +131,18 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
       // wins over the persisted view, regardless of whether the share carries
       // SQL to run — a SQL-bearing share never auto-runs here, so this only
       // pre-selects the drawer the recipient lands on before they click Run.
-      const launchView = rolePreviewView(shared.spec) || queryView(shared);
-      // `as`: unlike ui/saved-history.ts's restore path (which gates on
-      // `SAVED_VIEWS.has(launchView)`/`rolePreview` before this same
-      // assignment), this one doesn't validate `launchView` against the
-      // resultView union before restoring it — a pre-existing gap (#266),
-      // not fixed here. The cast preserves that exact (unvalidated) behavior.
-      if (launchView) app.state.resultView.value = (launchView === 'chart' ? 'panel' : launchView) as ResultView;
+      const rolePreview = rolePreviewView(shared.spec);
+      const launchView = rolePreview || queryView(shared);
+      // Normalize a legacy `view: 'chart'` (pre-Panel shares) to 'panel', then
+      // validate against the resultView union before assigning (#266): the v2
+      // tagged decode passes `spec.view` through verbatim, so a crafted share
+      // link could otherwise set `resultView` to an arbitrary string. Mirrors
+      // ui/saved-history.ts's `rolePreview || SAVED_VIEWS.has(...)` guard — a
+      // role-owned Filter preview wins, a persisted table/json/panel restores,
+      // and any other value silently falls back to the default view. `as`:
+      // that check is the runtime proof `normalized` is a resultView member.
+      const normalized = launchView === 'chart' ? 'panel' : launchView;
+      if (rolePreview || SAVED_VIEWS.has(normalized ?? '')) app.state.resultView.value = normalized as ResultView;
       // A queryless panel with no role/persisted view (no SQL to run) still
       // needs the Panel drawer open, or the recipient lands on an empty Table
       // view and sees nothing.
