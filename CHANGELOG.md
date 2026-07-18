@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-18
+
 ### Added
 - **`grafana-grid@1` — a rowless Grafana-style tile-grid Dashboard layout**
   (#291, building on #280). A second layout engine next to the normative
@@ -2024,7 +2026,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.0...v0.4.5
 [0.4.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.3.0...v0.4.0
