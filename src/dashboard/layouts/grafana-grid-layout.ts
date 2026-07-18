@@ -294,3 +294,16 @@ export function deriveFlowFallback(
   }
   return { type: 'flow', version: 1, preset: 'full-width', items: flowItems };
 }
+
+/** Regenerate a grafana-grid@1 layout's flow@1 `fallback` IN PLACE from its
+ *  current `items` + the given tile set (mutates `layout.fallback`, mirroring
+ *  `setGridPlacement`'s own mutate-in-place contract) — a no-op when `layout`
+ *  is not a grafana-grid@1 document. The single shared primitive every #291
+ *  application-layer mutation path (authoring commands, tile-membership star
+ *  toggle, saved-query mutation planning) calls so "every grid mutation
+ *  regenerates the flow@1 fallback deterministically" is enforced once, not
+ *  duplicated per call site. */
+export function regenerateGridFallback(layout: unknown, tiles: readonly GrafanaGridFallbackTile[]): void {
+  if (!isObject(layout) || layout.type !== 'grafana-grid') return;
+  layout.fallback = deriveFlowFallback(layout, tiles);
+}

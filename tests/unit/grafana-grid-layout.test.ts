@@ -3,7 +3,7 @@ import {
   DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS,
   computeGrafanaGridLayout, deriveFlowFallback, deriveGrafanaGridPlacement,
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
-  gridSpanFromFlowSpan, resolveGridPlacement, setGridPlacement,
+  gridSpanFromFlowSpan, regenerateGridFallback, resolveGridPlacement, setGridPlacement,
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
@@ -300,5 +300,30 @@ describe('deriveFlowFallback', () => {
     const layout = gridLayout({ a: { span: 1, height: 'huge' as never }, b: {} });
     const fallback = deriveFlowFallback(layout, [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     expect(jsonSchemaValidationService.validate(FLOW_LAYOUT_V1_SCHEMA_ID, fallback)).toEqual([]);
+  });
+});
+
+describe('regenerateGridFallback', () => {
+  it('mutates a grafana-grid layout\'s fallback in place, deterministically from its current items', () => {
+    const layout = gridLayout({ a: { span: 4, height: 'compact' } });
+    regenerateGridFallback(layout, [{ id: 'a' }, { id: 'b' }]);
+    expect((layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'full-width',
+      items: { a: { span: 1, height: 'compact' }, b: { span: 2, height: 'medium' } },
+    });
+  });
+
+  it('overwrites a stale fallback already present on the layout', () => {
+    const layout = { ...gridLayout({ a: { span: 12 } }), fallback: { type: 'flow', version: 1, preset: 'report', items: {} } };
+    regenerateGridFallback(layout, [{ id: 'a' }]);
+    expect(layout.fallback).toEqual({ type: 'flow', version: 1, preset: 'full-width', items: { a: { span: 3, height: 'medium' } } });
+  });
+
+  it('is a no-op on a non-grid layout or a non-object value', () => {
+    const flow = { type: 'flow', version: 1, preset: 'full-width', items: {} };
+    regenerateGridFallback(flow, [{ id: 'a' }]);
+    expect(flow).not.toHaveProperty('fallback');
+    expect(() => regenerateGridFallback(null, [{ id: 'a' }])).not.toThrow();
+    expect(() => regenerateGridFallback('nope', [{ id: 'a' }])).not.toThrow();
   });
 });

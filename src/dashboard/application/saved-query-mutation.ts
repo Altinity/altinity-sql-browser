@@ -20,7 +20,8 @@ import type { JsonSchemaValidationService } from '../../core/json-schema-validat
 import type { SpecSchemaService } from '../../core/spec-schema.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { resolveDashboardPresentations } from '../model/presentation-resolver.js';
-import { flowLayoutPlugin } from '../layouts/flow-layout.js';
+import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
+import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type {
   DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1,
@@ -166,7 +167,15 @@ export function planSavedQueryMutation(
   const queries = applyQueryMutation(workspace.queries, mutation);
   let dashboard: DashboardDocumentV1 | null = workspace.dashboard ? cloneJson(workspace.dashboard) : null;
   if (dashboard && repair) dashboard = applyRepair(dashboard, mutation.queryId, repair);
-  if (dashboard) dashboard = flowLayoutPlugin.normalize(dashboard);
+  // Normalize through the ACTIVE layout engine's own plugin (#291: flow@1 or
+  // grafana-grid@1, resolved from the document's own `layout.type`) rather
+  // than a hardcoded flow plugin, then regenerate the flow@1 fallback when
+  // grafana-grid@1 is active (a repair can add/remove tiles, exactly like the
+  // authoring commands do) — a no-op under flow@1.
+  if (dashboard) {
+    dashboard = resolveLayoutPluginSync(dashboard.layout).normalize(dashboard);
+    regenerateGridFallback(dashboard.layout, dashboard.tiles.map((tile) => ({ id: tile.id })));
+  }
   const candidate: StoredWorkspaceV1 = {
     storageVersion: 1, id: workspace.id, name: workspace.name,
     queries: cloneJson(queries), dashboard,

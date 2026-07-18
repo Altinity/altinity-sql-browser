@@ -128,3 +128,19 @@ export function createLayoutRegistry(
 /** The default registry: the built-in flow@1 engine plus grafana-grid@1
  *  (#291), the first second-engine consumer of this registry. */
 export const defaultLayoutRegistry: DashboardLayoutRegistry = createLayoutRegistry([grafanaGridLayoutRegistration]);
+
+/** Synchronous plugin resolution for pure call sites that mutate a Dashboard
+ *  document but cannot await the async registry (`tile-membership.ts`,
+ *  `saved-query-mutation.ts` — #291): the grafana-grid@1 plugin when the
+ *  layout's primary is grafana-grid@1, else the flow@1 plugin. Both built-in
+ *  plugins are stateless, already-constructed values (`load()` never truly
+ *  defers for either — see the module doc comment above), so no async is
+ *  needed to pick between them. Falling back to the flow plugin for any
+ *  OTHER primary (unknown/unsupported, or a genuine flow@1 primary) matches
+ *  `resolve()`'s own fallback behavior: `flowLayoutPlugin.normalize` already
+ *  knows how to operate against a `fallback` when the primary isn't flow@1
+ *  itself (`flowItemsHost`/`flowSurface` in flow-layout.ts). */
+export function resolveLayoutPluginSync(layout: unknown): DashboardLayoutPlugin {
+  if (isObject(layout) && layout.type === 'grafana-grid' && layout.version === 1) return grafanaGridLayoutPlugin;
+  return flowLayoutPlugin;
+}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createLayoutRegistry, defaultLayoutRegistry, flowLayoutRegistration, grafanaGridLayoutRegistration,
+  resolveLayoutPluginSync,
 } from '../../src/dashboard/layouts/layout-registry.js';
 import { flowLayoutPlugin } from '../../src/dashboard/layouts/flow-layout.js';
 import { grafanaGridLayoutPlugin } from '../../src/dashboard/layouts/grafana-grid-layout.js';
@@ -138,5 +139,19 @@ describe('defaultLayoutRegistry', () => {
   it('fails closed for an unsupported grafana-grid version without a valid flow@1 fallback', async () => {
     const result = await defaultLayoutRegistry.resolve({ type: 'grafana-grid', version: 9 });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('resolveLayoutPluginSync (#291)', () => {
+  it('resolves the grafana-grid@1 plugin for a grafana-grid@1 primary', () => {
+    expect(resolveLayoutPluginSync({ type: 'grafana-grid', version: 1, items: {} })).toBe(grafanaGridLayoutPlugin);
+  });
+
+  it('resolves the flow@1 plugin for everything else — a flow primary, an unsupported grid version, an unknown type, or a non-object', () => {
+    expect(resolveLayoutPluginSync(flow())).toBe(flowLayoutPlugin);
+    expect(resolveLayoutPluginSync({ type: 'grafana-grid', version: 2, items: {} })).toBe(flowLayoutPlugin);
+    expect(resolveLayoutPluginSync({ type: 'nope', version: 1 })).toBe(flowLayoutPlugin);
+    expect(resolveLayoutPluginSync(null)).toBe(flowLayoutPlugin);
+    expect(resolveLayoutPluginSync('nope')).toBe(flowLayoutPlugin);
   });
 });
