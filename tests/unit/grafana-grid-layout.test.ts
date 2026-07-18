@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, GRID_HEIGHT_PX,
-  computeGrafanaGridLayout, deriveFlowFallback, deriveGrafanaGridPlacement,
+  computeGrafanaGridLayout, contentBoxWidth, deriveFlowFallback, deriveGrafanaGridPlacement,
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
   gridSpanFromFlowSpan, regenerateGridFallback, resolveGridPlacement, setGridPlacement,
   snapGridHeight, snapGridSpan,
@@ -248,7 +248,7 @@ describe('computeGrafanaGridLayout', () => {
   it('keeps semantic tiles[] order as the model order, ignoring items for unknown tile ids', () => {
     const layout = gridLayout({ a: { span: 4 }, ghost: { span: 12 } });
     const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout });
-    expect(model.order).toEqual(['a']);
+    expect(model.tiles.map((t) => t.tileId)).toEqual(['a']);
     expect(model.tiles).toHaveLength(1);
   });
 
@@ -261,7 +261,6 @@ describe('computeGrafanaGridLayout', () => {
   it('handles an empty tile list', () => {
     const model = computeGrafanaGridLayout({ tiles: [], layout: gridLayout() });
     expect(model.tiles).toEqual([]);
-    expect(model.order).toEqual([]);
   });
 
   it('tolerates a non-object layout — every tile renders at the grid default', () => {
@@ -350,6 +349,27 @@ describe('GRID_GAP_PX / GRID_HEIGHT_PX', () => {
   });
 });
 
+// #291 review F2: `.dash-grid`'s own horizontal padding is not part of the
+// content box CSS grid tracks occupy — this pure helper is what
+// `ui/dashboard.ts` subtracts it with, for both the responsive breakpoint
+// measurement and the resize column-width math.
+describe('contentBoxWidth', () => {
+  it('subtracts left+right padding from clientWidth', () => {
+    expect(contentBoxWidth(1200, 20, 20)).toBe(1160);
+    expect(contentBoxWidth(500, 20, 20)).toBe(460);
+  });
+
+  it('treats a non-finite padding read (e.g. an unparsed empty computed-style string) as 0', () => {
+    expect(contentBoxWidth(1200, NaN, NaN)).toBe(1200);
+    expect(contentBoxWidth(1200, 20, NaN)).toBe(1180);
+    expect(contentBoxWidth(1200, NaN, 20)).toBe(1180);
+  });
+
+  it('clamps to a minimum of 0 rather than going negative', () => {
+    expect(contentBoxWidth(10, 20, 20)).toBe(0);
+  });
+});
+
 describe('regenerateGridFallback', () => {
   it('mutates a grafana-grid layout\'s fallback in place, deterministically from its current items', () => {
     const layout = gridLayout({ a: { span: 4, height: 'compact' } });
@@ -372,5 +392,22 @@ describe('regenerateGridFallback', () => {
     expect(flow).not.toHaveProperty('fallback');
     expect(() => regenerateGridFallback(null, [{ id: 'a' }])).not.toThrow();
     expect(() => regenerateGridFallback('nope', [{ id: 'a' }])).not.toThrow();
+  });
+
+  // #291 review F9: the id-extraction/filtering used to be built by every
+  // call site (dashboard-commands.ts, tile-membership.ts,
+  // saved-query-mutation.ts) before calling this function — now it accepts
+  // the RAW `dashboard.tiles[]`-shaped array directly and does its own
+  // filtering, tolerating a malformed entry.
+  it('accepts a raw dashboard.tiles[]-shaped array directly, dropping a malformed entry', () => {
+    const layout = gridLayout({ a: { span: 4 } });
+    regenerateGridFallback(layout, [
+      { id: 'a', queryId: 'q1' }, { id: 'b', queryId: 'q2', presentation: { variant: 'x' } },
+      null, 'nope', { queryId: 'q3' }, { id: 42 },
+    ]);
+    expect((layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'full-width',
+      items: { a: { span: 1, height: 'medium' }, b: { span: 2, height: 'medium' } },
+    });
   });
 });

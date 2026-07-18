@@ -82,17 +82,16 @@ const GRID_FALLBACK_COMMANDS = new Set<DashboardCommand['type']>([
   'add-query', 'add-query-instance', 'remove-tile', 'move-tile', 'update-placement',
 ]);
 
-/** Regenerate a grafana-grid@1 layout's flow@1 `fallback` from the
- *  document's CURRENT items + tile set, via the single shared primitive
- *  (`regenerateGridLayoutFallback`, grafana-grid-layout.ts) every #291
- *  application-layer mutation path calls — a no-op when the layout is not
- *  grafana-grid@1. Centralized here (called once, from `applyCommand`) so no
- *  individual command case needs its own copy. */
-function regenerateGridFallback(dashboard: DashboardDocumentV1): void {
-  const tileRefs = dashboard.tiles
-    .filter((tile): tile is DashboardTileV1 => isObject(tile) && typeof tile.id === 'string')
-    .map((tile) => ({ id: tile.id }));
-  regenerateGridLayoutFallback(dashboard.layout, tileRefs);
+/** Set one tile's placement through whichever engine plugin is ACTIVE
+ *  (`ctx.plugin`): grid → `setGridPlacement`, flow → `setFlowPlacement`. The
+ *  one shared primitive both the `add-query`/`add-query-instance` seed step
+ *  and `update-placement` use (#291 review F10 — this dispatch was
+ *  duplicated at both call sites). */
+function setPlacementForActiveEngine(
+  plugin: DashboardLayoutPlugin, layout: unknown, tileId: string, placement: unknown,
+): void {
+  if (plugin.type === 'grafana-grid') setGridPlacement(layout, tileId, placement);
+  else setFlowPlacement(layout, tileId, placement);
 }
 
 /** One-level merge of an `update-tile` presentation patch onto the tile's
@@ -123,7 +122,9 @@ export function applyCommand(
 ): ApplyCommandResult {
   const dashboard = cloneJson(draft);
   const result = applyCommandToClone(dashboard, command, ctx);
-  if (result.ok && GRID_FALLBACK_COMMANDS.has(command.type)) regenerateGridFallback(result.dashboard);
+  if (result.ok && GRID_FALLBACK_COMMANDS.has(command.type)) {
+    regenerateGridLayoutFallback(result.dashboard.layout, result.dashboard.tiles);
+  }
   return result;
 }
 
@@ -158,12 +159,9 @@ function applyCommandToClone(
       // always gets an explicit placement (its own default when there is no
       // usable hint), matching `deriveGrafanaGridPlacement`'s "no opinion"
       // contract being the grid default rather than flow's bare `undefined`.
-      if (ctx.plugin.type === 'grafana-grid') {
-        setGridPlacement(dashboard.layout, id, deriveGrafanaGridPlacement(sizeHints));
-      } else {
-        const placement = deriveFlowPlacement(sizeHints);
-        if (placement) setFlowPlacement(dashboard.layout, id, placement);
-      }
+      const placement = ctx.plugin.type === 'grafana-grid'
+        ? deriveGrafanaGridPlacement(sizeHints) : deriveFlowPlacement(sizeHints);
+      if (placement) setPlacementForActiveEngine(ctx.plugin, dashboard.layout, id, placement);
       return { ok: true, dashboard, value: { tileId: id } };
     }
 
@@ -229,11 +227,7 @@ function applyCommandToClone(
       const placementDiags = ctx.plugin.validatePlacement(command.placement,
         ['layout', 'items', command.tileId]);
       if (placementDiags.length) return { ok: false, diagnostics: placementDiags };
-      if (ctx.plugin.type === 'grafana-grid') {
-        setGridPlacement(dashboard.layout, command.tileId, cloneJson(command.placement));
-      } else {
-        setFlowPlacement(dashboard.layout, command.tileId, cloneJson(command.placement));
-      }
+      setPlacementForActiveEngine(ctx.plugin, dashboard.layout, command.tileId, cloneJson(command.placement));
       return { ok: true, dashboard, value: undefined };
     }
 
@@ -254,11 +248,18 @@ function applyCommandToClone(
     //    flow PRESET while grid is active is exactly this restore, then
     //    applying `command.layout.preset` on top — the caller (Wave 3 UI)
     //    only ever needs to send `{ type: 'flow', version: 1, preset? }`.
-    //  - anything else (same-engine change, e.g. a flow preset switch while
-    //    flow is already active, or an unrecognized combination): install the
-    //    (cloned) new layout document wholesale, as `change-layout` always
-    //    did before #291. A regenerated fallback still backstops a wholesale
-    //    grid layout that did not already carry one.
+    //  - same engine (type+version unchanged) with the incoming layout
+    //    carrying NO `items` field at all: a bare `{type,version}` (e.g. an
+    //    engine-switch dispatch sent while that engine is ALREADY active —
+    //    #291 review F5) must not silently reset `items` to `{}` and discard
+    //    every placement. Preserve the CURRENT items/fallback, with whatever
+    //    fields the command DOES carry (e.g. a flow `preset`) applied on top.
+    //  - anything else (same-engine change WITH an explicit `items` field —
+    //    e.g. a flow preset switch that also spreads its current items, or an
+    //    unrecognized combination): install the (cloned) new layout document
+    //    wholesale, as `change-layout` always did before #291. A regenerated
+    //    fallback still backstops a wholesale grid layout that did not
+    //    already carry one.
     case 'change-layout': {
       const currentType = dashboard.layout.type;
       const targetType = command.layout.type;
@@ -294,8 +295,15 @@ function applyCommandToClone(
         return { ok: true, dashboard, value: undefined };
       }
 
+      if (currentType === targetType && dashboard.layout.version === command.layout.version
+        && !Object.hasOwn(command.layout, 'items')) {
+        dashboard.layout = { ...cloneJson(dashboard.layout), ...cloneJson(command.layout) } as DashboardLayoutDocumentV1;
+        regenerateGridLayoutFallback(dashboard.layout, dashboard.tiles);
+        return { ok: true, dashboard, value: undefined };
+      }
+
       dashboard.layout = cloneJson(command.layout);
-      regenerateGridFallback(dashboard);
+      regenerateGridLayoutFallback(dashboard.layout, dashboard.tiles);
       return { ok: true, dashboard, value: undefined };
     }
   }

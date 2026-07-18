@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FLOW_PLACEMENT, FLOW_MOBILE_BREAKPOINT, FLOW_PRESET_COLUMNS,
   computeFlowLayout, deriveFlowPlacement, effectiveSpan, flowLayoutPlugin,
-  presetColumns, resolveActiveLayoutPlugin, resolvePlacement, setFlowPlacement,
+  presetColumns, resolvePlacement, setFlowPlacement,
 } from '../../src/dashboard/layouts/flow-layout.js';
 import type { DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
 
@@ -102,23 +102,6 @@ describe('flowLayoutPlugin.validatePlacement', () => {
     expect(codes).toContain('layout-placement-unknown-field');
     expect(codes).toContain('layout-placement-invalid-span');
     expect(codes).toContain('layout-placement-invalid-height');
-  });
-});
-
-describe('resolveActiveLayoutPlugin', () => {
-  it('loads flow@1 and unsupported-with-valid-fallback layouts', () => {
-    expect(resolveActiveLayoutPlugin(flowLayout()).ok).toBe(true);
-    expect(resolveActiveLayoutPlugin({ type: 'grid', version: 9, fallback: flowLayout() }).ok).toBe(true);
-    expect(flowLayoutPlugin.type).toBe('flow');
-    expect(flowLayoutPlugin.version).toBe(1);
-  });
-
-  it('fails for an unsupported layout without a valid fallback and for a non-object layout', () => {
-    const noFallback = resolveActiveLayoutPlugin({ type: 'grid', version: 9 });
-    expect(noFallback.ok).toBe(false);
-    if (!noFallback.ok) expect(noFallback.diagnostics[0].code).toBe('dashboard-layout-load-failed');
-    expect(resolveActiveLayoutPlugin(null).ok).toBe(false);
-    expect(resolveActiveLayoutPlugin({ type: 'grid', version: 9, fallback: { type: 'flow', version: 2 } }).ok).toBe(false);
   });
 });
 

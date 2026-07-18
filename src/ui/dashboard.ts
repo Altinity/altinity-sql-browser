@@ -51,7 +51,7 @@ import type {
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
 import {
-  GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, snapGridHeight, snapGridSpan,
+  GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, contentBoxWidth, snapGridHeight, snapGridSpan,
 } from '../dashboard/layouts/grafana-grid-layout.js';
 import type { GrafanaGridLayoutModel } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
@@ -122,6 +122,15 @@ export interface DashboardApp {
 
 const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
+
+/** #291 review F4: `renderDashboard` can run more than once against the SAME
+ *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
+ *  an import-commit while already on `/dashboard` (file-menu.ts's Import
+ *  flow). Module-level so a later call can find and remove the PRIOR call's
+ *  resize listener before installing its own; without this, repeated renders
+ *  stack listeners that all still close over their own render's now-stale
+ *  `session`/`currentDoc`/`containerWidthPx`. */
+let installedGridResizeListener: { win: Window; handler: () => void } | null = null;
 
 /**
  * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
@@ -279,6 +288,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   doc.documentElement.setAttribute('data-theme', state.theme);
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
+
+  // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
+  // call installed on this window before this call installs its own (see
+  // `installedGridResizeListener`'s own doc comment above).
+  if (installedGridResizeListener) {
+    installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
+    installedGridResizeListener = null;
+  }
 
   // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
   // the parsed open-source (ADR-0003). `current-workspace` (?ws=&dash=) verifies
@@ -471,6 +488,24 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
     'No tiles yet — star a query in the Queries panel to add it to the dashboard.');
 
+  // #291 review F2: `grid.clientWidth` INCLUDES the host's own horizontal
+  // padding (`.dash-grid`'s `padding: 18px 20px 40px`, styles.css), but CSS
+  // grid TRACKS occupy the CONTENT box — reading `clientWidth` directly
+  // misclassifies the responsive breakpoint tier near a boundary and skews
+  // the resize column-width math by the same amount. The ONE shared reader
+  // both the breakpoint measurement (`measureGridWidth`, below) and the
+  // resize pointer math (`wireGridResize`, below) use, over the pure,
+  // 100%-covered `contentBoxWidth` (grafana-grid-layout.ts) — `getComputedStyle`
+  // itself returns an empty string with no stylesheet loaded (happy-dom), so
+  // this thin wrapper is exercised by the real-browser e2e suite instead;
+  // `contentBoxWidth`'s own non-finite-padding guard keeps it behaving exactly
+  // like the un-padded `clientWidth` in that environment (the pre-fix reading).
+  function measuredGridWidth(): number {
+    const view = doc.defaultView || window;
+    const cs = view.getComputedStyle(grid);
+    return contentBoxWidth(grid.clientWidth, parseFloat(cs.paddingLeft), parseFloat(cs.paddingRight));
+  }
+
   // ── Structural commands (reorder via drag, preset) ────────────────────────
   // move-tile / update-placement / change-layout are the phase-3 authoring
   // commands; the dashboard UI drives only move-tile (drag) and change-layout
@@ -518,10 +553,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // DOM rebuild. `null` before the first publish (never actually read then —
   // no pointer/click interaction can precede it).
   let activeEngine: 'flow' | 'grafana-grid' | null = null;
-  // The tile's LAST rendered grid placement (span/height) — read at the start
-  // of a corner-drag so the drag continues from the actual rendered values,
-  // not a stale/default guess.
-  const gridPlacementByTile = new Map<string, { span: number; height: GrafanaGridHeightV1 }>();
+  // The tile's LAST rendered grid placement (span/height/colStart) — read at
+  // the start of a corner-drag so the drag continues from the actual
+  // rendered values, not a stale/default guess. `colStart` (#291 review F3)
+  // is what lets the drag PIN the tile's column position for the gesture's
+  // duration — see `wireGridResize` below.
+  const gridPlacementByTile = new Map<string, { span: number; height: GrafanaGridHeightV1; colStart: number }>();
   // The grafana-grid engine's last-rendered effective column count — read at
   // the start of a corner-drag for the column-width math; a safe desktop
   // default before the first grid publish (never read before one, same
@@ -541,24 +578,45 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // pointerup. A no-op while flow is active (`activeEngine` guard) even
   // though the handle DOM always exists once built (CSS hides it under the
   // ancestor `.dash-gg-grid` scope; this is the interaction-level backstop).
+  //
+  // #291 review F3 (pin-during-drag): the tile is PINNED to an explicit
+  // `grid-column: ${colStart+1} / span N` for the whole gesture, rather than
+  // just `span N` (which lets the browser's own auto-placement re-decide the
+  // tile's position on every span change). Without the pin, growing the span
+  // mid-drag could make the tile SELF-WRAP to a new row via auto-placement —
+  // after which `rect` (captured once at pointerdown) no longer describes the
+  // tile's actual position, so every subsequent snap — including the FINAL
+  // persisted one at pointerup — was measured against a stale rect. Pinning
+  // means the tile can never move mid-drag, so `rect` stays valid throughout.
+  // The tradeoff: an explicit start means a span that overflows the columns
+  // remaining at THIS start would demand phantom implicit tracks (the same
+  // overflow failure mode as F1) instead of wrapping — so both the live
+  // preview and the persisted span are clamped to `columns - colStart` for
+  // the gesture. Widening further than that needs a second drag after the
+  // next repack (deterministic beats a jumpy mid-drag reflow).
   function wireGridResize(tileId: string, handle: HTMLElement, card: HTMLElement): void {
     handle.addEventListener('pointerdown', (event: Event) => {
       if (activeEngine !== 'grafana-grid') return;
       const start = event as PointerEvent;
       start.preventDefault();
       start.stopPropagation(); // never let the resize handle start a card drag
-      const rect = card.getBoundingClientRect();
       const columns = Math.max(1, currentGridColumns);
-      const colWidthPx = (grid.clientWidth - GRID_GAP_PX * (columns - 1)) / columns;
       const placement = gridPlacementByTile.get(tileId);
-      let curSpan = placement ? placement.span : columns;
+      const colStart = placement ? placement.colStart : 0;
+      // The columns actually available at this tile's pinned start — the
+      // clamp ceiling for both the live preview and the persisted span.
+      const maxSpan = Math.max(1, columns - colStart);
+      let curSpan = Math.min(placement ? placement.span : columns, maxSpan);
       let curHeight: GrafanaGridHeightV1 = placement ? placement.height : 'medium';
+      card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
+      const rect = card.getBoundingClientRect();
+      const colWidthPx = (measuredGridWidth() - GRID_GAP_PX * (columns - 1)) / columns;
       card.classList.add('dash-gg-resizing');
       const win = doc.defaultView || window;
       const move = (ev: PointerEvent): void => {
-        const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, columns);
+        const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
         const height = snapGridHeight(ev.clientY - rect.top);
-        if (span !== curSpan) { curSpan = span; card.style.gridColumn = 'span ' + span; }
+        if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
         if (height !== curHeight) { curHeight = height; setGridHeightClass(card, height); }
       };
       const up = (): void => {
@@ -768,7 +826,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     for (const t of gridModel.tiles) {
       const tileEl = tileEls.get(t.tileId);
       if (!tileEl) continue;
-      gridPlacementByTile.set(t.tileId, { span: t.span, height: t.height });
+      gridPlacementByTile.set(t.tileId, { span: t.span, height: t.height, colStart: t.colStart });
       tileEl.card.classList.add('dash-gg-tile');
       tileEl.card.classList.toggle('is-kpi', t.isKpi);
       tileEl.card.style.gridColumn = `span ${t.span}`;
@@ -863,18 +921,24 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // how a mobile-breakpoint flip already forces one for flow, above) only
   // while the grid engine is active; flow's own responsive behavior stays the
   // untouched `state.isMobile` signal flip. `clientWidth` is always 0 under
-  // happy-dom (no real layout engine) — `measureGridWidth` then leaves
+  // happy-dom (no real layout engine) — `measuredGridWidth` then leaves
   // `containerWidthPx` `undefined`, which resolves to the widest (12-column)
   // breakpoint, exactly the useful non-DOM default `effectiveGridColumns`
   // itself documents.
   function measureGridWidth(): void {
-    const w = grid.clientWidth;
+    const w = measuredGridWidth();
     containerWidthPx = w > 0 ? w : undefined;
   }
   measureGridWidth();
-  // Unlike a repeatedly-opened modal (e.g. the EXPLAIN graph overlay), the
-  // Dashboard page is a single full-page navigation — the listener lives for
-  // the page's lifetime, no self-removal-on-disconnect needed.
+  // #291 review F4: unlike a repeatedly-opened modal (e.g. the EXPLAIN graph
+  // overlay), the Dashboard page is normally a single full-page navigation —
+  // BUT `renderDashboard` can still run again against this SAME window
+  // in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
+  // file-menu.ts's Import flow while already on `/dashboard`). This module
+  // never disconnects/observes page teardown, so the listener installed here
+  // is removed at the START of the NEXT `renderDashboard` call instead (see
+  // `installedGridResizeListener` above) rather than relying on the page
+  // itself never rendering twice.
   const gridWin = doc.defaultView;
   if (gridWin) {
     const onGridResize = (): void => {
@@ -884,6 +948,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (containerWidthPx !== prevWidth) session.syncDocument(currentDoc);
     };
     gridWin.addEventListener('resize', onGridResize);
+    installedGridResizeListener = { win: gridWin, handler: onGridResize };
   }
 
   await session.start();

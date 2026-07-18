@@ -58,13 +58,23 @@
 
   <script type="module">
     import {
-      computeGrafanaGridLayout, GRID_GAP_PX, snapGridSpan, snapGridHeight,
+      computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, snapGridSpan, snapGridHeight,
     } from '/src/dashboard/layouts/grafana-grid-layout.js';
 
     const GRID_HEIGHT_CLASSES = ['dash-gg-h-compact', 'dash-gg-h-medium', 'dash-gg-h-large'];
     function setHeightClass(card, height) {
       card.classList.remove(...GRID_HEIGHT_CLASSES);
       card.classList.add('dash-gg-h-' + height);
+    }
+
+    // #291 review F2: `el.clientWidth` INCLUDES `.dash-grid`'s own horizontal
+    // padding (18px 20px 40px, styles.css) but CSS grid TRACKS occupy the
+    // CONTENT box — every scenario below measures through this SAME reader
+    // `ui/dashboard.ts`'s `measuredGridWidth` uses, so the harness's model
+    // matches what the real browser actually renders.
+    function measuredWidth(el) {
+      const cs = getComputedStyle(el);
+      return contentBoxWidth(el.clientWidth, parseFloat(cs.paddingLeft), parseFloat(cs.paddingRight));
     }
 
     // Hand-built tile card matching `ui/dashboard.ts`'s `ensureTileEl` DOM
@@ -130,7 +140,7 @@
     ) };
     const packingGrid = document.getElementById('packing-grid');
     function renderPacking() {
-      const model = computeGrafanaGridLayout({ tiles: packingTiles, layout: packingLayout, containerWidth: packingGrid.clientWidth });
+      const model = computeGrafanaGridLayout({ tiles: packingTiles, layout: packingLayout, containerWidth: measuredWidth(packingGrid) });
       packingGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       packingGrid.replaceChildren(...model.tiles.map((t) => {
         const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
@@ -148,7 +158,7 @@
     } };
     const heightsGrid = document.getElementById('heights-grid');
     (function renderHeights() {
-      const model = computeGrafanaGridLayout({ tiles: heightsTiles, layout: heightsLayout, containerWidth: heightsGrid.clientWidth });
+      const model = computeGrafanaGridLayout({ tiles: heightsTiles, layout: heightsLayout, containerWidth: measuredWidth(heightsGrid) });
       heightsGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       heightsGrid.replaceChildren(...model.tiles.map((t) => {
         const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
@@ -171,7 +181,7 @@
     const responsiveWrap = document.getElementById('responsive-wrap');
     const responsiveGrid = document.getElementById('responsive-grid');
     function renderResponsive() {
-      const model = computeGrafanaGridLayout({ tiles: responsiveTiles, layout: responsiveLayout, containerWidth: responsiveGrid.clientWidth });
+      const model = computeGrafanaGridLayout({ tiles: responsiveTiles, layout: responsiveLayout, containerWidth: measuredWidth(responsiveGrid) });
       responsiveGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       responsiveGrid.replaceChildren(...model.tiles.map((t) => {
         const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
@@ -185,29 +195,39 @@
 
     // ── Scenario 4: edit-mode corner-drag resize + hover chrome ────────────
     // Thin harness replica of `ui/dashboard.ts`'s `wireGridResize` (#291 Wave
-    // 3): same pure `snapGridSpan`/`snapGridHeight` arithmetic the app uses;
-    // only the terminal dispatch differs (recorded to `window.__resizeEvents`
-    // instead of `runCommand({type:'update-placement',...})` — that dispatch
-    // itself is unit-tested at the app layer, not this harness's job).
-    const editTiles = [{ id: 'e1' }];
-    const editLayout = { items: { e1: { span: 6, height: 'medium' } } };
+    // 3 + review F3 "pin-during-drag"): same pure `snapGridSpan`/
+    // `snapGridHeight` arithmetic the app uses, PINNED to an explicit
+    // `${colStart+1} / span N` (not bare `span N`) for the drag's duration,
+    // clamped to the columns remaining at that pinned start — only the
+    // terminal dispatch differs (recorded to `window.__resizeEvents` instead
+    // of `runCommand({type:'update-placement',...})`, unit-tested at the app
+    // layer, not this harness's job). `e1` is the row's FIRST tile (colStart
+    // 0); `e2` is a MID-ROW tile (colStart 6) — the previously-untested case
+    // a naive `span`-only pin would let self-wrap when dragged wider.
+    const editTiles = [{ id: 'e1' }, { id: 'e2' }];
+    const editLayout = { items: { e1: { span: 6, height: 'medium' }, e2: { span: 4, height: 'medium' } } };
     const editGrid = document.getElementById('edit-grid');
     let editColumns = 12;
+    const editPlacementByTile = new Map();
     window.__resizeEvents = [];
-    function wireResize(tileId, card, handle, initialSpan, initialHeight) {
+    function wireResize(tileId, card, handle) {
       handle.addEventListener('pointerdown', (start) => {
         start.preventDefault();
         start.stopPropagation();
-        const rect = card.getBoundingClientRect();
         const columns = Math.max(1, editColumns);
-        const colWidthPx = (editGrid.clientWidth - GRID_GAP_PX * (columns - 1)) / columns;
-        let curSpan = initialSpan;
-        let curHeight = initialHeight;
+        const placement = editPlacementByTile.get(tileId);
+        const colStart = placement.colStart;
+        const maxSpan = Math.max(1, columns - colStart);
+        let curSpan = Math.min(placement.span, maxSpan);
+        let curHeight = placement.height;
+        card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
+        const rect = card.getBoundingClientRect();
+        const colWidthPx = (measuredWidth(editGrid) - GRID_GAP_PX * (columns - 1)) / columns;
         card.classList.add('dash-gg-resizing');
         const move = (ev) => {
-          const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, columns);
+          const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
           const height = snapGridHeight(ev.clientY - rect.top);
-          if (span !== curSpan) { curSpan = span; card.style.gridColumn = 'span ' + span; }
+          if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
           if (height !== curHeight) { curHeight = height; setHeightClass(card, height); }
         };
         const up = () => {
@@ -221,20 +241,23 @@
       });
     }
     function renderEdit() {
-      const model = computeGrafanaGridLayout({ tiles: editTiles, layout: editLayout, containerWidth: editGrid.clientWidth });
+      const model = computeGrafanaGridLayout({ tiles: editTiles, layout: editLayout, containerWidth: measuredWidth(editGrid) });
       editColumns = model.columns;
       editGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       editGrid.replaceChildren();
       for (const t of model.tiles) {
+        editPlacementByTile.set(t.tileId, { span: t.span, height: t.height, colStart: t.colStart });
         const { card, resizeHandle } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'edit');
         card.style.gridColumn = 'span ' + t.span;
         editGrid.appendChild(card);
-        wireResize(t.tileId, card, resizeHandle, t.span, t.height);
+        wireResize(t.tileId, card, resizeHandle);
       }
+      window.__editModel = model;
     }
     renderEdit();
     window.__editColumns = () => editColumns;
-    window.__editColWidthPx = () => (editGrid.clientWidth - GRID_GAP_PX * (editColumns - 1)) / editColumns;
+    window.__editColWidthPx = () => (measuredWidth(editGrid) - GRID_GAP_PX * (editColumns - 1)) / editColumns;
+    window.__editColStart = (tileId) => editPlacementByTile.get(tileId).colStart;
     window.__snapGridSpan = snapGridSpan;
     window.__snapGridHeight = snapGridHeight;
     window.__GRID_GAP_PX = GRID_GAP_PX;
@@ -244,7 +267,7 @@
     (function renderViewonly() {
       const tiles = [{ id: 'v1' }];
       const layout = { items: { v1: { span: 6, height: 'medium' } } };
-      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: viewonlyGrid.clientWidth });
+      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(viewonlyGrid) });
       viewonlyGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       viewonlyGrid.replaceChildren(...model.tiles.map((t) => {
         const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');

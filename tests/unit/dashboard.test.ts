@@ -692,23 +692,53 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const gridEl = qs(app.root, '.dash-gg-grid');
     // 12 columns, 8px gap → colWidth = (1200 - 8*11)/12 ≈ 92.67px.
     Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
-    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / compact
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / compact, colStart 0
     const handle = qs<HTMLElement>(card, '.dash-gg-resize');
     handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
     expect(card.classList.contains('dash-gg-resizing')).toBe(true);
+    // #291 review F3: the tile is PINNED to its rendered colStart (0 here) for
+    // the drag's duration — an explicit `${colStart+1} / span N`, not bare
+    // `span N` — so growing the span mid-drag can never make it self-wrap via
+    // the browser's own auto-placement.
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('1 / span 4');
     // clientX=600 → round((600+8)/100.67) = 6 columns; clientY=280 → closer to
     // 296 (large) than 210 (medium) — both differ from the starting 4/compact.
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
-    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('1 / span 6');
     expect(card.classList.contains('dash-gg-h-large')).toBe(true);
     expect(commit).not.toHaveBeenCalled(); // no command dispatched until pointerup
     window.dispatchEvent(new PointerEvent('pointerup'));
     expect(card.classList.contains('dash-gg-resizing')).toBe(false);
     expect(commit).toHaveBeenCalledTimes(1); // exactly one update-placement dispatch
-    // The committed placement survives reconciliation (re-derived from state).
+    // The committed placement survives reconciliation (re-derived from state,
+    // reverting to the ordinary un-pinned `span N` the normal reconciler writes).
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
     expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
     expect(after.classList.contains('dash-gg-h-large')).toBe(true);
+  });
+
+  it('a mid-row tile dragged wider is clamped to the columns remaining at its pinned start, never past the grid edge (#291 review F3)', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    // t2: no persisted placement → grid default span 6/medium, colStart 4
+    // (right after t1's span 4) — NOT the row's first tile.
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[1];
+    const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('5 / span 6'); // pinned at colStart 4
+    // A huge rightward drag would naively request span 12 (the full grid) —
+    // clamped instead to 12-4=8, the columns actually free at this start, so
+    // the tile never demands phantom implicit tracks past the grid edge.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100000, clientY: 0 }));
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('5 / span 8');
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    expect(commit).toHaveBeenCalledTimes(1);
+    // The persisted span survives reconciliation clamped too (not 12) —
+    // reverting to the ordinary un-pinned `span N` the ready reconciler writes.
+    const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[1];
+    expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 8');
   });
 
   it('a resize pointerdown is a no-op while flow (not grid) is active', async () => {
@@ -747,6 +777,35 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const rowsBefore = qsa(app.root, '.dash-row').length;
     expect(() => window.dispatchEvent(new Event('resize'))).not.toThrow();
     expect(qsa(app.root, '.dash-row').length).toBe(rowsBefore);
+  });
+
+  // #291 review F4: `renderDashboard` can run more than once on the SAME
+  // window (`app.reloadDashboardRoute()` re-invokes it after an
+  // import-commit while already on /dashboard) — a stale first-render
+  // listener must not keep reacting to resize events after a second render.
+  it('a second renderDashboard call removes the prior call\'s resize listener — only the latest render reacts', async () => {
+    const { app: app1 } = dashApp({ workspace: twoTilesGrid() });
+    await render(app1);
+    const grid1 = qs(app1.root, '.dash-gg-grid');
+    expect((grid1.style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    // A width that WOULD reflow this grid to 2 columns if its own listener
+    // were still (incorrectly) attached after the second render below.
+    Object.defineProperty(grid1, 'clientWidth', { value: 300, configurable: true });
+
+    const { app: app2 } = dashApp({ workspace: twoTilesGrid() });
+    await render(app2); // simulates app.reloadDashboardRoute() re-rendering on the same window
+    const grid2 = qs(app2.root, '.dash-gg-grid');
+    Object.defineProperty(grid2, 'clientWidth', { value: 600, configurable: true }); // >=470,<720 → 4 columns
+
+    window.dispatchEvent(new Event('resize'));
+    await Promise.resolve(); await Promise.resolve();
+
+    // The LATEST render reacts normally...
+    expect((qs(app2.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(4');
+    // ...but the FIRST render's grid is untouched — its listener was removed
+    // at the start of the second `renderDashboard` call, so it never saw
+    // this resize event (it would otherwise have reflowed to 2 columns).
+    expect((qs(app1.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
   });
 });
 

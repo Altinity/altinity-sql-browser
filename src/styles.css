@@ -2494,6 +2494,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    tile body like a chart/table does. */
 .dash-gg-tile .dash-tile-body { flex-wrap: wrap; gap: 8px; }
 .dash-gg-tile .dash-tile-body > .kpi-card { flex: 1; min-width: 0; max-width: none; inline-size: auto; }
-@media (max-width: 768px) {
-  .dash-grid.dash-gg-grid { grid-template-columns: 1fr !important; }
-}
+/* No `@media (max-width: 768px)` override here (#291 review finding F1): unlike
+   flow's binary mobile flip, grafana-grid@1's ENTIRE responsive behavior is the
+   JS container-width clamp (`effectiveGridColumns`, 12/6/4/2 at ≥1160/≥720/≥470)
+   which already sets an inline `grid-template-columns: repeat(N, 1fr)` on this
+   host and clamps every tile's `grid-column: span N` to fit. A `!important`
+   media override here does not know about a tile's span — a span>1 tile whose
+   host was forced to `1fr` still tries to occupy N implicit tracks, rendering
+   side-by-side/overflowing instead of the model's actual N-column layout. */

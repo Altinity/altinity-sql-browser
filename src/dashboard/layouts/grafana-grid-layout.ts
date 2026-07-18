@@ -208,8 +208,6 @@ export interface GrafanaGridLayoutModel {
   columns: number;
   /** Every visible tile, positioned, in `dashboard.tiles[]` semantic order. */
   tiles: GrafanaGridTileRender[];
-  /** Visible tile IDs in semantic order (parity with flow's `order`). */
-  order: string[];
 }
 
 /** One visible tile the grid lays out, in `dashboard.tiles[]` semantic order.
@@ -262,7 +260,7 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
     return render;
   });
 
-  return { engine: 'grafana-grid', columns, tiles: renders, order: tiles.map((tile) => tile.id) };
+  return { engine: 'grafana-grid', columns, tiles: renders };
 }
 
 // ── Engine conversion: grid → flow fallback (#291) ──────────────────────────
@@ -335,15 +333,53 @@ export function snapGridHeight(dyPx: number): GrafanaGridHeightV1 {
   return best;
 }
 
+/** Extract `{id}` refs from a RAW `dashboard.tiles[]`-shaped array — a
+ *  malformed entry (non-object, or a non-string `id`) is dropped, never
+ *  thrown. Lets every #291 call site hand `regenerateGridFallback` its own
+ *  `dashboard.tiles` array directly instead of pre-mapping/filtering it
+ *  itself (#291 review F9: three call sites duplicated this exact
+ *  `filter(isObject...).map(...)`). */
+function tileRefsOf(tiles: readonly unknown[]): GrafanaGridFallbackTile[] {
+  const out: GrafanaGridFallbackTile[] = [];
+  for (const tile of tiles) {
+    if (isObject(tile) && typeof tile.id === 'string') out.push({ id: tile.id });
+  }
+  return out;
+}
+
 /** Regenerate a grafana-grid@1 layout's flow@1 `fallback` IN PLACE from its
- *  current `items` + the given tile set (mutates `layout.fallback`, mirroring
- *  `setGridPlacement`'s own mutate-in-place contract) — a no-op when `layout`
- *  is not a grafana-grid@1 document. The single shared primitive every #291
- *  application-layer mutation path (authoring commands, tile-membership star
- *  toggle, saved-query mutation planning) calls so "every grid mutation
- *  regenerates the flow@1 fallback deterministically" is enforced once, not
- *  duplicated per call site. */
-export function regenerateGridFallback(layout: unknown, tiles: readonly GrafanaGridFallbackTile[]): void {
+ *  current `items` + the given RAW `dashboard.tiles[]` array (mutates
+ *  `layout.fallback`, mirroring `setGridPlacement`'s own mutate-in-place
+ *  contract) — a no-op when `layout` is not a grafana-grid@1 document. The
+ *  single shared primitive every #291 application-layer mutation path
+ *  (authoring commands, tile-membership star toggle, saved-query mutation
+ *  planning) calls so "every grid mutation regenerates the flow@1 fallback
+ *  deterministically" is enforced once, not duplicated per call site. The
+ *  non-grid guard runs BEFORE the tiles→refs mapping/allocation (#291 review
+ *  F9) — calling this on the far-more-common flow-engine document costs only
+ *  the guard check, never a `tiles[]` walk that would just be thrown away. */
+export function regenerateGridFallback(layout: unknown, tiles: readonly unknown[]): void {
   if (!isObject(layout) || layout.type !== 'grafana-grid') return;
-  layout.fallback = deriveFlowFallback(layout, tiles);
+  layout.fallback = deriveFlowFallback(layout, tileRefsOf(tiles));
+}
+
+// ── Measurement math (#291 review F2): the grid host's `clientWidth` INCLUDES
+// its own horizontal padding (`.dash-grid`'s `padding: 18px 20px 40px`,
+// styles.css), but CSS grid TRACKS occupy the CONTENT box — using
+// `clientWidth` directly for the responsive breakpoint clamp or the resize
+// column-width math misclassifies tiers near a threshold and skews the
+// column width by the same amount. `ui/dashboard.ts` pairs this with a thin
+// DOM reader (`getComputedStyle(el).paddingLeft/Right`) for both call sites. ─
+
+/** The grid host's CONTENT-box width: `clientWidth` minus its own horizontal
+ *  padding, clamped to a minimum of 0. A non-finite padding read (e.g. an
+ *  empty computed-style string under a no-stylesheet test environment, which
+ *  `parseFloat` turns into `NaN`) is treated as 0 rather than propagating NaN
+ *  — the un-padded `clientWidth` itself, exactly today's (pre-fix) behavior
+ *  when no padding can be read. Pure — the DOM `getComputedStyle` read is the
+ *  caller's job. */
+export function contentBoxWidth(clientWidth: number, padLeft: number, padRight: number): number {
+  const left = Number.isFinite(padLeft) ? padLeft : 0;
+  const right = Number.isFinite(padRight) ? padRight : 0;
+  return Math.max(0, clientWidth - left - right);
 }

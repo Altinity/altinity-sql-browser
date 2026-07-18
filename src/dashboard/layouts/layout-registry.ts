@@ -52,24 +52,32 @@ export interface DashboardLayoutRegistry {
   resolve(layout: unknown, path?: (string | number)[]): Promise<ResolveLayoutResult>;
 }
 
+/** The built-in engines with synchronous, already-constructed plugin
+ *  instances (#291 review F6) — the SINGLE source of truth both
+ *  `resolveLayoutPluginSync` (below) and `defaultLayoutRegistry`'s
+ *  registrations derive their dispatch from, so a third built-in engine is
+ *  added in exactly one place instead of two independent, driftable lists
+ *  (a hardcoded `if (type === 'grafana-grid')` alongside a separately
+ *  maintained registration array used to silently default an unhandled new
+ *  engine to flow in the sync path). `load` is registration-time-lazy only
+ *  for every entry, matching flow's original contract — the plugin modules
+ *  are still inlined in the one bundle (CLAUDE.md hard rule 4 forbids network
+ *  code-splitting); a plugin is simply not CONSTRUCTED/imported by a caller
+ *  until a Dashboard document actually requests its `type`. */
+const BUILTIN_SYNC_PLUGINS: readonly DashboardLayoutPlugin[] = [flowLayoutPlugin, grafanaGridLayoutPlugin];
+
+/** One registration for a built-in sync plugin — `load` needs no async work
+ *  since the instance already exists. */
+function syncRegistration(plugin: DashboardLayoutPlugin): DashboardLayoutRegistration {
+  return { id: plugin.type, versions: [plugin.version], load: () => Promise.resolve(plugin) };
+}
+
 /** The always-available flow@1 registration — its `load` returns the shared,
  *  stateless plugin instance (no code-splitting needed for the built-in). */
-export const flowLayoutRegistration: DashboardLayoutRegistration = {
-  id: 'flow',
-  versions: [1],
-  load: () => Promise.resolve(flowLayoutPlugin),
-};
+export const flowLayoutRegistration: DashboardLayoutRegistration = syncRegistration(flowLayoutPlugin);
 
-/** The grafana-grid@1 registration (#291): a second built-in engine. `load`
- *  is registration-time-lazy only, matching flow's — the plugin module is
- *  still inlined in the one bundle (CLAUDE.md hard rule 4 forbids network
- *  code-splitting); it is simply not constructed/imported by a caller until a
- *  Dashboard document actually requests `type: 'grafana-grid'`. */
-export const grafanaGridLayoutRegistration: DashboardLayoutRegistration = {
-  id: 'grafana-grid',
-  versions: [1],
-  load: () => Promise.resolve(grafanaGridLayoutPlugin),
-};
+/** The grafana-grid@1 registration (#291): a second built-in engine. */
+export const grafanaGridLayoutRegistration: DashboardLayoutRegistration = syncRegistration(grafanaGridLayoutPlugin);
 
 /** Build a registry from a set of registrations. flow@1 is always present (a
  *  passed `flow` registration is ignored in favour of the built-in, so the
@@ -125,14 +133,17 @@ export function createLayoutRegistry(
   return { supports, load, resolve };
 }
 
-/** The default registry: the built-in flow@1 engine plus grafana-grid@1
- *  (#291), the first second-engine consumer of this registry. */
-export const defaultLayoutRegistry: DashboardLayoutRegistry = createLayoutRegistry([grafanaGridLayoutRegistration]);
+/** The default registry: every `BUILTIN_SYNC_PLUGINS` entry, registered —
+ *  flow@1 plus grafana-grid@1 (#291), the first second-engine consumer of
+ *  this registry. Derived from the same table `resolveLayoutPluginSync`
+ *  reads (#291 review F6), rather than a separately maintained array. */
+export const defaultLayoutRegistry: DashboardLayoutRegistry =
+  createLayoutRegistry(BUILTIN_SYNC_PLUGINS.map(syncRegistration));
 
 /** Synchronous plugin resolution for pure call sites that mutate a Dashboard
  *  document but cannot await the async registry (`tile-membership.ts`,
- *  `saved-query-mutation.ts` — #291): the grafana-grid@1 plugin when the
- *  layout's primary is grafana-grid@1, else the flow@1 plugin. Both built-in
+ *  `saved-query-mutation.ts` — #291): looked up in `BUILTIN_SYNC_PLUGINS` by
+ *  exact `{type, version}` match, else the flow@1 plugin. Both built-in
  *  plugins are stateless, already-constructed values (`load()` never truly
  *  defers for either — see the module doc comment above), so no async is
  *  needed to pick between them. Falling back to the flow plugin for any
@@ -141,6 +152,9 @@ export const defaultLayoutRegistry: DashboardLayoutRegistry = createLayoutRegist
  *  knows how to operate against a `fallback` when the primary isn't flow@1
  *  itself (`flowItemsHost`/`flowSurface` in flow-layout.ts). */
 export function resolveLayoutPluginSync(layout: unknown): DashboardLayoutPlugin {
-  if (isObject(layout) && layout.type === 'grafana-grid' && layout.version === 1) return grafanaGridLayoutPlugin;
+  if (isObject(layout)) {
+    const match = BUILTIN_SYNC_PLUGINS.find((plugin) => plugin.type === layout.type && plugin.version === layout.version);
+    if (match) return match;
+  }
   return flowLayoutPlugin;
 }

@@ -274,6 +274,40 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
       });
     }
   });
+
+  // #291 review F5: a bare `{type,version}` change-layout (no `items` field
+  // at all) dispatched while that SAME engine+version is already active must
+  // not reset placements to `{}` — this is what a naive "pick Grafana grid"
+  // engine-switch dispatch looks like if it fires while grid is already
+  // active (the UI's own re-selection guard aside; the command layer must
+  // stay safe against it regardless of caller).
+  it('a BARE same-engine change (grid -> grid, no items field) preserves the existing placements instead of discarding them', () => {
+    const d = draft({
+      tiles: [{ id: 't1', queryId: 'q' }, { id: 't2', queryId: 'q' }] as never,
+      layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4 }, t2: { span: 8 } } } as never,
+    });
+    const result = run(d, { type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as never }, [query('q')]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.dashboard.layout.items).toEqual({ t1: { span: 4 }, t2: { span: 8 } });
+      expect(result.dashboard.layout.fallback).toEqual({
+        type: 'flow', version: 1, preset: 'full-width',
+        items: { t1: { span: 1, height: 'medium' }, t2: { span: 2, height: 'medium' } },
+      });
+    }
+  });
+
+  it('a bare same-engine flow change (no items field) preserves the existing preset/items too', () => {
+    const d = draft({
+      tiles: [{ id: 't1', queryId: 'q' }] as never,
+      layout: { type: 'flow', version: 1, preset: 'columns-3', items: { t1: { span: 2 } } } as never,
+    });
+    const result = run(d, { type: 'change-layout', layout: { type: 'flow', version: 1 } as never }, [query('q')]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.dashboard.layout).toEqual({ type: 'flow', version: 1, preset: 'columns-3', items: { t1: { span: 2 } } });
+    }
+  });
 });
 
 describe('applyCommand — grid fallback regeneration on every mutating command (#291)', () => {

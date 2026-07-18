@@ -70,11 +70,18 @@ test.describe('Dashboard grafana-grid layout', () => {
 
   test('clamps effective columns at the 12/6/4/2 container-width breakpoints, and a full-span tile never overflows', async ({ page }) => {
     await openWide(page);
+    // `width` is the WRAPPER's inline width; the grid host's own CONTENT box
+    // (where `effectiveGridColumns` — and CSS grid tracks — actually measure
+    // from) is 40px narrower than that (`.dash-grid`'s 20px left+right
+    // padding, styles.css — #291 review F2). Each case's width is chosen so
+    // the resulting CONTENT width lands comfortably inside its target tier
+    // (1200/800/500/300), not merely at a boundary the padding math could
+    // tip either way.
     const cases = [
-      { width: 1200, columns: 12 },
-      { width: 800, columns: 6 },
-      { width: 500, columns: 4 },
-      { width: 300, columns: 2 },
+      { width: 1240, columns: 12 },
+      { width: 840, columns: 6 },
+      { width: 540, columns: 4 },
+      { width: 340, columns: 2 },
     ];
     for (const { width, columns } of cases) {
       await page.evaluate((px) => window.__setResponsiveWidth(px), width);
@@ -119,10 +126,11 @@ test.describe('Dashboard grafana-grid layout', () => {
 
   test('corner-drag resize live-previews span/height during the drag and dispatches exactly one terminal placement', async ({ page }) => {
     await openWide(page);
+    // e1 is the row's FIRST tile (colStart 0, span 6/medium).
     const card = page.locator('#edit-grid .dash-tile[data-tile-id="e1"]');
-    const handle = page.locator('#edit-grid .dash-gg-resize');
+    const handle = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-resize');
     await expect(card).toHaveClass(/dash-gg-h-medium/);
-    expect(await card.evaluate((node) => node.style.gridColumn)).toBe('span 6');
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe('span 6'); // unpinned before any drag
 
     // Raw page.mouse.* calls don't auto-scroll (unlike locator.click()) —
     // the harness stacks several scenario sections, so the edit-mode grid
@@ -134,6 +142,9 @@ test.describe('Dashboard grafana-grid layout', () => {
     await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
     await page.mouse.down();
     await expect(card).toHaveClass(/dash-gg-resizing/);
+    // #291 review F3: PINNED to an explicit column start for the drag's
+    // duration, not bare `span N` — e1's colStart is 0, so `1 / span 6`.
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe('1 / span 6');
 
     // Drag to a point 3.5 columns wide, ~large-tier tall — assert the LIVE
     // (pre-release) preview matches the same pure snap functions the app uses.
@@ -144,7 +155,7 @@ test.describe('Dashboard grafana-grid layout', () => {
       span: window.__snapGridSpan(dx, window.__editColWidthPx(), window.__GRID_GAP_PX, window.__editColumns()),
       height: window.__snapGridHeight(dy),
     }), { dx: midTargetX - rect.left, dy: midTargetY - rect.top });
-    expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${midExpected.span}`);
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`1 / span ${midExpected.span}`);
     await expect(card).toHaveClass(new RegExp('dash-gg-h-' + midExpected.height));
     expect(await page.evaluate(() => window.__resizeEvents.length)).toBe(0); // no dispatch mid-drag
 
@@ -159,18 +170,66 @@ test.describe('Dashboard grafana-grid layout', () => {
       span: window.__snapGridSpan(dx, window.__editColWidthPx(), window.__GRID_GAP_PX, window.__editColumns()),
       height: window.__snapGridHeight(dy),
     }), { dx: finalTargetX - rect.left, dy: finalTargetY - rect.top });
-    expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${finalExpected.span}`);
+    // The persisted-command dispatch survives; the DOM's own explicit pin is
+    // still in place until the next reconciliation (this harness never
+    // re-renders after a resize — unlike the real app, which resets to plain
+    // `span N` on its next publish, unit-tested at the app layer).
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`1 / span ${finalExpected.span}`);
     await expect(card).toHaveClass(new RegExp('dash-gg-h-' + finalExpected.height));
     const events = await page.evaluate(() => window.__resizeEvents);
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({ tileId: 'e1', span: finalExpected.span, height: finalExpected.height });
   });
 
+  test('a mid-row tile (colStart > 0) dragged wider stays pinned and clamps to the columns remaining at its own start (#291 review F3)', async ({ page }) => {
+    await openWide(page);
+    // e2 sits right after e1 in the same row (colStart 6, span 4/medium) —
+    // the previously-untested case a naive `span`-only pin would let
+    // self-wrap via the browser's own auto-placement once dragged wider.
+    const card = page.locator('#edit-grid .dash-tile[data-tile-id="e2"]');
+    const handle = page.locator('#edit-grid .dash-tile[data-tile-id="e2"] .dash-gg-resize');
+    const colStart = await page.evaluate(() => window.__editColStart('e2'));
+    expect(colStart).toBe(6);
+    const rectBefore = await card.evaluate((node) => node.getBoundingClientRect().left);
+
+    await handle.scrollIntoViewIfNeeded();
+    const rect = await card.evaluate((node) => { const r = node.getBoundingClientRect(); return { left: r.left, top: r.top }; });
+    const handleBox = await handle.boundingBox();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    // Pinned immediately — same left edge as before the drag (no jump).
+    expect(await card.evaluate((node) => node.getBoundingClientRect().left)).toBeCloseTo(rectBefore, 0);
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe('7 / span 4'); // colStart 6 → "7 /"
+
+    // A huge rightward drag would naively request the full 12-column span —
+    // clamped instead to 12-6=6, the columns actually free at this pinned
+    // start, so the tile never demands phantom implicit tracks past the edge.
+    // (Y stays at the medium-tier offset so only the SPAN clamp is exercised.)
+    await page.mouse.move(rect.left + 100000, rect.top + 210, { steps: 3 });
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe('7 / span 6');
+    // Still pinned at the SAME left edge — growing the span never moved it.
+    expect(await card.evaluate((node) => node.getBoundingClientRect().left)).toBeCloseTo(rectBefore, 0);
+    // And it never overflows the grid's own content-box right edge.
+    const overflow = await page.evaluate(() => {
+      const grid = document.getElementById('edit-grid');
+      const e2 = document.querySelector('#edit-grid [data-tile-id="e2"]');
+      const cs = getComputedStyle(grid);
+      const gridRect = grid.getBoundingClientRect();
+      const contentRight = gridRect.right - parseFloat(cs.paddingRight);
+      return e2.getBoundingClientRect().right - contentRight;
+    });
+    expect(overflow).toBeLessThanOrEqual(1);
+
+    await page.mouse.up();
+    const events = await page.evaluate(() => window.__resizeEvents);
+    expect(events[events.length - 1]).toEqual({ tileId: 'e2', span: 6, height: 'medium' });
+  });
+
   test('hover reveals the delete button and resize glyph only in edit mode; view mode never builds edit affordances', async ({ page }) => {
     await openWide(page);
-    const delBtn = page.locator('#edit-grid .dash-gg-del');
-    const resizeHandle = page.locator('#edit-grid .dash-gg-resize');
-    const grip = page.locator('#edit-grid .dash-gg-grip');
+    const delBtn = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-del');
+    const resizeHandle = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-resize');
+    const grip = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-grip');
 
     // Grip is always visible in edit mode (not hover-gated); delete + the
     // resize glyph start hidden (opacity 0) and reveal on hover (styles.css

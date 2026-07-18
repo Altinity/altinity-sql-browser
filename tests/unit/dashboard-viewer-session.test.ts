@@ -621,7 +621,7 @@ describe('grafana-grid engine routing (#291)', () => {
     expect(layout.engine).toBe('grafana-grid');
     if (layout.engine === 'grafana-grid') {
       expect(layout.grid.engine).toBe('grafana-grid');
-      expect(layout.grid.order).toEqual(['a', 'b']);
+      expect(layout.grid.tiles.map((t) => t.tileId)).toEqual(['a', 'b']);
       expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'a', span: 4, height: 'compact' });
       // No persisted placement for 'b' → the grid default (span 6, medium).
       expect(layout.grid.tiles[1]).toMatchObject({ tileId: 'b', span: 6, height: 'medium' });

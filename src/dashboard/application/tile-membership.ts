@@ -76,6 +76,6 @@ export function toggleTileMembership(
     next = removeTilesForQuery(dashboard, query.id);
   }
   const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
-  regenerateGridFallback(normalized.layout, normalized.tiles.map((tile) => ({ id: tile.id })));
+  regenerateGridFallback(normalized.layout, normalized.tiles);
   return normalized;
 }

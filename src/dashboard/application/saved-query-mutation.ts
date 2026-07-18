@@ -174,7 +174,7 @@ export function planSavedQueryMutation(
   // authoring commands do) — a no-op under flow@1.
   if (dashboard) {
     dashboard = resolveLayoutPluginSync(dashboard.layout).normalize(dashboard);
-    regenerateGridFallback(dashboard.layout, dashboard.tiles.map((tile) => ({ id: tile.id })));
+    regenerateGridFallback(dashboard.layout, dashboard.tiles);
   }
   const candidate: StoredWorkspaceV1 = {
     storageVersion: 1, id: workspace.id, name: workspace.name,
