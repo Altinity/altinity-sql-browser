@@ -1001,3 +1001,159 @@ describe('app auth handoff', () => {
     await expect(app.conn.receiveAuthHandoff({ opener: asWindow({ postMessage: vi.fn() }) })).resolves.toBe(false);
   });
 });
+
+// ── #288 Phase 6: open-source modes + the Dashboard header File menu ──────────
+// renderDashboard now branches on `app.dashboardOpenSource`: a current-workspace
+// route verifies BOTH ids against the primary (edit) or detached (view) store; a
+// session-bundle route consumes the one-time handoff into a read-only view; a
+// resolution failure shows not-found. See ADR-0003.
+
+/** Build a dashApp wired for a specific open-source mode. `detached` seeds
+ *  `app.detachedViews.get`; `consume` overrides `app.consumeDashboardHandoff`. */
+function modeApp(opts: {
+  workspace?: ReturnType<typeof wsWith> | null;
+  openSource?: TestApp['dashboardOpenSource'];
+  detached?: ReturnType<typeof wsWith> | null;
+  consume?: ReturnType<typeof vi.fn>;
+  responder?: ExecResponder;
+} = {}) {
+  const built = dashApp({ workspace: opts.workspace, responder: opts.responder });
+  const app = built.app;
+  app.dashboardOpenSource = opts.openSource ?? null;
+  app.detachedViews = { get: vi.fn(async () => (opts.detached ?? null) as never), put: vi.fn(async () => {}) };
+  if (opts.consume) app.consumeDashboardHandoff = opts.consume;
+  return { ...built, app };
+}
+
+const openFileMenuBtn = (root: ParentNode | null): void => {
+  qs<HTMLButtonElement>(root, '.dash-file-btn').click();
+};
+const menuItems = (): string[] =>
+  qsa(document, '.dash-file-menu .dash-fm-item').map((b) => b.textContent || '');
+
+describe('renderDashboard — open-source modes (#288)', () => {
+  afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
+
+  it('current-workspace: both ids match the primary store → editable (draggable tiles, layout switcher)', async () => {
+    const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: ws, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeNull();
+    expect(qsa(app.root, '.dash-tile').length).toBe(1);
+    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('true');
+    expect(layoutSelect(app.root)).toBeTruthy();
+    // projection: the resolved workspace is on app.state for the File menu.
+    expect(app.state.dashboard?.id).toBe('d');
+  });
+
+  it('current-workspace: workspace matches but dashboard id differs → not-found, runs nothing', async () => {
+    const ws = wsWith({ id: 'd' });
+    const { app, calls } = modeApp({ workspace: ws, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'other' } });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeTruthy();
+    expect(qs(app.root, '.dash-notfound-title')?.textContent).toContain('unavailable');
+    expect(qsa(app.root, '.dash-tile').length).toBe(0);
+    expect(calls.length).toBe(0);
+  });
+
+  it('current-workspace: id resolves only in the detached store → read-only view (no drag, no layout switcher)', async () => {
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeNull();
+    expect(qsa(app.root, '.dash-tile').length).toBe(1);
+    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('false');
+    expect(layoutSelect(app.root)).toBeNull();
+  });
+
+  it('session-bundle: consumes the one-time handoff into a read-only view', async () => {
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const consume = vi.fn(async () => detached as never);
+    const { app } = modeApp({ openSource: { kind: 'session-bundle', token: 'tok', dashboardId: 'd' }, consume });
+    await render(app);
+    expect(consume).toHaveBeenCalledOnce();
+    expect(qs(app.root, '.dash-notfound')).toBeNull();
+    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('false');
+  });
+
+  it('session-bundle: a missing/expired token → not-found, runs nothing', async () => {
+    const consume = vi.fn(async () => null);
+    const { app, calls } = modeApp({ openSource: { kind: 'session-bundle', token: 'gone', dashboardId: 'd' }, consume });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeTruthy();
+    expect(calls.length).toBe(0);
+  });
+
+  it('a bare /dashboard open (no open-source) stays the legacy editable current workspace', async () => {
+    const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: ws, openSource: null });
+    await render(app);
+    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('true');
+  });
+});
+
+describe('renderDashboard — Dashboard header File menu (#302)', () => {
+  afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
+
+  const editApp = () => modeApp({
+    workspace: wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] }),
+    openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+  });
+
+  it('edit mode: opens Export / Import / Open-for-viewing, each wired to its action; re-click + Escape close', async () => {
+    const { app } = editApp();
+    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn(), openDashboardForViewing: vi.fn() };
+    await render(app);
+    const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
+    openFileMenuBtn(app.root);
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(menuItems()).toEqual(['Export Dashboard…', 'Import Dashboard…', 'Open for viewing…']);
+    // arrow-key navigation between items
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    // click "Open for viewing…"
+    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[2].click();
+    expect(app.actions.openDashboardForViewing).toHaveBeenCalledOnce();
+    expect(document.querySelector('.dash-file-menu')).toBeNull(); // closed on select
+    // re-open, then Escape closes + restores aria
+    openFileMenuBtn(app.root);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(document.querySelector('.dash-file-menu')).toBeNull();
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+    // re-open then click the toggle again closes it
+    openFileMenuBtn(app.root);
+    btn.click();
+    expect(document.querySelector('.dash-file-menu')).toBeNull();
+  });
+
+  it('Export / Import items call their actions; overlay click closes the menu', async () => {
+    const { app } = editApp();
+    app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn(), openDashboardForViewing: vi.fn() };
+    await render(app);
+    openFileMenuBtn(app.root);
+    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[0].click();
+    expect(app.actions.exportDashboard).toHaveBeenCalledOnce();
+    openFileMenuBtn(app.root);
+    qsa<HTMLButtonElement>(document, '.dash-file-menu .dash-fm-item')[1].click();
+    expect(app.actions.importDashboard).toHaveBeenCalledOnce();
+    openFileMenuBtn(app.root);
+    qs<HTMLButtonElement>(document, '.fm-overlay').click();
+    expect(document.querySelector('.dash-file-menu')).toBeNull();
+  });
+
+  it('view mode: the File menu offers Export only (import + re-preview are edit-context)', async () => {
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    openFileMenuBtn(app.root);
+    expect(menuItems()).toEqual(['Export Dashboard…']);
+  });
+
+  it('an unrelated keydown while the menu is open is ignored', async () => {
+    const { app } = editApp();
+    await render(app);
+    openFileMenuBtn(app.root);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    expect(document.querySelector('.dash-file-menu')).toBeTruthy(); // still open
+  });
+});

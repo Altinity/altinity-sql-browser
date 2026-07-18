@@ -74,7 +74,14 @@ import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../appli
 import { createAppPreferences } from '../application/app-preferences.js';
 import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
 import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
+import { createIndexedDbHandoffStore } from '../workspace/indexeddb-handoff-store.js';
+import { createIndexedDbDetachedViewsStore } from '../workspace/indexeddb-detached-views-store.js';
 import { migrateLegacyWorkspaceIfNeeded } from '../workspace/legacy-migration.js';
+import { isDashboardRoute } from '../core/dashboard.js';
+import { parseDashboardOpenSource, buildDashboardSearch } from '../dashboard/application/dashboard-open-source.js';
+import { buildViewHandoffRecord, materializeDetachedWorkspace } from '../dashboard/application/session-bundle.js';
+import { randomHandoffToken } from '../core/handoff-token.js';
+import { exportDashboardAction, triggerImportDashboard } from './file-menu.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -112,6 +119,12 @@ interface WindowExtras {
  *  `defaultSpecValidationService`). `.register` is app.ts-internal wiring (the
  *  `registerSpecValidator` action) that other modules never call directly. */
 type AppSpecValidators = QuerySpecValidationService;
+
+/** #288 Phase 6 — how long a one-time view-mode handoff token stays consumable
+ *  (ADR-0003). Long enough to survive a cold viewer tab's OAuth round-trip,
+ *  short enough to bound exposure; the real guarantee is delete-on-consume, not
+ *  the TTL. 5 minutes. */
+const VIEW_HANDOFF_TTL_MS = 5 * 60_000;
 
 export function createApp(env: CreateAppEnv = {}): App {
   const doc = env.document || document;
@@ -202,6 +215,23 @@ export function createApp(env: CreateAppEnv = {}): App {
   // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
   const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
   app.workspace = createWorkspaceRepository({ store: workspaceStore });
+  // #288 Phase 6 — Dashboard viewing. Two dedicated IndexedDB stores (own
+  // databases, same injected factory + lazy-open pattern as the workspace
+  // store): `handoff` is the one-time cross-tab token transport that carries a
+  // view-mode Dashboard snapshot to a new tab; `detachedViews` is the
+  // persistent store that the consumed handoff materializes into (a read-only
+  // copy under its own fresh workspace id, detached from the editable primary
+  // workspace — see ADR-0003). `dashboardOpenSource` is THIS tab's parsed
+  // /dashboard route: `?ws=&dash=` (edit, current-workspace) or `?st=&dash=`
+  // (a one-time view handoff), or null on a bare/legacy `/dashboard` open.
+  app.handoff = createIndexedDbHandoffStore(env.indexedDB || win.indexedDB);
+  app.detachedViews = createIndexedDbDetachedViewsStore(env.indexedDB || win.indexedDB);
+  app.dashboardOpenSource = parseDashboardOpenSource(loc.search);
+  // Static per-tab flag: is THIS tab the standalone `/dashboard` route (vs the
+  // Workbench)? Lets shared post-commit logic (`afterLibraryChange`) repaint the
+  // right surface — a Dashboard-page import re-renders the dashboard, not the
+  // absent Workbench chrome.
+  app.dashboardRoute = isDashboardRoute(loc.pathname);
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -1488,15 +1518,97 @@ export function createApp(env: CreateAppEnv = {}): App {
     return workspace;
   };
 
-  // Open the dashboard in a new tab and stand ready to hand it our credentials
-  // — the cross-tab auth-handoff GRANT side itself is the session's job now
-  // (`conn.grantHandoffTo`, #276 Phase 2); this stays app-side only because
-  // opening the tab (window.open) is a DOM/browser concern.
+  // Open the dashboard in a new EDIT-mode tab (#288/#302): the route carries
+  // the current workspace + dashboard ids (`?ws=&dash=`) so the viewer verifies
+  // both and shares the primary workspace store with this Workbench tab. We
+  // stand ready to hand it our credentials — the cross-tab auth-handoff GRANT
+  // side is the session's job (`conn.grantHandoffTo`, #276 Phase 2); this stays
+  // app-side only because opening the tab (window.open) is a DOM/browser
+  // concern. A workspace with no dashboard opens the bare route (legacy).
   function openDashboard(): void {
-    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard');
+    const dashId = app.state.dashboard?.id;
+    const wsId = app.state.workspaceId;
+    const search = (wsId && dashId)
+      ? buildDashboardSearch({ kind: 'current-workspace', workspaceId: wsId, dashboardId: dashId })
+      : '';
+    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
     if (child) conn.grantHandoffTo(child);
   }
   app.openDashboard = openDashboard;
+
+  // #288 Phase 6 — open the current dashboard in a new READ-ONLY VIEW-mode tab
+  // via the one-time IndexedDB token handoff (ADR-0003). The token is generated
+  // synchronously so the child tab can be opened in the SAME user-gesture task
+  // (popup-safe) already pointed at `?st=<token>&dash=`; the validated bundle is
+  // written to the handoff store in parallel, and the viewer retries the
+  // one-time `take` briefly to cover the write/read race. The detached workspace
+  // id minted here is what the consumed handoff materializes under, detached
+  // from (and unaffected by later edits to) this primary workspace.
+  function openDashboardForViewing(): void {
+    const dashboard = app.state.dashboard;
+    if (!dashboard) { flashToast('No dashboard to view', { document: doc }); return; }
+    const token = randomHandoffToken(cryptoObj);
+    const detachedWorkspaceId = uid('wsview-');
+    const built = buildViewHandoffRecord(dashboard, app.state.savedQueries, {
+      detachedWorkspaceId, expiresAt: wallNow() + VIEW_HANDOFF_TTL_MS,
+      nowISO: new Date(wallNow()).toISOString(),
+    });
+    if (!built.ok) { flashToast('✕ ' + (built.diagnostics[0]?.message || 'Could not prepare dashboard for viewing'), { document: doc }); return; }
+    const search = buildDashboardSearch({ kind: 'session-bundle', token, dashboardId: dashboard.id });
+    const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
+    // A blocked popup means nothing will ever consume the token — don't write a
+    // (potentially multi-MB) orphan record the store never sweeps. Only persist
+    // the handoff once we know a viewer tab is actually opening.
+    if (!child) { flashToast('Allow pop-ups to open the dashboard view', { document: doc }); return; }
+    conn.grantHandoffTo(child);
+    // Write AFTER opening the child (open must stay in the gesture task); the
+    // child only reads the token after a full load + auth handoff, well after
+    // this fast IndexedDB write lands.
+    app.handoff.put(token, built.record).catch(() => {
+      flashToast('✕ Could not prepare dashboard for viewing', { document: doc });
+    });
+  }
+  app.openDashboardForViewing = openDashboardForViewing;
+
+  // #288 Phase 6 — the VIEW-mode viewer's side of the one-time handoff
+  // (ADR-0003). Atomically consume this tab's `?st=` token, materialize the
+  // carried bundle into the persistent detached store under its own id, then
+  // rewrite the URL to the durable `?ws=<detachedId>&dash=` form (dropping the
+  // dead token) so a relogin/reload re-opens the detached view rather than a
+  // spent token. Returns the detached workspace, or null (missing/expired
+  // token, or an undecodable bundle) → the viewer shows not-found. The opener
+  // writes the token before opening this tab, and this tab only reaches here
+  // after a full load + auth handoff, so the record is present by now.
+  app.consumeDashboardHandoff = async () => {
+    const src = app.dashboardOpenSource;
+    if (!src || src.kind !== 'session-bundle') return null;
+    const record = await app.handoff.take(src.token, wallNow());
+    if (!record) return null;
+    const materialized = materializeDetachedWorkspace(record.text, record.dashboardId, record.detachedWorkspaceId);
+    if (!materialized.ok) return null;
+    await app.detachedViews.put({ workspace: materialized.workspace, savedAt: wallNow() });
+    const search = buildDashboardSearch({
+      kind: 'current-workspace', workspaceId: materialized.workspace.id, dashboardId: record.dashboardId,
+    });
+    win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
+    app.dashboardOpenSource = parseDashboardOpenSource(search);
+    return materialized.workspace;
+  };
+
+  // #302 — after an import committed FROM the standalone Dashboard page, point
+  // the tab's URL at the (possibly new) current dashboard id and re-render the
+  // viewer. Import replaces the current dashboard (new id), so the pre-import
+  // URL's `dash=` would otherwise fail the viewer's strict id verification.
+  app.reloadDashboardRoute = () => {
+    const dash = app.state.dashboard;
+    const wsId = app.state.workspaceId;
+    if (dash && wsId) {
+      const search = buildDashboardSearch({ kind: 'current-workspace', workspaceId: wsId, dashboardId: dash.id });
+      win.history.replaceState(null, '', loc.origin + conn.basePath + '/dashboard' + search);
+      app.dashboardOpenSource = parseDashboardOpenSource(search);
+    }
+    app.renderDashboard();
+  };
 
   // --- actions registry --------------------------------------------------
   app.actions = {
@@ -1545,6 +1657,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     openCreateInNewTab: (target, name) => openCreateInNewTab(target, name),
     openShortcuts: () => openShortcuts(app),
     openDashboard,
+    openDashboardForViewing,
+    // #302: Dashboard import/export invoked from the Dashboard page's own File
+    // menu (and still from the Workbench during the transition). Export is a
+    // read-only bundle download; import runs the transactional planner and, on
+    // the standalone Dashboard route, re-renders the dashboard on success.
+    exportDashboard: () => exportDashboardAction(app),
+    importDashboard: () => triggerImportDashboard(app),
     // Editor-mutating actions jump the mobile bottom-nav to the Editor panel
     // (#126) so a schema tap / SHOW CREATE lands where the user can see it.
     insertAtCursor: (text) => { app.sqlEditor.insertAtCursor(text); toEditorOnMobile(); },

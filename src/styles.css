@@ -344,6 +344,16 @@ body {
   cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 500; flex-shrink: 0;
 }
 .hd-file-btn:hover { background: var(--bg-hover); color: var(--fg); }
+/* #302: header Dashboard nav control, placed right after the workspace name.
+   A plain navigation button (not a dropdown); collapses to icon-only below the
+   mobile breakpoint via .hd-hide-mobile-label. */
+.hd-dash-nav {
+  display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px;
+  border: none; border-radius: 6px; background: transparent; color: var(--fg-mute);
+  cursor: pointer; font-family: inherit; font-size: 12.5px; font-weight: 500; flex-shrink: 0;
+}
+.hd-dash-nav:hover { background: var(--bg-hover); color: var(--fg); }
+.hd-dash-nav svg { width: 14px; height: 14px; }
 .lib-title { display: flex; align-items: center; min-width: 0; }
 .lib-name {
   display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px;
@@ -2036,6 +2046,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    all decorative or desktop-only; File / theme / user menu remain. */
 @media (max-width: 900px) {
   .logo-name, .env-chip, .app-header .hd-divider, .conn-status, .hd-hide-mobile { display: none; }
+  /* #302: the header Dashboard control keeps its icon but drops its label on
+     narrow screens (its accessible name stays on the button). */
+  .hd-hide-mobile-label { display: none; }
   /* Cap the user-menu label so a long local-part (`user ▾`) can't widen the
      header back past the viewport. */
   .hd-btn.user-btn .user-short { max-width: 90px; }
@@ -2230,6 +2243,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-btn:hover { background: var(--bg-hover); }
 .dash-btn:disabled { opacity: .55; cursor: default; }
+/* #302: the Dashboard header's own File menu reuses the shared .file-menu /
+   .fm-item dropdown chrome; only its width is tuned here. */
+.dash-file-menu { width: 220px; }
+/* #288: the read-only viewer's not-found state (a stale/replaced dashboard link
+   or a spent one-time preview token). */
+.dash-notfound-title { margin: 0 0 8px; font-size: 16px; color: var(--fg); }
 /* Arrange grid (#286 flow@1): the container is a vertical STACK of `.dash-row`
    wrappers — each row is itself the grid that owns its column count (the active
    preset's columns, or 1 on mobile), set inline by the flow renderer. The
