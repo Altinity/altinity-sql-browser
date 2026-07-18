@@ -42,7 +42,7 @@ import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeli
 import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import { buildFilterBar, filterClearAllButton, filterActiveCount } from './filter-bar.js';
+import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp } from './filter-bar.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
@@ -97,22 +97,27 @@ const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
 /**
- * Build a segmented control (the flow preset switcher). `options` are
- * `[value,label,title?]`; exactly one reads active from `getActive()`;
- * `onPick(value)` fires on a click; `sync()` repaints the active button.
+ * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
+ * override — was a `.dash-seg` segmented button group; restyled to match the
+ * Workbench's panel-type picker, `renderPanelTypePicker` in panels.ts, so the
+ * dashboard reuses the same "shared `.result-panel-select` chrome" convention
+ * rather than its own). `options` are `[value,label,title?]`; `sync()` (called
+ * on construction and after every layout change) reflects the current preset.
  */
-type SegOption = [value: string, label: string, title?: string];
-function buildSeg(
-  cls: string, options: SegOption[], getActive: () => string, onPick: (value: string) => void, ariaLabel: string,
-): { el: HTMLElement; sync: () => void } {
-  const btns = options.map(([, label, title]) => h('button', { class: 'dash-seg-btn', type: 'button', title }, label));
-  const sync = (): void => btns.forEach((b, i) => {
-    const on = options[i][0] === getActive();
-    b.classList.toggle('is-active', on);
-    b.setAttribute('aria-pressed', String(on));
-  });
-  btns.forEach((b, i) => { b.onclick = () => onPick(options[i][0]); });
-  const el = h('div', { class: 'dash-seg ' + cls, role: 'group', 'aria-label': ariaLabel }, ...btns);
+type LayoutOption = [value: string, label: string, title?: string];
+function buildLayoutSelect(
+  options: LayoutOption[], getActive: () => string, onPick: (value: string) => void, ariaLabel: string,
+): { el: HTMLSelectElement; sync: () => void } {
+  const el = h('select', {
+    class: 'result-panel-select dash-layout-select', 'aria-label': ariaLabel, title: ariaLabel,
+    onchange: (e: Event) => onPick((e.target as HTMLSelectElement).value),
+  }) as HTMLSelectElement;
+  for (const [value, label, title] of options) {
+    const opt = h('option', { value }, label) as HTMLOptionElement;
+    if (title) opt.title = title;
+    el.appendChild(opt);
+  }
+  const sync = (): void => { el.value = getActive(); };
   sync();
   return { el, sync };
 }
@@ -216,18 +221,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   themeBtn.appendChild(state.theme === 'dark' ? Icon.sun() : Icon.moon());
   app.dom.themeBtn = themeBtn;
 
-  const header = h('div', { class: 'dash-header' },
-    h('a', {
-      class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
-    }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
-    h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
-    tileCount,
-    h('div', { class: 'dash-spacer', style: { flex: '1' } }),
-    h('span', { class: 'dash-chip dash-src', title: app.conn.host() }, h('span', { class: 'dash-dot' }), app.conn.host()),
-    updated, themeBtn, refreshBtn);
-
   // ── Preset switcher (change-layout command) ───────────────────────────────
-  const presetSeg = buildSeg('dash-seg-layout', [
+  // 2026-07-18 owner override: moved off the filter toolbar and into the top
+  // header row (right after the tile-count chip) so the toolbar's whole width
+  // is available for filters; a compact select needs far less room than the
+  // four-button segmented control it replaces.
+  const layoutSelect = buildLayoutSelect([
     ['full-width', 'Full width', 'One tile per row using all available width'],
     ['report', 'Report', 'One centered, taller tile per row'],
     ['columns-2', '2 columns', 'Arrange tiles in two columns'],
@@ -235,12 +234,26 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   ], () => (typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'full-width'),
   (preset) => { runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: preset as FlowPresetV1 } }); },
   'Dashboard layout');
-  const layoutWrap = h('div', { class: 'dash-layout-wrap' }, h('span', { class: 'dash-seg-label' }, 'Layout'), presetSeg.el);
+  const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutSelect.el);
+
+  const header = h('div', { class: 'dash-header' },
+    h('a', {
+      class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
+    }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
+    h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
+    tileCount, layoutWrap,
+    h('div', { class: 'dash-spacer', style: { flex: '1' } }),
+    h('span', { class: 'dash-chip dash-src', title: app.conn.host() }, h('span', { class: 'dash-dot' }), app.conn.host()),
+    updated, themeBtn, refreshBtn);
 
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
+  // #294: the field region scrolls horizontally in its own viewport
+  // (`.dash-filter-host`) so it never wraps the toolbar onto a second row.
+  // No visible Clear-all control (reverses the #286/#293 decision) — no
+  // visible "N active" count either (2026-07-18 owner override, reverses
+  // #294's own retained-count acceptance criterion) — `session.clearAllFilters()`
+  // stays a tested application-level operation with no UI trigger.
   const filterHost = h('div', { class: 'dash-filter-host' });
-  const filterCountNode = h('span', { class: 'dash-filter-count-host' });
-  const clearAllNode = h('span', { class: 'dash-filter-clear-all-host' });
   // The draft value/active bag the shared filter bar reads + mutates; re-seeded
   // from committed filter state on each (re)build. Recents come from the real
   // app — the viewer never touches AppState.
@@ -274,7 +287,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc });
-    filterHost.replaceChildren(bar.el, clearAllNode, filterCountNode);
+    filterHost.replaceChildren(bar.el);
     filterBarDispose = bar.dispose;
   }
 
@@ -296,7 +309,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (applied.ok) {
       const normalized = flowLayoutPlugin.normalize(applied.dashboard);
       currentDoc = normalized;
-      presetSeg.sync();
+      layoutSelect.sync();
       session.syncDocument({
         ...normalized, filters: [...(normalized.filters || []), ...synthesizeImplicitFilters(normalized, queryById)],
       });
@@ -458,8 +471,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // progress ticks — so in-progress typing is not disturbed mid-wave.
     const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length)]));
     if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
-    clearAllNode.replaceChildren(filterClearAllButton({ active: sview.activeFilterCount > 0, onClearAll: () => session.clearAllFilters() }));
-    filterCountNode.replaceChildren(filterActiveCount(sview.activeFilterCount));
     tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
     empty.style.display = sview.tiles.length ? 'none' : '';
     // Genuine dashboard-config diagnostics only (a tile whose presentation
@@ -476,7 +487,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
   });
 
-  const toolbar = h('div', { class: 'dash-toolbar' + (session.state.value.filters.length ? ' has-filters' : '') }, layoutWrap, filterHost);
+  const toolbar = h('div', { class: 'dash-toolbar' + (session.state.value.filters.length ? ' has-filters' : '') }, filterHost);
 
   // `!`: the dashboard renders only into a mounted page.
   app.root!.replaceChildren(h('div', { class: 'dash-page' },

@@ -1310,18 +1310,31 @@ body.detached-tab .graph-overlay-panel {
 }
 .ed-toolbar > * { flex-shrink: 0; }
 .ed-toolbar::-webkit-scrollbar { display: none; }
+/* Shared "hide the native scrollbar, allow horizontal auto-scroll, contain
+   overscroll" viewport contract (#294) — the Workbench var-strip and the
+   Dashboard filter host (`.dash-filter-host`, below) read it off one
+   declaration so the two surfaces can't drift apart. Each keeps its own
+   layout rule (`.var-strip` is itself the flex/nowrap row; the Dashboard
+   nests a separate flex row — `.dash-filters` — inside this viewport). */
+.var-strip,
+.dash-filter-host {
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;
+}
+.var-strip::-webkit-scrollbar,
+.dash-filter-host::-webkit-scrollbar { display: none; }
 /* Query-variable strip (#134): one field per detected {name:Type}. A single
    row that swipe-scrolls horizontally when it overflows (many variables, or a
-   narrow/mobile workbench) — never wraps to a second line and never clips. */
+   narrow/mobile workbench) — never wraps to a second line and never clips.
+   The 6px vertical padding also keeps a focused field's box-shadow ring from
+   being clipped by `overflow-y: hidden` above. */
 .var-strip {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 6px 10px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0; flex-wrap: nowrap;
-  overflow-x: auto; scrollbar-width: none;
 }
-.var-strip::-webkit-scrollbar { display: none; }
 .var-field {
   display: inline-grid;
   grid-template-columns: max-content max-content;
@@ -1336,14 +1349,14 @@ body.detached-tab .graph-overlay-panel {
   white-space: nowrap;
 }
 .var-name::after { content: ':'; color: var(--fg-mute); }
-/* Required/optional-variable affordance (#165): a parameter confined to
-   optional filter blocks may stay blank — blank keeps its predicates out
-   instead of gating Run or a dashboard tile. Optional names are muted; a
-   required field's name is additionally marked with a leading "*" before the
-   colon (`name*:`) so the strip reads required vs optional at a glance (the
-   input title spells it out either way). */
+/* Required/optional-variable affordance (#165, restyled 2026-07-18): a
+   parameter confined to optional filter blocks may stay blank — blank keeps
+   its predicates out instead of gating Run or a dashboard tile. Optional
+   names are muted; a required field's name is bold instead of starred, so
+   the strip reads required vs optional at a glance without an asterisk
+   glyph (the input title spells it out either way). */
 .var-field.is-optional .var-name { color: var(--fg-mute); }
-.var-field:not(.is-optional) .var-name::after { content: '*' ':'; }
+.var-field:not(.is-optional) .var-name { font-weight: 700; }
 .var-input {
   height: 24px; width: 150px; padding: 0 8px;
   background: var(--bg-input); color: var(--fg);
@@ -2134,25 +2147,42 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   gap: 12px; padding: 11px 20px; background: var(--bg-header);
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
 }
-/* Layout toolbar (#149 D2) — becomes the filter bar in D4. */
+/* Filter toolbar (#149 D2, now filters-only since the layout switcher moved to
+   the header — 2026-07-18). `flex-wrap: nowrap` at every width (#294): filters
+   used to wrap the toolbar onto extra rows once several `{name:Type}` params
+   were present, growing the toolbar's height as the dashboard's data area
+   shrank. Hidden entirely (`:not(.has-filters)`) at every width, not just
+   mobile, now that it holds nothing else worth showing when there are no
+   filters. */
 .dash-toolbar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
   padding: 8px 20px; background: var(--bg-header); border-bottom: 1px solid var(--border);
 }
-.dash-seg { display: inline-flex; background: var(--bg-chip); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
-.dash-seg-btn {
-  appearance: none; border: none; background: none; cursor: pointer;
-  padding: 4px 12px; border-radius: 6px; font: 500 12px var(--ui); color: var(--fg-mute);
-}
-.dash-seg-btn:hover { color: var(--fg); }
-.dash-seg-btn.is-active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
-.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; }
-.dash-seg-label { font-size: 11px; color: var(--fg-faint); }
+.dash-toolbar:not(.has-filters) { display: none; }
+/* The flow preset switcher (2026-07-18: a `.result-panel-select` dropdown in
+   the header's top row, replacing the old `.dash-seg` segmented button group
+   that lived in the filter toolbar — see dashboard.ts). */
+.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 /* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
-   workbench's var-field/var-name/var-input classes. Sits in the toolbar's
-   existing flex-wrap row (no new sticky/scroll container needed); absent
-   entirely (display:none, no gap) when no favorite has a param. */
+   workbench's var-field/var-name/var-input classes.
+   #294: the field region IS its own horizontally-scrolling viewport
+   (`.dash-filter-host`, the shared scroll contract above, following the
+   workbench `.var-strip` / editor-tabs precedent) so excess fields scroll
+   instead of wrapping, at every viewport width — not just the ≤768px
+   breakpoint. No visible Clear-all or "N active" count sit beside it
+   (2026-07-18 owner override — see the header comment in dashboard.ts). The
+   4px vertical padding keeps a focused field's box-shadow ring from being
+   clipped by the viewport's `overflow-y: hidden`. */
+.dash-filter-host { flex: 1 1 auto; min-width: 0; padding: 4px 0; }
 .dash-filters { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+/* `.dash-filters` is shared with the detached Data view's filter row
+   (`.detached-filter-row .dash-filters`, above), which keeps the default wrap
+   — only the Dashboard toolbar's instance, nested in `.dash-filter-host`,
+   needs the never-wrap contract, so the override is scoped to that ancestor
+   rather than changed on the shared class itself. `.var-field` already sets
+   `flex-shrink: 0`, so `flex-wrap: nowrap` alone is enough for the overflow to
+   reach the scroll viewport above — no extra width rule needed. */
+.dash-filter-host .dash-filters { flex-wrap: nowrap; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -2174,7 +2204,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-fav { color: var(--accent); }
 .dash-src { font-family: var(--mono); }
 .dash-dot { width: 6px; height: 6px; border-radius: 6px; background: #22C55E; }
-.dash-skip { font-size: 11px; color: var(--fg-faint); }
 .dash-updated { font-size: 11px; color: var(--fg-faint); font-family: var(--mono); }
 .dash-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px;
@@ -2188,7 +2217,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    preset's columns, or 1 on mobile), set inline by the flow renderer. The
    container must NOT impose its own `grid-template-columns`, or it would lay the
    rows out side by side (regression: full-width showed 3 rows in a line, 3-col
-   showed 9). The four-way layout switcher lives in the toolbar (#149 D2, #184). */
+   showed 9). The four-way layout switcher lives in the header (#149 D2, #184;
+   moved out of the toolbar 2026-07-18). */
 .dash-grid {
   display: flex; flex-direction: column; gap: 14px; padding: 18px 20px 40px;
   max-width: 1560px; margin: 0 auto;
@@ -2332,7 +2362,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   }
   .dash-back-label,
   .dash-fav,
-  .dash-skip,
   .dash-src,
   .dash-updated,
   .dash-spacer,
@@ -2346,16 +2375,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-refresh { width: 30px; height: 30px; flex-shrink: 0; }
   .dash-refresh { padding: 0; justify-content: center; }
 
-  .dash-toolbar { flex-wrap: nowrap; padding: 6px 10px; }
-  .dash-toolbar:not(.has-filters) { display: none; }
-  .dash-filter-host { width: 100%; min-width: 0; overflow: hidden; }
-  .dash-filters {
-    width: 100%; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: none; overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
-  }
-  .dash-filters::-webkit-scrollbar { display: none; }
-  .dash-filters > .var-field { flex-shrink: 0; }
+  .dash-toolbar { padding: 6px 10px; }
 
   .dash-grid,
   .dash-grid.is-wide,

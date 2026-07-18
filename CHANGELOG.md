@@ -9,6 +9,52 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Dashboard filter strips no longer wrap, the visible "Clear all" control and
+  "N active" count are both removed, and the layout switcher moved to the
+  header as a compact select** (#294 + a same-PR 2026-07-18 owner follow-up —
+  together reverse the visible clear-all/count UX decisions made in #286/#293).
+  `.dash-toolbar` and the filter field region (`.dash-filter-host`, which IS
+  now the horizontally-scrolling viewport — no separate `.filter-strip-scroll`
+  wrapper) stay `flex-wrap: nowrap` at every viewport width, not just the
+  ≤768px mobile breakpoint from #248 — several `{name:Type}` params at desktop
+  width used to wrap the toolbar onto extra rows, permanently shrinking the
+  dashboard's data area. Both the **Clear all** button (`filterClearAllButton`,
+  `.dash-filter-clear-all`) and the **"N active"** status (`filterActiveCount`,
+  `.dash-filter-count`/`.dash-filter-count-host`) are deleted outright —
+  `DashboardViewerSession.clearAllFilters()`/`activeFilterCount` stay tested
+  application-level operations/state with no UI trigger or display. The
+  toolbar itself is now hidden whenever there are no filters, at every width
+  (previously mobile-only), since it holds nothing else. The flow preset
+  switcher is now a compact `<select class="result-panel-select">` — matching
+  the Workbench's panel-type picker convention (`renderPanelTypePicker` in
+  `panels.ts`) — in the header's top row right after the tile-count chip,
+  replacing the four-button `.dash-seg` segmented control that used to live in
+  the filter toolbar; a select needs far less room, so the whole toolbar width
+  goes to filters. The required/optional `{name:Type}` filter-name affordance
+  (shared by the Workbench var-strip and the Dashboard filter bar) is now bold
+  for a required name instead of a leading `*` glyph. Combobox popovers,
+  relative-time previews, and filter execution/activation/debounce/recents/
+  validation are unchanged. The "hide native scrollbar, allow horizontal
+  auto-scroll" viewport contract is one shared rule read by both `.var-strip`
+  and `.dash-filter-host` (previously copy-pasted per surface — review
+  follow-up), and the scroll viewport carries enough vertical padding that a
+  focused field's box-shadow ring is never clipped by its `overflow-y: hidden`.
+  New Playwright coverage (`dashboard-mobile.spec.js`, `workbench-var-strip.spec.js`)
+  pins the never-wrap/scroll contract, the focus-ring padding, the bold/muted
+  required-vs-optional styling, and the relocated layout select, for both
+  surfaces in a real browser (invisible to the happy-dom unit suite).
+  **Dead-CSS cleanup** from an audit prompted by the same change: `.dash-skip`
+  (styled but never constructed by `dashboard.ts` since #286 flipped Dashboard
+  membership onto `dashboard.tiles[]` — there is no "N not shown" concept left
+  to display) is deleted from `src/styles.css` and the `dashboard-mobile.html`/
+  `.spec.js` fixture. A second dead class, `.dash-grid.is-wide`, turned out to
+  guard a real, still-intended "Full width" preset behavior that #286's
+  `flow@1` rewrite never re-wired (`is-report` kept its toggle, `is-wide` lost
+  its) — filed as **#298** rather than deleted or silently fixed here, since
+  restoring it is a distinct rendering fix that needs its own >1560px-viewport
+  regression test.
+
 ### Added
 - **Dashboard v1 contracts, codecs, canonical encoding, and resource limits**
   (#283, phase 1 of #280). New canonical JSON Schemas ship through the existing

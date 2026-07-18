@@ -86,37 +86,10 @@ const buildRecentField = _buildRecentField as (opts: {
   onValueInput: () => void; onCommit: () => void;
 }) => FilterBarComboField;
 
-// ── #188 filter-bar usability affordances (#286) ─────────────────────────────
-// Small, reusable DOM builders the Dashboard viewer drives from its filter
-// state (clearFilter / clearAllFilters / activeFilterCount / blocking). Kept
-// here, on the shared filter-bar module, so any filter surface can compose the
-// same affordances; they are pure element factories (no app/state coupling).
-
-/** The toolbar clear-all affordance (#188): resets every filter in one wave.
- *  Hidden (not just disabled) when nothing is active, so it never draws focus
- *  to a no-op. */
-export function filterClearAllButton(opts: { active: boolean; onClearAll: () => void }): HTMLButtonElement {
-  const btn = h('button', {
-    type: 'button', class: 'dash-filter-clear-all',
-    title: 'Clear all filters', 'aria-label': 'Clear all filters',
-    onclick: () => opts.onClearAll(),
-  }, 'Clear all');
-  if (!opts.active) btn.style.display = 'none';
-  return btn;
-}
-
-/** The "N active" indicator (#188): counts ACTIVE filter definitions, readable
- *  by assistive tech without a live-region announcement (a plain labeled
- *  status node, not aria-live). Absent (empty) when nothing is active. */
-export function filterActiveCount(count: number): HTMLElement {
-  const node = h('span', {
-    class: 'dash-filter-count', role: 'status',
-    'aria-label': `${count} active filter${count === 1 ? '' : 's'}`,
-  });
-  if (count > 0) node.textContent = `${count} active`;
-  else node.style.display = 'none';
-  return node;
-}
+// #188's clear-all button and "N active" count affordances (#286) were both
+// removed from the Dashboard toolbar — clear-all by #294, the count by a
+// 2026-07-18 owner override reversing #294's own retained-count acceptance
+// criterion. Neither has a remaining UI consumer.
 
 // Idle time after the last keystroke in a filter field before it triggers a
 // re-run (#149 D3) — longer than the FROM-scope column-load debounce

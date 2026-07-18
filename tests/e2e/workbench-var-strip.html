@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Workbench var-strip harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body data-theme="dark">
+  <div id="root">
+    <div class="workbench">
+      <div class="var-strip" role="group" aria-label="Query variables"></div>
+      <div style="flex:1"></div>
+    </div>
+  </div>
+  <script type="module">
+    import { buildRecentField } from '/src/ui/recent-field.js';
+    import { wireComboInput } from '/src/ui/combobox.js';
+
+    const strip = document.querySelector('.var-strip');
+    const names = ['region', 'service', 'environment', 'owner', 'status', 'version', 'cluster', 'tenant'];
+    for (const name of names) {
+      const field = buildRecentField({
+        document, name, type: 'String', value: '', baseTitle: `${name}: String`,
+        getRecents: (text) => ['alpha', 'beta', 'gamma'].filter((value) => value.includes(text.toLowerCase())),
+        onClearRecent: () => {}, onValueInput: () => {}, onCommit: () => {},
+      });
+      wireComboInput(field, { onValueInput: () => {}, onCommit: () => {} });
+      const label = document.createElement('label');
+      label.className = 'var-field';
+      label.innerHTML = `<span class="var-name">${name}</span>`;
+      label.append(field.el);
+      strip.append(label);
+    }
+
+    window.__ready = true;
+  </script>
+</body>
+</html>

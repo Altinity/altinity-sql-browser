@@ -17,7 +17,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
     await expect(page.locator('.dash-back-label')).toBeHidden();
     await expect(page.locator('.dash-refresh-label')).toBeHidden();
-    for (const selector of ['.dash-fav', '.dash-skip', '.dash-src', '.dash-updated']) {
+    for (const selector of ['.dash-fav', '.dash-src', '.dash-updated', '.dash-layout-wrap']) {
       await expect(page.locator(selector)).toBeHidden();
     }
 
@@ -106,8 +106,9 @@ test.describe('Dashboard mobile layout', () => {
 
   test('scrolls filters in one row while fixed combobox content escapes clipping', async ({ page }) => {
     await openAt(page, 390);
+    const scroll = page.locator('.dash-filter-host');
     const filters = page.locator('.dash-filters');
-    const before = await filters.evaluate((node) => ({
+    const before = await scroll.evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
       fieldWidths: [...node.querySelectorAll('.var-field')].map((field) => field.getBoundingClientRect().width),
@@ -118,10 +119,11 @@ test.describe('Dashboard mobile layout', () => {
     expect(Math.max(...before.fieldTops) - Math.min(...before.fieldTops)).toBeLessThan(2);
     expect(Math.min(...before.fieldWidths)).toBeGreaterThan(150);
     expect(before.overflowX).toBe('auto');
+    expect(await filters.evaluate((node) => getComputedStyle(node).flexWrap)).toBe('nowrap');
 
-    await filters.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
-    expect(await filters.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
-    await filters.evaluate((node) => { node.scrollLeft = 0; });
+    await scroll.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    expect(await scroll.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+    await scroll.evaluate((node) => { node.scrollLeft = 0; });
 
     const first = page.getByRole('combobox', { name: 'region' });
     await first.focus();
@@ -145,10 +147,106 @@ test.describe('Dashboard mobile layout', () => {
     await expect(first).toHaveValue('alpha');
   });
 
-  test('removes an empty toolbar only on mobile', async ({ page }) => {
+  test('removes an empty toolbar at every viewport width (2026-07-18: the layout switcher no longer lives there, so an empty toolbar is never worth showing)', async ({ page }) => {
     await openAt(page, 390);
     await expect(page.locator('#no-filter-toolbar')).toBeHidden();
-    await page.setViewportSize({ width: 769, height: 844 });
-    await expect(page.locator('#no-filter-toolbar')).toBeVisible();
+    await page.setViewportSize({ width: 1100, height: 844 });
+    await expect(page.locator('#no-filter-toolbar')).toBeHidden();
+  });
+
+  test('marks a required filter name bold instead of a leading asterisk; an optional name stays muted (2026-07-18)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    const names = await page.locator('.dash-filters .var-name').evaluateAll((nodes) => nodes.map((node) => ({
+      // The old convention prepended a literal "*" via `::after { content }` —
+      // never part of `textContent` even before this change — so the real
+      // regression check is the CSS-generated content string itself, not the
+      // DOM text (which never had an asterisk to begin with).
+      afterContent: getComputedStyle(node, '::after').content,
+      fontWeight: getComputedStyle(node).fontWeight,
+      optional: node.closest('.var-field').classList.contains('is-optional'),
+    })));
+    const required = names.filter((n) => !n.optional);
+    const optional = names.filter((n) => n.optional);
+    expect(required.length).toBeGreaterThan(0);
+    expect(optional.length).toBeGreaterThan(0);
+    for (const n of [...required, ...optional]) expect(n.afterContent).not.toContain('*');
+    for (const n of required) expect(Number(n.fontWeight)).toBeGreaterThanOrEqual(700);
+    for (const n of optional) expect(Number(n.fontWeight)).toBeLessThan(700);
+  });
+
+  test('desktop: filters stay on one row and scroll horizontally, no Clear-all or count control exists (#294)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    await expect(page.locator('.dash-filter-clear-all')).toHaveCount(0);
+    await expect(page.locator('.dash-filter-count')).toHaveCount(0);
+    await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
+
+    const toolbar = page.locator('.dash-toolbar.has-filters');
+    const before = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
+
+    const layout = await page.evaluate(() => {
+      const host = document.querySelector('.dash-filter-host');
+      const filters = document.querySelector('.dash-filters');
+      const fields = [...filters.querySelectorAll('.var-field')];
+      return {
+        toolbarWrap: getComputedStyle(document.querySelector('.dash-toolbar')).flexWrap,
+        filtersWrap: getComputedStyle(filters).flexWrap,
+        scrollWidth: host.scrollWidth,
+        clientWidth: host.clientWidth,
+        fieldTops: fields.map((field) => field.getBoundingClientRect().top),
+        fieldWidths: fields.map((field) => field.getBoundingClientRect().width),
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+        // The scroll viewport's `overflow-y: hidden` must not clip a focused
+        // field's box-shadow ring (`.var-input:focus`'s 3px spread) — the
+        // vertical padding is the buffer that keeps it visible (#294 review
+        // finding, exercised against the fixture's taller relative-time field).
+        hostPaddingTop: parseFloat(getComputedStyle(host).paddingTop),
+        hostPaddingBottom: parseFloat(getComputedStyle(host).paddingBottom),
+      };
+    });
+    expect(layout.toolbarWrap).toBe('nowrap');
+    expect(layout.filtersWrap).toBe('nowrap');
+    expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
+    expect(Math.max(...layout.fieldTops) - Math.min(...layout.fieldTops)).toBeLessThan(2);
+    expect(Math.min(...layout.fieldWidths)).toBeGreaterThan(150);
+    expect(layout.pageOverflow).toBeLessThanOrEqual(0);
+    expect(layout.hostPaddingTop).toBeGreaterThanOrEqual(3);
+    expect(layout.hostPaddingBottom).toBeGreaterThanOrEqual(3);
+
+    // Scrolling the fields reaches the final one and doesn't grow the toolbar.
+    await page.locator('.dash-filter-host').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    const after = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
+    expect(after).toBe(before);
+    const lastField = page.locator('.dash-filters .var-field').last();
+    await expect(lastField).toBeInViewport();
+  });
+
+  test('the layout switcher is a compact select in the header, right after the tile-count chip, matching the workbench panel-picker style (2026-07-18)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    const select = page.locator('.dash-layout-select');
+    await expect(select).toBeVisible();
+    await expect(select).toHaveClass(/result-panel-select/);
+    // No more four-button segmented control.
+    await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
+
+    const geometry = await page.evaluate(() => {
+      const header = document.querySelector('.dash-header');
+      const children = [...header.children];
+      const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
+      const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));
+      const layoutWrap = children[layoutWrapIndex];
+      const tileCount = children[tileCountIndex];
+      return {
+        layoutRightAfterTileCount: layoutWrapIndex === tileCountIndex + 1,
+        inHeaderNotToolbar: !document.querySelector('.dash-toolbar .dash-layout-wrap'),
+        sameRow: Math.abs(
+          (layoutWrap.getBoundingClientRect().top + layoutWrap.getBoundingClientRect().height / 2)
+          - (tileCount.getBoundingClientRect().top + tileCount.getBoundingClientRect().height / 2),
+        ) < 2,
+      };
+    });
+    expect(geometry).toEqual({ layoutRightAfterTileCount: true, inHeaderNotToolbar: true, sameRow: true });
+
+    await select.selectOption('columns-2');
+    expect(await select.inputValue()).toBe('columns-2');
   });
 });
