@@ -86,24 +86,12 @@ const buildRecentField = _buildRecentField as (opts: {
   onValueInput: () => void; onCommit: () => void;
 }) => FilterBarComboField;
 
-// ── #188 filter-bar usability affordances (#286) ─────────────────────────────
+// ── #188 filter-bar usability affordances (#286; clear-all button removed by
+// #294 — see below) ──────────────────────────────────────────────────────────
 // Small, reusable DOM builders the Dashboard viewer drives from its filter
-// state (clearFilter / clearAllFilters / activeFilterCount / blocking). Kept
-// here, on the shared filter-bar module, so any filter surface can compose the
-// same affordances; they are pure element factories (no app/state coupling).
-
-/** The toolbar clear-all affordance (#188): resets every filter in one wave.
- *  Hidden (not just disabled) when nothing is active, so it never draws focus
- *  to a no-op. */
-export function filterClearAllButton(opts: { active: boolean; onClearAll: () => void }): HTMLButtonElement {
-  const btn = h('button', {
-    type: 'button', class: 'dash-filter-clear-all',
-    title: 'Clear all filters', 'aria-label': 'Clear all filters',
-    onclick: () => opts.onClearAll(),
-  }, 'Clear all');
-  if (!opts.active) btn.style.display = 'none';
-  return btn;
-}
+// state (activeFilterCount / blocking). Kept here, on the shared filter-bar
+// module, so any filter surface can compose the same affordances; they are
+// pure element factories (no app/state coupling).
 
 /** The "N active" indicator (#188): counts ACTIVE filter definitions, readable
  *  by assistive tech without a live-region announcement (a plain labeled

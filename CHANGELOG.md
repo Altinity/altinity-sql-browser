@@ -9,6 +9,35 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Dashboard filter strips no longer wrap, and the visible "Clear all" control
+  is removed** (#294 — reverses the visible clear-all UX decision made in
+  #286/#293). `.dash-toolbar` and the filter field region now stay
+  `flex-wrap: nowrap` at every viewport width, not just the ≤768px mobile
+  breakpoint from #248 — several `{name:Type}` params at desktop width used to
+  wrap the toolbar onto extra rows, permanently shrinking the dashboard's data
+  area. The field region is now a dedicated horizontally-scrolling viewport
+  (`.filter-strip-scroll`, the same nowrap/overflow-x:auto/hidden-scrollbar
+  contract the Workbench `.var-strip` already used), with the fixed "N active"
+  status (`.dash-filter-count-host`) as a non-scrolling sibling so it never
+  gets pushed onto a second line or scrolled out of view; the layout switcher
+  stays fixed alongside it on desktop. The visible **Clear all** button
+  (`filterClearAllButton`, `.dash-filter-clear-all`) is deleted outright —
+  `DashboardViewerSession.clearAllFilters()` stays a tested application-level
+  operation with no UI trigger. Combobox popovers, relative-time previews, and
+  filter execution/activation/debounce/recents/validation are unchanged. The
+  "hide native scrollbar, allow horizontal auto-scroll" viewport contract is
+  now one shared rule read by both `.var-strip` and `.filter-strip-scroll`
+  (previously copy-pasted per surface — review follow-up), and the scroll
+  viewport carries enough vertical padding that a focused field's box-shadow
+  ring is never clipped by its `overflow-y: hidden`; the "N active" count is
+  `align-self: center` so it stays vertically centered against the field row
+  even when a field (e.g. relative-time's resolved-value preview line) is
+  taller than one line. New Playwright coverage (`dashboard-mobile.spec.js`,
+  `workbench-var-strip.spec.js`) pins the never-wrap/scroll contract, the
+  count's centering against a taller row, and the focus-ring padding for both
+  surfaces in a real browser (invisible to the happy-dom unit suite).
+
 ### Added
 - **Dashboard v1 contracts, codecs, canonical encoding, and resource limits**
   (#283, phase 1 of #280). New canonical JSON Schemas ship through the existing

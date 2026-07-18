@@ -1310,18 +1310,32 @@ body.detached-tab .graph-overlay-panel {
 }
 .ed-toolbar > * { flex-shrink: 0; }
 .ed-toolbar::-webkit-scrollbar { display: none; }
+/* Shared "hide the native scrollbar, allow horizontal auto-scroll, contain
+   overscroll" viewport contract (#294) — the Workbench var-strip and the
+   Dashboard filter-strip scroll viewport (`.filter-strip-scroll`, below) read
+   it off one declaration so the two surfaces can't drift apart. Each keeps its
+   own layout rule (`.var-strip` is itself the flex/nowrap row; the Dashboard
+   nests a separate flex row — `.dash-filters` — inside this viewport so the
+   fixed "N active" status can sit outside it as a sibling). */
+.var-strip,
+.filter-strip-scroll {
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;
+}
+.var-strip::-webkit-scrollbar,
+.filter-strip-scroll::-webkit-scrollbar { display: none; }
 /* Query-variable strip (#134): one field per detected {name:Type}. A single
    row that swipe-scrolls horizontally when it overflows (many variables, or a
-   narrow/mobile workbench) — never wraps to a second line and never clips. */
+   narrow/mobile workbench) — never wraps to a second line and never clips.
+   The 6px vertical padding also keeps a focused field's box-shadow ring from
+   being clipped by `overflow-y: hidden` above. */
 .var-strip {
   display: flex; align-items: flex-start; gap: 14px;
   padding: 6px 10px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0; flex-wrap: nowrap;
-  overflow-x: auto; scrollbar-width: none;
 }
-.var-strip::-webkit-scrollbar { display: none; }
 .var-field {
   display: inline-grid;
   grid-template-columns: max-content max-content;
@@ -2134,9 +2148,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   gap: 12px; padding: 11px 20px; background: var(--bg-header);
   border-bottom: 1px solid var(--border); flex-wrap: wrap;
 }
-/* Layout toolbar (#149 D2) — becomes the filter bar in D4. */
+/* Layout toolbar (#149 D2) — becomes the filter bar in D4. `flex-wrap: nowrap`
+   at every width (#294): filters used to wrap the toolbar onto extra rows once
+   several `{name:Type}` params were present, growing the toolbar's height as
+   the dashboard's data area shrank. */
 .dash-toolbar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
   padding: 8px 20px; background: var(--bg-header); border-bottom: 1px solid var(--border);
 }
 .dash-seg { display: inline-flex; background: var(--bg-chip); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
@@ -2146,13 +2163,36 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 }
 .dash-seg-btn:hover { color: var(--fg); }
 .dash-seg-btn.is-active { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
-.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.dash-layout-wrap { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .dash-seg-label { font-size: 11px; color: var(--fg-faint); }
 /* Global filter bar (#149 D3) — one field per detected {name:Type}, reusing the
-   workbench's var-field/var-name/var-input classes. Sits in the toolbar's
-   existing flex-wrap row (no new sticky/scroll container needed); absent
-   entirely (display:none, no gap) when no favorite has a param. */
+   workbench's var-field/var-name/var-input classes.
+   #294: the field region lives in its own horizontally-scrolling viewport
+   (`.filter-strip-scroll`, the shared scroll contract above, following the
+   workbench `.var-strip` / editor-tabs precedent) so excess fields scroll
+   instead of wrapping, while the fixed "N active" status
+   (`.dash-filter-count-host`) stays outside it on the same row at every
+   viewport width — not just the ≤768px breakpoint. `align-self: center` on
+   the count keeps it vertically centered against the field row even when a
+   field grows taller (e.g. a relative-time field's resolved-value preview
+   line), rather than pinned to the row's top edge. The 4px vertical padding
+   on the scroll viewport keeps a focused field's box-shadow ring from being
+   clipped by its `overflow-y: hidden`. */
+.dash-filter-host {
+  display: flex; align-items: flex-start; gap: 12px;
+  flex: 1 1 auto; min-width: 0;
+}
+.filter-strip-scroll { flex: 1 1 auto; min-width: 0; padding: 4px 0; }
+.dash-filter-count-host { flex: 0 0 auto; align-self: center; }
 .dash-filters { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+/* `.dash-filters` is shared with the detached Data view's filter row
+   (`.detached-filter-row .dash-filters`, above), which keeps the default wrap
+   — only the Dashboard toolbar's instance, nested in `.filter-strip-scroll`,
+   needs the never-wrap contract, so the override is scoped to that ancestor
+   rather than changed on the shared class itself. `.var-field` already sets
+   `flex-shrink: 0`, so `flex-wrap: nowrap` alone is enough for the overflow to
+   reach the scroll viewport above — no extra width rule needed. */
+.filter-strip-scroll .dash-filters { flex-wrap: nowrap; }
 .dash-icobtn {
   width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-chip); color: var(--fg-mute); border: 1px solid var(--border);
@@ -2346,16 +2386,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .dash-refresh { width: 30px; height: 30px; flex-shrink: 0; }
   .dash-refresh { padding: 0; justify-content: center; }
 
-  .dash-toolbar { flex-wrap: nowrap; padding: 6px 10px; }
+  .dash-toolbar { padding: 6px 10px; }
   .dash-toolbar:not(.has-filters) { display: none; }
-  .dash-filter-host { width: 100%; min-width: 0; overflow: hidden; }
-  .dash-filters {
-    width: 100%; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: none; overscroll-behavior-x: contain;
-    -webkit-overflow-scrolling: touch;
-  }
-  .dash-filters::-webkit-scrollbar { display: none; }
-  .dash-filters > .var-field { flex-shrink: 0; }
 
   .dash-grid,
   .dash-grid.is-wide,

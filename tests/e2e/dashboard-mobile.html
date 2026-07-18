@@ -38,7 +38,10 @@
               <button class="dash-seg-btn">3 columns</button>
             </div>
           </div>
-          <div class="dash-filter-host"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
+          <div class="dash-filter-host">
+            <div class="filter-strip-scroll"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
+            <span class="dash-filter-count-host"><span class="dash-filter-count" role="status" aria-label="3 active filters">3 active</span></span>
+          </div>
         </div>
       </div>
       <div id="no-filter-toolbar" class="dash-toolbar">
@@ -54,6 +57,7 @@
   </div>
   <script type="module">
     import { buildRecentField } from '/src/ui/recent-field.js';
+    import { buildRelativeTimeField } from '/src/ui/relative-time-field.js';
     import { wireComboInput } from '/src/ui/combobox.js';
 
     const filters = document.querySelector('.dash-filters');
@@ -70,6 +74,21 @@
       label.append(field.el);
       filters.append(label);
     }
+    // A relative-time field's resolved-value preview line (#294 review finding)
+    // makes this field taller than the plain recent-value fields above — real
+    // coverage for the fixed count staying centered against a taller row,
+    // instead of pinned to the row's top edge.
+    const timeField = buildRelativeTimeField({
+      document, name: 'since', type: 'DateTime', value: 'now', baseTitle: 'since: DateTime',
+      wallNow: () => Date.parse('2026-07-18T12:00:00Z'),
+      getRecents: () => [], onClearRecent: () => {}, onValueInput: () => {}, onCommit: () => {},
+    });
+    wireComboInput(timeField, { onValueInput: () => {}, onCommit: () => {} });
+    const timeLabel = document.createElement('label');
+    timeLabel.className = 'var-field';
+    timeLabel.innerHTML = '<span class="var-name">since</span>';
+    timeLabel.append(timeField.el);
+    filters.append(timeLabel);
 
     window.__prefs = { dashLayout: 'report', dashCols: 3 };
     localStorage.setItem('asb:dashLayout', 'report');

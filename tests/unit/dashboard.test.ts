@@ -594,7 +594,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(added[0].params.param_p).toBe('x');
   });
 
-  it('shows the N-active count and clear-all when a filter is active; both hidden otherwise', async () => {
+  it('shows the N-active count when a filter is active, hidden otherwise; no visible Clear-all control at any count (#294)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -604,13 +604,30 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     });
     await render(app);
     expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
-    const clearAll = qs<HTMLElement>(app.root, '.dash-filter-clear-all');
-    expect(clearAll.style.display).toBe('');
-    // Clear-all resets to defaults (one coalesced wave; a no-op here since the
-    // filter is already at its default) — exercises the toolbar action.
-    clearAll.dispatchEvent(new Event('click', { bubbles: true }));
-    await Promise.resolve();
-    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
+    // #294 reverses #286/#293's visible Clear-all control — it never renders,
+    // active count or not (`DashboardViewerSession.clearAllFilters()` stays a
+    // tested application-level operation with no UI trigger).
+    expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
+  });
+
+  it('separates the scrolling filter-field region from the fixed count region (#294)', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
+      }),
+    });
+    await render(app);
+    const host = qs(app.root, '.dash-filter-host');
+    const scroll = qs(host, '.filter-strip-scroll');
+    const count = qs(host, '.dash-filter-count-host');
+    // The fields live inside the scroll viewport, the count lives outside it —
+    // as separate host children, not nested one inside the other.
+    expect(scroll.contains(qs(host, '.dash-filters'))).toBe(true);
+    expect(scroll.contains(count)).toBe(false);
+    expect(count.contains(scroll)).toBe(false);
+    expect(count.querySelector('.dash-filter-count')?.textContent).toBe('1 active');
   });
 
   it('renders no per-filter "required/invalid" badge (owner decision — dropped as noise)', async () => {
@@ -623,7 +640,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     await render(app);
     expect(qs(app.root, '.dash-filter-blocking')).toBeNull();
     expect((qs(app.root, '.dash-filter-count') as HTMLElement).style.display).toBe('none');
-    expect((qs(app.root, '.dash-filter-clear-all') as HTMLElement).style.display).toBe('none');
+    expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
   });
 });
 

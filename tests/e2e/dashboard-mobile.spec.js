@@ -106,8 +106,9 @@ test.describe('Dashboard mobile layout', () => {
 
   test('scrolls filters in one row while fixed combobox content escapes clipping', async ({ page }) => {
     await openAt(page, 390);
+    const scroll = page.locator('.filter-strip-scroll');
     const filters = page.locator('.dash-filters');
-    const before = await filters.evaluate((node) => ({
+    const before = await scroll.evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
       fieldWidths: [...node.querySelectorAll('.var-field')].map((field) => field.getBoundingClientRect().width),
@@ -118,10 +119,16 @@ test.describe('Dashboard mobile layout', () => {
     expect(Math.max(...before.fieldTops) - Math.min(...before.fieldTops)).toBeLessThan(2);
     expect(Math.min(...before.fieldWidths)).toBeGreaterThan(150);
     expect(before.overflowX).toBe('auto');
+    expect(await filters.evaluate((node) => getComputedStyle(node).flexWrap)).toBe('nowrap');
 
-    await filters.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
-    expect(await filters.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
-    await filters.evaluate((node) => { node.scrollLeft = 0; });
+    // The fixed count status is a sibling of the scroll region, not inside it —
+    // scrolling the fields must not move it.
+    const countBefore = await page.locator('.dash-filter-count-host').evaluate((node) => node.getBoundingClientRect().left);
+    await scroll.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    expect(await scroll.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
+    const countAfter = await page.locator('.dash-filter-count-host').evaluate((node) => node.getBoundingClientRect().left);
+    expect(countAfter).toBe(countBefore);
+    await scroll.evaluate((node) => { node.scrollLeft = 0; });
 
     const first = page.getByRole('combobox', { name: 'region' });
     await first.focus();
@@ -150,5 +157,64 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.locator('#no-filter-toolbar')).toBeHidden();
     await page.setViewportSize({ width: 769, height: 844 });
     await expect(page.locator('#no-filter-toolbar')).toBeVisible();
+  });
+
+  test('desktop: filters stay on one row and scroll horizontally, the layout switcher and count stay fixed, no Clear-all control exists (#294)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    await expect(page.locator('.dash-filter-clear-all')).toHaveCount(0);
+
+    const toolbar = page.locator('.dash-toolbar.has-filters');
+    const before = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
+
+    const layout = await page.evaluate(() => {
+      const layoutWrap = document.querySelector('.dash-layout-wrap');
+      const scroll = document.querySelector('.filter-strip-scroll');
+      const filters = document.querySelector('.dash-filters');
+      const count = document.querySelector('.dash-filter-count-host');
+      const fields = [...filters.querySelectorAll('.var-field')];
+      const center = (rect) => rect.top + rect.height / 2;
+      return {
+        toolbarWrap: getComputedStyle(document.querySelector('.dash-toolbar')).flexWrap,
+        layoutWrapVisible: getComputedStyle(layoutWrap).display !== 'none',
+        layoutCenter: center(layoutWrap.getBoundingClientRect()),
+        filtersWrap: getComputedStyle(filters).flexWrap,
+        scrollWidth: scroll.scrollWidth,
+        clientWidth: scroll.clientWidth,
+        fieldTops: fields.map((field) => field.getBoundingClientRect().top),
+        fieldWidths: fields.map((field) => field.getBoundingClientRect().width),
+        countCenter: center(count.getBoundingClientRect()),
+        countVisible: getComputedStyle(count.querySelector('.dash-filter-count')).display !== 'none',
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+        // #294 review finding: the fixture's last field is a relative-time
+        // field with a resolved-value preview line beneath the input, making
+        // its `.var-field` taller than the plain recent-value fields — this
+        // exercises the count staying vertically centered against a row taller
+        // than one line, not just pinned to its top edge.
+        scrollPaddingTop: parseFloat(getComputedStyle(scroll).paddingTop),
+        scrollPaddingBottom: parseFloat(getComputedStyle(scroll).paddingBottom),
+      };
+    });
+    expect(layout.toolbarWrap).toBe('nowrap');
+    expect(layout.layoutWrapVisible).toBe(true);
+    expect(layout.filtersWrap).toBe('nowrap');
+    expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
+    expect(Math.max(...layout.fieldTops) - Math.min(...layout.fieldTops)).toBeLessThan(2);
+    expect(Math.min(...layout.fieldWidths)).toBeGreaterThan(150);
+    expect(Math.abs(layout.countCenter - layout.layoutCenter)).toBeLessThan(3);
+    expect(layout.countVisible).toBe(true);
+    expect(layout.pageOverflow).toBeLessThanOrEqual(0);
+    // The scroll viewport's `overflow-y: hidden` must not clip a focused
+    // field's box-shadow ring (`.var-input:focus`'s 3px spread) — the vertical
+    // padding is the buffer that keeps it visible.
+    expect(layout.scrollPaddingTop).toBeGreaterThanOrEqual(3);
+    expect(layout.scrollPaddingBottom).toBeGreaterThanOrEqual(3);
+
+    // Scrolling the fields reaches the final one and doesn't grow the toolbar
+    // or move the layout switcher / count off their row.
+    await page.locator('.filter-strip-scroll').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    const after = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
+    expect(after).toBe(before);
+    const lastField = page.locator('.dash-filters .var-field').last();
+    await expect(lastField).toBeInViewport();
   });
 });

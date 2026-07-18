@@ -42,7 +42,7 @@ import { analyzeParameterizedSources, fieldControls } from '../core/param-pipeli
 import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
-import { buildFilterBar, filterClearAllButton, filterActiveCount } from './filter-bar.js';
+import { buildFilterBar, filterActiveCount } from './filter-bar.js';
 import type { FilterBarApp } from './filter-bar.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
@@ -238,9 +238,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, h('span', { class: 'dash-seg-label' }, 'Layout'), presetSeg.el);
 
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
-  const filterHost = h('div', { class: 'dash-filter-host' });
+  // #294: the field region scrolls horizontally in its own viewport
+  // (`.filter-strip-scroll`) so it never wraps the toolbar onto a second row;
+  // the "N active" count sits outside it as a fixed, non-scrolling sibling.
+  // No visible Clear-all control (reverses the #286/#293 decision) —
+  // `session.clearAllFilters()` stays a tested application-level operation
+  // with no UI trigger.
+  const filterScroll = h('div', { class: 'filter-strip-scroll' });
   const filterCountNode = h('span', { class: 'dash-filter-count-host' });
-  const clearAllNode = h('span', { class: 'dash-filter-clear-all-host' });
+  const filterHost = h('div', { class: 'dash-filter-host' }, filterScroll, filterCountNode);
   // The draft value/active bag the shared filter bar reads + mutates; re-seeded
   // from committed filter state on each (re)build. Recents come from the real
   // app — the viewer never touches AppState.
@@ -274,7 +280,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     };
     const getField = (name: string, mode: ValidationMode) => session.getFilterField(name, mode, draftValues, draftActive);
     const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc });
-    filterHost.replaceChildren(bar.el, clearAllNode, filterCountNode);
+    filterScroll.replaceChildren(bar.el);
     filterBarDispose = bar.dispose;
   }
 
@@ -458,7 +464,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // progress ticks — so in-progress typing is not disturbed mid-wave.
     const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length)]));
     if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
-    clearAllNode.replaceChildren(filterClearAllButton({ active: sview.activeFilterCount > 0, onClearAll: () => session.clearAllFilters() }));
     filterCountNode.replaceChildren(filterActiveCount(sview.activeFilterCount));
     tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
     empty.style.display = sview.tiles.length ? 'none' : '';
