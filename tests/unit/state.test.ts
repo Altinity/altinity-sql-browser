@@ -10,7 +10,7 @@ import type {
 } from '../../src/state.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
-import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 import { fakeWorkspaceCommit } from '../helpers/fake-app.js';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -35,6 +35,14 @@ function savedTestState(over: Record<string, unknown> = {}): AppState {
   s.workspaceId = 'w1';
   return s;
 }
+
+// #299: toggleFavorite now takes an injected tile-id generator (only called
+// when it actually appends a tile) — a fresh counter per call keeps ids
+// distinct within a test without pulling in a real crypto/uid seam.
+const genTileId = (): (() => string) => {
+  let n = 0;
+  return () => 'tile-' + (++n);
+};
 
 /** Unwrap a successful `SavedEntryResult`, failing loudly (not silently
  *  returning `undefined`) when a test's own setup produced a rejection —
@@ -312,7 +320,7 @@ describe('saved queries', () => {
     s.tabs.value = [tab, second];
     const commit = fakeWorkspaceCommit();
     await renameSaved(s, 's1', 'New', 'Description', commit);
-    await toggleFavorite(s, 's1', commit);
+    await toggleFavorite(s, 's1', commit, genTileId());
     for (const spec of [s.savedQueries[0].spec, tab.specParsed]) {
       expect(spec).toMatchObject({
         name: 'New', description: 'Description', favorite: true,
@@ -340,11 +348,88 @@ describe('saved queries', () => {
       savedQuery({ id: 'c', sql: '3', name: 'C' }),
     ];
     const commit = fakeWorkspaceCommit();
-    await toggleFavorite(s, 'c', commit);
+    await toggleFavorite(s, 'c', commit, genTileId());
     expect(queryFavorite(s.savedQueries.find((q) => q.id === 'c'))).toBe(true);
-    await toggleFavorite(s, 'missing', commit); // no-op
+    await toggleFavorite(s, 'missing', commit, genTileId()); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
     expect(commit).toHaveBeenCalledTimes(1);
+  });
+  // #299: the Workbench star also drives Dashboard tile membership, atomically
+  // with the favorite flip — only panel-role queries become tiles (mirrors
+  // legacy-migration.ts's buildLegacyMigrationCandidate), star OFF removes
+  // every matching tile and scrubs those tile ids from filter targets (mirrors
+  // saved-query-mutation.ts's removeAffectedTiles), and a null `state.dashboard`
+  // means favorite-flip-only (no Dashboard to touch).
+  describe('toggleFavorite wires Dashboard tile membership (#299)', () => {
+    const blankDashboard = (): DashboardDocumentV1 => ({
+      documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+      filters: [], tiles: [],
+    });
+
+    it('favorite ON on a panel-role query appends a tile in the same commit', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
+      s.dashboard = blankDashboard();
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard!.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
+      expect(commit).toHaveBeenCalledTimes(1);
+    });
+
+    it('favorite ON is idempotent when a tile already references the query', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', favorite: false, dashboard: { role: 'panel' } })];
+      s.dashboard = { ...blankDashboard(), tiles: [{ id: 't1', queryId: 'p1' }] };
+      const commit = fakeWorkspaceCommit();
+      await toggleFavorite(s, 'p1', commit, genTileId());
+      expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard!.tiles).toEqual([{ id: 't1', queryId: 'p1' }]); // no duplicate
+    });
+
+    it('favorite ON on a filter-role query never creates a tile', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'f1', sql: "SELECT ['a','b'] AS country", dashboard: { role: 'filter' } })];
+      s.dashboard = blankDashboard();
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'f1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard!.tiles).toEqual([]);
+    });
+
+    it('favorite OFF removes every tile referencing the query and scrubs filter targets', async () => {
+      const s = savedTestState();
+      s.savedQueries = [
+        savedQuery({ id: 'p1', sql: 'SELECT a WHERE c={country:String}', favorite: true, dashboard: { role: 'panel' } }),
+        savedQuery({ id: 'f1', sql: "SELECT ['a','b'] AS country", dashboard: { role: 'filter' } }),
+      ];
+      s.dashboard = {
+        ...blankDashboard(),
+        tiles: [{ id: 't1', queryId: 'p1' }],
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+      };
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(false);
+      expect(s.dashboard!.tiles).toEqual([]);
+      expect(s.dashboard!.filters[0].targets).toEqual([]);
+      expect(commit).toHaveBeenCalledTimes(1);
+    });
+
+    it('a null state.dashboard means favorite flip only — no tile change, no crash', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
+      expect(s.dashboard).toBeNull();
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard).toBeNull();
+    });
   });
   it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', async () => {
     const s = savedTestState();
@@ -358,7 +443,7 @@ describe('saved queries', () => {
     tab.dirtySpec = true;
     const commit = fakeWorkspaceCommit();
     expect(await renameSaved(s, 's1', 'Overwrite', undefined, commit)).toMatchObject({ ok: false, invalidTab: tab });
-    expect(await toggleFavorite(s, 's1', commit)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', commit, genTileId())).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryName(s.savedQueries[0])).toBe('Original');
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(commit).not.toHaveBeenCalled();
@@ -373,7 +458,7 @@ describe('saved queries', () => {
     const entryBlocked: SpecValidationService = {
       validate: () => [{ path: ['favorite'], severity: 'error', code: 'blocked', message: 'blocked' }],
     };
-    expect(await toggleFavorite(s, 's1', commit, entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
+    expect(await toggleFavorite(s, 's1', commit, genTileId(), entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
 
     const draftBlocked: SpecValidationService = {
@@ -381,7 +466,7 @@ describe('saved queries', () => {
         ? [{ path: ['draftOnly'], severity: 'error', code: 'blocked-draft', message: 'blocked draft' }]
         : [],
     };
-    expect(await toggleFavorite(s, 's1', commit, draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', commit, genTileId(), draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(tab.specParsed!.favorite).toBe(false);
     expect(commit).not.toHaveBeenCalled();
@@ -412,7 +497,7 @@ describe('saved queries', () => {
     expect(renamed).toEqual({ ok: false, invalidTab: null, entry: null, diagnostics: expect.any(Array) });
     expect(queryName(s.savedQueries[0])).toBe('Original');
 
-    const favorited = await toggleFavorite(s, 's1', failingCommit);
+    const favorited = await toggleFavorite(s, 's1', failingCommit, genTileId());
     expect(favorited).toMatchObject({ ok: false, invalidTab: null, entry: null });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
 
@@ -665,7 +750,7 @@ describe('default persistence', () => {
     s.tabs.value[0].sqlDraft = 'SELECT 9';
     const e = okEntry(await createSavedQuery(s, s.tabs.value[0], 'nine', undefined, commit));
     await renameSaved(s, e.id, 'nine!', undefined, commit);
-    await toggleFavorite(s, e.id, commit);
+    await toggleFavorite(s, e.id, commit, genTileId());
     await deleteSaved(s, 'nope', commit);
     expect(commit).toHaveBeenCalledTimes(4);
     expect(s.savedQueries.some((q) => q.id === e.id)).toBe(true);

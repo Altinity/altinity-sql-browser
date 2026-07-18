@@ -43,6 +43,36 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   never executes queries.
 
 ### Fixed
+- **The Workbench favorite star now drives Dashboard tile membership** (part of
+  #299, post-#287 aggregate). Since `dashboard.tiles[]` became the canonical
+  Dashboard membership (#280/#287), starring a query only flipped `spec.favorite`
+  and never added a tile, so favoriting/unfavoriting in the Workbench had no
+  effect on the Dashboard. `toggleFavorite` now reflects the flip onto tile
+  membership in the **same atomic commit**: a favorited **panel-role** query gains
+  a tile (mirroring the legacy migration's role gate — a filter/setup-role
+  favorite stays favorite-only), and unfavoriting removes every tile referencing
+  the query and scrubs those tile ids from filter targets. `spec.favorite` stays
+  the star's visual state (the documented dual-write retirement is deferred).
+- **A corrupt-but-present workspace aggregate is surfaced on boot instead of
+  silently swallowed** (#300). `WorkspaceRepository` gains `loadCurrentResult()`,
+  which distinguishes "no aggregate yet" (`empty`) from "a record is stored but
+  won't decode/validate" (`corrupt`) — previously both collapsed to `null`, so a
+  corrupt record let boot continue on the legacy projection and the next CRUD
+  commit orphaned it with no user-visible error. Boot now shows a toast ("Saved
+  workspace could not be read…") with a **Reset workspace** action that clears the
+  unreadable record and rebuilds a fresh aggregate from the current local state.
+  `flashToast` gained an optional non-auto-dismissing action button.
+- **Dashboard filter values persist across a reload again** (#303, regression from
+  the #280 dashboard rewrite). The isolated viewer session initialized every
+  filter purely from `def.defaultValue`/`defaultActive` and persisted nothing, so
+  a committed filter value lived only in memory and reset on reload (the Workbench
+  var-strip was unaffected). Filter runtime value/active now persist to an
+  **isolated** per-dashboard key (`asb:dashFilters`, `dashboardId → filterId →
+  {value,active}`) — deliberately separate from the Workbench's
+  `asb:varValues`/`asb:filterActive` — seeded back on load. Persistence stays a
+  pure `dashboard/model` store behind the existing `loadJSON`/`saveJSON` seam;
+  opening a dashboard does not persist its defaults (only genuine committed
+  changes write).
 - **Dashboard filter strips no longer wrap, the visible "Clear all" control and
   "N active" count are both removed, and the layout switcher moved to the
   header as a compact select** (#294 + a same-PR 2026-07-18 owner follow-up —

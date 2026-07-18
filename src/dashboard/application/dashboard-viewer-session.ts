@@ -156,6 +156,14 @@ export interface DashboardViewerDeps {
   onAuthFailed?(): void;
   /** #171 bound-param recording on a successful tile. */
   recordBoundParams?(boundParams: BoundParamSnapshot[]): void;
+  /** #303: persisted per-filter seed, keyed by filter `def.id` — the shell
+   *  reads this from the isolated `asb:dashFilters` store (never this layer;
+   *  this session stays storage-free) and passes it in so a filter's initial
+   *  runtime value/active reflects the last COMMITTED state instead of always
+   *  resetting to `def.defaultValue`/`defaultActive`. A filter with no entry
+   *  here (absent/empty map, or no key for its `def.id`) is unaffected — its
+   *  initial state is exactly the pre-#303 default-derived behavior. */
+  initialFilters?: Record<string, { value: unknown; active: boolean }>;
 }
 
 export interface DashboardViewerSession {
@@ -314,10 +322,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // Filter runtime records, in filter order.
   const filters: FilterRuntime[] = (Array.isArray(documentRef.filters) ? documentRef.filters : []).map((def) => {
     const source = typeof def.sourceQueryId === 'string' ? queryById.get(def.sourceQueryId) : undefined;
-    const active = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
+    const defaultValue = def.defaultValue ?? '';
+    const defaultActive = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
+    // #303: a persisted seed for this filter's id overrides the pure-default
+    // init above (untouched when `initialFilters` is absent/empty, or has no
+    // entry for `def.id`).
+    const seed = deps.initialFilters ? deps.initialFilters[def.id] : undefined;
+    const value = seed !== undefined ? (seed.value ?? defaultValue) : defaultValue;
+    const active = seed !== undefined ? !!seed.active : defaultActive;
     const state: ViewerFilterState = {
       id: def.id, parameter: def.parameter, label: def.label || def.parameter,
-      active, value: def.defaultValue ?? '', status: 'idle', options: null,
+      active, value, status: 'idle', options: null,
     };
     return { def, source, gen: 0, abortController: null, provider: null, state };
   });

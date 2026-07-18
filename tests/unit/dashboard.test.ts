@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   isDashboardRoute, configBase,
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
   activeDashboardView, dashboardViewSelection, partitionKpiBands,
 } from '../../src/core/dashboard.js';
+import { KEYS } from '../../src/state.js';
 import { CHART_ROW_CAPS } from '../../src/core/chart-data.js';
 import {
   AUTH_SS_KEYS, AUTH_REQUEST, AUTH_GRANT,
@@ -640,6 +641,108 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(qs(app.root, '.dash-filter-blocking')).toBeNull();
     expect(qs(app.root, '.dash-filter-count')).toBeNull();
     expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
+  });
+});
+
+// #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
+// #280 viewer session used to init every filter purely from
+// `def.defaultValue`/`defaultActive`, so a committed value lived only in
+// memory and reset on reload. `loadJSON`/`KEYS.dashFilters` reads through the
+// REAL default store (not through `app`), so these stub `globalThis.localStorage`
+// directly (never touching the ambient real one — Node 25 native Web Storage
+// flake, #130) — `app.saveJSON` (a `makeApp()` spy) is asserted on for writes.
+describe('renderDashboard — isolated per-dashboard filter persistence (#303)', () => {
+  function memStore(initial: Record<string, string> = {}) {
+    const m = new Map(Object.entries(initial));
+    return {
+      getItem: (k: string) => (m.has(k) ? (m.get(k) as string) : null),
+      setItem: (k: string, v: unknown) => { m.set(k, String(v)); },
+    };
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  const filterWs = (over: WsOver = {}) => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
+    tiles: [{ id: 't1', queryId: 'q1' }],
+    filters: [{ id: 'n', parameter: 'n', defaultValue: 5, defaultActive: true }],
+    ...over,
+  });
+  const nField = (app: TestApp): HTMLInputElement => qs<HTMLInputElement>(app.root, '.dash-filter-host .var-field input');
+
+  it("seeds a filter's value/active from a stored bag for the dashboard id", async () => {
+    vi.stubGlobal('localStorage', memStore({
+      [KEYS.dashFilters]: JSON.stringify({ d: { n: { value: '42', active: false } } }),
+    }));
+    const { app } = dashApp({ workspace: filterWs() });
+    await render(app);
+    expect(nField(app).value).toBe('42');
+  });
+
+  it('is isolated from the Workbench asb:varValues/asb:filterActive keys (Option B, not shared)', async () => {
+    vi.stubGlobal('localStorage', memStore({
+      [KEYS.varValues]: JSON.stringify({ n: 'workbench-only-value' }),
+      [KEYS.filterActive]: JSON.stringify({ n: false }),
+    }));
+    const { app } = dashApp({ workspace: filterWs() });
+    await render(app);
+    // The dashboard's own default (5) wins — the Workbench keys are never read.
+    expect(nField(app).value).toBe('5');
+  });
+
+  it('does not write defaults back over an existing stored bag on the initial publish', async () => {
+    vi.stubGlobal('localStorage', memStore({
+      [KEYS.dashFilters]: JSON.stringify({ d: { n: { value: '42', active: false } } }),
+    }));
+    const { app } = dashApp({ workspace: filterWs() });
+    await render(app);
+    expect(app.saveJSON).not.toHaveBeenCalled();
+  });
+
+  it('does not persist filter defaults on the initial publish when nothing is stored yet', async () => {
+    // Empty store + a filter with a non-empty default (n=5, active) — the first
+    // publish merely echoes the seeded default state, so it must NOT write:
+    // persisting defaults here would freeze them against a later Spec-editor
+    // change to the filter's default (regression guard for the review fix).
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = dashApp({ workspace: filterWs() });
+    await render(app);
+    expect(app.saveJSON).not.toHaveBeenCalled();
+  });
+
+  it('persists a committed filter change, keyed by dashboard id + filter id, isolated from the Workbench keys', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = dashApp({ workspace: filterWs() });
+    await render(app);
+    const input = nField(app);
+    input.value = '7';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.saveJSON).toHaveBeenCalledWith(KEYS.dashFilters, { d: { n: { value: '7', active: true } } });
+    // Never touches the Workbench's own keys.
+    expect(app.saveJSON).not.toHaveBeenCalledWith(KEYS.varValues, expect.anything());
+    expect(app.saveJSON).not.toHaveBeenCalledWith(KEYS.filterActive, expect.anything());
+  });
+
+  it('does not write again on a later publish that carries no filter change (e.g. a layout switch)', async () => {
+    vi.stubGlobal('localStorage', memStore());
+    const { app } = dashApp({
+      workspace: filterWs({ layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} } }),
+    });
+    await render(app);
+    const input = nField(app);
+    input.value = '7';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    const saveJSON = app.saveJSON as ReturnType<typeof vi.fn>;
+    const callsAfterCommit = saveJSON.mock.calls.length;
+    expect(callsAfterCommit).toBeGreaterThan(0);
+    // A structural republish (preset switch → syncDocument) with the SAME
+    // filter value/active must not persist again (the dedicated persist
+    // signature, not the bar-rebuild signature, gates the write).
+    pickLayout(app.root, 'full-width');
+    expect(saveJSON.mock.calls.length).toBe(callsAfterCommit);
   });
 });
 

@@ -31,6 +31,18 @@ export type WorkspaceCommitResult =
   | { ok: true; workspace: StoredWorkspaceV1; dashboardRevision: number | null }
   | { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
+/** The #300 tri-state load result `loadCurrentResult` returns — unlike
+ *  `loadCurrent` (below), it distinguishes "no record persisted yet" (`empty`)
+ *  from "a record is persisted but doesn't decode/validate" (`corrupt`, with
+ *  the codec's diagnostics) from a normal successful load (`ok`). Boot-time
+ *  callers that need to surface a corrupt-but-present record to the user
+ *  (rather than silently continuing on the legacy projection) use this
+ *  instead of `loadCurrent`. */
+export type WorkspaceLoadResult =
+  | { status: 'empty' }
+  | { status: 'ok'; workspace: StoredWorkspaceV1 }
+  | { status: 'corrupt'; diagnostics: WorkspaceDiagnostic[] };
+
 /** The #280 repository contract. Every method is async because the backing
  *  store (IndexedDB) is async. */
 export interface WorkspaceRepository {
@@ -40,6 +52,10 @@ export interface WorkspaceRepository {
    *  existence via the store, not on this method, so it never re-runs over a
    *  corrupt-but-present record. */
   loadCurrent(): Promise<StoredWorkspaceV1 | null>;
+  /** Like `loadCurrent`, but distinguishes "no record" from "record present
+   *  but undecodable" (#300) instead of collapsing both to `null` — see
+   *  `WorkspaceLoadResult`. */
+  loadCurrentResult(): Promise<WorkspaceLoadResult>;
   /** Validate the complete candidate, then atomically replace the persisted
    *  aggregate. Publishes committed state only after the write succeeds. */
   commit(candidate: StoredWorkspaceV1): Promise<WorkspaceCommitResult>;
@@ -73,6 +89,15 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     return decoded.ok ? decoded.value : null;
   }
 
+  async function loadCurrentResult(): Promise<WorkspaceLoadResult> {
+    const text = await store.read();
+    if (text === null) return { status: 'empty' };
+    const decoded = decodeStoredWorkspaceJson(text, codecOptions);
+    return decoded.ok
+      ? { status: 'ok', workspace: decoded.value }
+      : { status: 'corrupt', diagnostics: decoded.diagnostics };
+  }
+
   async function commit(candidate: StoredWorkspaceV1): Promise<WorkspaceCommitResult> {
     // Validate + canonically encode the WHOLE candidate before touching the
     // store; invalid candidates never reach persistence.
@@ -104,5 +129,5 @@ export function createWorkspaceRepository(deps: WorkspaceRepositoryDeps): Worksp
     return store.clear();
   }
 
-  return { loadCurrent, commit, clearCurrent };
+  return { loadCurrent, loadCurrentResult, commit, clearCurrent };
 }

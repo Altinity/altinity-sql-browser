@@ -76,4 +76,55 @@ describe('flashToast', () => {
     expect(otherClear).toHaveBeenCalledWith(2);
     expect(mainEl.classList.contains('show')).toBe(true);
   });
+
+  describe('action button (#300)', () => {
+    it('renders a button with the given label and does not schedule an auto-dismiss timer', () => {
+      const setTimeout = fakeSetTimeout(1);
+      const onClick = vi.fn();
+      const el = flashToast('corrupt workspace', {
+        document, setTimeout, action: { label: 'Reset workspace', onClick },
+      });
+      const button = el.querySelector('button.share-toast-action') as HTMLButtonElement | null;
+      expect(button).not.toBeNull();
+      expect(button!.textContent).toBe('Reset workspace');
+      expect(el.textContent).toContain('corrupt workspace');
+      expect(setTimeout).not.toHaveBeenCalled();
+    });
+
+    it('clicking the action button runs onClick, dismisses the toast, and does not also fire the body dismiss handler', () => {
+      const clearTimeout = vi.fn();
+      const onClick = vi.fn();
+      const el = flashToast('corrupt workspace', {
+        document, clearTimeout, action: { label: 'Reset workspace', onClick },
+      });
+      const button = el.querySelector('button.share-toast-action') as HTMLButtonElement;
+      button.click();
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(el.classList.contains('show')).toBe(false);
+      // No pending timer was ever set for an actionable toast, so a body
+      // click-to-dismiss never has anything to clear.
+      expect(clearTimeout).not.toHaveBeenCalled();
+    });
+
+    it('a later text-only flashToast on the same reused element clears the previous action button', () => {
+      const el = flashToast('corrupt workspace', {
+        document, action: { label: 'Reset workspace', onClick: vi.fn() },
+      });
+      expect(el.querySelector('button.share-toast-action')).not.toBeNull();
+      const el2 = flashToast('plain message', { document, setTimeout: fakeSetTimeout(3) });
+      expect(el2).toBe(el);
+      expect(el2.querySelector('button.share-toast-action')).toBeNull();
+      expect(el2.textContent).toBe('plain message');
+    });
+
+    it('clicking the toast body (not the button) still dismisses an actionable toast without invoking onClick', () => {
+      const onClick = vi.fn();
+      const el = flashToast('corrupt workspace', {
+        document, action: { label: 'Reset workspace', onClick },
+      });
+      el.click();
+      expect(onClick).not.toHaveBeenCalled();
+      expect(el.classList.contains('show')).toBe(false);
+    });
+  });
 });

@@ -52,6 +52,12 @@ import { defaultLayoutRegistry } from '../dashboard/layouts/layout-registry.js';
 import { flowLayoutPlugin } from '../dashboard/layouts/flow-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
+import {
+  readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
+} from '../dashboard/model/dashboard-filter-store.js';
+import type { DashboardFilterBag } from '../dashboard/model/dashboard-filter-store.js';
+import { loadJSON } from '../core/storage.js';
+import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, FlowPresetV1, SavedQueryV2, StoredWorkspaceV1,
 } from '../generated/json-schema.types.js';
@@ -91,6 +97,8 @@ export interface DashboardApp {
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
   loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
+  /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
+  saveJSON(key: string, value: unknown): void;
 }
 
 const valueString = (value: unknown): string =>
@@ -194,6 +202,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     ...currentDoc, filters: [...(currentDoc.filters || []), ...synthesizeImplicitFilters(currentDoc, queryById)],
   };
 
+  // #303: seed each filter's initial value/active from the isolated
+  // per-dashboard store (never the Workbench's asb:varValues/asb:filterActive
+  // keys) — restores committed filter state across a reload. `initialBag` is
+  // ALSO the baseline the persist effect below compares against, so the very
+  // first publish (which merely echoes this seed) does not immediately write
+  // defaults back over it.
+  const initialBag: DashboardFilterBag = readDashboardFilterBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id);
+
   const session: DashboardViewerSession = createDashboardViewerSession({
     document: viewerDoc,
     queries,
@@ -205,6 +221,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     isMobile: () => state.isMobile.value,
     onAuthFailed: () => app.conn.chCtx.onSignedOut(),
     recordBoundParams: (bp) => app.params.recordBoundParams(bp),
+    initialFilters: initialBag,
   });
 
   // ── Header chrome ───────────────────────────────────────────────────────
@@ -459,6 +476,22 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // ── Effect: reconcile on every publish (and on the mobile-breakpoint flip) ─
   let lastMobile = state.isMobile.value;
   let barSig = '';
+  // #303: the committed-filter bag for a published view, built exactly the way
+  // the persist step below and the seed just under it both need it.
+  const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
+    const bag: DashboardFilterBag = {};
+    for (const f of filters) bag[f.id] = { value: valueString(f.value), active: f.active };
+    return bag;
+  };
+  // #303: a SEPARATE signature from `barSig` above — that one also flips when
+  // curated options arrive (no committed value/active change), which would
+  // otherwise trigger a redundant write. Seeded from the session's OWN initial
+  // filter state (post-`initialFilters` seeding + defaults), not the raw stored
+  // `initialBag`, so the very first publish — which merely echoes that state —
+  // never writes: an empty/partial store would otherwise differ from the
+  // default-filled published bag and persist defaults on first open, freezing
+  // them against later Spec-editor changes to a filter's default.
+  let lastFilterPersistSig = filterBagSignature(persistBagOf(session.state.value.filters));
   effect(() => {
     const sview = session.state.value;
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
@@ -471,6 +504,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // progress ticks — so in-progress typing is not disturbed mid-wave.
     const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length)]));
     if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
+    // #303: persist committed filter value/active into the isolated per-dashboard
+    // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
+    const filterBag = persistBagOf(sview.filters);
+    const persistSig = filterBagSignature(filterBag);
+    if (persistSig !== lastFilterPersistSig) {
+      lastFilterPersistSig = persistSig;
+      app.saveJSON(KEYS.dashFilters, writeDashboardFilterBag(loadJSON(KEYS.dashFilters, {}), currentDoc.id, filterBag));
+    }
     tileCountLabel.textContent = sview.tiles.length + (sview.tiles.length === 1 ? ' tile' : ' tiles');
     empty.style.display = sview.tiles.length ? 'none' : '';
     // Genuine dashboard-config diagnostics only (a tile whose presentation

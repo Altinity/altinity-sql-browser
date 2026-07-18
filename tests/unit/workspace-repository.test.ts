@@ -69,6 +69,38 @@ describe('createWorkspaceRepository.loadCurrent', () => {
   });
 });
 
+describe('createWorkspaceRepository.loadCurrentResult', () => {
+  it('reports empty when no aggregate record exists', async () => {
+    const repo = createWorkspaceRepository({ store: memStore(null) });
+    expect(await repo.loadCurrentResult()).toEqual({ status: 'empty' });
+  });
+
+  it('reports ok with the decoded workspace when a valid record is stored', async () => {
+    const ws = withDashboard();
+    const encoded = encodeStoredWorkspaceJson(ws);
+    if (!encoded.ok) throw new Error('fixture should encode');
+    const repo = createWorkspaceRepository({ store: memStore(encoded.value) });
+    expect(await repo.loadCurrentResult()).toEqual({ status: 'ok', workspace: ws });
+  });
+
+  it('reports corrupt with diagnostics when a present record fails to decode/validate (never collapses to empty)', async () => {
+    const repo = createWorkspaceRepository({ store: memStore('{"storageVersion":2}') });
+    const result = await repo.loadCurrentResult();
+    expect(result.status).toBe('corrupt');
+    if (result.status !== 'corrupt') throw new Error('unreachable');
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+    expect(result.diagnostics.some((d) => d.code === 'workspace-version-unsupported')).toBe(true);
+  });
+
+  it('reports corrupt for text that is not even valid JSON', async () => {
+    const repo = createWorkspaceRepository({ store: memStore('not json{') });
+    const result = await repo.loadCurrentResult();
+    expect(result.status).toBe('corrupt');
+    if (result.status !== 'corrupt') throw new Error('unreachable');
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+  });
+});
+
 describe('createWorkspaceRepository.commit', () => {
   it('validates the whole candidate BEFORE writing; an invalid one is never persisted', async () => {
     const store = memStore(null);

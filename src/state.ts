@@ -15,6 +15,7 @@ import {
   loadStr as loadStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
+import { toggleTileMembership } from './dashboard/application/tile-membership.js';
 import type { ResultSort } from './core/sort.js';
 import {
   defaultSpecValidationService as defaultSpecValidationServiceUntyped,
@@ -97,13 +98,16 @@ const asSpecDiagnostics = (diagnostics: readonly WorkspaceDiagnostic[]): SpecDia
  *  carried through unchanged alongside the op's own next `queries` array. */
 type WorkspaceCandidateState = Pick<AppState, 'libraryName' | 'workspaceId' | 'dashboard'>;
 
-function buildWorkspaceCandidate(state: WorkspaceCandidateState, queries: SavedQueryV2[]): StoredWorkspaceV1 {
+function buildWorkspaceCandidate(
+  state: WorkspaceCandidateState, queries: SavedQueryV2[],
+  dashboard: DashboardDocumentV1 | null = state.dashboard,
+): StoredWorkspaceV1 {
   return {
     storageVersion: 1,
     id: state.workspaceId,
     name: state.libraryName.value,
     queries,
-    dashboard: state.dashboard,
+    dashboard,
   };
 }
 
@@ -342,6 +346,11 @@ export const KEYS = {
   dashCols: 'asb:dashCols',
   varRecent: 'asb:varRecent',
   varRecentDisabled: 'asb:varRecentDisabled',
+  /** Isolated per-dashboard Dashboard-filter persistence (#303 Option B) — a
+   *  single blob keyed `dashboardId -> filterId -> {value,active}`, read/written
+   *  through `dashboard/model/dashboard-filter-store.js`. Deliberately separate
+   *  from the Workbench's `varValues`/`filterActive` keys above. */
+  dashFilters: 'asb:dashFilters',
 };
 
 /** Row-limit options for the result cap selector (shared between state + UI).
@@ -750,6 +759,16 @@ export async function commitSavedQuery(
   return { ok: true, entry: saved };
 }
 
+/** A pure transform folded into the SAME commit candidate as a `patchSavedSpec`
+ *  write (#299) — e.g. `toggleFavorite` reflects its favorite flip onto
+ *  Dashboard tile membership atomically alongside the Spec patch. Defaults to
+ *  identity, so `renameSaved`/other callers that don't touch the Dashboard are
+ *  unaffected. Receives the COMMITTED entry (the one about to be sent to
+ *  `commit`, post-patch) so a role/id-dependent transform sees the final Spec. */
+export type DashboardTransform = (dashboard: DashboardDocumentV1 | null, entry: SavedQueryV2) => DashboardDocumentV1 | null;
+
+const identityDashboardTransform: DashboardTransform = (dashboard) => dashboard;
+
 /**
  * Generic committed-Spec writer for pencil/star/future controls. The patch is
  * applied independently to the persisted entry and every linked valid draft,
@@ -765,6 +784,7 @@ export async function patchSavedSpec(
   id: string, patch: SpecPatch,
   commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
+  transformDashboard: DashboardTransform = identityDashboardTransform,
 ): Promise<PatchSavedResult> {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
@@ -788,11 +808,16 @@ export async function patchSavedSpec(
   // COMPUTE only above — no `state`/`tabs` mutation yet.
   const nextQueries = state.savedQueries.slice();
   nextQueries[index] = entry;
-  const result = await commit(buildWorkspaceCandidate(state, nextQueries));
+  const nextDashboard = transformDashboard(state.dashboard, entry);
+  const result = await commit(buildWorkspaceCandidate(state, nextQueries, nextDashboard));
   if (!result.ok) {
     return { ok: false, invalidTab: null, entry: null, diagnostics: asSpecDiagnostics(result.diagnostics) };
   }
   state.savedQueries = result.workspace.queries;
+  // #299: project the committed Dashboard back, same convention as
+  // `savedQueries` above — the aggregate commit is the single source of truth
+  // for whether/how tile membership actually landed.
+  state.dashboard = result.workspace.dashboard;
   const saved = committedEntry(state.savedQueries, entry.id, entry);
   for (const update of draftUpdates) {
     setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
@@ -824,17 +849,27 @@ export async function renameSaved(
   return patchSavedSpec(state, id, patch, commit, validationService);
 }
 
-/** Toggle a saved query's favorite flag. */
+/**
+ * Toggle a saved query's favorite flag, atomically committing any Dashboard
+ * tile-membership change the flip implies in the SAME candidate (#299): a
+ * favorited panel-role query gets a tile (unless one already references it),
+ * an unfavorited query loses every tile that references it. `spec.favorite`
+ * stays the star's own visual state either way — this only ADDS the tile
+ * side effect, it does not retire the favorite dual-write. `genTileId` mints
+ * a fresh tile id (only called when a tile is actually appended).
+ */
 export async function toggleFavorite(
   state: AppState, id: string,
   commit: CommitWorkspace,
+  genTileId: () => string,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): Promise<PatchSavedResult | undefined> {
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
   const favorite = !queryFavorite(entry);
-  return patchSavedSpec(state, id, { favorite }, commit, validationService);
+  return patchSavedSpec(state, id, { favorite }, commit, validationService,
+    (dashboard, patchedEntry) => toggleTileMembership(dashboard, patchedEntry, favorite, genTileId));
 }
 
 /** Saved queries with favorites first (stable within each group). */
