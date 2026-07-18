@@ -558,6 +558,198 @@ describe('renderDashboard — KPI bands (#240)', () => {
   });
 });
 
+// #291: the grafana-grid@1 layout engine — a rowless single CSS grid host,
+// engine switching via the 5-option layout select, and Workbench-only edit
+// interactions (drag-reorder reuses flow's existing pattern verbatim, so it
+// is not re-tested here — corner-drag resize + delete are the new surfaces).
+describe('renderDashboard — grafana-grid engine (#291)', () => {
+  const twoTilesGrid = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 'compact' } } },
+  });
+
+  it('renders tiles through a single rowless grid host with span + height classes, no row wrappers', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    expect(qsa(app.root, '.dash-row').length).toBe(0); // rowless — no per-row wrappers, no KPI band
+    const cards = qsa(app.root, '.dash-gg-tile');
+    expect(cards.length).toBe(2);
+    expect((cards[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
+    expect(cards[0].classList.contains('dash-gg-h-compact')).toBe(true);
+    // No persisted placement for t2 → the grid default (span 6, medium).
+    expect((cards[1].style as CSSStyleDeclaration).gridColumn).toBe('span 6');
+    expect(cards[1].classList.contains('dash-gg-h-medium')).toBe(true);
+    expect((qs(app.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+  });
+
+  it('places a KPI tile inline (no band) in grid mode, still through the shared KPI card renderer', async () => {
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] }),
+      workspace: wsWith({
+        queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 't1', queryId: 'k1' }],
+        layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } },
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-kpi-band')).toBeNull();
+    const card = qs(app.root, '.dash-gg-tile');
+    expect(card.classList.contains('is-kpi')).toBe(true);
+    expect(qs(card, '.kpi-card')).not.toBeNull();
+  });
+
+  it('reflects the active engine in the 5-option layout select and switches engines via change-layout', async () => {
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a')],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      }),
+    });
+    await render(app);
+    const select = layoutSelect(app.root);
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['full-width', 'report', 'columns-2', 'columns-3', 'grafana-grid'],
+    );
+    expect(select.value).toBe('columns-2');
+    // Picking "Grafana grid" sends change-layout {type:'grafana-grid',version:1}.
+    pickLayout(app.root, 'grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    expect(commit).toHaveBeenCalled();
+    // Picking a flow preset while grid is active restores the regenerated
+    // flow@1 fallback (bare {type:'flow',version:1,preset} — grid carries no
+    // flow items/preset shape to spread).
+    pickLayout(app.root, 'full-width');
+    expect(layoutSelect(app.root).value).toBe('full-width');
+    expect(qs(app.root, '.dash-gg-grid')).toBeNull(); // cleaned up, not just hidden
+    expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
+    // The cached tile card sheds its grid-only chrome, not just the host.
+    expect(qs(app.root, '.dash-gg-tile')).toBeNull();
+    expect(qs(app.root, '.dash-tile')).not.toBeNull();
+  });
+
+  it('preserves per-tile flow items when switching between flow presets (not an engine switch)', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: { t1: { span: 2 } } },
+      }),
+    });
+    await render(app);
+    pickLayout(app.root, 'columns-3');
+    expect(layoutSelect(app.root).value).toBe('columns-3');
+    // 3-column preset with a persisted span-2 tile — still a flow row (not
+    // dropped by the switch).
+    expect(qsa(app.root, '.dash-row')[0].style.gridTemplateColumns).toContain('repeat(3');
+  });
+
+  it('shows grip/delete/resize affordances only in edit mode (!readOnly)', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    expect(qsa(app.root, '.dash-gg-grip').length).toBe(2);
+    expect(qsa(app.root, '.dash-gg-del').length).toBe(2);
+    expect(qsa(app.root, '.dash-gg-resize').length).toBe(2);
+
+    const detached = twoTilesGrid();
+    const { app: readonlyApp } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(readonlyApp);
+    expect(qsa(readonlyApp.root, '.dash-gg-grip').length).toBe(0);
+    expect(qsa(readonlyApp.root, '.dash-gg-del').length).toBe(0);
+    expect(qsa(readonlyApp.root, '.dash-gg-resize').length).toBe(0);
+  });
+
+  it('delete dispatches remove-tile and drops the tile from the grid', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    expect(qsa(app.root, '.dash-gg-tile').length).toBe(2);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    expect(commit).toHaveBeenCalled();
+  });
+
+  it('a delete click is a no-op while flow (not grid) is active', async () => {
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+      }),
+    });
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    expect(commit).not.toHaveBeenCalled();
+    expect(qsa(app.root, '.dash-tile').length).toBe(1);
+  });
+
+  it('corner-drag resize snaps span/height live and dispatches one update-placement on pointerup', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    // 12 columns, 8px gap → colWidth = (1200 - 8*11)/12 ≈ 92.67px.
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / compact
+    const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(card.classList.contains('dash-gg-resizing')).toBe(true);
+    // clientX=600 → round((600+8)/100.67) = 6 columns; clientY=280 → closer to
+    // 296 (large) than 210 (medium) — both differ from the starting 4/compact.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
+    expect(card.classList.contains('dash-gg-h-large')).toBe(true);
+    expect(commit).not.toHaveBeenCalled(); // no command dispatched until pointerup
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    expect(card.classList.contains('dash-gg-resizing')).toBe(false);
+    expect(commit).toHaveBeenCalledTimes(1); // exactly one update-placement dispatch
+    // The committed placement survives reconciliation (re-derived from state).
+    const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
+    expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
+    expect(after.classList.contains('dash-gg-h-large')).toBe(true);
+  });
+
+  it('a resize pointerdown is a no-op while flow (not grid) is active', async () => {
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+      }),
+    });
+    await render(app);
+    const handle = qs<HTMLElement>(app.root, '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('a container resize re-clamps the effective column count', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    expect((gridEl.style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 600, configurable: true }); // >=470,<720 → 4 columns
+    window.dispatchEvent(new Event('resize'));
+    await Promise.resolve(); await Promise.resolve();
+    expect((qs(app.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(4');
+  });
+
+  it('a resize while flow (not grid) is active does not force a spurious republish', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+      }),
+    });
+    await render(app);
+    // No throw, and flow's own row structure is untouched by a resize.
+    const rowsBefore = qsa(app.root, '.dash-row').length;
+    expect(() => window.dispatchEvent(new Event('resize'))).not.toThrow();
+    expect(qsa(app.root, '.dash-row').length).toBe(rowsBefore);
+  });
+});
+
 describe('renderDashboard — shared rich filter bar over the viewer (#188)', () => {
   it('renders the shared rich field family — one var-field per declared param type', async () => {
     const { app } = dashApp({

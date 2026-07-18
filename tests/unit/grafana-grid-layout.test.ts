@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS,
+  DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, GRID_HEIGHT_PX,
   computeGrafanaGridLayout, deriveFlowFallback, deriveGrafanaGridPlacement,
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
   gridSpanFromFlowSpan, regenerateGridFallback, resolveGridPlacement, setGridPlacement,
+  snapGridHeight, snapGridSpan,
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
@@ -300,6 +301,52 @@ describe('deriveFlowFallback', () => {
     const layout = gridLayout({ a: { span: 1, height: 'huge' as never }, b: {} });
     const fallback = deriveFlowFallback(layout, [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     expect(jsonSchemaValidationService.validate(FLOW_LAYOUT_V1_SCHEMA_ID, fallback)).toEqual([]);
+  });
+});
+
+// #291 Wave 3: pure corner-drag resize math — the DOM pointer listener
+// (ui/dashboard.ts) stays a thin imperative adapter over these.
+describe('snapGridSpan', () => {
+  it('rounds a horizontal pixel delta to the nearest column span, per the mock formula', () => {
+    // colWidth=96, gap=8 → each column step is 104px; span N sits at (N*104 - 8)px.
+    expect(snapGridSpan(96, 96, GRID_GAP_PX, 12)).toBe(1); // exactly one column's width
+    expect(snapGridSpan(400, 96, GRID_GAP_PX, 12)).toBe(4);
+    expect(snapGridSpan(0, 96, GRID_GAP_PX, 12)).toBe(1); // never below 1
+  });
+
+  it('clamps to the active column count', () => {
+    expect(snapGridSpan(10000, 96, GRID_GAP_PX, 4)).toBe(4);
+    expect(snapGridSpan(-500, 96, GRID_GAP_PX, 4)).toBe(1);
+  });
+
+  it('treats a non-finite or non-positive column width as span 1 rather than NaN/Infinity', () => {
+    expect(snapGridSpan(400, 0, 0, 12)).toBe(1);
+    expect(snapGridSpan(400, -8, GRID_GAP_PX, 12)).toBe(1);
+    expect(snapGridSpan(400, NaN, GRID_GAP_PX, 12)).toBe(1);
+  });
+
+  it('treats a zero/negative column count as at least 1', () => {
+    expect(snapGridSpan(400, 96, GRID_GAP_PX, 0)).toBe(1);
+  });
+});
+
+describe('snapGridHeight', () => {
+  it('snaps to the nearest tier by absolute pixel distance', () => {
+    expect(snapGridHeight(0)).toBe('compact');
+    expect(snapGridHeight(GRID_HEIGHT_PX.compact)).toBe('compact');
+    expect(snapGridHeight(160)).toBe('compact'); // closer to 118 than 210
+    expect(snapGridHeight(170)).toBe('medium'); // closer to 210 than 118
+    expect(snapGridHeight(GRID_HEIGHT_PX.medium)).toBe('medium');
+    expect(snapGridHeight(260)).toBe('large'); // closer to 296 than 210
+    expect(snapGridHeight(GRID_HEIGHT_PX.large)).toBe('large');
+    expect(snapGridHeight(10000)).toBe('large');
+  });
+});
+
+describe('GRID_GAP_PX / GRID_HEIGHT_PX', () => {
+  it('exposes the shared gap and height-tier constants', () => {
+    expect(GRID_GAP_PX).toBe(8);
+    expect(GRID_HEIGHT_PX).toEqual({ compact: 118, medium: 210, large: 296 });
   });
 });
 

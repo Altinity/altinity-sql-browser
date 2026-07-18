@@ -86,6 +86,8 @@ describe('createDashboardViewerSession', () => {
     expect(state.running).toBe(false);
     expect(state.updatedAt).not.toBeNull();
     // Flow model reflects the columns-2 preset and the stored span-2 placement.
+    expect(state.layout.engine).toBe('flow');
+    if (state.layout.engine !== 'flow') throw new Error('expected flow engine');
     expect(state.layout.columns).toBe(2);
     expect(state.layout.rows[0].tiles[0].span).toBe(2);
     expect(VIEWER_TILE_CONCURRENCY).toBe(6);
@@ -569,7 +571,9 @@ describe('per-tile control and lifecycle', () => {
     expect(calls.length).toBe(base);
     expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['b', 'a']);
     expect(session.state.value.tiles[0].status).toBe('ready'); // result preserved
-    expect(session.state.value.layout.rows[0].tiles[0]).toMatchObject({ tileId: 'b', span: 2 });
+    const syncedLayout = session.state.value.layout;
+    if (syncedLayout.engine !== 'flow') throw new Error('expected flow engine');
+    expect(syncedLayout.rows[0].tiles[0]).toMatchObject({ tileId: 'b', span: 2 });
     // An unknown tile id in the next document is dropped defensively.
     session.syncDocument({ ...document, tiles: [tile('a', 'qa'), tile('ghostly', 'x')] });
     expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a']);
@@ -578,6 +582,109 @@ describe('per-tile control and lifecycle', () => {
     expect(session.state.value.tiles.map((t) => t.tileId)).toEqual(['a']);
   });
 
+  it('tags the flow layout view with engine:\'flow\' — bit-identical otherwise', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('a', 'qa')],
+      layout: { type: 'flow', version: 1, preset: 'columns-3', items: { a: { span: 3 } } },
+    });
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: [query('qa', 'SELECT 1')] }));
+    await session.start();
+    const layout = session.state.value.layout;
+    expect(layout.engine).toBe('flow');
+    if (layout.engine === 'flow') {
+      expect(layout.preset).toBe('columns-3');
+      expect(layout.columns).toBe(3);
+      expect(layout.rows[0].tiles[0].span).toBe(3);
+    }
+  });
+});
+
+// #291: engine routing (grafana-grid@1) — buildState resolves the active
+// engine synchronously (resolveLayoutPluginSync) rather than always calling
+// computeFlowLayout; a grid document nests its own render model under
+// `layout.grid`, discriminated by `layout.engine`.
+describe('grafana-grid engine routing (#291)', () => {
+  const gridDoc = (over: Partial<DashboardDocumentV1> = {}) => doc({
+    tiles: [tile('a', 'qa'), tile('b', 'qb')],
+    layout: { type: 'grafana-grid', version: 1, items: { a: { span: 4, height: 'compact' } } },
+    ...over,
+  });
+
+  it('tags the layout view with engine:\'grafana-grid\' and nests the grid render model', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: gridDoc(), exec, queries: [query('qa', 'SELECT 1'), query('qb', 'SELECT 2')],
+    }));
+    await session.start();
+    const layout = session.state.value.layout;
+    expect(layout.engine).toBe('grafana-grid');
+    if (layout.engine === 'grafana-grid') {
+      expect(layout.grid.engine).toBe('grafana-grid');
+      expect(layout.grid.order).toEqual(['a', 'b']);
+      expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'a', span: 4, height: 'compact' });
+      // No persisted placement for 'b' → the grid default (span 6, medium).
+      expect(layout.grid.tiles[1]).toMatchObject({ tileId: 'b', span: 6, height: 'medium' });
+    }
+  });
+
+  it('clamps effective columns from the injected containerWidth seam', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: gridDoc(), exec, queries: [query('qa', 'SELECT 1'), query('qb', 'SELECT 2')],
+      containerWidth: () => 600, // >=470, <720 → 4 effective columns
+    }));
+    await session.start();
+    const layout = session.state.value.layout;
+    if (layout.engine === 'grafana-grid') expect(layout.grid.columns).toBe(4);
+    else throw new Error('expected grafana-grid engine');
+  });
+
+  it('defaults to the widest breakpoint (12 columns) when containerWidth is absent', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({
+      document: gridDoc(), exec, queries: [query('qa', 'SELECT 1'), query('qb', 'SELECT 2')],
+    }));
+    await session.start();
+    const layout = session.state.value.layout;
+    if (layout.engine === 'grafana-grid') expect(layout.grid.columns).toBe(12);
+    else throw new Error('expected grafana-grid engine');
+  });
+
+  it('places a KPI grid tile inline (no banding) and still runs its query', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'value' }], rows: [[7]] }));
+    const document = gridDoc({
+      tiles: [tile('k1', 'qk')],
+      layout: { type: 'grafana-grid', version: 1, items: { k1: { span: 4 } } },
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('qk', 'SELECT 7 AS value', { panel: { cfg: { type: 'kpi' } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(1);
+    const layout = session.state.value.layout;
+    if (layout.engine === 'grafana-grid') {
+      expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'k1', isKpi: true, span: 4 });
+    } else throw new Error('expected grafana-grid engine');
+    expect(session.state.value.tiles[0].status).toBe('ready');
+  });
+
+  it('falls back to the flow engine for an unsupported grid version with no valid fallback (existing dashboard-layout-load-failed shape unaffected)', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('a', 'qa')],
+      layout: { type: 'grafana-grid', version: 2, items: {} } as unknown as DashboardDocumentV1['layout'],
+    });
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: [query('qa', 'SELECT 1')] }));
+    await session.start();
+    // An unsupported grid version with no flow@1 fallback resolves to the
+    // flow plugin (resolveLayoutPluginSync's own documented fallback), which
+    // renders every tile at the flow default (no persisted flow surface).
+    expect(session.state.value.layout.engine).toBe('flow');
+  });
+});
+
+describe('flow layout (mobile normalization)', () => {
   it('normalizes the flow layout on mobile and coerces filter values to strings', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     let mobile = true;
@@ -590,8 +697,10 @@ describe('per-tile control and lifecycle', () => {
       exec, queries: [query('qa', 'SELECT {p:String} AS n')], isMobile: () => mobile,
     }));
     await session.start();
-    expect(session.state.value.layout.columns).toBe(1);
-    expect(session.state.value.layout.rows[0].tiles[0].span).toBe(1);
+    const mobileLayout = session.state.value.layout;
+    if (mobileLayout.engine !== 'flow') throw new Error('expected flow engine');
+    expect(mobileLayout.columns).toBe(1);
+    expect(mobileLayout.rows[0].tiles[0].span).toBe(1);
     // A numeric default coerces to a string; setting null clears it.
     await session.setFilter('f1', 5);
     expect(session.state.value.filters[0].active).toBe(true);

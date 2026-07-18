@@ -295,6 +295,46 @@ export function deriveFlowFallback(
   return { type: 'flow', version: 1, preset: 'full-width', items: flowItems };
 }
 
+// ── Pure resize math (#291 Wave 3 — corner-drag resize): the DOM listener in
+// ui/dashboard.ts stays a thin imperative adapter (rule 5); the snap/tier
+// arithmetic lives here so it is 100%-covered without any DOM. ────────────────
+
+/** The 8px gap between grid cells/rows — a single source of truth the CSS
+ *  grid host (`gap: 8px`, styles.css) and the resize pointer math both use, so
+ *  a corner-drag's column-width computation matches what the browser actually
+ *  renders. */
+export const GRID_GAP_PX = 8;
+
+/** Semantic tile height, in px — the same three tiers the mock encodes
+ *  (118/210/296), used both to render a tile's CSS height class and to snap a
+ *  corner-drag's vertical delta to the nearest tier. */
+export const GRID_HEIGHT_PX: Record<GrafanaGridHeightV1, number> = { compact: 118, medium: 210, large: 296 };
+
+/** Snap a corner-drag's horizontal pixel delta to a column span: `round((dx +
+ *  gap) / (colWidth + gap))`, clamped to `1..columns` — the same formula the
+ *  design mock's reference implementation uses (`grafana-dashboard-behavior.js`).
+ *  A non-finite/zero `colWidthPx` (no measured column width yet) still returns
+ *  a clamped integer rather than NaN/Infinity. */
+export function snapGridSpan(dxPx: number, colWidthPx: number, gapPx: number, columns: number): number {
+  const safeColumns = Math.max(1, columns);
+  const denominator = colWidthPx + gapPx;
+  if (!Number.isFinite(denominator) || denominator <= 0) return 1;
+  const raw = Math.round((dxPx + gapPx) / denominator);
+  return Math.max(1, Math.min(safeColumns, raw));
+}
+
+/** Snap a corner-drag's vertical pixel delta to the nearest semantic height
+ *  tier (compact|medium|large), by absolute distance to each tier's px value. */
+export function snapGridHeight(dyPx: number): GrafanaGridHeightV1 {
+  let best: GrafanaGridHeightV1 = 'compact';
+  let bestDelta = Infinity;
+  for (const tier of Object.keys(GRID_HEIGHT_PX) as GrafanaGridHeightV1[]) {
+    const delta = Math.abs(GRID_HEIGHT_PX[tier] - dyPx);
+    if (delta < bestDelta) { bestDelta = delta; best = tier; }
+  }
+  return best;
+}
+
 /** Regenerate a grafana-grid@1 layout's flow@1 `fallback` IN PLACE from its
  *  current `items` + the given tile set (mutates `layout.fallback`, mirroring
  *  `setGridPlacement`'s own mutate-in-place contract) — a no-op when `layout`

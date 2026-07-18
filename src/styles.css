@@ -2427,3 +2427,73 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
     min-width: 0; max-width: none; width: 100%;
   }
 }
+
+/* ── Grafana-grid layout engine (#291) ─────────────────────────────────────
+   A second, ROWLESS Dashboard layout: one flat CSS grid host (no `.dash-row`
+   sub-grids, no KPI band — every tile, KPI or not, is placed the same way).
+   `.dash-grid.dash-gg-grid` overrides `.dash-grid`'s own `display:flex` with
+   `display:grid` — same override pattern already used by `.is-report`/
+   `.is-wide` above (two classes on the host beat one on specificity), reusing
+   its outer padding/max-width. Every grid-only rule below is scoped under the
+   `.dash-gg-grid` ancestor (or the class is explicitly removed by the flow
+   path, ui/dashboard.ts) so a tile card CACHED across an engine switch never
+   keeps stray grid chrome once flow renders again. Density/relationships are
+   the design mock's own (8px gap, semantic tile heights, hover-revealed
+   dense chrome); colors are this app's own theme tokens (both themes). */
+.dash-grid.dash-gg-grid {
+  display: grid; grid-auto-rows: min-content; gap: 8px; align-items: stretch;
+}
+.dash-gg-grid .dash-tile { min-height: 0; }
+/* Semantic tile heights (#291 owner decision — reuses flow@1's own
+   compact/medium/large vocabulary verbatim): fixed px tiers, applied per
+   tile instead of via a shared row height. */
+.dash-gg-grid .dash-gg-tile.dash-gg-h-compact { height: 118px; }
+.dash-gg-grid .dash-gg-tile.dash-gg-h-medium { height: 210px; }
+.dash-gg-grid .dash-gg-tile.dash-gg-h-large { height: 296px; }
+/* Dense Grafana chrome: a tighter head than flow's own tile head (13px name,
+   11px/9px padding) — smaller, ellipsized title, hover/focus-revealed grip +
+   delete (both build only in edit mode, ui/dashboard.ts; CSS additionally
+   keeps them invisible while flow renders a cached card). */
+.dash-gg-grid .dash-tile-head {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px 4px; min-height: 22px;
+}
+.dash-gg-grid .dash-tile-name { font-size: 12px; font-weight: 600; }
+.dash-gg-grip {
+  display: none; flex-shrink: 0; color: var(--fg-faint); cursor: grab; font-size: 11px; line-height: 1;
+}
+.dash-gg-grid .dash-gg-grip { display: inline-flex; }
+.dash-gg-grip::before { content: '⠿'; }
+.dash-gg-del {
+  display: none; margin-left: auto; flex-shrink: 0; width: 20px; height: 20px;
+  align-items: center; justify-content: center; padding: 0; color: var(--fg-faint);
+  background: transparent; border: none; border-radius: 5px; cursor: pointer; opacity: 0;
+}
+.dash-gg-grid .dash-gg-del { display: inline-flex; }
+.dash-gg-grid .dash-gg-tile:hover .dash-gg-del,
+.dash-gg-del:focus-visible { opacity: 1; }
+.dash-gg-del:hover { color: var(--error-fg); background: var(--error-bg); }
+/* Corner-drag resize handle (bottom-right, edit mode only): nwse-resize
+   cursor, hover-revealed diagonal glyph, accent highlight while resizing. */
+.dash-gg-tile { position: relative; }
+.dash-gg-resize { display: none; }
+.dash-gg-grid .dash-gg-resize {
+  display: block; position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;
+}
+.dash-gg-resize::after {
+  content: ''; position: absolute; right: 3px; bottom: 3px; width: 6px; height: 6px;
+  border-right: 2px solid var(--fg-faint); border-bottom: 2px solid var(--fg-faint);
+  opacity: 0;
+}
+.dash-gg-grid .dash-gg-tile:hover .dash-gg-resize::after,
+.dash-gg-resize:hover::after { opacity: 1; }
+.dash-gg-resize:hover::after { border-color: var(--accent); }
+.dash-gg-tile.dash-gg-resizing {
+  border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); transition: none;
+}
+/* A grid tile's KPI content (#291: KPI tiles render inline, no band) fills the
+   tile body like a chart/table does. */
+.dash-gg-tile .dash-tile-body { flex-wrap: wrap; gap: 8px; }
+.dash-gg-tile .dash-tile-body > .kpi-card { flex: 1; min-width: 0; max-width: none; inline-size: auto; }
+@media (max-width: 768px) {
+  .dash-grid.dash-gg-grid { grid-template-columns: 1fr !important; }
+}
