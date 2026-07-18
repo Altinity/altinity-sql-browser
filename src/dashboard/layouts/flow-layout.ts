@@ -13,7 +13,7 @@
 
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { isSupportedLayout } from '../model/workspace-semantics.js';
+import { isFlowLayout } from '../model/workspace-semantics.js';
 import { cloneJson } from '../../core/saved-query.js';
 import { partitionKpiBands } from '../../core/dashboard.js';
 import type {
@@ -47,12 +47,12 @@ export interface DashboardLayoutPlugin {
  *  `null` (no flow surface to normalize). */
 function flowItemsHost(layout: unknown): Record<string, unknown> | null {
   if (!isObject(layout)) return null;
-  if (isSupportedLayout(layout.type, layout.version)) {
+  if (isFlowLayout(layout.type, layout.version)) {
     if (!isObject(layout.items)) { layout.items = {}; }
     return layout.items as Record<string, unknown>;
   }
   const fallback = layout.fallback;
-  if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) {
+  if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) {
     if (!isObject(fallback.items)) { fallback.items = {}; }
     return fallback.items as Record<string, unknown>;
   }
@@ -175,9 +175,9 @@ export function resolvePlacement(placement: unknown): Required<FlowTilePlacement
  *  flow@1 fallback, else `null`. */
 function flowSurface(layout: unknown): Record<string, unknown> | null {
   if (!isObject(layout)) return null;
-  if (isSupportedLayout(layout.type, layout.version)) return layout;
+  if (isFlowLayout(layout.type, layout.version)) return layout;
   const fallback = layout.fallback;
-  if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) return fallback;
+  if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) return fallback;
   return null;
 }
 
@@ -286,9 +286,9 @@ export function computeFlowLayout(input: ComputeFlowLayoutInput): FlowLayoutMode
  *  fallback" path. */
 export function resolveActiveLayoutPlugin(layout: unknown, path: Path = ['layout']): LoadLayoutPluginResult {
   if (isObject(layout)) {
-    if (isSupportedLayout(layout.type, layout.version)) return { ok: true, plugin: flowLayoutPlugin };
+    if (isFlowLayout(layout.type, layout.version)) return { ok: true, plugin: flowLayoutPlugin };
     const fallback = layout.fallback;
-    if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) {
+    if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) {
       return { ok: true, plugin: flowLayoutPlugin };
     }
   }

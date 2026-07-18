@@ -16,9 +16,10 @@
 
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { isSupportedLayout } from '../model/workspace-semantics.js';
+import { isFlowLayout } from '../model/workspace-semantics.js';
 import { flowLayoutPlugin } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
+import { grafanaGridLayoutPlugin } from './grafana-grid-layout.js';
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
@@ -59,6 +60,17 @@ export const flowLayoutRegistration: DashboardLayoutRegistration = {
   load: () => Promise.resolve(flowLayoutPlugin),
 };
 
+/** The grafana-grid@1 registration (#291): a second built-in engine. `load`
+ *  is registration-time-lazy only, matching flow's — the plugin module is
+ *  still inlined in the one bundle (CLAUDE.md hard rule 4 forbids network
+ *  code-splitting); it is simply not constructed/imported by a caller until a
+ *  Dashboard document actually requests `type: 'grafana-grid'`. */
+export const grafanaGridLayoutRegistration: DashboardLayoutRegistration = {
+  id: 'grafana-grid',
+  versions: [1],
+  load: () => Promise.resolve(grafanaGridLayoutPlugin),
+};
+
 /** Build a registry from a set of registrations. flow@1 is always present (a
  *  passed `flow` registration is ignored in favour of the built-in, so the
  *  fallback engine can never be shadowed). */
@@ -90,7 +102,7 @@ export function createLayoutRegistry(
 
   const flowFallbackPlugin = async (layout: Record<string, unknown>): Promise<DashboardLayoutPlugin | null> => {
     const fallback = layout.fallback;
-    if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) {
+    if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) {
       return load('flow', 1);
     }
     return null;
@@ -113,6 +125,6 @@ export function createLayoutRegistry(
   return { supports, load, resolve };
 }
 
-/** The default registry: only the built-in flow@1 engine (v1 ships no other
- *  layout). */
-export const defaultLayoutRegistry: DashboardLayoutRegistry = createLayoutRegistry();
+/** The default registry: the built-in flow@1 engine plus grafana-grid@1
+ *  (#291), the first second-engine consumer of this registry. */
+export const defaultLayoutRegistry: DashboardLayoutRegistry = createLayoutRegistry([grafanaGridLayoutRegistration]);

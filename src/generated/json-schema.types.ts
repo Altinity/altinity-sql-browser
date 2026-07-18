@@ -681,6 +681,56 @@ export interface FlowLayoutV1 {
   items: Record<string, FlowTilePlacementV1>;
 }
 
+// dashboard-layout-grafana-grid v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json
+
+/**
+ * Tile height
+ *
+ * Normative height ordering is compact < medium < large; exact pixels are renderer-defined. Shared vocabulary with flow@1.
+ */
+export type GrafanaGridHeightV1 = "compact" | "medium" | "large";
+
+/**
+ * Tile placement
+ *
+ * Closed placement contract: unknown fields fail validation. Future extension requires grafana-grid@2 or an explicit extension namespace.
+ */
+export interface GrafanaGridTilePlacementV1 {
+  /**
+   * Column span
+   *
+   * Columns (of 12) the tile occupies; the effective span is clamped to the active column count at each responsive breakpoint.
+   */
+  span?: number;
+  height?: GrafanaGridHeightV1;
+}
+
+/**
+ * Altinity SQL Browser Dashboard grafana-grid@1 layout
+ *
+ * The normative grafana-grid@1 Dashboard layout: rowless deterministic packing driven by dashboard.tiles order into a single 12-column grid, and per-tile span/height placements keyed by tile ID. Unlike flow@1 this engine has no preset. A grafana-grid primary layout always pairs with a valid flow@1 DashboardLayoutFallbackV1 document, regenerated on every mutation.
+ */
+export interface GrafanaGridLayoutV1 {
+  /**
+   * Layout engine
+   *
+   * Layout engine identifier; always grafana-grid for this contract.
+   */
+  type: "grafana-grid";
+  /**
+   * Layout engine version
+   *
+   * grafana-grid contract version; always 1 for this contract.
+   */
+  version: 1;
+  /**
+   * Tile placements
+   *
+   * Per-tile placement keyed by tile ID. A missing placement uses span 6 and medium height.
+   */
+  items: Record<string, GrafanaGridTilePlacementV1>;
+}
+
 // dashboard v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json
 
 /**
