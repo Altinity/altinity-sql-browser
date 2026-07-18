@@ -725,7 +725,10 @@ interface TooltipContext {
 interface ChartJsAxis {
   display: boolean;
   grid: { color: string; drawBorder: boolean; display: boolean };
-  ticks: { color: string; font: Record<string, unknown>; callback?: (v: number | string) => string };
+  ticks: {
+    color: string; font: Record<string, unknown>; callback?: (v: number | string) => string;
+    autoSkip?: boolean; maxRotation?: number; minRotation?: number;
+  };
   beginAtZero?: boolean;
   stacked?: boolean;
 }
@@ -909,7 +912,12 @@ export function chartJsConfig(
       beginAtZero: style.scale === 'zero'
         || (style.scale === 'auto' && (horizontal || cfg.type === 'bar')),
     };
-    const catAxis: ChartJsAxis = { display: axesVisible, grid: { ...grid, display: false }, ticks };
+    // Line/area charts plot every distinct row as its own category tick (no
+    // Chart.js time scale — #309), which at a few hundred rows is unreadable
+    // rotated at Chart.js's default up-to-50°. Force horizontal labels and let
+    // autoSkip drop enough of them to fit instead.
+    const catTicks = isLine ? { ...ticks, autoSkip: true, maxRotation: 0, minRotation: 0 } : ticks;
+    const catAxis: ChartJsAxis = { display: axesVisible, grid: { ...grid, display: false }, ticks: catTicks };
     options.scales = horizontal ? { x: valueAxis, y: catAxis } : { x: catAxis, y: valueAxis };
     const barsStacked = (horizontal || cfg.type === 'bar') && style.mode === 'stacked';
     const areaStacked = isArea && style.stack === 'stacked';

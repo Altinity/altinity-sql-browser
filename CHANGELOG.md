@@ -172,6 +172,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   its) — filed as **#298** rather than deleted or silently fixed here, since
   restoring it is a distinct rendering fix that needs its own >1560px-viewport
   regression test.
+- **Line/area chart X-axis tick labels no longer rotate into an unreadable
+  wall of timestamps at a few hundred rows.** Line/area charts still draw a
+  Chart.js `category` scale (one tick per distinct row — no time scale yet),
+  so `chartJsConfig` (`src/core/chart-data.ts`) now forces the category axis's
+  ticks to `autoSkip: true, maxRotation: 0, minRotation: 0` for those two chart
+  types, letting Chart.js drop enough labels to stay horizontal instead of
+  rotating every one of them. Bar/hbar/pie category axes are unchanged. A real
+  Chart.js time scale (natural tick boundaries, gap-aware point placement) is
+  filed as a follow-up: **#309**.
 
 ### Added
 - **Dashboard v1 contracts, codecs, canonical encoding, and resource limits**

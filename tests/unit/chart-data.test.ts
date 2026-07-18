@@ -585,6 +585,18 @@ describe('chartJsConfig', () => {
     expect(cfg.options.indexAxis).toBe('x');
     expect(cfg.options.scales!.y.beginAtZero).toBe(true);
   });
+  it('line/area category-axis ticks force horizontal autoSkip labels (#309); bar keeps Chart.js defaults', () => {
+    const line = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1], series: null }, colors);
+    expect(line.options.scales!.x.ticks).toMatchObject({ autoSkip: true, maxRotation: 0, minRotation: 0 });
+    const area = chartJsConfig(cols, rows, { type: 'area', x: 0, y: [1], series: null }, colors);
+    expect(area.options.scales!.x.ticks).toMatchObject({ autoSkip: true, maxRotation: 0, minRotation: 0 });
+    const bar = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+    expect(bar.options.scales!.x.ticks.autoSkip).toBeUndefined();
+    expect(bar.options.scales!.x.ticks.maxRotation).toBeUndefined();
+    // hbar's category axis is y, not x
+    const hbar = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
+    expect(hbar.options.scales!.y.ticks.autoSkip).toBeUndefined();
+  });
   it('value-axis ticks humanize via callback (number and coercible string)', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
     const cb = cfg.options.scales!.y.ticks.callback!;
