@@ -205,7 +205,12 @@ test.describe('Dashboard grafana-grid layout', () => {
     // clamped instead to 12-6=6, the columns actually free at this pinned
     // start, so the tile never demands phantom implicit tracks past the edge.
     // (Y stays at the medium-tier offset so only the SPAN clamp is exercised.)
-    await page.mouse.move(rect.left + 100000, rect.top + 210, { steps: 3 });
+    // Dispatched synthetically on window (where the wiring listens): Firefox
+    // does not deliver real mouse moves this far outside the viewport, and the
+    // clamp needs a request provably wider than the 6 columns that fit here.
+    await page.evaluate(({ x, y }) => {
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y }));
+    }, { x: rect.left + 100000, y: rect.top + 210 });
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe('7 / span 6');
     // Still pinned at the SAME left edge — growing the span never moved it.
     expect(await card.evaluate((node) => node.getBoundingClientRect().left)).toBeCloseTo(rectBefore, 0);
