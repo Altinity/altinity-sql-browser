@@ -4426,6 +4426,14 @@ describe('Dashboard viewing (open-source, handoff, actions) — #288/#302', () =
     app.state.dashboard = null;
     app.openDashboardForViewing();
     expect(opened.length).toBe(1);
+    // Blocked popup (openWindow → null) → no orphan token is written.
+    const put2 = vi.fn(async () => {});
+    const blocked = createApp(env({ openWindow: asOpenWindow(() => null) }));
+    blocked.handoff = { put: put2, take: vi.fn(async () => null) };
+    blocked.state.savedQueries = [vquery()] as never;
+    blocked.state.dashboard = vdash() as never;
+    blocked.openDashboardForViewing();
+    expect(put2).not.toHaveBeenCalled();
   });
 
   it('openDashboardForViewing toasts on an unencodable dashboard and on a failed token write', async () => {

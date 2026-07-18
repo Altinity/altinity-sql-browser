@@ -10,6 +10,23 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Direct + full-screen Dashboard viewing with a one-time cross-tab handoff**
+  (#288, Dashboard v1 Phase 6 — the final phase of #280; also lands #302). Two
+  explicit viewing modes on the standalone `/dashboard` route (ADR-0003): an
+  **edit mode** opened from the new Workbench-header **`Dashboard →`** control
+  (bookmarkable `?ws=&dash=` current-workspace route that verifies BOTH the
+  workspace and dashboard ids — showing *Dashboard unavailable* rather than
+  silently opening a different one — and shares the IndexedDB workspace store so
+  reorder/relayout persist), and a read-only **view mode** opened from the
+  Dashboard page's own **File → "Open for viewing…"** that snapshots the current
+  dashboard into a detached copy in a **new tab**. The cross-tab *state* handoff
+  uses a **one-time IndexedDB token** (unguessable 256-bit token; the validated
+  bundle is written before the tab opens, atomically consumed exactly once, and
+  the token stripped from the URL via `history.replaceState`) — `sessionStorage`
+  alone is insufficient. The consumed handoff **materializes** into a persistent
+  detached-views store under its own id, so a view tab survives relogin/reload
+  while staying detached from later Workbench edits. The read-only viewer path
+  builds no Workbench/editor modules (boundary-tested). Closes #153.
 - **Portable open/import/export + a transactional import planner** (#287, Dashboard
   v1 Phase 5). The File menu's ambiguous `Append` is gone, replaced by
   resource-oriented **Import queries / Import Dashboard / Replace workspace** and
@@ -31,6 +48,16 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Library-only JSON is written.
 
 ### Changed
+- **Dashboard operations moved out of the Workbench File menu** (#302). The
+  Workbench File menu now owns workspace + query-collection operations only (New
+  workspace / Import queries / Replace workspace / Export workspace / Download
+  Markdown+SQL / variable history). Dashboard navigation moved to a `Dashboard →`
+  control next to the workspace name (shown only when a Dashboard exists; opens
+  the standalone route in a new tab), and **Import Dashboard / Export Dashboard**
+  moved to the standalone Dashboard page's own resource-scoped **File** menu
+  (which also hosts the new **Open for viewing…**). Dashboard import still runs
+  the transactional planner and commits atomically; portable-bundle, schema, and
+  persistence semantics are unchanged.
 - **The `StoredWorkspaceV1` aggregate is now the single source of truth for the
   saved-query collection** (#287). All query CRUD (create/edit/rename/delete/star)
   commits the whole workspace through the atomic `WorkspaceRepository`

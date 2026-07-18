@@ -1556,9 +1556,14 @@ export function createApp(env: CreateAppEnv = {}): App {
     if (!built.ok) { flashToast('✕ ' + (built.diagnostics[0]?.message || 'Could not prepare dashboard for viewing'), { document: doc }); return; }
     const search = buildDashboardSearch({ kind: 'session-bundle', token, dashboardId: dashboard.id });
     const child = app.openWindow(loc.origin + conn.basePath + '/dashboard' + search);
-    if (child) conn.grantHandoffTo(child);
+    // A blocked popup means nothing will ever consume the token — don't write a
+    // (potentially multi-MB) orphan record the store never sweeps. Only persist
+    // the handoff once we know a viewer tab is actually opening.
+    if (!child) { flashToast('Allow pop-ups to open the dashboard view', { document: doc }); return; }
+    conn.grantHandoffTo(child);
     // Write AFTER opening the child (open must stay in the gesture task); the
-    // viewer's bounded retry covers the case where it reads before this lands.
+    // child only reads the token after a full load + auth handoff, well after
+    // this fast IndexedDB write lands.
     app.handoff.put(token, built.record).catch(() => {
       flashToast('✕ Could not prepare dashboard for viewing', { document: doc });
     });
