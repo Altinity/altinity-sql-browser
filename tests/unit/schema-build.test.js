@@ -20,13 +20,15 @@ describe('multi-schema build', () => {
       'schemas/saved-query-v2.schema.json',
       'schemas/library-v2.schema.json',
       'schemas/dashboard-layout-flow-v1.schema.json',
+      'schemas/dashboard-layout-grafana-grid-v1.schema.json',
       'schemas/dashboard-v1.schema.json',
       'schemas/stored-workspace-v1.schema.json',
       'schemas/portable-bundle-v1.schema.json',
     ]);
     const KINDS = [
       ['query-spec', 1], ['saved-query', 2], ['library', 2],
-      ['dashboard-layout-flow', 1], ['dashboard', 1], ['stored-workspace', 1], ['portable-bundle', 1],
+      ['dashboard-layout-flow', 1], ['dashboard-layout-grafana-grid', 1],
+      ['dashboard', 1], ['stored-workspace', 1], ['portable-bundle', 1],
     ];
     const records = await loadRecords();
     expect(records.map(({ schema }) => [schema['x-altinity-kind'], schema['x-altinity-version']]))
@@ -44,6 +46,7 @@ describe('multi-schema build', () => {
       'https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json',
+      'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json',
       'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json',
@@ -97,7 +100,7 @@ describe('multi-schema build', () => {
   it('emits the committed TypeScript artifact with pinned names, openness, and closedness', async () => {
     expect(SCHEMA_MANIFEST.map((entry) => entry.typeExport)).toEqual([
       'QuerySpecV1', 'SavedQueryV2', 'LibraryV2',
-      'FlowLayoutV1', 'DashboardDocumentV1', 'StoredWorkspaceV1', 'PortableBundleV1',
+      'FlowLayoutV1', 'GrafanaGridLayoutV1', 'DashboardDocumentV1', 'StoredWorkspaceV1', 'PortableBundleV1',
     ]);
     const sources = await generatedSources();
     const types = Object.entries(sources).find(([path]) => path.endsWith('json-schema.types.ts'))[1];
@@ -126,7 +129,9 @@ describe('multi-schema build', () => {
     expect(types).toContain('export interface PortableBundleV1');
     expect(types).toContain('export type DashboardLayoutFallbackV1 = FlowLayoutV1;');
     expect(types).toContain('export type QueryPresentationPatchV1 = Record<string, unknown>;');
+    expect(types).toContain('export interface GrafanaGridLayoutV1');
     expect(block('FlowTilePlacementV1')).not.toContain('[k: string]');
+    expect(block('GrafanaGridTilePlacementV1')).not.toContain('[k: string]');
     expect(block('DashboardDocumentV1')).not.toContain('[k: string]');
     expect(block('PortableBundleV1')).toContain('dashboards: DashboardDocumentV1[];');
     expect(block('StoredWorkspaceV1')).toContain('dashboard: DashboardDocumentV1 | null;');

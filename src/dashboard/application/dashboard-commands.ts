@@ -17,8 +17,12 @@
 import { cloneJson } from '../../core/saved-query.js';
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { deriveFlowPlacement, setFlowPlacement } from '../layouts/flow-layout.js';
+import { deriveFlowPlacement, resolvePlacement, setFlowPlacement } from '../layouts/flow-layout.js';
 import type { DashboardLayoutPlugin } from '../layouts/flow-layout.js';
+import {
+  deriveGrafanaGridPlacement, gridHeightUnitsFromFlowHeight, gridSpanFromFlowSpan,
+  regenerateGridFallback as regenerateGridLayoutFallback, setGridPlacement,
+} from '../layouts/grafana-grid-layout.js';
 import type { QueryResolver } from './dashboard-query-resolver.js';
 import type {
   DashboardDocumentV1, DashboardLayoutDocumentV1, DashboardTileV1,
@@ -67,6 +71,29 @@ const missingTile = (tileId: string): WorkspaceDiagnostic =>
 const tileIndex = (tiles: unknown[], tileId: string): number =>
   tiles.findIndex((tile) => isObject(tile) && tile.id === tileId);
 
+/** Command types whose tile/placement mutation must regenerate a
+ *  grafana-grid@1 layout's flow@1 `fallback` (#291 "every grid mutation
+ *  regenerates the flow@1 fallback deterministically") — every command that
+ *  changes `tiles[]` membership/order or a grid placement. `change-layout`
+ *  manages `fallback` itself (see its case below, both engine-switch
+ *  directions); `update-tile` never touches tiles[] membership/order or
+ *  placements, so it is deliberately excluded. */
+const GRID_FALLBACK_COMMANDS = new Set<DashboardCommand['type']>([
+  'add-query', 'add-query-instance', 'remove-tile', 'move-tile', 'update-placement',
+]);
+
+/** Set one tile's placement through whichever engine plugin is ACTIVE
+ *  (`ctx.plugin`): grid → `setGridPlacement`, flow → `setFlowPlacement`. The
+ *  one shared primitive both the `add-query`/`add-query-instance` seed step
+ *  and `update-placement` use (#291 review F10 — this dispatch was
+ *  duplicated at both call sites). */
+function setPlacementForActiveEngine(
+  plugin: DashboardLayoutPlugin, layout: unknown, tileId: string, placement: unknown,
+): void {
+  if (plugin.type === 'grafana-grid') setGridPlacement(layout, tileId, placement);
+  else setFlowPlacement(layout, tileId, placement);
+}
+
 /** One-level merge of an `update-tile` presentation patch onto the tile's
  *  existing presentation. A non-object patch replaces the whole field; else
  *  each patch sub-field replaces (or, when `null`, deletes) the same sub-field
@@ -86,11 +113,24 @@ function mergeTilePresentation(existing: unknown, patch: unknown): unknown {
 
 /** Apply one command to an ISOLATED clone of `draft`, returning the candidate
  *  dashboard or command-level diagnostics. The input `draft` is never
- *  mutated. */
+ *  mutated. On success, when the ACTIVE command type touches tiles[] or grid
+ *  placements while grafana-grid@1 is the primary layout, the flow@1
+ *  `fallback` is regenerated as one centralized post-step (#291;
+ *  `change-layout` is excluded — it manages `fallback` itself). */
 export function applyCommand(
   draft: DashboardDocumentV1, command: DashboardCommand, ctx: ApplyCommandContext,
 ): ApplyCommandResult {
   const dashboard = cloneJson(draft);
+  const result = applyCommandToClone(dashboard, command, ctx);
+  if (result.ok && GRID_FALLBACK_COMMANDS.has(command.type)) {
+    regenerateGridLayoutFallback(result.dashboard.layout, result.dashboard.tiles);
+  }
+  return result;
+}
+
+function applyCommandToClone(
+  dashboard: DashboardDocumentV1, command: DashboardCommand, ctx: ApplyCommandContext,
+): ApplyCommandResult {
   const tiles = dashboard.tiles as unknown[];
 
   switch (command.type) {
@@ -115,8 +155,13 @@ export function applyCommand(
       const query = ctx.resolver.get(queryId);
       const sizeHints = isObject(query) && isObject(query.spec) && isObject(query.spec.dashboard)
         ? query.spec.dashboard.sizeHints : undefined;
-      const placement = deriveFlowPlacement(sizeHints);
-      if (placement) setFlowPlacement(dashboard.layout, id, placement);
+      // Add-time placement seeding is engine-aware (#291): grafana-grid@1
+      // always gets an explicit placement (its own default when there is no
+      // usable hint), matching `deriveGrafanaGridPlacement`'s "no opinion"
+      // contract being the grid default rather than flow's bare `undefined`.
+      const placement = ctx.plugin.type === 'grafana-grid'
+        ? deriveGrafanaGridPlacement(sizeHints) : deriveFlowPlacement(sizeHints);
+      if (placement) setPlacementForActiveEngine(ctx.plugin, dashboard.layout, id, placement);
       return { ok: true, dashboard, value: { tileId: id } };
     }
 
@@ -176,19 +221,94 @@ export function applyCommand(
     case 'update-placement': {
       const index = tileIndex(tiles, command.tileId);
       if (index < 0) return failWith(missingTile(command.tileId));
+      // Validated through the ACTIVE engine's own plugin (`ctx.plugin`,
+      // resolved by the session from the current document — grid: span
+      // 1..12; flow: span 1..3) rather than a hardcoded flow plugin (#291).
       const placementDiags = ctx.plugin.validatePlacement(command.placement,
         ['layout', 'items', command.tileId]);
       if (placementDiags.length) return { ok: false, diagnostics: placementDiags };
-      setFlowPlacement(dashboard.layout, command.tileId, cloneJson(command.placement));
+      setPlacementForActiveEngine(ctx.plugin, dashboard.layout, command.tileId, cloneJson(command.placement));
       return { ok: true, dashboard, value: undefined };
     }
 
     // change-layout: the load/version/fallback failures are the session's
-    // `resolveActiveLayoutPlugin` step; a normalization that produces an
-    // invalid document is the session's validation step. Here we only install
-    // the (cloned) new layout.
-    default:
+    // registry-resolution step; a normalization that produces an invalid
+    // document is the session's validation step. Here we install the new
+    // layout AND, when it is an engine switch (#291 owner decision 3),
+    // convert placements between engines:
+    //  - flow -> grafana-grid: seed every tile's grid placement from its
+    //    current flow placement (`resolvePlacement` fills the flow default
+    //    for a tile with none), span converted via `gridSpanFromFlowSpan` and
+    //    height via `gridHeightUnitsFromFlowHeight` (flow's string height ->
+    //    grid's numeric row units, #291 height-units follow-up), and snapshot
+    //    the CURRENT flow layout (minus its own `fallback`, which a flow
+    //    primary never carries) as the new `layout.fallback`.
+    //  - grafana-grid -> flow: restore `layout.fallback` (kept continuously
+    //    valid by the grid-mutation fallback regeneration above) as the new
+    //    flow primary, dropping the `fallback` field itself (a flow primary
+    //    IS the fallback engine, so it never carries one). Switching to a
+    //    flow PRESET while grid is active is exactly this restore, then
+    //    applying `command.layout.preset` on top — the caller (Wave 3 UI)
+    //    only ever needs to send `{ type: 'flow', version: 1, preset? }`.
+    //  - same engine (type+version unchanged) with the incoming layout
+    //    carrying NO `items` field at all: a bare `{type,version}` (e.g. an
+    //    engine-switch dispatch sent while that engine is ALREADY active —
+    //    #291 review F5) must not silently reset `items` to `{}` and discard
+    //    every placement. Preserve the CURRENT items/fallback, with whatever
+    //    fields the command DOES carry (e.g. a flow `preset`) applied on top.
+    //  - anything else (same-engine change WITH an explicit `items` field —
+    //    e.g. a flow preset switch that also spreads its current items, or an
+    //    unrecognized combination): install the (cloned) new layout document
+    //    wholesale, as `change-layout` always did before #291. A regenerated
+    //    fallback still backstops a wholesale grid layout that did not
+    //    already carry one.
+    case 'change-layout': {
+      const currentType = dashboard.layout.type;
+      const targetType = command.layout.type;
+
+      if (currentType === 'flow' && targetType === 'grafana-grid') {
+        const flowItems = dashboard.layout.items ?? {};
+        const gridItems: Record<string, unknown> = {};
+        for (const tile of tiles) {
+          if (!isObject(tile) || typeof tile.id !== 'string') continue;
+          const flowPlacement = resolvePlacement(flowItems[tile.id]);
+          gridItems[tile.id] = {
+            span: gridSpanFromFlowSpan(flowPlacement.span), height: gridHeightUnitsFromFlowHeight(flowPlacement.height),
+          };
+        }
+        // Drop the (never-present-on-a-flow-primary) `fallback` field before
+        // snapshotting — a flow primary IS the fallback engine, so it never
+        // carries one, but this stays defensive against a malformed input.
+        const { fallback: _droppedFallback, ...flowSnapshot } = dashboard.layout;
+        dashboard.layout = {
+          type: 'grafana-grid', version: 1, items: gridItems, fallback: flowSnapshot,
+        } as unknown as DashboardLayoutDocumentV1;
+        return { ok: true, dashboard, value: undefined };
+      }
+
+      if (currentType === 'grafana-grid' && targetType === 'flow') {
+        const fallback = dashboard.layout.fallback;
+        if (!fallback) {
+          return failWith(diagnostic(['layout'], 'dashboard-command-layout-fallback-missing',
+            'No flow@1 fallback to restore for this Dashboard'));
+        }
+        const restored = cloneJson(fallback) as unknown as Record<string, unknown>;
+        const preset = typeof command.layout.preset === 'string' ? command.layout.preset : undefined;
+        if (preset !== undefined) restored.preset = preset;
+        dashboard.layout = restored as unknown as DashboardLayoutDocumentV1;
+        return { ok: true, dashboard, value: undefined };
+      }
+
+      if (currentType === targetType && dashboard.layout.version === command.layout.version
+        && !Object.hasOwn(command.layout, 'items')) {
+        dashboard.layout = { ...cloneJson(dashboard.layout), ...cloneJson(command.layout) } as DashboardLayoutDocumentV1;
+        regenerateGridLayoutFallback(dashboard.layout, dashboard.tiles);
+        return { ok: true, dashboard, value: undefined };
+      }
+
       dashboard.layout = cloneJson(command.layout);
+      regenerateGridLayoutFallback(dashboard.layout, dashboard.tiles);
       return { ok: true, dashboard, value: undefined };
+    }
   }
 }

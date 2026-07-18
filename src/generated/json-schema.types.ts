@@ -681,6 +681,56 @@ export interface FlowLayoutV1 {
   items: Record<string, FlowTilePlacementV1>;
 }
 
+// dashboard-layout-grafana-grid v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json
+
+/**
+ * Tile height
+ *
+ * Tile height in numeric row units (1..16); px = 32 + 88*units, so units 1/2/3 land close to the legacy compact/medium/large tiers (120/208/296px) and unit 16 reaches 1440px. The legacy compact|medium|large strings are still accepted for backward compatibility and are normalized to their numeric equivalents (1/2/3) by the layout's `normalize` step; new writes should always be numeric.
+ */
+export type GrafanaGridHeightV1 = number | "compact" | "medium" | "large";
+
+/**
+ * Tile placement
+ *
+ * Closed placement contract: unknown fields fail validation. Future extension requires grafana-grid@2 or an explicit extension namespace.
+ */
+export interface GrafanaGridTilePlacementV1 {
+  /**
+   * Column span
+   *
+   * Columns (of 12) the tile occupies; the effective span is clamped to the active column count at each responsive breakpoint.
+   */
+  span?: number;
+  height?: GrafanaGridHeightV1;
+}
+
+/**
+ * Altinity SQL Browser Dashboard grafana-grid@1 layout
+ *
+ * The normative grafana-grid@1 Dashboard layout: rowless deterministic packing driven by dashboard.tiles order into a single 12-column grid, and per-tile span/height placements keyed by tile ID. Unlike flow@1 this engine has no preset. A grafana-grid primary layout always pairs with a valid flow@1 DashboardLayoutFallbackV1 document, regenerated on every mutation.
+ */
+export interface GrafanaGridLayoutV1 {
+  /**
+   * Layout engine
+   *
+   * Layout engine identifier; always grafana-grid for this contract.
+   */
+  type: "grafana-grid";
+  /**
+   * Layout engine version
+   *
+   * grafana-grid contract version; always 1 for this contract.
+   */
+  version: 1;
+  /**
+   * Tile placements
+   *
+   * Per-tile placement keyed by tile ID. A missing placement uses span 6 and medium height.
+   */
+  items: Record<string, GrafanaGridTilePlacementV1>;
+}
+
 // dashboard v1 — https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json
 
 /**

@@ -17,10 +17,34 @@ import { scanParamDeclarations } from '../../core/param-scan.js';
 
 export const FLOW_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json';
+export const GRAFANA_GRID_LAYOUT_V1_SCHEMA_ID =
+  'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json';
 
-/** The layout engines this build can render. flow@1 is the only v1 engine;
- *  anything else must carry a valid flow@1 fallback or fail before execution. */
+/** Every primary layout engine this build can render, and the compiled schema
+ *  that validates its own document shape (#291 adds grafana-grid@1 as a
+ *  second engine alongside flow@1). */
+const SUPPORTED_LAYOUT_SCHEMAS: Record<string, { versions: readonly number[]; schemaId: string }> = {
+  flow: { versions: [1], schemaId: FLOW_LAYOUT_V1_SCHEMA_ID },
+  'grafana-grid': { versions: [1], schemaId: GRAFANA_GRID_LAYOUT_V1_SCHEMA_ID },
+};
+
+/** True for any registered primary engine at a version this build renders
+ *  (flow@1 or grafana-grid@1 in v1). Anything else must carry a valid flow@1
+ *  fallback or fail before execution. NOT the right check for "is this
+ *  specifically the flow@1 fallback slot" — that stays pinned to flow@1 only
+ *  (`isFlowLayout`) and never widens to another engine, even when that engine
+ *  is itself supported as a primary. */
 export const isSupportedLayout = (type: unknown, version: unknown): boolean =>
+  typeof type === 'string' && typeof version === 'number'
+  && Object.hasOwn(SUPPORTED_LAYOUT_SCHEMAS, type)
+  && SUPPORTED_LAYOUT_SCHEMAS[type].versions.includes(version);
+
+/** flow@1 specifically. Used wherever a value must be THE flow engine itself:
+ *  the flow plugin's own item host/render surface (flow-layout.ts), and the
+ *  Dashboard layout's `fallback` slot, which is pinned to flow@1 and must
+ *  never accept another engine even once that engine is a supported primary
+ *  (#291's "do not widen the fallback slot"). */
+export const isFlowLayout = (type: unknown, version: unknown): boolean =>
   type === 'flow' && version === 1;
 
 type Path = (string | number)[];
@@ -292,7 +316,10 @@ export function validateDashboardSemantics(dashboard: unknown, {
       }
     };
     checkItems(layout.items, [...layoutPath, 'items']);
-    if (isSupportedLayout(layout.type, layout.version)) {
+    if (isFlowLayout(layout.type, layout.version)) {
+      // flow@1 IS the fallback engine: a flow primary needs no fallback of
+      // its own, validated directly against its own schema (unchanged from
+      // pre-#291 behavior).
       for (const schemaError of validationService.validate(FLOW_LAYOUT_V1_SCHEMA_ID, layout)) {
         out.push({
           ...schemaError,
@@ -301,10 +328,38 @@ export function validateDashboardSemantics(dashboard: unknown, {
         });
       }
     } else {
+      // Any other primary — a second known engine (grafana-grid@1) or a
+      // truly unsupported/unknown one — always requires its own valid flow@1
+      // fallback (#291): the fallback slot is pinned to flow@1 and never
+      // widens, so it stays the one universal safety net regardless of which
+      // other engine is primary. A known non-flow engine ALSO gets its own
+      // items validated against its own schema, in addition to the fallback.
+      const primarySchema = isSupportedLayout(layout.type, layout.version)
+        ? SUPPORTED_LAYOUT_SCHEMAS[layout.type as string].schemaId : undefined;
+      if (primarySchema !== undefined) {
+        // Validate only the engine's own declared shape: `fallback`/`config`
+        // are envelope-only slots (dashboardLayoutDocumentV1 in
+        // dashboard-v1.schema.json), not part of any concrete per-engine
+        // schema (flow@1's own schema doesn't declare them either) — passing
+        // them through would spuriously fail the engine's closed
+        // `additionalProperties: false` schema.
+        const primaryOwn = Object.fromEntries(
+          Object.entries(layout).filter(([key]) => key !== 'fallback' && key !== 'config'),
+        );
+        for (const schemaError of validationService.validate(primarySchema, primaryOwn)) {
+          out.push({
+            ...schemaError,
+            path: [...layoutPath, ...schemaError.path],
+            ...(dashboardId === undefined ? {} : { resource: dashboardId }),
+          });
+        }
+      }
       const fallback = layout.fallback;
       if (fallback === undefined || fallback === null) {
         emit(layoutPath, 'layout-unsupported-without-fallback',
-          `Layout ${JSON.stringify(layout.type)}@${JSON.stringify(layout.version)} is unsupported and has no flow@1 fallback`);
+          primarySchema !== undefined
+            ? `Layout ${JSON.stringify(layout.type)}@${JSON.stringify(layout.version)} requires a valid flow@1 fallback`
+            : `Layout ${JSON.stringify(layout.type)}@${JSON.stringify(layout.version)} is unsupported and has no flow@1 fallback`);
       } else {
         for (const schemaError of validationService.validate(FLOW_LAYOUT_V1_SCHEMA_ID, fallback)) {
           out.push({

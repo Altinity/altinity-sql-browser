@@ -33,6 +33,19 @@ export const SCHEMA_MANIFEST = [
     validatorExport: 'validateFlowLayoutV1',
     typeExport: 'FlowLayoutV1',
   },
+  // grafana-grid@1 (#291): a second layout engine, sibling to flow@1. The
+  // generic layout envelope in dashboard-v1.schema.json is already open
+  // (type/version/items are unconstrained there), so this schema needs no
+  // $ref from dashboard-v1 — it is its own manifest root purely to get a
+  // compiled validator + generated types, exactly like flow's own root. The
+  // `fallback` slot stays pinned to flow@1 only; this schema is never a
+  // fallback target.
+  {
+    path: 'schemas/dashboard-layout-grafana-grid-v1.schema.json',
+    schemaExport: 'grafanaGridLayoutV1Schema',
+    validatorExport: 'validateGrafanaGridLayoutV1',
+    typeExport: 'GrafanaGridLayoutV1',
+  },
   {
     path: 'schemas/dashboard-v1.schema.json',
     schemaExport: 'dashboardV1Schema',

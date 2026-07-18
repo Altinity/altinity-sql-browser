@@ -102,3 +102,32 @@ describe('toggleTileMembership', () => {
     expect((added.layout as { items: Record<string, unknown> }).items).toEqual({});
   });
 });
+
+describe('toggleTileMembership — grafana-grid@1 engine awareness (#291)', () => {
+  it('normalizes through the ACTIVE grid plugin (not a hardcoded flow one) and regenerates the flow@1 fallback on star ON', () => {
+    const d = dashboard({ layout: { type: 'grafana-grid', version: 1, items: {} } });
+    const next = toggleTileMembership(d, panelQuery('p1'), true, genTileId())!;
+    expect(next.layout.type).toBe('grafana-grid');
+    expect(next.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
+    // No explicit grid placement is seeded here either (parity with flow's own
+    // pre-#291 behavior) — the new tile resolves to the grid default (span 6)
+    // at render time, which the regenerated fallback reflects (flow span 2).
+    expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
+    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'full-width', items: { 'tile-1': { span: 2, height: 'medium' } },
+    });
+  });
+
+  it('regenerates the flow@1 fallback (dropping the removed tile) on star OFF', () => {
+    const d = dashboard({
+      layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 12 } } },
+      tiles: [{ id: 't1', queryId: 'p1' }],
+    });
+    const next = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
+    expect(next.tiles).toEqual([]);
+    expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
+    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'full-width', items: {},
+    });
+  });
+});

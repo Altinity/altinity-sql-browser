@@ -4085,11 +4085,322 @@ function validate46(data, { instancePath = "", parentData, parentDataProperty, r
   return errors === 0;
 }
 validate46.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var validateDashboardV1 = validate49;
-function validate52(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+var validateGrafanaGridLayoutV1 = validate49;
+var schema62 = { "title": "Tile height", "description": "Tile height in numeric row units (1..16); px = 32 + 88*units, so units 1/2/3 land close to the legacy compact/medium/large tiers (120/208/296px) and unit 16 reaches 1440px. The legacy compact|medium|large strings are still accepted for backward compatibility and are normalized to their numeric equivalents (1/2/3) by the layout's `normalize` step; new writes should always be numeric.", "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 16 }, { "type": "string", "enum": ["compact", "medium", "large"] }] };
+function validate50(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate52.evaluated;
+  const evaluated0 = validate50.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    for (const key0 in data) {
+      if (!(key0 === "span" || key0 === "height")) {
+        const err0 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+    }
+    if (data.span !== void 0) {
+      let data0 = data.span;
+      if (!(typeof data0 == "number" && (!(data0 % 1) && !isNaN(data0)) && isFinite(data0))) {
+        const err1 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err1];
+        } else {
+          vErrors.push(err1);
+        }
+        errors++;
+      }
+      if (typeof data0 == "number" && isFinite(data0)) {
+        if (data0 > 12 || isNaN(data0)) {
+          const err2 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/maximum", keyword: "maximum", params: { comparison: "<=", limit: 12 }, message: "must be <= 12" };
+          if (vErrors === null) {
+            vErrors = [err2];
+          } else {
+            vErrors.push(err2);
+          }
+          errors++;
+        }
+        if (data0 < 1 || isNaN(data0)) {
+          const err3 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/minimum", keyword: "minimum", params: { comparison: ">=", limit: 1 }, message: "must be >= 1" };
+          if (vErrors === null) {
+            vErrors = [err3];
+          } else {
+            vErrors.push(err3);
+          }
+          errors++;
+        }
+      }
+    }
+    if (data.height !== void 0) {
+      let data1 = data.height;
+      const _errs6 = errors;
+      let valid2 = false;
+      const _errs7 = errors;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err4 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+      if (typeof data1 == "number" && isFinite(data1)) {
+        if (data1 > 16 || isNaN(data1)) {
+          const err5 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/maximum", keyword: "maximum", params: { comparison: "<=", limit: 16 }, message: "must be <= 16" };
+          if (vErrors === null) {
+            vErrors = [err5];
+          } else {
+            vErrors.push(err5);
+          }
+          errors++;
+        }
+        if (data1 < 1 || isNaN(data1)) {
+          const err6 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/minimum", keyword: "minimum", params: { comparison: ">=", limit: 1 }, message: "must be >= 1" };
+          if (vErrors === null) {
+            vErrors = [err6];
+          } else {
+            vErrors.push(err6);
+          }
+          errors++;
+        }
+      }
+      var _valid0 = _errs7 === errors;
+      valid2 = valid2 || _valid0;
+      const _errs9 = errors;
+      if (typeof data1 !== "string") {
+        const err7 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+      if (!(data1 === "compact" || data1 === "medium" || data1 === "large")) {
+        const err8 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/1/enum", keyword: "enum", params: { allowedValues: schema62.anyOf[1].enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+      var _valid0 = _errs9 === errors;
+      valid2 = valid2 || _valid0;
+      if (!valid2) {
+        const err9 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      } else {
+        errors = _errs6;
+        if (vErrors !== null) {
+          if (_errs6) {
+            vErrors.length = _errs6;
+          } else {
+            vErrors = null;
+          }
+        }
+      }
+    }
+  } else {
+    const err10 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err10];
+    } else {
+      vErrors.push(err10);
+    }
+    errors++;
+  }
+  validate50.errors = vErrors;
+  return errors === 0;
+}
+validate50.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate49(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate49.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.type === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "type" }, message: "must have required property 'type'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.version === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "version" }, message: "must have required property 'version'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.items === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "items" }, message: "must have required property 'items'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "type" || key0 === "version" || key0 === "items")) {
+        const err3 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err3];
+        } else {
+          vErrors.push(err3);
+        }
+        errors++;
+      }
+    }
+    if (data.type !== void 0) {
+      let data0 = data.type;
+      if (typeof data0 !== "string") {
+        const err4 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+      if ("grafana-grid" !== data0) {
+        const err5 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/const", keyword: "const", params: { allowedValue: "grafana-grid" }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+    }
+    if (data.version !== void 0) {
+      let data1 = data.version;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err6 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+      if (1 !== data1) {
+        const err7 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+    }
+    if (data.items !== void 0) {
+      let data2 = data.items;
+      if (data2 && typeof data2 == "object" && !Array.isArray(data2)) {
+        if (Object.keys(data2).length > 100) {
+          const err8 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/maxProperties", keyword: "maxProperties", params: { limit: 100 }, message: "must NOT have more than 100 properties" };
+          if (vErrors === null) {
+            vErrors = [err8];
+          } else {
+            vErrors.push(err8);
+          }
+          errors++;
+        }
+        for (const key1 in data2) {
+          const _errs8 = errors;
+          if (typeof key1 === "string") {
+            if (func1(key1) > 256) {
+              const err9 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err9];
+              } else {
+                vErrors.push(err9);
+              }
+              errors++;
+            }
+            if (func1(key1) < 1) {
+              const err10 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err10];
+              } else {
+                vErrors.push(err10);
+              }
+              errors++;
+            }
+          }
+          var valid1 = _errs8 === errors;
+          if (!valid1) {
+            const err11 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames", keyword: "propertyNames", params: { propertyName: key1 }, message: "property name must be valid" };
+            if (vErrors === null) {
+              vErrors = [err11];
+            } else {
+              vErrors.push(err11);
+            }
+            errors++;
+          }
+        }
+        for (const key2 in data2) {
+          if (!validate50(data2[key2], { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), parentData: data2, parentDataProperty: key2, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate50.errors : vErrors.concat(validate50.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err12 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err12];
+        } else {
+          vErrors.push(err12);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err13 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err13];
+    } else {
+      vErrors.push(err13);
+    }
+    errors++;
+  }
+  validate49.errors = vErrors;
+  return errors === 0;
+}
+validate49.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateDashboardV1 = validate52;
+function validate55(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate55.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -4159,15 +4470,15 @@ function validate52(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate52.errors = vErrors;
+  validate55.errors = vErrors;
   return errors === 0;
 }
-validate52.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-function validate51(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate55.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate54(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate51.evaluated;
+  const evaluated0 = validate54.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -4331,8 +4642,8 @@ function validate51(data, { instancePath = "", parentData, parentDataProperty, r
           }
         }
         for (const key2 in data3) {
-          if (!validate52(data3[key2], { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), parentData: data3, parentDataProperty: key2, rootData, dynamicAnchors })) {
-            vErrors = vErrors === null ? validate52.errors : vErrors.concat(validate52.errors);
+          if (!validate55(data3[key2], { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), parentData: data3, parentDataProperty: key2, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate55.errors : vErrors.concat(validate55.errors);
             errors = vErrors.length;
           }
         }
@@ -4355,14 +4666,14 @@ function validate51(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate51.errors = vErrors;
+  validate54.errors = vErrors;
   return errors === 0;
 }
-validate51.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-function validate50(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate54.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate53(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate50.evaluated;
+  const evaluated0 = validate53.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -4555,8 +4866,8 @@ function validate50(data, { instancePath = "", parentData, parentDataProperty, r
       }
     }
     if (data.fallback !== void 0) {
-      if (!validate51(data.fallback, { instancePath: instancePath + "/fallback", parentData: data, parentDataProperty: "fallback", rootData, dynamicAnchors })) {
-        vErrors = vErrors === null ? validate51.errors : vErrors.concat(validate51.errors);
+      if (!validate54(data.fallback, { instancePath: instancePath + "/fallback", parentData: data, parentDataProperty: "fallback", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate54.errors : vErrors.concat(validate54.errors);
         errors = vErrors.length;
       }
     }
@@ -4569,14 +4880,14 @@ function validate50(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate50.errors = vErrors;
+  validate53.errors = vErrors;
   return errors === 0;
 }
-validate50.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-function validate57(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate53.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate60(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate57.evaluated;
+  const evaluated0 = validate60.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -4648,14 +4959,14 @@ function validate57(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate57.errors = vErrors;
+  validate60.errors = vErrors;
   return errors === 0;
 }
-validate57.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-function validate56(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate60.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate59(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate56.evaluated;
+  const evaluated0 = validate59.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -4817,8 +5128,8 @@ function validate56(data, { instancePath = "", parentData, parentDataProperty, r
       }
     }
     if (data.presentation !== void 0) {
-      if (!validate57(data.presentation, { instancePath: instancePath + "/presentation", parentData: data, parentDataProperty: "presentation", rootData, dynamicAnchors })) {
-        vErrors = vErrors === null ? validate57.errors : vErrors.concat(validate57.errors);
+      if (!validate60(data.presentation, { instancePath: instancePath + "/presentation", parentData: data, parentDataProperty: "presentation", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate60.errors : vErrors.concat(validate60.errors);
         errors = vErrors.length;
       }
     }
@@ -4831,15 +5142,15 @@ function validate56(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate56.errors = vErrors;
+  validate59.errors = vErrors;
   return errors === 0;
 }
-validate56.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-function validate49(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate59.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate52(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate49.evaluated;
+  const evaluated0 = validate52.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -5050,8 +5361,8 @@ function validate49(data, { instancePath = "", parentData, parentDataProperty, r
       }
     }
     if (data.layout !== void 0) {
-      if (!validate50(data.layout, { instancePath: instancePath + "/layout", parentData: data, parentDataProperty: "layout", rootData, dynamicAnchors })) {
-        vErrors = vErrors === null ? validate50.errors : vErrors.concat(validate50.errors);
+      if (!validate53(data.layout, { instancePath: instancePath + "/layout", parentData: data, parentDataProperty: "layout", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate53.errors : vErrors.concat(validate53.errors);
         errors = vErrors.length;
       }
     }
@@ -5346,8 +5657,8 @@ function validate49(data, { instancePath = "", parentData, parentDataProperty, r
         }
         const len2 = data15.length;
         for (let i3 = 0; i3 < len2; i3++) {
-          if (!validate56(data15[i3], { instancePath: instancePath + "/tiles/" + i3, parentData: data15, parentDataProperty: i3, rootData, dynamicAnchors })) {
-            vErrors = vErrors === null ? validate56.errors : vErrors.concat(validate56.errors);
+          if (!validate59(data15[i3], { instancePath: instancePath + "/tiles/" + i3, parentData: data15, parentDataProperty: i3, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate59.errors : vErrors.concat(validate59.errors);
             errors = vErrors.length;
           }
         }
@@ -5370,16 +5681,16 @@ function validate49(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate49.errors = vErrors;
+  validate52.errors = vErrors;
   return errors === 0;
 }
-validate49.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var validateStoredWorkspaceV1 = validate60;
-function validate60(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate52.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateStoredWorkspaceV1 = validate63;
+function validate63(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate60.evaluated;
+  const evaluated0 = validate63.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -5561,8 +5872,8 @@ function validate60(data, { instancePath = "", parentData, parentDataProperty, r
       let valid3 = false;
       let passing0 = null;
       const _errs13 = errors;
-      if (!validate49(data5, { instancePath: instancePath + "/dashboard", parentData: data, parentDataProperty: "dashboard", rootData, dynamicAnchors })) {
-        vErrors = vErrors === null ? validate49.errors : vErrors.concat(validate49.errors);
+      if (!validate52(data5, { instancePath: instancePath + "/dashboard", parentData: data, parentDataProperty: "dashboard", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate52.errors : vErrors.concat(validate52.errors);
         errors = vErrors.length;
       }
       var _valid0 = _errs13 === errors;
@@ -5618,16 +5929,16 @@ function validate60(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate60.errors = vErrors;
+  validate63.errors = vErrors;
   return errors === 0;
 }
-validate60.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var validatePortableBundleV1 = validate63;
-function validate63(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+validate63.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validatePortableBundleV1 = validate66;
+function validate66(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate63.evaluated;
+  const evaluated0 = validate66.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -5867,8 +6178,8 @@ function validate63(data, { instancePath = "", parentData, parentDataProperty, r
         }
         const len1 = data9.length;
         for (let i1 = 0; i1 < len1; i1++) {
-          if (!validate49(data9[i1], { instancePath: instancePath + "/dashboards/" + i1, parentData: data9, parentDataProperty: i1, rootData, dynamicAnchors })) {
-            vErrors = vErrors === null ? validate49.errors : vErrors.concat(validate49.errors);
+          if (!validate52(data9[i1], { instancePath: instancePath + "/dashboards/" + i1, parentData: data9, parentDataProperty: i1, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate52.errors : vErrors.concat(validate52.errors);
             errors = vErrors.length;
           }
         }
@@ -5891,13 +6202,14 @@ function validate63(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate63.errors = vErrors;
+  validate66.errors = vErrors;
   return errors === 0;
 }
-validate63.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+validate66.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 export {
   validateDashboardV1,
   validateFlowLayoutV1,
+  validateGrafanaGridLayoutV1,
   validateLibraryV2,
   validatePortableBundleV1,
   validateQuerySpecV1,
@@ -5910,6 +6222,7 @@ export const validatorsById = {
   "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json": validateSavedQueryV2,
   "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json": validateLibraryV2,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": validateFlowLayoutV1,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json": validateGrafanaGridLayoutV1,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": validateDashboardV1,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json": validateStoredWorkspaceV1,
   "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": validatePortableBundleV1,

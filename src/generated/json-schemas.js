@@ -1298,6 +1298,97 @@ export const flowLayoutV1Schema = {
   }
 };
 
+export const grafanaGridLayoutV1Schema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json",
+  "title": "Altinity SQL Browser Dashboard grafana-grid@1 layout",
+  "description": "The normative grafana-grid@1 Dashboard layout: rowless deterministic packing driven by dashboard.tiles order into a single 12-column grid, and per-tile span/height placements keyed by tile ID. Unlike flow@1 this engine has no preset. A grafana-grid primary layout always pairs with a valid flow@1 DashboardLayoutFallbackV1 document, regenerated on every mutation.",
+  "x-altinity-kind": "dashboard-layout-grafana-grid",
+  "x-altinity-version": 1,
+  "type": "object",
+  "required": [
+    "type",
+    "version",
+    "items"
+  ],
+  "properties": {
+    "type": {
+      "title": "Layout engine",
+      "description": "Layout engine identifier; always grafana-grid for this contract.",
+      "type": "string",
+      "const": "grafana-grid"
+    },
+    "version": {
+      "title": "Layout engine version",
+      "description": "grafana-grid contract version; always 1 for this contract.",
+      "type": "integer",
+      "const": 1
+    },
+    "items": {
+      "title": "Tile placements",
+      "description": "Per-tile placement keyed by tile ID. A missing placement uses span 6 and medium height.",
+      "type": "object",
+      "maxProperties": 100,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/grafanaGridTilePlacementV1"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-altinity-order": [
+    "type",
+    "version",
+    "items"
+  ],
+  "$defs": {
+    "grafanaGridHeightV1": {
+      "title": "Tile height",
+      "description": "Tile height in numeric row units (1..16); px = 32 + 88*units, so units 1/2/3 land close to the legacy compact/medium/large tiers (120/208/296px) and unit 16 reaches 1440px. The legacy compact|medium|large strings are still accepted for backward compatibility and are normalized to their numeric equivalents (1/2/3) by the layout's `normalize` step; new writes should always be numeric.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        {
+          "type": "string",
+          "enum": [
+            "compact",
+            "medium",
+            "large"
+          ]
+        }
+      ]
+    },
+    "grafanaGridTilePlacementV1": {
+      "title": "Tile placement",
+      "description": "Closed placement contract: unknown fields fail validation. Future extension requires grafana-grid@2 or an explicit extension namespace.",
+      "type": "object",
+      "properties": {
+        "span": {
+          "title": "Column span",
+          "description": "Columns (of 12) the tile occupies; the effective span is clamped to the active column count at each responsive breakpoint.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 12
+        },
+        "height": {
+          "$ref": "#/$defs/grafanaGridHeightV1"
+        }
+      },
+      "additionalProperties": false,
+      "x-altinity-order": [
+        "span",
+        "height"
+      ]
+    }
+  }
+};
+
 export const dashboardV1Schema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json",
@@ -1755,6 +1846,7 @@ export const schemasById = {
   "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json": savedQueryV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json": libraryV2Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": flowLayoutV1Schema,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-grafana-grid-v1.schema.json": grafanaGridLayoutV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": dashboardV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json": storedWorkspaceV1Schema,
   "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": portableBundleV1Schema,

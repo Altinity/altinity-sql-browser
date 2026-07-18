@@ -225,6 +225,30 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
   });
 });
 
+describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', () => {
+  it('normalizes through the ACTIVE grid plugin and regenerates the flow@1 fallback on a tile-removing repair', () => {
+    const workspace: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'ws', name: 'WS',
+      queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1')],
+      dashboard: {
+        documentVersion: 1, id: 'dash', title: 'D', revision: 1,
+        layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 8 } } },
+        filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
+        tiles: [{ id: 't1', queryId: 'p1' }],
+      },
+    } as StoredWorkspaceV1;
+    const plan = planSavedQueryMutation(workspace, { type: 'delete-query', queryId: 'p1' }, { type: 'remove-affected-tiles' });
+    expect(plan.ok).toBe(true);
+    const dashboard = plan.candidate!.dashboard!;
+    expect(dashboard.layout.type).toBe('grafana-grid');
+    expect(dashboard.tiles).toEqual([]);
+    expect(dashboard.layout.items).toEqual({}); // orphan grid placement pruned
+    expect((dashboard.layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'full-width', items: {},
+    });
+  });
+});
+
 describe('planSavedQueryMutation — no dashboard, and suggestRepairs', () => {
   it('always accepts a mutation when the workspace has no dashboard', () => {
     const workspace = { ...baseWorkspace(), dashboard: null } as StoredWorkspaceV1;

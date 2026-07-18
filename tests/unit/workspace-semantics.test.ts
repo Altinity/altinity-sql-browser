@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isSupportedLayout, queryDashboardRole,
+  isFlowLayout, isSupportedLayout, queryDashboardRole,
   unsupportedDashboardVersionDiagnostics, unsupportedSpecVersionDiagnostics,
   validateDashboardCollectionSemantics, validateDashboardSemantics,
   validateQueryCollectionSemantics,
@@ -20,6 +20,7 @@ const filterQuery = (id: string, sql = "SELECT ['a','b'] AS country") => ({
   id, sql, specVersion: 1, spec: { name: id, dashboard: { role: 'filter' } },
 });
 const flowLayout = (items: Record<string, unknown> = {}) => ({ type: 'flow', version: 1, preset: 'full-width', items });
+const gridLayout = (items: Record<string, unknown> = {}) => ({ type: 'grafana-grid', version: 1, items });
 const dashboardDoc = (over: Record<string, unknown> = {}) => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
   layout: flowLayout(), filters: [], tiles: [], ...over,
@@ -27,10 +28,20 @@ const dashboardDoc = (over: Record<string, unknown> = {}) => ({
 const tile = (id: string, queryId: string, over: Record<string, unknown> = {}) => ({ id, queryId, ...over });
 
 describe('helper predicates', () => {
-  it('isSupportedLayout accepts only flow@1', () => {
+  it('isSupportedLayout accepts every registered primary engine at its supported version', () => {
     expect(isSupportedLayout('flow', 1)).toBe(true);
     expect(isSupportedLayout('flow', 2)).toBe(false);
+    expect(isSupportedLayout('grafana-grid', 1)).toBe(true);
+    expect(isSupportedLayout('grafana-grid', 2)).toBe(false);
     expect(isSupportedLayout('grid', 1)).toBe(false);
+    expect(isSupportedLayout(null, 1)).toBe(false);
+    expect(isSupportedLayout('flow', '1')).toBe(false);
+  });
+
+  it('isFlowLayout accepts only flow@1, even for another supported engine', () => {
+    expect(isFlowLayout('flow', 1)).toBe(true);
+    expect(isFlowLayout('flow', 2)).toBe(false);
+    expect(isFlowLayout('grafana-grid', 1)).toBe(false);
   });
 
   it('queryDashboardRole defaults to panel through every non-role shape', () => {
@@ -223,6 +234,47 @@ describe('validateDashboardSemantics', () => {
       layout: { type: 'grid', version: 9, items: {}, fallback: flowLayout({ ghost: {} }) },
     });
     expect(has(validateDashboardSemantics(orphanFallback, { queries: [panelQuery('p1')] }), 'layout-orphan-placement')).toBe(true);
+  });
+
+  it('validates a grafana-grid@1 primary against its own schema AND still requires a flow@1 fallback (#291)', () => {
+    const clean = dashboardDoc({
+      tiles: [tile('t1', 'p1')],
+      layout: gridLayout({ t1: { span: 6, height: 'medium' } }),
+    });
+    // A known-but-non-flow primary always needs its own fallback, even when
+    // its own items are perfectly valid.
+    expect(has(validateDashboardSemantics(clean, { queries: [panelQuery('p1')] }), 'layout-unsupported-without-fallback')).toBe(true);
+
+    const withFallback = dashboardDoc({
+      tiles: [tile('t1', 'p1')],
+      layout: { ...gridLayout({ t1: { span: 6, height: 'medium' } }), fallback: flowLayout({ t1: { span: 2 } }) },
+    });
+    expect(validateDashboardSemantics(withFallback, { queries: [panelQuery('p1')] })).toEqual([]);
+
+    // Invalid grid placement (span out of 1..12 range) is validated against
+    // grafana-grid's OWN schema, not the flow schema.
+    const badGridItems = dashboardDoc({
+      tiles: [tile('t1', 'p1')],
+      layout: { ...gridLayout({ t1: { span: 13 } }), fallback: flowLayout({ t1: { span: 2 } }) },
+    });
+    expect(has(validateDashboardSemantics(badGridItems, { queries: [panelQuery('p1')] }), 'schema-number-range')).toBe(true);
+
+    // A bad flow fallback is still reported even when the grid primary itself is fine.
+    const badFallback = dashboardDoc({
+      tiles: [tile('t1', 'p1')],
+      layout: { ...gridLayout({ t1: { span: 6 } }), fallback: { type: 'flow', version: 1, preset: 'nope', items: {} } },
+    });
+    expect(has(validateDashboardSemantics(badFallback, { queries: [panelQuery('p1')] }), 'schema-invalid-enum')).toBe(true);
+
+    // The grid primary's own schema errors omit `resource` too when the
+    // dashboard itself has no id (mirrors the flow/fallback schema-error path).
+    const badGridNoId = {
+      documentVersion: 1, title: 'T', revision: 1, filters: [],
+      tiles: [tile('t1', 'p1')],
+      layout: { ...gridLayout({ t1: { span: 13 } }), fallback: flowLayout({ t1: { span: 2 } }) },
+    };
+    const noIdDiagnostics = validateDashboardSemantics(badGridNoId, { queries: [panelQuery('p1')] });
+    expect(noIdDiagnostics.some((d) => d.code === 'schema-number-range' && d.resource === undefined)).toBe(true);
   });
 
   it('enforces the layout item-count limit independently of the tile count', () => {

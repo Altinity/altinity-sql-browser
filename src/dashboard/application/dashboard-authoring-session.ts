@@ -29,7 +29,7 @@ import { diagnostic, sortDiagnostics } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { resolveDashboardPresentations } from '../model/presentation-resolver.js';
 import { buildDashboardExportBundle } from '../model/dashboard-export.js';
-import { resolveActiveLayoutPlugin } from '../layouts/flow-layout.js';
+import { defaultLayoutRegistry } from '../layouts/layout-registry.js';
 import { applyCommand } from './dashboard-commands.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
 import { createQueryResolver } from './dashboard-query-resolver.js';
@@ -145,16 +145,20 @@ export function createDashboardAuthoringSession(
         `Command expected draft version ${options.expectedDraftVersion} but the draft is at ${baseVersion}`)], baseVersion);
     }
 
-    // Resolve the active layout plugin — for change-layout, the NEW layout.
+    // Resolve the active layout plugin through the full registry (#291: the
+    // grafana-grid@1 engine, not just flow@1) — for change-layout, the NEW
+    // layout; for every other command, the document's CURRENTLY active
+    // layout, so `update-placement`/`add-query` seeding and validation route
+    // through whichever engine (grid or flow) is actually active.
     const layoutForPlugin = command.type === 'change-layout' ? command.layout : current.document.layout;
-    const load = resolveActiveLayoutPlugin(layoutForPlugin);
-    if (!load.ok) return returnFail<T>(load.diagnostics, baseVersion);
+    const resolved = await defaultLayoutRegistry.resolve(layoutForPlugin);
+    if (!resolved.ok) return returnFail<T>(resolved.diagnostics, baseVersion);
 
     const resolver = createQueryResolver(queries);
-    const applied = applyCommand(current.document, command, { resolver, genTileId: genId, plugin: load.plugin });
+    const applied = applyCommand(current.document, command, { resolver, genTileId: genId, plugin: resolved.plugin });
     if (!applied.ok) return returnFail<T>(applied.diagnostics, baseVersion);
 
-    const normalized = load.plugin.normalize(applied.dashboard);
+    const normalized = resolved.plugin.normalize(applied.dashboard);
     const diagnostics = validateCandidate(normalized);
     if (diagnostics.length) return returnFail<T>(diagnostics, baseVersion);
 

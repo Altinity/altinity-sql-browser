@@ -48,6 +48,9 @@ import { diagnostic as wsDiagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { computeFlowLayout } from '../layouts/flow-layout.js';
 import type { FlowLayoutModel } from '../layouts/flow-layout.js';
+import { computeGrafanaGridLayout } from '../layouts/grafana-grid-layout.js';
+import type { GrafanaGridLayoutModel } from '../layouts/grafana-grid-layout.js';
+import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import type { DashboardLayoutRegistry } from '../layouts/layout-registry.js';
 import type {
   DashboardDocumentV1, DashboardTileV1, DashboardFilterDefinitionV1, Panel, SavedQueryV2,
@@ -98,10 +101,20 @@ export interface ViewerFilterState {
   options: FilterHelperOption[] | null;
 }
 
+/** The Dashboard's per-render layout view (#291) — a discriminated union over
+ *  the active layout ENGINE (`resolveLayoutPluginSync`, layout-registry.ts):
+ *  `flow` keeps every `FlowLayoutModel` field verbatim (bit-identical to the
+ *  pre-#291 shape) with an `engine` tag added; `grafana-grid` nests its own
+ *  render model under `grid` instead of spreading it, so the two engines'
+ *  same-named fields (both have `columns`) never collide on one object. */
+export type DashboardLayoutView =
+  | (FlowLayoutModel & { engine: 'flow' })
+  | { engine: 'grafana-grid'; grid: GrafanaGridLayoutModel };
+
 export interface DashboardViewState {
   tiles: ViewerTileState[];
   filters: ViewerFilterState[];
-  layout: FlowLayoutModel;
+  layout: DashboardLayoutView;
   /** Count of ACTIVE filter DEFINITIONS (not non-empty stored values, #188). */
   activeFilterCount: number;
   running: boolean;
@@ -152,6 +165,13 @@ export interface DashboardViewerDeps {
   wallNow(): number;
   /** True at/below the mobile breakpoint — normalizes the flow to one column. */
   isMobile?(): boolean;
+  /** Rendering container width in px, for the grafana-grid engine's own
+   *  responsive effective-columns clamp (12/6/4/2 at the 1160/720/470
+   *  breakpoints, `effectiveGridColumns`) — flow's responsive behavior stays
+   *  the coarser `isMobile` binary flip above, unaffected by this. Absent or
+   *  non-finite (not yet measured, or a non-DOM consumer) renders at the
+   *  widest desktop breakpoint (12). */
+  containerWidth?(): number | undefined;
   /** Fired when the token preflight fails (the shell wires sign-out). */
   onAuthFailed?(): void;
   /** #171 bound-param recording on a successful tile. */
@@ -397,10 +417,26 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   function buildState(running: boolean, updatedAt: number | null): DashboardViewState {
     const mobile = !!deps.isMobile?.();
     const visible = tiles.map((runtime) => ({ id: runtime.tile.id, isKpi: runtime.isKpi }));
+    // #291: route to whichever engine the CURRENT document's layout resolves
+    // to (`resolveLayoutPluginSync` — the same sync helper the application
+    // layer's other non-awaitable call sites use, since this runs on every
+    // publish and cannot await the async registry). An unsupported/foreign
+    // primary with a valid flow@1 fallback still resolves to the flow plugin
+    // here, exactly as before #291 (`computeFlowLayout`'s own fallback
+    // handling, untouched) — flow behavior stays bit-identical.
+    const plugin = resolveLayoutPluginSync(documentRef.layout);
+    const layout: DashboardLayoutView = plugin.type === 'grafana-grid'
+      ? {
+        engine: 'grafana-grid',
+        grid: computeGrafanaGridLayout({
+          tiles: visible, layout: documentRef.layout, containerWidth: deps.containerWidth?.(),
+        }),
+      }
+      : { engine: 'flow', ...computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }) };
     return {
       tiles: tiles.map((runtime) => ({ ...runtime.state })),
       filters: filters.map((filter) => ({ ...filter.state })),
-      layout: computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }),
+      layout,
       activeFilterCount: filters.filter((filter) => filter.state.active).length,
       running, updatedAt, diagnostics: presentationDiagnostics,
     };

@@ -13,7 +13,7 @@
 
 import { diagnostic } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
-import { isSupportedLayout } from '../model/workspace-semantics.js';
+import { isFlowLayout } from '../model/workspace-semantics.js';
 import { cloneJson } from '../../core/saved-query.js';
 import { partitionKpiBands } from '../../core/dashboard.js';
 import type {
@@ -47,12 +47,12 @@ export interface DashboardLayoutPlugin {
  *  `null` (no flow surface to normalize). */
 function flowItemsHost(layout: unknown): Record<string, unknown> | null {
   if (!isObject(layout)) return null;
-  if (isSupportedLayout(layout.type, layout.version)) {
+  if (isFlowLayout(layout.type, layout.version)) {
     if (!isObject(layout.items)) { layout.items = {}; }
     return layout.items as Record<string, unknown>;
   }
   const fallback = layout.fallback;
-  if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) {
+  if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) {
     if (!isObject(fallback.items)) { fallback.items = {}; }
     return fallback.items as Record<string, unknown>;
   }
@@ -119,10 +119,6 @@ export const flowLayoutPlugin: DashboardLayoutPlugin = {
   type: 'flow', version: 1, normalize, validatePlacement,
 };
 
-export type LoadLayoutPluginResult =
-  | { ok: true; plugin: DashboardLayoutPlugin }
-  | { ok: false; diagnostics: WorkspaceDiagnostic[] };
-
 // ── Phase 4: the normative flow@1 render model (#280 "Normative flow@1
 // contract") ────────────────────────────────────────────────────────────────
 // Pure layout MATH shared by the viewer, the authoring preview, print/export,
@@ -175,9 +171,9 @@ export function resolvePlacement(placement: unknown): Required<FlowTilePlacement
  *  flow@1 fallback, else `null`. */
 function flowSurface(layout: unknown): Record<string, unknown> | null {
   if (!isObject(layout)) return null;
-  if (isSupportedLayout(layout.type, layout.version)) return layout;
+  if (isFlowLayout(layout.type, layout.version)) return layout;
   const fallback = layout.fallback;
-  if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) return fallback;
+  if (isObject(fallback) && isFlowLayout(fallback.type, fallback.version)) return fallback;
   return null;
 }
 
@@ -277,24 +273,4 @@ export function computeFlowLayout(input: ComputeFlowLayoutInput): FlowLayoutMode
   }
 
   return { preset, columns, mobile, rows, order: tiles.map((tile) => tile.id) };
-}
-
-/** Resolve the active layout plugin for one layout document. flow@1 primary →
- *  the flow plugin; an unsupported primary WITH a valid flow@1 fallback → the
- *  flow plugin (operating on the fallback); otherwise a load failure — the
- *  `change-layout` "plugin cannot load / unsupported version without a valid
- *  fallback" path. */
-export function resolveActiveLayoutPlugin(layout: unknown, path: Path = ['layout']): LoadLayoutPluginResult {
-  if (isObject(layout)) {
-    if (isSupportedLayout(layout.type, layout.version)) return { ok: true, plugin: flowLayoutPlugin };
-    const fallback = layout.fallback;
-    if (isObject(fallback) && isSupportedLayout(fallback.type, fallback.version)) {
-      return { ok: true, plugin: flowLayoutPlugin };
-    }
-  }
-  return {
-    ok: false,
-    diagnostics: [diagnostic(path, 'dashboard-layout-load-failed',
-      'Dashboard layout cannot be loaded and has no valid flow@1 fallback')],
-  };
 }

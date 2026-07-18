@@ -16,7 +16,8 @@
 // folds the result into the same commit candidate as the favorite patch.
 
 import { queryDashboardRole } from '../model/workspace-semantics.js';
-import { flowLayoutPlugin } from '../layouts/flow-layout.js';
+import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
+import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
 /** Remove every tile referencing `queryId`, and scrub those tile ids out of
@@ -47,9 +48,15 @@ function removeTilesForQuery(dashboard: DashboardDocumentV1, queryId: string): D
  *   ids from every filter's `targets`.
  * - `dashboard` null in → `null` out (no Dashboard yet; favorite flip only).
  *
- * The result is always run through `flowLayoutPlugin.normalize` (a new tile
- * gets the flow default placement lazily — nothing to add up front — and a
- * removed tile's placement item, if any, is dropped) and is always a fresh
+ * The result is always run through the ACTIVE layout engine's own
+ * `normalize` (#291: flow@1 or grafana-grid@1, resolved from the document's
+ * OWN `layout.type` via `resolveLayoutPluginSync` rather than a hardcoded
+ * flow plugin) — a new tile gets its engine's default placement lazily
+ * (nothing to add up front), and a removed tile's placement item, if any, is
+ * dropped. When grafana-grid@1 is active, the flow@1 `fallback` is then
+ * regenerated too (#291 "every grid mutation regenerates the flow@1
+ * fallback"; a no-op under flow@1) — this membership change adds/removes a
+ * tile just like the authoring commands do. The result is always a fresh
  * copy; `dashboard` is never mutated.
  */
 export function toggleTileMembership(
@@ -68,5 +75,7 @@ export function toggleTileMembership(
   } else if (hasTile) {
     next = removeTilesForQuery(dashboard, query.id);
   }
-  return flowLayoutPlugin.normalize(next);
+  const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
+  regenerateGridFallback(normalized.layout, normalized.tiles);
+  return normalized;
 }
