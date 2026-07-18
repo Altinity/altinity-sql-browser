@@ -1,0 +1,259 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard grafana-grid harness</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+    .dash-page { height: auto; }
+    /* Each scenario gets its own `.dash-grid.dash-gg-grid` host, exactly the
+       class contract ui/dashboard.ts's `reconcileGrafanaGrid` produces
+       (#291 Wave 3) — see the CLAUDE.md/#291 DOM contract this harness
+       verifies: `.dash-grid.dash-gg-grid` (display:grid, inline
+       grid-template-columns), `.dash-tile.dash-gg-tile.dash-gg-h-*`
+       (+`.is-kpi`), edit-mode-only `.dash-gg-grip`/`.dash-gg-del`/
+       `.dash-gg-resize`, no `.dash-row`/`.dash-kpi-band`. */
+    section.scenario { margin-bottom: 24px; }
+    section.scenario > h2 { font: 12px var(--mono); color: var(--fg-mute); margin: 0 0 6px; }
+    #responsive-wrap { border: 1px dashed transparent; }
+    .dash-tile-body { align-items: center; justify-content: center; font: 11px var(--mono); color: var(--fg-mute); }
+  </style>
+</head>
+<body data-theme="dark">
+  <section class="scenario">
+    <h2>packing (mixed spans, 12-col)</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="packing-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>semantic heights (compact/medium/large)</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="heights-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>responsive clamp (host-width driven, no viewport media query)</h2>
+    <div id="responsive-wrap" style="width:1200px">
+      <div class="dash-grid dash-gg-grid" id="responsive-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>edit mode (corner-drag resize + hover chrome)</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="edit-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>view/read-only mode (no edit affordances at all)</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="viewonly-grid"></div>
+    </div>
+  </section>
+
+  <script type="module">
+    import {
+      computeGrafanaGridLayout, GRID_GAP_PX, snapGridSpan, snapGridHeight,
+    } from '/src/dashboard/layouts/grafana-grid-layout.js';
+
+    const GRID_HEIGHT_CLASSES = ['dash-gg-h-compact', 'dash-gg-h-medium', 'dash-gg-h-large'];
+    function setHeightClass(card, height) {
+      card.classList.remove(...GRID_HEIGHT_CLASSES);
+      card.classList.add('dash-gg-h-' + height);
+    }
+
+    // Hand-built tile card matching `ui/dashboard.ts`'s `ensureTileEl` DOM
+    // shape (#291 Wave 3 contract) — grip/delete/resize are built ONLY in
+    // 'edit' mode, mirroring the app's own `!readOnly` gate (they do not
+    // merely hide via CSS in view mode; the app never constructs them).
+    function buildTile({ id, title, height, isKpi }, mode) {
+      const card = document.createElement('div');
+      card.className = 'dash-tile dash-gg-tile dash-gg-h-' + height + (isKpi ? ' is-kpi' : '');
+      card.dataset.tileId = id;
+
+      const head = document.createElement('div');
+      head.className = 'dash-tile-head';
+      let grip = null;
+      if (mode === 'edit') {
+        grip = document.createElement('span');
+        grip.className = 'dash-gg-grip';
+        grip.title = 'Drag to reorder';
+        grip.setAttribute('aria-hidden', 'true');
+        head.appendChild(grip);
+      }
+      const name = document.createElement('span');
+      name.className = 'dash-tile-name';
+      name.title = title;
+      name.textContent = title;
+      head.appendChild(name);
+      let delBtn = null;
+      if (mode === 'edit') {
+        delBtn = document.createElement('button');
+        delBtn.className = 'dash-gg-del';
+        delBtn.title = 'Remove tile';
+        delBtn.setAttribute('aria-label', 'Remove ' + title + ' from the dashboard');
+        delBtn.textContent = '✕';
+        head.appendChild(delBtn);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'dash-tile-body';
+      body.textContent = title;
+      const foot = document.createElement('div');
+      foot.className = 'dash-tile-foot';
+
+      card.append(head, body, foot);
+
+      let resizeHandle = null;
+      if (mode === 'edit') {
+        resizeHandle = document.createElement('div');
+        resizeHandle.className = 'dash-gg-resize';
+        resizeHandle.title = 'Resize';
+        card.appendChild(resizeHandle);
+      }
+      return { card, grip, delBtn, resizeHandle };
+    }
+
+    // ── Scenario 1: packing ────────────────────────────────────────────────
+    const packingTiles = [
+      { id: 't1' }, { id: 't2' }, { id: 't3' }, { id: 't4' }, { id: 't5' },
+      { id: 't6' }, { id: 't7' }, { id: 't8' },
+    ];
+    const packingSpans = { t1: 3, t2: 3, t3: 3, t4: 1, t5: 2, t6: 4, t7: 2, t8: 6 };
+    const packingLayout = { items: Object.fromEntries(
+      Object.entries(packingSpans).map(([id, span]) => [id, { span, height: 'compact' }]),
+    ) };
+    const packingGrid = document.getElementById('packing-grid');
+    function renderPacking() {
+      const model = computeGrafanaGridLayout({ tiles: packingTiles, layout: packingLayout, containerWidth: packingGrid.clientWidth });
+      packingGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      packingGrid.replaceChildren(...model.tiles.map((t) => {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        card.style.gridColumn = 'span ' + t.span;
+        return card;
+      }));
+      window.__packingModel = model;
+    }
+    renderPacking();
+
+    // ── Scenario 2: semantic heights ───────────────────────────────────────
+    const heightsTiles = [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }];
+    const heightsLayout = { items: {
+      h1: { span: 4, height: 'compact' }, h2: { span: 4, height: 'medium' }, h3: { span: 4, height: 'large' },
+    } };
+    const heightsGrid = document.getElementById('heights-grid');
+    (function renderHeights() {
+      const model = computeGrafanaGridLayout({ tiles: heightsTiles, layout: heightsLayout, containerWidth: heightsGrid.clientWidth });
+      heightsGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      heightsGrid.replaceChildren(...model.tiles.map((t) => {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        card.style.gridColumn = 'span ' + t.span;
+        return card;
+      }));
+    }());
+
+    // ── Scenario 3: responsive clamp ───────────────────────────────────────
+    // Driven by a WRAPPER's inline width (not the viewport) so the 768px
+    // viewport-media-query mobile fallback (styles.css, "Grafana-grid layout
+    // engine" section) never fires here — this isolates grafana-grid@1's OWN
+    // container-width clamp (12/6/4/2, `effectiveGridColumns`) from that
+    // separate mobile simplification, matching how `ui/dashboard.ts` itself
+    // measures `grid.clientWidth` directly (not `innerWidth`).
+    const responsiveTiles = [{ id: 'r-wide' }, { id: 'r-a' }, { id: 'r-b' }];
+    const responsiveLayout = { items: {
+      'r-wide': { span: 12, height: 'compact' }, 'r-a': { span: 6, height: 'compact' }, 'r-b': { span: 6, height: 'compact' },
+    } };
+    const responsiveWrap = document.getElementById('responsive-wrap');
+    const responsiveGrid = document.getElementById('responsive-grid');
+    function renderResponsive() {
+      const model = computeGrafanaGridLayout({ tiles: responsiveTiles, layout: responsiveLayout, containerWidth: responsiveGrid.clientWidth });
+      responsiveGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      responsiveGrid.replaceChildren(...model.tiles.map((t) => {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        card.style.gridColumn = 'span ' + t.span;
+        return card;
+      }));
+      window.__responsiveModel = model;
+    }
+    renderResponsive();
+    window.__setResponsiveWidth = (px) => { responsiveWrap.style.width = px + 'px'; renderResponsive(); };
+
+    // ── Scenario 4: edit-mode corner-drag resize + hover chrome ────────────
+    // Thin harness replica of `ui/dashboard.ts`'s `wireGridResize` (#291 Wave
+    // 3): same pure `snapGridSpan`/`snapGridHeight` arithmetic the app uses;
+    // only the terminal dispatch differs (recorded to `window.__resizeEvents`
+    // instead of `runCommand({type:'update-placement',...})` — that dispatch
+    // itself is unit-tested at the app layer, not this harness's job).
+    const editTiles = [{ id: 'e1' }];
+    const editLayout = { items: { e1: { span: 6, height: 'medium' } } };
+    const editGrid = document.getElementById('edit-grid');
+    let editColumns = 12;
+    window.__resizeEvents = [];
+    function wireResize(tileId, card, handle, initialSpan, initialHeight) {
+      handle.addEventListener('pointerdown', (start) => {
+        start.preventDefault();
+        start.stopPropagation();
+        const rect = card.getBoundingClientRect();
+        const columns = Math.max(1, editColumns);
+        const colWidthPx = (editGrid.clientWidth - GRID_GAP_PX * (columns - 1)) / columns;
+        let curSpan = initialSpan;
+        let curHeight = initialHeight;
+        card.classList.add('dash-gg-resizing');
+        const move = (ev) => {
+          const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, columns);
+          const height = snapGridHeight(ev.clientY - rect.top);
+          if (span !== curSpan) { curSpan = span; card.style.gridColumn = 'span ' + span; }
+          if (height !== curHeight) { curHeight = height; setHeightClass(card, height); }
+        };
+        const up = () => {
+          card.classList.remove('dash-gg-resizing');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          window.__resizeEvents.push({ tileId, span: curSpan, height: curHeight });
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    }
+    function renderEdit() {
+      const model = computeGrafanaGridLayout({ tiles: editTiles, layout: editLayout, containerWidth: editGrid.clientWidth });
+      editColumns = model.columns;
+      editGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      editGrid.replaceChildren();
+      for (const t of model.tiles) {
+        const { card, resizeHandle } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'edit');
+        card.style.gridColumn = 'span ' + t.span;
+        editGrid.appendChild(card);
+        wireResize(t.tileId, card, resizeHandle, t.span, t.height);
+      }
+    }
+    renderEdit();
+    window.__editColumns = () => editColumns;
+    window.__editColWidthPx = () => (editGrid.clientWidth - GRID_GAP_PX * (editColumns - 1)) / editColumns;
+    window.__snapGridSpan = snapGridSpan;
+    window.__snapGridHeight = snapGridHeight;
+    window.__GRID_GAP_PX = GRID_GAP_PX;
+
+    // ── Scenario 5: view/read-only mode ─────────────────────────────────────
+    const viewonlyGrid = document.getElementById('viewonly-grid');
+    (function renderViewonly() {
+      const tiles = [{ id: 'v1' }];
+      const layout = { items: { v1: { span: 6, height: 'medium' } } };
+      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: viewonlyGrid.clientWidth });
+      viewonlyGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      viewonlyGrid.replaceChildren(...model.tiles.map((t) => {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        card.style.gridColumn = 'span ' + t.span;
+        return card;
+      }));
+    }());
+
+    window.__ready = true;
+  </script>
+</body>
+</html>
