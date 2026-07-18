@@ -9,6 +9,39 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Portable open/import/export + a transactional import planner** (#287, Dashboard
+  v1 Phase 5). The File menu's ambiguous `Append` is gone, replaced by
+  resource-oriented **Import queries / Import Dashboard / Replace workspace** and
+  **Export Dashboard / Export workspace** operations, all writing the one canonical
+  `altinity-sql-browser/portable-bundle` (`PortableBundleV1`) interchange format
+  through the deterministic canonical encoder. Export never mutates workspace
+  identity or Dashboard revision; **Export Dashboard** emits a dependency closure
+  (the Dashboard plus exactly its referenced queries), **Export workspace** emits
+  the whole catalog plus the zero-or-one Dashboard. Import runs a transactional
+  planner (`src/workspace/import-planner.ts`): parse → schema validation → select
+  Dashboard → dependency closure → conflict detection → decisions → complete ID
+  remapping → central reference rewrite → candidate workspace → whole-workspace
+  validation → atomic commit, with conflict actions **use-existing** (automatic
+  only on canonical equality), **copy** (fresh id + full reference rewrite),
+  **replace**, and **skip** (skipping a required Dashboard dependency invalidates
+  the Dashboard import rather than silently dropping a tile). A multi-Dashboard
+  bundle asks which Dashboard to import. Legacy Library v1/v2 files remain
+  **importable** (normalized to an in-memory bundle with `dashboards: []`); no new
+  Library-only JSON is written.
+
+### Changed
+- **The `StoredWorkspaceV1` aggregate is now the single source of truth for the
+  saved-query collection** (#287). All query CRUD (create/edit/rename/delete/star)
+  commits the whole workspace through the atomic `WorkspaceRepository`
+  (validate-before-publish per #280) instead of the flat `asb:saved` localStorage
+  key, which is retired (read once only as the legacy-migration source); boot loads
+  and projects the aggregate. Saved-query writes are serialized so two rapid
+  concurrent edits can't interleave and resurrect a just-deleted query. The
+  external-bundle **trust preflight** and durable cross-tab transport are deferred
+  to Phase 6 (#288); every Phase-5 file operation only commits to the workspace and
+  never executes queries.
+
 ### Fixed
 - **Dashboard filter strips no longer wrap, the visible "Clear all" control and
   "N active" count are both removed, and the layout switcher moved to the

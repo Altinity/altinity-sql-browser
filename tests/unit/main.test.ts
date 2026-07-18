@@ -54,6 +54,11 @@ function fakeApp(over: Partial<Omit<FakeApp, 'conn'>> & { conn?: Partial<FakeApp
     renderApp: vi.fn(),
     renderDashboard: vi.fn(),
     showLogin: vi.fn(),
+    // #287 W4: bootstrap awaits this before the first renderApp() on the
+    // non-dashboard route — a no-op stub here (the aggregate-projection
+    // behavior itself is app.test.ts's/state.test.ts's concern, not
+    // bootstrap's own).
+    loadWorkspaceOnBoot: vi.fn(async () => null),
     ...rest,
   } as FakeApp;
   return self;

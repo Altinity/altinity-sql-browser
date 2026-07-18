@@ -24,10 +24,10 @@ See the [**feature tour, deployment guide and screenshots**](https://docs.altini
 on the project site. Try it live on the Antalya demo cluster: **https://antalya.demo.altinity.cloud/sql**.
 The [**ontime chart demo**](docs/ONTIME-CHART-DEMO.md) is a ready-made library of 10
 queries (load [`examples/ontime-charts.json`](examples/ontime-charts.json) via
-**File ▾ → Open**) that walks through every chart type and feature against the public
+**File ▾ → Import queries**) that walks through every chart type and feature against the public
 `ontime` flight dataset. The [**system explorer demo**](docs/SYSTEM-EXPLORER-DEMO.md)
 is a 14-query library (load [`examples/system-explorer-charts.json`](examples/system-explorer-charts.json)
-via **File ▾ → Append**) that introspects ClickHouse's own `system` database —
+via **File ▾ → Import queries**) that introspects ClickHouse's own `system` database —
 running queries, merges/replication health, and historical query/part/error
 activity — with a shared From/To filter driving every time-ranged Dashboard tile
 at once.
@@ -93,7 +93,7 @@ with no per-favorite name, description, or statistics footer, spanning every
 Dashboard layout (Full width/Report/2/3 columns). Consecutive explicit KPI
 favorites merge into one shared band. The complete
 [`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
-**File ▾ → Open** to see both.
+**File ▾ → Import queries** to see both.
 When constructing a named tuple from expressions, either enable alias-derived
 member names for the query:
 
@@ -428,34 +428,45 @@ remembered result view and chart config. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the
 row and is included in Markdown/SQL exports.
 
-The whole collection is treated as a **document — the Library** — with a name and
-an unsaved-changes dot, managed from the header **File ▾** menu:
+The queries plus the zero-or-one editable Dashboard form one **current workspace**
+(a `StoredWorkspaceV1` aggregate). The workspace is persisted **atomically** in the
+browser (IndexedDB) — a reload restores queries, Dashboard, layout, and workspace
+name together; every saved-query edit commits the whole workspace and only
+publishes once persistence succeeds. The header **File ▾** menu carries a name, an
+unsaved-changes dot (changes since the last export or import), and these
+resource-oriented operations (#287):
 
-- **New Library** — clears to an empty, default-named library (confirms first
+- **New workspace…** — clears to an empty, default-named workspace (confirms first
   when non-empty). Open editor tabs are unaffected.
-- **Save JSON** (`.json`) — downloads the whole Library in the versioned
-  `altinity-sql-browser/saved-queries` envelope. Version 2 stores each query as
-  `{id, sql, specVersion, spec}`: `spec` is the complete, lossless query
-  definition (`name`, `description`, `favorite`, `view`, `panel`, `dashboard`,
-  and future extension fields). New files include a canonical `$schema` hint
-  and RFC 3339 `exportedAt` timestamp and validate against the
-  [complete Library contract](docs/library-json-schema.md). The filename derives from the Library name;
-  saving clears the unsaved-changes dot. Version 1 Library files remain
-  importable and are upgraded in memory; new exports always use version 2.
-- **Open… / Append…** — load a `.json` file: Open swaps the Library and
-  adopts the file's base name (confirms when the current Library is non-empty);
-  Append merges via the existing dedupe and reports `Added N · updated N ·
-  skipped N`. **JSON is the only importable format**, and imported SQL is never
-  run automatically.
+- **Import queries…** — merge a file's queries into the current collection. When
+  an incoming query's id collides with an existing one, a **conflict dialog**
+  offers a default action plus per-row overrides — *use existing*, *copy* (import
+  under a fresh id), *replace*, or *skip*; a byte-identical incoming query is
+  reused automatically. The Dashboard is untouched (imported favorite flags never
+  add tiles).
+- **Import Dashboard…** — replace the current Dashboard with one from a file
+  (confirms first when a Dashboard already exists), importing only its referenced
+  queries. A multi-Dashboard file asks which one.
+- **Replace workspace…** — atomically replace **both** the query collection and
+  the Dashboard from a file (confirms first). A multi-Dashboard file asks which
+  Dashboard to adopt (or none).
+- **Export Dashboard… / Export workspace…** (`.json`) — write the one canonical
+  **`altinity-sql-browser/portable-bundle`** interchange format. *Export Dashboard*
+  emits the selected Dashboard plus exactly its dependency-closure of queries;
+  *Export workspace* emits every saved query (catalog order) plus the zero-or-one
+  Dashboard. Both use the deterministic canonical encoder and never mutate the
+  workspace's identity or Dashboard revision. Legacy Library v1/v2 files remain
+  **importable** (decoded to an in-memory bundle); no new Library-only JSON is
+  written. See the [schema contracts](docs/library-json-schema.md). Imported SQL
+  is never run automatically.
 - **Share / publish** — **Download Markdown** (`.md`, a `### heading` + fenced
   ` ```sql ` cookbook) and **Download SQL** (`.sql`, `/* name + description */`
   comment blocks, `;`-delimited). Both are **one-way** — lossy by design (no ids
-  or Spec metadata), so JSON stays the canonical round-trip format.
+  or Spec metadata), so the portable bundle stays the canonical round-trip format.
 
-The Library name is editable inline (click it in the header) and is persisted
-separately from the queries. The **•** dot appears after any change that hasn't
-been written to a file yet (save/rename/delete/favorite/append/rename) and clears
-on Save JSON / Open / New.
+The workspace name is editable inline (click it in the header). The **•** dot
+appears after any change not yet written to a file and clears on export / import /
+New workspace.
 
 ### Dashboard Filter sources
 
@@ -471,7 +482,7 @@ ordinary parameter field when a source, consumer type, or provider conflicts.
 Filter sources run and reconcile saved values before any Panel query starts.
 
 The complete [`query-log-explorer.json`](examples/query-log-explorer.json)
-Library example (load via **File ▾ → Append**) demonstrates every filter
+Library example (load via **File ▾ → Import queries**) demonstrates every filter
 variant against `system.query_log` on any cluster: three Filter sources, one
 per option shape (`Array(Tuple(value, label))`, `Map(String, String)`, plain
 `Array(T)`), alongside plain auto-detected numeric/text fields — a KPI panel,

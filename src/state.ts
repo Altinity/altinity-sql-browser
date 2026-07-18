@@ -3,7 +3,6 @@
 // every operation is unit-testable with a spy and no real localStorage.
 
 import { clamp as clampUntyped } from './core/format.js';
-import { mergeSaved as mergeSavedUntyped, validateLibraryQueries as validateLibraryQueriesUntyped } from './core/saved-io.js';
 import {
   SPEC_VERSION, cloneJson, patchQuerySpec, queryDescription, queryFavorite, queryName,
   queryPanel, queryView, withQuerySpec,
@@ -13,7 +12,7 @@ import { decodeStoredSavedQueries as decodeStoredSavedQueriesUntyped } from './c
 import { normalizeDashLayout, normalizeDashCols } from './core/dashboard.js';
 import {
   loadJSON as loadJSONUntyped, saveJSON as saveJSONUntyped,
-  loadStr as loadStrUntyped, saveStr as saveStrUntyped,
+  loadStr as loadStrUntyped,
 } from './core/storage.js';
 import { emptyRecentMap as emptyRecentMapUntyped } from './core/recent-values.js';
 import type { ResultSort } from './core/sort.js';
@@ -26,8 +25,10 @@ import {
 } from './core/spec-draft.js';
 import { signal } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
-import type { QuerySpecV1, SavedQueryV2 } from './generated/json-schema.types.js';
+import type { QuerySpecV1, SavedQueryV2, DashboardDocumentV1, StoredWorkspaceV1 } from './generated/json-schema.types.js';
 import type { SpecDiagnostic } from './editor/spec-editor.types.js';
+import type { WorkspaceCommitResult } from './workspace/workspace-repository.js';
+import type { WorkspaceDiagnostic } from './dashboard/model/workspace-diagnostics.js';
 
 // ── Persisted-data types (schema-generated) ─────────────────────────────────
 
@@ -51,6 +52,68 @@ export interface StateReader {
 
 export type SaveJSON = (key: string, value: unknown) => void;
 export type SaveStr = (key: string, value: string) => void;
+
+// ── Aggregate persistence seam (#287 W4 — strict async commit) ─────────────
+// The saved-query CRUD ops below persist through the StoredWorkspaceV1
+// aggregate (app.workspace: WorkspaceRepository, IndexedDB), not the flat
+// `asb:saved` localStorage key: a caller builds the WHOLE candidate workspace
+// (this workbench never touches `dashboard`, just carries it through
+// unchanged) and awaits this seam BEFORE mutating any in-memory state or
+// tabs. `app.ts` injects `app.workspace.commit` directly (its signature is
+// exactly `CommitWorkspace`); tests inject an in-memory fake repository
+// (mirrors workspace-repository.test.ts's own `memStore` convention) so this
+// module never imports a concrete IndexedDB adapter.
+
+/** The async aggregate-commit seam every saved-query CRUD op below takes in
+ *  place of the old sync `save: SaveJSON` write. */
+export type CommitWorkspace = (candidate: StoredWorkspaceV1) => Promise<WorkspaceCommitResult>;
+
+/** A saved-query CRUD op's async result once its candidate is strictly
+ *  committed (validate-then-atomically-replace — see WorkspaceRepository.commit).
+ *  `entry: null` on failure covers BOTH a pre-commit compute guard (bad name,
+ *  blank SQL, a blocking Spec diagnostic — the same early-return semantics
+ *  the pre-#287 sync code had, `diagnostics` absent) and a real repository
+ *  rejection (`diagnostics` present, straight from the aggregate's whole-
+ *  candidate validation). Either way NOTHING is mutated — no `state`/`tabs`
+ *  write happens until `commit` resolves `ok: true`. */
+export type SavedEntryResult =
+  | { ok: true; entry: SavedQueryV2 }
+  | { ok: false; entry: null; diagnostics?: WorkspaceDiagnostic[] };
+
+/** Bridge a workspace-commit rejection's diagnostics onto the narrower
+ *  `SpecDiagnostic` shape `PatchSavedResult`/the Spec editor already expect
+ *  (`WorkspaceDiagnostic.severity` adds `'information'`, not a member of
+ *  `SpecDiagnostic.severity`'s narrower union — this maps it to `'warning'`,
+ *  the closest non-error severity, so nothing here needs a third severity
+ *  tier just for this one bridge). */
+const asSpecDiagnostics = (diagnostics: readonly WorkspaceDiagnostic[]): SpecDiagnostic[] =>
+  diagnostics.map((d) => ({
+    message: d.message, code: d.code, path: d.path,
+    severity: d.severity === 'warning' || d.severity === 'error' ? d.severity : 'warning',
+  }));
+
+/** The exact slice of `AppState` every saved-query CRUD op needs to build its
+ *  whole-workspace commit candidate — the current workspace id/name/Dashboard,
+ *  carried through unchanged alongside the op's own next `queries` array. */
+type WorkspaceCandidateState = Pick<AppState, 'libraryName' | 'workspaceId' | 'dashboard'>;
+
+function buildWorkspaceCandidate(state: WorkspaceCandidateState, queries: SavedQueryV2[]): StoredWorkspaceV1 {
+  return {
+    storageVersion: 1,
+    id: state.workspaceId,
+    name: state.libraryName.value,
+    queries,
+    dashboard: state.dashboard,
+  };
+}
+
+/** The committed entry, re-read from the just-committed canonical `queries`
+ *  array (not the locally-computed candidate entry) — the aggregate's commit
+ *  is the single source of truth for what actually persisted. Falls back to
+ *  `fallback` defensively; every real call site's `id` is always present in
+ *  the array it just committed. */
+const committedEntry = (queries: SavedQueryV2[], id: string, fallback: SavedQueryV2): SavedQueryV2 =>
+  queries.find((q) => q.id === id) ?? fallback;
 
 // ── Spec validation seam types ──────────────────────────────────────────────
 
@@ -85,22 +148,6 @@ const clamp: (v: number, lo: number, hi: number) => number = clampUntyped;
 const loadJSON: StateReader['loadJSON'] = loadJSONUntyped;
 const saveJSON: SaveJSON = saveJSONUntyped;
 const loadStr: StateReader['loadStr'] = loadStrUntyped;
-const saveStr: SaveStr = saveStrUntyped;
-
-// mergeSaved mints a fresh string id for every merged entry that lacks one, so
-// the canonical persisted SavedQueryV2 shape holds for the whole merged list.
-const mergeSaved: (
-  existing: SavedQueryV2[], incoming: readonly unknown[], genId: () => string,
-) => { merged: SavedQueryV2[]; added: number; updated: number; skipped: number } = mergeSavedUntyped;
-
-// validateLibraryQueries upgrades/validates each raw entry into the canonical
-// `{id, sql, specVersion, spec}` shape (throwing on the first invalid one).
-// `as`: the .js default parameter (`validationService = null`) makes TS infer
-// the param as `null | undefined`; the runtime accepts any object with
-// `.validate` (the SpecValidationService seam).
-const validateLibraryQueries = validateLibraryQueriesUntyped as (
-  queries: readonly unknown[], validationService: SpecValidationService | null,
-) => SavedQueryV2[];
 
 // decodeStoredSavedQueries fails closed: `ok: false` carries diagnostics and
 // no usable value (createState substitutes []); `ok: true` value entries are
@@ -230,6 +277,22 @@ export interface AppState {
   history: HistoryEntry[];
   libraryName: Signal<string>;
   libraryDirty: Signal<boolean>;
+  /** #287 W4: the current committed StoredWorkspaceV1's Dashboard document —
+   *  the Workbench NEVER mutates this (that's the /dashboard route's job); it
+   *  is only carried through, unchanged, in every saved-query CRUD commit
+   *  candidate. `null` until the boot projection (app.ts's
+   *  `loadWorkspaceOnBoot`) resolves the aggregate, or when the workspace
+   *  genuinely has no Dashboard yet. */
+  dashboard: DashboardDocumentV1 | null;
+  /** #287 W4: the current committed StoredWorkspaceV1's id, carried forward
+   *  unchanged by every saved-query CRUD commit candidate. `createState`
+   *  mints a session-local placeholder synchronously (never blank — the
+   *  stored-workspace schema requires a non-empty id), so a CRUD op run
+   *  before the boot projection resolves still succeeds, committing the
+   *  first-ever aggregate under that id; `loadWorkspaceOnBoot` overwrites it
+   *  with the real committed id (existing or freshly migrated) once
+   *  resolved. See `createState`'s own comment on `mintWorkspaceId`. */
+  workspaceId: string;
   libraryFilter: string;
   shortcutsOpen: Signal<boolean>;
   isMobile: Signal<boolean>;
@@ -469,6 +532,21 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // resets on reload. Read/write via `.value`.
     libraryName: signal(read.loadStr(KEYS.libraryName, DEFAULT_LIBRARY_NAME)),
     libraryDirty: signal(false),
+    // #287 W4: the aggregate projection. `dashboard` has no aggregate to read
+    // yet at this synchronous constructor — it starts `null` and is populated
+    // once app.ts's async boot step (`loadWorkspaceOnBoot`) resolves the real
+    // StoredWorkspaceV1 (after the one-shot legacy migration). `workspaceId`
+    // is minted here rather than left blank: the stored-workspace schema
+    // requires a non-empty id, so a save attempted in the window before boot
+    // projection completes (or by a fixture that never runs it at all — e.g.
+    // a unit test driving `createApp` directly) still succeeds, committing
+    // the FIRST-ever aggregate under this freshly-minted id; `loadCurrent`'s
+    // migration marker is keyed on store record existence, so that commit is
+    // simply treated as "already migrated" rather than raced/overwritten.
+    // `loadWorkspaceOnBoot` overwrites this with the real committed id once
+    // it resolves (a pre-existing aggregate, or the one migration just built).
+    dashboard: null,
+    workspaceId: mintWorkspaceId(),
     // Transient search text for the Library/History side panel (session-only,
     // cleared on a tab switch); never persisted.
     libraryFilter: '',
@@ -520,6 +598,11 @@ export function allocTabId(state: AppState): string {
 
 const rnd = () => Math.random().toString(36).slice(2, 6);
 const makeId = (prefix: string, now: number) => prefix + now + rnd();
+
+// #287 W4: `createState`'s synchronous placeholder workspace id (see its own
+// doc comment) — a session-local id, distinct enough that two tabs opened at
+// once don't collide before either resolves the real aggregate.
+const mintWorkspaceId = (): string => 'ws-' + Date.now().toString(36) + rnd() + rnd();
 // Narrowed to `Pick<AppState, 'tabs'>` (#276 Phase 4C) — the only field read
 // — so `patchSavedSpec`'s own narrowed `state` param (below) can pass it
 // through unchanged; every real caller already passes a full `AppState`,
@@ -581,13 +664,13 @@ export function savedForTab(
  * (app.ts's own `SavedQueryService`) already has a full `AppState` to pass,
  * which satisfies this directly.
  */
-export function createSavedQuery(
-  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty'>,
-  tab: QueryTab | null | undefined, name: unknown, description?: unknown,
-  save: SaveJSON = saveJSON, now: number = Date.now(),
+export async function createSavedQuery(
+  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  tab: QueryTab | null | undefined, name: unknown, description: unknown,
+  commit: CommitWorkspace, now: number = Date.now(),
   validationService: SpecValidationService = defaultSpecValidationService,
-): SavedQueryV2 | null {
-  if (!tab || tab.savedId) return null;
+): Promise<SavedEntryResult> {
+  if (!tab || tab.savedId) return { ok: false, entry: null };
   const sql = String(tab.sqlDraft || '');
   const nm = String(name || '').trim();
   const panel = tabPanel(tab);
@@ -596,7 +679,7 @@ export function createSavedQuery(
   // (`cfg!`: every panel this save path sees carries a cfg — the schema marks
   // cfg optional only for forward compatibility.)
   const sqlOptional = panel && panel.cfg!.type === 'text';
-  if ((!sql.trim() && !sqlOptional) || !nm) return null;
+  if ((!sql.trim() && !sqlOptional) || !nm) return { ok: false, entry: null };
   const desc = String(description || '').trim();
   // Remember the current result view (Table/JSON/Panel) so a restore reopens the
   // same data representation; the transient raw view isn't persisted.
@@ -610,45 +693,61 @@ export function createSavedQuery(
     view,
   });
   const entry = asSavedEntry(withQuerySpec({ ...draft, id: makeId('s', now), sql }, normalizeSpec(draft.spec)));
-  if (hasBlockingSpecErrors(validationService.validate(entry.spec, { sql, query: entry, tab }))) return null;
-  state.savedQueries.unshift(entry);
-  tab.savedId = entry.id;
+  if (hasBlockingSpecErrors(validationService.validate(entry.spec, { sql, query: entry, tab }))) {
+    return { ok: false, entry: null };
+  }
+  // COMPUTE only above this line — no `state`/`tab` mutation yet. Build the
+  // whole-workspace candidate and await its strict commit before touching
+  // anything (#287 W4: the aggregate is the single source of truth).
+  const nextQueries = [entry, ...state.savedQueries];
+  const result = await commit(buildWorkspaceCandidate(state, nextQueries));
+  if (!result.ok) return { ok: false, entry: null, diagnostics: result.diagnostics };
+  // APPLY only after `ok: true` — project the canonical committed queries,
+  // then mutate the tab exactly as the pre-#287 sync code did.
+  state.savedQueries = result.workspace.queries;
+  const saved = committedEntry(state.savedQueries, entry.id, entry);
+  tab.savedId = saved.id;
   tab.specVersion = SPEC_VERSION;
-  tab.sqlDraft = entry.sql;
+  tab.sqlDraft = saved.sql;
   tab.dirtySql = false;
-  tab.name = queryName(entry);
-  setTabSpecDraft(tab, entry.spec, { validationService });
+  tab.name = queryName(saved);
+  setTabSpecDraft(tab, saved.spec, { validationService });
   state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
-  return entry;
+  return { ok: true, entry: saved };
 }
 
-/** Atomically persist both documents of a linked tab in one Library write.
- *  Narrowed to `Pick<AppState, 'savedQueries' | 'libraryDirty'>` (#276 Phase
- *  4C), same convention as `createSavedQuery` above. */
-export function commitSavedQuery(
-  state: Pick<AppState, 'savedQueries' | 'libraryDirty'>, tab: QueryTab, spec: QuerySpecDraft | null | undefined,
-  save: SaveJSON = saveJSON,
+/** Atomically persist both documents of a linked tab in one strict aggregate
+ *  commit. Narrowed to the exact fields `buildWorkspaceCandidate` also needs
+ *  (#287 W4), same convention as `createSavedQuery` above. */
+export async function commitSavedQuery(
+  state: Pick<AppState, 'savedQueries' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  tab: QueryTab, spec: QuerySpecDraft | null | undefined,
+  commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
-): SavedQueryV2 | null {
+): Promise<SavedEntryResult> {
   const index = tab && tab.savedId ? state.savedQueries.findIndex((query) => query.id === tab.savedId) : -1;
-  if (index < 0 || !spec) return null;
+  if (index < 0 || !spec) return { ok: false, entry: null };
   const normalized = normalizeSpec(spec);
   const sql = String(tab.sqlDraft || '');
   const diagnostics = validationService.validate(normalized, { sql, tab });
-  if (hasBlockingSpecErrors(diagnostics)) return null;
+  if (hasBlockingSpecErrors(diagnostics)) return { ok: false, entry: null };
   const panel = queryPanel({ spec: normalized });
-  if (!sql.trim() && panel?.cfg?.type !== 'text') return null;
+  if (!sql.trim() && panel?.cfg?.type !== 'text') return { ok: false, entry: null };
   const current = state.savedQueries[index];
   const entry = asSavedEntry(withQuerySpec({ id: current.id, sql }, normalized));
-  state.savedQueries[index] = entry;
+  // COMPUTE only above — build the next array without mutating `state.savedQueries` in place.
+  const nextQueries = state.savedQueries.slice();
+  nextQueries[index] = entry;
+  const result = await commit(buildWorkspaceCandidate(state, nextQueries));
+  if (!result.ok) return { ok: false, entry: null, diagnostics: result.diagnostics };
+  state.savedQueries = result.workspace.queries;
+  const saved = committedEntry(state.savedQueries, entry.id, entry);
   tab.specVersion = SPEC_VERSION;
-  tab.name = queryName(entry);
+  tab.name = queryName(saved);
   tab.dirtySql = false;
-  setTabSpecDraft(tab, entry.spec, { validationService });
+  setTabSpecDraft(tab, saved.spec, { validationService });
   state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
-  return entry;
+  return { ok: true, entry: saved };
 }
 
 /**
@@ -661,11 +760,12 @@ export function commitSavedQuery(
  * `commitSavedQuery`. `renameSaved`/`toggleFavorite` below keep passing a
  * full `AppState` through unchanged (it satisfies this directly).
  */
-export function patchSavedSpec(
-  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty'>, id: string, patch: SpecPatch,
-  save: SaveJSON = saveJSON,
+export async function patchSavedSpec(
+  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  id: string, patch: SpecPatch,
+  commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
-): PatchSavedResult {
+): Promise<PatchSavedResult> {
   const invalidTab = invalidSpecTabForSaved(state, id);
   if (invalidTab) return { ok: false, invalidTab, entry: null };
   const index = state.savedQueries.findIndex((query) => query.id === id);
@@ -685,14 +785,21 @@ export function patchSavedSpec(
       return { ok: false, invalidTab: update.tab, entry: null, diagnostics };
     }
   }
-  state.savedQueries[index] = entry;
+  // COMPUTE only above — no `state`/`tabs` mutation yet.
+  const nextQueries = state.savedQueries.slice();
+  nextQueries[index] = entry;
+  const result = await commit(buildWorkspaceCandidate(state, nextQueries));
+  if (!result.ok) {
+    return { ok: false, invalidTab: null, entry: null, diagnostics: asSpecDiagnostics(result.diagnostics) };
+  }
+  state.savedQueries = result.workspace.queries;
+  const saved = committedEntry(state.savedQueries, entry.id, entry);
   for (const update of draftUpdates) {
     setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
     update.tab.name = queryName({ spec: update.spec });
   }
   state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
-  return { ok: true, invalidTab: null, entry };
+  return { ok: true, invalidTab: null, entry: saved };
 }
 
 /**
@@ -700,11 +807,11 @@ export function patchSavedSpec(
  * `description` is provided (not undefined) it is set/cleared too; pass
  * undefined to leave the existing description untouched (name-only rename).
  */
-export function renameSaved(
-  state: AppState, id: string, name: unknown, description?: string | null,
-  save: SaveJSON = saveJSON,
+export async function renameSaved(
+  state: AppState, id: string, name: unknown, description: string | null | undefined,
+  commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
-): PatchSavedResult | undefined {
+): Promise<PatchSavedResult | undefined> {
   const nm = String(name || '').trim();
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
@@ -714,20 +821,20 @@ export function renameSaved(
     const desc = String(description || '').trim(); // match saveQuery: null/non-string → '' → cleared
     patch.description = desc || undefined;
   }
-  return patchSavedSpec(state, id, patch, save, validationService);
+  return patchSavedSpec(state, id, patch, commit, validationService);
 }
 
 /** Toggle a saved query's favorite flag. */
-export function toggleFavorite(
+export async function toggleFavorite(
   state: AppState, id: string,
-  save: SaveJSON = saveJSON,
+  commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
-): PatchSavedResult | undefined {
+): Promise<PatchSavedResult | undefined> {
   const index = state.savedQueries.findIndex((q) => q.id === id);
   const entry = index >= 0 ? state.savedQueries[index] : null;
   if (!entry) return;
   const favorite = !queryFavorite(entry);
-  return patchSavedSpec(state, id, { favorite }, save, validationService);
+  return patchSavedSpec(state, id, { favorite }, commit, validationService);
 }
 
 /** Saved queries with favorites first (stable within each group). */
@@ -758,110 +865,27 @@ export function filterHistory(list: HistoryEntry[], query: unknown): HistoryEntr
   return list.filter((ent) => (ent.sql || '').toLowerCase().includes(q));
 }
 
-/**
- * Merge imported queries into savedQueries (dedupe by content, update by id,
- * else add). Returns { added, updated, skipped }.
- */
-export function importSaved(
-  state: AppState, queries: readonly unknown[],
-  save: SaveJSON = saveJSON, genId: () => string = () => makeId('s', Date.now()),
-): { added: number; updated: number; skipped: number } {
-  const { merged, added, updated, skipped } = mergeSaved(state.savedQueries, queries, genId);
-  state.savedQueries = merged;
-  state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
-  return { added, updated, skipped };
-}
+/** The strict-commit result of `deleteSaved`/similar whole-collection ops
+ *  that have no single "entry" to hand back. */
+export type CommitOnlyResult = { ok: true } | { ok: false; diagnostics: WorkspaceDiagnostic[] };
 
-/** Delete a saved query by id and clear any tab pointer to it. */
-export function deleteSaved(state: AppState, id: string, save: SaveJSON = saveJSON): void {
-  state.savedQueries = state.savedQueries.filter((q) => q.id !== id);
+/** Delete a saved query by id and clear any tab pointer to it — a strict
+ *  aggregate commit (#287 W4): on `ok: false` NOTHING is mutated (the query
+ *  and every tab pointer to it are left exactly as they were). */
+export async function deleteSaved(
+  state: Pick<AppState, 'savedQueries' | 'tabs' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  id: string, commit: CommitWorkspace,
+): Promise<CommitOnlyResult> {
+  const nextQueries = state.savedQueries.filter((q) => q.id !== id);
+  const result = await commit(buildWorkspaceCandidate(state, nextQueries));
+  if (!result.ok) return { ok: false, diagnostics: result.diagnostics };
+  state.savedQueries = result.workspace.queries;
   for (const t of tabsForSaved(state, id)) {
     t.savedId = null;
     t.editorMode = 'sql';
   }
   state.libraryDirty.value = true;
-  save(KEYS.saved, state.savedQueries);
-}
-
-// ── Library document ops ────────────────────────────────────────────────────
-// The saved-query collection is a named, savable document. These ops back the
-// header File menu (New / Save / Replace / Append) and the editable library
-// name + unsaved-changes dot.
-
-/** Clear tab→saved links whose entry no longer exists (after New/Replace), so a
- *  kept tab doesn't show "Saved" against a query that's gone. */
-function pruneTabLinks(state: AppState): void {
-  const ids = new Set(state.savedQueries.map((q) => q.id));
-  for (const t of state.tabs.value) {
-    if (t.savedId && !ids.has(t.savedId)) {
-      t.savedId = null;
-      t.editorMode = 'sql';
-    }
-  }
-}
-
-/** Rename the library (blank → the default name). Marks dirty; persists name. */
-export function renameLibrary(state: AppState, name: unknown, saveName: SaveStr = saveStr): void {
-  state.libraryName.value = String(name || '').trim() || DEFAULT_LIBRARY_NAME;
-  state.libraryDirty.value = true;
-  saveName(KEYS.libraryName, state.libraryName.value);
-}
-
-/** Start an empty, default-named library. Clears dirty; open tabs are kept
- *  (their now-dangling saved links are pruned). */
-export function newLibrary(state: AppState, save: SaveJSON = saveJSON, saveName: SaveStr = saveStr): void {
-  state.savedQueries = [];
-  pruneTabLinks(state);
-  state.libraryName.value = DEFAULT_LIBRARY_NAME;
-  state.libraryDirty.value = false;
-  save(KEYS.saved, state.savedQueries);
-  saveName(KEYS.libraryName, state.libraryName.value);
-}
-
-/** Replace the library with `queries`, adopting the loaded file's base name.
- *  Unique ids are kept (lossless round-trip); missing OR duplicate ids get a fresh id.
- *  Clears dirty; open tabs are kept (dangling links pruned). */
-export function replaceLibrary(
-  state: AppState, queries: readonly Record<string, unknown>[], fileName: unknown,
-  save: SaveJSON = saveJSON, saveName: SaveStr = saveStr,
-  genId: () => string = () => makeId('s', Date.now()),
-  validationService: SpecValidationService | false = defaultSpecValidationService,
-): void {
-  const validated = validationService === false ? queries : validateLibraryQueries(queries, validationService);
-  const seen = new Set<unknown>();
-  state.savedQueries = validated.map((q) => {
-    // Mint a fresh id for a missing OR already-seen id so every saved row has a
-    // unique id. The sidebar addresses rows by id (find/filter), so a duplicate
-    // id would let one delete remove several rows and rename/favorite hit the
-    // wrong one. (mergeSaved-based import already collapsed dup ids; keep parity.)
-    let id = q.id;
-    if (!id || seen.has(id)) { do { id = genId(); } while (seen.has(id)); }
-    seen.add(id);
-    return asSavedEntry(withQuerySpec({ ...q, id }, q.spec));
-  });
-  pruneTabLinks(state);
-  const base = String(fileName || '').replace(/\.[^.]+$/, '').trim();
-  state.libraryName.value = base || DEFAULT_LIBRARY_NAME;
-  state.libraryDirty.value = false;
-  save(KEYS.saved, state.savedQueries);
-  saveName(KEYS.libraryName, state.libraryName.value);
-}
-
-/** Append `queries` into the library via the standard merge dedupe (sets dirty
- *  through importSaved). Returns { added, updated, skipped }. */
-export function appendLibrary(
-  state: AppState, queries: readonly Record<string, unknown>[],
-  save: SaveJSON = saveJSON,
-  genId: () => string = () => makeId('s', Date.now()),
-  validationService: SpecValidationService | false = defaultSpecValidationService,
-): { added: number; updated: number; skipped: number } {
-  return importSaved(state, validationService === false ? queries : validateLibraryQueries(queries, validationService), save, genId);
-}
-
-/** Mark the library as saved to a file (clears the unsaved-changes dot). */
-export function markLibrarySaved(state: AppState): void {
-  state.libraryDirty.value = false;
+  return { ok: true };
 }
 
 // Push one history entry (most-recent first, capped at 50). Internal — the

@@ -8,6 +8,7 @@ import type { SpecValidationDiagnostic } from '../../src/core/spec-draft.js';
 import { encodeShare, decodeShare } from '../../src/core/share.js';
 import { withQuerySpec } from '../../src/core/saved-query.js';
 import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import { fakeWorkspaceCommit } from '../helpers/fake-app.js';
 
 // SavedQueryService (#276 Phase 4C) — the saved-query create/commit policy,
 // history recording, and share-URL building extracted from app.ts, unit-
@@ -20,7 +21,8 @@ import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
-type StateSlice = Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'history'>;
+type StateSlice = Pick<AppState,
+  'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName' | 'workspaceId' | 'dashboard'>;
 
 function makeState(over: Partial<StateSlice> = {}): StateSlice {
   return {
@@ -28,6 +30,9 @@ function makeState(over: Partial<StateSlice> = {}): StateSlice {
     resultView: over.resultView ?? signal<'table' | 'json' | 'panel' | 'filter'>('table'),
     libraryDirty: over.libraryDirty ?? signal(false),
     history: over.history ?? [],
+    libraryName: over.libraryName ?? signal('Lib'),
+    workspaceId: over.workspaceId ?? 'w1',
+    dashboard: over.dashboard ?? null,
   };
 }
 
@@ -41,16 +46,22 @@ function makeDeps(over: {
   saveJSON?: ReturnType<typeof vi.fn>;
   now?: () => number;
   specValidators?: SpecValidationService;
-} = {}): { deps: SavedQueryServiceDeps; state: StateSlice; saveJSON: ReturnType<typeof vi.fn> } {
+  workspace?: ReturnType<typeof fakeWorkspaceCommit>;
+} = {}): {
+  deps: SavedQueryServiceDeps; state: StateSlice; saveJSON: ReturnType<typeof vi.fn>;
+  commit: ReturnType<typeof fakeWorkspaceCommit>;
+} {
   const state = over.state || makeState();
   const saveJSON = over.saveJSON || vi.fn();
+  const commit = over.workspace || fakeWorkspaceCommit();
   const deps: SavedQueryServiceDeps = {
     state,
     saveJSON: saveJSON as unknown as SaveJSON,
     now: over.now || (() => 1700000000000),
     specValidators: over.specValidators || ALWAYS_VALID,
+    workspace: { commit },
   };
-  return { deps, state, saveJSON };
+  return { deps, state, saveJSON, commit };
 }
 
 const validEvaluated = (parsed: unknown = { name: 'Q', favorite: false }): { parsed: unknown; diagnostics: SpecValidationDiagnostic[] } =>
@@ -59,59 +70,71 @@ const validEvaluated = (parsed: unknown = { name: 'Q', favorite: false }): { par
 // ── create ───────────────────────────────────────────────────────────────────
 
 describe('create', () => {
-  it('creates and persists a new saved query from an unsaved tab', () => {
+  it('creates and persists (via the aggregate commit) a new saved query from an unsaved tab', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
-    const { deps, state, saveJSON } = makeDeps();
-    const result = createSavedQueryService(deps).create(tab, 'My query', 'a desc');
+    const { deps, state, commit } = makeDeps();
+    const result = await createSavedQueryService(deps).create(tab, 'My query', 'a desc');
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.entry).toMatchObject({ sql: 'SELECT 1', spec: { name: 'My query', description: 'a desc' } });
     expect(state.savedQueries).toEqual([result.entry]);
     expect(tab.savedId).toBe(result.entry.id);
     expect(state.libraryDirty.value).toBe(true);
-    expect(saveJSON).toHaveBeenCalledWith(KEYS.saved, state.savedQueries);
+    expect(commit).toHaveBeenCalledTimes(1);
     expect(result.entry.id.startsWith('s1700000000000')).toBe(true); // deps.now() feeds the minted id
   });
 
-  it('rejects (no persistence) a tab already linked to a saved query', () => {
+  it('rejects (no persistence) a tab already linked to a saved query', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     tab.savedId = 'already-linked';
-    const { deps, state, saveJSON } = makeDeps();
-    const result = createSavedQueryService(deps).create(tab, 'My query', '');
-    expect(result).toEqual({ ok: false });
+    const { deps, state, commit } = makeDeps();
+    const result = await createSavedQueryService(deps).create(tab, 'My query', '');
+    expect(result).toEqual({ ok: false, diagnostics: undefined });
     expect(state.savedQueries).toEqual([]);
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('rejects (no persistence) blank SQL on a non-text-panel tab', () => {
+  it('rejects (no persistence) blank SQL on a non-text-panel tab', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = '   ';
-    const { deps, state, saveJSON } = makeDeps();
-    const result = createSavedQueryService(deps).create(tab, 'My query', '');
-    expect(result).toEqual({ ok: false });
+    const { deps, state, commit } = makeDeps();
+    const result = await createSavedQueryService(deps).create(tab, 'My query', '');
+    expect(result).toEqual({ ok: false, diagnostics: undefined });
     expect(state.savedQueries).toEqual([]);
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('rejects (no persistence) a blank name', () => {
+  it('rejects (no persistence) a blank name', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     const { deps, state } = makeDeps();
-    const result = createSavedQueryService(deps).create(tab, '   ', '');
-    expect(result).toEqual({ ok: false });
+    const result = await createSavedQueryService(deps).create(tab, '   ', '');
+    expect(result).toEqual({ ok: false, diagnostics: undefined });
     expect(state.savedQueries).toEqual([]);
   });
 
-  it('rejects (no persistence) when the injected specValidators blocks the resulting Spec', () => {
+  it('rejects (no persistence) when the injected specValidators blocks the resulting Spec', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
-    const { deps, state, saveJSON } = makeDeps({ specValidators: ALWAYS_BLOCKING });
-    const result = createSavedQueryService(deps).create(tab, 'My query', '');
-    expect(result).toEqual({ ok: false });
+    const { deps, state, commit } = makeDeps({ specValidators: ALWAYS_BLOCKING });
+    const result = await createSavedQueryService(deps).create(tab, 'My query', '');
+    expect(result).toEqual({ ok: false, diagnostics: undefined });
     expect(state.savedQueries).toEqual([]);
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('rejects with the aggregate\'s diagnostics when the whole-workspace commit itself is rejected', async () => {
+    const tab = newTabObj('t1');
+    tab.sqlDraft = 'SELECT 1';
+    const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
+    const failingCommit = vi.fn(async () => ({ ok: false as const, diagnostics }));
+    const { deps, state } = makeDeps({ workspace: failingCommit });
+    const result = await createSavedQueryService(deps).create(tab, 'My query', '');
+    expect(result).toEqual({ ok: false, diagnostics });
+    expect(state.savedQueries).toEqual([]);
+    expect(tab.savedId).toBeNull();
   });
 });
 
@@ -124,82 +147,94 @@ describe('commit', () => {
     return makeState({ savedQueries: [entry] });
   }
 
-  it('rejects with invalid-spec when the evaluated Spec has no parsed draft', () => {
+  it('rejects with invalid-spec when the evaluated Spec has no parsed draft', async () => {
     const tab = newTabObj('t1');
     const state = linkedState(tab);
-    const { deps, saveJSON } = makeDeps({ state });
-    const result = createSavedQueryService(deps).commit(tab, { parsed: null, diagnostics: [] });
+    const { deps, commit } = makeDeps({ state });
+    const result = await createSavedQueryService(deps).commit(tab, { parsed: null, diagnostics: [] });
     expect(result).toEqual({ ok: false, reason: 'invalid-spec' });
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('rejects with invalid-spec when the evaluated Spec carries a blocking diagnostic', () => {
+  it('rejects with invalid-spec when the evaluated Spec carries a blocking diagnostic', async () => {
     const tab = newTabObj('t1');
     const state = linkedState(tab);
-    const { deps, saveJSON } = makeDeps({ state });
+    const { deps, commit } = makeDeps({ state });
     const evaluated = {
       parsed: { name: 'Q', favorite: false },
       diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'bad' }],
     };
-    const result = createSavedQueryService(deps).commit(tab, evaluated);
+    const result = await createSavedQueryService(deps).commit(tab, evaluated);
     expect(result).toEqual({ ok: false, reason: 'invalid-spec' });
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('rejects with empty when SQL is blank on a non-queryless panel', () => {
+  it('rejects with empty when SQL is blank on a non-queryless panel', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = '   ';
     const state = linkedState(tab, '');
-    const { deps, saveJSON } = makeDeps({ state });
-    const result = createSavedQueryService(deps).commit(tab, validEvaluated());
+    const { deps, commit } = makeDeps({ state });
+    const result = await createSavedQueryService(deps).commit(tab, validEvaluated());
     expect(result).toEqual({ ok: false, reason: 'empty' });
-    expect(saveJSON).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('accepts blank SQL on a queryless (text) panel', () => {
+  it('accepts blank SQL on a queryless (text) panel', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = '';
     const state = linkedState(tab, '');
-    const { deps, saveJSON, state: s } = makeDeps({ state });
+    const { deps, commit } = makeDeps({ state });
     const evaluated = validEvaluated({ name: 'Q', favorite: false, panel: { cfg: { type: 'text', content: 'hi' } } });
-    const result = createSavedQueryService(deps).commit(tab, evaluated);
+    const result = await createSavedQueryService(deps).commit(tab, evaluated);
     expect(result.ok).toBe(true);
-    expect(saveJSON).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects with rejected when commitSavedQuery itself declines (tab no longer linked)', () => {
+  it('rejects with rejected when commitSavedQuery itself declines (tab no longer linked)', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     tab.savedId = 'does-not-exist'; // linked id absent from savedQueries → index < 0
-    const { deps, saveJSON } = makeDeps();
-    const result = createSavedQueryService(deps).commit(tab, validEvaluated());
-    expect(result).toEqual({ ok: false, reason: 'rejected' });
-    expect(saveJSON).not.toHaveBeenCalled();
+    const { deps, commit } = makeDeps();
+    const result = await createSavedQueryService(deps).commit(tab, validEvaluated());
+    expect(result).toEqual({ ok: false, reason: 'rejected', diagnostics: undefined });
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('rejects with rejected when the injected specValidators blocks the normalized Spec even though the input evaluation was clean', () => {
+  it('rejects with rejected when the injected specValidators blocks the normalized Spec even though the input evaluation was clean', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     const state = linkedState(tab);
-    const { deps, saveJSON } = makeDeps({ state, specValidators: ALWAYS_BLOCKING });
-    const result = createSavedQueryService(deps).commit(tab, validEvaluated());
-    expect(result).toEqual({ ok: false, reason: 'rejected' });
-    expect(saveJSON).not.toHaveBeenCalled();
+    const { deps, commit } = makeDeps({ state, specValidators: ALWAYS_BLOCKING });
+    const result = await createSavedQueryService(deps).commit(tab, validEvaluated());
+    expect(result).toEqual({ ok: false, reason: 'rejected', diagnostics: undefined });
+    expect(commit).not.toHaveBeenCalled();
   });
 
-  it('commits and persists an update to the linked saved query', () => {
+  it('rejects with rejected + diagnostics when the whole-workspace commit itself is rejected', async () => {
+    const tab = newTabObj('t1');
+    tab.sqlDraft = 'SELECT 1';
+    const state = linkedState(tab);
+    const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
+    const failingCommit = vi.fn(async () => ({ ok: false as const, diagnostics }));
+    const { deps } = makeDeps({ state, workspace: failingCommit });
+    const result = await createSavedQueryService(deps).commit(tab, validEvaluated());
+    expect(result).toEqual({ ok: false, reason: 'rejected', diagnostics });
+    expect(state.savedQueries[0]).toMatchObject({ id: 's1', sql: 'SELECT 1' }); // unchanged
+  });
+
+  it('commits and persists an update to the linked saved query', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 2';
     const state = linkedState(tab);
-    const { deps, saveJSON, state: s } = makeDeps({ state });
+    const { deps, commit, state: s } = makeDeps({ state });
     const evaluated = validEvaluated({ name: 'Renamed', favorite: true });
-    const result = createSavedQueryService(deps).commit(tab, evaluated);
+    const result = await createSavedQueryService(deps).commit(tab, evaluated);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.entry).toMatchObject({ id: 's1', sql: 'SELECT 2', spec: { name: 'Renamed', favorite: true } });
     expect(s.savedQueries[0]).toEqual(result.entry);
     expect(s.libraryDirty.value).toBe(true);
-    expect(saveJSON).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -306,11 +341,11 @@ describe('buildShareUrl', () => {
 // depends on) still resolves against the narrowed slice this service itself
 // persists into — proves the two extractions share one consistent state shape.
 describe('cross-check with savedForTab', () => {
-  it('a committed query is resolvable via savedForTab against the same state', () => {
+  it('a committed query is resolvable via savedForTab against the same state', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     const { deps, state } = makeDeps();
-    const result = createSavedQueryService(deps).create(tab, 'Q', '');
+    const result = await createSavedQueryService(deps).create(tab, 'Q', '');
     expect(result.ok).toBe(true);
     expect(savedForTab(state, tab)).toEqual(result.ok ? result.entry : null);
   });

@@ -42,6 +42,12 @@ export interface BootstrapApp {
    *  main.ts's own `string | null` sentinel (`null` means "no callback
    *  error"), so this contract states what's actually passed here. */
   showLogin(msg?: string | null): void;
+  /** #287 W4: resolve the current StoredWorkspaceV1 aggregate (migrating the
+   *  legacy flat state once, if needed) and project it onto `app.state`
+   *  before the first `renderApp()` — see `App.loadWorkspaceOnBoot`'s own doc
+   *  comment (app.types.ts). The real return value is never read here
+   *  (`Promise<unknown>` is enough for `bootstrap`'s own purposes). */
+  loadWorkspaceOnBoot(): Promise<unknown>;
 }
 
 /** `app.state.resultView`'s value union, reused at the one cast below. */
@@ -168,7 +174,15 @@ export async function bootstrap(app: BootstrapApp, env: BootstrapEnv): Promise<{
     // ch_auth=basic username, not the raw email claim) on first paint.
     // (ensureConfig is a no-op in basic mode.)
     await app.conn.ensureConfig();
-    if (dash) app.renderDashboard(); else app.renderApp();
+    if (dash) app.renderDashboard();
+    else {
+      // #287 W4: resolve + project the aggregate before the Workbench's first
+      // paint so the saved-query sidebar/Save flow already treat it as the
+      // single source of truth (the /dashboard branch above keeps resolving
+      // its own copy via `renderDashboard` → `loadDashboardWorkspace`).
+      await app.loadWorkspaceOnBoot();
+      app.renderApp();
+    }
   } else {
     app.showLogin(callbackError);
   }

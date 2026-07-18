@@ -2,14 +2,16 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   KEYS, DEFAULT_LIBRARY_NAME, newTabObj, createState, activeTab, allocTabId, effectiveFilterActive,
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
-  sortedSaved, filterSaved, filterHistory, importSaved, deleteSaved, recordHistory,
+  sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
-  renameLibrary, newLibrary, replaceLibrary, appendLibrary, markLibrarySaved,
 } from '../../src/state.js';
-import type { StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService } from '../../src/state.js';
+import type {
+  StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
+} from '../../src/state.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
 import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import { fakeWorkspaceCommit } from '../helpers/fake-app.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -22,6 +24,25 @@ const reader = (over: Record<string, unknown> = {}): StateReader => ({
   loadStr: (k, dflt) => (k in over ? (over[k] as string) : dflt),
   loadJSON: (k, dflt) => (k in over ? over[k] : dflt),
 });
+
+// #287 W4: the saved-query CRUD ops now commit through the StoredWorkspaceV1
+// aggregate, whose schema requires a non-empty workspace id — every test
+// below that exercises them builds its state through this helper (instead of
+// bare `createState(reader())`) so the candidate a real `fakeWorkspaceCommit()`
+// validates always has one.
+function savedTestState(over: Record<string, unknown> = {}): AppState {
+  const s = createState(reader(over));
+  s.workspaceId = 'w1';
+  return s;
+}
+
+/** Unwrap a successful `SavedEntryResult`, failing loudly (not silently
+ *  returning `undefined`) when a test's own setup produced a rejection —
+ *  mirrors the pre-#287 sync code's `!`-asserted non-null return. */
+function okEntry(r: SavedEntryResult): SavedQueryV2 {
+  if (!r.ok) throw new Error('expected an ok SavedEntryResult, got: ' + JSON.stringify(r));
+  return r.entry;
+}
 
 // tests/helpers/saved-query.js is plain JS with no field annotations; TS can
 // only infer a parameter type for the fields carrying their own default
@@ -87,6 +108,15 @@ describe('createState', () => {
     expect(s.expanded.value.size).toBe(0);
     expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
     expect(s.libraryDirty.value).toBe(false);
+    // #287 W4: no aggregate loaded yet — `dashboard` starts null;
+    // `loadWorkspaceOnBoot` (app.ts's async boot step) projects the real
+    // aggregate onto both after this synchronous constructor. `workspaceId`
+    // is minted synchronously (never blank — the stored-workspace schema
+    // requires a non-empty id) so a save attempted before boot projection
+    // completes still succeeds; `loadWorkspaceOnBoot` overwrites it with the
+    // real committed id once resolved.
+    expect(s.dashboard).toBeNull();
+    expect(s.workspaceId).toMatch(/^ws-/);
     expect(s.dashLayout).toBe('arrange');
     expect(s.dashCols).toBe(3);
     expect(s.varValues).toEqual({});
@@ -166,35 +196,35 @@ describe('activeTab / allocTabId', () => {
 });
 
 describe('saved queries', () => {
-  it('createSavedQuery is a no-op for empty SQL or empty name', () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it('createSavedQuery is a no-op for empty SQL or empty name', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     s.tabs.value[0].sqlDraft = '';
-    expect(createSavedQuery(s, s.tabs.value[0], 'name', '', save)).toBeNull();
+    expect(await createSavedQuery(s, s.tabs.value[0], 'name', '', commit)).toEqual({ ok: false, entry: null });
     s.tabs.value[0].sqlDraft = 'SELECT 1';
-    expect(createSavedQuery(s, s.tabs.value[0], '  ', '', save)).toBeNull();
-    expect(save).not.toHaveBeenCalled();
+    expect(await createSavedQuery(s, s.tabs.value[0], '  ', '', commit)).toEqual({ ok: false, entry: null });
+    expect(commit).not.toHaveBeenCalled();
   });
-  it('creates an unsaved query, then atomically commits linked SQL + authoritative Spec', () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it('creates an unsaved query, then atomically commits linked SQL + authoritative Spec', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
-    // `!`: this Save path is guaranteed non-null here (linked-tab creation with
-    // a non-empty name and sql, asserted just below) — same invariant state.ts
-    // itself documents at its own `!` sites.
-    const e1 = createSavedQuery(s, tab, 'My query', '', save, 100)!;
+    // This Save path is guaranteed `ok: true` here (linked-tab creation with a
+    // non-empty name and sql, asserted just below) — same invariant state.ts
+    // itself documents at its own `!` sites, now via `okEntry`'s explicit throw.
+    const e1 = okEntry(await createSavedQuery(s, tab, 'My query', '', commit, 100));
     expect(e1).toEqual(expect.objectContaining({ sql: 'SELECT 1', specVersion: 1 }));
     expect(e1.spec).toMatchObject({ name: 'My query', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
     expect(s.savedQueries).toHaveLength(1);
-    expect(save).toHaveBeenLastCalledWith(KEYS.saved, s.savedQueries);
+    expect(commit).toHaveBeenCalledTimes(1);
     // Linked Save bypasses popover fields and commits the two drafts directly.
     tab.sqlDraft = 'SELECT 2';
     tab.specParsed!.name = 'My query v2';
     tab.dirtySql = true; tab.dirtySpec = true;
-    const e2 = commitSavedQuery(s, tab, tab.specParsed, save)!;
+    const e2 = okEntry(await commitSavedQuery(s, tab, tab.specParsed, commit));
     expect(e2.id).toBe(e1.id);
     expect(s.savedQueries).toHaveLength(1);
     expect(s.savedQueries[0].sql).toBe('SELECT 2');
@@ -202,22 +232,22 @@ describe('saved queries', () => {
     expect(tab.name).toBe('My query v2');
     expect(tabDirty(tab)).toBe(false);
   });
-  it('creation stores a description and linked commits normalize/clear it', () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it('creation stores a description and linked commits normalize/clear it', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
-    const e = createSavedQuery(s, tab, 'Q', '  what it does  ', save, 100); // trimmed
+    const e = okEntry(await createSavedQuery(s, tab, 'Q', '  what it does  ', commit, 100)); // trimmed
     expect(queryDescription(e)).toBe('what it does');
     tab.specParsed!.description = ' changed ';
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryDescription(s.savedQueries[0])).toBe('changed');
     tab.specParsed!.description = '   ';
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect('description' in s.savedQueries[0].spec).toBe(false);
     // create with no description arg → no description field
     const t2 = newTabObj('t2'); t2.sqlDraft = 'SELECT 2'; s.tabs.value.push(t2);
-    const e2 = createSavedQuery(s, t2, 'Q2', undefined, save, 400)!;
+    const e2 = okEntry(await createSavedQuery(s, t2, 'Q2', undefined, commit, 400));
     expect('description' in e2.spec).toBe(false);
   });
   it('savedForTab resolves the linked entry (or null)', () => {
@@ -230,36 +260,36 @@ describe('saved queries', () => {
     expect(savedForTab(s, s.tabs.value[0])).toBeNull();
     expect(savedForTab(s, { savedId: null })).toBeNull();
   });
-  it('renameSaved updates the entry + any linked tab name', () => {
-    const s = createState(reader());
+  it('renameSaved updates the entry + any linked tab name', async () => {
+    const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'old' })];
     s.tabs.value[0].savedId = 's1';
-    const save = vi.fn();
-    renameSaved(s, 's1', '  new  ', undefined, save);
+    const commit = fakeWorkspaceCommit();
+    await renameSaved(s, 's1', '  new  ', undefined, commit);
     expect(queryName(s.savedQueries[0])).toBe('new');
     expect(s.tabs.value[0].name).toBe('new');
-    renameSaved(s, 's1', '   ', undefined, save); // blank ignored
+    await renameSaved(s, 's1', '   ', undefined, commit); // blank ignored
     expect(queryName(s.savedQueries[0])).toBe('new');
-    renameSaved(s, 'missing', 'x', undefined, save); // unknown id ignored
-    expect(save).toHaveBeenCalledTimes(1);
+    await renameSaved(s, 'missing', 'x', undefined, commit); // unknown id ignored
+    expect(commit).toHaveBeenCalledTimes(1);
   });
-  it('renameSaved sets/clears description when given, leaves it untouched when undefined', () => {
-    const s = createState(reader());
+  it('renameSaved sets/clears description when given, leaves it untouched when undefined', async () => {
+    const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'A' })];
-    const save = vi.fn();
-    renameSaved(s, 's1', 'A', '  a note  ', save); // set (trimmed)
+    const commit = fakeWorkspaceCommit();
+    await renameSaved(s, 's1', 'A', '  a note  ', commit); // set (trimmed)
     expect(queryDescription(s.savedQueries[0])).toBe('a note');
-    renameSaved(s, 's1', 'A', undefined, save); // name-only → description kept
+    await renameSaved(s, 's1', 'A', undefined, commit); // name-only → description kept
     expect(queryDescription(s.savedQueries[0])).toBe('a note');
-    renameSaved(s, 's1', 'A', '', save); // explicit empty → cleared
+    await renameSaved(s, 's1', 'A', '', commit); // explicit empty → cleared
     expect('description' in s.savedQueries[0].spec).toBe(false);
-    renameSaved(s, 's1', 'A', '  re  ', save); // re-set
+    await renameSaved(s, 's1', 'A', '  re  ', commit); // re-set
     expect(queryDescription(s.savedQueries[0])).toBe('re');
-    renameSaved(s, 's1', 'A', null, save); // null (not undefined) → cleared, not stored as 'null' (#4 review)
+    await renameSaved(s, 's1', 'A', null, commit); // null (not undefined) → cleared, not stored as 'null' (#4 review)
     expect('description' in s.savedQueries[0].spec).toBe(false);
   });
-  it('rename/description/favorite patches merge into valid linked drafts and persist once per action', () => {
-    const s = createState(reader());
+  it('rename/description/favorite patches merge into valid linked drafts and persist once per action', async () => {
+    const s = savedTestState();
     const original = savedQuery({
       id: 's1', sql: 'x', name: 'Old', favorite: false,
       panel: { cfg: { type: 'table' }, fieldConfig: { defaults: { color: 'red' } } },
@@ -280,9 +310,9 @@ describe('saved queries', () => {
     second.savedId = 's1';
     setTabSpecDraft(second, { ...original.spec, secondDraftOnly: ['keep'] });
     s.tabs.value = [tab, second];
-    const save = vi.fn();
-    renameSaved(s, 's1', 'New', 'Description', save);
-    toggleFavorite(s, 's1', save);
+    const commit = fakeWorkspaceCommit();
+    await renameSaved(s, 's1', 'New', 'Description', commit);
+    await toggleFavorite(s, 's1', commit);
     for (const spec of [s.savedQueries[0].spec, tab.specParsed]) {
       expect(spec).toMatchObject({
         name: 'New', description: 'Description', favorite: true,
@@ -298,26 +328,26 @@ describe('saved queries', () => {
       name: 'New', description: 'Description', favorite: true, secondDraftOnly: ['keep'],
     });
     expect(second.dirtySpec).toBe(false);
-    expect(save).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(2);
     expect(original.spec.name).toBe('Old');
     expect((original.spec.extension as { nested: { value: number }[] }).nested[0].value).toBe(1);
   });
-  it('toggleFavorite flips the flag; sortedSaved puts favorites first (stable)', () => {
-    const s = createState(reader());
+  it('toggleFavorite flips the flag; sortedSaved puts favorites first (stable)', async () => {
+    const s = savedTestState();
     s.savedQueries = [
       savedQuery({ id: 'a', sql: '1', name: 'A' }),
       savedQuery({ id: 'b', sql: '2', name: 'B' }),
       savedQuery({ id: 'c', sql: '3', name: 'C' }),
     ];
-    const save = vi.fn();
-    toggleFavorite(s, 'c', save);
+    const commit = fakeWorkspaceCommit();
+    await toggleFavorite(s, 'c', commit);
     expect(queryFavorite(s.savedQueries.find((q) => q.id === 'c'))).toBe(true);
-    toggleFavorite(s, 'missing', save); // no-op
+    await toggleFavorite(s, 'missing', commit); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
-    expect(save).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
   });
-  it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', () => {
-    const s = createState(reader());
+  it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', async () => {
+    const s = savedTestState();
     const tab = s.tabs.value[0];
     const entry = savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' });
     s.savedQueries = [entry];
@@ -326,24 +356,24 @@ describe('saved queries', () => {
     tab.specParsed = null;
     tab.specDiagnostics = [{ severity: 'error', code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
-    const save = vi.fn();
-    expect(renameSaved(s, 's1', 'Overwrite', undefined, save)).toMatchObject({ ok: false, invalidTab: tab });
-    expect(toggleFavorite(s, 's1', save)).toMatchObject({ ok: false, invalidTab: tab });
+    const commit = fakeWorkspaceCommit();
+    expect(await renameSaved(s, 's1', 'Overwrite', undefined, commit)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', commit)).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryName(s.savedQueries[0])).toBe('Original');
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
-    expect(save).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
-  it('external writers validate the persisted entry and every linked draft before mutating', () => {
-    const s = createState(reader());
+  it('external writers validate the persisted entry and every linked draft before mutating', async () => {
+    const s = savedTestState();
     const tab = s.tabs.value[0];
     s.savedQueries = [savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' })];
     tab.savedId = 's1';
     setTabSpecDraft(tab, { ...s.savedQueries[0].spec, draftOnly: true }, { dirty: true });
-    const save = vi.fn();
+    const commit = fakeWorkspaceCommit();
     const entryBlocked: SpecValidationService = {
       validate: () => [{ path: ['favorite'], severity: 'error', code: 'blocked', message: 'blocked' }],
     };
-    expect(toggleFavorite(s, 's1', save, entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
+    expect(await toggleFavorite(s, 's1', commit, entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
 
     const draftBlocked: SpecValidationService = {
@@ -351,10 +381,46 @@ describe('saved queries', () => {
         ? [{ path: ['draftOnly'], severity: 'error', code: 'blocked-draft', message: 'blocked draft' }]
         : [],
     };
-    expect(toggleFavorite(s, 's1', save, draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', commit, draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(tab.specParsed!.favorite).toBe(false);
-    expect(save).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+  it('a rejected aggregate commit mutates nothing and surfaces diagnostics (#287 W4 strict commit)', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    tab.sqlDraft = 'SELECT 1';
+    const diagnostics = [{ path: ['id'], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
+    const failingCommit = vi.fn(async () => ({ ok: false as const, diagnostics }));
+    const result = await createSavedQuery(s, tab, 'Q', '', failingCommit, 100);
+    expect(result).toEqual({ ok: false, entry: null, diagnostics });
+    expect(s.savedQueries).toEqual([]);
+    expect(tab.savedId).toBeNull();
+    expect(s.libraryDirty.value).toBe(false);
+    expect(failingCommit).toHaveBeenCalledTimes(1);
+  });
+  it('a rejected aggregate commit leaves renameSaved/toggleFavorite/deleteSaved fully untouched', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    const entry = savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' });
+    s.savedQueries = [entry];
+    tab.savedId = 's1';
+    const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'nope' }];
+    const failingCommit = async () => ({ ok: false as const, diagnostics });
+
+    const renamed = await renameSaved(s, 's1', 'New name', undefined, failingCommit);
+    expect(renamed).toEqual({ ok: false, invalidTab: null, entry: null, diagnostics: expect.any(Array) });
+    expect(queryName(s.savedQueries[0])).toBe('Original');
+
+    const favorited = await toggleFavorite(s, 's1', failingCommit);
+    expect(favorited).toMatchObject({ ok: false, invalidTab: null, entry: null });
+    expect(queryFavorite(s.savedQueries[0])).toBe(false);
+
+    const deleted = await deleteSaved(s, 's1', failingCommit);
+    expect(deleted).toEqual({ ok: false, diagnostics });
+    expect(s.savedQueries).toHaveLength(1);
+    expect(tab.savedId).toBe('s1');
+    expect(s.libraryDirty.value).toBe(false);
   });
   it('patchSpecDraft handles object/function patches and reports a missing or invalid draft', () => {
     const tab = newTabObj('t1');
@@ -373,28 +439,28 @@ describe('saved queries', () => {
     expect(patchSpecDraft(tab, { name: 'Recovered' })).toMatchObject({ ok: true });
     expect(tab.specParsed).toMatchObject({ name: 'Recovered' });
   });
-  it('an invalid linked Spec makes atomic Save persist nothing and retain both dirty flags', () => {
-    const s = createState(reader());
+  it('an invalid linked Spec makes atomic Save persist nothing and retain both dirty flags', async () => {
+    const s = savedTestState();
     const tab = s.tabs.value[0];
     s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
     tab.savedId = 's1'; tab.sqlDraft = 'SELECT 2'; tab.dirtySql = true; tab.dirtySpec = true;
-    const save = vi.fn();
-    expect(commitSavedQuery(s, tab, { name: '  ', extension: true }, save)).toBeNull();
+    const commit = fakeWorkspaceCommit();
+    expect(await commitSavedQuery(s, tab, { name: '  ', extension: true }, commit)).toEqual({ ok: false, entry: null });
     expect(s.savedQueries[0].sql).toBe('SELECT 1');
     expect(tabDirty(tab)).toBe(true);
-    expect(save).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
-  it("linked Save keeps the existing empty-SQL guard except for text panels", () => {
-    const s = createState(reader());
+  it("linked Save keeps the existing empty-SQL guard except for text panels", async () => {
+    const s = savedTestState();
     const tab = s.tabs.value[0];
     s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
     tab.savedId = 's1'; tab.sqlDraft = ''; tab.dirtySql = true;
-    const save = vi.fn();
-    expect(commitSavedQuery(s, tab, { name: 'Q', favorite: false }, save)).toBeNull();
+    const commit = fakeWorkspaceCommit();
+    expect(await commitSavedQuery(s, tab, { name: 'Q', favorite: false }, commit)).toEqual({ ok: false, entry: null });
     expect(s.savedQueries[0].sql).toBe('SELECT 1');
-    expect(save).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
     const textSpec = { name: 'Q', favorite: false, panel: { cfg: { type: 'text', content: 'note' } } };
-    expect(commitSavedQuery(s, tab, textSpec, save)).not.toBeNull();
+    expect((await commitSavedQuery(s, tab, textSpec, commit)).ok).toBe(true);
     expect(s.savedQueries[0].sql).toBe('');
   });
   it('filterSaved matches name/description/sql case-insensitively; blank → unchanged', () => {
@@ -422,23 +488,6 @@ describe('saved queries', () => {
     expect(filterHistory(list, 'insert').map((h) => h.id)).toEqual(['h2']);
     expect(filterHistory(list, 'zzz')).toEqual([]);
   });
-  it('importSaved merges (add/skip/update), persists, and uses injected genId', () => {
-    const s = createState(reader());
-    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
-    const save = vi.fn();
-    const r = importSaved(s, [
-      { id: 's1', name: 'A', sql: '1' },      // skip (content dup)
-      { id: 's1', name: 'A2', sql: '1b' },    // update by id
-      { name: 'B', sql: '2' },                // add (genId)
-    ], save, () => 'gx');
-    expect(r).toEqual({ added: 1, updated: 1, skipped: 1 });
-    expect(s.savedQueries.map(queryName)).toEqual(['A2', 'B']);
-    expect(s.savedQueries.find((q) => queryName(q) === 'B')!.id).toBe('gx');
-    expect(save).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
-    // default save + genId (no injection) — exercises the default id generator
-    importSaved(s, [{ name: 'Z', sql: 'zz' }]);
-    expect(s.savedQueries.find((q) => queryName(q) === 'Z')!.id).toMatch(/^s/);
-  });
   it('tabPanel clones the complete tab-side panel, including future siblings', () => {
     expect(tabPanel(null)).toBeNull();
     // A truthy object with no `specParsed` at all (a bare saved-query entry,
@@ -454,42 +503,42 @@ describe('saved queries', () => {
     expect(panel).toEqual({ cfg, key: 'k', fieldConfig: { defaults: {} } });
     expect(panel).not.toBe(tab.specParsed!.panel);
   });
-  it('creation/commit persist the complete panel without a legacy mirror', () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it('creation/commit persist the complete panel without a legacy mirror', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT a, b';
     tab.specParsed!.panel = {
       cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64',
       fieldConfig: { defaults: { color: 'red' } },
     };
-    const e1 = createSavedQuery(s, tab, 'Chartd', '', save, 100)!;
+    const e1 = okEntry(await createSavedQuery(s, tab, 'Chartd', '', commit, 100));
     expect(queryPanel(e1)).toEqual(tab.specParsed!.panel);
     expect(queryPanel(e1)).not.toBe(tab.specParsed!.panel);
     expect('chart' in e1).toBe(false);
     // re-save with a different cfg; future panel siblings remain.
     tab.specParsed!.panel!.cfg = { type: 'line', x: 0, y: [1], series: null };
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryPanel(s.savedQueries[0])!.cfg!.type).toBe('line');
     expect(queryPanel(s.savedQueries[0])!.fieldConfig!.defaults!.color).toBe('red');
     tab.specParsed!.panel!.cfg = { type: 'logs' };
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryPanel(s.savedQueries[0])!.cfg).toEqual({ type: 'logs' });
     // re-save after the whole panel is cleared.
     delete tab.specParsed!.panel;
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryPanel(s.savedQueries[0])).toBeUndefined();
   });
-  it("createSavedQuery allows sql:'' for a text panel only (#166 per-type save guard)", () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it("createSavedQuery allows sql:'' for a text panel only (#166 per-type save guard)", async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
     tab.sqlDraft = '';
-    expect(createSavedQuery(s, tab, 'NoSql', '', save, 100)).toBeNull(); // no panel → still blocked
+    expect(await createSavedQuery(s, tab, 'NoSql', '', commit, 100)).toEqual({ ok: false, entry: null }); // no panel → still blocked
     tab.specParsed!.panel = { cfg: { type: 'table' } };
-    expect(createSavedQuery(s, tab, 'NoSql', '', save, 150)).toBeNull(); // non-text panel → blocked
+    expect(await createSavedQuery(s, tab, 'NoSql', '', commit, 150)).toEqual({ ok: false, entry: null }); // non-text panel → blocked
     tab.specParsed!.panel = { cfg: { type: 'text', content: '# hello' } };
-    const e = createSavedQuery(s, tab, 'Note', '', save, 200)!;
+    const e = okEntry(await createSavedQuery(s, tab, 'Note', '', commit, 200));
     expect(e).not.toBeNull();
     expect(e.sql).toBe('');
     expect(queryPanel(e)!.cfg).toEqual({ type: 'text', content: '# hello' });
@@ -498,185 +547,32 @@ describe('saved queries', () => {
     // not an index-signature bag), hence the local intersection cast.
     expect((e as SavedQueryV2 & { chart?: unknown }).chart).toBeUndefined();
   });
-  it('creation captures the result view; linked Spec becomes authoritative afterward', () => {
-    const s = createState(reader());
-    const save = vi.fn();
+  it('creation captures the result view; linked Spec becomes authoritative afterward', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
     s.resultView.value = 'panel';
-    const e = createSavedQuery(s, tab, 'V', '', save, 100);
+    const e = okEntry(await createSavedQuery(s, tab, 'V', '', commit, 100));
     expect(queryView(e)).toBe('panel');
     tab.specParsed!.view = 'json';
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryView(s.savedQueries[0])).toBe('json');
     // raw view (TSV/JSON output) is not a saved view → dropped
     delete tab.specParsed!.view;
-    commitSavedQuery(s, tab, tab.specParsed, save);
+    await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryView(s.savedQueries[0])).toBeUndefined();
   });
-  it('deleteSaved removes + clears tab pointers', () => {
-    const s = createState(reader());
+  it('deleteSaved removes + clears tab pointers', async () => {
+    const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
     s.tabs.value[0].savedId = 's1';
-    const save = vi.fn();
-    deleteSaved(s, 's1', save);
+    const commit = fakeWorkspaceCommit();
+    const result = await deleteSaved(s, 's1', commit);
+    expect(result).toEqual({ ok: true });
     expect(s.savedQueries).toHaveLength(0);
     expect(s.tabs.value[0].savedId).toBeNull();
     expect(s.tabs.value[0].editorMode).toBe('sql');
-    expect(save).toHaveBeenCalledWith(KEYS.saved, []);
-  });
-});
-
-describe('library document', () => {
-  it('dirty flag: saved-query mutations set it; markLibrarySaved clears it', () => {
-    const s = createState(reader());
-    const tab = s.tabs.value[0]; tab.sqlDraft = 'SELECT 1';
-    expect(s.libraryDirty.value).toBe(false);
-    createSavedQuery(s, tab, 'Q', '', vi.fn());
-    expect(s.libraryDirty.value).toBe(true);
-    markLibrarySaved(s);
-    expect(s.libraryDirty.value).toBe(false);
-    toggleFavorite(s, tab.savedId!, vi.fn());            // favorite the just-saved entry
-    expect(s.libraryDirty.value).toBe(true);
-    markLibrarySaved(s);
-    renameSaved(s, tab.savedId!, 'Q2', undefined, vi.fn());
-    expect(s.libraryDirty.value).toBe(true);
-    markLibrarySaved(s);
-    deleteSaved(s, tab.savedId!, vi.fn());
-    expect(s.libraryDirty.value).toBe(true);
-    markLibrarySaved(s);
-    importSaved(s, [{ name: 'I', sql: 'i' }], vi.fn(), () => 'gi');
-    expect(s.libraryDirty.value).toBe(true);
-  });
-
-  it('renameLibrary trims + persists + marks dirty; blank falls back to the default', () => {
-    const s = createState(reader());
-    const saveName = vi.fn();
-    renameLibrary(s, '  My queries  ', saveName);
-    expect(s.libraryName.value).toBe('My queries');
-    expect(s.libraryDirty.value).toBe(true);
-    expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My queries');
-    renameLibrary(s, '   ', saveName);
-    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
-  });
-
-  it('newLibrary clears queries + name, clears dirty, prunes dangling tab links', () => {
-    const s = createState(reader());
-    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
-    s.libraryName.value = 'Old'; s.libraryDirty.value = true;
-    s.tabs.value[0].savedId = 's1';                            // dangling after clear → pruned
-    s.tabs.value[0].editorMode = 'spec';
-    s.tabs.value.push(newTabObj('t2'));                        // no savedId → skipped by prune
-    const save = vi.fn(), saveName = vi.fn();
-    newLibrary(s, save, saveName);
-    expect(s.savedQueries).toEqual([]);
-    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
-    expect(s.libraryDirty.value).toBe(false);
-    expect(s.tabs.value[0].savedId).toBeNull();
-    expect(s.tabs.value[0].editorMode).toBe('sql');
-    expect(save).toHaveBeenCalledWith(KEYS.saved, []);
-    expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, DEFAULT_LIBRARY_NAME);
-  });
-
-  it('replaceLibrary keeps ids (mints for id-less), carries metadata, adopts the base name, clears dirty, prunes links', () => {
-    const s = createState(reader());
-    s.savedQueries = [savedQuery({ id: 'old', name: 'X', sql: 'x' })];
-    s.tabs.value[0].savedId = 'old';                           // becomes dangling → pruned
-    s.tabs.value[0].editorMode = 'spec';
-    s.libraryDirty.value = true;
-    const chart = { cfg: { type: 'bar', x: 0, y: [1], series: null }, key: 'k' };
-    const incoming = [
-      { id: 'keep', name: 'A', sql: '1', favorite: true, description: 'd', chart, view: 'json' },
-      { name: 'B', sql: '2', favorite: false },          // id-less → genId
-      { id: 'txt', name: 'N', sql: '', favorite: false, panel: { cfg: { type: 'text', content: 'x' } } },
-    ];
-    let n = 0;
-    const save = vi.fn(), saveName = vi.fn();
-    replaceLibrary(s, incoming, 'My Library.json', save, saveName, () => 'g' + (++n));
-    expect(s.savedQueries.map((q) => q.id)).toEqual(['keep', 'g1', 'txt']);
-    expect(s.savedQueries[0].sql).toBe('1');
-    expect(s.savedQueries[0].spec).toEqual({
-      name: 'A', favorite: true, description: 'd',
-      panel: { cfg: chart.cfg, key: 'k' }, view: 'json',
-    });
-    expect(queryPanel(s.savedQueries[2])).toEqual({ cfg: { type: 'text', content: 'x' } });
-    expect('chart' in s.savedQueries[2]).toBe(false);
-    expect(s.libraryName.value).toBe('My Library');            // extension stripped
-    expect(s.libraryDirty.value).toBe(false);
-    expect(s.tabs.value[0].savedId).toBeNull();
-    expect(s.tabs.value[0].editorMode).toBe('sql');
-    expect(save).toHaveBeenCalledWith(KEYS.saved, s.savedQueries);
-    expect(saveName).toHaveBeenCalledWith(KEYS.libraryName, 'My Library');
-  });
-
-  it('replaceLibrary mints fresh ids for duplicate incoming ids, keeping every id unique', () => {
-    const s = createState(reader());
-    const incoming = [
-      { id: 'dup', name: 'A', sql: '1' },
-      { id: 'dup', name: 'B', sql: '2' }, // same id → must be reassigned
-      { id: 'uniq', name: 'C', sql: '3' },
-      { name: 'D', sql: '4' },            // id-less → minted
-    ];
-    // first mint collides with an already-seen id → the retry loop must skip it
-    let n = 0;
-    const genId = () => { n += 1; return n === 1 ? 'dup' : 'g' + n; };
-    replaceLibrary(s, incoming, 'lib.json', vi.fn(), vi.fn(), genId);
-    const ids = s.savedQueries.map((q) => q.id);
-    expect(ids[0]).toBe('dup');                       // first occurrence keeps its id
-    expect(ids[2]).toBe('uniq');                      // unique id preserved
-    expect(ids).toHaveLength(4);
-    expect(new Set(ids).size).toBe(4);               // all unique (no duplicate 'dup')
-  });
-
-  it('replaceLibrary with no usable file name falls back to the default', () => {
-    const s = createState(reader());
-    replaceLibrary(s, [{ name: 'A', sql: '1' }], '.json', vi.fn(), vi.fn(), () => 'g');
-    expect(s.libraryName.value).toBe(DEFAULT_LIBRARY_NAME);
-  });
-
-  it('Replace and Append reject invalid Specs before any Library mutation', () => {
-    const s = createState(reader());
-    s.savedQueries = [savedQuery({ id: 'existing', name: 'Existing', sql: 'SELECT 1' })];
-    s.libraryName.value = 'Before';
-    s.libraryDirty.value = false;
-    const save = vi.fn(), saveName = vi.fn();
-    // `replaceLibrary`/`appendLibrary` take `readonly Record<string, unknown>[]`
-    // (any raw import shape); SavedQueryV2 is a strict interface with no index
-    // signature of its own, so a same-named-fields-plus-index-signature
-    // intersection cast (a genuine subtype, not an `unknown` bridge) satisfies it.
-    const invalid = [savedQuery({ id: 'bad', name: 'Bad', panel: { cfg: { type: 'line', x: 0, y: [] } } })] as
-      (SavedQueryV2 & Record<string, unknown>)[];
-    expect(() => replaceLibrary(s, invalid, 'after.json', save, saveName)).toThrow('panel.cfg.y');
-    expect(() => appendLibrary(s, invalid, save)).toThrow('panel.cfg.y');
-    expect(s.savedQueries.map((query) => query.id)).toEqual(['existing']);
-    expect(s.libraryName.value).toBe('Before');
-    expect(s.libraryDirty.value).toBe(false);
-    expect(save).not.toHaveBeenCalled();
-    expect(saveName).not.toHaveBeenCalled();
-  });
-
-  it('appendLibrary merges via importSaved (dedupe), returns counts, sets dirty', () => {
-    const s = createState(reader());
-    s.savedQueries = [savedQuery({ id: 's1', name: 'A', sql: '1' })];
-    const r = appendLibrary(s, [
-      { id: 's1', name: 'A', sql: '1' },                 // content dup → skip
-      { name: 'B', sql: '2' },                           // add
-    ], vi.fn(), () => 'gb');
-    expect(r).toEqual({ added: 1, updated: 0, skipped: 1 });
-    expect(s.savedQueries.map(queryName)).toEqual(['A', 'B']);
-    expect(s.libraryDirty.value).toBe(true);
-  });
-
-  it('library ops default their persistence seams (real storage helpers)', () => {
-    vi.stubGlobal('localStorage', memStore());
-    const s = createState(reader());
-    s.tabs.value[0].sqlDraft = 'SELECT 1';
-    const e = createSavedQuery(s, s.tabs.value[0], 'Q')!; // default save/now/description
-    renameLibrary(s, 'Lib');                // default saveName
-    replaceLibrary(s, [{ id: e.id, name: 'Q', sql: 'SELECT 1' }], 'f.json'); // default seams
-    newLibrary(s);                          // default seams
-    appendLibrary(s, [{ name: 'Z', sql: 'z' }]); // default seam
-    expect(s.savedQueries.some((q) => queryName(q) === 'Z')).toBe(true);
   });
 });
 
@@ -751,17 +647,27 @@ describe('history', () => {
 });
 
 describe('default persistence', () => {
-  it('createSavedQuery/renameSaved/toggleFavorite/deleteSaved/recordHistory/clearHistory persist via storage by default', () => {
+  it('recordHistory/clearHistory/deleteHistory persist via storage by default', () => {
     const s = createState(reader());
-    // Exercises the default saveJSON path (writes to happy-dom localStorage).
-    s.tabs.value[0].sqlDraft = 'SELECT 9';
-    const e = createSavedQuery(s, s.tabs.value[0], 'nine')!;
-    renameSaved(s, e.id, 'nine!');
-    toggleFavorite(s, e.id);
+    // Exercises the default saveJSON path (writes to happy-dom localStorage) —
+    // recordHistory/deleteHistory/clearHistory are untouched by #287 W4 (only
+    // the saved-query CRUD ops moved off the flat `save` seam onto the
+    // aggregate commit, which has no meaningful "real" default — see
+    // the next test).
     recordHistory(s, { sqlDraft: 'SELECT 9', result: { rawText: null, rows: [], progress: { elapsed_ns: 0 } } });
-    deleteSaved(s, 'nope');
     deleteHistory(s, 'nope');
     clearHistory(s);
     expect(s.history).toEqual([]);
+  });
+  it('createSavedQuery/renameSaved/toggleFavorite/deleteSaved always require an injected commit (#287 W4 — no flat-storage default)', async () => {
+    const s = savedTestState();
+    const commit = fakeWorkspaceCommit();
+    s.tabs.value[0].sqlDraft = 'SELECT 9';
+    const e = okEntry(await createSavedQuery(s, s.tabs.value[0], 'nine', undefined, commit));
+    await renameSaved(s, e.id, 'nine!', undefined, commit);
+    await toggleFavorite(s, e.id, commit);
+    await deleteSaved(s, 'nope', commit);
+    expect(commit).toHaveBeenCalledTimes(4);
+    expect(s.savedQueries.some((q) => q.id === e.id)).toBe(true);
   });
 });

@@ -12,7 +12,7 @@ import {
   normalizeRowLimit,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
-import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
 import { splitStatements } from '../core/sql-split.js';
 import { analysisView, fieldControls, fieldControlKind } from '../core/param-pipeline.js';
 import { hasOptionalBlocks } from '../core/optional-blocks.js';
@@ -282,6 +282,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     saveJSON,
     now: () => Date.now(),
     specValidators,
+    workspace: app.workspace,
   });
   app.saved = saved;
   app.sqlEditor.onDocChange((value) => {
@@ -1200,19 +1201,25 @@ export function createApp(env: CreateAppEnv = {}): App {
     return { close };
   }
 
-  function commitLinkedQuery(): SavedQueryV2 | null {
+  async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    const result = saved.commit(tab, evaluated);
+    // Serialized with every other saved-query write so a save can't interleave
+    // with a concurrent star/delete and commit a stale whole-workspace candidate
+    // (#287 review fix — see `app.serializeWrite`).
+    const result = await app.serializeWrite(() => saved.commit(tab, evaluated));
     if (!result.ok) {
-      // 'rejected' (commit's own defensive re-check inside the service) stays
-      // a silent no-op, same as the pre-extraction inline code's own bare
-      // `if (!entry) return null;`.
+      // 'rejected' (commit's own defensive re-check inside the service, OR the
+      // aggregate strictly rejecting the whole-workspace commit — #287 W4)
+      // stays a silent no-op for the tab/editor state (nothing was mutated),
+      // but a real commit rejection still surfaces its first diagnostic.
       if (result.reason === 'invalid-spec') {
         queryDoc.revealFirstSpecError(tab);
         flashToast('Fix Spec errors before saving', { document: doc });
       } else if (result.reason === 'empty') {
         flashToast('Nothing to save', { document: doc });
+      } else if (result.diagnostics?.length) {
+        flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
       }
       return null;
     }
@@ -1227,7 +1234,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     return result.entry;
   }
 
-  function saveActiveQuery(): SavedQueryV2 | null | undefined {
+  async function saveActiveQuery(): Promise<SavedQueryV2 | null | undefined> {
     if (savedForTab(app.state, app.activeTab())) return commitLinkedQuery();
     openSavePopover();
     return undefined;
@@ -1248,10 +1255,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     const input = h('input', { class: 'sp-input', value: prefill });
     const descInput = h('textarea', { class: 'sp-desc', rows: '3', placeholder: 'What this query does — included in Markdown export' });
     let close: () => void;
-    const commit = (): void => {
+    const commit = async (): Promise<void> => {
       if (!input.value.trim()) return;
-      const result = saved.create(tab, input.value, descInput.value);
-      if (!result.ok) return;
+      const result = await app.serializeWrite(() => saved.create(tab, input.value, descInput.value));
+      if (!result.ok) {
+        if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
+        return;
+      }
       close();
       queryDoc.revalidateSpecDrafts();
       app.specEditor.syncFromState();
@@ -1379,6 +1389,60 @@ export function createApp(env: CreateAppEnv = {}): App {
     return app.workspace.loadCurrent();
   };
 
+  // #287 W4: the async boot-init step — migrate-if-needed + loadCurrent (via
+  // `loadDashboardWorkspace` above), then PROJECT the resolved aggregate onto
+  // `state` so the Workbench (not only the /dashboard route) treats it as the
+  // saved-query collection's single source of truth. `main.ts`'s `bootstrap`
+  // awaits this before the first `renderApp()`. A null/failed load leaves
+  // `state` exactly as `createState()`'s synchronous legacy read already
+  // populated it (a brand-new install with nothing to migrate yet, or a
+  // degraded IndexedDB) — including its own synchronously-minted
+  // `workspaceId` placeholder (see `createState`'s `mintWorkspaceId`), so a
+  // saved-query CRUD op run in this window (or by a caller that never awaits
+  // this step at all) still succeeds rather than failing closed.
+  // #287 W5: the projection every commit of the aggregate onto `state`
+  // shares — extracted from this same assignment's pre-W5 inline body so
+  // `loadWorkspaceOnBoot` and every file-menu.js write (New/Import/Replace/
+  // rename) apply it identically. `libraryDirty` clears here too: a workspace
+  // that was JUST committed (boot's own load, or a file-menu op's commit) is
+  // by construction in sync with what's persisted, matching the pre-#287
+  // New/Replace-clears-dirty behavior file-menu.js's own ops used to apply
+  // directly.
+  const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
+    app.state.savedQueries = workspace.queries;
+    app.state.dashboard = workspace.dashboard;
+    app.state.workspaceId = workspace.id;
+    app.state.libraryName.value = workspace.name;
+    app.state.libraryDirty.value = false;
+  };
+  app.applyCommittedWorkspace = applyCommittedWorkspace;
+  // #287 W5: the shared WorkspaceIdGen seam file-menu.js's New workspace /
+  // Import / Replace operations mint fresh ids through — the same generator
+  // `loadDashboardWorkspace`'s one-shot legacy migration already uses inline
+  // above (`uid('ws-')`).
+  app.genId = () => uid('ws-');
+
+  // #287 review fix: serialize saved-query writes so overlapping async CRUD
+  // commits can't interleave. Without this, a delete and a star toggle fired in
+  // rapid succession each build a candidate from the same stale
+  // `state.savedQueries` snapshot, and whichever commits LAST wins — resurrecting
+  // a just-deleted query (or clobbering a concurrent edit). Chaining each op
+  // after the previous one fully resolves means the next op reads the freshest
+  // projected state. The chain swallows rejections so one failed op never
+  // wedges the queue; the op's own result/rejection still reaches its caller.
+  let writeChain: Promise<unknown> = Promise.resolve();
+  app.serializeWrite = <T,>(op: () => Promise<T>): Promise<T> => {
+    const run = writeChain.then(op, op);
+    writeChain = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  app.loadWorkspaceOnBoot = async () => {
+    const workspace = await app.loadDashboardWorkspace();
+    if (workspace) applyCommittedWorkspace(workspace);
+    return workspace;
+  };
+
   // Open the dashboard in a new tab and stand ready to hand it our credentials
   // — the cross-tab auth-handoff GRANT side itself is the session's job now
   // (`conn.grantHandoffTo`, #276 Phase 2); this stays app-side only because
@@ -1398,7 +1462,14 @@ export function createApp(env: CreateAppEnv = {}): App {
     closeTab: (id) => closeTab(app, id),
     loadIntoNewTab: (queryOrName, sql) => { loadIntoNewTab(app, queryOrName, sql); toEditorOnMobile(); },
     login: (idpId, targetOrigin) => conn.beginOAuth(idpId, targetOrigin),
-    connect: async (input) => { await conn.connectBasic(input); app.renderApp(); },
+    // Basic-auth login renders in-page (no page reload), so — unlike the OAuth
+    // path, where `main.ts`'s `bootstrap` awaits it — this is the ONLY place the
+    // aggregate load + legacy migration runs for a username/password session.
+    // Without it a first basic-auth session would render on the placeholder
+    // workspaceId and skip `migrateLegacyWorkspaceIfNeeded`, so the first CRUD
+    // commit would mint an orphan aggregate the migration marker then treats as
+    // "already migrated" — permanently stranding legacy favorites/layout (#287).
+    connect: async (input) => { await conn.connectBasic(input); await app.loadWorkspaceOnBoot(); app.renderApp(); },
     share,
     copyResult,
     // `ActionsRegistry.copySnapshot`'s public `result: Json | null` is looser

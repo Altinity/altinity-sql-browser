@@ -338,3 +338,32 @@ re-opens the decision via a fresh spike:
 
 If re-opened, the candidate is **Preact** (`spike/preact-schema` stands as
 evidence, +6.8 KB gzip), never React (+45 KB).
+
+## Addendum — the workspace aggregate is the saved-query source of truth (#287, Dashboard v1 Phase 5)
+
+Phase 5 made the persisted `StoredWorkspaceV1` aggregate (via the atomic
+`WorkspaceRepository`, IndexedDB) the single source of truth for the saved-query
+collection, retiring the flat `asb:saved` localStorage write path (read once only
+as the legacy-migration source). This is a state-flow change worth recording
+against this ADR because it re-shapes how `state.savedQueries` relates to
+reactivity:
+
+- `state.savedQueries` is now a **projection** of the committed workspace, not a
+  directly-mutated array. Boot loads the aggregate and projects it (queries,
+  Dashboard, workspace id/name); every file operation commits and re-projects
+  through one shared `app.applyCommittedWorkspace` helper.
+- All query CRUD is **strict async, validate-before-publish** (#280): each op
+  computes a candidate, `await`s `WorkspaceRepository.commit` (which validates the
+  whole candidate, then atomically replaces the record), and only then mutates
+  in-memory state + tabs. A failed commit mutates nothing and keeps the draft
+  dirty. The array is not a signal (it never was — see #276); the render surfaces
+  repaint explicitly after a commit, exactly as the pre-#287 synchronous code did.
+- Because commits are async, saved-query writes are **serialized** per app
+  (`app.serializeWrite`) so two overlapping ops can't each build a candidate from
+  the same stale snapshot and have the later commit resurrect a just-deleted query
+  or clobber a concurrent edit. This is last-commit-wins within one tab; #280's
+  multi-tab "last successful commit wins, no compare-and-swap" policy is unchanged.
+
+No framework pull here: the change is about persistence atomicity and validation,
+not a render model. The imperative-islands + signals-for-invalidation decision
+stands.

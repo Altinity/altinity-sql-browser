@@ -412,6 +412,24 @@ body {
 .fm-dialog-cancel:hover { background: var(--bg-hover); }
 .fm-dialog-confirm { border: none; background: var(--accent); color: #fff; font-weight: 600; }
 .fm-dialog-confirm:hover { filter: brightness(1.08); }
+/* Import conflict dialog + multi-dashboard picker (#287 W5) — wider variant
+   of the confirm card above, plus the conflict-row/select controls. */
+.fm-dialog-card--wide { width: 460px; }
+.fm-select {
+  font-family: inherit; font-size: 12px; padding: 4px 6px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-modal); color: var(--fg);
+}
+.fm-conflict-global {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border-faint);
+}
+.fm-conflict-rows { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+.fm-conflict-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--border-faint);
+}
+.fm-conflict-row:last-child { border-bottom: none; }
+.fm-picker-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
 
 /* ------------ main row ------------ */
 /* position:relative so the mobile sidebar overlay + backdrop (#126) can anchor
