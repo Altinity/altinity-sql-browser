@@ -43,6 +43,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   never executes queries.
 
 ### Fixed
+- **Open combobox popovers stay anchored while their containing strip scrolls**
+  (#296). The shared fixed-position listbox now listens for capture-phase
+  document scroll events only while open, so horizontal scrolling in either the
+  Workbench variable strip or Dashboard filter strip updates its anchor instead
+  of leaving the dropdown behind over unrelated fields.
 - **The Workbench favorite star now drives Dashboard tile membership** (part of
   #299, post-#287 aggregate). Since `dashboard.tiles[]` became the canonical
   Dashboard membership (#280/#287), starring a query only flipped `spec.favorite`

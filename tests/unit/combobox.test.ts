@@ -55,6 +55,25 @@ describe('createCombobox — open/close + ARIA', () => {
     combo.onBlur();
     expect(combo.isOpen()).toBe(false);
   });
+  it('repositions its fixed listbox on an ancestor scroll while open, then detaches on close', () => {
+    const { input, listEl, combo } = build();
+    const scroller = document.createElement('div');
+    document.body.append(scroller);
+    scroller.append(input);
+    let left = 20;
+    input.getBoundingClientRect = () => ({ bottom: 30, left, width: 100 } as DOMRect);
+
+    combo.onFocus();
+    expect(listEl.style.left).toBe('20px');
+    left = 60;
+    scroller.dispatchEvent(new Event('scroll'));
+    expect(listEl.style.left).toBe('60px');
+
+    combo.close();
+    left = 90;
+    scroller.dispatchEvent(new Event('scroll'));
+    expect(listEl.style.left).toBe('60px');
+  });
   it('the live region announces the option count, or "No matches"', () => {
     const { input, liveEl, combo } = build();
     combo.onFocus();

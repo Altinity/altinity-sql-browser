@@ -22,8 +22,9 @@
 // under the input via `fixedAnchor` (dom.js) at open time — the same trick
 // the File/user menus already use to escape an ancestor's `overflow`
 // clipping (the var-strip / dashboard filter bar both scroll horizontally).
-// Repositioning only happens on open/refresh, not continuously on scroll —
-// a known, minor v1 limitation (documented, not silently ignored).
+// While open, the listbox repositions on capture-phase document scroll events.
+// `scroll` does not bubble, so capture is what sees horizontal strip scrolling
+// as well as ordinary document scrolling.
 
 import { fixedAnchor } from './dom.js';
 
@@ -154,6 +155,10 @@ export function createCombobox(
     listEl.style.minWidth = rect.width + 'px';
   }
 
+  function repositionOnScroll(): void {
+    if (open) position();
+  }
+
   function render(): void {
     const ids: string[] = [];
     const children: HTMLElement[] = [];
@@ -193,6 +198,7 @@ export function createCombobox(
     options = getOptions(input.value) || [];
     position();
     render();
+    d.addEventListener('scroll', repositionOnScroll, true);
   }
 
   function closeList(): void {
@@ -202,6 +208,7 @@ export function createCombobox(
     input.setAttribute('aria-expanded', 'false');
     activeIndex = -1;
     input.removeAttribute('aria-activedescendant');
+    d.removeEventListener('scroll', repositionOnScroll, true);
     // Review (phase-7 user feedback): this is the ONE place every close path
     // funnels through — blur, Escape, Enter (with or without an active
     // option), AND an option's mousedown-commit (which closes the list
