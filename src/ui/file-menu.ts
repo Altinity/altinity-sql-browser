@@ -20,7 +20,7 @@ import { Icon } from './icons.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
 import { buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
-import { queryFavorite, queryName } from '../core/saved-query.js';
+import { queryName } from '../core/saved-query.js';
 import { decodePortableBundleJson, encodePortableBundleJson } from '../dashboard/model/portable-bundle-codec.js';
 import { normalizeLegacyLibraryToBundle } from '../dashboard/model/legacy-bundle.js';
 import { buildDashboardExportBundle, buildWorkspaceExportBundle } from '../dashboard/model/dashboard-export.js';
@@ -52,7 +52,26 @@ export function libraryControls(app: App): HTMLElement[] {
   }, h('span', null, 'File'), Icon.chevDown());
   app.dom.libraryTitle = h('div', { class: 'lib-title' });
   renderLibraryTitle(app);
-  return [app.dom.fileBtn, app.dom.libraryTitle];
+  // #302: Dashboard navigation lives next to the workspace name (not in the
+  // File menu). A plain navigation control (not a dropdown) that opens the
+  // standalone Dashboard; shown only when the workspace has a Dashboard. The
+  // label collapses to icon-only on narrow screens via `hd-hide-mobile-label`,
+  // but the accessible name ("Open Dashboard") is always present.
+  app.dom.dashboardNav = h('button', {
+    class: 'hd-dash-nav', title: 'Open Dashboard', 'aria-label': 'Open Dashboard',
+    onclick: () => app.actions.openDashboard(),
+  }, Icon.layers(), h('span', { class: 'hd-dash-nav-label hd-hide-mobile-label' }, 'Dashboard →'));
+  renderDashboardNav(app);
+  return [app.dom.fileBtn, app.dom.libraryTitle, app.dom.dashboardNav];
+}
+
+/** #302 — show the header "Dashboard →" control only when the current workspace
+ *  has a Dashboard. Re-run on library changes (see the workbench-shell effect +
+ *  `afterLibraryChange`). No-op before `libraryControls` has built the slot. */
+export function renderDashboardNav(app: App): void {
+  const nav = app.dom.dashboardNav;
+  if (!nav) return;
+  nav.hidden = !app.state.dashboard;
 }
 
 /** (Re)render the workspace title into its slot: a click-to-rename name button
@@ -107,25 +126,18 @@ export function openFileMenu(app: App): void {
   const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
 
   const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
-  const importDashboardInput = pickerInput(app, (f) => onImportDashboardFile(app, f));
   const replaceWorkspaceInput = pickerInput(app, (f) => onReplaceWorkspaceFile(app, f));
   const item = (icon: Node, label: string, meta: string | null, onClick: () => void): HTMLButtonElement => h('button', { class: 'fm-item', onclick: onClick },
     h('span', { class: 'fm-icon' }, icon), h('span', { class: 'fm-label' }, label),
     meta ? h('span', { class: 'fm-meta' }, meta) : null);
   const sep = (): HTMLDivElement => h('div', { class: 'fm-sep' });
   const empty = list.length === 0;
-  const hasFav = list.some(queryFavorite);
-  const hasDashboard = !!app.state.dashboard;
 
+  // #302: the Workbench File menu owns workspace + query-collection operations
+  // ONLY. Dashboard navigation moved to the header "Dashboard →" control
+  // (`libraryControls`), and Dashboard import/export moved to the Dashboard
+  // page's own File menu — none of them appear here anymore.
   const newWorkspaceItem = item(Icon.plus(), 'New workspace…', null, () => { close(); newWorkspaceAction(app); });
-  // Open the favorited subset of the workspace as a standalone dashboard
-  // (#149). Enabled only when at least one query is starred; otherwise it
-  // explains why.
-  const dashboardItem = item(Icon.layers(), 'Open as dashboard', hasFav ? null : 'no favorites', () => {
-    close();
-    if (!hasFav) { flashToast('Star a query to add it to the dashboard', { document: app.document }); return; }
-    app.actions.openDashboard();
-  });
   // Variable recent-value history (#171): this is the closest thing the app
   // has to a "settings" surface today (no dedicated preferences panel exists
   // yet — rg for one turned up nothing), so it follows the File menu's own
@@ -151,31 +163,22 @@ export function openFileMenu(app: App): void {
   const menu = h('div', { class: 'file-menu' },
     newWorkspaceItem,
     sep(),
-    h('div', { class: 'fm-section' }, 'Dashboard'),
-    dashboardItem,
-    sep(),
     h('div', { class: 'fm-section' }, 'Variable history'),
     historyToggle,
     clearAllRecentItem,
     sep(),
     h('div', { class: 'fm-section' }, 'Import / replace'),
     item(Icon.upload(), 'Import queries…', null, () => { importQueriesInput.click(); close(); }),
-    item(Icon.upload(), 'Import Dashboard…', null, () => { importDashboardInput.click(); close(); }),
     item(Icon.refresh(), 'Replace workspace…', null, () => { replaceWorkspaceInput.click(); close(); }),
     sep(),
     h('div', { class: 'fm-section' }, 'Export'),
-    item(Icon.download(), 'Export Dashboard…', hasDashboard ? '.json' : 'no dashboard', () => {
-      close();
-      if (!hasDashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
-      exportDashboardAction(app);
-    }),
     item(Icon.download(), 'Export workspace…', '.json', () => { close(); exportWorkspaceAction(app); }),
     sep(),
     h('div', { class: 'fm-section' }, 'Share / publish'),
     item(Icon.download(), 'Download Markdown', '.md', () => { close(); downloadAction(app, 'md'); }),
     item(Icon.download(), 'Download SQL', '.sql', () => { close(); downloadAction(app, 'sql'); }),
     h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace'),
-    importQueriesInput, importDashboardInput, replaceWorkspaceInput);
+    importQueriesInput, replaceWorkspaceInput);
 
   const overlay = h('div', { class: 'fm-overlay', onclick: close });
   app.dom.fileMenuOverlay = overlay;
@@ -271,12 +274,19 @@ function currentWorkspace(app: App): StoredWorkspaceV1 {
  *  may be pruned) and the saved list (count + rows). The title (name + dirty
  *  dot) repaints itself via the libraryName/libraryDirty effect in createApp. */
 function afterLibraryChange(app: App): void {
+  // #302: on the standalone Dashboard route the only committing operation is
+  // Import Dashboard, and none of the Workbench chrome below exists — re-render
+  // the dashboard instead (repointing the URL at the possibly-new dashboard id).
+  if (app.dashboardRoute) { app.reloadDashboardRoute(); return; }
   app.updateSaveBtn();
   // Always defined by the time a file-menu action can run (post-boot,
   // post-first-renderApp()) — app.types.ts only marks it optional because it's
   // absent before that first render.
   app.updateEditorModeUi!();
   renderSavedHistory(app);
+  // Keep the header "Dashboard →" control in sync when a commit adds/removes
+  // the workspace's Dashboard (e.g. Replace workspace / Import queries).
+  renderDashboardNav(app);
 }
 
 /** Commit one whole candidate `StoredWorkspaceV1`, then project + repaint on
@@ -460,6 +470,21 @@ function onImportDashboardFile(app: App, file: File): void {
   readBundleFile(app, file, (bundle) => startImportDashboard(app, bundle));
 }
 
+/** #302 — programmatically trigger the "Import Dashboard…" flow (used by the
+ *  Dashboard page's own File menu via `app.actions.importDashboard`): open a
+ *  file picker, then run the same transactional import as the Workbench used to.
+ *  On success `commitPlan` → `afterLibraryChange` repaints the active surface
+ *  (the Dashboard route re-renders itself). */
+export function triggerImportDashboard(app: App): void {
+  const input = pickerInput(app, (f) => onImportDashboardFile(app, f));
+  // Self-remove once a selection fires so repeated imports don't leak hidden
+  // inputs onto the page (the Workbench menu's own pickers are cleaned up with
+  // the menu; this one has no menu to ride along with).
+  input.addEventListener('change', () => input.remove(), { once: true });
+  app.document.body.appendChild(input);
+  input.click();
+}
+
 function startImportDashboard(app: App, bundle: PortableBundleV1): void {
   const dashboards = listBundleDashboards(bundle);
   if (!dashboards.length) { flashToast('✕ No dashboard in file', { document: app.document }); return; }
@@ -548,11 +573,12 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
   flashToast('Exported → .json', { document: app.document });
 }
 
-function exportDashboardAction(app: App): void {
-  // `!`: the only call site (the "Export Dashboard…" item's onclick, above)
-  // already checked `hasDashboard` and returns early with its own toast
-  // otherwise — this is never invoked with a null Dashboard.
-  const dashboard = app.state.dashboard!;
+export function exportDashboardAction(app: App): void {
+  // #302: invoked from the Dashboard page's File menu (via
+  // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
+  // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
+  const dashboard = app.state.dashboard;
+  if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
   const bundle = buildDashboardExportBundle(dashboard, app.state.savedQueries, new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
 }

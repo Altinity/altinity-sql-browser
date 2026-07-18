@@ -287,6 +287,20 @@ const appDefaults: App = {
     }),
     clearCurrent: async () => {},
   },
+  // #288 Phase 6 — Dashboard viewing seams. In-memory no-op stores by default;
+  // a test exercising the handoff/detached-view flow overrides these.
+  handoff: {
+    put: async () => {},
+    take: async () => null,
+  },
+  detachedViews: {
+    put: async () => {},
+    get: async () => null,
+  },
+  dashboardOpenSource: null,
+  dashboardRoute: false,
+  reloadDashboardRoute: () => {},
+  consumeDashboardHandoff: async () => null,
   loadDashboardWorkspace: async () => null,
   loadWorkspaceOnBoot: async () => null,
   // Inert placeholders — `base` below overrides both with real, state-backed
@@ -359,6 +373,7 @@ const appDefaults: App = {
   renderApp: () => {},
   renderDashboard: () => {},
   openDashboard: () => {},
+  openDashboardForViewing: () => {},
   actions: {} as ActionsRegistry,
 };
 
@@ -575,6 +590,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       openCreateInNewTab: vi.fn(),
       openShortcuts: vi.fn(),
       openDashboard: vi.fn(),
+      openDashboardForViewing: vi.fn(),
+      exportDashboard: vi.fn(),
+      importDashboard: vi.fn(),
       openUserMenu: vi.fn(),
       insertAtCursor: vi.fn(),
       replaceEditor: vi.fn(),

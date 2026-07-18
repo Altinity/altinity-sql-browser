@@ -19,6 +19,9 @@ import type { SchemaCatalogService } from '../application/schema-catalog-service
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { HandoffStore } from '../workspace/handoff-store.types.js';
+import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
+import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
 import type { StoredWorkspaceV1 } from '../generated/json-schema.types.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
 import type { DynamicSources } from '../core/spec-completion.js';
@@ -64,6 +67,9 @@ export interface AppDom {
   fileMenu?: HTMLElement;
   fileMenuOverlay?: HTMLElement;
   libraryTitle?: HTMLElement;
+  /** #302 — the Workbench header "Dashboard →" nav control (shown only when the
+   *  current workspace has a Dashboard). */
+  dashboardNav?: HTMLElement;
   qtabsInner?: HTMLElement;
   resultsRegion?: HTMLElement;
   runElapsedEl?: HTMLElement;
@@ -159,6 +165,12 @@ export interface ActionsRegistry {
   openCreateInNewTab(target: string, name?: string): Promise<void>;
   openShortcuts(): void;
   openDashboard(): void;
+  /** #288 Phase 6 — open the current dashboard read-only in a new view tab. */
+  openDashboardForViewing(): void;
+  /** #302 — export the current dashboard's dependency closure as a bundle. */
+  exportDashboard(): void;
+  /** #302 — import a Dashboard bundle through the transactional planner. */
+  importDashboard(): void;
   insertAtCursor(text: string): void;
   replaceEditor(text: string): void;
   loadColumns(db: string, table: string): Promise<void>;
@@ -247,6 +259,21 @@ export interface App {
    *  favorites-driven Dashboard render still reads legacy keys; Phases 3-6 of
    *  #280 route reads/commits through it and retire the legacy keys. */
   workspace: WorkspaceRepository;
+  /** #288 Phase 6 — the one-time cross-tab token store backing VIEW-mode
+   *  Dashboard handoff (ADR-0003): the opener writes a validated snapshot
+   *  bundle under an unguessable token before opening the viewer tab, which
+   *  atomically consumes (get+delete) and materializes it. Injected IndexedDB
+   *  seam, own database. */
+  handoff: HandoffStore;
+  /** #288 Phase 6 — the persistent detached-views store a consumed handoff
+   *  materializes into: a read-only Dashboard copy under its own fresh
+   *  workspace id, detached from the editable primary workspace so it survives
+   *  relogin/reload and is unaffected by later Workbench edits (ADR-0003). */
+  detachedViews: DetachedViewsStore;
+  /** #288 Phase 6 — THIS tab's parsed `/dashboard` open source: `?ws=&dash=`
+   *  (edit, current-workspace) or `?st=&dash=` (a one-time view handoff), or
+   *  null on a bare/legacy `/dashboard` open. Read by `renderDashboard`. */
+  dashboardOpenSource: DashboardOpenSource | null;
   saveJSON(key: string, value: unknown): void;
   saveStr(key: string, value: string): void;
   /** The one deliberate delegate survivor of #276 Phase 5's params-group
@@ -362,6 +389,22 @@ export interface App {
   renderApp(): void;
   renderDashboard(): void;
   openDashboard(): void;
+  /** #288 Phase 6 — open the current dashboard in a read-only VIEW-mode tab via
+   *  the one-time IndexedDB token handoff (ADR-0003). */
+  openDashboardForViewing(): void;
+  /** #288/#302 — true when THIS tab is the standalone `/dashboard` route (set
+   *  once from the pathname). Lets shared post-commit logic repaint the right
+   *  surface. */
+  dashboardRoute: boolean;
+  /** #302 — repaint the standalone Dashboard route after an in-tab import: point
+   *  the URL at the (possibly new) current dashboard id, then re-render. */
+  reloadDashboardRoute(): void;
+  /** #288 Phase 6 — the VIEW-mode viewer's side of the one-time handoff: consume
+   *  this tab's `?st=` token, materialize the carried bundle into the persistent
+   *  detached store, rewrite the URL to the durable `?ws=` form, and return the
+   *  detached workspace (or null when the token is missing/expired/undecodable).
+   *  ADR-0003. */
+  consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
   /** #286 Phase 4: resolve the current StoredWorkspaceV1 for the Dashboard
    *  viewer, running the one-shot legacy migration first when no aggregate
    *  exists. Returns null when neither an aggregate nor a migratable legacy

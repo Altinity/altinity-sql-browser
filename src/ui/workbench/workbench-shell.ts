@@ -57,7 +57,7 @@ import { renderSchema } from '../schema.js';
 import { renderResults } from '../results.js';
 import type { QueryResult } from '../results.js';
 import { renderSavedHistory } from '../saved-history.js';
-import { libraryControls, renderLibraryTitle } from '../file-menu.js';
+import { libraryControls, renderLibraryTitle, renderDashboardNav } from '../file-menu.js';
 import { SCHEMA_GRAPH_MIME } from '../dnd-mime.js';
 import { startDrag } from '../splitters.js';
 import type { DragCtx, DragRect, DragStartEvent, SplitterAxis } from '../splitters.js';
@@ -394,6 +394,10 @@ export function mountWorkbenchShell(deps: WorkbenchShellDeps): void {
     state.libraryName.value;
     state.libraryDirty.value;
     renderLibraryTitle(app);
+    // #302: the "Dashboard →" control's visibility tracks Dashboard presence,
+    // which changes alongside these signals (star toggle / import / replace all
+    // flip libraryDirty on their way through a commit).
+    renderDashboardNav(app);
   });
   // Mobile mode (#126): mirror the viewport width into `isMobile` (drives the
   // schema tree's drag/hover affordances, the results drop target, and the

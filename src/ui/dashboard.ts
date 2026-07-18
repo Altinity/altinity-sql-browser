@@ -29,7 +29,7 @@
 // is injected on the `app` controller.
 
 import { effect } from '@preact/signals-core';
-import { h } from './dom.js';
+import { h, fixedAnchor } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { resolvePanel } from '../core/panel-cfg.js';
@@ -52,6 +52,7 @@ import { defaultLayoutRegistry } from '../dashboard/layouts/layout-registry.js';
 import { flowLayoutPlugin } from '../dashboard/layouts/flow-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
+import { resolveDashboardMode } from '../dashboard/application/session-bundle.js';
 import {
   readDashboardFilterBag, writeDashboardFilterBag, filterBagSignature,
 } from '../dashboard/model/dashboard-filter-store.js';
@@ -61,7 +62,9 @@ import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, FlowPresetV1, SavedQueryV2, StoredWorkspaceV1,
 } from '../generated/json-schema.types.js';
-import type { App, AppDom } from './app.types.js';
+import type { App, AppDom, ActionsRegistry } from './app.types.js';
+import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
+import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
 import type { AppState } from '../state.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
@@ -97,6 +100,16 @@ export interface DashboardApp {
   params: Pick<WorkbenchParameterSession, 'recordBoundParams' | 'clearVarRecent'>;
   workspace: Pick<WorkspaceRepository, 'commit'>;
   loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
+  // #288 Phase 6 — viewer routing (ADR-0003): the parsed open-source of this
+  // tab, the detached-views lookup, the one-time-handoff consumer, and the
+  // projection of the resolved workspace onto app.state (so the File menu's
+  // export/import act on THIS dashboard).
+  dashboardOpenSource: DashboardOpenSource | null;
+  detachedViews: Pick<DetachedViewsStore, 'get'>;
+  consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
+  applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
+  // #302 — the Dashboard page's own File-menu operations.
+  actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openDashboardForViewing'>;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
   saveJSON(key: string, value: unknown): void;
 }
@@ -175,6 +188,85 @@ function synthesizeImplicitFilters(
   return out;
 }
 
+/** #288 — the read-only viewer's not-found state: a `current-workspace` route
+ *  whose workspace/dashboard ids no longer resolve (the workspace was replaced,
+ *  or the detached view was evicted), or a spent/expired one-time handoff token.
+ *  Renders a message + a link back and executes nothing. */
+function renderDashboardNotFound(app: DashboardApp): void {
+  const back = h('a', { class: 'dash-back', href: app.conn.basePath || '/sql' },
+    Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser'));
+  // `!`: the dashboard renders only into a mounted page.
+  app.root!.replaceChildren(h('div', { class: 'dash-page dash-notfound' },
+    h('div', { class: 'dash-empty' },
+      h('h2', { class: 'dash-notfound-title' }, 'Dashboard unavailable'),
+      h('p', null,
+        'This dashboard link is no longer available — the workspace may have been '
+        + 'replaced, or a one-time preview link was already used or has expired.'),
+      back)));
+}
+
+/** #302 — the standalone Dashboard header's own "File" menu: a keyboard- and
+ *  screen-reader-accessible dropdown owning Dashboard-scoped operations. Edit
+ *  mode offers Export / Import / Open for viewing; a read-only (detached) view
+ *  offers Export only (import + re-preview are edit-context operations). Every
+ *  item delegates to an `app.actions.*` seam (dashboard.ts never reaches into
+ *  app.ts). Esc/outside-click close and restore focus; arrows move between
+ *  items. */
+function buildDashboardFileMenu(app: DashboardApp, readOnly: boolean): HTMLElement {
+  const doc = app.document;
+  const btn = h('button', {
+    class: 'dash-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    title: 'File — dashboard import/export', 'aria-label': 'Dashboard File menu',
+  }, h('span', null, 'File'), Icon.arrow()) as HTMLButtonElement;
+  let menu: HTMLElement | null = null;
+  let overlay: HTMLElement | null = null;
+
+  const close = (): void => {
+    doc.removeEventListener('keydown', onKey, true);
+    menu?.remove(); overlay?.remove();
+    menu = null; overlay = null;
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); return; }
+    if (!menu) return;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('.dash-fm-item'));
+    const at = items.indexOf(doc.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(at + 1) % items.length]?.focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(at - 1 + items.length) % items.length]?.focus(); }
+  };
+
+  const item = (label: string, onClick: () => void): HTMLButtonElement => h('button', {
+    class: 'fm-item dash-fm-item', role: 'menuitem',
+    onclick: () => { close(); onClick(); },
+  }, h('span', { class: 'fm-label' }, label)) as HTMLButtonElement;
+
+  const open = (): void => {
+    overlay = h('div', { class: 'fm-overlay', onclick: close });
+    const items = [item('Export Dashboard…', () => app.actions.exportDashboard())];
+    if (!readOnly) {
+      items.push(
+        item('Import Dashboard…', () => app.actions.importDashboard()),
+        item('Open for viewing…', () => app.actions.openDashboardForViewing()),
+      );
+    }
+    menu = h('div', { class: 'file-menu dash-file-menu', role: 'menu' }, ...items);
+    doc.body.appendChild(overlay);
+    doc.body.appendChild(menu);
+    const r = btn.getBoundingClientRect();
+    const a = fixedAnchor(r) as { top: number; left: number };
+    menu.style.position = 'fixed';
+    menu.style.top = a.top + 'px';
+    menu.style.left = a.left + 'px';
+    btn.setAttribute('aria-expanded', 'true');
+    doc.addEventListener('keydown', onKey, true);
+    items[0].focus();
+  };
+
+  btn.onclick = () => { if (menu) { close(); btn.focus(); } else open(); };
+  return btn;
+}
+
 /** Render the dashboard into `app.root`. */
 export async function renderDashboard(app: DashboardApp): Promise<void> {
   const { document: doc, state } = app;
@@ -182,7 +274,35 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
 
-  const workspace = await app.loadDashboardWorkspace();
+  // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
+  // the parsed open-source (ADR-0003). `current-workspace` (?ws=&dash=) verifies
+  // both ids against the shared primary store (edit) or the persistent detached
+  // store (view); `session-bundle` (?st=) atomically consumes the one-time
+  // handoff into a detached view. A bare /dashboard open is the legacy editable
+  // current-workspace path. A resolution failure shows not-found — never a
+  // different dashboard.
+  const source = app.dashboardOpenSource;
+  let workspace: StoredWorkspaceV1 | null;
+  let readOnly = false;
+  if (source && source.kind === 'session-bundle') {
+    workspace = await app.consumeDashboardHandoff();
+    if (!workspace) { renderDashboardNotFound(app); return; }
+    readOnly = true;
+  } else if (source && source.kind === 'current-workspace') {
+    const primary = await app.loadDashboardWorkspace();
+    const detached = await app.detachedViews.get(source.workspaceId);
+    const resolved = resolveDashboardMode(source, primary, detached);
+    if (resolved.mode === 'not-found') { renderDashboardNotFound(app); return; }
+    workspace = resolved.workspace;
+    readOnly = resolved.mode === 'view';
+  } else {
+    workspace = await app.loadDashboardWorkspace();
+  }
+  // Project the resolved workspace onto app.state so the Dashboard File menu's
+  // export/import (which read app.state) operate on THIS dashboard, not the
+  // tab's stale legacy-boot state.
+  if (workspace) app.applyCommittedWorkspace(workspace);
+
   const queries: SavedQueryV2[] = workspace ? workspace.queries : state.savedQueries;
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) if (!queryById.has(query.id)) queryById.set(query.id, query);
@@ -253,15 +373,19 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   'Dashboard layout');
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutSelect.el);
 
+  // #302: the Dashboard page's own resource-scoped File menu (import/export +
+  // open-for-viewing). #288: a read-only (detached view) tab hides the layout
+  // switcher — layout editing is an edit-mode-only affordance.
+  const fileMenuBtn = buildDashboardFileMenu(app, readOnly);
   const header = h('div', { class: 'dash-header' },
     h('a', {
       class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
     }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
     h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
-    tileCount, layoutWrap,
+    tileCount, readOnly ? null : layoutWrap,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
     h('span', { class: 'dash-chip dash-src', title: app.conn.host() }, h('span', { class: 'dash-dot' }), app.conn.host()),
-    updated, themeBtn, refreshBtn);
+    updated, fileMenuBtn, themeBtn, refreshBtn);
 
   // ── Filter bar (shared buildFilterBar, viewer-backed) ─────────────────────
   // #294: the field region scrolls horizontally in its own viewport
@@ -351,18 +475,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const head = h('div', { class: 'dash-tile-head' }, h('span', { class: 'dash-tile-name', title: ts.title }, ts.title));
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
-    const card = h('div', { class: 'dash-tile', draggable: 'true' }, head, body, foot);
+    const card = h('div', { class: 'dash-tile', draggable: String(!readOnly) }, head, body, foot);
     // Pointer drag is the sole reorder mechanism (#286 owner override): a drop
     // persists the new dashboard.tiles[] order through the move-tile command.
-    card.addEventListener('dragstart', () => { dragTileId = ts.tileId; });
-    card.addEventListener('dragover', (event) => event.preventDefault());
-    card.addEventListener('drop', (event) => {
-      event.preventDefault();
-      if (dragTileId && dragTileId !== ts.tileId) {
-        runCommand({ type: 'move-tile', tileId: dragTileId, toIndex: currentDoc.tiles.map((t) => t.id).indexOf(ts.tileId) });
-      }
-      dragTileId = null;
-    });
+    // A read-only (detached view) dashboard is not reorderable (#288).
+    if (!readOnly) {
+      card.addEventListener('dragstart', () => { dragTileId = ts.tileId; });
+      card.addEventListener('dragover', (event) => event.preventDefault());
+      card.addEventListener('drop', (event) => {
+        event.preventDefault();
+        if (dragTileId && dragTileId !== ts.tileId) {
+          runCommand({ type: 'move-tile', tileId: dragTileId, toIndex: currentDoc.tiles.map((t) => t.id).indexOf(ts.tileId) });
+        }
+        dragTileId = null;
+      });
+    }
     const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null };
     tileEls.set(ts.tileId, tileEl);
     return tileEl;

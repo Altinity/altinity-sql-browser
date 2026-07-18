@@ -13,6 +13,7 @@ import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
+import { encodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { App } from '../../src/ui/app.types.js';
@@ -4369,5 +4370,134 @@ describe('mobile best-effort mode (#126)', () => {
     over.dataTransfer = { types: ['application/x-asb-schema-graph'] };
     app.dom.resultsRegion!.dispatchEvent(over);
     expect(over.defaultPrevented).toBe(false); // guard returns before preventDefault
+  });
+});
+
+// ── #288 / #302: Dashboard viewing seams on the App controller ────────────────
+describe('Dashboard viewing (open-source, handoff, actions) — #288/#302', () => {
+  const vdash = () => ({
+    documentVersion: 1, id: 'd', title: 'My View', revision: 1,
+    layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+    filters: [], tiles: [{ id: 't1', queryId: 'q1' }],
+  });
+  const vquery = () => savedQuery({ id: 'q1', name: 'q1', sql: 'SELECT 1' });
+  const bundleText = (): string => {
+    const enc = encodePortableBundleJson({ queries: [vquery()], dashboards: [vdash()] as never, nowISO: '2026-07-18T00:00:00.000Z' });
+    if (!enc.ok) throw new Error('fixture failed to encode');
+    return enc.value;
+  };
+  const child = () => ({ postMessage: vi.fn(), closed: false });
+
+  it('createApp parses the tab open-source + route flag from the location', () => {
+    const editTab = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?ws=w1&dash=d1', host: 'ch.example' } as Location }));
+    expect(editTab.dashboardOpenSource).toEqual({ kind: 'current-workspace', workspaceId: 'w1', dashboardId: 'd1' });
+    expect(editTab.dashboardRoute).toBe(true);
+    const workbenchTab = createApp(env());
+    expect(workbenchTab.dashboardOpenSource).toBeNull();
+    expect(workbenchTab.dashboardRoute).toBe(false);
+  });
+
+  it('openDashboard opens ?ws=&dash= when the workspace has a dashboard, else the bare route; grants the handoff', () => {
+    const opened: (string | undefined)[] = [];
+    const c = child();
+    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return c; }) }));
+    app.state.workspaceId = 'w9';
+    app.state.dashboard = vdash() as never;
+    app.openDashboard();
+    expect(opened[0]).toBe('https://ch.example/sql/dashboard?ws=w9&dash=d');
+    expect(c.postMessage).not.toBe(undefined); // grantHandoffTo ran against the child
+    // No dashboard → bare route.
+    app.state.dashboard = null;
+    app.openDashboard();
+    expect(opened[1]).toBe('https://ch.example/sql/dashboard');
+  });
+
+  it('openDashboardForViewing writes the one-time token then opens ?st=; toasts when there is no dashboard', async () => {
+    const opened: (string | undefined)[] = [];
+    const put = vi.fn(async () => {});
+    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return child(); }) }));
+    app.handoff = { put, take: vi.fn(async () => null) };
+    app.state.savedQueries = [vquery()] as never;
+    app.state.dashboard = vdash() as never;
+    app.openDashboardForViewing();
+    expect(opened[0]).toMatch(/\/dashboard\?st=[0-9a-f]{64}&dash=d$/);
+    expect(put).toHaveBeenCalledOnce();
+    // No dashboard → toast, no window.
+    app.state.dashboard = null;
+    app.openDashboardForViewing();
+    expect(opened.length).toBe(1);
+  });
+
+  it('openDashboardForViewing toasts on an unencodable dashboard and on a failed token write', async () => {
+    const opened: unknown[] = [];
+    // Unencodable dashboard (bad preset) → build fails before opening a window.
+    const app = createApp(env({ openWindow: asOpenWindow((url?: string) => { opened.push(url); return child(); }) }));
+    app.handoff = { put: vi.fn(async () => {}), take: vi.fn(async () => null) };
+    app.state.savedQueries = [vquery()] as never;
+    app.state.dashboard = { ...vdash(), layout: { type: 'flow', version: 1, preset: 'nope', items: {} } } as never;
+    app.openDashboardForViewing();
+    expect(opened.length).toBe(0);
+    // Valid dashboard but the token write rejects → the window still opened, the
+    // rejection is caught (toast), never thrown.
+    const app2 = createApp(env({ openWindow: asOpenWindow(() => child()) }));
+    app2.handoff = { put: vi.fn(async () => { throw new Error('idb down'); }), take: vi.fn(async () => null) };
+    app2.state.savedQueries = [vquery()] as never;
+    app2.state.dashboard = vdash() as never;
+    app2.openDashboardForViewing();
+    await new Promise((r) => setTimeout(r, 0)); // let the rejected put settle into .catch
+  });
+
+  it('consumeDashboardHandoff atomically consumes the token, materializes a detached view, and rewrites the URL', async () => {
+    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?st=tok&dash=d', host: 'ch.example' } as Location }));
+    const put = vi.fn(async () => {});
+    app.handoff = { take: vi.fn(async () => ({ text: bundleText(), dashboardId: 'd', detachedWorkspaceId: 'wsview-1', expiresAt: 9e12 })), put: vi.fn(async () => {}) };
+    app.detachedViews = { get: vi.fn(async () => null), put };
+    // happy-dom's real replaceState rejects a cross-origin URL from the test's
+    // blob: document — stub the impl so we observe the call without it throwing.
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    const ws = await app.consumeDashboardHandoff();
+    expect(ws?.id).toBe('wsview-1');
+    expect(put).toHaveBeenCalledOnce();
+    expect(replaceState).toHaveBeenCalled();
+    expect(app.dashboardOpenSource).toEqual({ kind: 'current-workspace', workspaceId: 'wsview-1', dashboardId: 'd' });
+    replaceState.mockRestore();
+  });
+
+  it('consumeDashboardHandoff returns null for a non-bundle route, a spent token, and an undecodable record', async () => {
+    const plain = createApp(env()); // no ?st → not a session-bundle route
+    expect(await plain.consumeDashboardHandoff()).toBeNull();
+    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?st=tok&dash=d', host: 'ch.example' } as Location }));
+    app.handoff = { take: vi.fn(async () => null), put: vi.fn(async () => {}) }; // spent/expired
+    expect(await app.consumeDashboardHandoff()).toBeNull();
+    app.handoff = { take: vi.fn(async () => ({ text: '{bad', dashboardId: 'd', detachedWorkspaceId: 'x', expiresAt: 9e12 })), put: vi.fn(async () => {}) };
+    expect(await app.consumeDashboardHandoff()).toBeNull();
+  });
+
+  it('reloadDashboardRoute repoints the URL at the current dashboard and re-renders (URL skipped when absent)', () => {
+    const app = createApp(env({ location: { origin: 'https://ch.example', pathname: '/sql/dashboard', search: '?ws=w&dash=old', host: 'ch.example' } as Location }));
+    app.renderDashboard = vi.fn();
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {});
+    app.state.workspaceId = 'w';
+    app.state.dashboard = { ...vdash(), id: 'dNew' } as never;
+    app.reloadDashboardRoute();
+    expect(replaceState).toHaveBeenCalledWith(null, '', 'https://ch.example/sql/dashboard?ws=w&dash=dNew');
+    expect(app.dashboardOpenSource).toEqual({ kind: 'current-workspace', workspaceId: 'w', dashboardId: 'dNew' });
+    expect(app.renderDashboard).toHaveBeenCalledOnce();
+    // No dashboard → re-render only, no URL rewrite.
+    replaceState.mockClear();
+    app.state.dashboard = null;
+    app.reloadDashboardRoute();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(app.renderDashboard).toHaveBeenCalledTimes(2);
+    replaceState.mockRestore();
+  });
+
+  it('the Dashboard export/import actions delegate to their file-menu flows', () => {
+    const app = createApp(env());
+    // exportDashboard with no dashboard just toasts (no throw); importDashboard
+    // opens a picker input on the page — both exercise the action arrow bodies.
+    app.state.dashboard = null;
+    expect(() => app.actions.exportDashboard()).not.toThrow();
+    expect(() => app.actions.importDashboard()).not.toThrow();
   });
 });
