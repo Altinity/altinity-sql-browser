@@ -21,7 +21,7 @@ const IGNORED_KEYWORDS = new Set([
   'minLength', 'maxLength', 'pattern', 'format',
   'minItems', 'maxItems', 'uniqueItems',
   'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
-  'minProperties', 'maxProperties',
+  'minProperties', 'maxProperties', 'propertyNames',
 ]);
 const HANDLED_KEYWORDS = new Set([
   'type', 'const', 'enum', 'anyOf', 'oneOf', 'allOf', 'not', '$ref',

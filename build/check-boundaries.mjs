@@ -49,6 +49,47 @@ const RULES = [
     forbidden: ['src/ui/app.ts'],
     why: 'issue #276 Phase 5: the dashboard shell must not reach back into app.ts (everything it needs is injected)',
   },
+  // Issue #280 phase 1 (#283): the Dashboard module keeps the dependency
+  // direction `model <- application <- UI adapters`, and neither the model
+  // nor the workspace aggregate may depend on the App controller, Workbench
+  // UI, editors, global AppState, or the network layer.
+  {
+    dir: 'src/dashboard',
+    forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
+    why: 'issue #280 phase 1: Dashboard model/application code is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
+  },
+  {
+    dir: 'src/dashboard/model',
+    forbidden: ['src/dashboard/application', 'src/dashboard/layouts', 'src/dashboard/ui'],
+    why: 'issue #280 phase 1: dependency direction is model <- application <- UI adapters',
+  },
+  {
+    // Issue #280 phase 3 (#285): the Dashboard authoring/application layer may
+    // import the model, the layout plugins, and the workspace aggregate, but
+    // must NOT reach up into any UI adapter (the App, Workbench UI, editors,
+    // and global AppState are already forbidden by the `src/dashboard` rule
+    // above). This keeps the direction model/layouts <- application <- UI.
+    //
+    // Issue #286 phase 4: the DashboardViewerSession lives here, so this rule
+    // also names the App/AppState/editor/service/network boundary EXPLICITLY
+    // (not just transitively via the `src/dashboard` rule) — the viewer session
+    // must be constructible and testable without the Workbench UI, the full
+    // `App` controller, global `AppState`, the CodeMirror editors, the
+    // `src/application` services, or the `src/net` client; it depends only on
+    // the narrow injected interfaces it declares. `main.ts` (the bootstrap) is
+    // named too so the application layer can never reach the composition root.
+    dir: 'src/dashboard/application',
+    forbidden: [
+      'src/dashboard/ui', 'src/ui', 'src/editor', 'src/application',
+      'src/state.ts', 'src/net', 'src/main.ts',
+    ],
+    why: 'issue #280 phase 3 / #286 phase 4: application (incl. DashboardViewerSession) must not import Dashboard UI adapters, Workbench UI, the App, global AppState, editors, src/application services, or the network layer',
+  },
+  {
+    dir: 'src/workspace',
+    forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
+    why: 'issue #280 phase 1: the workspace aggregate layer is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
+  },
 ];
 
 function collectFiles(target) {

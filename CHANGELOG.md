@@ -9,6 +9,199 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard v1 contracts, codecs, canonical encoding, and resource limits**
+  (#283, phase 1 of #280). New canonical JSON Schemas ship through the existing
+  manifest pipeline with generated types and Ajv-compiled validators:
+  `stored-workspace-v1`, `dashboard-v1` (with `DashboardTileV1`,
+  `DashboardFilterDefinitionV1`, `DashboardLayoutDocumentV1`, and the
+  `DashboardLayoutFallbackV1 = flow@1` fallback), `dashboard-layout-flow-v1`
+  (the normative `flow@1` contract with the closed `FlowTilePlacementV1` —
+  span 1|2|3, height compact|medium|large — and the presets
+  full-width|report|columns-2|columns-3), and `portable-bundle-v1`
+  (`queries` + `dashboards`, both required even when empty). `query-spec-v1`
+  gained the additive `QueryDashboardPresentationV1` (role/defaultVariant/
+  variants/sizeHints) plus `QueryPresentationPatchV1` (RFC 7396 merge-patch of
+  the panel spec) — a revision, not a new Spec version; the schema-driven Spec
+  editor autocomplete picks the new fields up automatically. Pure `src/`
+  additions: one canonical deterministic encoder (`dashboard/model/canonical-json.ts`,
+  shared by export/persistence/hashing/equality), a deterministic
+  numeric-aware diagnostic sorter, `PORTABLE_LIMITS` enforcement
+  (schema bounds + codec UTF-8-byte/depth guards + runtime re-checks), and
+  whole-workspace cross-resource semantic validation. No persistence, no UI,
+  no import planner yet (later phases of #280).
+
+- **Atomic `StoredWorkspaceV1` persistence and one-shot legacy migration**
+  (#284, phase 2 of #280). New pure `src/workspace/` modules: a
+  `WorkspaceRepository` (`loadCurrent`/`commit`/`clearCurrent`) that
+  validates the complete candidate through phase-1 whole-workspace validation
+  **before** writing and then atomically replaces the aggregate in one
+  transaction — a failed write leaves the previously stored workspace intact,
+  never increments Dashboard revision, and never produces a partially-mixed
+  workspace (multi-tab policy: last successful commit wins, atomic replacement,
+  not compare-and-swap). Persistence is **IndexedDB** (chosen over a single
+  localStorage key: the 10 MiB `maxDecodedJsonBytes` aggregate exceeds the
+  ~5 MB localStorage quota, and phase 6 needs IndexedDB anyway) behind an
+  injected `WorkspaceStore` seam (`env.indexedDB`, mirroring the crypto/storage
+  seams) so the repository unit-tests against a plain in-memory fake. The
+  one-shot legacy migration builds one candidate `StoredWorkspaceV1` from the
+  flat `asb:*` keys — the initial Dashboard from `spec.favorite` (panel-role
+  favorites become tiles in catalog order), `asb:dashLayout`/`asb:dashCols`
+  converted to a valid `flow@1` layout — validates the whole candidate, and
+  persists it atomically; it runs only when no aggregate record exists and
+  never deletes or modifies legacy keys. Repository + operation semantics only;
+  no authoring commands, viewer, or import UI yet (later phases of #280).
+  - **`spec.favorite` dual-write removal path.** During phases 2-4 `spec.favorite`
+    stays the membership source the existing favorites-driven Dashboard render
+    reads, while `dashboard.tiles` becomes the canonical membership going
+    forward; phase 3's star command dual-writes both. Membership **reads** flip
+    to `dashboard.tiles` when phase 4's `DashboardViewerSession` + `flow@1`
+    viewer replace `src/ui/dashboard.ts`'s `savedQueries.filter(queryFavorite)`
+    render; the `spec.favorite` **dual-write** is then deleted in the v1
+    Dashboard GA release (the release closing #280), after phase 5 lands — the
+    schema keeps `favorite` only as an ignored legacy-compat field readable by
+    old migrations.
+
+- **Dashboard authoring domain: atomic commands, presentation resolution, and
+  workspace-wide validation** (#285, phase 3 of #280). New pure/typed modules,
+  each 100%-covered, keeping the direction model/layouts ← application ← UI:
+  - `dashboard/model/json-merge-patch.ts` — an in-house RFC 7396 JSON Merge
+    Patch (no new dependency): objects merge recursively, a `null` member
+    deletes, arrays and non-objects replace wholesale, and the result shares no
+    structure with its inputs.
+  - `dashboard/model/presentation-resolver.ts` — the ONE canonical presentation
+    resolver (base panel → selected/`defaultVariant` variant patch → tile
+    override → final validation), shared by the authoring session, saved-query
+    mutation validation, and tests. Enforces the #280 rules: a missing selected
+    variant name fails (no silent fallback), neither a variant nor an override
+    may change `panel.cfg.type`, deleting a required field fails final
+    validation, and result-column role validation runs only when result
+    metadata is available.
+  - `dashboard/layouts/flow-layout.ts` — the minimal `flow@1` layout plugin the
+    authoring domain needs: placement validation (closed span/height contract),
+    document normalization (orphan-placement pruning), size-hint-derived initial
+    placement, and `resolveActiveLayoutPlugin` (flow@1, or an unsupported
+    primary with a valid flow@1 fallback, else a load failure).
+  - `dashboard/application/dashboard-authoring-session.ts` +
+    `dashboard-commands.ts` + `dashboard-query-resolver.ts` — a
+    `DashboardAuthoringSession` owning one editable draft (a signal), its
+    in-memory `draftVersion`, dirty/selection state, and commit/export. Every
+    membership/placement/layout change is a fallible, atomic typed command
+    (`add-query`, `add-query-instance`, `remove-tile`, `move-tile`,
+    `update-tile`, `update-placement`, `change-layout`): clone the draft → apply
+    to an isolated candidate → normalize through the layout plugin → validate
+    the whole candidate workspace (structure/references/roles/limits, then
+    presentation resolution) → replace the draft only when valid; a failed
+    command leaves the previous draft byte-for-byte unchanged. `draftVersion`
+    guards stale async commands (`dashboard-command-stale`) and is separate from
+    the persisted `revision`, which increments once per successful repository
+    commit (never on a command, preview, or export). The **star rewires** to
+    `toggleMembership`, which maps to an `add-query`/`remove-tile` command and
+    dual-writes `spec.favorite` — no direct signal/document mutation of
+    membership anywhere.
+  - `dashboard/application/saved-query-mutation.ts` — `planSavedQueryMutation`
+    constructs and validates a complete candidate workspace for every
+    saved-query mutation (delete or replace), rejecting an invalidating one
+    unless the caller supplies an atomic repair (remove affected tiles/filters,
+    switch to another variant, or remap references), then commits mutation +
+    repair as one candidate.
+  A new `check:arch` rule keeps `dashboard/application` off the Dashboard UI.
+  Live Workbench wiring of the session/star UI lands with the phase-4 viewer.
+
+- **Dashboard read-only viewer runtime + normative `flow@1` layout** (#286,
+  phase 4 of #280). New pure/application modules, gated at the per-file
+  thresholds, all constructible and unit-tested with plain fakes — no Workbench,
+  no full `App`, no `AppState`, no editors:
+  - `dashboard/application/dashboard-viewer-session.ts` — the standalone
+    **`DashboardViewerSession`**: it takes an immutable `DashboardDocumentV1`
+    snapshot plus the workspace queries and runs the Dashboard end-to-end,
+    reading membership from **`dashboard.tiles[]`** (not `spec.favorite`) and
+    resolving every tile through the ONE shared `presentation-resolver`
+    (`resolveDashboardPresentations`/`resolvePresentation` — no copy). It owns
+    only runtime state — filter values/activation, per-tile results/errors/
+    progress, the resolved flow layout — published through one `state` signal a
+    renderer subscribes to; `start`/`refresh`/`refreshTile`/`setFilter`/
+    `cancelTile`/`destroy` plus `clearFilter`/`clearAllFilters`, with bounded
+    concurrency, per-tile `AbortController` cancellation, stale-wave generation
+    guards, and `destroy()` teardown. It depends only on narrow injected seams
+    (a query executor, a token-preflight connection, an optional layout
+    registry) declared locally, so it imports nothing from `src/application`,
+    `src/net`, `src/state.ts`, `src/ui`, or `src/editor`.
+  - **#235 resolved inside the execution planner**: panels whose declared params
+    cannot be affected by any filter **source** query run in PARALLEL with the
+    filter wave; panels a source-backed filter targets wait for the wave and see
+    the correct blanked/active values on the first pass. The overlap is computed
+    from the explicit `DashboardFilterDefinitionV1.parameter`/`targets` contract.
+  - **Filter usability semantics** (absorbing #188's kept scope): per-filter
+    clear that deactivates without discarding the last value (reactivation
+    restores it, one affected-panel wave), a coalesced clear-all resetting every
+    filter to its `defaultActive`/`defaultValue` in ONE wave, and an
+    `activeFilterCount` counting active filter DEFINITIONS. (The per-filter
+    "required/invalid" blocking badge was dropped as noise by owner decision —
+    an unfilled required filter just leaves its target tiles unfilled.)
+  - `dashboard/layouts/flow-layout.ts` **extended** with the normative `flow@1`
+    render math (pure, 100%): `presetColumns`, `effectiveSpan`
+    (`min(storedSpan ?? 1, activeColumnCount)` — preset changes never rewrite
+    stored spans), `resolvePlacement` (defaults span 1 / medium), and
+    `computeFlowLayout` — deterministic row-major packing (no overlaps),
+    maximal-consecutive-KPI-run band grouping preserving #240, mobile
+    one-column normalization that never mutates persistence, and the order
+    equivalence `dashboard.tiles[] = DOM = keyboard = visual row-major =
+    print/export`.
+  - `dashboard/layouts/layout-registry.ts` — a compile-time-registered,
+    lazy-loadable **layout registry** (`DashboardLayoutRegistration` {id,
+    versions, load}), never arbitrary remote plugins, with the fallback
+    contract: a primary engine that cannot load falls back to a valid `flow@1`
+    fallback, and an unsupported primary without one fails closed.
+  - Accessible authoring (`moveTileEarlier`/`moveTileLater`/`setTileSpan`/
+    `setTileHeight`) is driven by the phase-3 `move-tile`/`update-placement`
+    commands; pointer drag (#153's reorder half) is an equivalent alternative,
+    never the only mechanism.
+  - A strengthened `check:arch` rule (plus a unit `dashboard-boundaries` test)
+    proves the Dashboard model/application layers — including the viewer session
+    — import no Workbench UI, `App`, `AppState`, editor, `src/application`, or
+    `src/net` module.
+  - **Live read-flip.** `src/ui/dashboard.ts` is rewritten to render from a
+    `DashboardViewerSession` bound to the persisted `StoredWorkspaceV1`
+    (`app.loadDashboardWorkspace()` → the phase-2 `WorkspaceRepository`, running
+    the one-shot legacy migration when no aggregate exists), reading membership
+    from **`dashboard.tiles[]`** — no longer `savedQueries.filter(queryFavorite)`.
+    The DOM reconciles from the session's `state` signal: `flow@1` rows/columns,
+    KPI bands (via `renderKpiCards`, preserving #240), per-tile
+    loading/unfilled/error/ready with chart-paint-once, mobile one-column
+    normalization at the 768px breakpoint, and the empty state. A migrated
+    Dashboard's implicit `{name:Type}` params are surfaced as runtime-only filter
+    definitions so the filter bar is not lost. The `spec.favorite` dual-WRITE
+    stays until GA (the Workbench star action); only the READ is flipped.
+  - **Rich filter bar.** The Dashboard filter bar is the SHARED `buildFilterBar`
+    — the same rich field family the Workbench var-strip and detached view use
+    (relative-time presets, recents, enum + curated comboboxes) — driven over
+    the viewer's filter model: a draft value/active bag the bar mutates,
+    `session.getFilterField` for live #170 validation, and `session.applyFilter`
+    on commit (which owns activation). Recents flow through the shim from the
+    real app; the viewer never imports global `AppState` (check-boundaries keeps
+    the phase-4 forbidden list intact). Toolbar affordances stay: a coalesced
+    clear-all (one wave) and an "N active" count. (The per-filter blocking badge
+    was dropped as noise by owner decision.)
+  - **Tile reordering is pointer DRAG ONLY** (owner override, final #286 scope).
+    A drop persists the new `dashboard.tiles[]` order through the `move-tile`
+    command. Note: #280's accessibility section says drag should not be the only
+    reorder mechanism — this is a deliberate product-owner override; the per-tile
+    keyboard Move controls were removed. The in-tile span/height buttons were
+    also removed (span/height are tuned in the Spec editor); the underlying
+    `update-placement`/`setTileSpan`/`setTileHeight` authoring commands stay in
+    the application layer. The per-filter "×" clear affordance was removed too.
+  This closes **#235** (filter wave / panel parallelism) and the reorder half of
+  **#153** (open-in-window arrives in Phase 6), and dissolves **#188** into the
+  viewer's filter contract.
+  - **Fix (post-review):** the `.dash-grid` container kept its old-model
+    `grid-template-columns`, so it laid the new flow `.dash-row` wrappers out in
+    columns — full-width showed multiple rows side by side and 3-column showed
+    the rows multiplied across the page. The container is now a vertical flex
+    stack; each `.dash-row` owns its own column count. (Invisible to the unit
+    suite because happy-dom does not compute CSS layout; verified in real
+    Chromium.)
+
 ### Changed
 - **The app.ts → services refactor is complete** (#276, Phase 5). The
   temporary `App` delegates from Phases 2–4 are deleted — consumers read

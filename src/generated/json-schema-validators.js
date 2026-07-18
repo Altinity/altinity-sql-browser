@@ -285,8 +285,7 @@ var require_formats = __commonJS({
 
 // json-schema-standalone.js
 var validateQuerySpecV1 = validate20;
-var schema31 = { "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json", "title": "Altinity SQL Browser saved-query Spec v1", "description": "The user-authored query.spec document. Saved-query envelope fields are intentionally outside this schema.", "x-altinity-kind": "query-spec", "x-altinity-version": 1, "type": "object", "properties": { "name": { "title": "Name", "description": "Panel, tile, and Library title.", "type": "string", "minLength": 1, "pattern": "\\S", "examples": ["Revenue by country"] }, "description": { "title": "Description", "description": "Optional authoring note shown with the saved query.", "type": "string" }, "favorite": { "title": "Favorite", "description": "Whether the query is included in favorite-driven surfaces.", "type": "boolean", "default": false }, "view": { "title": "Preferred result view", "description": "The result representation restored when the saved query opens.", "type": "string", "enum": ["table", "json", "panel"], "default": "table" }, "panel": { "$ref": "#/$defs/panel" }, "dashboard": { "$ref": "#/$defs/dashboard" } }, "additionalProperties": true, "x-altinity-order": ["name", "description", "favorite", "view", "panel", "dashboard"], "$defs": { "columnName": { "title": "Result column", "description": "Exact top-level ClickHouse result-column name.", "type": "string", "minLength": 1, "x-altinity-completion": { "source": "resultColumns" } }, "resultColumnIndex": { "title": "Result column index", "description": "Zero-based index of a ClickHouse result column.", "type": "integer", "minimum": 0, "x-altinity-completion": { "source": "resultColumnIndexes" } }, "deltaPresentation": { "title": "Delta presentation", "description": "Display metadata for a runtime KPI delta value.", "type": "object", "properties": { "displayName": { "title": "Delta label", "description": "Optional visible label for the delta.", "type": "string" }, "unit": { "title": "Delta unit", "description": "Display-only suffix appended to the delta.", "type": "string" }, "decimals": { "title": "Delta decimal places", "description": "Requested display rounding for the delta.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [1] }, "positiveIsGood": { "title": "Positive is good", "description": "Whether a positive runtime delta has good semantics.", "type": "boolean" }, "show": { "title": "Show delta", "description": "Whether a present runtime delta is rendered.", "type": "boolean", "default": true } }, "additionalProperties": true, "x-altinity-order": ["displayName", "unit", "decimals", "positiveIsGood", "show"] }, "fieldConfigValue": { "title": "Field presentation metadata", "description": "Known presentation metadata for one result column. Unknown renderer extensions are retained.", "type": "object", "properties": { "displayName": { "title": "Display name", "description": "Rendered label for the field.", "type": "string" }, "decimals": { "title": "Decimal places", "description": "Requested number of decimal places for numeric display.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [2] }, "description": { "title": "Description", "description": "Supporting display text for the field.", "type": "string" }, "unit": { "title": "Unit", "description": "Display-only suffix appended to the value.", "type": "string", "examples": ["%"] }, "color": { "title": "Color", "description": "Theme token or CSS color hint interpreted by the renderer.", "type": "string" }, "noValue": { "title": "No-value text", "description": "Text shown for NULL or unavailable values.", "type": "string", "default": "\u2014" }, "hidden": { "title": "Hidden", "description": "Suppress this otherwise eligible result field.", "type": "boolean", "default": false }, "delta": { "$ref": "#/$defs/deltaPresentation" } }, "additionalProperties": true, "x-altinity-order": ["displayName", "description", "unit", "decimals", "color", "noValue", "hidden", "delta"] }, "fieldConfig": { "title": "Panel field configuration", "description": "Default and per-column display metadata.", "type": "object", "properties": { "defaults": { "$ref": "#/$defs/fieldConfigValue" }, "columns": { "title": "Column overrides", "description": "Display metadata keyed by exact result-column name.", "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldConfigValue" }, "x-altinity-key-completion": { "source": "resultColumns" } } }, "additionalProperties": true, "x-altinity-order": ["defaults", "columns"] }, "dashboard": { "title": "Dashboard configuration", "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] } }, "additionalProperties": true, "x-altinity-order": ["role"] }, "panel": { "title": "Panel configuration", "description": "Visualization and field metadata for the saved query.", "type": "object", "properties": { "cfg": { "$ref": "#/$defs/panelCfg" }, "key": { "title": "Result schema key", "description": "Saved result-column signature used to detect stale positional roles.", "type": ["string", "null"] }, "fieldConfig": { "$ref": "#/$defs/fieldConfig" } }, "additionalProperties": true, "x-altinity-order": ["cfg", "key", "fieldConfig"] }, "lineChartStyle": { "title": "Line style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "scale": { "title": "Value scale", "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "data" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points", "scale", "legend", "grid", "axes"] }, "areaChartStyle": { "title": "Area style", "description": "Curve, marker, and additive stacking presentation for Area charts.", "allOf": [{ "$ref": "#/$defs/lineChartStyle" }, { "type": "object", "properties": { "stack": { "title": "Area stacking", "description": "overlay draws series independently; stacked uses one shared additive stack without normalization.", "anyOf": [{ "type": "string", "enum": ["overlay", "stacked"] }, { "type": "string" }], "default": "overlay" } }, "additionalProperties": true }], "x-altinity-order": ["curve", "points", "stack", "scale", "legend", "grid", "axes"] }, "barChartStyle": { "title": "Bar and Column style", "description": "Grouping and category-spacing presentation shared by horizontal Bar and vertical Column charts.", "type": "object", "properties": { "mode": { "title": "Bar grouping", "description": "grouped draws measures side by side; stacked adds them on one shared value stack.", "anyOf": [{ "type": "string", "enum": ["grouped", "stacked"] }, { "type": "string" }], "default": "grouped" }, "density": { "title": "Category spacing", "description": "normal uses standard spacing, compact reduces gaps, and joined removes category gaps.", "anyOf": [{ "type": "string", "enum": ["normal", "compact", "joined"] }, { "type": "string" }], "default": "normal" }, "scale": { "title": "Value scale", "description": "zero and auto anchor Bar/Column at zero; data uses the data range.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "zero" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["mode", "density", "scale", "legend", "grid", "axes"] }, "pieChartStyle": { "title": "Pie style", "description": "Pie or Donut shape presentation.", "type": "object", "properties": { "shape": { "title": "Pie shape", "description": "pie fills the center; donut uses a fixed 60% cutout.", "anyOf": [{ "type": "string", "enum": ["pie", "donut"] }, { "type": "string" }], "default": "pie" }, "legend": { "title": "Legend visibility", "description": "show renders the slice legend; hide relies on tooltips.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "show" }, "frame": { "title": "Chart frame", "description": "compact reduces Pie layout padding; normal retains the standard frame.", "anyOf": [{ "type": "string", "enum": ["normal", "compact"] }, { "type": "string" }], "default": "normal" } }, "additionalProperties": true, "x-altinity-order": ["shape", "legend", "frame"] }, "chartCfg": { "type": "object", "properties": { "x": { "$ref": "#/$defs/resultColumnIndex", "default": 0 }, "y": { "title": "Measure columns", "description": "One or more zero-based result-column indexes used as measures.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/resultColumnIndex" } }, "series": { "title": "Series column", "description": "Optional zero-based result-column index used to split series.", "oneOf": [{ "$ref": "#/$defs/resultColumnIndex" }, { "type": "null" }], "default": null, "x-altinity-completion": { "source": "resultColumnIndexes" } } }, "required": ["x", "y"], "additionalProperties": true, "x-altinity-order": ["type", "x", "y", "series"] }, "styledChartCfg": { "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "type": "object", "properties": { "style": { "type": "object" } } }], "x-altinity-order": ["type", "style", "x", "y", "series"] }, "panelCfg": { "title": "Panel type configuration", "description": "Discriminated visualization configuration. Unknown types remain storable for forward compatibility.", "type": "object", "required": ["type"], "properties": { "type": { "title": "Panel type", "description": "Visualization renderer identifier.", "type": "string", "minLength": 1 } }, "additionalProperties": true, "x-altinity-discriminator": "type", "x-altinity-order": ["type"], "oneOf": [{ "title": "Column chart", "description": "Vertical columns using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "bar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/barChartStyle" } } }, { "properties": { "type": { "const": "bar" } }, "required": ["type"] }] }, { "title": "Horizontal bar chart", "description": "Horizontal bars using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "hbar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/barChartStyle" } } }, { "properties": { "type": { "const": "hbar" } }, "required": ["type"] }] }, { "title": "Line chart", "description": "Line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "line", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/lineChartStyle" } } }, { "properties": { "type": { "const": "line" } }, "required": ["type"] }] }, { "title": "Area chart", "description": "Filled line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "area", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/areaChartStyle" } } }, { "properties": { "type": { "const": "area" } }, "required": ["type"] }] }, { "title": "Pie chart", "description": "Pie slices using one positional measure role.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "pie", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/pieChartStyle" } } }, { "properties": { "type": { "const": "pie" }, "y": { "type": "array", "maxItems": 1 } }, "required": ["type"] }] }, { "title": "KPI", "description": "One-row scalar and named-tuple KPI cards.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "kpi" }, "properties": { "type": { "const": "kpi" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type"] }, { "title": "Table", "description": "Tabular result rendering with no required panel-specific fields.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "table" }, "properties": { "type": { "const": "table" } }, "required": ["type"], "additionalProperties": true }, { "title": "Logs", "description": "Timestamped log messages with optional explicit result-column roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "logs", "time": "event_time", "msg": "message", "level": "level" }, "properties": { "type": { "const": "logs" }, "time": { "$ref": "#/$defs/columnName" }, "msg": { "$ref": "#/$defs/columnName" }, "level": { "$ref": "#/$defs/columnName" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "time", "msg", "level"] }, { "title": "Markdown text", "description": "Safe Markdown content that does not require a SQL result.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "text", "content": "# Heading\n\nMarkdown content." }, "properties": { "type": { "const": "text" }, "content": { "title": "Markdown content", "description": "Source text for the safe Markdown renderer.", "type": "string", "default": "" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "content"] }, { "title": "Future panel type", "description": "Forward-compatible storage branch for a type implemented by a newer build.", "x-altinity-status": "planned", "x-altinity-snippet": { "type": "future-panel" }, "properties": { "type": { "type": "string", "minLength": 1, "not": { "enum": ["bar", "hbar", "line", "area", "pie", "kpi", "table", "logs", "text"] } } }, "required": ["type"], "additionalProperties": true }] } } };
-var schema51 = { "title": "Dashboard configuration", "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] } }, "additionalProperties": true, "x-altinity-order": ["role"] };
+var schema31 = { "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json", "title": "Altinity SQL Browser saved-query Spec v1", "description": "The user-authored query.spec document. Saved-query envelope fields are intentionally outside this schema.", "x-altinity-kind": "query-spec", "x-altinity-version": 1, "type": "object", "properties": { "name": { "title": "Name", "description": "Panel, tile, and Library title.", "type": "string", "minLength": 1, "pattern": "\\S", "examples": ["Revenue by country"] }, "description": { "title": "Description", "description": "Optional authoring note shown with the saved query.", "type": "string" }, "favorite": { "title": "Favorite", "description": "Whether the query is included in favorite-driven surfaces.", "type": "boolean", "default": false }, "view": { "title": "Preferred result view", "description": "The result representation restored when the saved query opens.", "type": "string", "enum": ["table", "json", "panel"], "default": "table" }, "panel": { "$ref": "#/$defs/panel" }, "dashboard": { "$ref": "#/$defs/queryDashboardPresentationV1" } }, "additionalProperties": true, "x-altinity-order": ["name", "description", "favorite", "view", "panel", "dashboard"], "$defs": { "columnName": { "title": "Result column", "description": "Exact top-level ClickHouse result-column name.", "type": "string", "minLength": 1, "x-altinity-completion": { "source": "resultColumns" } }, "resultColumnIndex": { "title": "Result column index", "description": "Zero-based index of a ClickHouse result column.", "type": "integer", "minimum": 0, "x-altinity-completion": { "source": "resultColumnIndexes" } }, "deltaPresentation": { "title": "Delta presentation", "description": "Display metadata for a runtime KPI delta value.", "type": "object", "properties": { "displayName": { "title": "Delta label", "description": "Optional visible label for the delta.", "type": "string" }, "unit": { "title": "Delta unit", "description": "Display-only suffix appended to the delta.", "type": "string" }, "decimals": { "title": "Delta decimal places", "description": "Requested display rounding for the delta.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [1] }, "positiveIsGood": { "title": "Positive is good", "description": "Whether a positive runtime delta has good semantics.", "type": "boolean" }, "show": { "title": "Show delta", "description": "Whether a present runtime delta is rendered.", "type": "boolean", "default": true } }, "additionalProperties": true, "x-altinity-order": ["displayName", "unit", "decimals", "positiveIsGood", "show"] }, "fieldConfigValue": { "title": "Field presentation metadata", "description": "Known presentation metadata for one result column. Unknown renderer extensions are retained.", "type": "object", "properties": { "displayName": { "title": "Display name", "description": "Rendered label for the field.", "type": "string" }, "decimals": { "title": "Decimal places", "description": "Requested number of decimal places for numeric display.", "type": "integer", "minimum": 0, "maximum": 20, "default": 0, "examples": [2] }, "description": { "title": "Description", "description": "Supporting display text for the field.", "type": "string" }, "unit": { "title": "Unit", "description": "Display-only suffix appended to the value.", "type": "string", "examples": ["%"] }, "color": { "title": "Color", "description": "Theme token or CSS color hint interpreted by the renderer.", "type": "string" }, "noValue": { "title": "No-value text", "description": "Text shown for NULL or unavailable values.", "type": "string", "default": "\u2014" }, "hidden": { "title": "Hidden", "description": "Suppress this otherwise eligible result field.", "type": "boolean", "default": false }, "delta": { "$ref": "#/$defs/deltaPresentation" } }, "additionalProperties": true, "x-altinity-order": ["displayName", "description", "unit", "decimals", "color", "noValue", "hidden", "delta"] }, "fieldConfig": { "title": "Panel field configuration", "description": "Default and per-column display metadata.", "type": "object", "properties": { "defaults": { "$ref": "#/$defs/fieldConfigValue" }, "columns": { "title": "Column overrides", "description": "Display metadata keyed by exact result-column name.", "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldConfigValue" }, "x-altinity-key-completion": { "source": "resultColumns" } } }, "additionalProperties": true, "x-altinity-order": ["defaults", "columns"] }, "queryPresentationPatchV1": { "title": "Presentation patch", "description": "RFC 7396 JSON Merge Patch applied over the saved query's base panel object. Object members merge recursively, arrays replace the previous array completely, and a null member deletes an optional property. A patch may not change panel.cfg.type, and the final resolved panel must validate like a normal saved-query panel.", "type": "object", "additionalProperties": true }, "dashboardSizeHints": { "title": "Size hints", "description": "Layout-neutral tile size hints. Authoring may derive an initial placement from them; they never own actual Dashboard placement.", "type": "object", "properties": { "preferred": { "title": "Preferred size", "description": "Preferred layout-neutral tile size.", "type": "string", "enum": ["compact", "medium", "wide"] }, "minimum": { "title": "Minimum size", "description": "Smallest layout-neutral tile size that still renders usefully.", "type": "string", "enum": ["compact", "medium", "wide"] }, "aspectRatio": { "title": "Aspect ratio", "description": "Preferred width/height ratio hint.", "type": "number", "exclusiveMinimum": 0 } }, "additionalProperties": true, "x-altinity-order": ["preferred", "minimum", "aspectRatio"] }, "queryDashboardPresentationV1": { "title": "Dashboard configuration", "description": "Reusable Dashboard presentation for this query: role, named presentation variants, and layout-neutral size hints. Actual Dashboard sequence, placement, and tile-local overrides live in the Dashboard document. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] }, "defaultVariant": { "title": "Default presentation variant", "description": "Variant applied when a tile does not select one. Must name an existing entry in variants.", "type": "string", "minLength": 1, "maxLength": 256 }, "variants": { "title": "Presentation variants", "description": "Named reusable presentation patches, each an RFC 7396 JSON Merge Patch over the base panel.", "type": "object", "maxProperties": 32, "propertyNames": { "minLength": 1, "maxLength": 256 }, "additionalProperties": { "$ref": "#/$defs/queryPresentationPatchV1" } }, "sizeHints": { "$ref": "#/$defs/dashboardSizeHints" } }, "additionalProperties": true, "x-altinity-order": ["role", "defaultVariant", "variants", "sizeHints"] }, "panel": { "title": "Panel configuration", "description": "Visualization and field metadata for the saved query.", "type": "object", "properties": { "cfg": { "$ref": "#/$defs/panelCfg" }, "key": { "title": "Result schema key", "description": "Saved result-column signature used to detect stale positional roles.", "type": ["string", "null"] }, "fieldConfig": { "$ref": "#/$defs/fieldConfig" } }, "additionalProperties": true, "x-altinity-order": ["cfg", "key", "fieldConfig"] }, "lineChartStyle": { "title": "Line style", "description": "Renderer-independent line presentation. Unknown fields and future string values remain storable.", "type": "object", "properties": { "curve": { "title": "Line curve", "description": "linear draws straight segments, smooth uses monotone interpolation, and stepped draws step-after segments.", "anyOf": [{ "type": "string", "enum": ["linear", "smooth", "stepped"] }, { "type": "string" }], "default": "linear" }, "points": { "title": "Point markers", "description": "auto shows markers only for sparse results, show always displays them, and hide retains hover targets without visible markers.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "scale": { "title": "Value scale", "description": "zero anchors the value axis at zero, data uses the data range, and auto uses the chart-type default.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "data" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["curve", "points", "scale", "legend", "grid", "axes"] }, "areaChartStyle": { "title": "Area style", "description": "Curve, marker, and additive stacking presentation for Area charts.", "allOf": [{ "$ref": "#/$defs/lineChartStyle" }, { "type": "object", "properties": { "stack": { "title": "Area stacking", "description": "overlay draws series independently; stacked uses one shared additive stack without normalization.", "anyOf": [{ "type": "string", "enum": ["overlay", "stacked"] }, { "type": "string" }], "default": "overlay" } }, "additionalProperties": true }], "x-altinity-order": ["curve", "points", "stack", "scale", "legend", "grid", "axes"] }, "barChartStyle": { "title": "Bar and Column style", "description": "Grouping and category-spacing presentation shared by horizontal Bar and vertical Column charts.", "type": "object", "properties": { "mode": { "title": "Bar grouping", "description": "grouped draws measures side by side; stacked adds them on one shared value stack.", "anyOf": [{ "type": "string", "enum": ["grouped", "stacked"] }, { "type": "string" }], "default": "grouped" }, "density": { "title": "Category spacing", "description": "normal uses standard spacing, compact reduces gaps, and joined removes category gaps.", "anyOf": [{ "type": "string", "enum": ["normal", "compact", "joined"] }, { "type": "string" }], "default": "normal" }, "scale": { "title": "Value scale", "description": "zero and auto anchor Bar/Column at zero; data uses the data range.", "anyOf": [{ "type": "string", "enum": ["auto", "zero", "data"] }, { "type": "string" }], "default": "zero" }, "legend": { "title": "Legend visibility", "description": "auto shows the legend for multiple datasets; show and hide override that behavior.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "grid": { "title": "Grid visibility", "description": "auto shows the value grid in the workbench and hides it on Dashboard; show and hide override the surface default.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "auto" }, "axes": { "title": "Axis visibility", "description": "show renders both axes; hide removes both axes while retaining chart interaction.", "anyOf": [{ "type": "string", "enum": ["show", "hide"] }, { "type": "string" }], "default": "show" } }, "additionalProperties": true, "x-altinity-order": ["mode", "density", "scale", "legend", "grid", "axes"] }, "pieChartStyle": { "title": "Pie style", "description": "Pie or Donut shape presentation.", "type": "object", "properties": { "shape": { "title": "Pie shape", "description": "pie fills the center; donut uses a fixed 60% cutout.", "anyOf": [{ "type": "string", "enum": ["pie", "donut"] }, { "type": "string" }], "default": "pie" }, "legend": { "title": "Legend visibility", "description": "show renders the slice legend; hide relies on tooltips.", "anyOf": [{ "type": "string", "enum": ["auto", "show", "hide"] }, { "type": "string" }], "default": "show" }, "frame": { "title": "Chart frame", "description": "compact reduces Pie layout padding; normal retains the standard frame.", "anyOf": [{ "type": "string", "enum": ["normal", "compact"] }, { "type": "string" }], "default": "normal" } }, "additionalProperties": true, "x-altinity-order": ["shape", "legend", "frame"] }, "chartCfg": { "type": "object", "properties": { "x": { "$ref": "#/$defs/resultColumnIndex", "default": 0 }, "y": { "title": "Measure columns", "description": "One or more zero-based result-column indexes used as measures.", "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/resultColumnIndex" } }, "series": { "title": "Series column", "description": "Optional zero-based result-column index used to split series.", "oneOf": [{ "$ref": "#/$defs/resultColumnIndex" }, { "type": "null" }], "default": null, "x-altinity-completion": { "source": "resultColumnIndexes" } } }, "required": ["x", "y"], "additionalProperties": true, "x-altinity-order": ["type", "x", "y", "series"] }, "styledChartCfg": { "allOf": [{ "$ref": "#/$defs/chartCfg" }, { "type": "object", "properties": { "style": { "type": "object" } } }], "x-altinity-order": ["type", "style", "x", "y", "series"] }, "panelCfg": { "title": "Panel type configuration", "description": "Discriminated visualization configuration. Unknown types remain storable for forward compatibility.", "type": "object", "required": ["type"], "properties": { "type": { "title": "Panel type", "description": "Visualization renderer identifier.", "type": "string", "minLength": 1 } }, "additionalProperties": true, "x-altinity-discriminator": "type", "x-altinity-order": ["type"], "oneOf": [{ "title": "Column chart", "description": "Vertical columns using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "bar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/barChartStyle" } } }, { "properties": { "type": { "const": "bar" } }, "required": ["type"] }] }, { "title": "Horizontal bar chart", "description": "Horizontal bars using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "hbar", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/barChartStyle" } } }, { "properties": { "type": { "const": "hbar" } }, "required": ["type"] }] }, { "title": "Line chart", "description": "Line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "line", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/lineChartStyle" } } }, { "properties": { "type": { "const": "line" } }, "required": ["type"] }] }, { "title": "Area chart", "description": "Filled line series using positional X and measure roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "area", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/areaChartStyle" } } }, { "properties": { "type": { "const": "area" } }, "required": ["type"] }] }, { "title": "Pie chart", "description": "Pie slices using one positional measure role.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "pie", "x": 0, "y": [1], "series": null }, "allOf": [{ "$ref": "#/$defs/styledChartCfg" }, { "properties": { "style": { "$ref": "#/$defs/pieChartStyle" } } }, { "properties": { "type": { "const": "pie" }, "y": { "type": "array", "maxItems": 1 } }, "required": ["type"] }] }, { "title": "KPI", "description": "One-row scalar and named-tuple KPI cards.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "kpi" }, "properties": { "type": { "const": "kpi" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type"] }, { "title": "Table", "description": "Tabular result rendering with no required panel-specific fields.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "table" }, "properties": { "type": { "const": "table" } }, "required": ["type"], "additionalProperties": true }, { "title": "Logs", "description": "Timestamped log messages with optional explicit result-column roles.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "logs", "time": "event_time", "msg": "message", "level": "level" }, "properties": { "type": { "const": "logs" }, "time": { "$ref": "#/$defs/columnName" }, "msg": { "$ref": "#/$defs/columnName" }, "level": { "$ref": "#/$defs/columnName" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "time", "msg", "level"] }, { "title": "Markdown text", "description": "Safe Markdown content that does not require a SQL result.", "x-altinity-status": "implemented", "x-altinity-snippet": { "type": "text", "content": "# Heading\n\nMarkdown content." }, "properties": { "type": { "const": "text" }, "content": { "title": "Markdown content", "description": "Source text for the safe Markdown renderer.", "type": "string", "default": "" } }, "required": ["type"], "additionalProperties": true, "x-altinity-order": ["type", "content"] }, { "title": "Future panel type", "description": "Forward-compatible storage branch for a type implemented by a newer build.", "x-altinity-status": "planned", "x-altinity-snippet": { "type": "future-panel" }, "properties": { "type": { "type": "string", "minLength": 1, "not": { "enum": ["bar", "hbar", "line", "area", "pie", "kpi", "table", "logs", "text"] } } }, "required": ["type"], "additionalProperties": true }] } } };
 var func1 = require_ucs2length().default;
 var pattern4 = new RegExp("\\S", "u");
 var schema32 = { "title": "Panel configuration", "description": "Visualization and field metadata for the saved query.", "type": "object", "properties": { "cfg": { "$ref": "#/$defs/panelCfg" }, "key": { "title": "Result schema key", "description": "Saved result-column signature used to detect stale positional roles.", "type": ["string", "null"] }, "fieldConfig": { "$ref": "#/$defs/fieldConfig" } }, "additionalProperties": true, "x-altinity-order": ["cfg", "key", "fieldConfig"] };
@@ -3101,6 +3100,229 @@ function validate21(data, { instancePath = "", parentData, parentDataProperty, r
   return errors === 0;
 }
 validate21.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var schema51 = { "title": "Dashboard configuration", "description": "Reusable Dashboard presentation for this query: role, named presentation variants, and layout-neutral size hints. Actual Dashboard sequence, placement, and tile-local overrides live in the Dashboard document. Feature-specific extensions remain forward compatible.", "type": "object", "properties": { "role": { "title": "Dashboard role (Panel, Filter, or Setup)", "description": "How the saved query participates in a dashboard. panel (the default) creates a visualization tile. filter returns exactly one row whose supported top-level Array, named Tuple Array, or Map columns provide option lists for parameters with the same exact names; it creates no tile and its SQL cannot declare parameters. setup is reserved for serialized Dashboard setup execution.", "type": "string", "enum": ["panel", "filter", "setup"], "default": "panel", "examples": ["filter"] }, "defaultVariant": { "title": "Default presentation variant", "description": "Variant applied when a tile does not select one. Must name an existing entry in variants.", "type": "string", "minLength": 1, "maxLength": 256 }, "variants": { "title": "Presentation variants", "description": "Named reusable presentation patches, each an RFC 7396 JSON Merge Patch over the base panel.", "type": "object", "maxProperties": 32, "propertyNames": { "minLength": 1, "maxLength": 256 }, "additionalProperties": { "$ref": "#/$defs/queryPresentationPatchV1" } }, "sizeHints": { "$ref": "#/$defs/dashboardSizeHints" } }, "additionalProperties": true, "x-altinity-order": ["role", "defaultVariant", "variants", "sizeHints"] };
+var schema53 = { "title": "Size hints", "description": "Layout-neutral tile size hints. Authoring may derive an initial placement from them; they never own actual Dashboard placement.", "type": "object", "properties": { "preferred": { "title": "Preferred size", "description": "Preferred layout-neutral tile size.", "type": "string", "enum": ["compact", "medium", "wide"] }, "minimum": { "title": "Minimum size", "description": "Smallest layout-neutral tile size that still renders usefully.", "type": "string", "enum": ["compact", "medium", "wide"] }, "aspectRatio": { "title": "Aspect ratio", "description": "Preferred width/height ratio hint.", "type": "number", "exclusiveMinimum": 0 } }, "additionalProperties": true, "x-altinity-order": ["preferred", "minimum", "aspectRatio"] };
+function validate40(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate40.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.role !== void 0) {
+      let data0 = data.role;
+      if (typeof data0 !== "string") {
+        const err0 = { instancePath: instancePath + "/role", schemaPath: "#/properties/role/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+      if (!(data0 === "panel" || data0 === "filter" || data0 === "setup")) {
+        const err1 = { instancePath: instancePath + "/role", schemaPath: "#/properties/role/enum", keyword: "enum", params: { allowedValues: schema51.properties.role.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err1];
+        } else {
+          vErrors.push(err1);
+        }
+        errors++;
+      }
+    }
+    if (data.defaultVariant !== void 0) {
+      let data1 = data.defaultVariant;
+      if (typeof data1 === "string") {
+        if (func1(data1) > 256) {
+          const err2 = { instancePath: instancePath + "/defaultVariant", schemaPath: "#/properties/defaultVariant/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err2];
+          } else {
+            vErrors.push(err2);
+          }
+          errors++;
+        }
+        if (func1(data1) < 1) {
+          const err3 = { instancePath: instancePath + "/defaultVariant", schemaPath: "#/properties/defaultVariant/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err3];
+          } else {
+            vErrors.push(err3);
+          }
+          errors++;
+        }
+      } else {
+        const err4 = { instancePath: instancePath + "/defaultVariant", schemaPath: "#/properties/defaultVariant/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+    if (data.variants !== void 0) {
+      let data2 = data.variants;
+      if (data2 && typeof data2 == "object" && !Array.isArray(data2)) {
+        if (Object.keys(data2).length > 32) {
+          const err5 = { instancePath: instancePath + "/variants", schemaPath: "#/properties/variants/maxProperties", keyword: "maxProperties", params: { limit: 32 }, message: "must NOT have more than 32 properties" };
+          if (vErrors === null) {
+            vErrors = [err5];
+          } else {
+            vErrors.push(err5);
+          }
+          errors++;
+        }
+        for (const key0 in data2) {
+          const _errs8 = errors;
+          if (typeof key0 === "string") {
+            if (func1(key0) > 256) {
+              const err6 = { instancePath: instancePath + "/variants", schemaPath: "#/properties/variants/propertyNames/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters", propertyName: key0 };
+              if (vErrors === null) {
+                vErrors = [err6];
+              } else {
+                vErrors.push(err6);
+              }
+              errors++;
+            }
+            if (func1(key0) < 1) {
+              const err7 = { instancePath: instancePath + "/variants", schemaPath: "#/properties/variants/propertyNames/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters", propertyName: key0 };
+              if (vErrors === null) {
+                vErrors = [err7];
+              } else {
+                vErrors.push(err7);
+              }
+              errors++;
+            }
+          }
+          var valid1 = _errs8 === errors;
+          if (!valid1) {
+            const err8 = { instancePath: instancePath + "/variants", schemaPath: "#/properties/variants/propertyNames", keyword: "propertyNames", params: { propertyName: key0 }, message: "property name must be valid" };
+            if (vErrors === null) {
+              vErrors = [err8];
+            } else {
+              vErrors.push(err8);
+            }
+            errors++;
+          }
+        }
+        for (const key1 in data2) {
+          let data3 = data2[key1];
+          if (data3 && typeof data3 == "object" && !Array.isArray(data3)) {
+          } else {
+            const err9 = { instancePath: instancePath + "/variants/" + key1.replace(/~/g, "~0").replace(/\//g, "~1"), schemaPath: "#/$defs/queryPresentationPatchV1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+            if (vErrors === null) {
+              vErrors = [err9];
+            } else {
+              vErrors.push(err9);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err10 = { instancePath: instancePath + "/variants", schemaPath: "#/properties/variants/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err10];
+        } else {
+          vErrors.push(err10);
+        }
+        errors++;
+      }
+    }
+    if (data.sizeHints !== void 0) {
+      let data4 = data.sizeHints;
+      if (data4 && typeof data4 == "object" && !Array.isArray(data4)) {
+        if (data4.preferred !== void 0) {
+          let data5 = data4.preferred;
+          if (typeof data5 !== "string") {
+            const err11 = { instancePath: instancePath + "/sizeHints/preferred", schemaPath: "#/$defs/dashboardSizeHints/properties/preferred/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err11];
+            } else {
+              vErrors.push(err11);
+            }
+            errors++;
+          }
+          if (!(data5 === "compact" || data5 === "medium" || data5 === "wide")) {
+            const err12 = { instancePath: instancePath + "/sizeHints/preferred", schemaPath: "#/$defs/dashboardSizeHints/properties/preferred/enum", keyword: "enum", params: { allowedValues: schema53.properties.preferred.enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err12];
+            } else {
+              vErrors.push(err12);
+            }
+            errors++;
+          }
+        }
+        if (data4.minimum !== void 0) {
+          let data6 = data4.minimum;
+          if (typeof data6 !== "string") {
+            const err13 = { instancePath: instancePath + "/sizeHints/minimum", schemaPath: "#/$defs/dashboardSizeHints/properties/minimum/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err13];
+            } else {
+              vErrors.push(err13);
+            }
+            errors++;
+          }
+          if (!(data6 === "compact" || data6 === "medium" || data6 === "wide")) {
+            const err14 = { instancePath: instancePath + "/sizeHints/minimum", schemaPath: "#/$defs/dashboardSizeHints/properties/minimum/enum", keyword: "enum", params: { allowedValues: schema53.properties.minimum.enum }, message: "must be equal to one of the allowed values" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+        }
+        if (data4.aspectRatio !== void 0) {
+          let data7 = data4.aspectRatio;
+          if (typeof data7 == "number" && isFinite(data7)) {
+            if (data7 <= 0 || isNaN(data7)) {
+              const err15 = { instancePath: instancePath + "/sizeHints/aspectRatio", schemaPath: "#/$defs/dashboardSizeHints/properties/aspectRatio/exclusiveMinimum", keyword: "exclusiveMinimum", params: { comparison: ">", limit: 0 }, message: "must be > 0" };
+              if (vErrors === null) {
+                vErrors = [err15];
+              } else {
+                vErrors.push(err15);
+              }
+              errors++;
+            }
+          } else {
+            const err16 = { instancePath: instancePath + "/sizeHints/aspectRatio", schemaPath: "#/$defs/dashboardSizeHints/properties/aspectRatio/type", keyword: "type", params: { type: "number" }, message: "must be number" };
+            if (vErrors === null) {
+              vErrors = [err16];
+            } else {
+              vErrors.push(err16);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err17 = { instancePath: instancePath + "/sizeHints", schemaPath: "#/$defs/dashboardSizeHints/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err17];
+        } else {
+          vErrors.push(err17);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err18 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err18];
+    } else {
+      vErrors.push(err18);
+    }
+    errors++;
+  }
+  validate40.errors = vErrors;
+  return errors === 0;
+}
+validate40.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 function validate20(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
@@ -3194,45 +3416,17 @@ function validate20(data, { instancePath = "", parentData, parentDataProperty, r
       }
     }
     if (data.dashboard !== void 0) {
-      let data5 = data.dashboard;
-      if (data5 && typeof data5 == "object" && !Array.isArray(data5)) {
-        if (data5.role !== void 0) {
-          let data6 = data5.role;
-          if (typeof data6 !== "string") {
-            const err7 = { instancePath: instancePath + "/dashboard/role", schemaPath: "#/$defs/dashboard/properties/role/type", keyword: "type", params: { type: "string" }, message: "must be string" };
-            if (vErrors === null) {
-              vErrors = [err7];
-            } else {
-              vErrors.push(err7);
-            }
-            errors++;
-          }
-          if (!(data6 === "panel" || data6 === "filter" || data6 === "setup")) {
-            const err8 = { instancePath: instancePath + "/dashboard/role", schemaPath: "#/$defs/dashboard/properties/role/enum", keyword: "enum", params: { allowedValues: schema51.properties.role.enum }, message: "must be equal to one of the allowed values" };
-            if (vErrors === null) {
-              vErrors = [err8];
-            } else {
-              vErrors.push(err8);
-            }
-            errors++;
-          }
-        }
-      } else {
-        const err9 = { instancePath: instancePath + "/dashboard", schemaPath: "#/$defs/dashboard/type", keyword: "type", params: { type: "object" }, message: "must be object" };
-        if (vErrors === null) {
-          vErrors = [err9];
-        } else {
-          vErrors.push(err9);
-        }
-        errors++;
+      if (!validate40(data.dashboard, { instancePath: instancePath + "/dashboard", parentData: data, parentDataProperty: "dashboard", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate40.errors : vErrors.concat(validate40.errors);
+        errors = vErrors.length;
       }
     }
   } else {
-    const err10 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    const err7 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
     if (vErrors === null) {
-      vErrors = [err10];
+      vErrors = [err7];
     } else {
-      vErrors.push(err10);
+      vErrors.push(err7);
     }
     errors++;
   }
@@ -3240,12 +3434,12 @@ function validate20(data, { instancePath = "", parentData, parentDataProperty, r
   return errors === 0;
 }
 validate20.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var validateSavedQueryV2 = validate40;
-function validate40(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+var validateSavedQueryV2 = validate42;
+function validate42(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate40.evaluated;
+  const evaluated0 = validate42.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -3451,17 +3645,17 @@ function validate40(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate40.errors = vErrors;
+  validate42.errors = vErrors;
   return errors === 0;
 }
-validate40.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
-var validateLibraryV2 = validate42;
+validate42.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateLibraryV2 = validate44;
 var formats0 = require_formats().fullFormats["date-time"];
-function validate42(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+function validate44(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   ;
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate42.evaluated;
+  const evaluated0 = validate44.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = void 0;
   }
@@ -3586,8 +3780,8 @@ function validate42(data, { instancePath = "", parentData, parentDataProperty, r
         }
         const len0 = data4.length;
         for (let i0 = 0; i0 < len0; i0++) {
-          if (!validate40(data4[i0], { instancePath: instancePath + "/queries/" + i0, parentData: data4, parentDataProperty: i0, rootData, dynamicAnchors })) {
-            vErrors = vErrors === null ? validate40.errors : vErrors.concat(validate40.errors);
+          if (!validate42(data4[i0], { instancePath: instancePath + "/queries/" + i0, parentData: data4, parentDataProperty: i0, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate42.errors : vErrors.concat(validate42.errors);
             errors = vErrors.length;
           }
         }
@@ -3610,18 +3804,2113 @@ function validate42(data, { instancePath = "", parentData, parentDataProperty, r
     }
     errors++;
   }
-  validate42.errors = vErrors;
+  validate44.errors = vErrors;
   return errors === 0;
 }
-validate42.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+validate44.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateFlowLayoutV1 = validate46;
+var schema57 = { "title": "Flow preset", "description": "Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.", "type": "string", "enum": ["full-width", "report", "columns-2", "columns-3"] };
+var schema58 = { "title": "Tile placement", "description": "Closed placement contract: unknown fields fail validation. Future extension requires flow@2 or an explicit extension namespace.", "type": "object", "properties": { "span": { "title": "Column span", "description": "Columns the tile occupies; the effective span is clamped to the active column count.", "type": "integer", "enum": [1, 2, 3] }, "height": { "$ref": "#/$defs/flowHeightV1" } }, "additionalProperties": false, "x-altinity-order": ["span", "height"] };
+var schema59 = { "title": "Tile height", "description": "Normative height ordering is compact < medium < large; exact pixels are renderer-defined.", "type": "string", "enum": ["compact", "medium", "large"] };
+function validate47(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate47.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    for (const key0 in data) {
+      if (!(key0 === "span" || key0 === "height")) {
+        const err0 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+    }
+    if (data.span !== void 0) {
+      let data0 = data.span;
+      if (!(typeof data0 == "number" && (!(data0 % 1) && !isNaN(data0)) && isFinite(data0))) {
+        const err1 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err1];
+        } else {
+          vErrors.push(err1);
+        }
+        errors++;
+      }
+      if (!(data0 === 1 || data0 === 2 || data0 === 3)) {
+        const err2 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/enum", keyword: "enum", params: { allowedValues: schema58.properties.span.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err2];
+        } else {
+          vErrors.push(err2);
+        }
+        errors++;
+      }
+    }
+    if (data.height !== void 0) {
+      let data1 = data.height;
+      if (typeof data1 !== "string") {
+        const err3 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/flowHeightV1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err3];
+        } else {
+          vErrors.push(err3);
+        }
+        errors++;
+      }
+      if (!(data1 === "compact" || data1 === "medium" || data1 === "large")) {
+        const err4 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/flowHeightV1/enum", keyword: "enum", params: { allowedValues: schema59.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err5 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err5];
+    } else {
+      vErrors.push(err5);
+    }
+    errors++;
+  }
+  validate47.errors = vErrors;
+  return errors === 0;
+}
+validate47.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate46(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate46.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.type === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "type" }, message: "must have required property 'type'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.version === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "version" }, message: "must have required property 'version'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.preset === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "preset" }, message: "must have required property 'preset'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    if (data.items === void 0) {
+      const err3 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "items" }, message: "must have required property 'items'" };
+      if (vErrors === null) {
+        vErrors = [err3];
+      } else {
+        vErrors.push(err3);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "type" || key0 === "version" || key0 === "preset" || key0 === "items")) {
+        const err4 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+    if (data.type !== void 0) {
+      let data0 = data.type;
+      if (typeof data0 !== "string") {
+        const err5 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+      if ("flow" !== data0) {
+        const err6 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/const", keyword: "const", params: { allowedValue: "flow" }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+    }
+    if (data.version !== void 0) {
+      let data1 = data.version;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err7 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+      if (1 !== data1) {
+        const err8 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+    }
+    if (data.preset !== void 0) {
+      let data2 = data.preset;
+      if (typeof data2 !== "string") {
+        const err9 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      }
+      if (!(data2 === "full-width" || data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
+        const err10 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/enum", keyword: "enum", params: { allowedValues: schema57.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err10];
+        } else {
+          vErrors.push(err10);
+        }
+        errors++;
+      }
+    }
+    if (data.items !== void 0) {
+      let data3 = data.items;
+      if (data3 && typeof data3 == "object" && !Array.isArray(data3)) {
+        if (Object.keys(data3).length > 100) {
+          const err11 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/maxProperties", keyword: "maxProperties", params: { limit: 100 }, message: "must NOT have more than 100 properties" };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+        for (const key1 in data3) {
+          const _errs11 = errors;
+          if (typeof key1 === "string") {
+            if (func1(key1) > 256) {
+              const err12 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err12];
+              } else {
+                vErrors.push(err12);
+              }
+              errors++;
+            }
+            if (func1(key1) < 1) {
+              const err13 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err13];
+              } else {
+                vErrors.push(err13);
+              }
+              errors++;
+            }
+          }
+          var valid2 = _errs11 === errors;
+          if (!valid2) {
+            const err14 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames", keyword: "propertyNames", params: { propertyName: key1 }, message: "property name must be valid" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+        }
+        for (const key2 in data3) {
+          if (!validate47(data3[key2], { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), parentData: data3, parentDataProperty: key2, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate47.errors : vErrors.concat(validate47.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err15 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err15];
+        } else {
+          vErrors.push(err15);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err16 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err16];
+    } else {
+      vErrors.push(err16);
+    }
+    errors++;
+  }
+  validate46.errors = vErrors;
+  return errors === 0;
+}
+validate46.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateDashboardV1 = validate49;
+function validate52(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate52.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    for (const key0 in data) {
+      if (!(key0 === "span" || key0 === "height")) {
+        const err0 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+    }
+    if (data.span !== void 0) {
+      let data0 = data.span;
+      if (!(typeof data0 == "number" && (!(data0 % 1) && !isNaN(data0)) && isFinite(data0))) {
+        const err1 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err1];
+        } else {
+          vErrors.push(err1);
+        }
+        errors++;
+      }
+      if (!(data0 === 1 || data0 === 2 || data0 === 3)) {
+        const err2 = { instancePath: instancePath + "/span", schemaPath: "#/properties/span/enum", keyword: "enum", params: { allowedValues: schema58.properties.span.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err2];
+        } else {
+          vErrors.push(err2);
+        }
+        errors++;
+      }
+    }
+    if (data.height !== void 0) {
+      let data1 = data.height;
+      if (typeof data1 !== "string") {
+        const err3 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/flowHeightV1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err3];
+        } else {
+          vErrors.push(err3);
+        }
+        errors++;
+      }
+      if (!(data1 === "compact" || data1 === "medium" || data1 === "large")) {
+        const err4 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/flowHeightV1/enum", keyword: "enum", params: { allowedValues: schema59.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err5 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err5];
+    } else {
+      vErrors.push(err5);
+    }
+    errors++;
+  }
+  validate52.errors = vErrors;
+  return errors === 0;
+}
+validate52.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate51(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate51.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.type === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "type" }, message: "must have required property 'type'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.version === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "version" }, message: "must have required property 'version'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.preset === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "preset" }, message: "must have required property 'preset'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    if (data.items === void 0) {
+      const err3 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "items" }, message: "must have required property 'items'" };
+      if (vErrors === null) {
+        vErrors = [err3];
+      } else {
+        vErrors.push(err3);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "type" || key0 === "version" || key0 === "preset" || key0 === "items")) {
+        const err4 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+    if (data.type !== void 0) {
+      let data0 = data.type;
+      if (typeof data0 !== "string") {
+        const err5 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+      if ("flow" !== data0) {
+        const err6 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/const", keyword: "const", params: { allowedValue: "flow" }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+    }
+    if (data.version !== void 0) {
+      let data1 = data.version;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err7 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+      if (1 !== data1) {
+        const err8 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+    }
+    if (data.preset !== void 0) {
+      let data2 = data.preset;
+      if (typeof data2 !== "string") {
+        const err9 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      }
+      if (!(data2 === "full-width" || data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
+        const err10 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/enum", keyword: "enum", params: { allowedValues: schema57.enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err10];
+        } else {
+          vErrors.push(err10);
+        }
+        errors++;
+      }
+    }
+    if (data.items !== void 0) {
+      let data3 = data.items;
+      if (data3 && typeof data3 == "object" && !Array.isArray(data3)) {
+        if (Object.keys(data3).length > 100) {
+          const err11 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/maxProperties", keyword: "maxProperties", params: { limit: 100 }, message: "must NOT have more than 100 properties" };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+        for (const key1 in data3) {
+          const _errs11 = errors;
+          if (typeof key1 === "string") {
+            if (func1(key1) > 256) {
+              const err12 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err12];
+              } else {
+                vErrors.push(err12);
+              }
+              errors++;
+            }
+            if (func1(key1) < 1) {
+              const err13 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err13];
+              } else {
+                vErrors.push(err13);
+              }
+              errors++;
+            }
+          }
+          var valid2 = _errs11 === errors;
+          if (!valid2) {
+            const err14 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames", keyword: "propertyNames", params: { propertyName: key1 }, message: "property name must be valid" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+        }
+        for (const key2 in data3) {
+          if (!validate52(data3[key2], { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), parentData: data3, parentDataProperty: key2, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate52.errors : vErrors.concat(validate52.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err15 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err15];
+        } else {
+          vErrors.push(err15);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err16 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err16];
+    } else {
+      vErrors.push(err16);
+    }
+    errors++;
+  }
+  validate51.errors = vErrors;
+  return errors === 0;
+}
+validate51.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate50(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate50.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.type === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "type" }, message: "must have required property 'type'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.version === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "version" }, message: "must have required property 'version'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "type" || key0 === "version" || key0 === "preset" || key0 === "config" || key0 === "items" || key0 === "fallback")) {
+        const err2 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err2];
+        } else {
+          vErrors.push(err2);
+        }
+        errors++;
+      }
+    }
+    if (data.type !== void 0) {
+      let data0 = data.type;
+      if (typeof data0 === "string") {
+        if (func1(data0) > 256) {
+          const err3 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err3];
+          } else {
+            vErrors.push(err3);
+          }
+          errors++;
+        }
+        if (func1(data0) < 1) {
+          const err4 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err4];
+          } else {
+            vErrors.push(err4);
+          }
+          errors++;
+        }
+      } else {
+        const err5 = { instancePath: instancePath + "/type", schemaPath: "#/properties/type/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+    }
+    if (data.version !== void 0) {
+      let data1 = data.version;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err6 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+      if (typeof data1 == "number" && isFinite(data1)) {
+        if (data1 < 1 || isNaN(data1)) {
+          const err7 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/minimum", keyword: "minimum", params: { comparison: ">=", limit: 1 }, message: "must be >= 1" };
+          if (vErrors === null) {
+            vErrors = [err7];
+          } else {
+            vErrors.push(err7);
+          }
+          errors++;
+        }
+      }
+    }
+    if (data.preset !== void 0) {
+      let data2 = data.preset;
+      if (typeof data2 === "string") {
+        if (func1(data2) > 256) {
+          const err8 = { instancePath: instancePath + "/preset", schemaPath: "#/properties/preset/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err8];
+          } else {
+            vErrors.push(err8);
+          }
+          errors++;
+        }
+      } else {
+        const err9 = { instancePath: instancePath + "/preset", schemaPath: "#/properties/preset/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      }
+    }
+    if (data.config !== void 0) {
+      let data3 = data.config;
+      if (!(data3 && typeof data3 == "object" && !Array.isArray(data3))) {
+        const err10 = { instancePath: instancePath + "/config", schemaPath: "#/properties/config/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err10];
+        } else {
+          vErrors.push(err10);
+        }
+        errors++;
+      }
+    }
+    if (data.items !== void 0) {
+      let data4 = data.items;
+      if (data4 && typeof data4 == "object" && !Array.isArray(data4)) {
+        if (Object.keys(data4).length > 100) {
+          const err11 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/maxProperties", keyword: "maxProperties", params: { limit: 100 }, message: "must NOT have more than 100 properties" };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+        for (const key1 in data4) {
+          const _errs12 = errors;
+          if (typeof key1 === "string") {
+            if (func1(key1) > 256) {
+              const err12 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err12];
+              } else {
+                vErrors.push(err12);
+              }
+              errors++;
+            }
+            if (func1(key1) < 1) {
+              const err13 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters", propertyName: key1 };
+              if (vErrors === null) {
+                vErrors = [err13];
+              } else {
+                vErrors.push(err13);
+              }
+              errors++;
+            }
+          }
+          var valid1 = _errs12 === errors;
+          if (!valid1) {
+            const err14 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/propertyNames", keyword: "propertyNames", params: { propertyName: key1 }, message: "property name must be valid" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+        }
+        for (const key2 in data4) {
+          let data5 = data4[key2];
+          if (!(data5 && typeof data5 == "object" && !Array.isArray(data5))) {
+            const err15 = { instancePath: instancePath + "/items/" + key2.replace(/~/g, "~0").replace(/\//g, "~1"), schemaPath: "#/properties/items/additionalProperties/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+            if (vErrors === null) {
+              vErrors = [err15];
+            } else {
+              vErrors.push(err15);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err16 = { instancePath: instancePath + "/items", schemaPath: "#/properties/items/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err16];
+        } else {
+          vErrors.push(err16);
+        }
+        errors++;
+      }
+    }
+    if (data.fallback !== void 0) {
+      if (!validate51(data.fallback, { instancePath: instancePath + "/fallback", parentData: data, parentDataProperty: "fallback", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate51.errors : vErrors.concat(validate51.errors);
+        errors = vErrors.length;
+      }
+    }
+  } else {
+    const err17 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err17];
+    } else {
+      vErrors.push(err17);
+    }
+    errors++;
+  }
+  validate50.errors = vErrors;
+  return errors === 0;
+}
+validate50.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate57(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate57.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    for (const key0 in data) {
+      if (!(key0 === "variant" || key0 === "override")) {
+        const err0 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+    }
+    if (data.variant !== void 0) {
+      let data0 = data.variant;
+      if (typeof data0 === "string") {
+        if (func1(data0) > 256) {
+          const err1 = { instancePath: instancePath + "/variant", schemaPath: "#/properties/variant/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err1];
+          } else {
+            vErrors.push(err1);
+          }
+          errors++;
+        }
+        if (func1(data0) < 1) {
+          const err2 = { instancePath: instancePath + "/variant", schemaPath: "#/properties/variant/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err2];
+          } else {
+            vErrors.push(err2);
+          }
+          errors++;
+        }
+      } else {
+        const err3 = { instancePath: instancePath + "/variant", schemaPath: "#/properties/variant/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err3];
+        } else {
+          vErrors.push(err3);
+        }
+        errors++;
+      }
+    }
+    if (data.override !== void 0) {
+      let data1 = data.override;
+      if (data1 && typeof data1 == "object" && !Array.isArray(data1)) {
+      } else {
+        const err4 = { instancePath: instancePath + "/override", schemaPath: "query-spec-v1.schema.json#/$defs/queryPresentationPatchV1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err4];
+        } else {
+          vErrors.push(err4);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err5 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err5];
+    } else {
+      vErrors.push(err5);
+    }
+    errors++;
+  }
+  validate57.errors = vErrors;
+  return errors === 0;
+}
+validate57.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate56(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate56.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.id === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "id" }, message: "must have required property 'id'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.queryId === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "queryId" }, message: "must have required property 'queryId'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "id" || key0 === "queryId" || key0 === "title" || key0 === "description" || key0 === "presentation")) {
+        const err2 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err2];
+        } else {
+          vErrors.push(err2);
+        }
+        errors++;
+      }
+    }
+    if (data.id !== void 0) {
+      let data0 = data.id;
+      if (typeof data0 === "string") {
+        if (func1(data0) > 256) {
+          const err3 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err3];
+          } else {
+            vErrors.push(err3);
+          }
+          errors++;
+        }
+        if (func1(data0) < 1) {
+          const err4 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err4];
+          } else {
+            vErrors.push(err4);
+          }
+          errors++;
+        }
+        if (!pattern4.test(data0)) {
+          const err5 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/pattern", keyword: "pattern", params: { pattern: "\\S" }, message: 'must match pattern "\\S"' };
+          if (vErrors === null) {
+            vErrors = [err5];
+          } else {
+            vErrors.push(err5);
+          }
+          errors++;
+        }
+      } else {
+        const err6 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+    }
+    if (data.queryId !== void 0) {
+      let data1 = data.queryId;
+      if (typeof data1 === "string") {
+        if (func1(data1) > 256) {
+          const err7 = { instancePath: instancePath + "/queryId", schemaPath: "#/properties/queryId/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err7];
+          } else {
+            vErrors.push(err7);
+          }
+          errors++;
+        }
+        if (func1(data1) < 1) {
+          const err8 = { instancePath: instancePath + "/queryId", schemaPath: "#/properties/queryId/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err8];
+          } else {
+            vErrors.push(err8);
+          }
+          errors++;
+        }
+        if (!pattern4.test(data1)) {
+          const err9 = { instancePath: instancePath + "/queryId", schemaPath: "#/properties/queryId/pattern", keyword: "pattern", params: { pattern: "\\S" }, message: 'must match pattern "\\S"' };
+          if (vErrors === null) {
+            vErrors = [err9];
+          } else {
+            vErrors.push(err9);
+          }
+          errors++;
+        }
+      } else {
+        const err10 = { instancePath: instancePath + "/queryId", schemaPath: "#/properties/queryId/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err10];
+        } else {
+          vErrors.push(err10);
+        }
+        errors++;
+      }
+    }
+    if (data.title !== void 0) {
+      let data2 = data.title;
+      if (typeof data2 === "string") {
+        if (func1(data2) > 512) {
+          const err11 = { instancePath: instancePath + "/title", schemaPath: "#/properties/title/maxLength", keyword: "maxLength", params: { limit: 512 }, message: "must NOT have more than 512 characters" };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+      } else {
+        const err12 = { instancePath: instancePath + "/title", schemaPath: "#/properties/title/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err12];
+        } else {
+          vErrors.push(err12);
+        }
+        errors++;
+      }
+    }
+    if (data.description !== void 0) {
+      let data3 = data.description;
+      if (typeof data3 === "string") {
+        if (func1(data3) > 16384) {
+          const err13 = { instancePath: instancePath + "/description", schemaPath: "#/properties/description/maxLength", keyword: "maxLength", params: { limit: 16384 }, message: "must NOT have more than 16384 characters" };
+          if (vErrors === null) {
+            vErrors = [err13];
+          } else {
+            vErrors.push(err13);
+          }
+          errors++;
+        }
+      } else {
+        const err14 = { instancePath: instancePath + "/description", schemaPath: "#/properties/description/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err14];
+        } else {
+          vErrors.push(err14);
+        }
+        errors++;
+      }
+    }
+    if (data.presentation !== void 0) {
+      if (!validate57(data.presentation, { instancePath: instancePath + "/presentation", parentData: data, parentDataProperty: "presentation", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate57.errors : vErrors.concat(validate57.errors);
+        errors = vErrors.length;
+      }
+    }
+  } else {
+    const err15 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err15];
+    } else {
+      vErrors.push(err15);
+    }
+    errors++;
+  }
+  validate56.errors = vErrors;
+  return errors === 0;
+}
+validate56.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+function validate49(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate49.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.documentVersion === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "documentVersion" }, message: "must have required property 'documentVersion'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.id === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "id" }, message: "must have required property 'id'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.title === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "title" }, message: "must have required property 'title'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    if (data.revision === void 0) {
+      const err3 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "revision" }, message: "must have required property 'revision'" };
+      if (vErrors === null) {
+        vErrors = [err3];
+      } else {
+        vErrors.push(err3);
+      }
+      errors++;
+    }
+    if (data.layout === void 0) {
+      const err4 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "layout" }, message: "must have required property 'layout'" };
+      if (vErrors === null) {
+        vErrors = [err4];
+      } else {
+        vErrors.push(err4);
+      }
+      errors++;
+    }
+    if (data.filters === void 0) {
+      const err5 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "filters" }, message: "must have required property 'filters'" };
+      if (vErrors === null) {
+        vErrors = [err5];
+      } else {
+        vErrors.push(err5);
+      }
+      errors++;
+    }
+    if (data.tiles === void 0) {
+      const err6 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "tiles" }, message: "must have required property 'tiles'" };
+      if (vErrors === null) {
+        vErrors = [err6];
+      } else {
+        vErrors.push(err6);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "documentVersion" || key0 === "id" || key0 === "title" || key0 === "description" || key0 === "revision" || key0 === "layout" || key0 === "filters" || key0 === "tiles")) {
+        const err7 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+    }
+    if (data.documentVersion !== void 0) {
+      let data0 = data.documentVersion;
+      if (!(typeof data0 == "number" && (!(data0 % 1) && !isNaN(data0)) && isFinite(data0))) {
+        const err8 = { instancePath: instancePath + "/documentVersion", schemaPath: "#/properties/documentVersion/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+      if (1 !== data0) {
+        const err9 = { instancePath: instancePath + "/documentVersion", schemaPath: "#/properties/documentVersion/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      }
+    }
+    if (data.id !== void 0) {
+      let data1 = data.id;
+      if (typeof data1 === "string") {
+        if (func1(data1) > 256) {
+          const err10 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err10];
+          } else {
+            vErrors.push(err10);
+          }
+          errors++;
+        }
+        if (func1(data1) < 1) {
+          const err11 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+        if (!pattern4.test(data1)) {
+          const err12 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/pattern", keyword: "pattern", params: { pattern: "\\S" }, message: 'must match pattern "\\S"' };
+          if (vErrors === null) {
+            vErrors = [err12];
+          } else {
+            vErrors.push(err12);
+          }
+          errors++;
+        }
+      } else {
+        const err13 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err13];
+        } else {
+          vErrors.push(err13);
+        }
+        errors++;
+      }
+    }
+    if (data.title !== void 0) {
+      let data2 = data.title;
+      if (typeof data2 === "string") {
+        if (func1(data2) > 512) {
+          const err14 = { instancePath: instancePath + "/title", schemaPath: "#/properties/title/maxLength", keyword: "maxLength", params: { limit: 512 }, message: "must NOT have more than 512 characters" };
+          if (vErrors === null) {
+            vErrors = [err14];
+          } else {
+            vErrors.push(err14);
+          }
+          errors++;
+        }
+      } else {
+        const err15 = { instancePath: instancePath + "/title", schemaPath: "#/properties/title/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err15];
+        } else {
+          vErrors.push(err15);
+        }
+        errors++;
+      }
+    }
+    if (data.description !== void 0) {
+      let data3 = data.description;
+      if (typeof data3 === "string") {
+        if (func1(data3) > 16384) {
+          const err16 = { instancePath: instancePath + "/description", schemaPath: "#/properties/description/maxLength", keyword: "maxLength", params: { limit: 16384 }, message: "must NOT have more than 16384 characters" };
+          if (vErrors === null) {
+            vErrors = [err16];
+          } else {
+            vErrors.push(err16);
+          }
+          errors++;
+        }
+      } else {
+        const err17 = { instancePath: instancePath + "/description", schemaPath: "#/properties/description/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err17];
+        } else {
+          vErrors.push(err17);
+        }
+        errors++;
+      }
+    }
+    if (data.revision !== void 0) {
+      let data4 = data.revision;
+      if (!(typeof data4 == "number" && (!(data4 % 1) && !isNaN(data4)) && isFinite(data4))) {
+        const err18 = { instancePath: instancePath + "/revision", schemaPath: "#/properties/revision/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err18];
+        } else {
+          vErrors.push(err18);
+        }
+        errors++;
+      }
+      if (typeof data4 == "number" && isFinite(data4)) {
+        if (data4 < 1 || isNaN(data4)) {
+          const err19 = { instancePath: instancePath + "/revision", schemaPath: "#/properties/revision/minimum", keyword: "minimum", params: { comparison: ">=", limit: 1 }, message: "must be >= 1" };
+          if (vErrors === null) {
+            vErrors = [err19];
+          } else {
+            vErrors.push(err19);
+          }
+          errors++;
+        }
+      }
+    }
+    if (data.layout !== void 0) {
+      if (!validate50(data.layout, { instancePath: instancePath + "/layout", parentData: data, parentDataProperty: "layout", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate50.errors : vErrors.concat(validate50.errors);
+        errors = vErrors.length;
+      }
+    }
+    if (data.filters !== void 0) {
+      let data6 = data.filters;
+      if (Array.isArray(data6)) {
+        if (data6.length > 32) {
+          const err20 = { instancePath: instancePath + "/filters", schemaPath: "#/properties/filters/maxItems", keyword: "maxItems", params: { limit: 32 }, message: "must NOT have more than 32 items" };
+          if (vErrors === null) {
+            vErrors = [err20];
+          } else {
+            vErrors.push(err20);
+          }
+          errors++;
+        }
+        const len0 = data6.length;
+        for (let i0 = 0; i0 < len0; i0++) {
+          let data7 = data6[i0];
+          if (data7 && typeof data7 == "object" && !Array.isArray(data7)) {
+            if (data7.id === void 0) {
+              const err21 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/required", keyword: "required", params: { missingProperty: "id" }, message: "must have required property 'id'" };
+              if (vErrors === null) {
+                vErrors = [err21];
+              } else {
+                vErrors.push(err21);
+              }
+              errors++;
+            }
+            if (data7.parameter === void 0) {
+              const err22 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/required", keyword: "required", params: { missingProperty: "parameter" }, message: "must have required property 'parameter'" };
+              if (vErrors === null) {
+                vErrors = [err22];
+              } else {
+                vErrors.push(err22);
+              }
+              errors++;
+            }
+            for (const key1 in data7) {
+              if (!(key1 === "id" || key1 === "parameter" || key1 === "label" || key1 === "sourceQueryId" || key1 === "targets" || key1 === "defaultValue" || key1 === "defaultActive")) {
+                const err23 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key1 }, message: "must NOT have additional properties" };
+                if (vErrors === null) {
+                  vErrors = [err23];
+                } else {
+                  vErrors.push(err23);
+                }
+                errors++;
+              }
+            }
+            if (data7.id !== void 0) {
+              let data8 = data7.id;
+              if (typeof data8 === "string") {
+                if (func1(data8) > 256) {
+                  const err24 = { instancePath: instancePath + "/filters/" + i0 + "/id", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/id/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err24];
+                  } else {
+                    vErrors.push(err24);
+                  }
+                  errors++;
+                }
+                if (func1(data8) < 1) {
+                  const err25 = { instancePath: instancePath + "/filters/" + i0 + "/id", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/id/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err25];
+                  } else {
+                    vErrors.push(err25);
+                  }
+                  errors++;
+                }
+                if (!pattern4.test(data8)) {
+                  const err26 = { instancePath: instancePath + "/filters/" + i0 + "/id", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/id/pattern", keyword: "pattern", params: { pattern: "\\S" }, message: 'must match pattern "\\S"' };
+                  if (vErrors === null) {
+                    vErrors = [err26];
+                  } else {
+                    vErrors.push(err26);
+                  }
+                  errors++;
+                }
+              } else {
+                const err27 = { instancePath: instancePath + "/filters/" + i0 + "/id", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/id/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+                if (vErrors === null) {
+                  vErrors = [err27];
+                } else {
+                  vErrors.push(err27);
+                }
+                errors++;
+              }
+            }
+            if (data7.parameter !== void 0) {
+              let data9 = data7.parameter;
+              if (typeof data9 === "string") {
+                if (func1(data9) > 256) {
+                  const err28 = { instancePath: instancePath + "/filters/" + i0 + "/parameter", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/parameter/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err28];
+                  } else {
+                    vErrors.push(err28);
+                  }
+                  errors++;
+                }
+                if (func1(data9) < 1) {
+                  const err29 = { instancePath: instancePath + "/filters/" + i0 + "/parameter", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/parameter/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err29];
+                  } else {
+                    vErrors.push(err29);
+                  }
+                  errors++;
+                }
+              } else {
+                const err30 = { instancePath: instancePath + "/filters/" + i0 + "/parameter", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/parameter/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+                if (vErrors === null) {
+                  vErrors = [err30];
+                } else {
+                  vErrors.push(err30);
+                }
+                errors++;
+              }
+            }
+            if (data7.label !== void 0) {
+              let data10 = data7.label;
+              if (typeof data10 === "string") {
+                if (func1(data10) > 512) {
+                  const err31 = { instancePath: instancePath + "/filters/" + i0 + "/label", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/label/maxLength", keyword: "maxLength", params: { limit: 512 }, message: "must NOT have more than 512 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err31];
+                  } else {
+                    vErrors.push(err31);
+                  }
+                  errors++;
+                }
+              } else {
+                const err32 = { instancePath: instancePath + "/filters/" + i0 + "/label", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/label/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+                if (vErrors === null) {
+                  vErrors = [err32];
+                } else {
+                  vErrors.push(err32);
+                }
+                errors++;
+              }
+            }
+            if (data7.sourceQueryId !== void 0) {
+              let data11 = data7.sourceQueryId;
+              if (typeof data11 === "string") {
+                if (func1(data11) > 256) {
+                  const err33 = { instancePath: instancePath + "/filters/" + i0 + "/sourceQueryId", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/sourceQueryId/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err33];
+                  } else {
+                    vErrors.push(err33);
+                  }
+                  errors++;
+                }
+                if (func1(data11) < 1) {
+                  const err34 = { instancePath: instancePath + "/filters/" + i0 + "/sourceQueryId", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/sourceQueryId/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+                  if (vErrors === null) {
+                    vErrors = [err34];
+                  } else {
+                    vErrors.push(err34);
+                  }
+                  errors++;
+                }
+              } else {
+                const err35 = { instancePath: instancePath + "/filters/" + i0 + "/sourceQueryId", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/sourceQueryId/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+                if (vErrors === null) {
+                  vErrors = [err35];
+                } else {
+                  vErrors.push(err35);
+                }
+                errors++;
+              }
+            }
+            if (data7.targets !== void 0) {
+              let data12 = data7.targets;
+              if (Array.isArray(data12)) {
+                if (data12.length > 100) {
+                  const err36 = { instancePath: instancePath + "/filters/" + i0 + "/targets", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/maxItems", keyword: "maxItems", params: { limit: 100 }, message: "must NOT have more than 100 items" };
+                  if (vErrors === null) {
+                    vErrors = [err36];
+                  } else {
+                    vErrors.push(err36);
+                  }
+                  errors++;
+                }
+                const len1 = data12.length;
+                for (let i1 = 0; i1 < len1; i1++) {
+                  let data13 = data12[i1];
+                  if (typeof data13 === "string") {
+                    if (func1(data13) > 256) {
+                      const err37 = { instancePath: instancePath + "/filters/" + i0 + "/targets/" + i1, schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/items/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+                      if (vErrors === null) {
+                        vErrors = [err37];
+                      } else {
+                        vErrors.push(err37);
+                      }
+                      errors++;
+                    }
+                    if (func1(data13) < 1) {
+                      const err38 = { instancePath: instancePath + "/filters/" + i0 + "/targets/" + i1, schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/items/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+                      if (vErrors === null) {
+                        vErrors = [err38];
+                      } else {
+                        vErrors.push(err38);
+                      }
+                      errors++;
+                    }
+                  } else {
+                    const err39 = { instancePath: instancePath + "/filters/" + i0 + "/targets/" + i1, schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/items/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+                    if (vErrors === null) {
+                      vErrors = [err39];
+                    } else {
+                      vErrors.push(err39);
+                    }
+                    errors++;
+                  }
+                }
+                let i2 = data12.length;
+                let j0;
+                if (i2 > 1) {
+                  const indices0 = {};
+                  for (; i2--; ) {
+                    let item0 = data12[i2];
+                    if (typeof item0 !== "string") {
+                      continue;
+                    }
+                    if (typeof indices0[item0] == "number") {
+                      j0 = indices0[item0];
+                      const err40 = { instancePath: instancePath + "/filters/" + i0 + "/targets", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/uniqueItems", keyword: "uniqueItems", params: { i: i2, j: j0 }, message: "must NOT have duplicate items (items ## " + j0 + " and " + i2 + " are identical)" };
+                      if (vErrors === null) {
+                        vErrors = [err40];
+                      } else {
+                        vErrors.push(err40);
+                      }
+                      errors++;
+                      break;
+                    }
+                    indices0[item0] = i2;
+                  }
+                }
+              } else {
+                const err41 = { instancePath: instancePath + "/filters/" + i0 + "/targets", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/targets/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+                if (vErrors === null) {
+                  vErrors = [err41];
+                } else {
+                  vErrors.push(err41);
+                }
+                errors++;
+              }
+            }
+            if (data7.defaultActive !== void 0) {
+              if (typeof data7.defaultActive !== "boolean") {
+                const err42 = { instancePath: instancePath + "/filters/" + i0 + "/defaultActive", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/defaultActive/type", keyword: "type", params: { type: "boolean" }, message: "must be boolean" };
+                if (vErrors === null) {
+                  vErrors = [err42];
+                } else {
+                  vErrors.push(err42);
+                }
+                errors++;
+              }
+            }
+          } else {
+            const err43 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+            if (vErrors === null) {
+              vErrors = [err43];
+            } else {
+              vErrors.push(err43);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err44 = { instancePath: instancePath + "/filters", schemaPath: "#/properties/filters/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        if (vErrors === null) {
+          vErrors = [err44];
+        } else {
+          vErrors.push(err44);
+        }
+        errors++;
+      }
+    }
+    if (data.tiles !== void 0) {
+      let data15 = data.tiles;
+      if (Array.isArray(data15)) {
+        if (data15.length > 100) {
+          const err45 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/maxItems", keyword: "maxItems", params: { limit: 100 }, message: "must NOT have more than 100 items" };
+          if (vErrors === null) {
+            vErrors = [err45];
+          } else {
+            vErrors.push(err45);
+          }
+          errors++;
+        }
+        const len2 = data15.length;
+        for (let i3 = 0; i3 < len2; i3++) {
+          if (!validate56(data15[i3], { instancePath: instancePath + "/tiles/" + i3, parentData: data15, parentDataProperty: i3, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate56.errors : vErrors.concat(validate56.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err46 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        if (vErrors === null) {
+          vErrors = [err46];
+        } else {
+          vErrors.push(err46);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err47 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err47];
+    } else {
+      vErrors.push(err47);
+    }
+    errors++;
+  }
+  validate49.errors = vErrors;
+  return errors === 0;
+}
+validate49.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validateStoredWorkspaceV1 = validate60;
+function validate60(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate60.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.storageVersion === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "storageVersion" }, message: "must have required property 'storageVersion'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.id === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "id" }, message: "must have required property 'id'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.name === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "name" }, message: "must have required property 'name'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    if (data.queries === void 0) {
+      const err3 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "queries" }, message: "must have required property 'queries'" };
+      if (vErrors === null) {
+        vErrors = [err3];
+      } else {
+        vErrors.push(err3);
+      }
+      errors++;
+    }
+    if (data.dashboard === void 0) {
+      const err4 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "dashboard" }, message: "must have required property 'dashboard'" };
+      if (vErrors === null) {
+        vErrors = [err4];
+      } else {
+        vErrors.push(err4);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "storageVersion" || key0 === "id" || key0 === "name" || key0 === "queries" || key0 === "dashboard")) {
+        const err5 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+    }
+    if (data.storageVersion !== void 0) {
+      let data0 = data.storageVersion;
+      if (!(typeof data0 == "number" && (!(data0 % 1) && !isNaN(data0)) && isFinite(data0))) {
+        const err6 = { instancePath: instancePath + "/storageVersion", schemaPath: "#/properties/storageVersion/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+      if (1 !== data0) {
+        const err7 = { instancePath: instancePath + "/storageVersion", schemaPath: "#/properties/storageVersion/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+    }
+    if (data.id !== void 0) {
+      let data1 = data.id;
+      if (typeof data1 === "string") {
+        if (func1(data1) > 256) {
+          const err8 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/maxLength", keyword: "maxLength", params: { limit: 256 }, message: "must NOT have more than 256 characters" };
+          if (vErrors === null) {
+            vErrors = [err8];
+          } else {
+            vErrors.push(err8);
+          }
+          errors++;
+        }
+        if (func1(data1) < 1) {
+          const err9 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/minLength", keyword: "minLength", params: { limit: 1 }, message: "must NOT have fewer than 1 characters" };
+          if (vErrors === null) {
+            vErrors = [err9];
+          } else {
+            vErrors.push(err9);
+          }
+          errors++;
+        }
+        if (!pattern4.test(data1)) {
+          const err10 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/pattern", keyword: "pattern", params: { pattern: "\\S" }, message: 'must match pattern "\\S"' };
+          if (vErrors === null) {
+            vErrors = [err10];
+          } else {
+            vErrors.push(err10);
+          }
+          errors++;
+        }
+      } else {
+        const err11 = { instancePath: instancePath + "/id", schemaPath: "#/properties/id/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err11];
+        } else {
+          vErrors.push(err11);
+        }
+        errors++;
+      }
+    }
+    if (data.name !== void 0) {
+      let data2 = data.name;
+      if (typeof data2 === "string") {
+        if (func1(data2) > 512) {
+          const err12 = { instancePath: instancePath + "/name", schemaPath: "#/properties/name/maxLength", keyword: "maxLength", params: { limit: 512 }, message: "must NOT have more than 512 characters" };
+          if (vErrors === null) {
+            vErrors = [err12];
+          } else {
+            vErrors.push(err12);
+          }
+          errors++;
+        }
+      } else {
+        const err13 = { instancePath: instancePath + "/name", schemaPath: "#/properties/name/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err13];
+        } else {
+          vErrors.push(err13);
+        }
+        errors++;
+      }
+    }
+    if (data.queries !== void 0) {
+      let data3 = data.queries;
+      if (Array.isArray(data3)) {
+        if (data3.length > 1e3) {
+          const err14 = { instancePath: instancePath + "/queries", schemaPath: "#/properties/queries/maxItems", keyword: "maxItems", params: { limit: 1e3 }, message: "must NOT have more than 1000 items" };
+          if (vErrors === null) {
+            vErrors = [err14];
+          } else {
+            vErrors.push(err14);
+          }
+          errors++;
+        }
+        const len0 = data3.length;
+        for (let i0 = 0; i0 < len0; i0++) {
+          if (!validate42(data3[i0], { instancePath: instancePath + "/queries/" + i0, parentData: data3, parentDataProperty: i0, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate42.errors : vErrors.concat(validate42.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err15 = { instancePath: instancePath + "/queries", schemaPath: "#/properties/queries/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        if (vErrors === null) {
+          vErrors = [err15];
+        } else {
+          vErrors.push(err15);
+        }
+        errors++;
+      }
+    }
+    if (data.dashboard !== void 0) {
+      let data5 = data.dashboard;
+      const _errs12 = errors;
+      let valid3 = false;
+      let passing0 = null;
+      const _errs13 = errors;
+      if (!validate49(data5, { instancePath: instancePath + "/dashboard", parentData: data, parentDataProperty: "dashboard", rootData, dynamicAnchors })) {
+        vErrors = vErrors === null ? validate49.errors : vErrors.concat(validate49.errors);
+        errors = vErrors.length;
+      }
+      var _valid0 = _errs13 === errors;
+      if (_valid0) {
+        valid3 = true;
+        passing0 = 0;
+      }
+      const _errs14 = errors;
+      if (data5 !== null) {
+        const err16 = { instancePath: instancePath + "/dashboard", schemaPath: "#/properties/dashboard/oneOf/1/type", keyword: "type", params: { type: "null" }, message: "must be null" };
+        if (vErrors === null) {
+          vErrors = [err16];
+        } else {
+          vErrors.push(err16);
+        }
+        errors++;
+      }
+      var _valid0 = _errs14 === errors;
+      if (_valid0 && valid3) {
+        valid3 = false;
+        passing0 = [passing0, 1];
+      } else {
+        if (_valid0) {
+          valid3 = true;
+          passing0 = 1;
+        }
+      }
+      if (!valid3) {
+        const err17 = { instancePath: instancePath + "/dashboard", schemaPath: "#/properties/dashboard/oneOf", keyword: "oneOf", params: { passingSchemas: passing0 }, message: "must match exactly one schema in oneOf" };
+        if (vErrors === null) {
+          vErrors = [err17];
+        } else {
+          vErrors.push(err17);
+        }
+        errors++;
+      } else {
+        errors = _errs12;
+        if (vErrors !== null) {
+          if (_errs12) {
+            vErrors.length = _errs12;
+          } else {
+            vErrors = null;
+          }
+        }
+      }
+    }
+  } else {
+    const err18 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err18];
+    } else {
+      vErrors.push(err18);
+    }
+    errors++;
+  }
+  validate60.errors = vErrors;
+  return errors === 0;
+}
+validate60.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
+var validatePortableBundleV1 = validate63;
+function validate63(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
+  ;
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate63.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.format === void 0) {
+      const err0 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "format" }, message: "must have required property 'format'" };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.version === void 0) {
+      const err1 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "version" }, message: "must have required property 'version'" };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.exportedAt === void 0) {
+      const err2 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "exportedAt" }, message: "must have required property 'exportedAt'" };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    if (data.queries === void 0) {
+      const err3 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "queries" }, message: "must have required property 'queries'" };
+      if (vErrors === null) {
+        vErrors = [err3];
+      } else {
+        vErrors.push(err3);
+      }
+      errors++;
+    }
+    if (data.dashboards === void 0) {
+      const err4 = { instancePath, schemaPath: "#/required", keyword: "required", params: { missingProperty: "dashboards" }, message: "must have required property 'dashboards'" };
+      if (vErrors === null) {
+        vErrors = [err4];
+      } else {
+        vErrors.push(err4);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "$schema" || key0 === "format" || key0 === "version" || key0 === "exportedAt" || key0 === "metadata" || key0 === "queries" || key0 === "dashboards")) {
+        const err5 = { instancePath, schemaPath: "#/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key0 }, message: "must NOT have additional properties" };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      }
+    }
+    if (data.$schema !== void 0) {
+      if ("https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json" !== data.$schema) {
+        const err6 = { instancePath: instancePath + "/$schema", schemaPath: "#/properties/%24schema/const", keyword: "const", params: { allowedValue: "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json" }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err6];
+        } else {
+          vErrors.push(err6);
+        }
+        errors++;
+      }
+    }
+    if (data.format !== void 0) {
+      if ("altinity-sql-browser/portable-bundle" !== data.format) {
+        const err7 = { instancePath: instancePath + "/format", schemaPath: "#/properties/format/const", keyword: "const", params: { allowedValue: "altinity-sql-browser/portable-bundle" }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+    }
+    if (data.version !== void 0) {
+      let data2 = data.version;
+      if (!(typeof data2 == "number" && (!(data2 % 1) && !isNaN(data2)) && isFinite(data2))) {
+        const err8 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+      if (1 !== data2) {
+        const err9 = { instancePath: instancePath + "/version", schemaPath: "#/properties/version/const", keyword: "const", params: { allowedValue: 1 }, message: "must be equal to constant" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      }
+    }
+    if (data.exportedAt !== void 0) {
+      let data3 = data.exportedAt;
+      if (typeof data3 === "string") {
+        if (!formats0.validate(data3)) {
+          const err10 = { instancePath: instancePath + "/exportedAt", schemaPath: "#/properties/exportedAt/format", keyword: "format", params: { format: "date-time" }, message: 'must match format "date-time"' };
+          if (vErrors === null) {
+            vErrors = [err10];
+          } else {
+            vErrors.push(err10);
+          }
+          errors++;
+        }
+      } else {
+        const err11 = { instancePath: instancePath + "/exportedAt", schemaPath: "#/properties/exportedAt/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+        if (vErrors === null) {
+          vErrors = [err11];
+        } else {
+          vErrors.push(err11);
+        }
+        errors++;
+      }
+    }
+    if (data.metadata !== void 0) {
+      let data4 = data.metadata;
+      if (data4 && typeof data4 == "object" && !Array.isArray(data4)) {
+        for (const key1 in data4) {
+          if (!(key1 === "name" || key1 === "description")) {
+            const err12 = { instancePath: instancePath + "/metadata", schemaPath: "#/properties/metadata/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key1 }, message: "must NOT have additional properties" };
+            if (vErrors === null) {
+              vErrors = [err12];
+            } else {
+              vErrors.push(err12);
+            }
+            errors++;
+          }
+        }
+        if (data4.name !== void 0) {
+          let data5 = data4.name;
+          if (typeof data5 === "string") {
+            if (func1(data5) > 512) {
+              const err13 = { instancePath: instancePath + "/metadata/name", schemaPath: "#/properties/metadata/properties/name/maxLength", keyword: "maxLength", params: { limit: 512 }, message: "must NOT have more than 512 characters" };
+              if (vErrors === null) {
+                vErrors = [err13];
+              } else {
+                vErrors.push(err13);
+              }
+              errors++;
+            }
+          } else {
+            const err14 = { instancePath: instancePath + "/metadata/name", schemaPath: "#/properties/metadata/properties/name/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err14];
+            } else {
+              vErrors.push(err14);
+            }
+            errors++;
+          }
+        }
+        if (data4.description !== void 0) {
+          let data6 = data4.description;
+          if (typeof data6 === "string") {
+            if (func1(data6) > 16384) {
+              const err15 = { instancePath: instancePath + "/metadata/description", schemaPath: "#/properties/metadata/properties/description/maxLength", keyword: "maxLength", params: { limit: 16384 }, message: "must NOT have more than 16384 characters" };
+              if (vErrors === null) {
+                vErrors = [err15];
+              } else {
+                vErrors.push(err15);
+              }
+              errors++;
+            }
+          } else {
+            const err16 = { instancePath: instancePath + "/metadata/description", schemaPath: "#/properties/metadata/properties/description/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+            if (vErrors === null) {
+              vErrors = [err16];
+            } else {
+              vErrors.push(err16);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err17 = { instancePath: instancePath + "/metadata", schemaPath: "#/properties/metadata/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+        if (vErrors === null) {
+          vErrors = [err17];
+        } else {
+          vErrors.push(err17);
+        }
+        errors++;
+      }
+    }
+    if (data.queries !== void 0) {
+      let data7 = data.queries;
+      if (Array.isArray(data7)) {
+        if (data7.length > 1e3) {
+          const err18 = { instancePath: instancePath + "/queries", schemaPath: "#/properties/queries/maxItems", keyword: "maxItems", params: { limit: 1e3 }, message: "must NOT have more than 1000 items" };
+          if (vErrors === null) {
+            vErrors = [err18];
+          } else {
+            vErrors.push(err18);
+          }
+          errors++;
+        }
+        const len0 = data7.length;
+        for (let i0 = 0; i0 < len0; i0++) {
+          if (!validate42(data7[i0], { instancePath: instancePath + "/queries/" + i0, parentData: data7, parentDataProperty: i0, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate42.errors : vErrors.concat(validate42.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err19 = { instancePath: instancePath + "/queries", schemaPath: "#/properties/queries/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        if (vErrors === null) {
+          vErrors = [err19];
+        } else {
+          vErrors.push(err19);
+        }
+        errors++;
+      }
+    }
+    if (data.dashboards !== void 0) {
+      let data9 = data.dashboards;
+      if (Array.isArray(data9)) {
+        if (data9.length > 32) {
+          const err20 = { instancePath: instancePath + "/dashboards", schemaPath: "#/properties/dashboards/maxItems", keyword: "maxItems", params: { limit: 32 }, message: "must NOT have more than 32 items" };
+          if (vErrors === null) {
+            vErrors = [err20];
+          } else {
+            vErrors.push(err20);
+          }
+          errors++;
+        }
+        const len1 = data9.length;
+        for (let i1 = 0; i1 < len1; i1++) {
+          if (!validate49(data9[i1], { instancePath: instancePath + "/dashboards/" + i1, parentData: data9, parentDataProperty: i1, rootData, dynamicAnchors })) {
+            vErrors = vErrors === null ? validate49.errors : vErrors.concat(validate49.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err21 = { instancePath: instancePath + "/dashboards", schemaPath: "#/properties/dashboards/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        if (vErrors === null) {
+          vErrors = [err21];
+        } else {
+          vErrors.push(err21);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err22 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    if (vErrors === null) {
+      vErrors = [err22];
+    } else {
+      vErrors.push(err22);
+    }
+    errors++;
+  }
+  validate63.errors = vErrors;
+  return errors === 0;
+}
+validate63.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 export {
+  validateDashboardV1,
+  validateFlowLayoutV1,
   validateLibraryV2,
+  validatePortableBundleV1,
   validateQuerySpecV1,
-  validateSavedQueryV2
+  validateSavedQueryV2,
+  validateStoredWorkspaceV1
 };
 
 export const validatorsById = {
   "https://altinity.com/schemas/altinity-sql-browser/query-spec-v1.schema.json": validateQuerySpecV1,
   "https://altinity.com/schemas/altinity-sql-browser/saved-query-v2.schema.json": validateSavedQueryV2,
   "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json": validateLibraryV2,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json": validateFlowLayoutV1,
+  "https://altinity.com/schemas/altinity-sql-browser/dashboard-v1.schema.json": validateDashboardV1,
+  "https://altinity.com/schemas/altinity-sql-browser/stored-workspace-v1.schema.json": validateStoredWorkspaceV1,
+  "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json": validatePortableBundleV1,
 };

@@ -40,6 +40,7 @@ import type { WorkbenchSession } from '../../src/ui/workbench/workbench-session.
 import type { WorkbenchParameterSession } from '../../src/application/workbench-parameter-session.js';
 import type { ExportService } from '../../src/application/export-service.js';
 import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
+import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
 } from '../../src/application/saved-query-service.js';
@@ -242,6 +243,12 @@ const appDefaults: App = {
   params: paramsDefaults,
   graph: graphDefaults,
   prefs: prefsDefaults,
+  workspace: {
+    loadCurrent: async () => null,
+    commit: async () => ({ ok: true, workspace: {} as never, dashboardRevision: null }),
+    clearCurrent: async () => {},
+  },
+  loadDashboardWorkspace: async () => null,
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
@@ -316,7 +323,11 @@ const appDefaults: App = {
  * convenience key (#276 Phase 5 deleted `App.chCtx` — `app.conn.chCtx` is
  * the only live alias now), kept so existing `makeApp({ chCtx: {...} })`
  * call sites don't all need to become `conn: { chCtx: {...} }`. */
-type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs'>> & {
+type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
+  /** Partial like the rest (#286 Phase 4) — the Dashboard viewer reads a
+   *  StoredWorkspaceV1 through `loadDashboardWorkspace`/`workspace.loadCurrent`;
+   *  a dashboard test overrides just the method(s) it drives. */
+  workspace?: Partial<WorkspaceRepository>;
   dom?: Partial<AppDom>;
   chCtx?: Partial<ChCtx>;
   actions?: Partial<ActionsRegistry>;
@@ -513,6 +524,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
     prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
+    workspace: { ...appDefaults.workspace, ...(overrides.workspace ?? {}) },
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

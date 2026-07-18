@@ -355,6 +355,20 @@ describe('createApp basics', () => {
     const app = createApp(env({ specValidators: service }));
     expect(app.specValidators).toBe(service); // identity — the seam's own service passes straight through
   });
+  it('constructs the atomic StoredWorkspaceV1 repository (#284) behind the injected IndexedDB seam', () => {
+    // Default env: no env.indexedDB → falls back to win.indexedDB (absent under
+    // happy-dom). The repository still constructs (lazy — no DB opened yet) and
+    // exposes the full #280 contract.
+    const app = createApp(env());
+    expect(typeof app.workspace.loadCurrent).toBe('function');
+    expect(typeof app.workspace.commit).toBe('function');
+    expect(typeof app.workspace.clearCurrent).toBe('function');
+    // Injecting a factory exercises the left side of `env.indexedDB ||
+    // win.indexedDB`; the repository still constructs lazily (no DB is opened
+    // until an operation runs — the concrete adapter is covered on its own).
+    const app2 = createApp(env({ indexedDB: {} as IDBFactory }));
+    expect(typeof app2.workspace.commit).toBe('function');
+  });
   it('reads the stored token and derives identity', () => {
     const app = createApp(env());
     expect(app.conn.token()).toBe(validToken);

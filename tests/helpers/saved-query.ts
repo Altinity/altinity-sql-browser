@@ -8,7 +8,7 @@
 // `specVersion: 1` inside that catch-all, which bypasses the shorthand
 // entirely and hands back a fully custom `spec` untouched (`structuredClone`d)
 // for tests exercising a pre-built Spec document directly.
-import type { Dashboard, Panel, QuerySpecV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { Panel, QueryDashboardPresentationV1, QuerySpecV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
 export interface SavedQueryFixture {
   id?: string;
@@ -18,7 +18,7 @@ export interface SavedQueryFixture {
   description?: string;
   view?: QuerySpecV1['view'];
   panel?: Panel;
-  dashboard?: Dashboard;
+  dashboard?: QueryDashboardPresentationV1;
   spec?: Record<string, unknown>;
   // Arbitrary extension fields (e.g. `extension`, or `specVersion: 1` — see
   // above) — QuerySpecV1's own index signature accepts the same.

@@ -34,7 +34,7 @@
       "default": "table"
     },
     "panel": { "$ref": "#/$defs/panel" },
-    "dashboard": { "$ref": "#/$defs/dashboard" }
+    "dashboard": { "$ref": "#/$defs/queryDashboardPresentationV1" }
   },
   "additionalProperties": true,
   "x-altinity-order": ["name", "description", "favorite", "view", "panel", "dashboard"],
@@ -113,9 +113,42 @@
       "additionalProperties": true,
       "x-altinity-order": ["defaults", "columns"]
     },
-    "dashboard": {
+    "queryPresentationPatchV1": {
+      "title": "Presentation patch",
+      "description": "RFC 7396 JSON Merge Patch applied over the saved query's base panel object. Object members merge recursively, arrays replace the previous array completely, and a null member deletes an optional property. A patch may not change panel.cfg.type, and the final resolved panel must validate like a normal saved-query panel.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "dashboardSizeHints": {
+      "title": "Size hints",
+      "description": "Layout-neutral tile size hints. Authoring may derive an initial placement from them; they never own actual Dashboard placement.",
+      "type": "object",
+      "properties": {
+        "preferred": {
+          "title": "Preferred size",
+          "description": "Preferred layout-neutral tile size.",
+          "type": "string",
+          "enum": ["compact", "medium", "wide"]
+        },
+        "minimum": {
+          "title": "Minimum size",
+          "description": "Smallest layout-neutral tile size that still renders usefully.",
+          "type": "string",
+          "enum": ["compact", "medium", "wide"]
+        },
+        "aspectRatio": {
+          "title": "Aspect ratio",
+          "description": "Preferred width/height ratio hint.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "x-altinity-order": ["preferred", "minimum", "aspectRatio"]
+    },
+    "queryDashboardPresentationV1": {
       "title": "Dashboard configuration",
-      "description": "Dashboard participation metadata. Feature-specific extensions remain forward compatible.",
+      "description": "Reusable Dashboard presentation for this query: role, named presentation variants, and layout-neutral size hints. Actual Dashboard sequence, placement, and tile-local overrides live in the Dashboard document. Feature-specific extensions remain forward compatible.",
       "type": "object",
       "properties": {
         "role": {
@@ -125,10 +158,26 @@
           "enum": ["panel", "filter", "setup"],
           "default": "panel",
           "examples": ["filter"]
-        }
+        },
+        "defaultVariant": {
+          "title": "Default presentation variant",
+          "description": "Variant applied when a tile does not select one. Must name an existing entry in variants.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "variants": {
+          "title": "Presentation variants",
+          "description": "Named reusable presentation patches, each an RFC 7396 JSON Merge Patch over the base panel.",
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": { "minLength": 1, "maxLength": 256 },
+          "additionalProperties": { "$ref": "#/$defs/queryPresentationPatchV1" }
+        },
+        "sizeHints": { "$ref": "#/$defs/dashboardSizeHints" }
       },
       "additionalProperties": true,
-      "x-altinity-order": ["role"]
+      "x-altinity-order": ["role", "defaultVariant", "variants", "sizeHints"]
     },
     "panel": {
       "title": "Panel configuration",

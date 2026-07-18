@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { analyzeParameterizedSources, fieldControls } from '../../src/core/param-pipeline.js';
 import type { FieldControl, PreparedFieldState } from '../../src/core/param-pipeline.js';
 import { buildFilterBar, FILTER_DEBOUNCE_MS } from '../../src/ui/filter-bar.js';
+import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 // The field-family construction, debounce, commit, conflict, and optional
@@ -48,6 +49,24 @@ describe('buildFilterBar (shared filter row)', () => {
 
   it('exposes the shared debounce constant', () => {
     expect(FILTER_DEBOUNCE_MS).toBe(500);
+  });
+
+  it('a recent-value pick commits immediately and Clear recent clears the field recents (#171)', () => {
+    const app = makeApp();
+    app.state.varRecent = recordRecent(emptyRecentMap(), 'x', 'foo');
+    const onCommit = vi.fn();
+    const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), onCommit, okField, { document });
+    document.body.appendChild(bar.el);
+    const input = bar.el.querySelector('input')!;
+    input.dispatchEvent(new Event('focus'));
+    const opt = bar.el.querySelector('[role="option"]');
+    expect(opt).not.toBeNull();
+    opt!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(onCommit).toHaveBeenCalledWith('x'); // onPick — immediate commit
+    input.dispatchEvent(new Event('focus'));
+    bar.el.querySelector('.var-combo-footer button')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    expect(app.params.clearVarRecent).toHaveBeenCalledWith('x'); // onClearRecent
+    bar.el.remove();
   });
 
   it('persists and commits curated selections', () => {

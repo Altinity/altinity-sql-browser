@@ -72,6 +72,9 @@ import { createExportService } from '../application/export-service.js';
 import type { ExportSink, FileHandleLike, DirectoryHandleLike } from '../application/export-service.js';
 import { createSchemaGraphSession, SchemaGraphAuthRequiredError } from '../application/schema-graph-session.js';
 import { createAppPreferences } from '../application/app-preferences.js';
+import { createWorkspaceRepository } from '../workspace/workspace-repository.js';
+import { createIndexedDbWorkspaceStore } from '../workspace/indexeddb-workspace-store.js';
+import { migrateLegacyWorkspaceIfNeeded } from '../workspace/legacy-migration.js';
 import { createWorkbenchSession } from './workbench/workbench-session.js';
 import { createQueryDocumentSession } from '../application/query-document-session.js';
 import { createSavedQueryService } from '../application/saved-query-service.js';
@@ -190,6 +193,15 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.prefs = prefs;
   app.saveJSON = saveJSON;
   app.saveStr = saveStr;
+  // Atomic StoredWorkspaceV1 persistence (#280 Phase 2 / #284): the injected
+  // IndexedDB factory seam (mirrors crypto/sessionStorage) backs a single-record
+  // WorkspaceStore, behind which the pure WorkspaceRepository does validate-then-
+  // atomically-replace commits. Constructed lazily — no database is opened until
+  // a workspace operation runs — so this never touches IndexedDB during
+  // bootstrap. The favorites-driven Dashboard render still reads legacy keys in
+  // this phase; wiring reads onto the aggregate is Phases 3-6 of #280.
+  const workspaceStore = createIndexedDbWorkspaceStore(env.indexedDB || win.indexedDB);
+  app.workspace = createWorkspaceRepository({ store: workspaceStore });
   // The `{name:Type}` var-value/filter-active/recent-value persistence
   // wrappers (saveVarValues/saveFilterActive/saveVarRecent/
   // saveVarRecentDisabled) + the recent-value policy that sits on top of them
@@ -1345,6 +1357,27 @@ export function createApp(env: CreateAppEnv = {}): App {
   // former bespoke `runTile`/`queryDashboardTile`/`parseJsonResult` machinery
   // was retired so cap/settings fixes can't apply to only one path.
   app.renderDashboard = () => renderDashboard(app);
+
+  // #286 Phase 4: resolve the current StoredWorkspaceV1 the Dashboard viewer
+  // reads from. The one-shot legacy migration (favorites → tiles,
+  // dashLayout/dashCols → flow@1) runs only when no aggregate exists yet, from
+  // the flat `asb:*` keys already loaded onto `app.state`; then the aggregate
+  // is the source of truth. Composition-root wiring — the store lives here, so
+  // the migration deps are assembled here rather than in the render module.
+  app.loadDashboardWorkspace = async () => {
+    await migrateLegacyWorkspaceIfNeeded({
+      store: workspaceStore,
+      repository: app.workspace,
+      legacy: {
+        name: app.state.libraryName.value,
+        queries: app.state.savedQueries,
+        dashLayout: app.state.dashLayout,
+        dashCols: app.state.dashCols,
+      },
+      genId: () => uid('ws-'),
+    });
+    return app.workspace.loadCurrent();
+  };
 
   // Open the dashboard in a new tab and stand ready to hand it our credentials
   // — the cross-tab auth-handoff GRANT side itself is the session's job now
