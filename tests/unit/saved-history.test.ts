@@ -5,13 +5,18 @@ import { queryDescription, queryFavorite, queryName } from '../../src/core/saved
 import { makeApp } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
-import { setTabSpecDraft } from '../../src/state.js';
+import { setTabSpecDraft, toggleFavorite, deleteSaved } from '../../src/state.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { AppState, HistoryEntry } from '../../src/state.js';
 
 type ResultView = AppState['resultView']['value'];
 
 const click = (el: Element) => el.dispatchEvent(new Event('click', { bubbles: true }));
+// #287 W4: toggleFavorite/renameSaved/deleteSaved's onclick handlers are now
+// async (they await the aggregate commit before mutating state/re-rendering)
+// — a macrotask flush lets every pending microtask (the commit promise chain)
+// settle before a test's post-click assertions run.
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const setSaved = (app: App, queries: SavedQueryFixture[]) => {
   app.state.savedQueries = queries.map((q) => savedQuery(q));
 };
@@ -51,7 +56,7 @@ describe('renderSavedHistory', () => {
     expect(savedList(app).textContent).toContain('No saved queries yet.');
   });
 
-  it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', () => {
+  it('saved: lists rows, loads on click, deletes via trash + refreshes Save button', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     const panel = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
@@ -66,6 +71,7 @@ describe('renderSavedHistory', () => {
     expect(app.actions.loadIntoNewTab).toHaveBeenCalledWith(app.state.savedQueries[0]);
     expect(app.actions.run).toHaveBeenCalledWith({ view: 'panel' });
     byTitle(row, 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
+    await flush();
     expect(app.state.savedQueries).toHaveLength(0);
     expect(app.updateSaveBtn).toHaveBeenCalled();
     expect(app.updateEditorModeUi).toHaveBeenCalled();
@@ -163,7 +169,7 @@ describe('renderSavedHistory', () => {
     expect(app.state.resultView.value).toBe('filter'); // role wins, not the dormant 'panel'
   });
 
-  it('saved: live count + star toggles favorite and re-sorts favorites first', () => {
+  it('saved: live count + star toggles favorite and re-sorts favorites first', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [
@@ -176,12 +182,13 @@ describe('renderSavedHistory', () => {
     expect(names()).toEqual(['A', 'B']);
     const stars = qsa(savedList(app), '.sv-star');
     stars[1].dispatchEvent(new Event('click', { bubbles: true })); // favorite B
+    await flush();
     expect(queryFavorite(app.state.savedQueries.find((q) => q.id === 'b'))).toBe(true);
     expect(names()).toEqual(['B', 'A']);
     expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
   });
 
-  it('saved: favorite merges into a linked dirty valid Spec draft', () => {
+  it('saved: favorite merges into a linked dirty valid Spec draft', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
@@ -190,10 +197,10 @@ describe('renderSavedHistory', () => {
     setTabSpecDraft(tab, { name: 'Draft', favorite: false, future: { keep: true } }, { dirty: true });
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
+    await flush();
     expect(queryFavorite(app.state.savedQueries[0])).toBe(true);
     expect(tab.specParsed).toMatchObject({ name: 'Draft', favorite: true, future: { keep: true } });
     expect(tab.dirtySpec).toBe(true);
-    expect(app.saveJSON).toHaveBeenCalledTimes(1);
   });
 
   it('saved: pencil focuses an invalid linked Spec draft instead of opening', () => {
@@ -212,7 +219,7 @@ describe('renderSavedHistory', () => {
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
   });
 
-  it('saved: favorite blocks on invalid JSON without persistence', () => {
+  it('saved: favorite blocks on invalid JSON without persistence', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
@@ -224,12 +231,59 @@ describe('renderSavedHistory', () => {
     tab.dirtySpec = true;
     renderSavedHistory(app);
     click(qs(savedList(app), '.sv-star'));
+    await flush();
     expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
     expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
-    expect(app.saveJSON).not.toHaveBeenCalled();
   });
 
-  it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', () => {
+  const failingCommit = () => vi.fn(async () => ({
+    ok: false as const,
+    diagnostics: [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }],
+  }));
+
+  it('#287 W4: star surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
+    const commit = failingCommit();
+    const app = makeApp({ workspace: { commit } });
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false);
+    expect(qs(document, '.share-toast').textContent).toBe('Couldn’t update favorite: boom');
+  });
+
+  it('#287 W4: delete surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
+    const commit = failingCommit();
+    const app = makeApp({ workspace: { commit } });
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    app.activeTab().savedId = 's1';
+    renderSavedHistory(app);
+    byTitle(qs(savedList(app), '.saved-row'), 'Delete').dispatchEvent(new Event('click', { bubbles: true }));
+    await flush();
+    expect(app.state.savedQueries).toHaveLength(1);
+    expect(app.activeTab().savedId).toBe('s1');
+    expect(app.updateSaveBtn).not.toHaveBeenCalled();
+    expect(qs(document, '.share-toast').textContent).toBe('Couldn’t delete: boom');
+  });
+
+  it('#287 W4: rename surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
+    const commit = failingCommit();
+    const app = makeApp({ workspace: { commit } });
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    qs<HTMLInputElement>(savedList(app), '.sv-edit-name').value = 'New';
+    qs<HTMLInputElement>(savedList(app), '.sv-edit-name')
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+    expect(queryName(app.state.savedQueries[0])).toBe('Old');
+    expect(qs(document, '.share-toast').textContent).toBe('Couldn’t rename: boom');
+  });
+
+  it('saved: pencil opens the edit form; Name(Enter)+Description commit via renameSaved; double-fire is guarded', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
@@ -243,6 +297,7 @@ describe('renderSavedHistory', () => {
     nameInput.value = 'New';
     descInput.value = 'a description';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
     expect(app.state.savedQueries[0].spec).toMatchObject({ name: 'New', description: 'a description' });
     expect(app.state.editingSavedId.value).toBeNull();
     expect(app.actions.rerenderTabs).toHaveBeenCalled();
@@ -250,6 +305,7 @@ describe('renderSavedHistory', () => {
     // a second commit on the now-detached field is a no-op (the `done` guard)
     nameInput.value = 'AGAIN';
     nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
     expect(queryName(app.state.savedQueries[0])).toBe('New');
     // re-open and press Escape on the name field → cancels without saving
     byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
@@ -259,7 +315,7 @@ describe('renderSavedHistory', () => {
     expect(app.state.editingSavedId.value).toBeNull();
     expect(queryName(app.state.savedQueries[0])).toBe('New');
   });
-  it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', () => {
+  it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', async () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false, description: 'd0' }]);
@@ -271,12 +327,14 @@ describe('renderSavedHistory', () => {
     expect(descInput.value).toBe('d0');
     descInput.value = 'd1';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+    await flush();
     expect(queryDescription(app.state.savedQueries[0])).toBe('d1');
     // Ctrl+Enter also commits
     open();
     descInput = qs<HTMLTextAreaElement>(savedList(app), '.sv-edit-desc');
     descInput.value = 'd2';
     descInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    await flush();
     expect(queryDescription(app.state.savedQueries[0])).toBe('d2');
     // Escape on the description cancels without saving
     open();
@@ -310,13 +368,13 @@ describe('renderSavedHistory', () => {
     expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
-  it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
+  it('saved: the tab is labelled "Queries" with a live count and no Export/Import row', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
     const savedTab = qsa(savedTabsRow(app), '.side-tab')[0];
-    expect(savedTab.textContent).toContain('Library');
+    expect(savedTab.textContent).toContain('Queries');
     expect(savedTab.textContent).not.toContain('Saved');
     expect(qs(savedTab, '.side-count').textContent).toContain('1');
     // the old bottom Export/Import row is gone (moved to the header File menu)
@@ -497,5 +555,23 @@ describe('drag a row into the editor', () => {
     expect(row.getAttribute('draggable')).toBe('true');
     const setData = dragStart(row);
     expect(setData).toHaveBeenCalledWith(SUBQUERY_MIME, 'SELECT 2');
+  });
+});
+
+describe('concurrent saved-query writes (#287 review fix)', () => {
+  it('serializes overlapping ops so a delete is not resurrected by a stale toggle', async () => {
+    const app = makeApp();
+    setSaved(app, [
+      { id: 'q1', name: 'Q1', sql: 'SELECT 1', favorite: false },
+      { id: 'q2', name: 'Q2', sql: 'SELECT 2' },
+    ]);
+    // Fire a favorite-toggle on q1 and a delete on q2 in the same tick. Without
+    // app.serializeWrite both build a candidate from the same [q1,q2] snapshot
+    // and whichever commit lands last wins — resurrecting the deleted q2.
+    const pToggle = app.serializeWrite(() => toggleFavorite(app.state, 'q1', app.workspace.commit, app.specValidators));
+    const pDelete = app.serializeWrite(() => deleteSaved(app.state, 'q2', app.workspace.commit));
+    await Promise.all([pToggle, pDelete]);
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']); // q2 stays deleted
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(true);      // q1 toggle applied
   });
 });

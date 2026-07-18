@@ -12,6 +12,7 @@ import {
   deleteHistory, invalidSpecTabForSaved, SAVED_VIEWS,
 } from '../state.js';
 import type { AppState, HistoryEntry } from '../state.js';
+import { flashToast } from './toast.js';
 import { isAutoRunnable } from '../core/sql-split.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../core/saved-query.js';
@@ -54,7 +55,7 @@ export function renderSavedHistory(app: App): void {
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'saved' ? ' active' : ''),
       onclick: () => switchTo('saved'),
-    }, Icon.layers(), h('span', null, 'Library'),
+    }, Icon.layers(), h('span', null, 'Queries'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'history' ? ' active' : ''),
@@ -133,13 +134,15 @@ function renderSaved(app: App, list: HTMLElement): void {
     const launchView = rolePreview || queryView(q);
     const star = h('button', {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
-      onclick: (e: Event) => {
+      onclick: async (e: Event) => {
         e.stopPropagation();
-        const result = toggleFavorite(state, q.id, app.saveJSON, app.specValidators);
+        const result = await app.serializeWrite(() => toggleFavorite(state, q.id, app.workspace.commit, app.specValidators));
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();
           app.specEditor.syncFromState();
+        } else if (result && !result.ok && result.diagnostics?.length) {
+          flashToast('Couldn’t update favorite: ' + result.diagnostics[0].message, { document: app.document });
         }
         renderSavedHistory(app);
       },
@@ -184,11 +187,15 @@ function renderSaved(app: App, list: HTMLElement): void {
         }, Icon.pencil()),
         h('button', {
           class: 'sv-act', title: 'Delete',
-          onclick: (e: Event) => {
+          onclick: async (e: Event) => {
             e.stopPropagation();
-            deleteSaved(state, q.id, app.saveJSON);
-            app.updateSaveBtn();
-            app.updateEditorModeUi?.();
+            const result = await app.serializeWrite(() => deleteSaved(state, q.id, app.workspace.commit));
+            if (result.ok) {
+              app.updateSaveBtn();
+              app.updateEditorModeUi?.();
+            } else if (result.diagnostics.length) {
+              flashToast('Couldn’t delete: ' + result.diagnostics[0].message, { document: app.document });
+            }
             renderSavedHistory(app);
           },
         }, Icon.trash())),
@@ -211,13 +218,15 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
   const descInput = h('textarea', { class: 'sv-edit-desc', rows: '3', placeholder: 'What this query does (shown in Markdown export)' });
   descInput.value = queryDescription(q);
   let done = false;
-  const finish = (commit: boolean): void => {
+  const finish = async (commit: boolean): Promise<void> => {
     if (done) return;
     done = true;
     if (commit && nameInput.value.trim()) {
-      const result = renameSaved(state, q.id, nameInput.value, descInput.value, app.saveJSON, app.specValidators);
+      const result = await app.serializeWrite(() => renameSaved(state, q.id, nameInput.value, descInput.value, app.workspace.commit, app.specValidators));
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
-      else {
+      else if (result && !result.ok && result.diagnostics?.length) {
+        flashToast('Couldn’t rename: ' + result.diagnostics[0].message, { document: app.document });
+      } else {
         app.queryDoc.revalidateSpecDrafts();
         app.specEditor.syncFromState();
         app.actions.rerenderTabs();

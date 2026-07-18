@@ -12,6 +12,7 @@ import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { queryDescription } from '../../src/core/saved-query.js';
 import { createSpecValidatorRegistry } from '../../src/core/spec-draft.js';
 import { savedQuery } from '../helpers/saved-query.js';
+import { fakeIndexedDbFactory } from '../helpers/fake-idb.js';
 import { decodeShare } from '../../src/core/share.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { App } from '../../src/ui/app.types.js';
@@ -342,6 +343,15 @@ function env(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
     now: () => 0,
     retryMs: 0, // instant script-statement retry in tests (no real 250ms wait)
     navigator: { clipboard: asClipboard({ writeText: vi.fn(async (_data: string) => {}) }) },
+    // #287 W4: every saved-query CRUD op now awaits `app.workspace.commit` —
+    // a real IndexedDB-backed commit, not the retired flat `asb:saved` write.
+    // Default to a working in-memory fake factory (mirrors dashboard.test.ts's
+    // own local `fakeIndexedDb`) so the many real `createApp(env())`-driven
+    // save/rename/favorite/delete flows below actually persist under
+    // happy-dom (which has no real `indexedDB`) instead of silently failing
+    // closed on every commit. A test can still override `indexedDB: undefined`
+    // to exercise the no-factory fallback path deliberately.
+    indexedDB: fakeIndexedDbFactory(),
     ...over,
   };
 }
@@ -356,10 +366,11 @@ describe('createApp basics', () => {
     expect(app.specValidators).toBe(service); // identity — the seam's own service passes straight through
   });
   it('constructs the atomic StoredWorkspaceV1 repository (#284) behind the injected IndexedDB seam', () => {
-    // Default env: no env.indexedDB → falls back to win.indexedDB (absent under
-    // happy-dom). The repository still constructs (lazy — no DB opened yet) and
-    // exposes the full #280 contract.
-    const app = createApp(env());
+    // `indexedDB: undefined` overrides `env()`'s own #287 W4 default fake
+    // factory → falls back to win.indexedDB (absent under happy-dom). The
+    // repository still constructs (lazy — no DB opened yet) and exposes the
+    // full #280 contract.
+    const app = createApp(env({ indexedDB: undefined }));
     expect(typeof app.workspace.loadCurrent).toBe('function');
     expect(typeof app.workspace.commit).toBe('function');
     expect(typeof app.workspace.clearCurrent).toBe('function');
@@ -2840,6 +2851,14 @@ describe('credentials (basic) sign-in', () => {
   });
 });
 
+// #287 W4: `commitLinkedQuery`'s Save-button path and the popover's own Save
+// button both await the aggregate commit before mutating anything; a DOM
+// `click`/keydown dispatch can't be awaited directly (the handler's promise
+// isn't returned to the dispatcher), so a macrotask flush lets it settle
+// before a test's post-click assertions run (same convention as
+// saved-history.test.ts's own `flush`).
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('share + star + columns', () => {
   it('share copies a link to the clipboard', async () => {
     const e = env({ window: asWindow({ history: { replaceState: vi.fn() }, navigator: {} }) });
@@ -2856,16 +2875,17 @@ describe('share + star + columns', () => {
     app.activeTab().sqlDraft = '  ';
     expect(() => app.actions.share()).not.toThrow();
   });
-  it('save opens a name popover; Save commits, links the tab, and the button reads "Saved"', () => {
+  it('save opens a name popover; Save commits, links the tab, and the button reads "Saved"', async () => {
     const app = createApp(env());
     app.renderApp();
     app.activeTab().sqlDraft = 'SELECT 42';
-    app.actions.save();
+    app.actions.save(); // opens the popover synchronously (before any await)
     const pop = qs(document, '.save-popover');
     expect(pop).not.toBeNull();
     expect(qs<HTMLInputElement>(pop, '.sp-input').value).toBe('SELECT 42'); // inferred name
     qs<HTMLInputElement>(pop, '.sp-input').value = 'My fave';
     qs(pop, '.sp-save').dispatchEvent(new Event('click'));
+    await flush(); // the popover's Save button awaits the aggregate commit (#287 W4)
     expect(app.state.savedQueries).toHaveLength(1);
     expect(app.state.savedQueries[0]).toMatchObject({ sql: 'SELECT 42', spec: { name: 'My fave', favorite: false } });
     expect(app.activeTab().savedId).toBe(app.state.savedQueries[0].id);
@@ -2873,7 +2893,7 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn!.textContent).toContain('Saved');
     expect(qs(document, '.save-popover')).toBeNull(); // closed
   });
-  it('save popover: re-opening is idempotent, Esc closes, dirty edit flips "Saved"→"Save"', () => {
+  it('save popover: re-opening is idempotent, Esc closes, dirty edit flips "Saved"→"Save"', async () => {
     const app = createApp(env());
     app.renderApp();
     app.activeTab().sqlDraft = 'SELECT 1';
@@ -2882,6 +2902,7 @@ describe('share + star + columns', () => {
     expect(qsa(document, '.save-popover')).toHaveLength(1);
     qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Q';
     qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click'));
+    await flush();
     expect(app.dom.saveBtn!.textContent).toContain('Saved');
     // edit → button reverts to "Save"
     app.activeTab().sqlDraft = 'SELECT 2';
@@ -2902,16 +2923,74 @@ describe('share + star + columns', () => {
     expect(qs(document, '.save-popover')).toBeNull();
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to save');
   });
-  it('linked Save also retains the empty-SQL guard', () => {
+  it('linked Save also retains the empty-SQL guard', async () => {
     const app = createApp(env());
     app.renderApp();
     app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
     app.sqlEditor.replaceDocument('');
-    app.actions.save();
+    await app.actions.save();
     expect(app.state.savedQueries[0].sql).toBe('SELECT 9');
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to save');
     expect(app.activeTab().dirtySql).toBe(true);
+  });
+  it('#287 W4: the Save popover surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
+    app.workspace.commit = vi.fn(async () => ({ ok: false as const, diagnostics }));
+    app.activeTab().sqlDraft = 'SELECT 1';
+    app.actions.save(); // opens the popover synchronously
+    qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Q';
+    qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click'));
+    await flush();
+    expect(app.state.savedQueries).toEqual([]);
+    expect(app.activeTab().savedId).toBeNull();
+    expect(qs(document, '.share-toast').textContent).toBe('Save failed: boom');
+  });
+  it('#287 W4: linked Save surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
+    app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
+    const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
+    app.workspace.commit = vi.fn(async () => ({ ok: false as const, diagnostics }));
+    app.sqlEditor.replaceDocument('SELECT 99');
+    await app.actions.save();
+    expect(app.state.savedQueries[0].sql).toBe('SELECT 9'); // unchanged
+    expect(qs(document, '.share-toast').textContent).toBe('Save failed: boom');
+  });
+  it('#287 W4: loadWorkspaceOnBoot projects the resolved aggregate onto state, or leaves it untouched on a null/failed load', async () => {
+    // A working IndexedDB (env()'s own #287 default fake): the one-shot legacy
+    // migration builds + commits a fresh aggregate (no favorites yet, but the
+    // Dashboard is still created — see legacy-migration.ts), so the resolved
+    // workspace is non-null and every field gets projected.
+    const app = createApp(env());
+    app.state.libraryName.value = 'Before boot';
+    const before = app.state.workspaceId;
+    const workspace = await app.loadWorkspaceOnBoot();
+    expect(workspace).not.toBeNull();
+    expect(app.state.savedQueries).toEqual(workspace!.queries);
+    expect(app.state.dashboard).toEqual(workspace!.dashboard);
+    expect(app.state.workspaceId).toBe(workspace!.id);
+    expect(app.state.workspaceId).not.toBe(before); // overwritten by the real committed id
+    expect(app.state.libraryName.value).toBe(workspace!.name);
+
+    // The one-shot migration's own commit rejected (a real repository
+    // rejection, not an unavailable store — see `workspace-persist-failed`):
+    // nothing was ever written, so the still-real, working `loadCurrent()`
+    // finds no record and resolves null → state is left exactly as it was
+    // (the synchronous `createState()` legacy projection, including its
+    // minted placeholder id).
+    const app2 = createApp(env());
+    const beforeId2 = app2.state.workspaceId;
+    app2.workspace.commit = vi.fn(async () => ({
+      ok: false as const, diagnostics: [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'boom' }],
+    }));
+    const workspace2 = await app2.loadWorkspaceOnBoot();
+    expect(workspace2).toBeNull();
+    expect(app2.state.workspaceId).toBe(beforeId2);
+    expect(app2.state.dashboard).toBeNull();
   });
   it('save popover closes on click outside', () => {
     const app = createApp(env());
@@ -3002,7 +3081,7 @@ describe('share + star + columns', () => {
     const before = structuredClone(app.state.savedQueries[0]);
     store.setItem.mockClear();
 
-    app.actions.save();
+    await app.actions.save();
     app.actions.setEditorMode('sql');
     app.actions.share();
     await Promise.resolve();
@@ -3100,7 +3179,7 @@ describe('share + star + columns', () => {
     error(); warning();
     expect(app.dom.specStatus!.hidden).toBe(true);
   });
-  it('synchronously reruns registered blocking validation inside linked Save', () => {
+  it('synchronously reruns registered blocking validation inside linked Save', async () => {
     const store = { getItem: vi.fn(() => null), setItem: vi.fn() };
     vi.stubGlobal('localStorage', store);
     const app = createApp(env());
@@ -3115,19 +3194,19 @@ describe('share + star + columns', () => {
     // Simulate stale presentation state: Save must not trust this array.
     app.activeTab().specDiagnostics = [];
     store.setItem.mockClear();
-    app.actions.save();
+    await app.actions.save();
     expect(app.state.savedQueries[0].sql).toBe('SELECT 9');
     expect(store.setItem).not.toHaveBeenCalled();
     expect(app.activeTab().specDiagnostics[0]).toMatchObject({ code: 'runtime-blocked' });
   });
-  it('linked Save commits SQL and authoritative Spec directly without a popover', () => {
+  it('linked Save commits SQL and authoritative Spec directly without a popover', async () => {
     const app = createApp(env());
     app.renderApp();
     app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9', description: 'why' })];
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
     app.sqlEditor.replaceDocument('SELECT 10');
     app.specEditor.replaceDocument('{"name":"  Renamed  ","description":"  updated reason  ","favorite":false,"future":{"kept":true}}');
-    app.actions.save();
+    await app.actions.save();
     expect(qs(document, '.save-popover')).toBeNull();
     expect(app.state.savedQueries[0].sql).toBe('SELECT 10');
     expect(app.state.savedQueries[0].spec).toEqual({
@@ -3178,7 +3257,7 @@ describe('exhaustive controller coverage', () => {
     expect(e.sessionStorage!.getItem('oauth_refresh_token')).toBe('rt2');
   });
 
-  it('clicks every header + toolbar control', () => {
+  it('clicks every header + toolbar control', async () => {
     const e = env({ window: fakeWin(), navigator: { clipboard: asClipboard({ writeText: vi.fn(async () => {}) }) } });
     const app = createApp(e);
     app.renderApp();
@@ -3188,6 +3267,7 @@ describe('exhaustive controller coverage', () => {
     app.dom.saveBtn!.dispatchEvent(new Event('click')); // open save popover
     qs<HTMLInputElement>(document, '.save-popover .sp-input').value = 'Q';
     qs(document, '.save-popover .sp-save').dispatchEvent(new Event('click')); // commit
+    await flush(); // the popover's Save button awaits the aggregate commit (#287 W4)
     app.dom.shareBtn!.dispatchEvent(new Event('click')); // share
     expect(app.state.tabs.value.length).toBeGreaterThan(1);
     expect(app.state.savedQueries.length).toBe(1);

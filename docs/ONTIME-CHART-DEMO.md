@@ -20,7 +20,7 @@ dataset (`ontime`, ~230M rows, 1987–2025) on the Antalya demo cluster.
 3. In the header, click **File ▾ → Open…** and pick the file. The library is renamed
    **ontime-charts** and fills with 10 saved queries (confirm the replace if you already
    had queries saved).
-4. Click any query in the **Library** panel — it runs and opens straight into its chart.
+4. Click any query in the **Queries** panel — it runs and opens straight into its chart.
    Switch **Table / JSON / Chart** at the top of the results, or change the **Type / X / Y /
    Series** dropdowns to re-encode any chart live.
 

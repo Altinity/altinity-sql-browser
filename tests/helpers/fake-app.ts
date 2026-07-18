@@ -25,6 +25,8 @@ import dagre from '@dagrejs/dagre';
 import { createState, activeTab } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
 import { createNoopSpecEditor } from '../../src/editor/spec-editor.js';
+import { createWorkspaceRepository } from '../../src/workspace/workspace-repository.js';
+import type { WorkspaceStore } from '../../src/workspace/workspace-store.types.js';
 import type { App, ActionsRegistry, AppDom, ChCtx } from '../../src/ui/app.types.js';
 import type { AppState } from '../../src/state.js';
 import type { ConfigDoc, ResolvedIdpConfig } from '../../src/net/oauth-config.js';
@@ -41,11 +43,35 @@ import type { WorkbenchParameterSession } from '../../src/application/workbench-
 import type { ExportService } from '../../src/application/export-service.js';
 import type { QueryDocumentSession } from '../../src/application/query-document-session.js';
 import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
+import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 import type {
   SavedQueryService, CreateSavedResult, CommitLinkedResult, ShareResult,
 } from '../../src/application/saved-query-service.js';
 import { assembleReferenceData, buildCompletions } from '../../src/core/completions.js';
 import type { AssembledReference } from '../../src/core/completions.js';
+
+// #287 W4: an in-memory `WorkspaceStore` fake (mirrors
+// workspace-repository.test.ts's own `memStore`) — every saved-query CRUD op
+// now awaits a real `WorkspaceRepository.commit`, not a bare stub, so a test
+// exercising `createSavedQuery`/`toggleFavorite`/`deleteSaved`/etc. through
+// `app.workspace.commit` gets genuine whole-candidate schema validation
+// rather than an always-succeeds/always-fails placeholder.
+export function memWorkspaceStore(initial: string | null = null): WorkspaceStore {
+  let value = initial;
+  return {
+    read: async () => value,
+    write: async (text: string) => { value = text; },
+    clear: async () => { value = null; },
+  };
+}
+
+/** A fresh real `WorkspaceRepository.commit` (backed by its own private
+ *  `memWorkspaceStore`), wrapped in a `vi.fn` spy so a test can assert call
+ *  counts the same way it used to assert on the retired `save: SaveJSON`
+ *  spy — `vi.fn(impl)` still delegates to the real implementation. */
+export function fakeWorkspaceCommit() {
+  return vi.fn(createWorkspaceRepository({ store: memWorkspaceStore() }).commit);
+}
 
 // `app.conn.chCtx`'s defaults (#276 Phase 2; Phase 5 deleted the flat
 // `App.chCtx` alias this file used to also mirror it onto).
@@ -201,8 +227,8 @@ const queryDocDefaults: QueryDocumentSession = {
 // saved-query-service.test.ts's job); this just satisfies the `App.saved`
 // contract.
 const savedDefaults: SavedQueryService = {
-  create: vi.fn((): CreateSavedResult => ({ ok: false })),
-  commit: vi.fn((): CommitLinkedResult => ({ ok: false, reason: 'empty' })),
+  create: vi.fn(async (): Promise<CreateSavedResult> => ({ ok: false })),
+  commit: vi.fn(async (): Promise<CommitLinkedResult> => ({ ok: false, reason: 'empty' })),
   recordHistory: vi.fn(),
   buildShareUrl: vi.fn((): ShareResult => ({ ok: false, reason: 'empty' })),
 };
@@ -243,12 +269,31 @@ const appDefaults: App = {
   params: paramsDefaults,
   graph: graphDefaults,
   prefs: prefsDefaults,
+  // Default commit is a permissive ECHO (not real schema validation, unlike
+  // `fakeWorkspaceCommit()` above): it always succeeds and publishes back
+  // exactly the candidate it was given, so a generic UI-focused fixture that
+  // never overrides `workspace` still gets a coherent `state.savedQueries =
+  // result.workspace.queries` projection (#287 W4) without also having to set
+  // `state.workspaceId` to satisfy the real repository's non-empty-id schema
+  // rule. A test asserting real validate-then-persist behavior overrides this
+  // with `fakeWorkspaceCommit()` (or its own stub) instead.
   workspace: {
     loadCurrent: async () => null,
-    commit: async () => ({ ok: true, workspace: {} as never, dashboardRevision: null }),
+    commit: async (candidate) => ({
+      ok: true, workspace: candidate, dashboardRevision: candidate.dashboard === null ? null : candidate.dashboard.revision,
+    }),
     clearCurrent: async () => {},
   },
   loadDashboardWorkspace: async () => null,
+  loadWorkspaceOnBoot: async () => null,
+  // Inert placeholders — `base` below overrides both with real, state-backed
+  // implementations (mirroring app.ts's own #287 W5 wiring) so a file-menu
+  // fixture that never overrides `workspace.commit` still observes a coherent
+  // post-commit projection.
+  applyCommittedWorkspace: () => {},
+  genId: () => 'gen-id',
+  // Inert passthrough — `base` overrides with a real per-instance queue.
+  serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
@@ -323,6 +368,13 @@ const appDefaults: App = {
  * convenience key (#276 Phase 5 deleted `App.chCtx` — `app.conn.chCtx` is
  * the only live alias now), kept so existing `makeApp({ chCtx: {...} })`
  * call sites don't all need to become `conn: { chCtx: {...} }`. */
+// Exported (as `MakeAppOverrides`, distinct from any test file's own local
+// `AppOverrides`) so a fixture's own `mount()`-style wrapper (e.g.
+// file-menu.test.ts's, which needs `workspace: { commit }` — a genuinely
+// nested-partial override `Partial<App>` alone can't express) can type its
+// parameter as exactly what `makeApp` itself accepts, instead of
+// re-declaring a narrower `Partial<App>` that would reject it.
+export type MakeAppOverrides = AppOverrides;
 type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'catalog' | 'workbench' | 'params' | 'queryDoc' | 'saved' | 'exports' | 'graph' | 'prefs' | 'workspace'>> & {
   /** Partial like the rest (#286 Phase 4) — the Dashboard viewer reads a
    *  StoredWorkspaceV1 through `loadDashboardWorkspace`/`workspace.loadCurrent`;
@@ -409,6 +461,31 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       entityDoc: vi.fn(async () => ''),
     },
     toggleTheme: vi.fn(),
+    // #287 W5: real, state-backed implementations (mirroring app.ts's own
+    // projection + WorkspaceIdGen wiring) so a file-menu fixture exercising a
+    // real commit (default echo `workspace.commit`, or `fakeWorkspaceCommit()`)
+    // observes a coherent post-commit projection without overriding either.
+    // `genId` mints a fresh, test-deterministic id per call — its own counter,
+    // not `appDefaults`' shared placeholder, so ids never leak across tests.
+    applyCommittedWorkspace: (workspace: StoredWorkspaceV1) => {
+      state.savedQueries = workspace.queries;
+      state.dashboard = workspace.dashboard;
+      state.workspaceId = workspace.id;
+      state.libraryName.value = workspace.name;
+      state.libraryDirty.value = false;
+    },
+    genId: (() => { let n = 0; return () => 'gen-' + (++n); })(),
+    // #287 review fix: a real per-instance serialization queue (mirrors app.ts)
+    // so a test firing two overlapping CRUD ops observes them applied in order,
+    // not interleaved. Per-instance (own `chain`), so no leak across makeApp calls.
+    serializeWrite: (() => {
+      let chain: Promise<unknown> = Promise.resolve();
+      return <T,>(op: () => Promise<T>): Promise<T> => {
+        const run = chain.then(op, op);
+        chain = run.then(() => undefined, () => undefined);
+        return run;
+      };
+    })(),
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.
     saveVarRecent: vi.fn(),

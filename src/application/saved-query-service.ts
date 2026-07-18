@@ -40,6 +40,8 @@ import { queryPanel, withQuerySpec } from '../core/saved-query.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { encodeShare } from '../core/share.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
+import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 // ── Construction deps ────────────────────────────────────────────────────────
 
@@ -49,7 +51,8 @@ import type { SavedQueryV2 } from '../generated/json-schema.types.js';
  *  `createSavedQuery`/`commitSavedQuery`/`recordHistory` (state.ts, all three
  *  narrowed to their own exact reads) need between them. */
 export interface SavedQueryServiceDeps {
-  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'history'>;
+  state: Pick<AppState,
+    'savedQueries' | 'resultView' | 'libraryDirty' | 'history' | 'libraryName' | 'workspaceId' | 'dashboard'>;
   saveJSON: SaveJSON;
   /** `createSavedQuery`'s minting timestamp — a genuine wall-clock read
    *  (production wires this to `() => Date.now()`, called at the exact
@@ -64,17 +67,25 @@ export interface SavedQueryServiceDeps {
    *  `createSavedQuery`/`commitSavedQuery` only ever call `.validate`).
    *  Production passes `app.specValidators` (structurally assignable). */
   specValidators: SpecValidationService;
+  /** The strict aggregate-commit seam (#287 W4) `createSavedQuery`/
+   *  `commitSavedQuery` await instead of the retired flat `asb:saved` write.
+   *  Production passes `app.workspace` (structurally assignable — only
+   *  `.commit` is ever called). */
+  workspace: Pick<WorkspaceRepository, 'commit'>;
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
 
 export type CreateSavedResult =
   | { ok: true; entry: SavedQueryV2 }
-  /** `createSavedQuery` itself returned null (already-linked tab, blank SQL
-   *  on a non-text panel, blank name, or a blocking validation diagnostic) —
-   *  the pre-extraction inline code never distinguished a reason here either
-   *  (silent no-op), so neither does this result. */
-  | { ok: false };
+  /** `createSavedQuery` itself rejected the entry — either a pre-commit
+   *  compute guard (already-linked tab, blank SQL on a non-text panel, blank
+   *  name, or a blocking validation diagnostic — the pre-#287 inline code
+   *  never distinguished a reason here either, so neither does this result;
+   *  `diagnostics` absent), or the aggregate strictly rejected the whole-
+   *  workspace commit (#287 W4 — `diagnostics` present, straight from
+   *  `WorkspaceRepository.commit`; nothing was mutated). */
+  | { ok: false; diagnostics?: WorkspaceDiagnostic[] };
 
 export type CommitLinkedResult =
   | { ok: true; entry: SavedQueryV2 }
@@ -85,10 +96,13 @@ export type CommitLinkedResult =
     | 'invalid-spec'
     /** Blank SQL on a panel type that isn't SQL-optional (#166's text panel). */
     | 'empty'
-    /** `commitSavedQuery` itself returned null (tab no longer linked, or its
-     *  own re-validation against the normalized Spec rejected it) — a
-     *  defensive case the pre-extraction inline code never toasted either. */
+    /** `commitSavedQuery` itself rejected the commit — either its own
+     *  defensive re-check against the normalized Spec (tab no longer linked —
+     *  the pre-#287 inline code never toasted this either, `diagnostics`
+     *  absent), or the aggregate strictly rejected the whole-workspace commit
+     *  (#287 W4 — `diagnostics` present; nothing was mutated). */
     | 'rejected';
+    diagnostics?: WorkspaceDiagnostic[];
   };
 
 export type ShareResult =
@@ -116,12 +130,12 @@ export interface SavedQueryService {
    *  saved query from an unsaved tab's current `sqlDraft`/`specParsed` plus
    *  `name`/`description`. Rejects (silently — see `CreateSavedResult`) an
    *  already-linked tab, per `createSavedQuery`'s own guard. */
-  create(tab: QueryTab, name: unknown, description: unknown): CreateSavedResult;
+  create(tab: QueryTab, name: unknown, description: unknown): Promise<CreateSavedResult>;
   /** Update-in-place path (app.ts's `commitLinkedQuery`, the "Save" button on
    *  an already-linked tab): persist `evaluated` as the linked saved query's
    *  new Spec. Takes the Spec evaluation as an input (see this module's
    *  header comment) rather than evaluating it itself. */
-  commit(tab: QueryTab, evaluated: { parsed: unknown; diagnostics: SpecValidationDiagnostic[] }): CommitLinkedResult;
+  commit(tab: QueryTab, evaluated: { parsed: unknown; diagnostics: SpecValidationDiagnostic[] }): Promise<CommitLinkedResult>;
   /** Record a successful run in history (state.ts's own `recordHistory`) —
    *  never touches rendering; app.ts's own `app.recordHistory` delegate
    *  conditionally repaints the History side panel itself after calling
@@ -136,14 +150,16 @@ export interface SavedQueryService {
  *  validation, no defaulting; the caller supplies every field exactly as it
  *  wants it used. */
 export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQueryService {
-  function create(tab: QueryTab, name: unknown, description: unknown): CreateSavedResult {
-    const entry = createSavedQuery(deps.state, tab, name, description, deps.saveJSON, deps.now(), deps.specValidators);
-    return entry ? { ok: true, entry } : { ok: false };
+  async function create(tab: QueryTab, name: unknown, description: unknown): Promise<CreateSavedResult> {
+    const result = await createSavedQuery(
+      deps.state, tab, name, description, deps.workspace.commit, deps.now(), deps.specValidators,
+    );
+    return result.ok ? { ok: true, entry: result.entry } : { ok: false, diagnostics: result.diagnostics };
   }
 
-  function commit(
+  async function commit(
     tab: QueryTab, evaluated: { parsed: unknown; diagnostics: SpecValidationDiagnostic[] },
-  ): CommitLinkedResult {
+  ): Promise<CommitLinkedResult> {
     if (!evaluated.parsed || hasBlockingSpecErrors(evaluated.diagnostics)) {
       return { ok: false, reason: 'invalid-spec' };
     }
@@ -151,8 +167,12 @@ export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQuery
     if (!String(tab.sqlDraft || '').trim() && !isQuerylessPanel(panel)) {
       return { ok: false, reason: 'empty' };
     }
-    const entry = commitSavedQuery(deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.saveJSON, deps.specValidators);
-    return entry ? { ok: true, entry } : { ok: false, reason: 'rejected' };
+    const result = await commitSavedQuery(
+      deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.workspace.commit, deps.specValidators,
+    );
+    return result.ok
+      ? { ok: true, entry: result.entry }
+      : { ok: false, reason: 'rejected', diagnostics: result.diagnostics };
   }
 
   function recordHistoryFn(tab: QueryTab, sqlText?: string): void {

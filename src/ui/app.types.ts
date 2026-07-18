@@ -134,11 +134,12 @@ export interface ActionsRegistry {
   exportDirect(sqlInput: string, waveMs: number): Promise<void>;
   cancelExport(): void;
   cancelExportScript(): void;
-  /** null: nothing to save (empty draft); undefined: the create-popover opened
-   * instead of returning a result. A committed/created save resolves the real
-   * generated `SavedQueryV2` entry (state.ts's `commitSavedQuery`/
-   * `createSavedQuery`) — `Json` undersold it as opaque. */
-  save(): SavedQueryV2 | null | undefined;
+  /** null: nothing to save (empty draft, or the aggregate strictly rejected
+   * the commit — #287 W4); undefined: the create-popover opened instead of
+   * returning a result. A committed/created save resolves the real generated
+   * `SavedQueryV2` entry (state.ts's `commitSavedQuery`/`createSavedQuery`,
+   * both async now) — `Json` undersold it as opaque. */
+  save(): Promise<SavedQueryV2 | null | undefined>;
   openUserMenu(): void;
   formatQuery(): Promise<void>;
   formatSpec(): void;
@@ -366,6 +367,42 @@ export interface App {
    *  exists. Returns null when neither an aggregate nor a migratable legacy
    *  workspace is available. */
   loadDashboardWorkspace(): Promise<StoredWorkspaceV1 | null>;
+  /** #287 W4: the async boot-init step — runs `loadDashboardWorkspace`
+   *  (migrate-if-needed, then `workspace.loadCurrent()`) and, when it
+   *  resolves a real aggregate, PROJECTS it onto `state` (`savedQueries`,
+   *  `dashboard`, `workspaceId`, `libraryName`) so the whole app (not only
+   *  the /dashboard route) treats the aggregate as the saved-query
+   *  collection's single source of truth. `main.ts`'s `bootstrap` awaits
+   *  this before the first `renderApp()`. On a null/failed load, `state`
+   *  keeps whatever the legacy-projected `createState()` synchronous read
+   *  already populated (a brand-new install, or a degraded IndexedDB). */
+  loadWorkspaceOnBoot(): Promise<StoredWorkspaceV1 | null>;
+  /** #287 W5: project a committed `StoredWorkspaceV1` onto `state`
+   *  (`savedQueries`/`dashboard`/`workspaceId`/`libraryName`, and clear
+   *  `libraryDirty` — a fresh committed workspace is, by construction, in
+   *  sync with what's persisted) — the exact projection `loadWorkspaceOnBoot`
+   *  inlined pre-#287 W5, now shared with every file-menu commit (New/Import/
+   *  Replace/rename) so they never fork from the boot projection. Repaint
+   *  (`updateSaveBtn`/`updateEditorModeUi`/`renderSavedHistory`) is the
+   *  caller's job — this never touches `app.dom` (it also runs during boot,
+   *  before the first `renderApp()`/mount). */
+  applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
+  /** #287 W5: a fresh, unguessable id — the same generator
+   *  `loadDashboardWorkspace`'s legacy migration already uses internally
+   *  (`uid('ws-')`), exposed here as the injected `WorkspaceIdGen` the
+   *  file-menu's New workspace / Import / Replace operations pass to
+   *  `createNewWorkspace`/the import planner. One shared generator: a minted
+   *  id only needs to be unique, never to encode which op minted it. */
+  genId(): string;
+  /** #287 review fix: serialize saved-query write operations per-app so two
+   *  overlapping async CRUD commits can't interleave. Each queued op runs only
+   *  after the previous fully resolved (compute → commit → project), so it
+   *  reads the freshest `state.savedQueries` — without this, a delete and a
+   *  star toggle fired in rapid succession could each build a candidate from the
+   *  same stale snapshot and the later commit would resurrect the deleted query
+   *  (or clobber a concurrent edit). Rejections propagate to the caller; the
+   *  queue itself never rejects. */
+  serializeWrite<T>(op: () => Promise<T>): Promise<T>;
 
   actions: ActionsRegistry;
 }

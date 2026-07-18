@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { libraryControls, renderLibraryTitle, openFileMenu } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
+import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { makeApp } from '../helpers/fake-app.js';
+import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -15,6 +18,10 @@ const toast = (): string | null => document.querySelector('.share-toast')!.textC
 const setSaved = (app: App, queries: SavedQueryFixture[]): void => {
   app.state.savedQueries = queries.map((q) => savedQuery(q));
 };
+// Flush the microtask queue — every commit path here is async (`app.workspace
+// .commit` always returns a Promise), so an assertion made right after firing
+// a UI event needs one tick before the projection lands.
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r));
 
 // A FileReader stub: readAsText resolves synchronously with `content` (or errors).
 // Implements the full (mostly-unused) `FileReader` interface honestly — rather
@@ -46,15 +53,36 @@ const fakeReader = (content: string, fail?: boolean): typeof FileReader => class
   removeEventListener(): void {}
   dispatchEvent(): boolean { return true; }
 };
-const envFile = (queries: unknown[]): string => JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
+
+// ── portable-bundle / Dashboard fixtures (mirror import-planner.test.ts) ────
+
+const panelQuery = (id: string, name = id, sql = 'SELECT 1'): SavedQueryV2 => ({
+  id, sql, specVersion: 1, spec: { name, panel: { cfg: { type: 'bar', x: 0, y: [1] } } },
+});
+const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
+  documentVersion: 1, id: 'd1', title: 'D', revision: 1,
+  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+  filters: [], tiles: [], ...over,
+});
+const bundleDoc = (over: Partial<PortableBundleV1> = {}): PortableBundleV1 => ({
+  format: 'altinity-sql-browser/portable-bundle', version: 1,
+  exportedAt: '2026-07-17T00:00:00.000Z', queries: [], dashboards: [], ...over,
+});
+const bundleText = (over: Partial<PortableBundleV1> = {}): string => JSON.stringify(bundleDoc(over));
+const legacyFile = (queries: unknown[]): string =>
+  JSON.stringify({ format: 'altinity-sql-browser/saved-queries', version: 1, queries });
 
 // Build an app with the header controls mounted (File button + title slot in the DOM).
-function mount<O extends Partial<App> = Record<string, never>>(over: O = {} as O) {
+function mount<O extends MakeAppOverrides = Record<string, never>>(over: O = {} as O) {
   const app = makeApp(over);
   for (const node of libraryControls(app)) document.body.appendChild(node);
   return app;
 }
 const picker = (i: number): HTMLInputElement => document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[i];
+const pickFile = (input: HTMLInputElement, name = 'file.json'): void => {
+  Object.defineProperty(input, 'files', { configurable: true, value: [{ name }] });
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+};
 
 afterEach(() => document.body.replaceChildren());
 
@@ -110,29 +138,27 @@ describe('variable history (#171)', () => {
   });
 });
 
-describe('library title', () => {
-  it('renders the name + dirty dot; inline rename commits on Enter and persists', () => {
+describe('workspace title', () => {
+  it('renders the name + dirty dot; inline rename commits on Enter through the workspace aggregate', async () => {
     const app = mount();
-    app.state.libraryName.value = 'My queries';
+    app.state.libraryName.value = 'My workspace';
     app.state.libraryDirty.value = true;
     renderLibraryTitle(app);
-    expect(app.dom.libraryTitle!.querySelector('.lib-name-text')!.textContent).toBe('My queries');
+    expect(app.dom.libraryTitle!.querySelector('.lib-name-text')!.textContent).toBe('My workspace');
     expect(app.dom.libraryTitle!.querySelector('.lib-dirty')).not.toBeNull();
     click(app.dom.libraryTitle!.querySelector('.lib-name')!);
     expect(app.editingLibrary).toBe(true);
     const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
-    expect(input.value).toBe('My queries');
+    expect(input.value).toBe('My workspace');
     input.value = 'Renamed';
     key(input, 'Enter');
+    expect(app.editingLibrary).toBe(false); // leaves edit mode immediately, before the commit resolves
+    await flush();
     expect(app.state.libraryName.value).toBe('Renamed');
-    expect(app.editingLibrary).toBe(false);
-    expect(app.saveStr).toHaveBeenCalled();
-    app.state.libraryDirty.value = false;
-    renderLibraryTitle(app);
-    expect(app.dom.libraryTitle!.querySelector('.lib-dirty')).toBeNull();
+    expect(app.state.libraryDirty.value).toBe(false); // a fresh commit is never "unsaved"
   });
 
-  it('inline rename: Escape cancels, blur commits, empty commit is a no-op, double-fire guarded', () => {
+  it('inline rename: Escape cancels, blur commits, empty commit is a no-op, double-fire guarded', async () => {
     const app = mount();
     app.state.libraryName.value = 'Orig';
     renderLibraryTitle(app);
@@ -153,8 +179,10 @@ describe('library title', () => {
     input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
     input.value = 'Blurred';
     input.dispatchEvent(new Event('blur'));
+    await flush();
     expect(app.state.libraryName.value).toBe('Blurred');
     key(input, 'Enter');
+    await flush();
     expect(app.state.libraryName.value).toBe('Blurred');
   });
 
@@ -163,36 +191,34 @@ describe('library title', () => {
   });
 });
 
-describe('file menu', () => {
+describe('file menu structure', () => {
   it('lists every section + item, reflects the (pluralized) count, and re-open is a no-op', () => {
     const app = mount();
-    setSaved(app, [
-      { id: 's1', name: 'A', sql: '1', favorite: false },
-      { id: 's2', name: 'B', sql: '2', favorite: false },
-    ]);
+    app.state.savedQueries = [panelQuery('s1', 'A'), panelQuery('s2', 'B')];
     openFileMenu(app);
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
-      'New Library', 'Open as dashboard', 'Remember recent variable values', 'Clear all recent values',
-      'Save JSON', 'Open…', 'Append…', 'Download Markdown', 'Download SQL',
+      'New workspace…', 'Open as dashboard', 'Remember recent variable values', 'Clear all recent values',
+      'Import queries…', 'Import Dashboard…', 'Replace workspace…',
+      'Export Dashboard…', 'Export workspace…', 'Download Markdown', 'Download SQL',
     ]);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Dashboard', 'Variable history', 'Save library', 'Load from file', 'Share / publish']);
-    expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in Library');
+      ['Dashboard', 'Variable history', 'Import / replace', 'Export', 'Share / publish']);
+    expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in workspace');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
   });
 
-  it('autofocuses the first item (New Library) on open', async () => {
+  it('autofocuses the first item (New workspace…) on open', async () => {
     const app = mount();
     openFileMenu(app);
-    await new Promise((r) => setTimeout(r));
-    expect(document.activeElement).toBe(item(/New Library/));
+    await flush();
+    expect(document.activeElement).toBe(item(/New workspace/));
   });
 
   it('footer shows the empty state when there are no queries', () => {
     const app = mount();
     openFileMenu(app);
-    expect(document.querySelector('.fm-count')!.textContent).toBe('Library is empty');
+    expect(document.querySelector('.fm-count')!.textContent).toBe('Workspace is empty');
   });
 
   it('closes on overlay click and on Escape (ignores other keys)', () => {
@@ -208,32 +234,65 @@ describe('file menu', () => {
   });
 });
 
-describe('Save JSON / Markdown / SQL downloads', () => {
-  it('Save JSON: empty → toast; non-empty → download envelope, clear dirty', () => {
+describe('Export', () => {
+  it('Export Dashboard is disabled (with a reason) and toasts when there is no Dashboard', () => {
     const app = mount();
     openFileMenu(app);
-    click(item(/Save JSON/)!);
+    const btn = item(/Export Dashboard/)!;
+    expect(btn.textContent).toContain('no dashboard');
+    click(btn);
     expect(app.downloadFile).not.toHaveBeenCalled();
-    expect(toast()).toBe('Nothing to save');
-    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: true }]);
-    app.state.libraryName.value = 'My Lib';
-    app.state.libraryDirty.value = true;
-    openFileMenu(app);
-    click(item(/Save JSON/)!);
-    const [fname, mime, content] = app.downloadFile.mock.calls[0];
-    expect(fname).toBe('My Lib.json');
-    expect(mime).toBe('application/json');
-    expect(JSON.parse(content as string)).toMatchObject({
-      $schema: 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json',
-      format: 'altinity-sql-browser/saved-queries',
-      version: 2,
-      exportedAt: '1970-01-01T00:00:00.000Z',
-    });
-    expect(app.state.libraryDirty.value).toBe(false);
-    expect(toast()).toBe('Saved 1 query → .json');
+    expect(toast()).toBe('No dashboard to export');
   });
 
-  it('Download Markdown + SQL: empty → toast; non-empty → files named from the library', () => {
+  it('Export Dashboard downloads a valid bundle containing only its query dependencies', () => {
+    const app = mount();
+    app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
+    app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
+    openFileMenu(app);
+    click(item(/Export Dashboard/)!);
+    const [fname, mime, content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('Ops.json');
+    expect(mime).toBe('application/json');
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.queries.map((q) => q.id)).toEqual(['p1']); // unrelated query excluded
+      expect(decoded.value.dashboards).toHaveLength(1);
+    }
+    expect(toast()).toBe('Exported → .json');
+  });
+
+  it('a role-incompatible Dashboard toasts the encode diagnostic instead of downloading', () => {
+    const filterQuery: SavedQueryV2 = {
+      id: 'f1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'F', dashboard: { role: 'filter' } },
+    };
+    const app = mount();
+    // A tile referencing a filter-role query — legal to ASSEMBLE (Wave 1's
+    // pure builder never re-validates), but `encodePortableBundleJson`'s own
+    // re-validation catches the role mismatch.
+    app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
+    app.state.savedQueries = [filterQuery];
+    openFileMenu(app);
+    click(item(/Export Dashboard/)!);
+    expect(app.downloadFile).not.toHaveBeenCalled();
+    expect(toast()).toMatch(/^✕ /);
+  });
+
+  it('Export workspace downloads a valid bundle containing the whole catalog', () => {
+    const app = mount();
+    app.state.libraryName.value = 'My Lib';
+    app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    const [fname, , content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('My Lib.json');
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id).sort()).toEqual(['p1', 'p2']);
+  });
+
+  it('Download Markdown + SQL: empty → toast; non-empty → files named from the workspace', () => {
     const app = mount();
     openFileMenu(app);
     click(item(/Download Markdown/)!);
@@ -247,7 +306,7 @@ describe('Save JSON / Markdown / SQL downloads', () => {
     openFileMenu(app);
     click(item(/Download SQL/)!);
     expect(app.downloadFile.mock.calls.at(-1)!.slice(0, 2)).toEqual(['Lib.sql', 'application/sql']);
-    // an unnamed / whitespace-only library name falls back to "queries"
+    // an unnamed / whitespace-only workspace name falls back to "queries"
     app.state.libraryName.value = '';
     openFileMenu(app);
     click(item(/Download Markdown/)!);
@@ -259,138 +318,345 @@ describe('Save JSON / Markdown / SQL downloads', () => {
   });
 });
 
-describe('Open / Append (JSON only)', () => {
-  it('Open item closes the menu and opens the picker; a non-empty library confirms first', () => {
-    const app = mount({ FileReader: fakeReader(envFile([{ id: 'x', name: 'New', sql: 'S' }, { name: 'New2', sql: 'S2' }])) });
-    setSaved(app, [
-      { id: 's1', name: 'Old', sql: '1', favorite: false },
-      { id: 's2', name: 'Old2', sql: '2', favorite: false },
-    ]);
-    openFileMenu(app);
-    const replaceInput = picker(0);
-    replaceInput.click = vi.fn();
-    click(item(/Open…/)!);
-    expect(document.querySelector('.file-menu')).toBeNull(); // menu closed
-    expect(replaceInput.click).toHaveBeenCalled();
-    // user picks a file → confirm dialog (current library non-empty, plural copy)
-    Object.defineProperty(replaceInput, 'files', { configurable: true, value: [{ name: 'team.json' }] });
-    replaceInput.dispatchEvent(new Event('change', { bubbles: true }));
-    const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Open and replace current library?');
-    expect(dialog.textContent).toContain('contains 2 queries');
-    expect(dialog.textContent).toContain('current 2 saved queries');
-    click(document.querySelector('.fm-dialog-confirm')!);
-    expect(app.state.savedQueries.map(queryName)).toEqual(['New', 'New2']);
-    expect(app.state.libraryName.value).toBe('team');
-    expect(app.updateSaveBtn).toHaveBeenCalled();
-    expect(app.updateEditorModeUi).toHaveBeenCalled();
-    expect(toast()).toBe('Opened library · 2 queries');
-  });
-
-  it('Open into an empty library loads directly (no confirm); cancelling the picker is a no-op', () => {
-    const app = mount({ FileReader: fakeReader(envFile([{ name: 'New', sql: 'S' }])) });
+describe('Import queries', () => {
+  it('the menu item closes the menu, opens the picker, and a picked file imports without a conflict dialog', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'Q1'), panelQuery('q2', 'Q2')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'Q1')]; // canonically identical to the incoming q1 → auto-resolved
     openFileMenu(app);
     const input = picker(0);
-    // cancel (no file chosen) → nothing happens
+    input.click = vi.fn();
+    click(item(/Import queries/)!);
+    expect(document.querySelector('.file-menu')).toBeNull();
+    expect(input.click).toHaveBeenCalled();
+    pickFile(input);
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.savedQueries.map((q) => q.id).sort()).toEqual(['q1', 'q2']);
+    expect(toast()).toBe('Imported 2 queries');
+  });
+
+  it('imports directly (no dialog at all) when no incoming id overlaps an existing one', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('new1'), panelQuery('new2')] })) });
+    app.state.savedQueries = [panelQuery('existing')];
+    openFileMenu(app);
+    pickFile(picker(0));
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.savedQueries.map((q) => q.id).sort()).toEqual(['existing', 'new1', 'new2']);
+  });
+
+  it('picking no file is a no-op', () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1')] })) });
+    openFileMenu(app);
+    const input = picker(0);
     Object.defineProperty(input, 'files', { configurable: true, value: [] });
     input.dispatchEvent(new Event('change', { bubbles: true }));
     expect(app.state.savedQueries).toEqual([]);
-    // pick a file → loaded directly, name adopted, no dialog
-    Object.defineProperty(input, 'files', { configurable: true, value: [{ name: 'lib.json' }] });
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(document.querySelector('.fm-dialog-card')).toBeNull();
-    expect(app.state.savedQueries.map(queryName)).toEqual(['New']);
-    expect(app.state.libraryName.value).toBe('lib');
   });
 
-  it('Append item closes the menu, merges the file, and toasts counts', () => {
-    const app = mount({ FileReader: fakeReader(envFile([{ id: 's1', name: 'A', sql: '1' }, { name: 'B', sql: '2' }])) });
-    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+  it('opens a conflict dialog for genuinely differing ids; the global default resolves an unmarked row', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    const appendInput = picker(1);
-    appendInput.click = vi.fn();
-    click(item(/Append/)!);
-    expect(document.querySelector('.file-menu')).toBeNull();
-    expect(appendInput.click).toHaveBeenCalled();
-    Object.defineProperty(appendInput, 'files', { configurable: true, value: [{ name: 'more.json' }] });
-    appendInput.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(app.state.savedQueries.map(queryName)).toEqual(['A', 'B']);
-    expect(toast()).toBe('Added 1 · updated 0 · skipped 1'); // the duplicate A is skipped
+    pickFile(picker(0));
+    const dialog = document.querySelector('.fm-dialog-card')!;
+    expect(dialog.textContent).toContain('Resolve 1 conflicting query');
+    expect(dialog.textContent).toContain('OldName'); // row shows the EXISTING query's name
+    click(document.querySelector('.fm-dialog-confirm')!); // Apply with the default (use-existing)
+    await flush();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
+    expect(toast()).toBe('Imported 1 query');
   });
 
-  it('Open / Append with no queries in the file → error toast', () => {
-    const app = mount({ FileReader: fakeReader(envFile([])) });
+  it('a per-row override wins over the global default', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    Object.defineProperty(picker(0), 'files', { configurable: true, value: [{ name: 'empty.json' }] });
-    picker(0).dispatchEvent(new Event('change', { bubbles: true }));
-    expect(toast()).toBe('✕ No queries in file');
+    pickFile(picker(0));
+    const rowSelect = document.querySelectorAll<HTMLSelectElement>('.fm-select')[1]; // [0] is the global select
+    rowSelect.value = 'replace';
+    rowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['NewName']);
+  });
+
+  it('resetting a row back to "Use default" falls back to the global action', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    Object.defineProperty(picker(1), 'files', { configurable: true, value: [{ name: 'empty.json' }] });
-    picker(1).dispatchEvent(new Event('change', { bubbles: true }));
-    expect(toast()).toBe('✕ No queries in file');
+    pickFile(picker(0));
+    const [globalSelect, rowSelect] = document.querySelectorAll<HTMLSelectElement>('.fm-select');
+    globalSelect.value = 'skip';
+    globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    rowSelect.value = 'replace';
+    rowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    rowSelect.value = ''; // back to "Use default" — the row no longer overrides
+    rowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    // 'skip' (the global default) dropped the incoming row entirely
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
   });
 
-  it('invalid JSON → error toast; a read error → error toast', () => {
-    const bad = mount({ FileReader: fakeReader('{not json') });
-    openFileMenu(bad);
-    Object.defineProperty(picker(0), 'files', { configurable: true, value: [{ name: 'bad.json' }] });
-    picker(0).dispatchEvent(new Event('change', { bubbles: true }));
-    expect(toast()).toBe('✕ Not a valid JSON file');
-    document.body.replaceChildren();
-    const err = mount({ FileReader: fakeReader('', true) });
-    openFileMenu(err);
-    Object.defineProperty(picker(0), 'files', { configurable: true, value: [{ name: 'x.json' }] });
-    picker(0).dispatchEvent(new Event('change', { bubbles: true }));
-    expect(toast()).toBe('✕ Could not read file');
+  it('the global default action applies to every unmarked conflicting row ("copy" keeps both)', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
+    openFileMenu(app);
+    pickFile(picker(0));
+    const globalSelect = document.querySelector<HTMLSelectElement>('.fm-select')!;
+    globalSelect.value = 'copy';
+    globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.savedQueries.map((q) => queryName(q)).sort()).toEqual(['NewName', 'OldName']);
+    expect(app.state.savedQueries).toHaveLength(2);
   });
 
-  it('rejects a complete invalid document before Open or Append can mutate state', () => {
-    const invalid = JSON.stringify({
-      format: 'altinity-sql-browser/saved-queries', version: 2,
-      queries: [
-        { id: 'same', sql: '1', specVersion: 1, spec: { name: 'A' } },
-        { id: 'same', sql: '2', specVersion: 1, spec: { name: 'B' } },
-      ],
+  it('"skip" drops the incoming query, leaving the existing one untouched', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })) });
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
+    openFileMenu(app);
+    pickFile(picker(0));
+    const globalSelect = document.querySelector<HTMLSelectElement>('.fm-select')!;
+    globalSelect.value = 'skip';
+    globalSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
+  });
+
+  it('cancelling the conflict dialog aborts the import (no commit)', () => {
+    const commit = vi.fn(async (candidate) => ({ ok: true as const, workspace: candidate, dashboardRevision: null }));
+    const app = mount({
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('q1', 'NewName')] })),
+      workspace: { commit },
     });
-    const app = mount({ FileReader: fakeReader(invalid) });
-    setSaved(app, [{ id: 'keep', name: 'Keep', sql: 'SELECT 1', favorite: false }]);
+    app.state.savedQueries = [panelQuery('q1', 'OldName')];
     openFileMenu(app);
-    const inputs = [picker(0), picker(1)];
-    for (const input of inputs) {
-      Object.defineProperty(input, 'files', { configurable: true, value: [{ name: 'invalid.json' }] });
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      expect(app.state.savedQueries.map((query) => query.id)).toEqual(['keep']);
-      expect(document.querySelector('.fm-dialog-card')).toBeNull();
-      expect(toast()).toContain('duplicates');
-    }
+    pickFile(picker(0));
+    click(document.querySelector('.fm-dialog-cancel')!);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(commit).not.toHaveBeenCalled();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
   });
 });
 
-describe('New Library + confirm dialogs', () => {
-  it('New Library: empty → clears directly; non-empty → confirm → New resets to the default', () => {
-    const app = mount();
+describe('Import Dashboard', () => {
+  it('the menu item closes the menu and opens the picker; a single-dashboard file imports directly, minting a fresh id/revision', async () => {
+    const dep = panelQuery('p1', 'Panel');
+    const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
     openFileMenu(app);
-    click(item(/New Library/)!);
-    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
-    expect(toast()).toBe('Started a new library');
-    expect(app.updateEditorModeUi).toHaveBeenCalled();
-    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
-    app.state.libraryName.value = 'Old';
+    const input = picker(1);
+    input.click = vi.fn();
+    click(item(/Import Dashboard/)!);
+    expect(document.querySelector('.file-menu')).toBeNull();
+    expect(input.click).toHaveBeenCalled();
+    pickFile(input);
+    await flush();
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.dashboard).not.toBeNull();
+    expect(app.state.dashboard!.id).not.toBe('src-d'); // mode 'copy' mints a fresh id
+    expect(app.state.dashboard!.revision).toBe(1);
+    expect(app.state.dashboard!.title).toBe('Sales');
+    expect(app.state.savedQueries.map((q) => q.id)).toContain('p1');
+    expect(toast()).toBe('Imported dashboard');
+  });
+
+  it('confirms before discarding an existing Dashboard, then replaces it on confirm', async () => {
+    const dep = panelQuery('p1', 'Panel');
+    const dash = dashboardDoc({ id: 'src-d', title: 'Sales', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
+    app.state.dashboard = dashboardDoc({ id: 'old', title: 'My existing dashboard' });
     openFileMenu(app);
-    click(item(/New Library/)!);
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new library?');
+    pickFile(picker(1));
+    const dialog = document.querySelector('.fm-dialog-card')!;
+    expect(dialog.textContent).toContain('Import and replace current Dashboard?');
     click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.dashboard!.title).toBe('Sales');
+    expect(app.state.dashboard!.id).not.toBe('old'); // mode 'copy' mints a fresh id
+    expect(toast()).toBe('Imported dashboard');
+  });
+
+  it('cancelling the discard-Dashboard confirm keeps the current Dashboard and imports nothing', () => {
+    const dash = dashboardDoc({ id: 'src-d', title: 'Sales' });
+    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
+    app.state.dashboard = dashboardDoc({ id: 'old', title: 'My existing dashboard' });
+    openFileMenu(app);
+    pickFile(picker(1));
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Import and replace current Dashboard?');
+    click(document.querySelector('.fm-dialog-cancel')!);
+    expect(app.state.dashboard!.id).toBe('old');
+    expect(app.state.dashboard!.title).toBe('My existing dashboard');
+  });
+
+  it('shows a picker (no "No dashboard" option) for a multi-dashboard bundle; selecting one imports only that one', async () => {
+    const dep1 = panelQuery('p1', 'Panel1');
+    const dep2 = panelQuery('p2', 'Panel2');
+    const dashA = dashboardDoc({ id: 'a', title: 'Alpha', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const dashB = dashboardDoc({ id: 'b', title: 'Beta', tiles: [{ id: 't2', queryId: 'p2' }] });
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep1, dep2], dashboards: [dashA, dashB] })) });
+    openFileMenu(app);
+    pickFile(picker(1));
+    const dialog = document.querySelector('.fm-dialog-card')!;
+    expect(dialog.textContent).toContain('Import which dashboard?');
+    expect(dialog.textContent).toContain('Alpha');
+    expect(dialog.textContent).toContain('Beta');
+    expect([...dialog.querySelectorAll('.fm-label')].some((l) => l.textContent === 'No dashboard')).toBe(false);
+    const betaRow = [...dialog.querySelectorAll<HTMLButtonElement>('.fm-item')].find((b) => (b.textContent || '').includes('Beta'))!;
+    click(betaRow);
+    await flush();
+    expect(app.state.dashboard!.title).toBe('Beta');
+    expect(app.state.savedQueries.map((q) => q.id)).toContain('p2');
+  });
+
+  it('cancelling the multi-dashboard picker imports nothing', () => {
+    const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
+    const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
+    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })) });
+    openFileMenu(app);
+    pickFile(picker(1));
+    click(document.querySelector('.fm-dialog-cancel')!);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.dashboard).toBeNull();
+  });
+
+  it('aborts (no commit) when a skipped conflict breaks a required tile dependency', async () => {
+    const dash = dashboardDoc({ id: 'src', title: 'D', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1', 'Incoming')], dashboards: [dash] })) });
+    app.state.savedQueries = [panelQuery('p1', 'Existing')]; // conflicting id, different content
+    openFileMenu(app);
+    pickFile(picker(1));
+    const rowSelect = document.querySelectorAll<HTMLSelectElement>('.fm-select')[1];
+    rowSelect.value = 'skip';
+    rowSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.dashboard).toBeNull();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['Existing']);
+    expect(toast()).toContain('missing required saved-query dependencies');
+  });
+
+  it('toasts and aborts when the file has no dashboard', () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [] })) });
+    openFileMenu(app);
+    pickFile(picker(1));
+    expect(toast()).toBe('✕ No dashboard in file');
+  });
+});
+
+describe('Replace workspace', () => {
+  it('the menu item closes the menu, opens the picker, and — after confirming — replaces the catalog + Dashboard', async () => {
+    const dep = panelQuery('p1', 'Panel');
+    const dash = dashboardDoc({ id: 'd1', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [dep], dashboards: [dash] })) });
+    app.state.savedQueries = [panelQuery('old', 'Old')];
+    openFileMenu(app);
+    const input = picker(2);
+    input.click = vi.fn();
+    click(item(/Replace workspace/)!);
+    expect(document.querySelector('.file-menu')).toBeNull();
+    expect(input.click).toHaveBeenCalled();
+    pickFile(input);
+    const dialog = document.querySelector('.fm-dialog-card')!;
+    expect(dialog.textContent).toContain('Replace workspace?');
+    expect(dialog.textContent).toContain('current 1 saved query');
+    expect(dialog.textContent).toContain('and the selected Dashboard');
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
+    expect(app.state.dashboard!.id).toBe('d1'); // Replace keeps the bundle Dashboard's own id/revision
+    expect(toast()).toBe('Replaced workspace');
+  });
+
+  it('cancelling the confirm dialog leaves the workspace untouched', () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1')] })) });
+    app.state.savedQueries = [panelQuery('old', 'Old')];
+    openFileMenu(app);
+    pickFile(picker(2));
+    click(document.querySelector('.fm-dialog-cancel')!);
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['old']);
+  });
+
+  it('shows a picker with a "No dashboard" option for a multi-dashboard bundle; picking it clears the Dashboard', async () => {
+    const dashA = dashboardDoc({ id: 'a', title: 'Alpha' });
+    const dashB = dashboardDoc({ id: 'b', title: 'Beta' });
+    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dashA, dashB] })) });
+    app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
+    openFileMenu(app);
+    pickFile(picker(2));
+    const dialog = document.querySelector('.fm-dialog-card')!;
+    expect(dialog.textContent).toContain('Replace workspace — which dashboard?');
+    const noneRow = [...dialog.querySelectorAll<HTMLButtonElement>('.fm-item')].find((b) => (b.textContent || '').includes('No dashboard'))!;
+    click(noneRow);
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Replace workspace?');
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.dashboard).toBeNull();
+  });
+
+  it('auto-picks the sole Dashboard in a single-dashboard bundle (no picker)', () => {
+    const dash = dashboardDoc({ id: 'only', title: 'Only' });
+    const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
+    openFileMenu(app);
+    pickFile(picker(2));
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Replace workspace?');
+  });
+
+  it('a queries-only bundle (no Dashboard) clears an existing Dashboard', async () => {
+    const app = mount({ FileReader: fakeReader(bundleText({ queries: [panelQuery('p1')] })) });
+    app.state.dashboard = dashboardDoc({ id: 'existing', title: 'Existing' });
+    app.state.savedQueries = [];
+    openFileMenu(app);
+    pickFile(picker(2));
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('current 0 saved queries');
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.dashboard).toBeNull();
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
+  });
+});
+
+describe('New workspace', () => {
+  it('commits directly (no confirm) when the workspace is already empty', async () => {
+    const app = mount();
+    const oldId = app.state.workspaceId;
+    openFileMenu(app);
+    click(item(/New workspace/)!);
+    await flush();
+    expect(document.querySelector('.fm-dialog-backdrop')).toBeNull();
     expect(app.state.savedQueries).toEqual([]);
     expect(app.state.libraryName.value).toBe('SQL Library');
+    expect(app.state.workspaceId).not.toBe(oldId);
+    expect(toast()).toBe('Started a new workspace');
+  });
+
+  it('confirms first when there are saved queries', async () => {
+    const app = mount();
+    app.state.savedQueries = [panelQuery('q1')];
+    openFileMenu(app);
+    click(item(/New workspace/)!);
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new workspace?');
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(app.state.savedQueries).toEqual([]);
+  });
+
+  it('confirms first when a Dashboard exists even with no saved queries', () => {
+    const app = mount();
+    app.state.dashboard = dashboardDoc();
+    openFileMenu(app);
+    click(item(/New workspace/)!);
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Start a new workspace?');
   });
 
   it('confirm dialog: Cancel, backdrop click, and Escape all dismiss; a card click does not', () => {
     const app = mount();
-    setSaved(app, [ // two queries → exercises the plural dialog copy
-      { id: 's1', name: 'A', sql: '1', favorite: false },
-      { id: 's2', name: 'B', sql: '2', favorite: false },
-    ]);
-    const openNew = (): void => { openFileMenu(app); click(item(/New Library/)!); };
+    app.state.savedQueries = [panelQuery('q1'), panelQuery('q2')]; // two → exercises the plural dialog copy
+    const openNew = (): void => { openFileMenu(app); click(item(/New workspace/)!); };
     // Cancel
     openNew();
     click(document.querySelector('.fm-dialog-cancel')!);
@@ -413,13 +679,73 @@ describe('New Library + confirm dialogs', () => {
 
   it('a gesture starting on the card and ending on the backdrop does not dismiss it (#110)', () => {
     const app = mount();
-    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    app.state.savedQueries = [panelQuery('q1')];
     openFileMenu(app);
-    click(item(/New Library/)!);
+    click(item(/New workspace/)!);
     const backdrop = document.querySelector('.fm-dialog-backdrop')!;
     const card = document.querySelector('.fm-dialog-card')!;
     card.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     backdrop.dispatchEvent(new Event('click', { bubbles: true })); // click's target is the backdrop
     expect(document.querySelector('.fm-dialog-backdrop')).not.toBeNull();
+  });
+});
+
+describe('decode failures', () => {
+  it('malformed JSON toasts the parse diagnostic (no legacy fallback)', () => {
+    const app = mount({ FileReader: fakeReader('{not json') });
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(toast()).toBe('✕ Not a valid JSON file');
+  });
+
+  it('a read error toasts', () => {
+    const app = mount({ FileReader: fakeReader('', true) });
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(toast()).toBe('✕ Could not read file');
+  });
+
+  it('falls back to the legacy Library decoder for a v1/v2 saved-queries file', async () => {
+    const app = mount({ FileReader: fakeReader(legacyFile([{ id: 'x', name: 'New', sql: 'S' }])) });
+    openFileMenu(app);
+    pickFile(picker(0));
+    await flush();
+    expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['New']);
+    expect(toast()).toBe('Imported 1 query');
+  });
+
+  it('toasts the legacy diagnostic when neither decoder recognizes the file', () => {
+    const app = mount({ FileReader: fakeReader(JSON.stringify({ foo: 1 })) });
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(toast()).toMatch(/^✕ /);
+  });
+
+  it('a structurally-invalid portable bundle toasts its OWN diagnostic, never falling back to "Unrecognized file format"', () => {
+    const bad = JSON.stringify({
+      format: 'altinity-sql-browser/portable-bundle', version: 1, exportedAt: 'x',
+      queries: [{ id: 'a' }], dashboards: [],
+    });
+    const app = mount({ FileReader: fakeReader(bad) });
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(toast()).toMatch(/^✕ /);
+    expect(toast()).not.toContain('Unrecognized file format');
+  });
+});
+
+describe('commit failure', () => {
+  it('a rejected commit toasts the first diagnostic and leaves state untouched', async () => {
+    const commit = vi.fn(async () => ({
+      ok: false as const, diagnostics: [{ path: [], severity: 'error' as const, code: 'x', message: 'nope' }],
+    }));
+    const app = mount({ workspace: { commit } });
+    app.state.savedQueries = [panelQuery('q1')];
+    openFileMenu(app);
+    click(item(/New workspace/)!);
+    click(document.querySelector('.fm-dialog-confirm')!);
+    await flush();
+    expect(toast()).toBe('✕ nope');
+    expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']);
   });
 });

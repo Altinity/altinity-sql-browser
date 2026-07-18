@@ -275,17 +275,22 @@ describe('resolveEditorMode', () => {
     expect(gate).toEqual({ ok: false, message: 'Save this query to create an editable Spec.' });
   });
 
-  it('allows entering spec mode once the tab is linked to a saved query', () => {
+  it('allows entering spec mode once the tab is linked to a saved query', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     const state = {
       tabs: signal([tab]), savedQueries: [] as AppState['savedQueries'],
       resultView: signal<'table' | 'json' | 'panel' | 'filter'>('table'), libraryDirty: signal(false),
+      libraryName: signal('Lib'), workspaceId: 'w1', dashboard: null as AppState['dashboard'],
     };
     // Link the tab via the real state.ts create path — the exact invariant
-    // `savedForTab` (this session's own dependency) reads.
-    const entry = createSavedQuery(state, tab, 'My query', '', vi.fn(), 0);
-    expect(entry).not.toBeNull();
+    // `savedForTab` (this session's own dependency) reads. #287 W4: the
+    // aggregate commit is a trivial always-succeeds echo — this test only
+    // needs a real linked entry, not real persistence semantics.
+    const result = await createSavedQuery(state, tab, 'My query', '', async (candidate) => ({
+      ok: true, workspace: candidate, dashboardRevision: null,
+    }), 0);
+    expect(result.ok).toBe(true);
     const { deps } = makeDeps({ tab, state });
     const gate = createQueryDocumentSession(deps).resolveEditorMode(tab, 'spec');
     expect(gate).toEqual({ ok: true });

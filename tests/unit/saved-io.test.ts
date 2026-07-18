@@ -1,53 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import {
-  buildExportDoc, parseImportDoc, mergeSaved, buildMarkdownDoc, buildSqlDoc, upgradeSavedEntry,
-} from '../../src/core/saved-io.js';
+import { parseImportDoc, buildMarkdownDoc, buildSqlDoc, upgradeSavedEntry } from '../../src/core/saved-io.js';
 
 const FORMAT = 'altinity-sql-browser/saved-queries';
-const SCHEMA = 'https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json';
-const NOW = '2026-07-13T00:00:00.000Z';
 const v2 = (id: string, sql: string, spec: Record<string, unknown> = {}) => ({ id, sql, specVersion: 1, spec });
 const envelope = (version: number, queries: unknown[], over: Record<string, unknown> = {}) =>
   JSON.stringify({ format: FORMAT, version, queries, ...over });
 const CHART = { cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'k' };
-
-// `buildExportDoc` returns a bare `Record<string, unknown>` (the generic export
-// envelope shape) — this module's own tests read a query's canonical fields
-// back off it, so a single, local, honestly-loose shape (not `any`) narrows
-// `doc.queries` for every assertion below.
-interface ExportedQuery {
-  id: string;
-  sql: string;
-  specVersion: number;
-  spec: Record<string, unknown>;
-}
-const queriesOf = (doc: Record<string, unknown>): ExportedQuery[] => doc.queries as ExportedQuery[];
-
-describe('buildExportDoc', () => {
-  it('writes only the canonical v2 envelope and preserves the complete Spec', () => {
-    const extension = { nested: [{ x: 1 }] };
-    const doc = buildExportDoc([v2('s1', 'SELECT 1', {
-      name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
-    })], '2026-07-13T00:00:00.000Z');
-    expect(doc).toEqual({
-      $schema: SCHEMA, format: FORMAT, version: 2, exportedAt: NOW,
-      queries: [v2('s1', 'SELECT 1', {
-        name: 'A', favorite: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: {} } }, extension,
-      })],
-    });
-    expect(queriesOf(doc)[0].spec.extension).not.toBe(extension);
-    expect('name' in queriesOf(doc)[0]).toBe(false);
-    expect('panel' in queriesOf(doc)[0]).toBe(false);
-    expect('chart' in queriesOf(doc)[0]).toBe(false);
-  });
-
-  it('upgrades defensive v1 input on export and handles an empty list', () => {
-    const doc = buildExportDoc([{ id: 'old', name: 'Old', sql: '1', chart: CHART }], NOW);
-    expect(doc.version).toBe(2);
-    expect(queriesOf(doc)[0]).toEqual(v2('old', '1', { name: 'Old', favorite: false, panel: CHART }));
-    expect(queriesOf(buildExportDoc([], NOW))).toEqual([]);
-  });
-});
 
 describe('parseImportDoc — v1 migration', () => {
   it('upgrades supported flat entries, defaults a missing name, and skips malformed rows', () => {
@@ -152,56 +110,9 @@ describe('parseImportDoc — v2 validation', () => {
   });
 });
 
-describe('mergeSaved', () => {
-  const generator = () => { let n = 0; return () => 'gen' + (++n); };
-
-  it('adds, updates by id, generates unique ids, and skips complete-Spec duplicates', () => {
-    const existing = [v2('s1', '1', { name: 'A', favorite: false, extension: { b: 2, a: 1 } })];
-    const incoming = [
-      v2('different-id', '1', { extension: { a: 1, b: 2 }, favorite: false, name: 'A' }),
-      v2('s1', '1b', { name: 'A2', favorite: true, extension: { incoming: [1] } }),
-      { name: 'B', sql: '2' },
-      v2('s2', '3', { name: 'C', favorite: false }),
-    ];
-    const result = mergeSaved(existing, incoming, generator());
-    expect(result).toMatchObject({ added: 2, updated: 1, skipped: 1 });
-    expect(result.merged.map((q) => q.id)).toEqual(['s1', 'gen1', 's2']);
-    expect(result.merged[0].spec).toEqual({ name: 'A2', favorite: true, extension: { incoming: [1] } });
-    expect(existing[0].spec.name).toBe('A');
-  });
-
-  it('replaces the complete incoming Spec by id, including extension removal/addition', () => {
-    const existing = [v2('s1', '1', { name: 'A', oldExtension: { keep: false } })];
-    const incoming = [v2('s1', '1', { name: 'A', newExtension: { nested: [1, 2] } })];
-    const result = mergeSaved(existing, incoming, () => 'unused');
-    expect(result.updated).toBe(1);
-    expect(result.merged[0].spec).toEqual(incoming[0].spec);
-    expect(result.merged[0].spec).not.toBe(incoming[0].spec);
-  });
-
-  it('upgrades v1 input, preserves array-order semantics, and avoids duplicate incoming ids', () => {
-    const existing = [v2('taken', 'x', { name: 'X', list: [1, 2] })];
-    const incoming = [
-      { id: 'old', name: 'Old', sql: '1', chart: CHART },
-      v2('taken', 'x', { name: 'X', list: [2, 1] }),
-      v2('old', '2', { name: 'Other' }),
-    ];
-    const result = mergeSaved(existing, incoming, generator());
-    expect(result).toMatchObject({ added: 1, updated: 2, skipped: 0 });
-    expect(result.merged.find((q) => q.id === 'old')!.sql).toBe('2');
+describe('upgradeSavedEntry', () => {
+  it('re-exports upgradeSavedQuery unchanged (a v1 flat entry upgrades to canonical v2)', () => {
     expect(upgradeSavedEntry({ name: 'Alias', sql: 'a' }).spec.name).toBe('Alias');
-  });
-
-  it('dedups a v1 null-key chart against its live key-less twin (no spurious duplicate)', () => {
-    // Live editing stores a null schema key by OMITTING it: {cfg}. A v1 file
-    // (or legacy share) carrying the same chart with an absent/null key must
-    // upgrade to the same key-less shape, so a different-id import is skipped
-    // as an exact duplicate rather than added as a second row.
-    const live = v2('live1', 'SELECT 1', { name: 'Chart Q', favorite: false, panel: { cfg: { type: 'bar', x: 'x', y: 'y' } } });
-    const v1file = { id: 'other', name: 'Chart Q', sql: 'SELECT 1', favorite: false, chart: { cfg: { type: 'bar', x: 'x', y: 'y' } } };
-    const result = mergeSaved([live], [v1file], () => 'unused');
-    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1 });
-    expect(result.merged).toHaveLength(1);
   });
 });
 

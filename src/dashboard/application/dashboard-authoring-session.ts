@@ -28,10 +28,7 @@ import type { SpecSchemaService } from '../../core/spec-schema.js';
 import { diagnostic, sortDiagnostics } from '../model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { resolveDashboardPresentations } from '../model/presentation-resolver.js';
-import { dashboardDependencyQueryIds } from '../model/bundle-order.js';
-import {
-  CURRENT_PORTABLE_BUNDLE_VERSION, PORTABLE_BUNDLE_FORMAT, PORTABLE_BUNDLE_V1_SCHEMA_ID,
-} from '../model/portable-bundle-codec.js';
+import { buildDashboardExportBundle } from '../model/dashboard-export.js';
 import { resolveActiveLayoutPlugin } from '../layouts/flow-layout.js';
 import { applyCommand } from './dashboard-commands.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
@@ -228,26 +225,9 @@ export function createDashboardAuthoringSession(
   }
 
   function createPortableBundle(): PortableBundleV1 {
-    const dashboard = cloneJson(stateSignal.value.document);
-    const byId = new Map<string, SavedQueryV2>();
-    for (const query of queries) {
-      if (isObject(query) && typeof query.id === 'string' && !byId.has(query.id)) byId.set(query.id, query);
-    }
-    const bundleQueries: SavedQueryV2[] = [];
-    for (const id of dashboardDependencyQueryIds(dashboard)) {
-      const query = byId.get(id);
-      if (query) bundleQueries.push(cloneJson(query));
-    }
     // Export never mutates workspace identity or revision — nothing here
-    // touches `committedRevision` or the draft.
-    return {
-      $schema: PORTABLE_BUNDLE_V1_SCHEMA_ID as PortableBundleV1['$schema'],
-      format: PORTABLE_BUNDLE_FORMAT as PortableBundleV1['format'],
-      version: CURRENT_PORTABLE_BUNDLE_VERSION as PortableBundleV1['version'],
-      exportedAt: nowISO(),
-      queries: bundleQueries,
-      dashboards: [dashboard],
-    };
+    // touches `committedRevision` or the draft; the builder deep-clones.
+    return buildDashboardExportBundle(stateSignal.value.document, queries, nowISO());
   }
 
   function destroy(): void {
