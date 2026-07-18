@@ -17,7 +17,7 @@ test.describe('Dashboard mobile layout', () => {
     await expect(page.getByRole('button', { name: 'Refresh dashboard' })).toBeVisible();
     await expect(page.locator('.dash-back-label')).toBeHidden();
     await expect(page.locator('.dash-refresh-label')).toBeHidden();
-    for (const selector of ['.dash-fav', '.dash-skip', '.dash-src', '.dash-updated']) {
+    for (const selector of ['.dash-fav', '.dash-src', '.dash-updated', '.dash-layout-wrap']) {
       await expect(page.locator(selector)).toBeHidden();
     }
 
@@ -106,7 +106,7 @@ test.describe('Dashboard mobile layout', () => {
 
   test('scrolls filters in one row while fixed combobox content escapes clipping', async ({ page }) => {
     await openAt(page, 390);
-    const scroll = page.locator('.filter-strip-scroll');
+    const scroll = page.locator('.dash-filter-host');
     const filters = page.locator('.dash-filters');
     const before = await scroll.evaluate((node) => ({
       clientWidth: node.clientWidth,
@@ -121,13 +121,8 @@ test.describe('Dashboard mobile layout', () => {
     expect(before.overflowX).toBe('auto');
     expect(await filters.evaluate((node) => getComputedStyle(node).flexWrap)).toBe('nowrap');
 
-    // The fixed count status is a sibling of the scroll region, not inside it —
-    // scrolling the fields must not move it.
-    const countBefore = await page.locator('.dash-filter-count-host').evaluate((node) => node.getBoundingClientRect().left);
     await scroll.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
     expect(await scroll.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
-    const countAfter = await page.locator('.dash-filter-count-host').evaluate((node) => node.getBoundingClientRect().left);
-    expect(countAfter).toBe(countBefore);
     await scroll.evaluate((node) => { node.scrollLeft = 0; });
 
     const first = page.getByRole('combobox', { name: 'region' });
@@ -152,69 +147,106 @@ test.describe('Dashboard mobile layout', () => {
     await expect(first).toHaveValue('alpha');
   });
 
-  test('removes an empty toolbar only on mobile', async ({ page }) => {
+  test('removes an empty toolbar at every viewport width (2026-07-18: the layout switcher no longer lives there, so an empty toolbar is never worth showing)', async ({ page }) => {
     await openAt(page, 390);
     await expect(page.locator('#no-filter-toolbar')).toBeHidden();
-    await page.setViewportSize({ width: 769, height: 844 });
-    await expect(page.locator('#no-filter-toolbar')).toBeVisible();
+    await page.setViewportSize({ width: 1100, height: 844 });
+    await expect(page.locator('#no-filter-toolbar')).toBeHidden();
   });
 
-  test('desktop: filters stay on one row and scroll horizontally, the layout switcher and count stay fixed, no Clear-all control exists (#294)', async ({ page }) => {
+  test('marks a required filter name bold instead of a leading asterisk; an optional name stays muted (2026-07-18)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    const names = await page.locator('.dash-filters .var-name').evaluateAll((nodes) => nodes.map((node) => ({
+      // The old convention prepended a literal "*" via `::after { content }` —
+      // never part of `textContent` even before this change — so the real
+      // regression check is the CSS-generated content string itself, not the
+      // DOM text (which never had an asterisk to begin with).
+      afterContent: getComputedStyle(node, '::after').content,
+      fontWeight: getComputedStyle(node).fontWeight,
+      optional: node.closest('.var-field').classList.contains('is-optional'),
+    })));
+    const required = names.filter((n) => !n.optional);
+    const optional = names.filter((n) => n.optional);
+    expect(required.length).toBeGreaterThan(0);
+    expect(optional.length).toBeGreaterThan(0);
+    for (const n of [...required, ...optional]) expect(n.afterContent).not.toContain('*');
+    for (const n of required) expect(Number(n.fontWeight)).toBeGreaterThanOrEqual(700);
+    for (const n of optional) expect(Number(n.fontWeight)).toBeLessThan(700);
+  });
+
+  test('desktop: filters stay on one row and scroll horizontally, no Clear-all or count control exists (#294)', async ({ page }) => {
     await openAt(page, 1100, 800);
     await expect(page.locator('.dash-filter-clear-all')).toHaveCount(0);
+    await expect(page.locator('.dash-filter-count')).toHaveCount(0);
+    await expect(page.locator('.dash-filter-count-host')).toHaveCount(0);
 
     const toolbar = page.locator('.dash-toolbar.has-filters');
     const before = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
 
     const layout = await page.evaluate(() => {
-      const layoutWrap = document.querySelector('.dash-layout-wrap');
-      const scroll = document.querySelector('.filter-strip-scroll');
+      const host = document.querySelector('.dash-filter-host');
       const filters = document.querySelector('.dash-filters');
-      const count = document.querySelector('.dash-filter-count-host');
       const fields = [...filters.querySelectorAll('.var-field')];
-      const center = (rect) => rect.top + rect.height / 2;
       return {
         toolbarWrap: getComputedStyle(document.querySelector('.dash-toolbar')).flexWrap,
-        layoutWrapVisible: getComputedStyle(layoutWrap).display !== 'none',
-        layoutCenter: center(layoutWrap.getBoundingClientRect()),
         filtersWrap: getComputedStyle(filters).flexWrap,
-        scrollWidth: scroll.scrollWidth,
-        clientWidth: scroll.clientWidth,
+        scrollWidth: host.scrollWidth,
+        clientWidth: host.clientWidth,
         fieldTops: fields.map((field) => field.getBoundingClientRect().top),
         fieldWidths: fields.map((field) => field.getBoundingClientRect().width),
-        countCenter: center(count.getBoundingClientRect()),
-        countVisible: getComputedStyle(count.querySelector('.dash-filter-count')).display !== 'none',
         pageOverflow: document.documentElement.scrollWidth - innerWidth,
-        // #294 review finding: the fixture's last field is a relative-time
-        // field with a resolved-value preview line beneath the input, making
-        // its `.var-field` taller than the plain recent-value fields — this
-        // exercises the count staying vertically centered against a row taller
-        // than one line, not just pinned to its top edge.
-        scrollPaddingTop: parseFloat(getComputedStyle(scroll).paddingTop),
-        scrollPaddingBottom: parseFloat(getComputedStyle(scroll).paddingBottom),
+        // The scroll viewport's `overflow-y: hidden` must not clip a focused
+        // field's box-shadow ring (`.var-input:focus`'s 3px spread) — the
+        // vertical padding is the buffer that keeps it visible (#294 review
+        // finding, exercised against the fixture's taller relative-time field).
+        hostPaddingTop: parseFloat(getComputedStyle(host).paddingTop),
+        hostPaddingBottom: parseFloat(getComputedStyle(host).paddingBottom),
       };
     });
     expect(layout.toolbarWrap).toBe('nowrap');
-    expect(layout.layoutWrapVisible).toBe(true);
     expect(layout.filtersWrap).toBe('nowrap');
     expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
     expect(Math.max(...layout.fieldTops) - Math.min(...layout.fieldTops)).toBeLessThan(2);
     expect(Math.min(...layout.fieldWidths)).toBeGreaterThan(150);
-    expect(Math.abs(layout.countCenter - layout.layoutCenter)).toBeLessThan(3);
-    expect(layout.countVisible).toBe(true);
     expect(layout.pageOverflow).toBeLessThanOrEqual(0);
-    // The scroll viewport's `overflow-y: hidden` must not clip a focused
-    // field's box-shadow ring (`.var-input:focus`'s 3px spread) — the vertical
-    // padding is the buffer that keeps it visible.
-    expect(layout.scrollPaddingTop).toBeGreaterThanOrEqual(3);
-    expect(layout.scrollPaddingBottom).toBeGreaterThanOrEqual(3);
+    expect(layout.hostPaddingTop).toBeGreaterThanOrEqual(3);
+    expect(layout.hostPaddingBottom).toBeGreaterThanOrEqual(3);
 
-    // Scrolling the fields reaches the final one and doesn't grow the toolbar
-    // or move the layout switcher / count off their row.
-    await page.locator('.filter-strip-scroll').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+    // Scrolling the fields reaches the final one and doesn't grow the toolbar.
+    await page.locator('.dash-filter-host').evaluate((node) => { node.scrollLeft = node.scrollWidth; });
     const after = await toolbar.evaluate((node) => node.getBoundingClientRect().height);
     expect(after).toBe(before);
     const lastField = page.locator('.dash-filters .var-field').last();
     await expect(lastField).toBeInViewport();
+  });
+
+  test('the layout switcher is a compact select in the header, right after the tile-count chip, matching the workbench panel-picker style (2026-07-18)', async ({ page }) => {
+    await openAt(page, 1100, 800);
+    const select = page.locator('.dash-layout-select');
+    await expect(select).toBeVisible();
+    await expect(select).toHaveClass(/result-panel-select/);
+    // No more four-button segmented control.
+    await expect(page.locator('.dash-seg-layout')).toHaveCount(0);
+
+    const geometry = await page.evaluate(() => {
+      const header = document.querySelector('.dash-header');
+      const children = [...header.children];
+      const tileCountIndex = children.findIndex((c) => c.classList.contains('dash-fav'));
+      const layoutWrapIndex = children.findIndex((c) => c.classList.contains('dash-layout-wrap'));
+      const layoutWrap = children[layoutWrapIndex];
+      const tileCount = children[tileCountIndex];
+      return {
+        layoutRightAfterTileCount: layoutWrapIndex === tileCountIndex + 1,
+        inHeaderNotToolbar: !document.querySelector('.dash-toolbar .dash-layout-wrap'),
+        sameRow: Math.abs(
+          (layoutWrap.getBoundingClientRect().top + layoutWrap.getBoundingClientRect().height / 2)
+          - (tileCount.getBoundingClientRect().top + tileCount.getBoundingClientRect().height / 2),
+        ) < 2,
+      };
+    });
+    expect(geometry).toEqual({ layoutRightAfterTileCount: true, inHeaderNotToolbar: true, sameRow: true });
+
+    await select.selectOption('columns-2');
+    expect(await select.inputValue()).toBe('columns-2');
   });
 });

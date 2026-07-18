@@ -33,7 +33,7 @@ const qs = <T extends Element = HTMLElement>(root: ParentNode | null, selector: 
   (root as ParentNode).querySelector(selector) as T;
 const qsa = <T extends Element = HTMLElement>(root: ParentNode | null, selector: string): T[] =>
   [...(root as ParentNode).querySelectorAll(selector)] as T[];
-/** `el.onclick`'s DOM-lib type takes a `MouseEvent`; every `.dash-btn`/`.dash-seg-btn`
+/** `el.onclick`'s DOM-lib type takes a `MouseEvent`; every `.dash-btn`
  * handler this suite exercises is a real zero-arg (often async) closure `ui/dashboard.ts`
  * assigns directly — narrower than the lib's declared signature (an assignable
  * direction, not a fixture gap), so calling through it needs no argument. */
@@ -299,8 +299,14 @@ function dashApp(opts: {
 }
 
 const render = (app: TestApp): Promise<void> => renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
-const seg = (root: ParentNode | null, label: string): HTMLElement | undefined =>
-  qsa(root, '.dash-seg-layout .dash-seg-btn').find((b) => b.textContent === label);
+/** The flow preset switcher (2026-07-18: a `<select class="dash-layout-select">`
+ *  in the header, replacing the old `.dash-seg-layout` button group). */
+const layoutSelect = (root: ParentNode | null): HTMLSelectElement => qs<HTMLSelectElement>(root, '.dash-layout-select');
+const pickLayout = (root: ParentNode | null, value: string): void => {
+  const select = layoutSelect(root);
+  select.value = value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+};
 
 describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
   it('renders one tile per dashboard.tiles entry — independent of spec.favorite', async () => {
@@ -393,12 +399,12 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
       }),
     });
     await render(app);
-    expect(seg(app.root, '2 columns')?.getAttribute('aria-pressed')).toBe('true');
+    expect(layoutSelect(app.root).value).toBe('columns-2');
     const rows = qsa(app.root, '.dash-row');
     expect((rows[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(2');
     // Switch to full-width — one column.
-    seg(app.root, 'Full width')!.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(seg(app.root, 'Full width')?.getAttribute('aria-pressed')).toBe('true');
+    pickLayout(app.root, 'full-width');
+    expect(layoutSelect(app.root).value).toBe('full-width');
     expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
     expect(commit).toHaveBeenCalled();
   });
@@ -412,7 +418,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
       }),
     });
     await render(app);
-    expect(seg(app.root, 'Full width')?.getAttribute('aria-pressed')).toBe('true');
+    expect(layoutSelect(app.root).value).toBe('full-width');
     expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
   });
@@ -594,7 +600,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     expect(added[0].params.param_p).toBe('x');
   });
 
-  it('shows the N-active count when a filter is active, hidden otherwise; no visible Clear-all control at any count (#294)', async () => {
+  it('shows no visible Clear-all control or "N active" count at any active count (#294; count removed by a 2026-07-18 owner override)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -603,14 +609,14 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
       }),
     });
     await render(app);
-    expect(qs(app.root, '.dash-filter-count')?.textContent).toBe('1 active');
-    // #294 reverses #286/#293's visible Clear-all control — it never renders,
-    // active count or not (`DashboardViewerSession.clearAllFilters()` stays a
-    // tested application-level operation with no UI trigger).
+    // `DashboardViewerSession.clearAllFilters()`/`activeFilterCount` stay
+    // tested application-level operations/state with no UI trigger or display.
     expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
+    expect(qs(app.root, '.dash-filter-count')).toBeNull();
+    expect(qs(app.root, '.dash-filter-count-host')).toBeNull();
   });
 
-  it('separates the scrolling filter-field region from the fixed count region (#294)', async () => {
+  it('the filter host IS the scrolling field viewport (#294, single-level since the count sibling was removed)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a WHERE n = {n:UInt8}')],
@@ -620,14 +626,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     });
     await render(app);
     const host = qs(app.root, '.dash-filter-host');
-    const scroll = qs(host, '.filter-strip-scroll');
-    const count = qs(host, '.dash-filter-count-host');
-    // The fields live inside the scroll viewport, the count lives outside it —
-    // as separate host children, not nested one inside the other.
-    expect(scroll.contains(qs(host, '.dash-filters'))).toBe(true);
-    expect(scroll.contains(count)).toBe(false);
-    expect(count.contains(scroll)).toBe(false);
-    expect(count.querySelector('.dash-filter-count')?.textContent).toBe('1 active');
+    expect(host.contains(qs(host, '.dash-filters'))).toBe(true);
   });
 
   it('renders no per-filter "required/invalid" badge (owner decision — dropped as noise)', async () => {
@@ -639,7 +638,7 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
     });
     await render(app);
     expect(qs(app.root, '.dash-filter-blocking')).toBeNull();
-    expect((qs(app.root, '.dash-filter-count') as HTMLElement).style.display).toBe('none');
+    expect(qs(app.root, '.dash-filter-count')).toBeNull();
     expect(qs(app.root, '.dash-filter-clear-all')).toBeNull();
   });
 });

@@ -16,7 +16,14 @@
           </a>
           <div class="dash-title">A deliberately long production operations Dashboard name</div>
           <span class="dash-chip dash-fav">6 favorites</span>
-          <span class="dash-skip">1 not shown</span>
+          <div class="dash-layout-wrap">
+            <select class="result-panel-select dash-layout-select" aria-label="Dashboard layout" title="Dashboard layout">
+              <option value="full-width">Full width</option>
+              <option value="report" selected>Report</option>
+              <option value="columns-2">2 columns</option>
+              <option value="columns-3">3 columns</option>
+            </select>
+          </div>
           <div class="dash-spacer" style="flex:1"></div>
           <span class="dash-chip dash-src"><span class="dash-dot"></span>clickhouse.example.internal</span>
           <span class="dash-updated">Updated 12:34</span>
@@ -29,24 +36,10 @@
           </button>
         </div>
         <div class="dash-toolbar has-filters">
-          <div class="dash-layout-wrap">
-            <span class="dash-seg-label">Layout</span>
-            <div class="dash-seg dash-seg-layout" role="group" aria-label="Dashboard layout">
-              <button class="dash-seg-btn">Full width</button>
-              <button class="dash-seg-btn is-active">Report</button>
-              <button class="dash-seg-btn">2 columns</button>
-              <button class="dash-seg-btn">3 columns</button>
-            </div>
-          </div>
-          <div class="dash-filter-host">
-            <div class="filter-strip-scroll"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
-            <span class="dash-filter-count-host"><span class="dash-filter-count" role="status" aria-label="3 active filters">3 active</span></span>
-          </div>
+          <div class="dash-filter-host"><div class="dash-filters" role="group" aria-label="Dashboard filters"></div></div>
         </div>
       </div>
-      <div id="no-filter-toolbar" class="dash-toolbar">
-        <div class="dash-layout-wrap">Layout-only toolbar</div>
-      </div>
+      <div id="no-filter-toolbar" class="dash-toolbar">Empty toolbar (no filters)</div>
       <main class="dash-grid is-report" aria-label="Dashboard panels">
         <section class="dash-tile"><div class="dash-tile-head">Panel one</div></section>
         <section class="dash-tile"><div class="dash-tile-head">Panel two</div></section>
@@ -61,6 +54,10 @@
     import { wireComboInput } from '/src/ui/combobox.js';
 
     const filters = document.querySelector('.dash-filters');
+    // 'version' is the one optional field here — real coverage for the bold
+    // (required) vs muted (optional) `.var-name` contrast (2026-07-18: replaced
+    // the leading "*" glyph).
+    const OPTIONAL = new Set(['version']);
     for (const name of ['region', 'service', 'environment', 'owner', 'status', 'version']) {
       const field = buildRecentField({
         document, name, type: 'String', value: '', baseTitle: `${name}: String`,
@@ -69,15 +66,14 @@
       });
       wireComboInput(field, { onValueInput: () => {}, onCommit: () => {} });
       const label = document.createElement('label');
-      label.className = 'var-field';
+      label.className = 'var-field' + (OPTIONAL.has(name) ? ' is-optional' : '');
       label.innerHTML = `<span class="var-name">${name}</span>`;
       label.append(field.el);
       filters.append(label);
     }
     // A relative-time field's resolved-value preview line (#294 review finding)
     // makes this field taller than the plain recent-value fields above — real
-    // coverage for the fixed count staying centered against a taller row,
-    // instead of pinned to the row's top edge.
+    // coverage for the focused-field padding/clipping fix.
     const timeField = buildRelativeTimeField({
       document, name: 'since', type: 'DateTime', value: 'now', baseTitle: 'since: DateTime',
       wallNow: () => Date.parse('2026-07-18T12:00:00Z'),
