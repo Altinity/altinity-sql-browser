@@ -2992,6 +2992,62 @@ describe('share + star + columns', () => {
     expect(app2.state.workspaceId).toBe(beforeId2);
     expect(app2.state.dashboard).toBeNull();
   });
+  it('#300: a corrupt-but-present aggregate surfaces a toast instead of silently continuing, and its Reset action rebuilds a fresh one', async () => {
+    const app = createApp(env());
+    const beforeId = app.state.workspaceId;
+    const beforeQueries = app.state.savedQueries;
+    const diagnostics = [{
+      path: ['storageVersion'], severity: 'error' as const,
+      code: 'workspace-version-unsupported', message: 'Unsupported stored-workspace version',
+    }];
+    // Simulate a corrupt-but-present record without hand-rolling raw
+    // IndexedDB bytes: stub `loadCurrentResult` to report `corrupt` while
+    // `corrupted` is true, delegating to the REAL (fake-IndexedDB-backed)
+    // implementation once it flips false — so Reset's rebuild below exercises
+    // the genuine migrate-then-load path, not another stub.
+    let corrupted = true;
+    const realLoadCurrentResult = app.workspace.loadCurrentResult.bind(app.workspace);
+    app.workspace.loadCurrentResult = vi.fn(
+      async () => (corrupted ? { status: 'corrupt' as const, diagnostics } : realLoadCurrentResult()),
+    );
+    const clearSpy = vi.spyOn(app.workspace, 'clearCurrent');
+
+    const workspace = await app.loadWorkspaceOnBoot();
+    expect(workspace).toBeNull();
+    // State is left exactly as `createState()`'s synchronous legacy
+    // projection populated it — not overwritten by the corrupt record.
+    expect(app.state.workspaceId).toBe(beforeId);
+    expect(app.state.savedQueries).toBe(beforeQueries);
+
+    const toastEl = qs(document, '.share-toast');
+    expect(toastEl.textContent).toContain('Saved workspace could not be read');
+    const resetBtn = qs<HTMLButtonElement>(toastEl, 'button.share-toast-action');
+    expect(resetBtn.textContent).toBe('Reset workspace');
+    expect(clearSpy).not.toHaveBeenCalled();
+
+    // Invoke the Reset action: clears the (real) store, then re-runs the
+    // migrate + load path, which now genuinely resolves `ok` and projects.
+    corrupted = false;
+    resetBtn.click();
+    await flush();
+
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+    const rebuilt = await app.workspace.loadCurrent();
+    expect(rebuilt).not.toBeNull();
+    expect(app.state.workspaceId).toBe(rebuilt!.id);
+    expect(app.state.workspaceId).not.toBe(beforeId);
+  });
+  it('#300: the empty and ok load-result cases behave exactly as before (no toast, migrate-then-project runs as usual)', async () => {
+    const app = createApp(env());
+    // `env()`'s own #287 default fake IndexedDB: a working store with nothing
+    // persisted yet resolves `empty`, so `loadWorkspaceOnBoot` migrates and
+    // projects the freshly-committed aggregate exactly as the pre-#300 test
+    // above (line ~2963) already covers for `loadCurrent`.
+    const workspace = await app.loadWorkspaceOnBoot();
+    expect(workspace).not.toBeNull();
+    expect(app.state.savedQueries).toEqual(workspace!.queries);
+    expect(document.querySelector('.share-toast')).toBeNull();
+  });
   it('save popover closes on click outside', () => {
     const app = createApp(env());
     app.renderApp();

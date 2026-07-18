@@ -279,6 +279,9 @@ const appDefaults: App = {
   // with `fakeWorkspaceCommit()` (or its own stub) instead.
   workspace: {
     loadCurrent: async () => null,
+    // #300: default mirrors `loadCurrent`'s own default (no record) — a
+    // fixture testing the corrupt-record surface overrides this directly.
+    loadCurrentResult: async () => ({ status: 'empty' }),
     commit: async (candidate) => ({
       ok: true, workspace: candidate, dashboardRevision: candidate.dashboard === null ? null : candidate.dashboard.revision,
     }),

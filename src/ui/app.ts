@@ -1368,24 +1368,34 @@ export function createApp(env: CreateAppEnv = {}): App {
   // was retired so cap/settings fixes can't apply to only one path.
   app.renderDashboard = () => renderDashboard(app);
 
+  // #286 Phase 4: run the one-shot legacy migration (favorites → tiles,
+  // dashLayout/dashCols → flow@1) — it only actually does anything when no
+  // aggregate record exists yet (`migrateLegacyWorkspaceIfNeeded` keys on raw
+  // record existence via the store, never on `loadCurrent`/`loadCurrentResult`
+  // validity, so a present-but-corrupt record is never clobbered by a re-run
+  // — #300). Shared by `loadDashboardWorkspace` below and the boot path
+  // (`loadWorkspaceOnBoot`) so both read the SAME migration deps built off the
+  // current `app.state` snapshot.
+  const runLegacyMigrationIfNeeded = () => migrateLegacyWorkspaceIfNeeded({
+    store: workspaceStore,
+    repository: app.workspace,
+    legacy: {
+      name: app.state.libraryName.value,
+      queries: app.state.savedQueries,
+      dashLayout: app.state.dashLayout,
+      dashCols: app.state.dashCols,
+    },
+    genId: () => uid('ws-'),
+  });
+
   // #286 Phase 4: resolve the current StoredWorkspaceV1 the Dashboard viewer
-  // reads from. The one-shot legacy migration (favorites → tiles,
-  // dashLayout/dashCols → flow@1) runs only when no aggregate exists yet, from
-  // the flat `asb:*` keys already loaded onto `app.state`; then the aggregate
-  // is the source of truth. Composition-root wiring — the store lives here, so
-  // the migration deps are assembled here rather than in the render module.
+  // reads from. Reads via `loadCurrent` (not `loadCurrentResult`), so a
+  // corrupt-but-present record still collapses to `null` here — the /dashboard
+  // route's own render just falls back to its empty state; the user-visible
+  // corrupt-record surface (#300) lives in the boot path below, which both
+  // `main.ts`'s OAuth bootstrap and the basic-auth `connect` action go through.
   app.loadDashboardWorkspace = async () => {
-    await migrateLegacyWorkspaceIfNeeded({
-      store: workspaceStore,
-      repository: app.workspace,
-      legacy: {
-        name: app.state.libraryName.value,
-        queries: app.state.savedQueries,
-        dashLayout: app.state.dashLayout,
-        dashCols: app.state.dashCols,
-      },
-      genId: () => uid('ws-'),
-    });
+    await runLegacyMigrationIfNeeded();
     return app.workspace.loadCurrent();
   };
 
@@ -1437,8 +1447,43 @@ export function createApp(env: CreateAppEnv = {}): App {
     return run;
   };
 
+  // #300: the Reset action offered on the corrupt-workspace toast below.
+  // `loadCurrent()`/`clearCurrent()`'s callers rely on a corrupt record
+  // collapsing to `null`/being silently removable — here that removal is
+  // deliberate and user-initiated. Clearing makes the store look exactly like
+  // a fresh install to `migrateLegacyWorkspaceIfNeeded`'s existence check, so
+  // it rebuilds a brand-new aggregate from the CURRENT legacy/local state
+  // (favorites, layout prefs) rather than leaving the next random CRUD op to
+  // silently mint one over nothing. Only projects + re-renders on success —
+  // an immediately-re-corrupt or still-empty outcome (unexpected; the store
+  // was just cleared) leaves the legacy `createState()` projection standing,
+  // same as any other failed load.
+  const resetCorruptWorkspace = async (): Promise<void> => {
+    await app.workspace.clearCurrent();
+    await runLegacyMigrationIfNeeded();
+    const result = await app.workspace.loadCurrentResult();
+    if (result.status === 'ok') {
+      applyCommittedWorkspace(result.workspace);
+      app.renderApp();
+    }
+  };
+
   app.loadWorkspaceOnBoot = async () => {
-    const workspace = await app.loadDashboardWorkspace();
+    await runLegacyMigrationIfNeeded();
+    const result = await app.workspace.loadCurrentResult();
+    if (result.status === 'corrupt') {
+      // #300: a corrupt-but-present aggregate is surfaced instead of silently
+      // continuing on the legacy projection (which would otherwise let the
+      // next saved-query CRUD commit orphan the corrupt record with no
+      // user-visible error). State is left untouched — same as any other
+      // null/failed load below.
+      flashToast(
+        'Saved workspace could not be read — your queries and dashboard layout are unaffected until you reset it.',
+        { document: app.document, action: { label: 'Reset workspace', onClick: () => { void resetCorruptWorkspace(); } } },
+      );
+      return null;
+    }
+    const workspace = result.status === 'ok' ? result.workspace : null;
     if (workspace) applyCommittedWorkspace(workspace);
     return workspace;
   };
