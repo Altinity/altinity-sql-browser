@@ -422,7 +422,7 @@ read; DDL secrets remain masked unless the role separately holds
 
 ## Saved queries & the Library
 
-Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Library**
+Queries you save (★ **Save** next to Run, or `⌘S`) land in the sidebar **★ Queries**
 panel. Each carries a name, an optional **description**, and — when set — its
 remembered result view and chart config. Saving or editing a query opens a small
 form with both a name and a description field; the description shows under the

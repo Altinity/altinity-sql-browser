@@ -294,7 +294,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
   const grid = h('div', { class: 'dash-grid' });
   const empty = h('div', { class: 'dash-empty', style: { display: currentDoc.tiles.length ? 'none' : '' } },
-    'No tiles yet — star a query in the Library to add it to the dashboard.');
+    'No tiles yet — star a query in the Queries panel to add it to the dashboard.');
 
   // ── Structural commands (reorder via drag, preset) ────────────────────────
   // move-tile / update-placement / change-layout are the phase-3 authoring

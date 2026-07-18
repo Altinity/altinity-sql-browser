@@ -55,7 +55,7 @@ export function renderSavedHistory(app: App): void {
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'saved' ? ' active' : ''),
       onclick: () => switchTo('saved'),
-    }, Icon.layers(), h('span', null, 'Library'),
+    }, Icon.layers(), h('span', null, 'Queries'),
       count ? h('span', { class: 'side-count' }, '· ' + count) : null),
     h('button', {
       class: 'side-tab' + (state.sidePanel.value === 'history' ? ' active' : ''),

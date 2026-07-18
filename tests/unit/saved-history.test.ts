@@ -368,13 +368,13 @@ describe('renderSavedHistory', () => {
     expect(rows[1].querySelector('.desc')).toBeNull();
   });
 
-  it('saved: the tab is labelled "Library" with a live count and no Export/Import row', () => {
+  it('saved: the tab is labelled "Queries" with a live count and no Export/Import row', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
     setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
     renderSavedHistory(app);
     const savedTab = qsa(savedTabsRow(app), '.side-tab')[0];
-    expect(savedTab.textContent).toContain('Library');
+    expect(savedTab.textContent).toContain('Queries');
     expect(savedTab.textContent).not.toContain('Saved');
     expect(qs(savedTab, '.side-count').textContent).toContain('1');
     // the old bottom Export/Import row is gone (moved to the header File menu)
