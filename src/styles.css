@@ -2444,12 +2444,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: grid; grid-auto-rows: min-content; gap: 8px; align-items: stretch;
 }
 .dash-gg-grid .dash-tile { min-height: 0; }
-/* Semantic tile heights (#291 owner decision — reuses flow@1's own
-   compact/medium/large vocabulary verbatim): fixed px tiers, applied per
-   tile instead of via a shared row height. */
-.dash-gg-grid .dash-gg-tile.dash-gg-h-compact { height: 118px; }
-.dash-gg-grid .dash-gg-tile.dash-gg-h-medium { height: 210px; }
-.dash-gg-grid .dash-gg-tile.dash-gg-h-large { height: 296px; }
+/* Tile height (#291 height-units follow-up): a NUMERIC row-unit height
+   (1..16, px = 32 + 88*units — grafana-grid-layout.ts's `gridHeightUnitsToPx`)
+   applied as a direct inline `height` style per tile (ui/dashboard.ts), not a
+   fixed-tier CSS class — there is no longer a closed set of tiers to
+   enumerate as classes. */
 /* Dense Grafana chrome: a tighter head than flow's own tile head (13px name,
    11px/9px padding) — smaller, ellipsized title, hover/focus-revealed grip +
    delete (both build only in edit mode, ui/dashboard.ts; CSS additionally

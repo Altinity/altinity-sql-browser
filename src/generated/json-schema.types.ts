@@ -686,9 +686,9 @@ export interface FlowLayoutV1 {
 /**
  * Tile height
  *
- * Normative height ordering is compact < medium < large; exact pixels are renderer-defined. Shared vocabulary with flow@1.
+ * Tile height in numeric row units (1..16); px = 32 + 88*units, so units 1/2/3 land close to the legacy compact/medium/large tiers (120/208/296px) and unit 16 reaches 1440px. The legacy compact|medium|large strings are still accepted for backward compatibility and are normalized to their numeric equivalents (1/2/3) by the layout's `normalize` step; new writes should always be numeric.
  */
-export type GrafanaGridHeightV1 = "compact" | "medium" | "large";
+export type GrafanaGridHeightV1 = number | "compact" | "medium" | "large";
 
 /**
  * Tile placement

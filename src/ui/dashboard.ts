@@ -51,7 +51,8 @@ import type {
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
 import {
-  GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, contentBoxWidth, snapGridHeight, snapGridSpan,
+  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, contentBoxWidth, gridHeightUnitsToPx,
+  snapGridHeight, snapGridSpan,
 } from '../dashboard/layouts/grafana-grid-layout.js';
 import type { GrafanaGridLayoutModel } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
@@ -65,7 +66,7 @@ import { loadJSON } from '../core/storage.js';
 import { KEYS } from '../state.js';
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardLayoutDocumentV1, FlowPresetV1,
-  GrafanaGridHeightV1, SavedQueryV2, StoredWorkspaceV1,
+  SavedQueryV2, StoredWorkspaceV1,
 } from '../generated/json-schema.types.js';
 import type { App, AppDom, ActionsRegistry } from './app.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
@@ -558,17 +559,19 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rendered values, not a stale/default guess. `colStart` (#291 review F3)
   // is what lets the drag PIN the tile's column position for the gesture's
   // duration — see `wireGridResize` below.
-  const gridPlacementByTile = new Map<string, { span: number; height: GrafanaGridHeightV1; colStart: number }>();
+  const gridPlacementByTile = new Map<string, { span: number; heightUnits: number; colStart: number }>();
   // The grafana-grid engine's last-rendered effective column count — read at
   // the start of a corner-drag for the column-width math; a safe desktop
   // default before the first grid publish (never read before one, same
   // reasoning as `activeEngine` above).
   let currentGridColumns = GRAFANA_GRID_MAX_COLUMNS;
 
-  const GRID_HEIGHT_CLASSES = ['dash-gg-h-compact', 'dash-gg-h-medium', 'dash-gg-h-large'];
-  function setGridHeightClass(card: HTMLElement, height: GrafanaGridHeightV1): void {
-    card.classList.remove(...GRID_HEIGHT_CLASSES);
-    card.classList.add('dash-gg-h-' + height);
+  // #291 height-units follow-up: height is a direct inline px style (from
+  // numeric row units, `gridHeightUnitsToPx`), NOT a `.dash-gg-h-*` class —
+  // there is no fixed tier vocabulary left to enumerate as CSS classes once
+  // height is a 1..16 numeric range.
+  function setGridHeightPx(card: HTMLElement, heightUnits: number): void {
+    card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
   }
 
   // #291 corner-drag resize (Workbench edit mode + grafana-grid engine only):
@@ -607,7 +610,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // clamp ceiling for both the live preview and the persisted span.
       const maxSpan = Math.max(1, columns - colStart);
       let curSpan = Math.min(placement ? placement.span : columns, maxSpan);
-      let curHeight: GrafanaGridHeightV1 = placement ? placement.height : 'medium';
+      let curHeight = placement ? placement.heightUnits : DEFAULT_GRID_HEIGHT_UNITS;
       card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
       const rect = card.getBoundingClientRect();
       const colWidthPx = (measuredGridWidth() - GRID_GAP_PX * (columns - 1)) / columns;
@@ -617,7 +620,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
         const height = snapGridHeight(ev.clientY - rect.top);
         if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
-        if (height !== curHeight) { curHeight = height; setGridHeightClass(card, height); }
+        if (height !== curHeight) { curHeight = height; setGridHeightPx(card, height); }
       };
       const up = (): void => {
         card.classList.remove('dash-gg-resizing');
@@ -776,7 +779,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         for (const t of row.tiles) {
           const tileEl = tileEls.get(t.tileId);
           if (tileEl) {
-            tileEl.card.classList.remove('dash-gg-tile', ...GRID_HEIGHT_CLASSES);
+            tileEl.card.classList.remove('dash-gg-tile');
+            tileEl.card.style.height = ''; // #291 height-units: undo the grid engine's inline px height
             tileEl.card.style.gridColumn = `span ${t.span}`;
             rowEl.appendChild(tileEl.card);
           }
@@ -795,8 +799,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   // ── Grid reconciliation from the grafana-grid@1 model (#291) ─────────────
   // Rowless: a SINGLE CSS grid host, every tile (KPI or not) placed by
-  // `grid-column: span N` + a height class — no row wrappers, no KPI band.
-  // Tile CONTENT reuses the exact same resolvePanel/renderResolvedPanel/
+  // `grid-column: span N` + a direct inline px `height` (#291 height-units
+  // follow-up — numeric row units, not a fixed tier class) — no row wrappers,
+  // no KPI band. Tile CONTENT reuses the exact same resolvePanel/renderResolvedPanel/
   // renderKpiCards paths as flow (`reconcileGridTile` below); only the DOM
   // placement differs.
   function reconcileGridTile(ts: ViewerTileState): void {
@@ -813,7 +818,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (ts) reconcileGridTile(ts);
     }
     currentGridColumns = gridModel.columns;
-    const sig = JSON.stringify({ c: gridModel.columns, tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.height]) });
+    const sig = JSON.stringify({ c: gridModel.columns, tiles: gridModel.tiles.map((t) => [t.tileId, t.span, t.heightUnits]) });
     // Rebuild the host STRUCTURE only when the grid model changes (a reorder,
     // resize, delete, responsive clamp, or membership change) — moving stable
     // tile cards, so charts/KPI content are never thrashed mid-drag.
@@ -826,11 +831,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     for (const t of gridModel.tiles) {
       const tileEl = tileEls.get(t.tileId);
       if (!tileEl) continue;
-      gridPlacementByTile.set(t.tileId, { span: t.span, height: t.height, colStart: t.colStart });
+      gridPlacementByTile.set(t.tileId, { span: t.span, heightUnits: t.heightUnits, colStart: t.colStart });
       tileEl.card.classList.add('dash-gg-tile');
       tileEl.card.classList.toggle('is-kpi', t.isKpi);
       tileEl.card.style.gridColumn = `span ${t.span}`;
-      setGridHeightClass(tileEl.card, t.height);
+      setGridHeightPx(tileEl.card, t.heightUnits);
       cards.push(tileEl.card);
     }
     grid.replaceChildren(...cards);

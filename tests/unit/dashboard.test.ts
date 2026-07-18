@@ -569,7 +569,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 'compact' } } },
   });
 
-  it('renders tiles through a single rowless grid host with span + height classes, no row wrappers', async () => {
+  it('renders tiles through a single rowless grid host with span + a direct px height, no row wrappers', async () => {
     const { app } = dashApp({ workspace: twoTilesGrid() });
     await render(app);
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
@@ -577,10 +577,12 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const cards = qsa(app.root, '.dash-gg-tile');
     expect(cards.length).toBe(2);
     expect((cards[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
-    expect(cards[0].classList.contains('dash-gg-h-compact')).toBe(true);
-    // No persisted placement for t2 → the grid default (span 6, medium).
+    // t1's legacy 'compact' height alias canonicalizes to 1 row unit → 120px
+    // (#291 height-units follow-up: px = 32 + 88*units).
+    expect((cards[0].style as CSSStyleDeclaration).height).toBe('120px');
+    // No persisted placement for t2 → the grid default (span 6, height 2 → 208px).
     expect((cards[1].style as CSSStyleDeclaration).gridColumn).toBe('span 6');
-    expect(cards[1].classList.contains('dash-gg-h-medium')).toBe(true);
+    expect((cards[1].style as CSSStyleDeclaration).height).toBe('208px');
     expect((qs(app.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
   });
 
@@ -692,7 +694,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const gridEl = qs(app.root, '.dash-gg-grid');
     // 12 columns, 8px gap → colWidth = (1200 - 8*11)/12 ≈ 92.67px.
     Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
-    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / compact, colStart 0
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, starts span 4 / height unit 1 (120px), colStart 0
     const handle = qs<HTMLElement>(card, '.dash-gg-resize');
     handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
     expect(card.classList.contains('dash-gg-resizing')).toBe(true);
@@ -701,11 +703,12 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // `span N` — so growing the span mid-drag can never make it self-wrap via
     // the browser's own auto-placement.
     expect((card.style as CSSStyleDeclaration).gridColumn).toBe('1 / span 4');
-    // clientX=600 → round((600+8)/100.67) = 6 columns; clientY=280 → closer to
-    // 296 (large) than 210 (medium) — both differ from the starting 4/compact.
+    // clientX=600 → round((600+8)/100.67) = 6 columns; clientY=280 →
+    // round((280-32)/88) = 3 row units → 296px (#291 height-units follow-up) —
+    // both differ from the starting 4 / 1-unit (120px).
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
     expect((card.style as CSSStyleDeclaration).gridColumn).toBe('1 / span 6');
-    expect(card.classList.contains('dash-gg-h-large')).toBe(true);
+    expect((card.style as CSSStyleDeclaration).height).toBe('296px');
     expect(commit).not.toHaveBeenCalled(); // no command dispatched until pointerup
     window.dispatchEvent(new PointerEvent('pointerup'));
     expect(card.classList.contains('dash-gg-resizing')).toBe(false);
@@ -714,7 +717,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // reverting to the ordinary un-pinned `span N` the normal reconciler writes).
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
     expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
-    expect(after.classList.contains('dash-gg-h-large')).toBe(true);
+    expect((after.style as CSSStyleDeclaration).height).toBe('296px');
   });
 
   it('a mid-row tile dragged wider is clamped to the columns remaining at its pinned start, never past the grid edge (#291 review F3)', async () => {

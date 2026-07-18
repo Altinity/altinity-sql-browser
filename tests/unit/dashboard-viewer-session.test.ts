@@ -622,9 +622,11 @@ describe('grafana-grid engine routing (#291)', () => {
     if (layout.engine === 'grafana-grid') {
       expect(layout.grid.engine).toBe('grafana-grid');
       expect(layout.grid.tiles.map((t) => t.tileId)).toEqual(['a', 'b']);
-      expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'a', span: 4, height: 'compact' });
-      // No persisted placement for 'b' → the grid default (span 6, medium).
-      expect(layout.grid.tiles[1]).toMatchObject({ tileId: 'b', span: 6, height: 'medium' });
+      // 'compact' is the legacy height alias, canonicalized to row unit 1
+      // (#291 height-units follow-up) by the time it reaches the render model.
+      expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'a', span: 4, heightUnits: 1 });
+      // No persisted placement for 'b' → the grid default (span 6, height 2).
+      expect(layout.grid.tiles[1]).toMatchObject({ tileId: 'b', span: 6, heightUnits: 2 });
     }
   });
 

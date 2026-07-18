@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, GRID_HEIGHT_PX,
+  DEFAULT_GRID_HEIGHT_UNITS, DEFAULT_GRID_PLACEMENT, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX,
+  GRID_HEIGHT_PX_BASE, GRID_HEIGHT_PX_PER_UNIT, GRID_HEIGHT_UNIT_MAX, GRID_HEIGHT_UNIT_MIN,
   computeGrafanaGridLayout, contentBoxWidth, deriveFlowFallback, deriveGrafanaGridPlacement,
   effectiveGridColumns, effectiveGridSpan, flowSpanFromGridSpan, grafanaGridLayoutPlugin,
-  gridSpanFromFlowSpan, regenerateGridFallback, resolveGridPlacement, setGridPlacement,
-  snapGridHeight, snapGridSpan,
+  gridHeightUnitsFromFlowHeight, gridHeightUnitsToFlowHeight, gridHeightUnitsToPx,
+  gridSpanFromFlowSpan, normalizeGridHeightUnits, regenerateGridFallback, resolveGridPlacement,
+  setGridPlacement, snapGridHeight, snapGridSpan,
 } from '../../src/dashboard/layouts/grafana-grid-layout.js';
 import { FLOW_LAYOUT_V1_SCHEMA_ID } from '../../src/dashboard/model/workspace-semantics.js';
 import { jsonSchemaValidationService } from '../../src/core/library-codec.js';
@@ -18,7 +20,7 @@ const doc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
 describe('constants', () => {
   it('exposes the grid default placement and max column count', () => {
     expect(GRAFANA_GRID_MAX_COLUMNS).toBe(12);
-    expect(DEFAULT_GRID_PLACEMENT).toEqual({ span: 6, height: 'medium' });
+    expect(DEFAULT_GRID_PLACEMENT).toEqual({ span: 6, height: 2 });
   });
 });
 
@@ -48,11 +50,70 @@ describe('gridSpanFromFlowSpan / flowSpanFromGridSpan', () => {
   });
 });
 
+describe('gridHeightUnitsFromFlowHeight / gridHeightUnitsToFlowHeight (#291 height-units follow-up)', () => {
+  it('maps flow height to grid row units', () => {
+    expect(gridHeightUnitsFromFlowHeight('compact')).toBe(1);
+    expect(gridHeightUnitsFromFlowHeight('medium')).toBe(2);
+    expect(gridHeightUnitsFromFlowHeight('large')).toBe(3);
+  });
+
+  it('maps grid row units to flow height: 1->compact, 2->medium, >=3->large', () => {
+    expect(gridHeightUnitsToFlowHeight(1)).toBe('compact');
+    expect(gridHeightUnitsToFlowHeight(2)).toBe('medium');
+    expect(gridHeightUnitsToFlowHeight(3)).toBe('large');
+    expect(gridHeightUnitsToFlowHeight(16)).toBe('large');
+  });
+
+  it('normalizes an invalid/legacy/missing input before mapping', () => {
+    expect(gridHeightUnitsToFlowHeight('compact')).toBe('compact');
+    expect(gridHeightUnitsToFlowHeight('large')).toBe('large');
+    expect(gridHeightUnitsToFlowHeight(undefined)).toBe('medium'); // defaults to units 2
+    expect(gridHeightUnitsToFlowHeight(99)).toBe('medium'); // out of range -> default
+  });
+});
+
+describe('normalizeGridHeightUnits', () => {
+  it('converts a legacy alias to its numeric equivalent', () => {
+    expect(normalizeGridHeightUnits('compact')).toBe(1);
+    expect(normalizeGridHeightUnits('medium')).toBe(2);
+    expect(normalizeGridHeightUnits('large')).toBe(3);
+  });
+
+  it('passes an already-valid integer through unchanged', () => {
+    expect(normalizeGridHeightUnits(1)).toBe(1);
+    expect(normalizeGridHeightUnits(16)).toBe(16);
+    expect(normalizeGridHeightUnits(10)).toBe(10);
+  });
+
+  it('defaults an invalid, missing, or out-of-range value', () => {
+    expect(normalizeGridHeightUnits(undefined)).toBe(2);
+    expect(normalizeGridHeightUnits(0)).toBe(2);
+    expect(normalizeGridHeightUnits(17)).toBe(2);
+    expect(normalizeGridHeightUnits(2.5)).toBe(2);
+    expect(normalizeGridHeightUnits('huge')).toBe(2);
+    expect(normalizeGridHeightUnits(null)).toBe(2);
+  });
+});
+
+describe('gridHeightUnitsToPx', () => {
+  it('applies the canonical px = 32 + 88*units formula', () => {
+    expect(gridHeightUnitsToPx(1)).toBe(120);
+    expect(gridHeightUnitsToPx(2)).toBe(208);
+    expect(gridHeightUnitsToPx(3)).toBe(296);
+    expect(gridHeightUnitsToPx(16)).toBe(1440);
+  });
+
+  it('treats a non-finite input as 0 rather than propagating NaN', () => {
+    expect(gridHeightUnitsToPx(NaN)).toBe(32);
+    expect(gridHeightUnitsToPx(Infinity)).toBe(32);
+  });
+});
+
 describe('deriveGrafanaGridPlacement', () => {
-  it('maps preferred size hints through flow span to grid span', () => {
-    expect(deriveGrafanaGridPlacement({ preferred: 'wide' })).toEqual({ span: 12, height: 'medium' });
-    expect(deriveGrafanaGridPlacement({ preferred: 'medium' })).toEqual({ span: 6, height: 'medium' });
-    expect(deriveGrafanaGridPlacement({ preferred: 'compact' })).toEqual({ span: 4, height: 'medium' });
+  it('maps preferred size hints through flow span to grid span, height always the medium equivalent (2)', () => {
+    expect(deriveGrafanaGridPlacement({ preferred: 'wide' })).toEqual({ span: 12, height: 2 });
+    expect(deriveGrafanaGridPlacement({ preferred: 'medium' })).toEqual({ span: 6, height: 2 });
+    expect(deriveGrafanaGridPlacement({ preferred: 'compact' })).toEqual({ span: 4, height: 2 });
   });
 
   it('falls back to the grid default without a usable hint', () => {
@@ -63,10 +124,12 @@ describe('deriveGrafanaGridPlacement', () => {
 });
 
 describe('resolveGridPlacement', () => {
-  it('merges a stored placement with the defaults', () => {
-    expect(resolveGridPlacement({ span: 4, height: 'large' })).toEqual({ span: 4, height: 'large' });
-    expect(resolveGridPlacement({ span: 9 })).toEqual({ span: 9, height: 'medium' });
-    expect(resolveGridPlacement({ height: 'compact' })).toEqual({ span: 6, height: 'compact' });
+  it('merges a stored placement with the defaults, canonicalizing a legacy height alias to numeric', () => {
+    expect(resolveGridPlacement({ span: 4, height: 3 })).toEqual({ span: 4, height: 3 });
+    expect(resolveGridPlacement({ span: 9 })).toEqual({ span: 9, height: 2 });
+    expect(resolveGridPlacement({ height: 'compact' })).toEqual({ span: 6, height: 1 });
+    expect(resolveGridPlacement({ height: 'large' })).toEqual({ span: 6, height: 3 });
+    expect(resolveGridPlacement({ height: 10 })).toEqual({ span: 6, height: 10 });
   });
 
   it('falls back to the defaults for a missing or invalid placement', () => {
@@ -75,6 +138,9 @@ describe('resolveGridPlacement', () => {
     expect(resolveGridPlacement({ span: 0 })).toEqual(DEFAULT_GRID_PLACEMENT);
     expect(resolveGridPlacement({ span: 2.5 })).toEqual(DEFAULT_GRID_PLACEMENT);
     expect(resolveGridPlacement('nope')).toEqual(DEFAULT_GRID_PLACEMENT);
+    expect(resolveGridPlacement({ height: 0 })).toEqual(DEFAULT_GRID_PLACEMENT);
+    expect(resolveGridPlacement({ height: 17 })).toEqual(DEFAULT_GRID_PLACEMENT);
+    expect(resolveGridPlacement({ height: 2.5 })).toEqual(DEFAULT_GRID_PLACEMENT);
   });
 });
 
@@ -124,13 +190,35 @@ describe('grafanaGridLayoutPlugin', () => {
       const noTiles = doc({ tiles: undefined as never, layout: gridLayout({ ghost: {} }) });
       expect(grafanaGridLayoutPlugin.normalize(noTiles).layout.items).toEqual({});
     });
+
+    // #291 height-units follow-up: "normalize canonicalizes [legacy aliases]
+    // to 1/2/3 so persisted docs converge to numeric."
+    it('canonicalizes a legacy compact|medium|large height alias to its numeric row-unit equivalent, without mutating the input', () => {
+      const input = doc({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: gridLayout({ t1: { span: 4, height: 'large' } }) });
+      const result = grafanaGridLayoutPlugin.normalize(input);
+      expect(result.layout.items).toEqual({ t1: { span: 4, height: 3 } });
+      expect((input.layout.items as Record<string, unknown>).t1).toEqual({ span: 4, height: 'large' }); // input untouched
+    });
+
+    it('leaves an already-numeric height untouched, even an out-of-range one (validation is validatePlacement\'s job, not normalize\'s)', () => {
+      const input = doc({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: gridLayout({ t1: { height: 99 } }) });
+      expect(grafanaGridLayoutPlugin.normalize(input).layout.items).toEqual({ t1: { height: 99 } });
+    });
+
+    it('leaves a placement with no height field alone', () => {
+      const input = doc({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: gridLayout({ t1: { span: 4 } }) });
+      expect(grafanaGridLayoutPlugin.normalize(input).layout.items).toEqual({ t1: { span: 4 } });
+    });
   });
 
   describe('validatePlacement', () => {
-    it('accepts a valid placement, including partials', () => {
+    it('accepts a valid placement, including partials, numeric heights, and legacy aliases', () => {
       expect(grafanaGridLayoutPlugin.validatePlacement({ span: 4, height: 'large' })).toEqual([]);
+      expect(grafanaGridLayoutPlugin.validatePlacement({ span: 4, height: 10 })).toEqual([]);
       expect(grafanaGridLayoutPlugin.validatePlacement({ span: 12 })).toEqual([]);
       expect(grafanaGridLayoutPlugin.validatePlacement({ height: 'compact' })).toEqual([]);
+      expect(grafanaGridLayoutPlugin.validatePlacement({ height: 1 })).toEqual([]);
+      expect(grafanaGridLayoutPlugin.validatePlacement({ height: 16 })).toEqual([]);
       expect(grafanaGridLayoutPlugin.validatePlacement({})).toEqual([]);
     });
 
@@ -155,6 +243,15 @@ describe('grafanaGridLayoutPlugin', () => {
         .toContain('layout-placement-invalid-span');
       expect(grafanaGridLayoutPlugin.validatePlacement({ span: 13 }).map((d) => d.code))
         .toContain('layout-placement-invalid-span');
+    });
+
+    it('rejects a height of 0, a non-integer height, and a too-large height', () => {
+      expect(grafanaGridLayoutPlugin.validatePlacement({ height: 0 }).map((d) => d.code))
+        .toContain('layout-placement-invalid-height');
+      expect(grafanaGridLayoutPlugin.validatePlacement({ height: 2.5 }).map((d) => d.code))
+        .toContain('layout-placement-invalid-height');
+      expect(grafanaGridLayoutPlugin.validatePlacement({ height: 17 }).map((d) => d.code))
+        .toContain('layout-placement-invalid-height');
     });
 
     it('uses the default empty path', () => {
@@ -204,11 +301,11 @@ describe('effectiveGridSpan', () => {
 describe('computeGrafanaGridLayout', () => {
   const tiles = (...ids: string[]) => ids.map((id) => ({ id }));
 
-  it('defaults a missing placement to span 6, medium height, at the widest breakpoint', () => {
+  it('defaults a missing placement to span 6, height 2 (medium equivalent), at the widest breakpoint', () => {
     const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout: gridLayout() });
     expect(model.engine).toBe('grafana-grid');
     expect(model.columns).toBe(12);
-    expect(model.tiles[0]).toMatchObject({ tileId: 'a', span: 6, height: 'medium', row: 0, colStart: 0 });
+    expect(model.tiles[0]).toMatchObject({ tileId: 'a', span: 6, heightUnits: 2, row: 0, colStart: 0 });
   });
 
   it('clamps effective span per responsive breakpoint without mutating stored spans', () => {
@@ -255,7 +352,13 @@ describe('computeGrafanaGridLayout', () => {
   it('falls back to defaults for an invalid persisted span/height', () => {
     const layout = gridLayout({ a: { span: 99, height: 'huge' } });
     const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout });
-    expect(model.tiles[0]).toMatchObject({ span: 6, height: 'medium' });
+    expect(model.tiles[0]).toMatchObject({ span: 6, heightUnits: 2 });
+  });
+
+  it('resolves a numeric persisted height (e.g. a tall 10-unit tile) verbatim', () => {
+    const layout = gridLayout({ a: { span: 4, height: 10 } });
+    const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout });
+    expect(model.tiles[0].heightUnits).toBe(10);
   });
 
   it('handles an empty tile list', () => {
@@ -270,9 +373,9 @@ describe('computeGrafanaGridLayout', () => {
 });
 
 describe('deriveFlowFallback', () => {
-  it('maps each tile\'s grid span/height to its flow equivalent', () => {
+  it('maps each tile\'s grid span/height (numeric row units) to its flow equivalent', () => {
     const layout = gridLayout({
-      a: { span: 4, height: 'compact' }, b: { span: 8, height: 'large' }, c: { span: 12 },
+      a: { span: 4, height: 1 }, b: { span: 8, height: 3 }, c: { span: 12 },
     });
     const fallback = deriveFlowFallback(layout, [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     expect(fallback).toEqual({
@@ -285,7 +388,13 @@ describe('deriveFlowFallback', () => {
     });
   });
 
-  it('resolves a tile with no persisted grid placement to the grid default (span 6 → flow span 2)', () => {
+  it('also accepts a legacy string height alias on a grid item (canonicalized through resolveGridPlacement)', () => {
+    const layout = gridLayout({ a: { span: 4, height: 'compact' } });
+    const fallback = deriveFlowFallback(layout, [{ id: 'a' }]);
+    expect(fallback.items).toEqual({ a: { span: 1, height: 'compact' } });
+  });
+
+  it('resolves a tile with no persisted grid placement to the grid default (span 6 → flow span 2, height 2 → medium)', () => {
     const fallback = deriveFlowFallback(gridLayout(), [{ id: 't1' }]);
     expect(fallback.items).toEqual({ t1: { span: 2, height: 'medium' } });
   });
@@ -329,23 +438,39 @@ describe('snapGridSpan', () => {
   });
 });
 
+// #291 height-units follow-up: `snapGridHeight` now snaps to a numeric row
+// unit (1..16) via `round((dy - 32) / 88)`, not a 3-tier enum.
 describe('snapGridHeight', () => {
-  it('snaps to the nearest tier by absolute pixel distance', () => {
-    expect(snapGridHeight(0)).toBe('compact');
-    expect(snapGridHeight(GRID_HEIGHT_PX.compact)).toBe('compact');
-    expect(snapGridHeight(160)).toBe('compact'); // closer to 118 than 210
-    expect(snapGridHeight(170)).toBe('medium'); // closer to 210 than 118
-    expect(snapGridHeight(GRID_HEIGHT_PX.medium)).toBe('medium');
-    expect(snapGridHeight(260)).toBe('large'); // closer to 296 than 210
-    expect(snapGridHeight(GRID_HEIGHT_PX.large)).toBe('large');
-    expect(snapGridHeight(10000)).toBe('large');
+  it('snaps a vertical pixel delta to the nearest row unit, clamped to 1..16', () => {
+    expect(snapGridHeight(0)).toBe(1); // round((0-32)/88) = 0, clamped up to the minimum
+    expect(snapGridHeight(-1000)).toBe(1);
+    expect(snapGridHeight(10000)).toBe(16);
+  });
+
+  it('is the exact inverse of gridHeightUnitsToPx — snapping to a tile\'s OWN current px height is a stable fixed point', () => {
+    for (let units = GRID_HEIGHT_UNIT_MIN; units <= GRID_HEIGHT_UNIT_MAX; units++) {
+      expect(snapGridHeight(gridHeightUnitsToPx(units))).toBe(units);
+    }
+  });
+
+  it('lands close to the legacy compact/medium/large px tiers (backward-compatible feel)', () => {
+    expect(snapGridHeight(118)).toBe(1); // legacy "compact" px
+    expect(snapGridHeight(160)).toBe(1); // closer to unit 1 (120px) than unit 2 (208px)
+    expect(snapGridHeight(170)).toBe(2); // closer to unit 2
+    expect(snapGridHeight(210)).toBe(2); // legacy "medium" px
+    expect(snapGridHeight(260)).toBe(3); // closer to unit 3 (296px)
+    expect(snapGridHeight(296)).toBe(3); // legacy "large" px, and unit 3's own exact px
   });
 });
 
-describe('GRID_GAP_PX / GRID_HEIGHT_PX', () => {
-  it('exposes the shared gap and height-tier constants', () => {
+describe('GRID_GAP_PX / height-unit constants', () => {
+  it('exposes the shared gap, unit range, px-formula constants, and grid default', () => {
     expect(GRID_GAP_PX).toBe(8);
-    expect(GRID_HEIGHT_PX).toEqual({ compact: 118, medium: 210, large: 296 });
+    expect(GRID_HEIGHT_UNIT_MIN).toBe(1);
+    expect(GRID_HEIGHT_UNIT_MAX).toBe(16);
+    expect(GRID_HEIGHT_PX_BASE).toBe(32);
+    expect(GRID_HEIGHT_PX_PER_UNIT).toBe(88);
+    expect(DEFAULT_GRID_HEIGHT_UNITS).toBe(2);
   });
 });
 
@@ -372,7 +497,7 @@ describe('contentBoxWidth', () => {
 
 describe('regenerateGridFallback', () => {
   it('mutates a grafana-grid layout\'s fallback in place, deterministically from its current items', () => {
-    const layout = gridLayout({ a: { span: 4, height: 'compact' } });
+    const layout = gridLayout({ a: { span: 4, height: 1 } });
     regenerateGridFallback(layout, [{ id: 'a' }, { id: 'b' }]);
     expect((layout as { fallback?: unknown }).fallback).toEqual({
       type: 'flow', version: 1, preset: 'full-width',

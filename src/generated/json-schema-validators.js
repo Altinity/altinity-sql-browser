@@ -4086,7 +4086,7 @@ function validate46(data, { instancePath = "", parentData, parentDataProperty, r
 }
 validate46.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 var validateGrafanaGridLayoutV1 = validate49;
-var schema62 = { "title": "Tile height", "description": "Normative height ordering is compact < medium < large; exact pixels are renderer-defined. Shared vocabulary with flow@1.", "type": "string", "enum": ["compact", "medium", "large"] };
+var schema62 = { "title": "Tile height", "description": "Tile height in numeric row units (1..16); px = 32 + 88*units, so units 1/2/3 land close to the legacy compact/medium/large tiers (120/208/296px) and unit 16 reaches 1440px. The legacy compact|medium|large strings are still accepted for backward compatibility and are normalized to their numeric equivalents (1/2/3) by the layout's `normalize` step; new writes should always be numeric.", "anyOf": [{ "type": "integer", "minimum": 1, "maximum": 16 }, { "type": "string", "enum": ["compact", "medium", "large"] }] };
 function validate50(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
@@ -4143,8 +4143,11 @@ function validate50(data, { instancePath = "", parentData, parentDataProperty, r
     }
     if (data.height !== void 0) {
       let data1 = data.height;
-      if (typeof data1 !== "string") {
-        const err4 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
+      const _errs6 = errors;
+      let valid2 = false;
+      const _errs7 = errors;
+      if (!(typeof data1 == "number" && (!(data1 % 1) && !isNaN(data1)) && isFinite(data1))) {
+        const err4 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/type", keyword: "type", params: { type: "integer" }, message: "must be integer" };
         if (vErrors === null) {
           vErrors = [err4];
         } else {
@@ -4152,22 +4155,74 @@ function validate50(data, { instancePath = "", parentData, parentDataProperty, r
         }
         errors++;
       }
-      if (!(data1 === "compact" || data1 === "medium" || data1 === "large")) {
-        const err5 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/enum", keyword: "enum", params: { allowedValues: schema62.enum }, message: "must be equal to one of the allowed values" };
+      if (typeof data1 == "number" && isFinite(data1)) {
+        if (data1 > 16 || isNaN(data1)) {
+          const err5 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/maximum", keyword: "maximum", params: { comparison: "<=", limit: 16 }, message: "must be <= 16" };
+          if (vErrors === null) {
+            vErrors = [err5];
+          } else {
+            vErrors.push(err5);
+          }
+          errors++;
+        }
+        if (data1 < 1 || isNaN(data1)) {
+          const err6 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/0/minimum", keyword: "minimum", params: { comparison: ">=", limit: 1 }, message: "must be >= 1" };
+          if (vErrors === null) {
+            vErrors = [err6];
+          } else {
+            vErrors.push(err6);
+          }
+          errors++;
+        }
+      }
+      var _valid0 = _errs7 === errors;
+      valid2 = valid2 || _valid0;
+      const _errs9 = errors;
+      if (typeof data1 !== "string") {
+        const err7 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/1/type", keyword: "type", params: { type: "string" }, message: "must be string" };
         if (vErrors === null) {
-          vErrors = [err5];
+          vErrors = [err7];
         } else {
-          vErrors.push(err5);
+          vErrors.push(err7);
         }
         errors++;
       }
+      if (!(data1 === "compact" || data1 === "medium" || data1 === "large")) {
+        const err8 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf/1/enum", keyword: "enum", params: { allowedValues: schema62.anyOf[1].enum }, message: "must be equal to one of the allowed values" };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+      var _valid0 = _errs9 === errors;
+      valid2 = valid2 || _valid0;
+      if (!valid2) {
+        const err9 = { instancePath: instancePath + "/height", schemaPath: "#/$defs/grafanaGridHeightV1/anyOf", keyword: "anyOf", params: {}, message: "must match a schema in anyOf" };
+        if (vErrors === null) {
+          vErrors = [err9];
+        } else {
+          vErrors.push(err9);
+        }
+        errors++;
+      } else {
+        errors = _errs6;
+        if (vErrors !== null) {
+          if (_errs6) {
+            vErrors.length = _errs6;
+          } else {
+            vErrors = null;
+          }
+        }
+      }
     }
   } else {
-    const err6 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    const err10 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
     if (vErrors === null) {
-      vErrors = [err6];
+      vErrors = [err10];
     } else {
-      vErrors.push(err6);
+      vErrors.push(err10);
     }
     errors++;
   }

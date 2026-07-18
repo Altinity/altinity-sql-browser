@@ -17,10 +17,27 @@
 //   its own `{span, height}` placement, in canonical order. `isKpi` is
 //   carried through to the render model only so a renderer can still style a
 //   KPI tile differently (chrome, not placement).
-// - Heights reuse flow@1's `compact|medium|large` vocabulary verbatim, not a
-//   new scale (the `dashboard-layout-grafana-grid-v1.schema.json` defs use
-//   the same values; the generated `GrafanaGridHeightV1` type is structurally
-//   identical to `FlowHeightV1`).
+// - Heights are NUMERIC ROW UNITS, 1..16 (#291 height-units follow-up, owner
+//   override): `px = 32 + 88*units` is the one canonical formula every
+//   height→px conversion in this module and the renderer uses — units 1/2/3
+//   land close to the legacy compact/medium/large tiers (120/208/296px vs the
+//   old fixed 118/210/296, "close enough" per the owner decision, not required
+//   to be exact) and unit 16 reaches 1440px, ~5x the old 296px max. The legacy
+//   `compact|medium|large` strings stay valid on read (schema `anyOf`) for
+//   backward compatibility with already-persisted documents; `normalize`
+//   canonicalizes them to 1/2/3 so persisted docs converge to numeric, and
+//   every OTHER function in this module (`resolveGridPlacement`,
+//   `deriveGrafanaGridPlacement`, `deriveFlowFallback`, `snapGridHeight`,
+//   `computeGrafanaGridLayout`) works with the canonical numeric form only —
+//   the legacy string is never produced, only ever accepted as input.
+// - `gridHeightUnitsFromFlowHeight`/`gridHeightUnitsToFlowHeight` are the
+//   grid-units ↔ flow-height conversion pair (mirroring
+//   `gridSpanFromFlowSpan`/`flowSpanFromGridSpan` for span): flow's OWN height
+//   vocabulary (`compact|medium|large`) is untouched by this change — only the
+//   grid engine's own persisted `height` moved to numeric units. The mapping
+//   is deliberately not symmetric (3 flow values, 16 grid units): units 1→
+//   compact, 2→medium, ≥3→large going grid→flow, so every unit above 3 still
+//   maps somewhere sensible in the fallback instead of only unit 3 being valid.
 // - `deriveGrafanaGridPlacement` reuses flow's own `sizeHints` → span mapping
 //   (`deriveFlowPlacement`) and then converts through `gridSpanFromFlowSpan`,
 //   rather than duplicating the sizeHints interpretation.
@@ -40,8 +57,8 @@ import { cloneJson } from '../../core/saved-query.js';
 import { deriveFlowPlacement } from './flow-layout.js';
 import type { DashboardLayoutPlugin } from './flow-layout.js';
 import type {
-  DashboardDocumentV1, FlowLayoutV1, FlowTilePlacementV1,
-  GrafanaGridHeightV1, GrafanaGridTilePlacementV1,
+  DashboardDocumentV1, FlowHeightV1, FlowLayoutV1, FlowTilePlacementV1,
+  GrafanaGridHeightV1,
 } from '../../generated/json-schema.types.js';
 
 type Path = (string | number)[];
@@ -49,7 +66,6 @@ type Path = (string | number)[];
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
-const VALID_HEIGHTS = new Set<unknown>(['compact', 'medium', 'large']);
 const PLACEMENT_FIELDS = new Set(['span', 'height']);
 
 /** The maximum column count grafana-grid@1 ever resolves to (its widest
@@ -59,9 +75,86 @@ export const GRAFANA_GRID_MAX_COLUMNS = 12;
 const isValidGridSpan = (value: unknown): value is number =>
   Number.isInteger(value) && (value as number) >= 1 && (value as number) <= GRAFANA_GRID_MAX_COLUMNS;
 
+// ── Height as numeric row units (#291 height-units follow-up) ──────────────
+
+/** The valid numeric row-unit range for a grid tile's height. */
+export const GRID_HEIGHT_UNIT_MIN = 1;
+export const GRID_HEIGHT_UNIT_MAX = 16;
+
+/** The canonical units→px formula, the ONE source of truth for every
+ *  height→pixel conversion (the renderer's inline height, and the fixed
+ *  point `snapGridHeight` is built around): `px = 32 + 88*units`. */
+export const GRID_HEIGHT_PX_BASE = 32;
+export const GRID_HEIGHT_PX_PER_UNIT = 88;
+
+/** The grid default height, in row units — the numeric equivalent of the
+ *  legacy "medium" tier. */
+export const DEFAULT_GRID_HEIGHT_UNITS = 2;
+
+const isValidGridHeightUnits = (value: unknown): value is number =>
+  Number.isInteger(value) && (value as number) >= GRID_HEIGHT_UNIT_MIN && (value as number) <= GRID_HEIGHT_UNIT_MAX;
+
+/** The legacy `compact|medium|large` string aliases the schema still accepts
+ *  on read, and their numeric row-unit equivalents. */
+const LEGACY_GRID_HEIGHT_UNITS: Record<'compact' | 'medium' | 'large', number> = { compact: 1, medium: 2, large: 3 };
+
+const isLegacyGridHeight = (value: unknown): value is keyof typeof LEGACY_GRID_HEIGHT_UNITS =>
+  typeof value === 'string' && Object.hasOwn(LEGACY_GRID_HEIGHT_UNITS, value);
+
+/** True for anything the schema's `grafanaGridHeightV1` `anyOf` accepts: an
+ *  integer 1..16, or one of the three legacy alias strings. */
+const isValidGridHeightValue = (value: unknown): value is GrafanaGridHeightV1 =>
+  isValidGridHeightUnits(value) || isLegacyGridHeight(value);
+
+/** Canonicalize one height value to its numeric row-unit form: a legacy
+ *  `compact|medium|large` alias maps to 1/2/3; anything else (including an
+ *  already-numeric or a genuinely invalid value) passes through UNCHANGED —
+ *  this only resolves the KNOWN legacy vocabulary, it is not a validator
+ *  (`validatePlacement` owns rejecting an invalid value). */
+function canonicalGridHeightUnits(value: unknown): unknown {
+  return isLegacyGridHeight(value) ? LEGACY_GRID_HEIGHT_UNITS[value] : value;
+}
+
+/** Canonicalize + default one height value to a valid numeric row-unit
+ *  count: a legacy alias converts, an already-valid integer passes through,
+ *  anything else (missing, out of range, malformed) falls back to
+ *  `DEFAULT_GRID_HEIGHT_UNITS`. Always returns a valid `1..16` integer. */
+export function normalizeGridHeightUnits(value: unknown): number {
+  const canonical = canonicalGridHeightUnits(value);
+  return isValidGridHeightUnits(canonical) ? canonical : DEFAULT_GRID_HEIGHT_UNITS;
+}
+
+/** Row units → px, the canonical formula (`32 + 88*units`); a non-finite
+ *  input still returns a finite number (`32`) rather than propagating NaN. */
+export function gridHeightUnitsToPx(units: number): number {
+  const safe = Number.isFinite(units) ? units : 0;
+  return GRID_HEIGHT_PX_BASE + GRID_HEIGHT_PX_PER_UNIT * safe;
+}
+
+const GRID_HEIGHT_UNITS_FROM_FLOW_HEIGHT: Record<FlowHeightV1, number> = { compact: 1, medium: 2, large: 3 };
+
+/** flow height (compact|medium|large) → grid row units (1|2|3), used when
+ *  seeding a grid placement from a flow one (flow→grid engine switch,
+ *  `deriveGrafanaGridPlacement`'s size-hints derivation) — the height-units
+ *  mirror of `gridSpanFromFlowSpan`. */
+export function gridHeightUnitsFromFlowHeight(flowHeight: FlowHeightV1): number {
+  return GRID_HEIGHT_UNITS_FROM_FLOW_HEIGHT[flowHeight];
+}
+
+/** grid row units → flow height (compact|medium|large): units 1→compact,
+ *  2→medium, ≥3→large. Used to regenerate the flow@1 fallback on every grid
+ *  mutation — the height-units mirror of `flowSpanFromGridSpan`. An
+ *  invalid/out-of-range input is normalized first, so this always returns a
+ *  valid `FlowHeightV1`. */
+export function gridHeightUnitsToFlowHeight(units: unknown): FlowHeightV1 {
+  const normalized = normalizeGridHeightUnits(units);
+  return normalized <= 1 ? 'compact' : normalized === 2 ? 'medium' : 'large';
+}
+
 /** The grafana-grid@1 default placement (#291): span 6 (half the 12-column
- *  grid), medium height — matching flow@1's default height. */
-export const DEFAULT_GRID_PLACEMENT: Required<GrafanaGridTilePlacementV1> = { span: 6, height: 'medium' };
+ *  grid), height 2 row units (the numeric equivalent of flow@1's own
+ *  "medium" default). */
+export const DEFAULT_GRID_PLACEMENT: { span: number; height: number } = { span: 6, height: DEFAULT_GRID_HEIGHT_UNITS };
 
 /** The object holding the active grid placements — the primary layout's
  *  `items` (grafana-grid@1 is never a fallback target, so there is no
@@ -85,12 +178,12 @@ export function setGridPlacement(layout: unknown, tileId: string, placement: unk
  *  `gridSpanFromFlowSpan`. Always returns a complete placement — grafana-grid
  *  has an explicit default (span 6, medium) rather than flow's "no opinion"
  *  `undefined`. */
-export function deriveGrafanaGridPlacement(sizeHints: unknown): Required<GrafanaGridTilePlacementV1> {
+export function deriveGrafanaGridPlacement(sizeHints: unknown): { span: number; height: number } {
   const flowPlacement = deriveFlowPlacement(sizeHints);
   if (!flowPlacement || flowPlacement.span === undefined) return { ...DEFAULT_GRID_PLACEMENT };
   // `deriveFlowPlacement`'s own contract: whenever it returns a placement
   // (span defined), height is always set too (it never returns a bare span).
-  return { span: gridSpanFromFlowSpan(flowPlacement.span), height: flowPlacement.height! };
+  return { span: gridSpanFromFlowSpan(flowPlacement.span), height: gridHeightUnitsFromFlowHeight(flowPlacement.height!) };
 }
 
 const GRID_SPAN_FROM_FLOW_SPAN: Record<1 | 2 | 3, 4 | 6 | 12> = { 1: 4, 2: 6, 3: 12 };
@@ -110,16 +203,26 @@ export function flowSpanFromGridSpan(gridSpan: unknown): 1 | 2 | 3 {
 }
 
 /** Merge one stored grid placement with `DEFAULT_GRID_PLACEMENT`: a
- *  missing/invalid span or height falls back to the default, so the result is
- *  always a complete `{span, height}` (mirrors flow's `resolvePlacement`). */
-export function resolveGridPlacement(placement: unknown): Required<GrafanaGridTilePlacementV1> {
+ *  missing/invalid span falls back to the default; height is always
+ *  canonicalized + defaulted through `normalizeGridHeightUnits` (a legacy
+ *  alias converts, an already-numeric value passes through, anything else
+ *  defaults) — so the result is always a complete, NUMERIC `{span, height}`
+ *  (mirrors flow's `resolvePlacement`). */
+export function resolveGridPlacement(placement: unknown): { span: number; height: number } {
   const p = isObject(placement) ? placement : {};
   return {
     span: isValidGridSpan(p.span) ? (p.span as number) : DEFAULT_GRID_PLACEMENT.span,
-    height: VALID_HEIGHTS.has(p.height) ? (p.height as GrafanaGridHeightV1) : DEFAULT_GRID_PLACEMENT.height,
+    height: normalizeGridHeightUnits(p.height),
   };
 }
 
+/** Normalize a candidate document's grid placements: prune a placement whose
+ *  tile no longer exists (as before #291 height-units), AND canonicalize
+ *  every remaining placement's `height` — a legacy `compact|medium|large`
+ *  alias converts to its numeric row-unit equivalent (1/2/3) so a persisted
+ *  document converges to the numeric vocabulary over time; a value already
+ *  numeric (valid or not — validation is `validatePlacement`'s job, not
+ *  this normalization step) is left untouched. */
 function normalize(dashboard: DashboardDocumentV1): DashboardDocumentV1 {
   const next = cloneJson(dashboard);
   const tileIds = new Set<string>();
@@ -129,7 +232,11 @@ function normalize(dashboard: DashboardDocumentV1): DashboardDocumentV1 {
   const items = gridItemsHost(next.layout);
   if (items) {
     for (const key of Object.keys(items)) {
-      if (!tileIds.has(key)) delete items[key];
+      if (!tileIds.has(key)) { delete items[key]; continue; }
+      const item = items[key];
+      if (isObject(item) && Object.hasOwn(item, 'height')) {
+        item.height = canonicalGridHeightUnits(item.height);
+      }
     }
   }
   return next;
@@ -150,9 +257,9 @@ function validatePlacement(placement: unknown, path: Path = []): WorkspaceDiagno
     out.push(diagnostic([...path, 'span'], 'layout-placement-invalid-span',
       'Grafana-grid placement span must be an integer from 1 to 12'));
   }
-  if (Object.hasOwn(placement, 'height') && !VALID_HEIGHTS.has(placement.height)) {
+  if (Object.hasOwn(placement, 'height') && !isValidGridHeightValue(placement.height)) {
     out.push(diagnostic([...path, 'height'], 'layout-placement-invalid-height',
-      'Grafana-grid placement height must be compact, medium, or large'));
+      'Grafana-grid placement height must be an integer from 1 to 16 (or the legacy compact, medium, or large)'));
   }
   return out;
 }
@@ -193,7 +300,11 @@ export interface GrafanaGridTileRender {
   tileId: string;
   index: number;
   span: number;
-  height: GrafanaGridHeightV1;
+  /** Row units (1..16), already canonicalized/defaulted by
+   *  `resolveGridPlacement` — never the legacy string form (#291
+   *  height-units follow-up: renamed from `height` so a discriminating
+   *  consumer never mistakes this for flow's own string `FlowHeightV1`). */
+  heightUnits: number;
   isKpi: boolean;
   row: number;
   colStart: number;
@@ -254,7 +365,7 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
       cursor = 0;
     }
     const render: GrafanaGridTileRender = {
-      tileId: tile.id, index, span, height: placement.height, isKpi: !!tile.isKpi, row, colStart: cursor,
+      tileId: tile.id, index, span, heightUnits: placement.height, isKpi: !!tile.isKpi, row, colStart: cursor,
     };
     cursor += span;
     return render;
@@ -288,7 +399,9 @@ export function deriveFlowFallback(
   const flowItems: Record<string, FlowTilePlacementV1> = {};
   for (const tile of tiles) {
     const gridPlacement = resolveGridPlacement(items[tile.id]);
-    flowItems[tile.id] = { span: flowSpanFromGridSpan(gridPlacement.span), height: gridPlacement.height };
+    flowItems[tile.id] = {
+      span: flowSpanFromGridSpan(gridPlacement.span), height: gridHeightUnitsToFlowHeight(gridPlacement.height),
+    };
   }
   return { type: 'flow', version: 1, preset: 'full-width', items: flowItems };
 }
@@ -303,11 +416,6 @@ export function deriveFlowFallback(
  *  renders. */
 export const GRID_GAP_PX = 8;
 
-/** Semantic tile height, in px — the same three tiers the mock encodes
- *  (118/210/296), used both to render a tile's CSS height class and to snap a
- *  corner-drag's vertical delta to the nearest tier. */
-export const GRID_HEIGHT_PX: Record<GrafanaGridHeightV1, number> = { compact: 118, medium: 210, large: 296 };
-
 /** Snap a corner-drag's horizontal pixel delta to a column span: `round((dx +
  *  gap) / (colWidth + gap))`, clamped to `1..columns` — the same formula the
  *  design mock's reference implementation uses (`grafana-dashboard-behavior.js`).
@@ -321,16 +429,14 @@ export function snapGridSpan(dxPx: number, colWidthPx: number, gapPx: number, co
   return Math.max(1, Math.min(safeColumns, raw));
 }
 
-/** Snap a corner-drag's vertical pixel delta to the nearest semantic height
- *  tier (compact|medium|large), by absolute distance to each tier's px value. */
-export function snapGridHeight(dyPx: number): GrafanaGridHeightV1 {
-  let best: GrafanaGridHeightV1 = 'compact';
-  let bestDelta = Infinity;
-  for (const tier of Object.keys(GRID_HEIGHT_PX) as GrafanaGridHeightV1[]) {
-    const delta = Math.abs(GRID_HEIGHT_PX[tier] - dyPx);
-    if (delta < bestDelta) { bestDelta = delta; best = tier; }
-  }
-  return best;
+/** Snap a corner-drag's vertical pixel delta to the nearest row-unit height:
+ *  `round((dy - 32) / 88)`, clamped to `1..16` — the inverse of
+ *  `gridHeightUnitsToPx`, so dragging a tile to exactly its OWN current px
+ *  height is a stable fixed point (`snapGridHeight(gridHeightUnitsToPx(u))
+ *  === u` for every valid `u`), not just a nearby tier. */
+export function snapGridHeight(dyPx: number): number {
+  const raw = Math.round((dyPx - GRID_HEIGHT_PX_BASE) / GRID_HEIGHT_PX_PER_UNIT);
+  return Math.max(GRID_HEIGHT_UNIT_MIN, Math.min(GRID_HEIGHT_UNIT_MAX, raw));
 }
 
 /** Extract `{id}` refs from a RAW `dashboard.tiles[]`-shaped array — a

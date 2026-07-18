@@ -13,8 +13,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 - **`grafana-grid@1` — a rowless Grafana-style tile-grid Dashboard layout**
   (#291, building on #280). A second layout engine next to the normative
   `flow@1`: a responsive 12-column tile grid with deterministic packing —
-  per-tile `{span: 1–12, height: compact|medium|large}` (118/210/296 px)
-  persisted in `layout.items`, vertical position derived purely from the
+  per-tile `{span: 1–12, height: 1–16 row units}` (`px = 32 + 88×units`;
+  units 1/2/3 ≈ the flow tiers, unit 16 = 1440 px ≈ 5× flow's tallest;
+  the legacy `compact|medium|large` strings stay readable and upgrade to
+  1/2/3 on the next edit) persisted in `layout.items`, vertical position
+  derived purely from the
   canonical `dashboard.tiles[]` order, and a container-width column clamp
   (12/6/4/2 at ≥1160/≥720/≥470 px of *content-box* width) that never mutates
   persisted spans. No rows, no folding (owner decision). The engine registers
@@ -27,13 +30,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   snapshots the flow layout as the fallback; switching back restores it.
   Workbench-only (edit-mode) placement editing per the mock: whole-card
   drag-reorder, **corner-drag resize** (span snaps to columns, height snaps
-  to the three semantic tiers; the tile is pinned to its column during the
-  drag so the persisted placement always matches the pointer), and tile
+  per row unit across all 16 stops; the tile is pinned to its column during
+  the drag so the persisted placement always matches the pointer), and tile
   delete — every change propagates immediately (no Save/Undo, owner
   decision). KPI tiles place like any other tile (no KPI band). Filters,
   panel/KPI rendering, and view-mode read-only rules (#306/ADR-0003) are
   reused unchanged. Includes a real-browser e2e harness
-  (`tests/e2e/dashboard-grid.*`) covering packing, semantic heights, the
+  (`tests/e2e/dashboard-grid.*`) covering packing, row-unit heights, the
   responsive clamp, 360 px overflow, resize, and hover chrome.
 - **Direct + full-screen Dashboard viewing with a one-time cross-tab handoff**
   (#288, Dashboard v1 Phase 6 — the final phase of #280; also lands #302). Two

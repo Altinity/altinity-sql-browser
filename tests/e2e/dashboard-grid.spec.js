@@ -58,14 +58,18 @@ test.describe('Dashboard grafana-grid layout', () => {
     for (const box of boxes) expect(box.right).toBeLessThanOrEqual(gridBox.right + 1);
   });
 
-  test('renders compact/medium/large tiles at their semantic pixel heights', async ({ page }) => {
+  test('renders tiles at their numeric row-unit pixel heights, including a tall (10-unit) tile (#291 height-units follow-up)', async ({ page }) => {
     await openWide(page);
     const heights = await page.locator('#heights-grid .dash-tile').evaluateAll(
       (nodes) => nodes.map((node) => node.getBoundingClientRect().height),
     );
-    expect(heights[0]).toBeCloseTo(118, 0);
-    expect(heights[1]).toBeCloseTo(210, 0);
+    // px = 32 + 88*units (gridHeightUnitsToPx): units 1/2/3 land close to the
+    // legacy compact/medium/large tiers; unit 10 reaches well past the old
+    // 296px ceiling, proving the range now extends far beyond the 3-tier max.
+    expect(heights[0]).toBeCloseTo(120, 0);
+    expect(heights[1]).toBeCloseTo(208, 0);
     expect(heights[2]).toBeCloseTo(296, 0);
+    expect(heights[3]).toBeCloseTo(912, 0);
   });
 
   test('clamps effective columns at the 12/6/4/2 container-width breakpoints, and a full-span tile never overflows', async ({ page }) => {
@@ -126,10 +130,10 @@ test.describe('Dashboard grafana-grid layout', () => {
 
   test('corner-drag resize live-previews span/height during the drag and dispatches exactly one terminal placement', async ({ page }) => {
     await openWide(page);
-    // e1 is the row's FIRST tile (colStart 0, span 6/medium).
+    // e1 is the row's FIRST tile (colStart 0, span 6 / 2 row units).
     const card = page.locator('#edit-grid .dash-tile[data-tile-id="e1"]');
     const handle = page.locator('#edit-grid .dash-tile[data-tile-id="e1"] .dash-gg-resize');
-    await expect(card).toHaveClass(/dash-gg-h-medium/);
+    expect(await card.evaluate((node) => node.style.height)).toBe('208px'); // 2 row units = 32 + 88*2
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe('span 6'); // unpinned before any drag
 
     // Raw page.mouse.* calls don't auto-scroll (unlike locator.click()) —
@@ -146,8 +150,9 @@ test.describe('Dashboard grafana-grid layout', () => {
     // duration, not bare `span N` — e1's colStart is 0, so `1 / span 6`.
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe('1 / span 6');
 
-    // Drag to a point 3.5 columns wide, ~large-tier tall — assert the LIVE
-    // (pre-release) preview matches the same pure snap functions the app uses.
+    // Drag to a point 3.5 columns wide, ~250px tall (a few row units) —
+    // assert the LIVE (pre-release) preview matches the same pure snap
+    // functions the app uses.
     const midTargetX = rect.left + 3.5 * (await page.evaluate(() => window.__editColWidthPx()) + 8);
     const midTargetY = rect.top + 250;
     await page.mouse.move(midTargetX, midTargetY, { steps: 5 });
@@ -156,7 +161,8 @@ test.describe('Dashboard grafana-grid layout', () => {
       height: window.__snapGridHeight(dy),
     }), { dx: midTargetX - rect.left, dy: midTargetY - rect.top });
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`1 / span ${midExpected.span}`);
-    await expect(card).toHaveClass(new RegExp('dash-gg-h-' + midExpected.height));
+    expect(await card.evaluate((node) => node.style.height))
+      .toBe(await page.evaluate((h) => window.__gridHeightUnitsToPx(h) + 'px', midExpected.height));
     expect(await page.evaluate(() => window.__resizeEvents.length)).toBe(0); // no dispatch mid-drag
 
     // Move to a final, distinct target and release — exactly one terminal event.
@@ -175,7 +181,8 @@ test.describe('Dashboard grafana-grid layout', () => {
     // re-renders after a resize — unlike the real app, which resets to plain
     // `span N` on its next publish, unit-tested at the app layer).
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`1 / span ${finalExpected.span}`);
-    await expect(card).toHaveClass(new RegExp('dash-gg-h-' + finalExpected.height));
+    expect(await card.evaluate((node) => node.style.height))
+      .toBe(await page.evaluate((h) => window.__gridHeightUnitsToPx(h) + 'px', finalExpected.height));
     const events = await page.evaluate(() => window.__resizeEvents);
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({ tileId: 'e1', span: finalExpected.span, height: finalExpected.height });
@@ -183,7 +190,7 @@ test.describe('Dashboard grafana-grid layout', () => {
 
   test('a mid-row tile (colStart > 0) dragged wider stays pinned and clamps to the columns remaining at its own start (#291 review F3)', async ({ page }) => {
     await openWide(page);
-    // e2 sits right after e1 in the same row (colStart 6, span 4/medium) —
+    // e2 sits right after e1 in the same row (colStart 6, span 4 / 2 row units) —
     // the previously-untested case a naive `span`-only pin would let
     // self-wrap via the browser's own auto-placement once dragged wider.
     const card = page.locator('#edit-grid .dash-tile[data-tile-id="e2"]');
@@ -204,7 +211,7 @@ test.describe('Dashboard grafana-grid layout', () => {
     // A huge rightward drag would naively request the full 12-column span —
     // clamped instead to 12-6=6, the columns actually free at this pinned
     // start, so the tile never demands phantom implicit tracks past the edge.
-    // (Y stays at the medium-tier offset so only the SPAN clamp is exercised.)
+    // (Y stays at the same 2-row-unit offset so only the SPAN clamp is exercised.)
     // Dispatched synthetically on window (where the wiring listens): Firefox
     // does not deliver real mouse moves this far outside the viewport, and the
     // clamp needs a request provably wider than the 6 columns that fit here.
@@ -227,7 +234,7 @@ test.describe('Dashboard grafana-grid layout', () => {
 
     await page.mouse.up();
     const events = await page.evaluate(() => window.__resizeEvents);
-    expect(events[events.length - 1]).toEqual({ tileId: 'e2', span: 6, height: 'medium' });
+    expect(events[events.length - 1]).toEqual({ tileId: 'e2', span: 6, height: 2 });
   });
 
   test('hover reveals the delete button and resize glyph only in edit mode; view mode never builds edit affordances', async ({ page }) => {

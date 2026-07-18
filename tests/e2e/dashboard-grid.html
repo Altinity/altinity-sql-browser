@@ -9,11 +9,12 @@
     .dash-page { height: auto; }
     /* Each scenario gets its own `.dash-grid.dash-gg-grid` host, exactly the
        class contract ui/dashboard.ts's `reconcileGrafanaGrid` produces
-       (#291 Wave 3) — see the CLAUDE.md/#291 DOM contract this harness
-       verifies: `.dash-grid.dash-gg-grid` (display:grid, inline
-       grid-template-columns), `.dash-tile.dash-gg-tile.dash-gg-h-*`
-       (+`.is-kpi`), edit-mode-only `.dash-gg-grip`/`.dash-gg-del`/
-       `.dash-gg-resize`, no `.dash-row`/`.dash-kpi-band`. */
+       (#291 Wave 3; height-units follow-up) — see the CLAUDE.md/#291 DOM
+       contract this harness verifies: `.dash-grid.dash-gg-grid`
+       (display:grid, inline grid-template-columns), `.dash-tile.dash-gg-tile`
+       with a direct inline px `height` (+`.is-kpi`), edit-mode-only
+       `.dash-gg-grip`/`.dash-gg-del`/`.dash-gg-resize`, no
+       `.dash-row`/`.dash-kpi-band`. */
     section.scenario { margin-bottom: 24px; }
     section.scenario > h2 { font: 12px var(--mono); color: var(--fg-mute); margin: 0 0 6px; }
     #responsive-wrap { border: 1px dashed transparent; }
@@ -29,7 +30,7 @@
   </section>
 
   <section class="scenario">
-    <h2>semantic heights (compact/medium/large)</h2>
+    <h2>numeric row-unit heights (1/2/3/10)</h2>
     <div class="dash-page">
       <div class="dash-grid dash-gg-grid" id="heights-grid"></div>
     </div>
@@ -58,13 +59,14 @@
 
   <script type="module">
     import {
-      computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, snapGridSpan, snapGridHeight,
+      computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, gridHeightUnitsToPx, snapGridSpan, snapGridHeight,
     } from '/src/dashboard/layouts/grafana-grid-layout.js';
 
-    const GRID_HEIGHT_CLASSES = ['dash-gg-h-compact', 'dash-gg-h-medium', 'dash-gg-h-large'];
-    function setHeightClass(card, height) {
-      card.classList.remove(...GRID_HEIGHT_CLASSES);
-      card.classList.add('dash-gg-h-' + height);
+    // #291 height-units follow-up: height is a direct inline px style (from
+    // numeric row units), not a `.dash-gg-h-*` class — mirrors
+    // `ui/dashboard.ts`'s own `setGridHeightPx`.
+    function setHeightPx(card, heightUnits) {
+      card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
     }
 
     // #291 review F2: `el.clientWidth` INCLUDES `.dash-grid`'s own horizontal
@@ -81,9 +83,10 @@
     // shape (#291 Wave 3 contract) — grip/delete/resize are built ONLY in
     // 'edit' mode, mirroring the app's own `!readOnly` gate (they do not
     // merely hide via CSS in view mode; the app never constructs them).
-    function buildTile({ id, title, height, isKpi }, mode) {
+    function buildTile({ id, title, heightUnits, isKpi }, mode) {
       const card = document.createElement('div');
-      card.className = 'dash-tile dash-gg-tile dash-gg-h-' + height + (isKpi ? ' is-kpi' : '');
+      card.className = 'dash-tile dash-gg-tile' + (isKpi ? ' is-kpi' : '');
+      card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
       card.dataset.tileId = id;
 
       const head = document.createElement('div');
@@ -136,14 +139,14 @@
     ];
     const packingSpans = { t1: 3, t2: 3, t3: 3, t4: 1, t5: 2, t6: 4, t7: 2, t8: 6 };
     const packingLayout = { items: Object.fromEntries(
-      Object.entries(packingSpans).map(([id, span]) => [id, { span, height: 'compact' }]),
+      Object.entries(packingSpans).map(([id, span]) => [id, { span, height: 1 }]),
     ) };
     const packingGrid = document.getElementById('packing-grid');
     function renderPacking() {
       const model = computeGrafanaGridLayout({ tiles: packingTiles, layout: packingLayout, containerWidth: measuredWidth(packingGrid) });
       packingGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       packingGrid.replaceChildren(...model.tiles.map((t) => {
-        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'view');
         card.style.gridColumn = 'span ' + t.span;
         return card;
       }));
@@ -151,17 +154,20 @@
     }
     renderPacking();
 
-    // ── Scenario 2: semantic heights ───────────────────────────────────────
-    const heightsTiles = [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }];
+    // ── Scenario 2: numeric row-unit heights (#291 height-units follow-up) ──
+    // h1/h2/h3 are the legacy compact/medium/large equivalents (1/2/3 row
+    // units, 120/208/296px); h4 is a TALL tile (10 units, ~912px) — proving
+    // the range now reaches well past the old 3-tier/296px ceiling.
+    const heightsTiles = [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }, { id: 'h4' }];
     const heightsLayout = { items: {
-      h1: { span: 4, height: 'compact' }, h2: { span: 4, height: 'medium' }, h3: { span: 4, height: 'large' },
+      h1: { span: 3, height: 1 }, h2: { span: 3, height: 2 }, h3: { span: 3, height: 3 }, h4: { span: 3, height: 10 },
     } };
     const heightsGrid = document.getElementById('heights-grid');
     (function renderHeights() {
       const model = computeGrafanaGridLayout({ tiles: heightsTiles, layout: heightsLayout, containerWidth: measuredWidth(heightsGrid) });
       heightsGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       heightsGrid.replaceChildren(...model.tiles.map((t) => {
-        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'view');
         card.style.gridColumn = 'span ' + t.span;
         return card;
       }));
@@ -176,7 +182,7 @@
     // measures `grid.clientWidth` directly (not `innerWidth`).
     const responsiveTiles = [{ id: 'r-wide' }, { id: 'r-a' }, { id: 'r-b' }];
     const responsiveLayout = { items: {
-      'r-wide': { span: 12, height: 'compact' }, 'r-a': { span: 6, height: 'compact' }, 'r-b': { span: 6, height: 'compact' },
+      'r-wide': { span: 12, height: 1 }, 'r-a': { span: 6, height: 1 }, 'r-b': { span: 6, height: 1 },
     } };
     const responsiveWrap = document.getElementById('responsive-wrap');
     const responsiveGrid = document.getElementById('responsive-grid');
@@ -184,7 +190,7 @@
       const model = computeGrafanaGridLayout({ tiles: responsiveTiles, layout: responsiveLayout, containerWidth: measuredWidth(responsiveGrid) });
       responsiveGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       responsiveGrid.replaceChildren(...model.tiles.map((t) => {
-        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'view');
         card.style.gridColumn = 'span ' + t.span;
         return card;
       }));
@@ -205,7 +211,7 @@
     // 0); `e2` is a MID-ROW tile (colStart 6) — the previously-untested case
     // a naive `span`-only pin would let self-wrap when dragged wider.
     const editTiles = [{ id: 'e1' }, { id: 'e2' }];
-    const editLayout = { items: { e1: { span: 6, height: 'medium' }, e2: { span: 4, height: 'medium' } } };
+    const editLayout = { items: { e1: { span: 6, height: 2 }, e2: { span: 4, height: 2 } } };
     const editGrid = document.getElementById('edit-grid');
     let editColumns = 12;
     const editPlacementByTile = new Map();
@@ -219,7 +225,7 @@
         const colStart = placement.colStart;
         const maxSpan = Math.max(1, columns - colStart);
         let curSpan = Math.min(placement.span, maxSpan);
-        let curHeight = placement.height;
+        let curHeight = placement.heightUnits;
         card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
         const rect = card.getBoundingClientRect();
         const colWidthPx = (measuredWidth(editGrid) - GRID_GAP_PX * (columns - 1)) / columns;
@@ -228,12 +234,14 @@
           const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
           const height = snapGridHeight(ev.clientY - rect.top);
           if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
-          if (height !== curHeight) { curHeight = height; setHeightClass(card, height); }
+          if (height !== curHeight) { curHeight = height; setHeightPx(card, height); }
         };
         const up = () => {
           card.classList.remove('dash-gg-resizing');
           window.removeEventListener('pointermove', move);
           window.removeEventListener('pointerup', up);
+          // `height` here is the numeric row-unit value — same field name the
+          // real app's `update-placement` command placement carries.
           window.__resizeEvents.push({ tileId, span: curSpan, height: curHeight });
         };
         window.addEventListener('pointermove', move);
@@ -246,8 +254,8 @@
       editGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       editGrid.replaceChildren();
       for (const t of model.tiles) {
-        editPlacementByTile.set(t.tileId, { span: t.span, height: t.height, colStart: t.colStart });
-        const { card, resizeHandle } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'edit');
+        editPlacementByTile.set(t.tileId, { span: t.span, heightUnits: t.heightUnits, colStart: t.colStart });
+        const { card, resizeHandle } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'edit');
         card.style.gridColumn = 'span ' + t.span;
         editGrid.appendChild(card);
         wireResize(t.tileId, card, resizeHandle);
@@ -260,17 +268,18 @@
     window.__editColStart = (tileId) => editPlacementByTile.get(tileId).colStart;
     window.__snapGridSpan = snapGridSpan;
     window.__snapGridHeight = snapGridHeight;
+    window.__gridHeightUnitsToPx = gridHeightUnitsToPx;
     window.__GRID_GAP_PX = GRID_GAP_PX;
 
     // ── Scenario 5: view/read-only mode ─────────────────────────────────────
     const viewonlyGrid = document.getElementById('viewonly-grid');
     (function renderViewonly() {
       const tiles = [{ id: 'v1' }];
-      const layout = { items: { v1: { span: 6, height: 'medium' } } };
+      const layout = { items: { v1: { span: 6, height: 2 } } };
       const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(viewonlyGrid) });
       viewonlyGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
       viewonlyGrid.replaceChildren(...model.tiles.map((t) => {
-        const { card } = buildTile({ id: t.tileId, title: t.tileId, height: t.height }, 'view');
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'view');
         card.style.gridColumn = 'span ' + t.span;
         return card;
       }));

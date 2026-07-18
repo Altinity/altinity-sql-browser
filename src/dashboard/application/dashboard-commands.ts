@@ -20,7 +20,7 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { deriveFlowPlacement, resolvePlacement, setFlowPlacement } from '../layouts/flow-layout.js';
 import type { DashboardLayoutPlugin } from '../layouts/flow-layout.js';
 import {
-  deriveGrafanaGridPlacement, gridSpanFromFlowSpan,
+  deriveGrafanaGridPlacement, gridHeightUnitsFromFlowHeight, gridSpanFromFlowSpan,
   regenerateGridFallback as regenerateGridLayoutFallback, setGridPlacement,
 } from '../layouts/grafana-grid-layout.js';
 import type { QueryResolver } from './dashboard-query-resolver.js';
@@ -238,9 +238,11 @@ function applyCommandToClone(
     // convert placements between engines:
     //  - flow -> grafana-grid: seed every tile's grid placement from its
     //    current flow placement (`resolvePlacement` fills the flow default
-    //    for a tile with none), converted via `gridSpanFromFlowSpan`, and
-    //    snapshot the CURRENT flow layout (minus its own `fallback`, which a
-    //    flow primary never carries) as the new `layout.fallback`.
+    //    for a tile with none), span converted via `gridSpanFromFlowSpan` and
+    //    height via `gridHeightUnitsFromFlowHeight` (flow's string height ->
+    //    grid's numeric row units, #291 height-units follow-up), and snapshot
+    //    the CURRENT flow layout (minus its own `fallback`, which a flow
+    //    primary never carries) as the new `layout.fallback`.
     //  - grafana-grid -> flow: restore `layout.fallback` (kept continuously
     //    valid by the grid-mutation fallback regeneration above) as the new
     //    flow primary, dropping the `fallback` field itself (a flow primary
@@ -270,7 +272,9 @@ function applyCommandToClone(
         for (const tile of tiles) {
           if (!isObject(tile) || typeof tile.id !== 'string') continue;
           const flowPlacement = resolvePlacement(flowItems[tile.id]);
-          gridItems[tile.id] = { span: gridSpanFromFlowSpan(flowPlacement.span), height: flowPlacement.height };
+          gridItems[tile.id] = {
+            span: gridSpanFromFlowSpan(flowPlacement.span), height: gridHeightUnitsFromFlowHeight(flowPlacement.height),
+          };
         }
         // Drop the (never-present-on-a-flow-primary) `fallback` field before
         // snapshotting — a flow primary IS the fallback engine, so it never

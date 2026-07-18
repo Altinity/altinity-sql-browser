@@ -167,13 +167,15 @@ describe('applyCommand — grafana-grid@1 engine awareness (#291)', () => {
       const q = query('q', { sizeHints: { preferred: 'wide' } });
       const result = run(gridDraft(), { type: 'add-query', queryId: 'q' }, [q], grafanaGridLayoutPlugin);
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.dashboard.layout.items).toEqual({ 'tile-1': { span: 12, height: 'medium' } });
+      // height is now a numeric row unit (#291 height-units follow-up): 2 is
+      // the medium equivalent, seeded from deriveFlowPlacement's own 'medium'.
+      if (result.ok) expect(result.dashboard.layout.items).toEqual({ 'tile-1': { span: 12, height: 2 } });
     });
 
     it('seeds the grid default placement even without a usable size hint — unlike flow\'s "no opinion" (undefined)', () => {
       const result = run(gridDraft(), { type: 'add-query', queryId: 'q' }, [query('q')], grafanaGridLayoutPlugin);
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.dashboard.layout.items).toEqual({ 'tile-1': { span: 6, height: 'medium' } });
+      if (result.ok) expect(result.dashboard.layout.items).toEqual({ 'tile-1': { span: 6, height: 2 } });
     });
   });
 
@@ -213,11 +215,16 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.dashboard.layout.type).toBe('grafana-grid');
+    // Grid items carry NUMERIC height row units (#291 height-units
+    // follow-up: 1=compact, 2=medium, 3=large equivalents) — converted from
+    // the flow layout's own string height via gridHeightUnitsFromFlowHeight.
+    // The flow SNAPSHOT (fallback, below) keeps flow's own string vocabulary
+    // untouched.
     expect(result.dashboard.layout.items).toEqual({
-      a: { span: 4, height: 'compact' },
-      b: { span: 6, height: 'large' },
-      c: { span: 12, height: 'medium' },
-      noPlacement: { span: 4, height: 'medium' },
+      a: { span: 4, height: 1 },
+      b: { span: 6, height: 3 },
+      c: { span: 12, height: 2 },
+      noPlacement: { span: 4, height: 2 },
     });
     expect(result.dashboard.layout.fallback).toEqual(flowLayout);
   });
@@ -250,7 +257,7 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     });
     const result = run(d, { type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as never }, [query('q')]);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.dashboard.layout.items).toEqual({ a: { span: 4, height: 'medium' } });
+    if (result.ok) expect(result.dashboard.layout.items).toEqual({ a: { span: 4, height: 2 } });
   });
 
   it('grafana-grid -> flow fails without a fallback to restore, leaving diagnostics', () => {
