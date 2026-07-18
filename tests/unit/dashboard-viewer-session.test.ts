@@ -208,6 +208,63 @@ describe('createDashboardViewerSession', () => {
   });
 });
 
+// #303: `initialFilters` seeds each filter's runtime value/active from a
+// persisted bag (the shell's isolated per-dashboard store) instead of always
+// deriving it from `def.defaultValue`/`defaultActive`. These assert on the
+// session's initial `state.value.filters` BEFORE `start()` — the seed is
+// applied at construction time, no query execution required.
+describe('initialFilters seeding (#303)', () => {
+  const seededDoc = () => doc({
+    filters: [
+      { id: 'f1', parameter: 'p1', defaultValue: 'D1', defaultActive: false },
+      { id: 'f2', parameter: 'p2', defaultValue: 'D2', defaultActive: true },
+    ],
+  });
+  const byId = (session: ReturnType<typeof createDashboardViewerSession>, id: string) =>
+    session.state.value.filters.find((f) => f.id === id)!;
+
+  it('starts a seeded filter with its persisted value+active, overriding the definition defaults', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: seededDoc(), initialFilters: { f1: { value: 'seeded', active: true } },
+    }));
+    expect(byId(session, 'f1')).toMatchObject({ value: 'seeded', active: true });
+  });
+
+  it('leaves an unseeded filter (absent from the map) on its definition defaults', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: seededDoc(), initialFilters: { f1: { value: 'seeded', active: true } },
+    }));
+    expect(byId(session, 'f2')).toMatchObject({ value: 'D2', active: true });
+  });
+
+  it('behaves identically when initialFilters is absent', () => {
+    const session = createDashboardViewerSession(makeDeps({ document: seededDoc() }));
+    expect(byId(session, 'f1')).toMatchObject({ value: 'D1', active: false });
+    expect(byId(session, 'f2')).toMatchObject({ value: 'D2', active: true });
+  });
+
+  it('behaves identically when initialFilters is an empty map', () => {
+    const session = createDashboardViewerSession(makeDeps({ document: seededDoc(), initialFilters: {} }));
+    expect(byId(session, 'f1')).toMatchObject({ value: 'D1', active: false });
+    expect(byId(session, 'f2')).toMatchObject({ value: 'D2', active: true });
+  });
+
+  it('falls back to the definition defaultValue when a seed entry has a nullish value', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      document: seededDoc(), initialFilters: { f1: { value: null, active: true } },
+    }));
+    expect(byId(session, 'f1')).toMatchObject({ value: 'D1', active: true });
+  });
+
+  it('coerces a seeded falsy active flag to false rather than falling back to the default', () => {
+    const session = createDashboardViewerSession(makeDeps({
+      // f2's OWN default is active:true — the seed's explicit false must win.
+      document: seededDoc(), initialFilters: { f2: { value: 'D2', active: false } },
+    }));
+    expect(byId(session, 'f2')).toMatchObject({ value: 'D2', active: false });
+  });
+});
+
 describe('filters and the #235 execution planner', () => {
   // A dashboard with a source-backed filter targeting one tile via parameter
   // declaration, plus an unrelated tile the filter can never affect.
