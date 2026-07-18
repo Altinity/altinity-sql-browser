@@ -136,7 +136,7 @@ function renderSaved(app: App, list: HTMLElement): void {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
         e.stopPropagation();
-        const result = await app.serializeWrite(() => toggleFavorite(state, q.id, app.workspace.commit, app.specValidators));
+        const result = await app.serializeWrite(() => toggleFavorite(state, q.id, app.workspace.commit, app.genId, app.specValidators));
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();

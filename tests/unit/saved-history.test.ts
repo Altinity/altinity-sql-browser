@@ -568,7 +568,7 @@ describe('concurrent saved-query writes (#287 review fix)', () => {
     // Fire a favorite-toggle on q1 and a delete on q2 in the same tick. Without
     // app.serializeWrite both build a candidate from the same [q1,q2] snapshot
     // and whichever commit lands last wins — resurrecting the deleted q2.
-    const pToggle = app.serializeWrite(() => toggleFavorite(app.state, 'q1', app.workspace.commit, app.specValidators));
+    const pToggle = app.serializeWrite(() => toggleFavorite(app.state, 'q1', app.workspace.commit, app.genId, app.specValidators));
     const pDelete = app.serializeWrite(() => deleteSaved(app.state, 'q2', app.workspace.commit));
     await Promise.all([pToggle, pDelete]);
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['q1']); // q2 stays deleted
