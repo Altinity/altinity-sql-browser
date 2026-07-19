@@ -125,6 +125,35 @@ describe('executeRead', () => {
     expect(out.progress.bytes).toBe(5);
   });
 
+  it('sets result.image + progress.bytes from a valid out.binary PNG (#307)', async () => {
+    // Minimal well-formed PNG: signature + IHDR (length 13, type IHDR, 10x20).
+    const bytes = new Uint8Array(29);
+    bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(8, 13, false);
+    bytes.set([73, 72, 68, 82], 12); // 'IHDR'
+    view.setUint32(16, 10, false);
+    view.setUint32(20, 20, false);
+    const { fn } = fakeRunQuery([() => ({ binary: { bytes, contentType: 'image/png' } })]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));
+    const out = await svc.executeRead(newResult('PNG'), { sql: 'SELECT plot(1) FORMAT PNG', format: 'PNG' });
+    expect(out.image).toEqual({
+      kind: 'image', format: 'PNG', mimeType: 'image/png', bytes, width: 10, height: 20,
+    });
+    expect(out.progress.bytes).toBe(29);
+    expect(out.rawText).toBeNull();
+    expect(out.error).toBeNull();
+  });
+
+  it('sets result.error (and drops the bytes) when out.binary fails PNG validation', async () => {
+    const badBytes = new Uint8Array([1, 2, 3]); // too short, bad signature
+    const { fn } = fakeRunQuery([() => ({ binary: { bytes: badBytes, contentType: 'image/png' } })]);
+    const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));
+    const out = await svc.executeRead(newResult('PNG'), { sql: 'x', format: 'PNG' });
+    expect(out.image).toBeNull();
+    expect(out.error).toMatch(/^Invalid PNG result: /);
+  });
+
   it('defaults format to Table and rowLimit to 0 in the runQuery opts', async () => {
     const { fn, calls } = fakeRunQuery([() => ({ raw: '' })]);
     const svc = createQueryExecutionService(makeDeps({ runQuery: fn }));

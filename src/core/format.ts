@@ -300,6 +300,16 @@ export function supportsExplainPretty(v?: string | null): boolean {
 }
 
 /**
+ * True when `fmt` is a binary (non-text) ClickHouse output format that the
+ * transport must read as bytes rather than decode as text — currently just
+ * `PNG` (#307's image results). Case-insensitive, matched by exact name (not
+ * prefix, unlike `formatFileMeta`'s families) since PNG has no name variants.
+ */
+export function isBinaryFormat(fmt?: string | null): boolean {
+  return /^PNG$/i.test(String(fmt || ''));
+}
+
+/**
  * Short display name for the header user control: the local-part of an email
  * (before '@'). Falls back to the whole string when there's no '@', and '' for
  * empty/nullish input.

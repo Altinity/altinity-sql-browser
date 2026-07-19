@@ -28,6 +28,7 @@ interface StreamResult {
   pct: number;
   rowLimit: number;
   capped: boolean;
+  image: unknown;
   // QueryTab.result (state.ts) holds this as an opaque Record<string, unknown>
   // (only results.js knows the concrete shape); the index signature lets a
   // StreamResult assign straight into `tab.result` without a further cast.

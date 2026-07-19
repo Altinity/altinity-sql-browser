@@ -7,6 +7,8 @@
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
 
+import type { ImageResultPayload } from './png.js';
+
 /** One streamed result column, as reported by a `{meta}` line. */
 export interface StreamColumn {
   name: string;
@@ -37,6 +39,10 @@ export interface StreamResult {
   pct: number;
   rowLimit: number;
   capped: boolean;
+  /** A validated `FORMAT PNG` image result (#307), or null for every other
+   *  format/until one is set. Mutually exclusive with `rawText`/`rows` in
+   *  practice — the transport picks one branch per query. */
+  image: ImageResultPayload | null;
 }
 
 /**
@@ -58,6 +64,7 @@ export function newResult(fmt: string, rowLimit = 0): StreamResult {
     pct: 0,
     rowLimit,
     capped: false,
+    image: null,
   };
 }
 

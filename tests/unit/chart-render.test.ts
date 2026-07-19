@@ -27,6 +27,7 @@ interface StreamResult {
   pct: number;
   rowLimit: number;
   capped: boolean;
+  image: unknown;
   [k: string]: unknown;
 }
 const newResult = (fmt: string, rowLimit = 0): StreamResult => newResultUntyped(fmt, rowLimit) as StreamResult;

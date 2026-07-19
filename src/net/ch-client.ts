@@ -11,7 +11,7 @@ import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../cor
 import type { StreamLine } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
-import { sqlString } from '../core/format.js';
+import { sqlString, isBinaryFormat } from '../core/format.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 
@@ -852,6 +852,11 @@ export interface RunQueryResult {
   error?: string;
   raw?: string;
   streamed?: boolean;
+  /** A raw-mode `FORMAT PNG` (or other binary format) body, read as bytes
+   *  rather than decoded as text (#307). `contentType` is normalized to
+   *  `image/png` regardless of what the server's response header says —
+   *  never base64-encoded. */
+  binary?: { bytes: Uint8Array; contentType: string };
 }
 
 /**
@@ -907,6 +912,10 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
     return { error: parseExceptionText(await resp.text()) };
   }
   if (!isStreaming) {
+    if (isBinaryFormat(fmt)) {
+      const buf = await resp.arrayBuffer();
+      return { binary: { bytes: new Uint8Array(buf), contentType: 'image/png' } };
+    }
     return { raw: await resp.text() };
   }
   const reader = resp.body!.getReader();

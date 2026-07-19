@@ -32,6 +32,9 @@ describe('newResult', () => {
   it('carries the row limit when given', () => {
     expect(newResult('Table', 500)).toMatchObject({ rowLimit: 500, capped: false });
   });
+  it('starts with a null image (#307)', () => {
+    expect(newResult('PNG')).toMatchObject({ image: null });
+  });
 });
 
 describe('applyStreamLine', () => {

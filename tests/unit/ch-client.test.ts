@@ -18,6 +18,7 @@ interface FakeResponse {
   status: number;
   json?(): Promise<unknown>;
   text(): Promise<string>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
   clone(): FakeResponse;
   body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }> } };
 }
@@ -31,6 +32,18 @@ function jsonResp(body: unknown, ok = true, status = ok ? 200 : 500): FakeRespon
 }
 function textResp(text: string, ok = true, status = ok ? 200 : 500): FakeResponse {
   return { ok, status, text: async () => text, clone() { return this; } };
+}
+/** A raw-mode binary response (e.g. `FORMAT PNG`) — `arrayBuffer()` is the
+ *  only reader `runQuery`'s binary branch calls; `text()` backs the non-2xx
+ *  error path (parseExceptionText reads text, never bytes, on failure). */
+function binResp(bytes: Uint8Array, ok = true, status = ok ? 200 : 500): FakeResponse {
+  return {
+    ok,
+    status,
+    text: async () => new TextDecoder().decode(bytes),
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    clone() { return this; },
+  };
 }
 function streamResp(chunks: string[], ok = true): FakeResponse {
   let i = 0;
@@ -510,6 +523,30 @@ describe('runQuery', () => {
   it('JSON raw mode returns the text body', async () => {
     const ctx = ctxWith(async () => textResp('{"x":1}'));
     expect(await runQuery(ctx, 'x', { format: 'JSON' })).toEqual({ raw: '{"x":1}' });
+  });
+  it('PNG raw mode reads bytes (never text/base64) and normalizes the content type (#307)', async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+    const ctx = ctxWith(async () => binResp(bytes));
+    const out = await runQuery(ctx, 'SELECT plot(1) FORMAT PNG', { format: 'PNG' });
+    expect(out.raw).toBeUndefined();
+    expect(out.binary).toBeDefined();
+    expect(out.binary!.contentType).toBe('image/png');
+    expect(out.binary!.bytes).toBeInstanceOf(Uint8Array);
+    expect(Array.from(out.binary!.bytes)).toEqual(Array.from(bytes));
+  });
+  it('PNG raw mode with a case-insensitive format name is still read as binary', async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const ctx = ctxWith(async () => binResp(bytes));
+    const out = await runQuery(ctx, 'x', { format: 'png' });
+    expect(out.binary).toBeDefined();
+  });
+  it('PNG raw mode error response (non-2xx) is parsed as text, not bytes', async () => {
+    const errText = 'Code: 62. DB::Exception: Syntax error';
+    const ctx = ctxWith(async () => textResp(errText, false, 500));
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeUndefined();
+    expect(out.raw).toBeUndefined();
+    expect(out.error).toContain('Syntax error');
   });
   it('passes the abort signal through', async () => {
     const ctx = ctxWith(async () => streamResp(['{"row":{}}\n']));

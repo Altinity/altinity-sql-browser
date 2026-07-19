@@ -17,6 +17,7 @@
 import type { ChCtx, RunQueryOptions, RunQueryResult } from '../net/ch-client.js';
 import type { runQuery, killQuery } from '../net/ch-client.js';
 import { applyStreamLine } from '../core/stream.js';
+import { validatePng } from '../core/png.js';
 import type { StreamResult } from '../core/stream.js';
 import { isRowReturning } from '../core/sql-split.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
@@ -177,7 +178,22 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
         onChunk,
       });
       if (out.error != null) result.error = out.error;
-      else if (out.raw != null) {
+      else if (out.binary != null) {
+        const check = validatePng(out.binary.bytes);
+        if (check.ok) {
+          result.image = {
+            kind: 'image',
+            format: 'PNG',
+            mimeType: 'image/png',
+            bytes: out.binary.bytes,
+            width: check.width,
+            height: check.height,
+          };
+          result.progress.bytes = out.binary.bytes.byteLength;
+        } else {
+          result.error = 'Invalid PNG result: ' + check.reason;
+        }
+      } else if (out.raw != null) {
         result.rawText = out.raw;
         result.progress.bytes = out.raw.length;
       }
