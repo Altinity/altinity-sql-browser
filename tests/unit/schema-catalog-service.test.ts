@@ -61,7 +61,6 @@ function makeDeps(over: Partial<SchemaCatalogDeps> = {}): SchemaCatalogDeps {
     loadSchema: fakeLoadSchema([]),
     loadColumns: vi.fn(async () => []),
     loadReferenceData: fakeLoadReferenceData({}),
-    loadEntityDoc: vi.fn(async () => ''),
     loadFunctionsDocColumns: vi.fn(async () => []),
     loadFunctionDocRow: vi.fn(async () => []),
     ctx: () => fakeCtx,
@@ -182,28 +181,30 @@ describe('loadColumns', () => {
 // ── loadReference / rebuildCompletions ──────────────────────────────────────
 
 describe('loadReference', () => {
-  it('assembles reference data, clears docCache, rebuilds completions, and refreshes the editor', async () => {
+  it('assembles reference data, resets doc-summary state, rebuilds completions, and refreshes the editor', async () => {
     const state = makeState();
     const hooks = makeHooks();
-    const loadEntityDoc = vi.fn(async () => 'doc-1');
+    const loadFunctionsDocColumns = vi.fn(async () => ['name']);
+    const loadFunctionDocRow = vi.fn(async () => [{ name: 'count' }]);
     const deps = makeDeps({
       state,
       hooks,
-      loadEntityDoc,
+      loadFunctionsDocColumns,
+      loadFunctionDocRow,
       loadReferenceData: fakeLoadReferenceData({ keywords: ['ZAP'], functions: {}, formats: [] }),
     });
     const svc = createSchemaCatalogService(deps);
 
-    await svc.entityDoc('count'); // warm the hover-doc cache
-    expect(loadEntityDoc).toHaveBeenCalledTimes(1);
+    await svc.docEntry({ kind: 'function', name: 'count' }); // warm the doc-entry cache
+    expect(loadFunctionDocRow).toHaveBeenCalledTimes(1);
 
     await svc.loadReference();
     expect(svc.refData.keywords).toContain('ZAP');
     expect(svc.completions.some((c) => c.kind === 'keyword' && c.label === 'ZAP')).toBe(true);
     expect(hooks.refreshEditorReference).toHaveBeenCalledTimes(1);
 
-    await svc.entityDoc('count'); // cache was cleared by loadReference → refetches
-    expect(loadEntityDoc).toHaveBeenCalledTimes(2);
+    await svc.docEntry({ kind: 'function', name: 'count' }); // cache was cleared by loadReference → refetches
+    expect(loadFunctionDocRow).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -245,39 +246,6 @@ describe('refData / completions setters', () => {
   });
 });
 
-// ── entityDoc ────────────────────────────────────────────────────────────────
-
-describe('entityDoc', () => {
-  it('caches a resolved doc and dedupes concurrent in-flight calls for the same name', async () => {
-    const loadEntityDoc = vi.fn(async () => 'the doc');
-    const deps = makeDeps({ loadEntityDoc });
-    const svc = createSchemaCatalogService(deps);
-
-    const [a, b] = await Promise.all([svc.entityDoc('count'), svc.entityDoc('count')]);
-    expect(a).toBe('the doc');
-    expect(b).toBe('the doc');
-    expect(loadEntityDoc).toHaveBeenCalledTimes(1); // deduped, not fetched twice
-
-    expect(await svc.entityDoc('count')).toBe('the doc'); // served from cache
-    expect(loadEntityDoc).toHaveBeenCalledTimes(1);
-    // `docCache` itself is a live, read-only exposed accessor (`app.catalog.docCache`
-    // in production, #276 Phase 5 — no more `app.docCache` mirror) — the resolved
-    // doc really lands in the SAME map `entityDoc` consults, not a private copy.
-    expect(svc.docCache.get('count')).toBe('the doc');
-  });
-
-  it('drops a failed fetch (null) rather than caching it, and retries on the next call', async () => {
-    const loadEntityDoc = vi.fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce('now works');
-    const deps = makeDeps({ loadEntityDoc: loadEntityDoc as unknown as SchemaCatalogDeps['loadEntityDoc'] });
-    const svc = createSchemaCatalogService(deps);
-
-    expect(await svc.entityDoc('count')).toBeNull();
-    expect(await svc.entityDoc('count')).toBe('now works'); // retried, not served from a cached error
-    expect(loadEntityDoc).toHaveBeenCalledTimes(2);
-  });
-});
 
 // ── invalidate ───────────────────────────────────────────────────────────────
 
@@ -520,17 +488,19 @@ describe('docSummary / docEntry', () => {
 });
 
 describe('invalidate', () => {
-  it('clears the reference/completions/hover-doc caches back to the built-in fallback', async () => {
-    const loadEntityDoc = vi.fn(async () => 'doc');
+  it('clears the reference/completions/documentation caches back to the built-in fallback', async () => {
+    const loadFunctionsDocColumns = vi.fn(async () => ['name']);
+    const loadFunctionDocRow = vi.fn(async () => [{ name: 'count' }]);
     const deps = makeDeps({
-      loadEntityDoc,
+      loadFunctionsDocColumns,
+      loadFunctionDocRow,
       loadReferenceData: fakeLoadReferenceData({ keywords: ['ZAP'] }),
     });
     const svc = createSchemaCatalogService(deps);
 
     await svc.loadReference();
-    await svc.entityDoc('count');
-    expect(loadEntityDoc).toHaveBeenCalledTimes(1);
+    await svc.docEntry({ kind: 'function', name: 'count' });
+    expect(loadFunctionDocRow).toHaveBeenCalledTimes(1);
     expect(svc.refData.keywords).toContain('ZAP');
 
     svc.invalidate();
@@ -538,7 +508,7 @@ describe('invalidate', () => {
     expect(svc.refData).toEqual(assembleReferenceData(null));
     expect(svc.completions.some((c) => c.label === 'ZAP')).toBe(false);
 
-    await svc.entityDoc('count'); // docCache was cleared by invalidate → refetches
-    expect(loadEntityDoc).toHaveBeenCalledTimes(2);
+    await svc.docEntry({ kind: 'function', name: 'count' }); // entry cache was cleared by invalidate → refetches
+    expect(loadFunctionDocRow).toHaveBeenCalledTimes(2);
   });
 });

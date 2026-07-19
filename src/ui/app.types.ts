@@ -297,7 +297,7 @@ export interface App {
   /** The server-metadata/reference lifecycle service (#276 Phase 4A) —
    *  `src/application/schema-catalog-service.ts`, constructible without
    *  App/AppState/DOM: `loadVersion`/`loadSchema`/`loadReference`/
-   *  `rebuildCompletions`/`entityDoc`/`docCache`/`refData`/`completions` all
+   *  `rebuildCompletions`/`docSummary`/`docEntry`/`refData`/`completions` all
    *  live on it now — the flat `App` delegates that used to forward onto
    *  them were deleted in #276 Phase 5; every consumer reads `app.catalog.*`
    *  directly. */

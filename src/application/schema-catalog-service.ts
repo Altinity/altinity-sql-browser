@@ -1,16 +1,21 @@
 // #276 Phase 4A's SchemaCatalogService — the server-metadata/reference
 // lifecycle (server version probe, schema-tree load, lazy per-table column
-// load, editor reference data + completion candidates, hover-doc cache)
-// extracted from app.ts (see that file's history around `loadVersion`/
-// `loadSchema`/`loadColumns`/`loadReference`/`rebuildCompletions`/`entityDoc`,
-// formerly inline in `createApp`) so it's constructible without App/AppState/
-// DOM (issue #276 §6). This is a byte-for-byte port: every body below matches
-// the pre-extraction code verbatim, including the exact error handling
-// (loadSchema's catch → `schemaError`), the version-string handling, and the
-// completions-rebuild trigger points. No imports from `src/ui/**` or
-// `src/editor/**` (a pretest check enforces this) — DOM (`setConn`'s
-// `app.dom.connStatus` write, the schemaError-driven banner effect) stays in
-// app.ts, driven by the same signals/hooks as today.
+// load, editor reference data + completion candidates, target-aware
+// documentation lookups) extracted from app.ts (see that file's history
+// around `loadVersion`/`loadSchema`/`loadColumns`/`loadReference`/
+// `rebuildCompletions`, formerly inline in `createApp`) so it's constructible
+// without App/AppState/DOM (issue #276 §6). This is a byte-for-byte port:
+// every body below matches the pre-extraction code verbatim, including the
+// exact error handling (loadSchema's catch → `schemaError`), the
+// version-string handling, and the completions-rebuild trigger points. No
+// imports from `src/ui/**` or `src/editor/**` (a pretest check enforces
+// this) — DOM (`setConn`'s `app.dom.connStatus` write, the schemaError-driven
+// banner effect) stays in app.ts, driven by the same signals/hooks as today.
+//
+// #313 Phase 1 deleted the old function-name-only `entityDoc(name)` hover-doc
+// seam (and its `docCache`) once the CM6 adapter's last caller moved onto the
+// target-aware `docSummary`/`docEntry` lookups below — there is no longer a
+// second, parallel documentation cache to keep in sync.
 
 import { batch } from '@preact/signals-core';
 import type { Signal } from '@preact/signals-core';
@@ -22,7 +27,7 @@ import type { FunctionsDocCapability } from '../core/doc-capability.js';
 import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
 import type { ChCtx } from '../net/ch-client.js';
 import type {
-  loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc,
+  loadServerVersion, loadSchema, loadColumns, loadReferenceData,
   loadFunctionsDocColumns, loadFunctionDocRow,
 } from '../net/ch-client.js';
 
@@ -74,7 +79,6 @@ export interface SchemaCatalogDeps {
   loadSchema: typeof loadSchema;
   loadColumns: typeof loadColumns;
   loadReferenceData: typeof loadReferenceData;
-  loadEntityDoc: typeof loadEntityDoc;
   /** #313 — the silent per-connection `system.functions` documentation
    *  capability probe and the per-lookup row fetch (see `docSummary`/
    *  `docEntry` below). */
@@ -90,8 +94,8 @@ export interface SchemaCatalogDeps {
    *  matching `workbench-session.ts`'s own `ensureConfig` seam) — this service
    *  never reads the resolved config, only awaits it. */
   ensureConfig(): Promise<unknown>;
-  /** SQL-string-quoting function `loadColumns`/`loadEntityDoc` need to build
-   *  their literals (matches `core/format.js`'s `sqlString`). */
+  /** SQL-string-quoting function `loadColumns` needs to build its literals
+   *  (matches `core/format.js`'s `sqlString`). */
   sqlString: (s: unknown) => string;
   state: SchemaCatalogStateSlice;
   hooks: SchemaCatalogHooks;
@@ -106,16 +110,12 @@ export interface SchemaCatalogService {
   loadColumns(db: string, table: string): Promise<void>;
   loadReference(): Promise<void>;
   rebuildCompletions(): void;
-  /** Resolves to `null` on a failed fetch (not cached; retried next call). */
-  entityDoc(name: string): Promise<string | null>;
   /** #313 — target-aware, kind-cache-keyed, connection-generation-safe
-   *  documentation lookups that replace `entityDoc` for the CM6 hover/F1/
-   *  reference-pane feature (entityDoc itself keeps working unchanged for its
-   *  existing callers until a later commit deletes it). Both share ONE fetch:
-   *  `docSummary` is `summaryFromEntry` projected over the same entry cache
-   *  `docEntry` populates — a lookup never runs the SQL twice for the same
-   *  target. See `docEntryImpl`'s comment for the full capability-probe /
-   *  cache / generation-safety semantics. */
+   *  documentation lookups for the CM6 hover/F1/reference-pane feature. Both
+   *  share ONE fetch: `docSummary` is `summaryFromEntry` projected over the
+   *  same entry cache `docEntry` populates — a lookup never runs the SQL
+   *  twice for the same target. See `resolveDocEntry`'s comment for the full
+   *  capability-probe / cache / generation-safety semantics. */
   docSummary(target: DocTarget): Promise<DocLookup<DocSummary>>;
   docEntry(target: DocTarget): Promise<DocLookup<DocEntry>>;
   /** The editor reference data (keywords/functions/…) — a get/set ACCESSOR
@@ -135,16 +135,13 @@ export interface SchemaCatalogService {
   /** The flat completion candidate list built from `refData` + the live
    *  schema — same live get/set-accessor reasoning as `refData` above. */
   completions: CompletionItem[];
-  /** A pending fetch while in flight; the resolved doc string once settled (a
-   *  failed fetch, `null`, is dropped rather than cached — see `entityDoc`). */
-  readonly docCache: Map<string, string | Promise<string | null>>;
-  /** Clears the reference/completions/hover-doc caches back to the built-in
-   *  fallback (issue #276 §6). Nothing in the pre-extraction app.ts cleared
-   *  `docCache`/`refData` outside of `loadReference` itself (which already
-   *  clears `docCache` and rebuilds `refData` from a fresh fetch) — this is a
-   *  NEW capability, not wired to any call site yet. Phase 5 is expected to
-   *  call it on a connection change (sign-out/reconnect); calling it here
-   *  would change today's behavior, so this extraction does not.
+  /** Clears the reference/completions/documentation caches back to the
+   *  built-in fallback (issue #276 §6). Nothing in the pre-extraction app.ts
+   *  cleared `refData` outside of `loadReference` itself (which already
+   *  rebuilds `refData` from a fresh fetch) — this is a NEW capability, not
+   *  wired to any call site yet. Phase 5 is expected to call it on a
+   *  connection change (sign-out/reconnect); calling it here would change
+   *  today's behavior, so this extraction does not.
    *  #313 additionally clears the `docSummary`/`docEntry` state: the
    *  capability probe/result, the entry cache, and bumps the doc generation
    *  so any lookup already in flight resolves `unavailable` rather than
@@ -174,26 +171,6 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     completions = buildCompletions(refData, state.schema.value as SchemaDb[] | null);
   }
 
-  // Hover docs (#27) are fetched on demand per entity and cached for reuse —
-  // descriptions are large, so they stay out of the bulk reference load. The
-  // cache holds the resolved string (incl. '' for no-doc / error) so each
-  // entity is queried at most once per connection; an in-flight promise is
-  // cached too to dedupe concurrent hovers of the same word.
-  const docCache = new Map<string, string | Promise<string | null>>();
-  function entityDoc(name: string): Promise<string | null> {
-    if (docCache.has(name)) return Promise.resolve(docCache.get(name)!);
-    const p = deps.ensureConfig().then(() => deps.loadEntityDoc(deps.ctx(), name, deps.sqlString));
-    docCache.set(name, p); // dedupe concurrent hovers of the same name
-    p.then((doc) => {
-      // Cache a resolved doc ('' included = genuinely no doc), but DROP a
-      // failed fetch (null) so a transient error doesn't suppress it for the
-      // session (#8).
-      if (doc === null) docCache.delete(name);
-      else docCache.set(name, doc);
-    });
-    return p;
-  }
-
   // ── #313 target-aware documentation (docSummary/docEntry) ──────────────────
   //
   // Connection-scoped state, reset by `resetDocsState()` (called from both
@@ -220,10 +197,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   //  - `entryCache` — keyed by `target.kind + ':' + target.name` (the raw
   //    requested name, NOT lowercased — case-insensitivity lives in the SQL
   //    built by `buildFunctionDocSelect`). Holds either the settled
-  //    `DocLookup<DocEntry>` or the in-flight promise (same dedupe-by-map
-  //    convention as `docCache` above). `docSummary` never queries directly —
-  //    it awaits the SAME entry the `docEntry` cache holds and projects it
-  //    down with `summaryFromEntry`, so one fetch always serves both.
+  //    `DocLookup<DocEntry>` or the in-flight promise (a settled/pending map
+  //    entry dedupes concurrent lookups the same way the old `entityDoc`
+  //    hover-doc cache did). `docSummary` never queries directly — it awaits
+  //    the SAME entry the `docEntry` cache holds and projects it down with
+  //    `summaryFromEntry`, so one fetch always serves both.
   //
   // Kind-mismatch policy (#313): `system.functions` carries `is_aggregate`,
   // so a lookup requested as `{kind:'function', name:'quantile'}` fetches a
@@ -383,13 +361,11 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     resetDocsState();
     await deps.ensureConfig();
     refData = assembleReferenceData(await deps.loadReferenceData(deps.ctx()));
-    docCache.clear(); // re-fetch hover docs against the (possibly new) connection
     rebuildCompletions();
     hooks.refreshEditorReference(); // re-highlight with server keywords
   }
 
   function invalidate(): void {
-    docCache.clear();
     resetDocsState();
     refData = assembleReferenceData(null);
     rebuildCompletions();
@@ -401,14 +377,12 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     loadColumns: loadColumnsImpl,
     loadReference: loadReferenceImpl,
     rebuildCompletions,
-    entityDoc,
     docSummary,
     docEntry,
     get refData() { return refData; },
     set refData(v: AssembledReference) { refData = v; },
     get completions() { return completions; },
     set completions(v: CompletionItem[]) { completions = v; },
-    get docCache() { return docCache; },
     invalidate,
   };
 }

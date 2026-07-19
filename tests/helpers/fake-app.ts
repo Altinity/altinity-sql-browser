@@ -166,12 +166,10 @@ const catalogDefaults: SchemaCatalogService = {
   loadColumns: vi.fn(async () => {}),
   loadReference: vi.fn(async () => {}),
   rebuildCompletions: vi.fn(),
-  entityDoc: vi.fn(async () => null),
   docSummary: vi.fn(async () => ({ status: 'unavailable' as const })),
   docEntry: vi.fn(async () => ({ status: 'unavailable' as const })),
   refData: catalogRefDataDefault,
   completions: buildCompletions(catalogRefDataDefault, null),
-  docCache: new Map(),
   invalidate: vi.fn(),
 };
 
@@ -474,11 +472,11 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       loadIdps: async (): Promise<ConfigDoc> => ({ idps: [], basicLogin: true, hosts: [] }),
     },
     // The server-metadata/reference lifecycle (#276 Phase 4A) — no flat `App`
-    // delegates (Phase 5 deleted them); `entityDoc` overridden per test (#27).
+    // delegates (Phase 5 deleted them); `docSummary`/`docEntry` overridden
+    // per test (#313) where a fixture needs them.
     catalog: {
       loadVersion: vi.fn(),
       loadSchema: vi.fn(),
-      entityDoc: vi.fn(async () => ''),
     },
     toggleTheme: vi.fn(),
     // #287 W5: real, state-backed implementations (mirroring app.ts's own

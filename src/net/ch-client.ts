@@ -735,10 +735,11 @@ interface FormatRow { name: string }
  * signature help are version-correct. This is the only *bulk* reference fetch;
  * everything then runs off this in-memory data, never a query per keystroke (the
  * keystroke rule, #25). Hover descriptions are NOT loaded here — they are large
- * and most are never read — they're fetched on demand per entity and cached
- * (loadEntityDoc, #27). Each source is best-effort; a missing/denied system
- * table yields null for that piece and the caller (assembleReferenceData) falls
- * back to the built-in set.
+ * and most are never read — they're fetched on demand per target and cached by
+ * the catalog's `docSummary`/`docEntry` (schema-catalog-service.ts, #313).
+ * Each source is best-effort; a missing/denied system table yields null for
+ * that piece and the caller (assembleReferenceData) falls back to the
+ * built-in set.
  * Returns { keywords, functions, formats } — each null when its source is
  * missing/denied (the caller falls back to a built-in set).
  */
@@ -758,7 +759,7 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
         kind: r.is_aggregate ? 'agg' : 'fn',
         sig: firstLine(r.syntax) || r.name + '()',
         ret: '',
-        desc: '', // hover docs are fetched lazily per entity + cached (loadEntityDoc, #27)
+        desc: '', // rich docs are fetched lazily per target via the catalog's docSummary/docEntry (#313)
       };
     }
   }
@@ -767,25 +768,6 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
   const fmts = await tryQueryData<FormatRow>(ctx, 'SELECT name FROM system.formats WHERE is_output ORDER BY name FORMAT JSON');
   const formats = fmts ? fmts.map((r) => r.name) : null;
   return { keywords, functions, formats };
-}
-
-/**
- * Fetch one function's documentation on demand for hover docs (#27). Kept OUT of
- * the bulk reference load: descriptions are large and most are never hovered, so
- * loading every one would bloat connect time. The caller (app.entityDoc) caches
- * the result so each entity is queried at most once per connection. Returns the
- * first non-empty line (CH descriptions begin with a blank line), `''` when the
- * query SUCCEEDS but there's no description (unknown name / older server / blank),
- * or `null` when the query itself FAILED — so the caller can cache the former but
- * retry the latter rather than sticking a transient error (#8 review).
- */
-export async function loadEntityDoc(ctx: ChCtx, name: string, sqlString: SqlStringFn): Promise<string | null> {
-  const rows = await tryQueryData<{ description?: string }>(
-    ctx,
-    'SELECT description FROM system.functions WHERE name = ' + sqlString(name) + ' LIMIT 1 FORMAT JSON',
-  );
-  if (rows === null) return null;                  // query failed → retryable, don't cache
-  return rows[0] ? firstLine(rows[0].description) : ''; // succeeded → '' means genuinely no doc
 }
 
 /**

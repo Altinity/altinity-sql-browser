@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, loadFunctionsDocColumns, loadFunctionDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import type { ChCtx } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
@@ -425,8 +425,18 @@ describe('loadReferenceData', () => {
         : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)' }] })
     ));
     const ref = await loadReferenceData(ctx);
-    // desc stays '' here — hover docs are fetched on demand via loadEntityDoc.
+    // desc stays '' here — rich docs are fetched on demand via the catalog's
+    // target-aware docSummary/docEntry (schema-catalog-service.ts, #313).
     expect(ref.functions!.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
+  });
+  it('falls back to name() when the syntax column is present but entirely blank lines', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('system.keywords')
+        ? jsonResp({ data: [{ keyword: 'SELECT' }] })
+        : jsonResp({ data: [{ name: 'blankSyntax', is_aggregate: 0, syntax: '\n   \n' }] })
+    ));
+    const ref = await loadReferenceData(ctx);
+    expect(ref.functions!.blankSyntax).toEqual({ kind: 'fn', sig: 'blankSyntax()', ret: '', desc: '' });
   });
   it('falls back to the minimal function query when the syntax column is absent (older CH)', async () => {
     const ctx = ctxWith(async (url, o) => {
@@ -436,26 +446,6 @@ describe('loadReferenceData', () => {
     });
     const ref = await loadReferenceData(ctx);
     expect(ref.functions!.now).toEqual({ kind: 'fn', sig: 'now()', ret: '', desc: '' });
-  });
-});
-
-describe('loadEntityDoc (#27 — lazy hover docs)', () => {
-  it('returns the first NON-empty line (CH descriptions begin with a blank line)', async () => {
-    const ctx = ctxWith(async () => jsonResp({ data: [{ description: '\nCalculates a hash.\nMore detail here.' }] }));
-    expect(await loadEntityDoc(ctx, 'BLAKE3', sqlString)).toBe('Calculates a hash.');
-  });
-  it('escapes the name through sqlString and queries system.functions', async () => {
-    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [{ description: 'doc' }] }));
-    const ctx = ctxWith(fetchImpl);
-    await loadEntityDoc(ctx, "o'brien", sqlString);
-    expect(fetchImpl.mock.calls[0][1].body).toContain("WHERE name = 'o''brien'");
-  });
-  it('returns "" when the query succeeds but there is no description (unknown name / blank)', async () => {
-    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [] })), 'nope', sqlString)).toBe('');
-    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [{ description: '\n   \n' }] })), 'blank', sqlString)).toBe('');
-  });
-  it('returns null when the query FAILS, so the caller can retry rather than cache it (#8 review)', async () => {
-    expect(await loadEntityDoc(ctxWith(async () => textResp('boom', false, 500)), 'x', sqlString)).toBeNull();
   });
 });
 

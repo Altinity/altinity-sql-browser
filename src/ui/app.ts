@@ -426,7 +426,6 @@ export function createApp(env: CreateAppEnv = {}): App {
     loadSchema: ch.loadSchema,
     loadColumns: ch.loadColumns,
     loadReferenceData: ch.loadReferenceData,
-    loadEntityDoc: ch.loadEntityDoc,
     loadFunctionsDocColumns: ch.loadFunctionsDocColumns,
     loadFunctionDocRow: ch.loadFunctionDocRow,
     ctx: () => chCtx,
@@ -441,7 +440,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   });
   app.catalog = catalog;
   // `loadVersion`/`loadSchema`/`loadReference`/`rebuildCompletions`/
-  // `entityDoc`/`refData`/`completions`/`docCache` all live on `catalog`
+  // `docSummary`/`docEntry`/`refData`/`completions` all live on `catalog`
   // itself now (#276 Phase 5 deleted the flat `App` delegates) —
   // codemirror-adapter.ts and every other consumer reads `app.catalog.*`
   // directly.

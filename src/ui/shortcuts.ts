@@ -29,6 +29,7 @@ const SHORTCUTS: string[][] = [
   ['Spec editor mode', '⌘⌥2'],
   ['Undo', '⌘Z'],
   ['Redo', '⌘⇧Z'],
+  ['Open reference for symbol', 'F1'], // #313 — in-editor only (CM6 keymap, codemirror-adapter.ts)
   ['Show this dialog', '?'],
   ['Close dialog', 'Esc'],
 ];

@@ -74,7 +74,16 @@
       // `app.catalog.*` (the SchemaCatalogService member) — this harness
       // mirrors that shape with a writable plain object (editor-cm6.spec.js
       // reassigns `catalog.completions` to test dynamic sources).
-      catalog: { refData, completions: buildCompletions(refData, []), entityDoc: async () => null },
+      // #313: `docSummary`/`docEntry` replace the old `entityDoc(name)` seam —
+      // both resolve `unavailable` here (no live server in this harness), so
+      // the hover/F1 card falls back to the local functions-table content.
+      catalog: {
+        refData, completions: buildCompletions(refData, []),
+        docSummary: async () => ({ status: 'unavailable' }),
+        docEntry: async () => ({ status: 'unavailable' }),
+      },
+      prefs: { save() {} },
+      CodeViewer: (opts) => createCodeViewer(opts),
       specValidators: createQuerySpecValidationService(),
       specCompletionSources: createSpecCompletionSources(),
     };
