@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   chartStripType, chartRole, autoChart, schemaKey, CHART_TYPES, chartFieldOptions,
-  chartNumFmt, chartLabel, chartPalette, chartColors, buildChartData, chartJsConfig,
+  chartNumFmt, chartLabel, chartTimeValue, chartPalette, chartColors, buildChartData, chartJsConfig,
   cloneChartCfg, chartCfgValid, normalizeChartCfg, chartRowCap,
   normalizeChartStyle, chartStylePresets, chartStylePreset,
   applyChartStylePreset, shouldShowChartPoints, formatChartValue, visibleChartMeasures,
@@ -156,6 +156,29 @@ describe('chartLabel', () => {
   it('stringifies non-date values', () => {
     expect(chartLabel('B6')).toBe('B6');
     expect(chartLabel(7)).toBe('7');
+  });
+});
+
+describe('chartTimeValue', () => {
+  it('parses a Date-only value as local midnight', () => {
+    expect(chartTimeValue('2026-06-21')).toBe(new Date(2026, 5, 21, 0, 0, 0, 0).getTime());
+  });
+  it('parses a DateTime value down to the second', () => {
+    expect(chartTimeValue('2026-06-21 12:30:45')).toBe(new Date(2026, 5, 21, 12, 30, 45, 0).getTime());
+  });
+  it('parses a DateTime64 value with fractional seconds, and an ISO "T" separator', () => {
+    expect(chartTimeValue('2026-06-21 12:30:45.123456')).toBe(new Date(2026, 5, 21, 12, 30, 45, 123).getTime());
+    expect(chartTimeValue('2026-06-21T09:05:00.5')).toBe(new Date(2026, 5, 21, 9, 5, 0, 500).getTime());
+  });
+  it('returns null for a non-ClickHouse-date-shaped value', () => {
+    expect(chartTimeValue('B6')).toBeNull();
+    expect(chartTimeValue(7)).toBeNull();
+    expect(chartTimeValue('2026/06/21')).toBeNull();
+  });
+  it('returns null for a date-shaped but calendrically invalid value, instead of silently rolling over', () => {
+    expect(chartTimeValue('2026-13-01')).toBeNull(); // month 13 would otherwise roll to next January
+    expect(chartTimeValue('2026-02-30')).toBeNull(); // no Feb 30
+    expect(chartTimeValue('2026-06-21 25:00:00')).toBeNull(); // hour 25 would otherwise roll to next day
   });
 });
 
@@ -404,10 +427,10 @@ describe('buildChartData', () => {
       categoriesTruncated: false, duplicateCellsSummed: false, groupKey: 'x+series',
     };
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cfg, { columns: { flights: { hidden: true } } }))
-      .toEqual({ labels: [], datasets: [], meta: emptyMeta });
+      .toEqual({ labels: [], categories: [], datasets: [], meta: emptyMeta });
     expect(buildChartData(cols, [['B6', 10, 2, 'East']], cc({
       type: 'line', x: 0, y: [1, 2], series: 3,
-    }), { columns: { flights: { hidden: true } } })).toEqual({ labels: [], datasets: [], meta: emptyMeta });
+    }), { columns: { flights: { hidden: true } } })).toEqual({ labels: [], categories: [], datasets: [], meta: emptyMeta });
   });
 
   // --- #111: the cap limits X categories (not raw rows), and typed metadata ---
@@ -559,7 +582,7 @@ describe('chartJsConfig', () => {
     // A sentinel data result unrelated to `rows`: chartJsConfig must draw it as-is,
     // proving the renderer's one aggregation is reused, not recomputed here.
     const data = {
-      labels: ['only'], datasets: [{ label: 'precomputed', data: [42] }],
+      labels: ['only'], categories: ['only'], datasets: [{ label: 'precomputed', data: [42] }],
       meta: {
         totalRows: 2, totalCategories: 1, shownCategories: 1,
         categoriesTruncated: false, duplicateCellsSummed: false, groupKey: 'x' as const,
@@ -597,6 +620,97 @@ describe('chartJsConfig', () => {
     const hbar = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
     expect(hbar.options.scales!.y.ticks.autoSkip).toBeUndefined();
   });
+
+  // --- #309: a genuine Chart.js time scale for line/area over a time-role X ---
+  describe('time scale (#309)', () => {
+    const timeCols = [{ name: 'ts', type: 'DateTime' }, { name: 'v', type: 'UInt64' }];
+
+    it('line/area over a time-role X get scales.x.type "time" with {x,y} point data', () => {
+      const evenRows = [
+        ['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2],
+        ['2026-01-01 02:00:00', 3], ['2026-01-01 03:00:00', 4],
+      ];
+      const line = chartJsConfig(timeCols, evenRows, { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(line.options.scales!.x.type).toBe('time');
+      expect(line.data.datasets[0].data).toEqual(evenRows.map(([t, v]) => ({ x: chartTimeValue(t), y: v })));
+      const area = chartJsConfig(timeCols, evenRows, { type: 'area', x: 0, y: [1], series: null }, colors);
+      expect(area.options.scales!.x.type).toBe('time');
+    });
+
+    it('places points at real elapsed time, so an irregular/gappy sample is not evenly spaced', () => {
+      const gappyRows = [
+        ['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2], ['2026-01-02 00:00:00', 3],
+      ];
+      const cfg = chartJsConfig(timeCols, gappyRows, { type: 'line', x: 0, y: [1], series: null }, colors);
+      const xs = (cfg.data.datasets[0].data as { x: number; y: number | null }[]).map((p) => p.x);
+      const [d1, d2] = [xs[1] - xs[0], xs[2] - xs[1]];
+      expect(d1).toBe(60 * 60 * 1000); // 1 hour
+      expect(d2).toBe(23 * 60 * 60 * 1000); // 23 hours — a real gap, not "1 category apart" like d1
+      expect(d2).not.toBe(d1);
+    });
+
+    it('a single-point time series still renders one valid {x,y} point', () => {
+      const cfg = chartJsConfig(timeCols, [['2026-01-01 00:00:00', 1]], { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(cfg.options.scales!.x.type).toBe('time');
+      expect(cfg.data.datasets[0].data).toEqual([{ x: chartTimeValue('2026-01-01 00:00:00'), y: 1 }]);
+    });
+
+    it('falls back to the category scale if any displayed category is not a parseable date (defensive)', () => {
+      const badRows = [['2026-01-01 00:00:00', 1], ['not-a-date', 2]];
+      const cfg = chartJsConfig(timeCols, badRows, { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(cfg.options.scales!.x.type).toBeUndefined();
+      expect(cfg.data.datasets[0].data).toEqual([1, 2]);
+    });
+
+    it('a non-time-role X column keeps the category scale on line/area, byte-for-byte', () => {
+      // `cols`/`rows` (outer scope) use a String X column — category role.
+      const line = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(line.options.scales!.x.type).toBeUndefined();
+      expect(line.data.datasets[0].data).toEqual([null, 20]); // rows[0][1] ('2026-01-01') isn't numeric
+    });
+
+    it('bar/hbar/pie ignore a time-role X column and never switch to the time scale', () => {
+      const evenRows = [['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2]];
+      const bar = chartJsConfig(timeCols, evenRows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+      expect(bar.options.scales!.x.type).toBeUndefined();
+      expect(bar.data.datasets[0].data).toEqual([1, 2]);
+      const hbar = chartJsConfig(timeCols, evenRows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
+      expect(hbar.options.scales!.y.type).toBeUndefined();
+      const pie = chartJsConfig(timeCols, evenRows, { type: 'pie', x: 0, y: [1], series: null }, colors);
+      expect(pie.options.scales).toBeUndefined();
+    });
+
+    it('style.scale and axes visibility keep working the same under the time scale', () => {
+      const evenRows = [['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2]];
+      const zeroed = chartJsConfig(timeCols, evenRows, {
+        type: 'line', x: 0, y: [1], series: null, style: { scale: 'zero', axes: 'show' },
+      }, colors);
+      expect(zeroed.options.scales!.x.type).toBe('time');
+      expect(zeroed.options.scales!.y.beginAtZero).toBe(true);
+      expect(zeroed.options.scales!.x.display).toBe(true);
+      const hiddenAxes = chartJsConfig(timeCols, evenRows, {
+        type: 'line', x: 0, y: [1], series: null, style: { scale: 'data', axes: 'hide' },
+      }, colors);
+      expect(hiddenAxes.options.scales!.x.type).toBe('time');
+      expect(hiddenAxes.options.scales!.y.beginAtZero).toBe(false);
+      expect(hiddenAxes.options.scales!.x.display).toBe(false);
+      expect(hiddenAxes.options.scales!.y.display).toBe(false);
+    });
+
+    it('tooltip label formats the Y value (not the whole {x,y} point object) for an authored value format', () => {
+      const evenRows = [['2026-01-01 00:00:00', 1000], ['2026-01-01 01:00:00', 2000]];
+      const cfg = chartJsConfig(timeCols, evenRows, { type: 'line', x: 0, y: [1], series: null }, colors, {
+        fieldConfig: { columns: { v: { unit: ' ms', decimals: 0 } } },
+      });
+      const point = cfg.data.datasets[0].data[0] as { x: number; y: number | null };
+      expect(point).toEqual({ x: chartTimeValue('2026-01-01 00:00:00'), y: 1000 });
+      const label = cfg.options.plugins.tooltip.callbacks.label({
+        datasetIndex: 0, dataset: cfg.data.datasets[0], raw: point, formattedValue: 'unused',
+      });
+      expect(label).toBe('v: 1000 ms'); // not "v: —" (Number({x,y}) would be NaN)
+    });
+  });
+
   it('value-axis ticks humanize via callback (number and coercible string)', () => {
     const cfg = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
     const cb = cfg.options.scales!.y.ticks.callback!;

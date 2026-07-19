@@ -8,11 +8,12 @@ schema-aware autocomplete, streaming results with table / JSON / chart views,
 saved queries, history, and shareable links. It ships as a
 **single self-contained HTML file served from ClickHouse itself** (no Node
 server, no CDN, no external fonts) — the page makes **zero third-party
-requests** and renders in the OS's native UI font. Its four bundled runtime
+requests** and renders in the OS's native UI font. Its five bundled runtime
 dependencies — **CodeMirror 6** (the SQL editor, saved-query Spec JSON editor,
 and read-only source viewer),
-**Chart.js** (the chart result view), **@dagrejs/dagre** (the EXPLAIN
-pipeline-graph layout), and
+**Chart.js** + **chartjs-adapter-date-fns** (the chart result view, including
+a real time scale for time-series line/area charts), **@dagrejs/dagre** (the
+EXPLAIN pipeline-graph layout), and
 **@preact/signals-core** (state reactivity) — are inlined into that one file.
 
 Refactored from a single-file SPA into a fully modular, test-first codebase

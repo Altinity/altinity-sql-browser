@@ -4,6 +4,11 @@
 // the real side-effect that runs in the browser (and is coverage-ignored).
 
 import Chart from 'chart.js/auto';
+// Side-effect only: registers Chart.js's `_adapters._date` implementation so
+// `scales.x.type: 'time'` (line/area charts over a time-role X column — #309)
+// can compute real time-boundary ticks; `chart.js/auto` bundles the `time`
+// scale itself but ships no date-math backend of its own.
+import 'chartjs-adapter-date-fns';
 import Dagre from '@dagrejs/dagre';
 import { createApp } from './ui/app.js';
 import { createCodeMirrorEditor } from './editor/codemirror-adapter.js';
