@@ -146,6 +146,7 @@ function makeHooks(over: Partial<ExportHooks> = {}): ExportHooks {
     showExportProgress: vi.fn(() => ({ update: vi.fn(), remove: vi.fn() })),
     toast: vi.fn(),
     loadSchema: vi.fn(),
+    revokeResultImage: vi.fn(),
     ...over,
   };
 }
@@ -570,6 +571,26 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
     pending.reject(abortError());
     await first;
     expect(h.state.exporting.value).toBe(false);
+  });
+
+  // #318: exportScript() overwrites `tab.result` wholesale with its own
+  // scriptExport log (`Object.assign(tab, { result: scriptExportResult })`) —
+  // the same class of replacement workbench-session.ts's run()/runScript()
+  // and tabs.ts's closeTab already guard with `hooks.revokeResultImage`, so a
+  // tab that was showing a FORMAT PNG image result must free that image's
+  // blob URL before the log replaces it, not leak it.
+  it('revokes a previously-displayed image result\'s URL before overwriting tab.result with the script-export log', async () => {
+    const { dir } = fakeDirHandle();
+    const oldImageResult = { columns: [], rows: [], error: null, rawText: null, image: { kind: 'image' as const } };
+    const h = makeHarness({
+      sink: { pickDirectory: vi.fn(async () => dir) },
+      tab: { sqlDraft: 'SELECT 1;\nSELECT 2;', result: oldImageResult },
+    });
+    await createExportService(h.deps).exportEntry();
+    expect(h.hooks.revokeResultImage).toHaveBeenCalledWith(oldImageResult);
+    // The call happens BEFORE the replacement — never with the already-replaced log.
+    expect(h.tab.result).not.toBe(oldImageResult);
+    expect(h.tab.result).toHaveProperty('scriptExport');
   });
 
   it('runs statements sequentially in one shared session; effect statements log ok with no file, rows stream to their own file', async () => {

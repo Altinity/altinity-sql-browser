@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>FORMAT PNG image result harness (#307)</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+    #workbench-root { width: 640px; height: 420px; display: flex; flex-direction: column; }
+    #workbench-root .res-body { flex: 1; min-height: 0; }
+    #wide-tile { width: 600px; height: 200px; }
+    #tall-tile { width: 200px; height: 600px; }
+    .dash-tile-body { width: 100%; height: 100%; }
+  </style>
+  <!-- Raw, unbundled ESM harness (#89 gotcha): every bare specifier the /src
+       graph imports (results.js pulls in state.js -> @preact/signals-core)
+       needs an import-map entry — esbuild inlines these for the shipped
+       artifact, but this fixture serves /src straight off disk. -->
+  <script type="importmap">
+    { "imports": {
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+    } }
+  </script>
+</head>
+<body data-theme="dark">
+  <h1 style="font-size:13px">Workbench result: FORMAT PNG image</h1>
+  <div id="workbench-root">
+    <div id="results-region"></div>
+  </div>
+
+  <h1 style="font-size:13px">Dashboard Image panel tile (contain fit)</h1>
+  <div class="dash-tile dash-gg-tile" id="wide-tile">
+    <div class="dash-tile-body" id="wide-tile-body"></div>
+  </div>
+  <div class="dash-tile dash-gg-tile" id="tall-tile">
+    <div class="dash-tile-body" id="tall-tile-body"></div>
+  </div>
+
+  <script type="module">
+    import { renderResults } from '/src/ui/results.js';
+    import { newResult } from '/src/core/stream.js';
+    import { renderResolvedPanel } from '/src/ui/panels.js';
+    import { resolvePanel } from '/src/core/panel-cfg.js';
+    import { signal } from '@preact/signals-core';
+
+    // A real, minimal, hand-built 2x2 RGB PNG (signature + IHDR + one IDAT +
+    // IEND) — top row red/green, bottom row blue/yellow — generated locally
+    // with Node's zlib (not copied from anywhere), verified against
+    // src/core/png.ts's validatePng before being hardcoded here.
+    const PNG_BYTES = new Uint8Array([
+      137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,2,0,0,0,
+      253,212,154,115,0,0,0,20,73,68,65,84,120,156,99,248,207,192,192,0,194,
+      12,255,255,255,103,0,0,30,239,4,252,163,200,180,247,0,0,0,0,73,69,78,68,
+      174,66,96,130,
+    ]);
+
+    // ── Scenario 1: Workbench result area — a completed FORMAT PNG run ─────
+    const region = document.getElementById('results-region');
+    const result = newResult('PNG');
+    result.image = { kind: 'image', format: 'PNG', mimeType: 'image/png', bytes: PNG_BYTES, width: 2, height: 2 };
+    result.progress = { rows: 0, bytes: PNG_BYTES.length, elapsed_ns: 5_000_000 };
+
+    const tab = { name: 'Spiral demo', result };
+    window.__downloaded = null;
+    const app = {
+      dom: { resultsRegion: region },
+      document,
+      chart: null,
+      state: {
+        resultView: signal('table'),
+        running: signal(false),
+        exporting: signal(false),
+        resultSort: { col: null, dir: 'asc' },
+        cellDrawerPx: 360,
+      },
+      activeTab: () => tab,
+      actions: {
+        rerenderTabs: () => {}, cancel: () => {}, cancelExportScript: () => {},
+        cancelSchemaGraph: () => {}, expandSchemaGraph: () => {}, setExplainView: () => {},
+        setResultRowLimit: () => {}, copyResult: () => {}, copySnapshot: () => {},
+      },
+      now: () => 0, elapsedMs: () => 0, wallNow: () => 0,
+      conn: { ensureFreshToken: async () => true },
+      exec: { executeRead: async () => {} },
+      params: { recordBoundParams: () => {}, saveVarValues: () => {}, saveFilterActive: () => {}, clearVarRecent: () => {} },
+      prefs: { save: () => {} },
+      updateSaveBtn: () => {},
+      updateEditorModeUi: () => {},
+      downloadFile: (filename, mime, content) => { window.__downloaded = { filename, mime, size: content.length }; },
+      createObjectUrl: (bytes, mime) => URL.createObjectURL(new Blob([bytes], { type: mime })),
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+    };
+    renderResults(app);
+    window.__wbApp = app;
+    window.__rerenderWb = () => renderResults(app);
+
+    // ── Scenario 2/3: Dashboard Image panel tiles (contain fit) ────────────
+    function paintTile(bodyId, fit) {
+      const body = document.getElementById(bodyId);
+      const panelApp = {
+        createObjectUrl: (bytes, mime) => URL.createObjectURL(new Blob([bytes], { type: mime })),
+        revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+      };
+      const saved = { cfg: { type: 'image', fit, background: 'theme', alt: 'A tiny demo image' } };
+      const resolved = resolvePanel(saved, { columns: [], rows: [], rowCount: null });
+      const panelResult = { image: { kind: 'image', format: 'PNG', mimeType: 'image/png', bytes: PNG_BYTES, width: 2, height: 2 } };
+      const out = renderResolvedPanel(panelApp, resolved, panelResult, {
+        surface: 'dashboard', state: {}, rerender: () => {}, readonly: true, title: 'Demo image tile',
+      });
+      body.replaceChildren(out.node);
+    }
+    paintTile('wide-tile-body', 'contain');
+    paintTile('tall-tile-body', 'contain');
+
+    window.__ready = true;
+  </script>
+</body>
+</html>

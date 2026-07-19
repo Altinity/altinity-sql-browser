@@ -36,6 +36,8 @@ describe('formatFileMeta', () => {
     expect(formatFileMeta('XML')).toEqual({ ext: 'xml', mime: 'application/xml' });
     expect(formatFileMeta('Markdown')).toEqual({ ext: 'md', mime: 'text/markdown' });
     expect(formatFileMeta('SQLInsert')).toEqual({ ext: 'sql', mime: 'application/sql' });
+    expect(formatFileMeta('PNG')).toEqual({ ext: 'png', mime: 'image/png' });
+    expect(formatFileMeta('png')).toEqual({ ext: 'png', mime: 'image/png' });
   });
   it('falls back to txt for Pretty/Vertical/Values/unknown formats', () => {
     expect(formatFileMeta('PrettyCompact')).toEqual({ ext: 'txt', mime: 'text/plain' });

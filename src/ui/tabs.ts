@@ -11,6 +11,7 @@ import type { AppDom, ActionsRegistry } from './app.types.js';
 import type { AppState, QueryTab } from '../state.js';
 import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
+import { revokeResultImageUrl } from './results.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
  *  full ~50-member `App` contract (app.types.ts). `state` is the real
@@ -25,6 +26,10 @@ export interface TabsApp {
   actions: Pick<ActionsRegistry, 'setEditorMode'>;
   specEditor: Pick<SpecEditorPort, 'revealOffset'>;
   sqlEditor: Pick<EditorPort, 'focus'>;
+  /** Object-URL seam for the Image (PNG) result view (#307) — `closeTab`
+   *  revokes a closed tab's own result image URL through it (nothing else
+   *  in this module reads/writes a result's image). */
+  revokeObjectUrl(url: string): void;
 }
 
 /** The shape `onOpen()` (filterRoleBadge's caller) must hand back — only
@@ -139,6 +144,12 @@ export function loadIntoNewTab(app: TabsApp, queryOrName: QueryOrName, sql = '')
 export function closeTab(app: TabsApp, id: string): void {
   if (app.state.tabs.value.length <= 1) return;
   const idx = app.state.tabs.value.findIndex((t) => t.id === id);
+  // Free the closed tab's own Image (PNG) result URL (#307) — its blob would
+  // otherwise leak for the life of the page (nothing else revokes it once the
+  // tab itself is gone; `run()`'s own rerun-revocation only frees a tab's
+  // PREVIOUS result, never the current one).
+  const closed = app.state.tabs.value[idx];
+  if (closed) revokeResultImageUrl(app, closed.result);
   batch(() => {
     app.state.tabs.value = app.state.tabs.value.filter((t) => t.id !== id);
     if (id === app.state.activeTabId.value) {

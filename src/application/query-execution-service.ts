@@ -16,7 +16,8 @@
 
 import type { ChCtx, RunQueryOptions, RunQueryResult } from '../net/ch-client.js';
 import type { runQuery, killQuery } from '../net/ch-client.js';
-import { applyStreamLine } from '../core/stream.js';
+import { applyStreamLine, looksLikeChException, parseExceptionText } from '../core/stream.js';
+import { validatePng } from '../core/png.js';
 import type { StreamResult } from '../core/stream.js';
 import { isRowReturning } from '../core/sql-split.js';
 import { parseSelectResult, firstRowPreview, SELECT_ROW_CAP } from '../core/script-result.js';
@@ -122,6 +123,12 @@ export interface AttemptResult extends RunQueryResult {
   transient?: boolean;
 }
 
+// Bounded textual prefix decoded from a failed-PNG-validation binary body to
+// check for an embedded ClickHouse exception (#307 item 6) — large enough for
+// any real CH error message, small enough to never meaningfully allocate on a
+// huge (already MAX_PNG_BYTES-capped) body.
+const CH_EXCEPTION_PREFIX_BYTES = 4096;
+
 // ClickHouse's transient "session is busy / locked by a concurrent client"
 // (SESSION_IS_LOCKED, code 373) — retryable once the prior request releases it.
 const SESSION_BUSY = /SESSION_IS_LOCKED|session .* is locked|locked by a concurrent/i;
@@ -177,7 +184,29 @@ export function createQueryExecutionService(deps: QueryExecutionDeps): QueryExec
         onChunk,
       });
       if (out.error != null) result.error = out.error;
-      else if (out.raw != null) {
+      else if (out.binary != null) {
+        const check = validatePng(out.binary.bytes);
+        if (check.ok) {
+          result.image = {
+            kind: 'image',
+            format: 'PNG',
+            mimeType: 'image/png',
+            bytes: out.binary.bytes,
+            width: check.width,
+            height: check.height,
+          };
+          result.progress.bytes = out.binary.bytes.byteLength;
+        } else {
+          // ClickHouse can fail AFTER sending a 2xx status (headers are
+          // already committed once streaming starts) and append its
+          // exception as plain text instead of PNG bytes — surface that CH
+          // error verbatim rather than a confusing "structurally invalid
+          // PNG" message (#307 item 6). Bounded + non-fatal: a real PNG's
+          // binary prefix will never decode into exception-shaped text.
+          const prefix = new TextDecoder('utf-8', { fatal: false }).decode(out.binary.bytes.subarray(0, CH_EXCEPTION_PREFIX_BYTES));
+          result.error = looksLikeChException(prefix) ? parseExceptionText(prefix) : 'Invalid PNG result: ' + check.reason;
+        }
+      } else if (out.raw != null) {
         result.rawText = out.raw;
         result.progress.bytes = out.raw.length;
       }

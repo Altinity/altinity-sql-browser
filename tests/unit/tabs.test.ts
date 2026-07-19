@@ -155,4 +155,26 @@ describe('closeTab', () => {
     closeTab(app, 't2');
     expect(app.state.activeTabId.value).toBe('t1');
   });
+  it('closing a tab holding a FORMAT PNG image result frees its object URL (#307)', () => {
+    const app = makeApp();
+    const image = { kind: 'image', format: 'PNG', mimeType: 'image/png', bytes: new Uint8Array([1]), width: 1, height: 1 };
+    app.state.tabs.value = [
+      { id: 't1', name: 'A' } as QueryTab,
+      { id: 't2', name: 'B', result: { image } } as unknown as QueryTab,
+    ];
+    app.state.activeTabId.value = 't1';
+    closeTab(app, 't2');
+    // `revokeResultImageUrl` (results.ts) is a no-op unless the URL was
+    // actually minted (cached) — the closed tab's result never went through
+    // renderResults here, so nothing was cached; the seam itself, and the
+    // "no cached URL" no-op path, are exercised directly in results.test.ts.
+    expect(app.revokeObjectUrl).not.toHaveBeenCalled();
+    expect(app.state.tabs.value.map((t) => t.id)).toEqual(['t1']);
+  });
+  it('closing a tab with no result at all is a no-op for revokeObjectUrl', () => {
+    const app = makeApp();
+    app.state.tabs.value = [{ id: 't1', name: 'A' } as QueryTab, { id: 't2', name: 'B', result: null } as QueryTab];
+    closeTab(app, 't2');
+    expect(app.revokeObjectUrl).not.toHaveBeenCalled();
+  });
 });

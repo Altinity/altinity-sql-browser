@@ -13,7 +13,11 @@ de-duped by name (your config.xml wins), and offers them as a
   • a plain connection (hostname/user/password) → prefills the credentials form.
   • a connection carrying clickhouse-client's OAuth keys (`oauth-url`,
     `oauth-client-id`, optional `oauth-client-secret` for a Web client like Google,
-    `oauth-audience`) → an OAuth sign-in against that cluster.
+    `oauth-audience`) → an OAuth sign-in against that cluster. Add
+    `<ch-auth>basic</ch-auth>` if that cluster is stock/OSS ClickHouse behind a
+    ch-jwt-verify deployment (docs/CLICKHOUSE-OSS-OAUTH.md) rather than a
+    `<token_processors>` build — the browser then sends the JWT as the HTTP
+    Basic password instead of `Authorization: Bearer`.
 
   A connection with `<accept-invalid-certificate>1</accept-invalid-certificate>`
   is flagged `insecure` in config.json. The browser can't skip TLS validation
@@ -150,15 +154,24 @@ def collect():
         oauth_client = _text(conn, "oauth-client-id", "oauth_client_id")
         oauth_secret = _text(conn, "oauth-client-secret", "oauth_client_secret")
         oauth_aud = _text(conn, "oauth-audience", "oauth_audience")
+        # Stock/OSS ClickHouse can't validate a Bearer JWT itself (see
+        # docs/CLICKHOUSE-OSS-OAUTH.md) — a ch-jwt-verify deployment instead expects
+        # the JWT as the HTTP Basic *password*. `--ch-auth basic` on install.sh bakes
+        # this into a real deploy's config.json; mirror it here so a local <connection>
+        # can opt into the same `ch_auth: "basic"` the browser already understands.
+        ch_auth = _text(conn, "ch-auth", "ch_auth").lower()
         if oauth_url and oauth_client:
-            idps_by_id.setdefault(name, {
+            idp = {
                 "id": name, "label": name, "issuer": oauth_url, "client_id": oauth_client,
                 # Optional: a Web-client secret (e.g. Google) for the code exchange.
                 # Empty → public PKCE. clickhouse-client has no such flag, so this is
                 # a local-only convenience key read from the same connection.
                 "client_secret": oauth_secret, "audience": oauth_aud,
                 "bearer": "access_token" if oauth_aud else "id_token",
-            })
+            }
+            if ch_auth == "basic":
+                idp["ch_auth"] = "basic"
+            idps_by_id.setdefault(name, idp)
             hosts.append({"label": name, "url": url, "auth": "oauth", "idp": name,
                           "insecure": insecure, "_alts": alts})
         else:

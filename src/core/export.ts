@@ -56,6 +56,7 @@ export function formatFileMeta(format?: string | null): FileMeta {
   if (/^XML$/i.test(f)) return { ext: 'xml', mime: 'application/xml' };
   if (/^Markdown$/i.test(f)) return { ext: 'md', mime: 'text/markdown' };
   if (/^SQLInsert$/i.test(f)) return { ext: 'sql', mime: 'application/sql' };
+  if (/^PNG$/i.test(f)) return { ext: 'png', mime: 'image/png' };
   return { ext: 'txt', mime: 'text/plain' }; // Pretty*, Vertical, Values, unknown
 }
 

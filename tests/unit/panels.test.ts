@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/panels.js';
 import { renderResults } from '../../src/ui/results.js';
 import { parseMarkdown } from '../../src/core/markdown-lite.js';
@@ -10,6 +10,7 @@ import { DASHBOARD_ROLE_RESULT_CHOICES, PANEL_RESULT_CHOICES } from '../../src/c
 import type { App, Tab } from '../../src/ui/app.types.js';
 import type { PanelCfg } from '../../src/generated/json-schema.types.js';
 import type { Column } from '../../src/core/panel-cfg.js';
+import type { ImageResultPayload } from '../../src/core/png.js';
 
 // core/stream.js is plain JS; without an explicit return-type annotation TS
 // infers the empty-array initializers of `columns`/`rows` as `never[]`,
@@ -28,6 +29,7 @@ interface StreamResult {
   pct: number;
   rowLimit: number;
   capped: boolean;
+  image: ImageResultPayload | null;
   // QueryTab.result (state.ts) holds this as an opaque Record<string, unknown>
   // (only results.js knows the concrete shape); the index signature lets a
   // StreamResult assign straight into `tab.result` without a further cast.
@@ -703,5 +705,102 @@ describe('renderResolvedPanel', () => {
     out.destroy!();
     expect(inst!.destroyed).toBe(true);
     expect(() => out.destroy!()).not.toThrow(); // idempotent
+  });
+});
+
+// ── Image arm (#307) ──────────────────────────────────────────────────────────
+describe('image panel arm', () => {
+  const fakeImage = () => ({
+    kind: 'image' as const, format: 'PNG' as const, mimeType: 'image/png' as const,
+    bytes: new Uint8Array([1, 2, 3]), width: 4, height: 5,
+  });
+
+  it('has no inline controls — authoring happens on the cfg (Spec editor)', () => {
+    expect(PANEL_TYPES.image.controls({
+      app: makeApp(), result: null, cfg: { type: 'image' }, onChange: () => {},
+    })).toBeNull();
+  });
+
+  it('shows the empty hint before any image result is available', () => {
+    const out = PANEL_TYPES.image.renderPanel({ app: makeApp(), result: null, cfg: { type: 'image' } });
+    expect(out.node.textContent).toContain('FORMAT PNG');
+  });
+
+  it('mints an object URL through the injected seam, sets fit/background/alt, and frees it on destroy', () => {
+    const image = fakeImage();
+    const created: [Uint8Array, string][] = [];
+    const revoked: string[] = [];
+    const app = makeApp({
+      createObjectUrl: vi.fn((bytes: Uint8Array, mime: string) => { created.push([bytes, mime]); return 'blob:test-1'; }),
+      revokeObjectUrl: vi.fn((url: string) => { revoked.push(url); }),
+    });
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image },
+      cfg: { type: 'image', fit: 'cover', background: 'checkerboard', alt: 'a plot' },
+      title: 'My tile',
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    expect(img.src).toBe('blob:test-1');
+    expect(img.alt).toBe('a plot'); // explicit alt wins over the title fallback
+    expect(img.className).toContain('panel-image-fit-cover');
+    expect(out.node.className).toContain('panel-image-bg-checkerboard');
+    expect(created).toEqual([[image.bytes, image.mimeType]]);
+    out.destroy!();
+    expect(revoked).toEqual(['blob:test-1']);
+  });
+
+  it('defaults fit=contain, background=theme, and alt falls back to the tile/query title', () => {
+    const app = makeApp();
+    const image = fakeImage();
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image },
+      cfg: { type: 'image' }, title: 'Fallback title',
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    expect(img.className).toContain('panel-image-fit-contain');
+    expect(out.node.className).toContain('panel-image-bg-theme');
+    expect(img.alt).toBe('Fallback title');
+  });
+
+  it('falls back to "PNG query result" when no cfg.alt and no title are given', () => {
+    const app = makeApp();
+    const image = fakeImage();
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image },
+      cfg: { type: 'image' },
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    expect(img.alt).toBe('PNG query result');
+  });
+
+  it('#318: an <img> decode failure revokes the URL and swaps in the empty-hint presentation', () => {
+    const image = fakeImage();
+    const revoked: string[] = [];
+    const app = makeApp({
+      createObjectUrl: vi.fn(() => 'blob:test-2'),
+      revokeObjectUrl: vi.fn((url: string) => { revoked.push(url); }),
+    });
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image }, cfg: { type: 'image' },
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    img.dispatchEvent(new Event('error'));
+    expect(revoked).toEqual(['blob:test-2']);
+    expect(qs(out.node, 'img')).toBeNull();
+    expect(out.node.textContent).toContain('PNG decode failed');
+    // `destroy` (the normal repaint-cleanup path) is idempotent against the
+    // SAME revoke the decode-failure handler already fired — no double-free.
+    out.destroy!();
+    expect(revoked).toEqual(['blob:test-2']);
+  });
+
+  it('renders through renderResolvedPanel end to end (resolvePanel → registry dispatch)', () => {
+    const app = makeApp();
+    const image = fakeImage();
+    const resolved = resolvePanel({ cfg: { type: 'image', fit: 'actual' } }, []);
+    const { node } = renderResolvedPanel(app, resolved, {
+      columns: [], rows: [], error: null, rawText: null, image,
+    }, { surface: 'dashboard', state: {}, rerender: () => {}, readonly: true, onCell: () => {} });
+    expect(qs(node, '.panel-image-fit-actual')).not.toBeNull();
   });
 });

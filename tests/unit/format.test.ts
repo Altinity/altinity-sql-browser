@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
+  clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio, isBinaryFormat,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -171,6 +171,11 @@ describe('detectSqlFormat', () => {
     expect(detectSqlFormat('SELECT 1 FORMAT CSV SETTINGS max_threads=1')).toBe('CSV');
     expect(detectSqlFormat('SELECT 1 FORMAT CSV SETTINGS max_threads=1;')).toBe('CSV');
     expect(detectSqlFormat('SELECT 1 SETTINGS max_threads=1 FORMAT CSV')).toBe('CSV'); // the other order
+  });
+  it('detects a trailing FORMAT PNG in either FORMAT/SETTINGS order (#307)', () => {
+    expect(detectSqlFormat('SELECT plot(x) FROM t FORMAT PNG')).toBe('PNG');
+    expect(detectSqlFormat('SELECT plot(x) FROM t FORMAT PNG SETTINGS max_threads=1')).toBe('PNG');
+    expect(detectSqlFormat('SELECT plot(x) FROM t SETTINGS max_threads=1 FORMAT PNG')).toBe('PNG');
   });
   it('returns null without a trailing FORMAT clause', () => {
     expect(detectSqlFormat('SELECT 1')).toBeNull();
@@ -359,5 +364,21 @@ describe('toSubquery', () => {
     expect(toSubquery('')).toBe('');
     expect(toSubquery('   ')).toBe('');
     expect(toSubquery(null)).toBe('');
+  });
+});
+
+describe('isBinaryFormat', () => {
+  it('is true for PNG, case-insensitive', () => {
+    expect(isBinaryFormat('PNG')).toBe(true);
+    expect(isBinaryFormat('png')).toBe(true);
+    expect(isBinaryFormat('Png')).toBe(true);
+  });
+  it('is false for other/empty/nullish formats', () => {
+    expect(isBinaryFormat('Table')).toBe(false);
+    expect(isBinaryFormat('JSON')).toBe(false);
+    expect(isBinaryFormat('PNGx')).toBe(false);
+    expect(isBinaryFormat('')).toBe(false);
+    expect(isBinaryFormat(null)).toBe(false);
+    expect(isBinaryFormat(undefined)).toBe(false);
   });
 });

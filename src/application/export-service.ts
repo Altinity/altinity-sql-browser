@@ -158,6 +158,11 @@ export interface ExportHooks {
   /** Fire-and-forget schema reload after a schema-mutating script statement
    *  actually ran (mirrors `WorkbenchHooks.loadSchema`). */
   loadSchema(): void;
+  /** #318: free a displayed image's blob URL before `tab.result` is replaced
+   *  wholesale — mirrors `WorkbenchHooks.revokeResultImage` (workbench-
+   *  session.ts) exactly; a no-op for every non-image result (`results.js`'s
+   *  `revokeResultImageUrl` itself is the shared no-op guard). */
+  revokeResultImage(result: unknown): void;
 }
 
 /** Every side effect this service needs, injected as a narrow bag — mirrors
@@ -478,6 +483,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       status: 'pending', file: null, bytes: 0, startedAt: null, ms: 0, error: null,
     }));
     const scriptExportResult: ScriptExportResult = { scriptExport: entries, startedAt: t0 };
+    deps.hooks.revokeResultImage(tab.result); // #318: free a displayed image's URL before it's overwritten
     Object.assign(tab, { result: scriptExportResult });
     deps.state.resultSort = { col: null, dir: 'asc' };
     exportScriptCancelled = false;

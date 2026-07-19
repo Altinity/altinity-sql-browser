@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
-  renderResults, renderJson, renderTable, openCellDetail, openRowsViewer, expandDataPane,
+  renderResults, renderJson, renderTable, openCellDetail, openRowsViewer, expandDataPane, revokeResultImageUrl,
 } from '../../src/ui/results.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry,
@@ -8,6 +9,7 @@ import type {
 import { makeApp } from '../helpers/fake-app.js';
 import type { FakeChart } from '../helpers/fake-app.js';
 import { newResult as newResultUntyped } from '../../src/core/stream.js';
+import type { ImageResultPayload } from '../../src/core/png.js';
 import { formatRows } from '../../src/core/format.js';
 import { queryPanel } from '../../src/core/saved-query.js';
 import type { AppState, ResultSort } from '../../src/state.js';
@@ -93,6 +95,19 @@ function tableResult(): Indexed<QueryResult> {
   return r;
 }
 
+// A validated FORMAT PNG image result (#307) — same `newResult()` shape as
+// every other fixture here, with `image` populated the way executeRead only
+// ever sets it (a real result never carries both `image` and `rows`/`rawText`).
+function imageResult(overrides: Partial<ImageResultPayload> = {}): Indexed<QueryResult> {
+  const r = newResult('PNG');
+  r.image = {
+    kind: 'image', format: 'PNG', mimeType: 'image/png',
+    bytes: new Uint8Array([1, 2, 3, 4]), width: 10, height: 20,
+    ...overrides,
+  };
+  return r;
+}
+
 describe('renderResults states', () => {
   it('no-ops without a region', () => {
     const app = makeApp();
@@ -153,6 +168,92 @@ describe('renderResults states', () => {
     const app = appWithResult(r);
     renderResults(app);
     expect(qs(app.dom.resultsRegion, '.result-view-tab').textContent).toContain('JSON');
+  });
+  it('image result (#307): a centered <img> from a minted object URL, sized from the payload, alt = tab name', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    renderResults(app);
+    const img = qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img');
+    expect(img.getAttribute('src')).toBe('blob:fake');
+    expect(img.getAttribute('width')).toBe('10');
+    expect(img.getAttribute('height')).toBe('20');
+    expect(img.getAttribute('alt')).toBe('Untitled');
+    expect(app.createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(app.createObjectUrl).toHaveBeenCalledWith(r.image!.bytes, 'image/png');
+  });
+  it('image result: falls back to a generic alt when the tab is somehow unnamed', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    app.activeTab().name = '';
+    renderResults(app);
+    const img = qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img');
+    expect(img.getAttribute('alt')).toBe('PNG query result');
+  });
+  it('image result: a re-render of the SAME payload reuses the cached object URL', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    renderResults(app);
+    renderResults(app);
+    expect(app.createObjectUrl).toHaveBeenCalledTimes(1);
+  });
+  it('image result: a locked "Image (PNG)" tab, row-limit selector hidden, Copy replaced by Download PNG (exact bytes, no Copy)', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    renderResults(app);
+    const region = app.dom.resultsRegion;
+    expect(qsa(region, '.result-view-tab')).toHaveLength(1);
+    expect(qs(region, '.result-view-tab').textContent).toContain('Image (PNG)');
+    expect(region.querySelector('.row-limit')).toBeNull();
+    expect([...qsa(region, '.res-act')].some((b) => /Copy/.test(b.textContent))).toBe(false);
+    const dl = [...qsa(region, '.res-act')].find((b) => /Download PNG/.test(b.textContent));
+    expect(dl).not.toBeUndefined();
+    click(dl);
+    expect(app.downloadFile).toHaveBeenCalledWith('Untitled.png', 'image/png', r.image!.bytes);
+  });
+  it('image result: streamingBlank never misclassifies a finished image (rows is always [])', () => {
+    const r = imageResult();
+    const app = appWithResult(r, { running: false });
+    renderResults(app);
+    expect(qs(app.dom.resultsRegion, '.image-result-view')).not.toBeNull();
+    expect(app.dom.resultsRegion.textContent).not.toContain('Starting query…');
+  });
+  it('#318: an <img> decode failure shows the standard error state, revokes the URL, and clears the cache so a re-render mints a fresh one', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    renderResults(app);
+    const img = qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img');
+    img.dispatchEvent(new Event('error'));
+    expect(app.revokeObjectUrl).toHaveBeenCalledWith('blob:fake');
+    expect(qs(app.dom.resultsRegion, '.results-error').textContent).toContain('PNG decode failed');
+    expect(qs(app.dom.resultsRegion, '.image-result-view img')).toBeNull();
+    // The cache entry is gone — a later render of the SAME payload mints a
+    // fresh URL rather than reusing the now-dead one.
+    (app.createObjectUrl as Mock).mockReturnValueOnce('blob:fake-2');
+    renderResults(app);
+    expect(qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img').getAttribute('src')).toBe('blob:fake-2');
+  });
+
+  it('revokeResultImageUrl (#307): frees a painted image\'s URL, once, and is a no-op otherwise', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    // Never painted (no createObjectUrl call yet) → nothing to free.
+    revokeResultImageUrl(app, r);
+    expect(app.revokeObjectUrl).not.toHaveBeenCalled();
+    renderResults(app); // mints + caches the URL
+    revokeResultImageUrl(app, r);
+    expect(app.revokeObjectUrl).toHaveBeenCalledWith('blob:fake');
+    expect(app.revokeObjectUrl).toHaveBeenCalledTimes(1);
+    // A second revoke of the same (already-freed) result is a no-op — no
+    // double-free, and a later re-render would mint a genuinely fresh URL.
+    revokeResultImageUrl(app, r);
+    expect(app.revokeObjectUrl).toHaveBeenCalledTimes(1);
+  });
+  it('revokeResultImageUrl: no-ops for null/scriptResult/non-image QueryResult', () => {
+    const app = appWithResult(null);
+    expect(() => revokeResultImageUrl(app, null)).not.toThrow();
+    expect(() => revokeResultImageUrl(app, { script: [] })).not.toThrow();
+    expect(() => revokeResultImageUrl(app, tableResult())).not.toThrow();
+    expect(app.revokeObjectUrl).not.toHaveBeenCalled();
   });
   it('reports 0 rows', () => {
     const r = newResult('Table');

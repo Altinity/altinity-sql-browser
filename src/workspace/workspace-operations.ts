@@ -50,13 +50,21 @@ export function createNewWorkspace(genId: WorkspaceIdGen, name?: unknown): Store
   };
 }
 
-/** Import a query collection into the workspace: modifies `queries` ONLY. The
- *  Dashboard is left byte-for-byte unchanged — imported `spec.favorite` flags
- *  never add Dashboard tiles (#280 "Import queries modifies the query
- *  collection only; imported favorite flags do not add Dashboard tiles"). The
- *  incoming collection replaces the workspace's queries; conflict resolution
- *  (use-existing/copy/replace/skip) and ID remapping are the Phase-5 import
- *  planner's job, applied before a candidate reaches here. */
+/** Import a query collection into the workspace: modifies `queries` ONLY, at
+ *  THIS layer — the Dashboard passed through is byte-for-byte unchanged here.
+ *  (#280's original rule — "imported favorite flags do not add Dashboard
+ *  tiles" — turned out to be a bug, not a decision: a fresh workspace's
+ *  Dashboard is `null` and `toggleTileMembership` also returned `null` for
+ *  it, so a favorited panel-role query could never get a tile through EITHER
+ *  path. #307 fixes both; for imports the fix is one layer up, in
+ *  `import-planner.ts`'s `planImportQueries`, which calls
+ *  `syncFavoriteTileMembership` on this function's result before returning
+ *  its plan — kept there, not here, so this repository-level primitive stays
+ *  a pure "assemble the candidate" step with no Dashboard-semantics
+ *  knowledge.) The incoming collection replaces the workspace's queries;
+ *  conflict resolution (use-existing/copy/replace/skip) and ID remapping are
+ *  the Phase-5 import planner's job, applied before a candidate reaches
+ *  here. */
 export function importQueries(
   workspace: StoredWorkspaceV1, queries: readonly SavedQueryV2[],
 ): StoredWorkspaceV1 {

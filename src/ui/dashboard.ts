@@ -34,6 +34,7 @@ import { Icon as IconUntyped } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
+import type { ImageResultPayload } from '../core/png.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
 import {
   formatBytes as formatBytesUntyped, formatRows as formatRowsUntyped,
@@ -124,14 +125,19 @@ export interface DashboardApp {
 const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
-/** #291 review F4: `renderDashboard` can run more than once against the SAME
- *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
- *  an import-commit while already on `/dashboard` (file-menu.ts's Import
- *  flow). Module-level so a later call can find and remove the PRIOR call's
- *  resize listener before installing its own; without this, repeated renders
- *  stack listeners that all still close over their own render's now-stale
+/** #291 review F4 / #318: `renderDashboard` can run more than once against the
+ *  SAME window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place
+ *  after an import-commit while already on `/dashboard` (file-menu.ts's Import
+ *  flow). Module-level so a later call can fully tear down the PRIOR call's
+ *  live state before installing its own: the resize listener (#291's own
+ *  fix), the signals `effect()` (its own `dispose` — a second live effect
+ *  would double-publish/double-paint over the new render's DOM), the
+ *  `DashboardViewerSession` (in-flight requests, generations — `session.
+ *  destroy()`), and every retained per-tile renderer (Chart.js instances,
+ *  #307 image blob URLs — `destroyChart`). Without this, a repeated render
+ *  leaks all of the above, each still closing over its own render's now-stale
  *  `session`/`currentDoc`/`containerWidthPx`. */
-let installedGridResizeListener: { win: Window; handler: () => void } | null = null;
+let installedDashboardDisposer: (() => void) | null = null;
 
 /**
  * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
@@ -182,6 +188,12 @@ interface TileEl {
   panelState: { key: string;[k: string]: unknown } | null;
   destroy: (() => void) | null;
   paintedRows: unknown[][] | null;
+  /** The last image identity `paintPanel` painted (#307) — `rows` for an
+   *  Image tile is always an empty array (a query result never streams
+   *  `{row}` lines), so the `rows`-reference repaint gate below can't tell
+   *  a fresh Image result from an unchanged one on its own; this is checked
+   *  alongside it. */
+  paintedImage: ImageResultPayload | null;
 }
 
 /** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
@@ -290,12 +302,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
 
-  // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
-  // call installed on this window before this call installs its own (see
-  // `installedGridResizeListener`'s own doc comment above).
-  if (installedGridResizeListener) {
-    installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
-    installedGridResizeListener = null;
+  // #291 review F4 / #318: tear down a PRIOR renderDashboard call's live state
+  // on this window before this call builds its own (see
+  // `installedDashboardDisposer`'s own doc comment above).
+  if (installedDashboardDisposer) {
+    installedDashboardDisposer();
+    installedDashboardDisposer = null;
   }
 
   // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
@@ -674,18 +686,44 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       });
     }
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
-    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null };
+    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null, paintedImage: null };
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
 
   function destroyChart(tileEl: TileEl): void { if (tileEl.destroy) { tileEl.destroy(); tileEl.destroy = null; } }
 
+  // #318: a tile removed from the document (remove-tile, or a syncDocument
+  // whose new tile set drops one) stops appearing in `sview.tiles` — the
+  // session itself drops the runtime record (`syncDocument`) — but its
+  // `tileEls` entry, and any live chart/image renderer it holds, were never
+  // cleaned up: `reconcileGrid`/`reconcileGrafanaGrid` only ever ADD/update
+  // cards for tiles that are still present, so a stale entry just sat in the
+  // map forever (leaking a Chart.js instance or, since #307, an image blob
+  // URL). Called once per publish, before either engine reconciles, so both
+  // paths share the same prune regardless of which is active.
+  function pruneRemovedTiles(sview: DashboardViewState): void {
+    if (!tileEls.size) return;
+    const liveIds = new Set(sview.tiles.map((t) => t.tileId));
+    for (const [tileId, tileEl] of tileEls) {
+      if (liveIds.has(tileId)) continue;
+      destroyChart(tileEl);
+      tileEl.card.remove();
+      tileEls.delete(tileId);
+      gridPlacementByTile.delete(tileId);
+    }
+  }
+
   // Paint an ordinary (non-KPI) tile's result once per new result. Only ever
   // called for a 'ready' tile, so columns/rows/meta/panel are all present.
   function paintPanel(ts: ViewerTileState, tileEl: TileEl): void {
-    if (ts.rows === tileEl.paintedRows) return;
-    destroyChart(tileEl);
+    // The rows-reference gate alone can't detect a fresh Image result (its
+    // `rows` is always an empty array — see `paintedImage`'s doc comment), so
+    // an Image tile is also gated on `ts.image` identity; this ALSO means a
+    // tile-body resize (CSS-only fit, no `syncDocument`/re-run) never repaints
+    // an Image tile, since neither identity changes.
+    if (ts.rows === tileEl.paintedRows && ts.image === tileEl.paintedImage) return;
+    destroyChart(tileEl); // also revokes the previously painted Image's object URL (#307)
     const panel = (ts.panel || {}) as Record<string, unknown>;
     const columns = ts.columns as Column[];
     const rows = ts.rows as unknown[][];
@@ -695,20 +733,25 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     tileEl.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
     const key = JSON.stringify(columns.map((c) => c.name + ':' + c.type));
     if (!tileEl.panelState || tileEl.panelState.key !== key) tileEl.panelState = { key };
-    const result = { columns, rows } as Parameters<typeof renderResolvedPanel>[2];
+    const result = { columns, rows, image: ts.image } as Parameters<typeof renderResolvedPanel>[2];
     const out = renderResolvedPanel(app as unknown as App, resolved, result, {
       surface: 'dashboard', state: tileEl.panelState, rerender: () => paintForce(ts, tileEl),
-      readonly: true, cap: DASH_TABLE_DISPLAY_CAP, onCell: () => {},
+      readonly: true, cap: DASH_TABLE_DISPLAY_CAP, onCell: () => {}, title: ts.title,
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
     tileEl.foot.replaceChildren(...tileFooter(ts.meta as NonNullable<ViewerTileState['meta']>));
     tileEl.paintedRows = ts.rows;
+    tileEl.paintedImage = ts.image;
   }
 
-  // A local re-paint (header-click sort) — force even when the rows ref is
-  // unchanged (the sort mutated the panel state, not the data).
-  function paintForce(ts: ViewerTileState, tileEl: TileEl): void { tileEl.paintedRows = null; paintPanel(ts, tileEl); }
+  // A local re-paint (header-click sort) — force even when the rows/image ref
+  // is unchanged (the sort mutated the panel state, not the data).
+  function paintForce(ts: ViewerTileState, tileEl: TileEl): void {
+    tileEl.paintedRows = null;
+    tileEl.paintedImage = null;
+    paintPanel(ts, tileEl);
+  }
 
   // The ordinary (non-KPI) tile body: painted result, or an error/unfilled/
   // loading state card — shared by BOTH engines' reconciliation (flow's
@@ -719,6 +762,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (ts.status === 'ready') { paintPanel(ts, tileEl); return; }
     destroyChart(tileEl);
     tileEl.paintedRows = null;
+    tileEl.paintedImage = null;
     tileEl.foot.replaceChildren();
     if (ts.status === 'error') {
       tileEl.body.replaceChildren(h('div', { class: 'dash-tile-error' }, ts.error || 'Error'));
@@ -926,8 +970,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // default-filled published bag and persist defaults on first open, freezing
   // them against later Spec-editor changes to a filter's default.
   let lastFilterPersistSig = filterBagSignature(persistBagOf(session.state.value.filters));
-  effect(() => {
+  const disposeEffect = effect(() => {
     const sview = session.state.value;
+    pruneRemovedTiles(sview);
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
@@ -994,16 +1039,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     containerWidthPx = w > 0 ? w : undefined;
   }
   measureGridWidth();
-  // #291 review F4: unlike a repeatedly-opened modal (e.g. the EXPLAIN graph
-  // overlay), the Dashboard page is normally a single full-page navigation —
-  // BUT `renderDashboard` can still run again against this SAME window
-  // in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
+  // #291 review F4 / #318: unlike a repeatedly-opened modal (e.g. the EXPLAIN
+  // graph overlay), the Dashboard page is normally a single full-page
+  // navigation — BUT `renderDashboard` can still run again against this SAME
+  // window in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
   // file-menu.ts's Import flow while already on `/dashboard`). This module
-  // never disconnects/observes page teardown, so the listener installed here
-  // is removed at the START of the NEXT `renderDashboard` call instead (see
-  // `installedGridResizeListener` above) rather than relying on the page
-  // itself never rendering twice.
+  // never disconnects/observes page teardown, so everything this render
+  // installed/started is torn down at the START of the NEXT `renderDashboard`
+  // call instead (see `installedDashboardDisposer`'s doc comment above)
+  // rather than relying on the page itself never rendering twice.
   const gridWin = doc.defaultView;
+  let removeGridResizeListener: (() => void) | null = null;
   if (gridWin) {
     const onGridResize = (): void => {
       if (activeEngine !== 'grafana-grid') return;
@@ -1012,8 +1058,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (containerWidthPx !== prevWidth) session.syncDocument(currentDoc);
     };
     gridWin.addEventListener('resize', onGridResize);
-    installedGridResizeListener = { win: gridWin, handler: onGridResize };
+    removeGridResizeListener = () => gridWin.removeEventListener('resize', onGridResize);
   }
+
+  // #318: the ONE disposer for everything this render started — found and run
+  // by the NEXT same-window `renderDashboard` call (above), so re-entry never
+  // leaks the previous call's effect, session, tile renderers, or listener.
+  installedDashboardDisposer = () => {
+    disposeEffect();
+    session.destroy();
+    for (const tileEl of tileEls.values()) destroyChart(tileEl);
+    removeGridResizeListener?.();
+  };
 
   await session.start();
 }

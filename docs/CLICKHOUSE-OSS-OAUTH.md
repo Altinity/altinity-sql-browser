@@ -42,6 +42,11 @@ token's `email` claim (falling back to `preferred_username` / `sub`):
 }
 ```
 
+For a real deploy this is `install.sh --ch-auth basic` (baked into the rendered
+`config.json`). For `npm run local`, add `<ch-auth>basic</ch-auth>` to the OAuth
+`<connection>` in `~/.clickhouse-client/config.xml` — `build/local.py` picks it up
+and sets the same `ch_auth: "basic"` on that IdP's generated entry.
+
 `bearer` usually stays at its default `id_token` here (ch-jwt-verify validates
 the id_token as the password). Combine with `audience` only if your verifier
 enforces one.

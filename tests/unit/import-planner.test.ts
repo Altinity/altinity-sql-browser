@@ -281,6 +281,123 @@ describe('planImportQueries', () => {
     expect(plan.diagnostics.length).toBeGreaterThan(0);
     expect(plan.diagnostics.some((d) => d.code === 'spec-version-unsupported')).toBe(true);
   });
+
+  // #307: importing favorited panel-role queries must land matching Dashboard
+  // tiles — the bridge that was entirely missing before this fix.
+  it('creates a fresh Dashboard and a tile for an imported favorited panel-role query when the workspace has none', () => {
+    const ws = workspace({ queries: [], dashboard: null });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+    expect(plan.candidateWorkspace).not.toBeNull();
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash).not.toBeNull();
+    expect(dash.tiles).toEqual([{ id: 'id-2', queryId: 'p1' }]);
+    expect(dash.id).toBe('id-1'); // genId() called once for the Dashboard, then once per tile
+    // #316 review item 4: a brand-new Dashboard created by the sync carries
+    // the same "new Dashboard starts at revision 1" convention as
+    // `createEmptyDashboardDocument`/`legacy-migration.ts` — no extra bump.
+    expect(dash.revision).toBe(1);
+  });
+
+  it('adds a tile ONLY for the favorited panel-role query, leaving a favorited filter-role import tile-less', () => {
+    const ws = workspace({ queries: [], dashboard: null });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const favoritedFilter: SavedQueryV2 = {
+      ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel, favoritedFilter] }), [], counter());
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash.tiles).toEqual([{ id: 'id-2', queryId: 'p1' }]);
+  });
+
+  it('is additive-only: an existing Dashboard keeps its other tiles/layout/filters and gains only the missing favorite tile', () => {
+    const existingDash = dashboardDoc({
+      title: 'My dash',
+      layout: { type: 'flow', version: 1, preset: 'report', items: { keep: { span: 2, height: 'large' } } },
+      tiles: [{ id: 'keep', queryId: 'existing-panel' }],
+      filters: [{ id: 'flt1', parameter: 'x' }],
+    });
+    const ws = workspace({
+      queries: [{ ...panelQuery('existing-panel'), spec: { ...panelQuery('existing-panel').spec, favorite: true } }],
+      dashboard: existingDash,
+    });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash.title).toBe('My dash');
+    expect(dash.filters).toEqual([{ id: 'flt1', parameter: 'x' }]);
+    expect(dash.tiles).toEqual([
+      { id: 'keep', queryId: 'existing-panel' },
+      { id: 'id-1', queryId: 'p1' },
+    ]);
+    // #316 review item 4: the sync actually mutated an EXISTING Dashboard
+    // (added a tile) — the persisted-mutation invariant requires exactly one
+    // revision bump over the pre-import value (dashboardDoc() defaults to 1).
+    expect(dash.revision).toBe(2);
+  });
+
+  // #316 review item 4: the invariant "a successful persisted Dashboard
+  // mutation increments revision exactly once" must hold for the import path
+  // too — `syncFavoriteTileMembership` itself never touches revision, so
+  // `planImportQueries` (the candidate builder here) owns the bump, exactly
+  // like `dashboard-authoring-session.ts`'s commit-time `committedRevision + 1`.
+  describe('Dashboard revision bump (#316 review item 4)', () => {
+    it('bumps revision by exactly 1 when the sync adds a tile to an existing Dashboard', () => {
+      const existingDash = dashboardDoc({ revision: 5, tiles: [] });
+      const ws = workspace({ queries: [], dashboard: existingDash });
+      const favoritedPanel: SavedQueryV2 = {
+        ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+      };
+      const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+      const dash = plan.candidateWorkspace!.dashboard!;
+      expect(dash.tiles).toEqual([{ id: 'id-1', queryId: 'p1' }]);
+      expect(dash.revision).toBe(6);
+    });
+
+    it('sets revision to 1 (not bumped further) when the sync creates a brand-new Dashboard', () => {
+      const ws = workspace({ queries: [], dashboard: null });
+      const favoritedPanel: SavedQueryV2 = {
+        ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+      };
+      const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+      expect(plan.candidateWorkspace!.dashboard!.revision).toBe(1);
+    });
+
+    it('a no-op import (nothing qualifies) preserves the previous revision AND the same Dashboard reference', () => {
+      const existingDash = dashboardDoc({
+        revision: 7,
+        tiles: [{ id: 't1', queryId: 'existing-panel' }],
+      });
+      const ws = workspace({
+        queries: [{ ...panelQuery('existing-panel'), spec: { ...panelQuery('existing-panel').spec, favorite: true } }],
+        dashboard: existingDash,
+      });
+      // Importing a query that is already favorited-with-a-tile — nothing for
+      // the sync to add.
+      const plan = planImportQueries(
+        ws, bundle({ queries: [panelQuery('existing-panel', 'incoming')] }),
+        [{ sourceId: 'existing-panel', action: 'use-existing' }], counter(),
+      );
+      const dash = plan.candidateWorkspace!.dashboard!;
+      expect(dash.revision).toBe(7);
+      expect(dash).toBe(existingDash); // identical reference — downstream change detection stays quiet
+    });
+
+    it('a no-op import with no favorited panel-role queries at all preserves revision and reference', () => {
+      const existingDash = dashboardDoc({ revision: 3, tiles: [] });
+      const ws = workspace({ queries: [], dashboard: existingDash });
+      const plan = planImportQueries(ws, bundle({ queries: [panelQuery('b')] }), [], counter());
+      const dash = plan.candidateWorkspace!.dashboard!;
+      expect(dash.revision).toBe(3);
+      expect(dash).toBe(existingDash);
+    });
+  });
 });
 
 // --- planImportDashboard --------------------------------------------------------

@@ -842,6 +842,19 @@ body {
 /* tabindex makes the pane keyboard-scrollable; suppress the focus ring. */
 .raw-text-view:focus, .json-view:focus { outline: none; }
 
+/* ------------ FORMAT PNG image result view (#307) ------------ */
+/* Centered, scrollable — a PNG bigger than the pane scrolls rather than
+   clipping; the image itself never upscales past its intrinsic size. */
+.image-result-view {
+  height: 100%; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-table);
+}
+.image-result-view img {
+  max-width: 100%; max-height: 100%;
+  display: block;
+}
+
 /* ------------ EXPLAIN pipeline graph view ------------ */
 /* Same pan/zoom surface as the fullscreen overlay: drag to pan (grab cursor),
    wheel to pan, ⌘/Ctrl+wheel to zoom, double-click to fit. */
@@ -1152,14 +1165,15 @@ body.detached-tab .graph-overlay-panel {
 .panel-config .chart-config { padding: 0; border-bottom: none; flex: 1; }
 .panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-body > .chart-view, .panel-body > .res-table-wrap,
-.panel-body > .dash-logs, .panel-body > .panel-with-note { flex: 1; min-height: 0; }
+.panel-body > .dash-logs, .panel-body > .panel-with-note,
+.panel-body > .panel-image-box { flex: 1; min-height: 0; }
 /* Detached-view / readonly panel: a resolved panel renders straight into the
    block-level `.res-body` (no `.panel-body` flex wrapper), so `flex:1` can't
    bound it. Like `.chart-view`, these need `height:100%` to fill `.res-body`
    and let their own `overflow:auto` scroll — otherwise `.dash-logs` grows to
    content height and `.res-body`'s `overflow:hidden` clips it with no scroll. */
 .res-body > .dash-logs, .res-body > .md-view,
-.res-body > .panel-with-note { height: 100%; }
+.res-body > .panel-with-note, .res-body > .panel-image-box { height: 100%; }
 .panel-with-note { display: flex; flex-direction: column; }
 .panel-with-note > :last-child { flex: 1; min-height: 0; }
 .panel-note {
@@ -1188,6 +1202,30 @@ body.detached-tab .graph-overlay-panel {
   background: var(--bg-chip); border-radius: 3px; padding: 1px 4px;
 }
 .md-view a { color: var(--accent); }
+
+/* Image panel (#307): a single FORMAT PNG result rendered as an <img> filling
+   the tile/panel body. `.panel-image-fit-*` is CSS-only (never re-runs the
+   query on resize); `.panel-image-bg-*` is the backdrop behind a
+   transparent PNG. */
+.panel-image-box {
+  display: flex; align-items: center; justify-content: center;
+  overflow: auto; width: 100%; height: 100%;
+}
+.panel-image-bg-theme { background: transparent; }
+.panel-image-bg-transparent { background: transparent; }
+.panel-image-bg-checkerboard {
+  background-image:
+    linear-gradient(45deg, var(--border-faint) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--border-faint) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--border-faint) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--border-faint) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+}
+.panel-image { display: block; max-width: 100%; max-height: 100%; }
+.panel-image-fit-contain { width: 100%; height: 100%; object-fit: contain; }
+.panel-image-fit-cover { width: 100%; height: 100%; object-fit: cover; }
+.panel-image-fit-actual { width: auto; height: auto; max-width: none; max-height: none; }
 
 /* ------------ schema tree ------------ */
 .schema-search {
@@ -2323,7 +2361,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    inside the tile instead of clipping; the workbench grid's height:100% is
    overridden back to auto (flex sizes it here). */
 .dash-tile-body > .res-table-wrap,
-.dash-tile-body > .dash-logs { flex: 1; min-width: 0; min-height: 0; }
+.dash-tile-body > .dash-logs,
+.dash-tile-body > .panel-image-box { flex: 1; min-width: 0; min-height: 0; }
 .dash-tile-body > .res-table-wrap { height: auto; }
 /* Logs view (#149 D9): a compact, scroll-only reading surface — level colors
    via the --log-* theme vars, monospace, wrapped messages. */

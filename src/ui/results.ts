@@ -22,6 +22,7 @@ import {
 import type { ParameterAnalysis, PreparedFieldState, ValidationMode } from '../core/param-pipeline.js';
 import { newResult } from '../core/stream.js';
 import type { StreamResult } from '../core/stream.js';
+import type { ImageResultPayload } from '../core/png.js';
 import { renderExplainGraph, openPipelineFullscreen, renderSchemaGraph } from './explain-graph.js';
 import type { DetachedGraphApp, SchemaLineageGraph } from './explain-graph.js';
 import { openInDetachedTab } from './detached-view.js';
@@ -174,6 +175,13 @@ export interface ResultsApp {
   updateSaveBtn(): void;
   updateEditorModeUi?(): void;
   openWindow?(url: string, target: string): DetachedWindowLike | null;
+  /** The Image (PNG) result view's Download button (#307) — same seam
+   *  file-menu.ts already calls. */
+  downloadFile(filename: string, mime: string, content: BlobPart): void;
+  /** Object-URL seam for the Image (PNG) result view (#307) — mints/frees the
+   *  `blob:` URL an `<img>` displays a validated PNG payload through. */
+  createObjectUrl(bytes: Uint8Array, mime: string): string;
+  revokeObjectUrl(url: string): void;
 }
 
 /** The Chart.js instance shape a readonly panel's `setChart` ever receives —
@@ -196,6 +204,79 @@ const EXPLAIN_ICONS: Record<string, () => SVGElement> = {
   explain: Icon.plan, indexes: Icon.key, projections: Icon.layers,
   pipeline: Icon.share, estimate: Icon.rows,
 };
+
+// ── FORMAT PNG image result view (#307) ─────────────────────────────────────
+// One `blob:` object URL per `ImageResultPayload`, keyed by the payload object
+// itself (a fresh run always allocates a fresh `ImageResultPayload`, so this
+// never confuses two different results) — a re-render of the SAME completed
+// result (a resize, a drawer toggle, an unrelated repaint) reuses the cached
+// URL instead of minting (and leaking) a new one every paint. Freed by
+// `revokeResultImageUrl` below, called from the two places a result object is
+// actually discarded: workbench-session.ts's `run()` (a rerun replaces
+// `tab.result` wholesale) and tabs.ts's `closeTab` (the tab itself is gone).
+// Never revoked from inside `renderResults` — a render never knows whether
+// its result is about to be replaced.
+const imageResultUrls = new WeakMap<ImageResultPayload, string>();
+
+/** Return `image`'s cached object URL, minting one via `app.createObjectUrl`
+ *  on first paint. */
+function getOrCreateImageUrl(app: Pick<ResultsApp, 'createObjectUrl'>, image: ImageResultPayload): string {
+  const cached = imageResultUrls.get(image);
+  if (cached != null) return cached;
+  const url = app.createObjectUrl(image.bytes, image.mimeType);
+  imageResultUrls.set(image, url);
+  return url;
+}
+
+/** Free `result`'s own image object URL, if it has one cached — a no-op for
+ *  every other result shape (script/scriptExport/no-image QueryResult) and
+ *  for an image whose URL was never actually painted (nothing to free). */
+export function revokeResultImageUrl(app: Pick<ResultsApp, 'revokeObjectUrl'>, result: unknown): void {
+  const image = (result as { image?: ImageResultPayload | null } | null | undefined)?.image;
+  if (!image) return;
+  const url = imageResultUrls.get(image);
+  if (url == null) return;
+  app.revokeObjectUrl(url);
+  imageResultUrls.delete(image);
+}
+
+/** The image view body: a scrollable, centered pane holding the `<img>` for a
+ *  validated PNG result. `width`/`height` attributes come straight off the
+ *  IHDR-derived payload (no natural-size flash) — CSS caps display size at
+ *  the pane's bounds without upscaling past the intrinsic size. Alt text is
+ *  the active tab's name (already the saved query's name once a tab is
+ *  linked — see `loadIntoNewTab`), falling back when a tab is somehow
+ *  unnamed. */
+function renderImageView(app: ResultsApp, r: QueryResult): HTMLDivElement {
+  const image = r.image!;
+  const url = getOrCreateImageUrl(app, image);
+  const alt = app.activeTab().name || 'PNG query result';
+  const wrap = h('div', { class: 'image-result-view' },
+    h('img', {
+      src: url, width: String(image.width), height: String(image.height), alt,
+      // #318: the browser couldn't decode the blob (truncated/corrupt bytes
+      // despite passing the IHDR-level validation `newResult`'s binary branch
+      // already ran) — revoke the now-useless URL and drop the cache entry
+      // (`imageResultUrls.delete`, not just the revoke) so a LATER render of
+      // the exact same payload mints a fresh URL rather than reusing a dead
+      // one `getOrCreateImageUrl`'s cache would otherwise hand back verbatim.
+      onerror: () => {
+        app.revokeObjectUrl(url);
+        imageResultUrls.delete(image);
+        wrap.replaceChildren(h('div', { class: 'results-error' },
+          'PNG decode failed — the returned bytes are not a renderable image.'));
+      },
+    }));
+  return wrap;
+}
+
+/** The `Download PNG` button's filename base — the active tab's name,
+ *  sanitized like every other export filename in this codebase
+ *  (file-menu.ts's own local `fileBase`, not shared/exported — same
+ *  character class, kept in lockstep by convention, not an import). */
+function imageFileName(app: ResultsApp): string {
+  return (app.activeTab().name || 'query-result').replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim() || 'query-result';
+}
 
 export function renderResults(app: ResultsApp): void {
   const region = app.dom.resultsRegion;
@@ -241,7 +322,14 @@ export function renderResults(app: ResultsApp): void {
   // Beyond this point `r` is narrowed to `QueryResult | null`.
   const view = app.state.resultView.value;
   const streamingBlank = app.state.running.value && (!r || (r.rows.length === 0 && r.rawText == null));
-  if (streamingBlank && view !== 'filter') {
+  // A validated FORMAT PNG image result (#307): checked BEFORE streamingBlank
+  // (which reads `r.rows.length` — an image result's `rows` is always `[]`, so
+  // a finished image would otherwise misclassify as still-streaming/blank).
+  // `!r.error` is defensive: executeRead only ever sets `image` alongside a
+  // clean (non-error) result in practice.
+  if (r && r.image && !r.error) {
+    inner.appendChild(renderImageView(app, r));
+  } else if (streamingBlank && view !== 'filter') {
     inner.appendChild(loadingPlaceholder('Starting query…'));
   } else if (!r && view !== 'panel' && view !== 'filter') {
     // The Panel tab renders even with no result at all (#166): a text panel
@@ -625,6 +713,12 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
         onclick: () => app.actions.setExplainView(v.id),
       }, icon ? icon() : null, h('span', null, v.label)));
     }
+  } else if (r && r.image) {
+    // A single, always-active locked tab (#307), same shape as the raw-text
+    // one below — an image result has no other view to switch to.
+    tabs = h('div', { class: 'result-view-tabs' },
+      h('button', { class: 'result-view-tab active' },
+        Icon.image(), h('span', null, 'Image (PNG)')));
   } else if (r && r.rawText != null) {
     // A single, always-active tab naming the raw format (TSV/JSON) — nothing to switch to.
     tabs = h('div', { class: 'result-view-tabs' },
@@ -636,8 +730,8 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
   }
   toolbar.appendChild(tabs);
   // Row-cap selector after the view tabs, for normal result queries only —
-  // EXPLAIN views are exempt (small output a cap would truncate oddly).
-  if (!(r && r.explainView)) toolbar.appendChild(rowLimitSelect(app));
+  // EXPLAIN views and images (#307 — a single PNG, no row concept) are exempt.
+  if (!(r && (r.explainView || r.image))) toolbar.appendChild(rowLimitSelect(app));
   toolbar.appendChild(h('div', { style: { flex: '1' } }));
   // EXPLAIN views suppress the ms/rows/bytes stats — they're not meaningful for a
   // plan and the freed space lets the five tabs breathe.
@@ -665,7 +759,7 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
       const ms = (r.progress.elapsed_ns / 1e6).toFixed(0);
       toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.clock()), h('span', { class: 'v' }, ms + ' ms')));
       toolbar.appendChild(h('div', { class: 'stat' }, h('span', { class: 'ic' }, Icon.rows()),
-        h('span', { class: 'v' }, (r.rawText != null ? '—' : r.rows.length) + ' rows')));
+        h('span', { class: 'v' }, (r.rawText != null || r.image ? '—' : r.rows.length) + ' rows')));
       toolbar.appendChild(h('div', { class: 'stat', title: r.progress.rows + ' rows scanned' },
         h('span', { class: 'ic' }, Icon.bytes()), h('span', { class: 'v' }, formatBytes(r.progress.bytes))));
       // The result hit the row cap: say so (the fetch stopped at the limit, more
@@ -695,10 +789,26 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
           onclick: () => expandDataPane(app, r),
         }, Icon.expand(), h('span', null, 'Expand')));
       }
-      toolbar.appendChild(h('button', {
-        class: 'res-act', title: 'Copy results to clipboard',
-        onclick: () => app.actions.copyResult(),
-      }, Icon.copy(), h('span', null, 'Copy')));
+      if (r.image) {
+        // Image results have no tabular/clipboard-text form (#307) — Copy is
+        // replaced outright by a Download button handing back the exact
+        // validated bytes, never re-derived from the `<img>`/object URL.
+        toolbar.appendChild(h('button', {
+          class: 'res-act', title: 'Download the PNG result',
+          // `Uint8Array`'s default `ArrayBufferLike` type param (this TS/lib
+          // combo) doesn't structurally satisfy `BlobPart`'s `ArrayBufferView
+          // <ArrayBuffer>` (excludes `SharedArrayBuffer`) — the runtime value
+          // is always a real, non-shared `Uint8Array` (ch-client.ts's own
+          // `new Uint8Array(buf)` off a fetch `ArrayBuffer`), so this is a
+          // type-only bridge, not a behavior change.
+          onclick: () => app.downloadFile(imageFileName(app) + '.png', 'image/png', r.image!.bytes as unknown as BlobPart),
+        }, Icon.download(), h('span', null, 'Download PNG')));
+      } else {
+        toolbar.appendChild(h('button', {
+          class: 'res-act', title: 'Copy results to clipboard',
+          onclick: () => app.actions.copyResult(),
+        }, Icon.copy(), h('span', null, 'Copy')));
+      }
     }
   }
   return toolbar;
@@ -804,6 +914,12 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
   const r = result;
   if (view === 'panel') {
     if (panel.mode === 'readonly') {
+      // `destroy` is unreachable here today: the Image arm's `destroy` only
+      // ever matters for a real `result.image` (#307), and an image result
+      // always renders via renderResults' own dedicated image branch before
+      // reaching this readonly Panel path. Comment only, no behavior change —
+      // a future reorder that lets an image result reach here must wire
+      // `destroy` or it'll leak the object URL.
       const { node } = renderResolvedPanel(app, panel.resolved, r, {
         surface: 'workbench',
         state: panel.state,
@@ -812,6 +928,7 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
         cap,
         onCell,
         setChart: panel.setChart,
+        title: app.activeTab().name || undefined, // #307: Image arm's alt-text source
       });
       return node;
     }

@@ -14,6 +14,8 @@ describe('result choices', () => {
     expect(resultChoiceForSpec({})).toBe('panel:auto');
     expect(resultChoiceForSpec({ dashboard: { role: 'filter' }, panel: { cfg: { type: 'line' } } })).toBe('role:filter');
     expect(PANEL_RESULT_CHOICES.some((c) => c.id === 'panel:kpi')).toBe(true);
+    expect(PANEL_RESULT_CHOICES.some((c) => c.id === 'panel:image')).toBe(true);
+    expect(resultChoiceForSpec({ panel: { cfg: { type: 'image' } } })).toBe('panel:image');
     expect(DASHBOARD_ROLE_RESULT_CHOICES).toEqual([{ id: 'role:filter', kind: 'role', role: 'filter', label: 'Filter' }]);
   });
   it('maps a table (or unknown) panel to panel:auto, since Table is not a picker option', () => {

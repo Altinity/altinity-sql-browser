@@ -34,7 +34,8 @@ import { hasOptionalBlocks } from '../../core/optional-blocks.js';
 import { detectSqlFormat } from '../../core/format.js';
 import { DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP } from '../../core/dashboard.js';
 import { queryName } from '../../core/saved-query.js';
-import { panelExecution } from '../../core/panel-execution.js';
+import { panelExecution, shouldInferImagePanel } from '../../core/panel-execution.js';
+import type { ImageResultPayload } from '../../core/png.js';
 import { filterExecution } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
@@ -74,11 +75,18 @@ export interface ViewerTileState {
   title: string;
   status: ViewerTileStatus;
   isKpi: boolean;
+  /** True for a resolved Image (PNG) panel (#307) — `runTile` requires the
+   *  authored SQL to carry `FORMAT PNG` for exactly this tile and publishes
+   *  its result on `image` instead of `columns`/`rows`. */
+  isImage: boolean;
   /** The resolved effective panel (base + variant + override), or null when the
    *  presentation could not resolve (then `status` is 'error'). */
   panel: Record<string, unknown> | null;
   columns: Column[] | null;
   rows: unknown[][] | null;
+  /** A ready Image tile's validated PNG payload (#307); null for every other
+   *  panel type, and while not yet ready. */
+  image: ImageResultPayload | null;
   meta: { rows: number; ms: number; bytes: number; truncated: boolean } | null;
   error: string | null;
   /** Param names still needing a value (status 'unfilled'). */
@@ -233,6 +241,7 @@ interface TileRuntime {
   explicit: Panel | null;
   isKpi: boolean;
   isText: boolean;
+  isImage: boolean;
   presentationError: WorkspaceDiagnostic | null;
   gen: number;
   abortController: AbortController | null;
@@ -318,22 +327,34 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
         `No saved query ${JSON.stringify(tile.queryId)} for tile ${JSON.stringify(tile.id)}`, tile.id);
     } else {
       const resolved = resolvePresentation({ query, tile });
-      if (resolved.ok) panel = resolved.panel;
-      else presentationError = resolved.diagnostics[0];
+      if (resolved.ok) {
+        panel = resolved.panel;
+        // #307 UX fix: an unconfigured panel-role tile (no explicit
+        // `panel.cfg` at all) whose authored SQL ends in `FORMAT PNG` is
+        // treated as an Image panel — same as if `cfg.type:'image'` had been
+        // saved. Must run BEFORE the isKpi/isText/isImage derivation below so
+        // `explicit`, `state.panel`, and `panelExecution` (via
+        // `runtime.explicit`) all see a real image panel. Uses the base
+        // authored SQL (`query.sql`), not any later filter/param merge.
+        if (!cfgType(panel) && shouldInferImagePanel(panel, query.sql)) {
+          panel = { ...panel, cfg: { type: 'image' } };
+        }
+      } else presentationError = resolved.diagnostics[0];
     }
     const type = cfgType(panel);
     const isKpi = type === 'kpi';
     const isText = type === 'text';
+    const isImage = type === 'image';
     const explicit: Panel | null = isObject(panel) && isObject(panel.cfg) ? (panel as unknown as Panel) : null;
     const title = (typeof tile.title === 'string' && tile.title) || (query ? queryName(query) : tile.queryId) || tile.id;
     const state: ViewerTileState = {
-      tileId: tile.id, queryId: tile.queryId, title, isKpi, panel,
+      tileId: tile.id, queryId: tile.queryId, title, isKpi, isImage, panel,
       status: presentationError ? 'error' : 'idle',
-      columns: null, rows: null, meta: null,
+      columns: null, rows: null, image: null, meta: null,
       error: presentationError ? presentationError.message : null,
       unfilled: [], progressRows: 0,
     };
-    return { tile, query, panel, explicit, isKpi, isText, presentationError, gen: 0, abortController: null, state };
+    return { tile, query, panel, explicit, isKpi, isText, isImage, presentationError, gen: 0, abortController: null, state };
   }
 
   // One runtime record per tile, in semantic (dashboard.tiles) order.
@@ -480,11 +501,23 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       format: 'Table', rowLimit: DASH_TILE_ROW_CAP + 1,
       params: { readonly: 2, max_result_bytes: DASH_TILE_BYTE_CAP, ...mergedSourceArgs(source) },
     });
-    const checkFormat = !runtime.isKpi;
-    if (execution.error || (checkFormat && detectSqlFormat(execSql))) {
+    // A tile's authored SQL may carry a trailing FORMAT clause only when its
+    // resolved panel OWNS a binary/non-streaming transport for it — today that
+    // is the KPI arm (silently normalized away) and the Image arm (panelExecution
+    // above already validated it's exactly `FORMAT PNG`, and set `execution.error`
+    // otherwise). Every other panel/role keeps the blanket rejection.
+    const checkFormat = !runtime.isKpi && !runtime.isImage;
+    const rejectedFormat = checkFormat ? detectSqlFormat(execSql) : null;
+    if (execution.error || rejectedFormat) {
       runtime.state.status = 'error';
+      // #307: an explicitly-typed non-image panel whose authored format is
+      // specifically PNG gets an actionable message pointing at the fix
+      // (retype the panel to Image) rather than the generic "remove FORMAT"
+      // guidance, which would be wrong advice for a PNG-producing query.
       runtime.state.error = execution.error
-        || 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.';
+        || (rejectedFormat && rejectedFormat.toUpperCase() === 'PNG'
+          ? 'This query returns FORMAT PNG — set its panel type to Image to show it on the Dashboard.'
+          : 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.');
       publish();
       return;
     }
@@ -494,7 +527,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const controller = new AbortController();
     runtime.abortController = controller;
     const startedAt = deps.now();
-    const rowCap = runtime.isKpi ? 2 : DASH_TILE_ROW_CAP;
+    // rowLimit/rowCap are meaningless for a binary (single-blob) Image result —
+    // `newResult`'s cap only trims streamed `{row}` lines, which a PNG response
+    // never emits (executeRead's binary branch populates `result.image`
+    // instead), so 0 (uncapped) is simply inert here rather than load-bearing.
+    const rowCap = runtime.isKpi ? 2 : runtime.isImage ? 0 : DASH_TILE_ROW_CAP;
     // `!`: panelExecution always resolves a concrete format ('Table' default or 'KPI').
     const result = newResult(execution.format!, rowCap);
     await deps.exec.executeRead(result, {
@@ -519,6 +556,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     runtime.state.unfilled = [];
     runtime.state.columns = result.columns as unknown as Column[];
     runtime.state.rows = result.rows;
+    runtime.state.image = result.image;
     runtime.state.meta = tileResultMeta(result, startedAt, deps.now());
     deps.recordBoundParams?.(source.statements.flatMap((statement) => statement.boundParams));
     publish();

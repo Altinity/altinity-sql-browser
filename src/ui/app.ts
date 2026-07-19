@@ -36,7 +36,7 @@ import { createSpecCompletionSources } from '../editor/spec-completion-adapter.j
 import { renderTabs, selectTab, newTab, closeTab, loadIntoNewTab } from './tabs.js';
 import type { QueryOrName } from './tabs.js';
 import { batch } from '@preact/signals-core';
-import { renderResults } from './results.js';
+import { renderResults, revokeResultImageUrl } from './results.js';
 import type { Result, QueryResult, ScriptResult, ScriptEntry } from './results.js';
 import { renderDashboard } from './dashboard.js';
 import { toggleThemeDom } from './theme-toggle.js';
@@ -245,6 +245,14 @@ export function createApp(env: CreateAppEnv = {}): App {
   // helper (defined below). The library title (name + dirty dot) repaints via a
   // libraryName/libraryDirty effect, so callers just mutate those signals.
   app.downloadFile = downloadFile;
+  app.createObjectUrl = env.createObjectUrl || ((bytes, mime) => {
+    const url = (win.URL || win.webkitURL)!;
+    const BlobCtor = win.Blob!;
+    return url.createObjectURL(new BlobCtor([bytes as BlobPart], { type: mime }));
+  });
+  app.revokeObjectUrl = env.revokeObjectUrl || ((url) => {
+    (win.URL || win.webkitURL)!.revokeObjectURL(url);
+  });
 
   // --- identity ------------------------------------------------------------
   // Identity/auth reads (host/email/isSignedIn/…) live on `app.conn` itself
@@ -588,6 +596,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       showExportProgress: (onCancel) => showExportProgress(onCancel),
       toast: (message) => flashToast(message, { document: doc }),
       loadSchema: () => { void catalog.loadSchema(); },
+      revokeResultImage: (result) => revokeResultImageUrl(app, result),
     },
   });
   app.exports = exportService;
@@ -618,6 +627,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       tickElapsed,
       saveJSON,
       onAuthFailed: () => chCtx.onSignedOut(),
+      revokeResultImage: (result) => revokeResultImageUrl(app, result),
     },
   });
   app.workbench = workbench;
@@ -912,6 +922,7 @@ export function createApp(env: CreateAppEnv = {}): App {
         // clear just this — see clearFormatError) is app.ts/test-only, not
         // part of results.ts's own canonical `QueryResult` contract.
         const formatErrorResult: QueryResult & { formatError: true } = { ...newResult('Table'), error: msg, formatError: true };
+        revokeResultImageUrl(app, tab.result); // #307: free a displayed image's URL before it's overwritten
         Object.assign(tab, { result: formatErrorResult });
         app.state.resultView.value = 'table';
         renderResults(app); // explicit: the format-error tab.result is an in-place write, and resultView may already be 'table' (no effect)
@@ -944,6 +955,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     hooks: {
       renderResults: () => renderResults(app),
       onAuthFailed: () => chCtx.onSignedOut(),
+      revokeResultImage: (result) => revokeResultImageUrl(app, result),
     },
   });
   app.graph = graph;
@@ -1108,7 +1120,13 @@ export function createApp(env: CreateAppEnv = {}): App {
     // original untyped property read did — never actually a `QueryResult`).
     const r = app.activeTab().result as (QueryResult & { script?: unknown }) | null;
     // A script result is a per-statement grid, not a single exportable table.
-    return r && !r.error && !r.script && (r.rawText != null || r.rows.length > 0) ? r : null;
+    // A FORMAT PNG image result (#307) is neither — Copy/Export are text/row
+    // operations and an image has no tabular text form (Download PNG, the
+    // results pane's own toolbar button, is the only export path for it).
+    // `rows.length > 0` is already false for an image result (its `rows` is
+    // always `[]`) so this never changes behavior, only makes the exclusion
+    // explicit against a future result shape where that stops being true.
+    return r && !r.error && !r.script && !r.image && (r.rawText != null || r.rows.length > 0) ? r : null;
   }
   // `targetDoc` defaults to the main document, but a detached view (issue
   // #100's Data Pane) passes its own — the Clipboard API ties writeText's

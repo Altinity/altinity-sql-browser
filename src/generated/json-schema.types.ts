@@ -500,6 +500,39 @@ export interface TextPanelCfg {
 }
 
 /**
+ * Image
+ *
+ * A single ClickHouse `FORMAT PNG` result rendered as an image. The authored SQL must end in an explicit FORMAT PNG clause.
+ */
+export interface ImagePanelCfg {
+  /**
+   * Panel type
+   *
+   * Visualization renderer identifier.
+   */
+  type: "image";
+  /**
+   * Image fit
+   *
+   * contain scales the image to fit within the tile preserving aspect ratio, cover fills the tile and crops overflow, and actual renders at intrinsic CSS pixel size in a scrollable body.
+   */
+  fit?: "contain" | "cover" | "actual";
+  /**
+   * Image background
+   *
+   * theme uses the surrounding surface color, transparent shows nothing behind the image, and checkerboard renders a checkerboard pattern (useful for a transparent PNG).
+   */
+  background?: "transparent" | "checkerboard" | "theme";
+  /**
+   * Alt text
+   *
+   * Accessible description for the image. Falls back to the tile/query title when absent.
+   */
+  alt?: string;
+  [k: string]: unknown;
+}
+
+/**
  * Future panel type
  *
  * Forward-compatible storage branch for a type implemented by a newer build.
@@ -524,7 +557,7 @@ export interface FuturePanelCfg {
  *
  * Discriminated visualization configuration. Unknown types remain storable for forward compatibility.
  */
-export type PanelCfg = BarPanelCfg | HbarPanelCfg | LinePanelCfg | AreaPanelCfg | PiePanelCfg | KpiPanelCfg | TablePanelCfg | LogsPanelCfg | TextPanelCfg | FuturePanelCfg;
+export type PanelCfg = BarPanelCfg | HbarPanelCfg | LinePanelCfg | AreaPanelCfg | PiePanelCfg | KpiPanelCfg | TablePanelCfg | LogsPanelCfg | TextPanelCfg | ImagePanelCfg | FuturePanelCfg;
 
 /**
  * Altinity SQL Browser saved-query Spec v1

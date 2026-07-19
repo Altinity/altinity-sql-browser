@@ -11,6 +11,27 @@ export function isKpiPanel(panel: Panel | null | undefined): boolean {
   return panel?.cfg?.type === 'kpi';
 }
 
+/** True when `panel`'s resolved cfg is the Image (PNG) arm (#307) — the
+ *  explicit-panel type whose transport `panelExecution` also owns (a single
+ *  binary FORMAT PNG result, not a structured streaming one). */
+export function isImagePanel(panel: Panel | null | undefined): boolean {
+  return panel?.cfg?.type === 'image';
+}
+
+/** #307 UX fix: should an UNCONFIGURED panel-role tile (no explicit `panel.cfg`
+ *  at all — `panel` is null or has no `cfg`) be treated as an Image panel? True
+ *  only when the authored SQL's trailing FORMAT clause is exactly `PNG`
+ *  (case-insensitive, via `detectSqlFormat`). An explicitly-typed panel (any
+ *  type, including a non-image one) never re-types here — this is purely the
+ *  "nothing chosen yet" heuristic, parallel to `autoPanel`'s result-shape
+ *  heuristic but keyed on the authored SQL rather than the result. */
+export function shouldInferImagePanel(panel: Panel | Record<string, unknown> | null | undefined, sql: string): boolean {
+  const cfg = panel && typeof panel === 'object' ? (panel as { cfg?: unknown }).cfg : undefined;
+  if (cfg && typeof cfg === 'object') return false;
+  const format = detectSqlFormat(sql);
+  return !!format && format.toUpperCase() === 'PNG';
+}
+
 /** A saved query's explicit, known-typed panel payload, or null. Unknown
  *  panel-cfg shapes stay non-null-ish only through resolvePanel's diagnostic
  *  fallback. Shared by the Dashboard's ordinary-tile path and its KPI-band
@@ -51,6 +72,36 @@ export function panelExecution(
   sql: string,
   defaults: PanelExecutionDefaults = {},
 ): PanelExecutionResult {
+  if (isImagePanel(panel)) {
+    const authoredFormat = detectSqlFormat(sql);
+    if (!authoredFormat) {
+      return {
+        ...defaults,
+        owned: true,
+        error: 'Image panel requires an explicit FORMAT PNG clause.',
+        params: { ...(defaults.params || {}) },
+      };
+    }
+    if (authoredFormat.toUpperCase() !== 'PNG') {
+      return {
+        ...defaults,
+        owned: true,
+        error: `Image panel requires FORMAT PNG. Remove FORMAT ${authoredFormat} from the SQL.`,
+        params: { ...(defaults.params || {}) },
+      };
+    }
+    return {
+      ...defaults,
+      owned: true,
+      error: null,
+      format: 'PNG',
+      // rowLimit is not meaningful for a binary (single-blob) result — kept
+      // at 0 so a caller that still reads it (e.g. a shared row-cap gate)
+      // never treats an image tile as a multi-row streaming result.
+      rowLimit: 0,
+      params: { ...(defaults.params || {}) },
+    };
+  }
   if (!isKpiPanel(panel)) return { ...defaults, owned: false, error: null, params: { ...(defaults.params || {}) } };
   const authoredFormat = detectSqlFormat(sql);
   if (authoredFormat) {

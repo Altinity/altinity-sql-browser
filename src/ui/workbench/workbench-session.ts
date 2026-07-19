@@ -124,6 +124,14 @@ export interface WorkbenchHooks {
    *  ConnectionSession sign-out flow (e.g. `() => chCtx.onSignedOut()`); the
    *  session stays ignorant of `chCtx`. */
   onAuthFailed(): void;
+  /** Frees a discarded result's own Image (PNG) object URL (#307) — called
+   *  by `run()` right before a rerun overwrites `tab.result` wholesale (the
+   *  filter-error/KPI-error early-return branches included). A no-op for
+   *  every non-image result, so every call site can invoke it unconditionally
+   *  rather than checking first. The session stays ignorant of `app.
+   *  revokeObjectUrl`/results.ts's URL cache, same seam shape as
+   *  `onAuthFailed`. */
+  revokeResultImage(result: unknown): void;
 }
 
 // ── Construction deps ────────────────────────────────────────────────────────
@@ -238,6 +246,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     if (filterRun?.error) {
       const filterErrorResult: QueryResult = newResult('Filter', filterRun.rowLimit);
       filterErrorResult.error = filterRun.error;
+      hooks.revokeResultImage(tab.result);
       Object.assign(tab, { result: filterErrorResult });
       tab.filterPreview = { status: 'error', error: filterRun.error };
       state.resultView.value = 'filter';
@@ -280,6 +289,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     if (kpiExecution.error) {
       const kpiErrorResult: QueryResult = newResult('KPI', 2);
       kpiErrorResult.error = kpiExecution.error;
+      hooks.revokeResultImage(tab.result);
       Object.assign(tab, { result: kpiErrorResult });
       state.resultView.value = 'panel';
       hooks.renderResults();
@@ -324,6 +334,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const rowLimit = isFilter ? filterRun!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
     const t0 = deps.now();
     const result: QueryResult = newResult(fmt, rowLimit);
+    hooks.revokeResultImage(tab.result);
     Object.assign(tab, { result });
     if (isFilter) tab.filterPreview = { status: 'running' };
     if (explainView) result.explainView = explainView;
@@ -448,6 +459,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const t0 = deps.now();
     const entries: ScriptEntry[] = [];
     const scriptResult: ScriptResult = { script: entries };
+    hooks.revokeResultImage(tab.result);
     Object.assign(tab, { result: scriptResult });
     state.resultSort = { col: null, dir: 'asc' };
     runT0 = t0;

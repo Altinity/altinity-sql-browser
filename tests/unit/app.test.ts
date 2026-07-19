@@ -3582,6 +3582,21 @@ describe('exhaustive controller coverage', () => {
     app.actions.copyResult();
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to copy');
   });
+  it('copyResult: a FORMAT PNG image result (#307) is never exportable, even if `rows`/`rawText` somehow carried data', async () => {
+    // exportableResult()'s `!r.image` guard is explicit (not just implied by
+    // rows.length/rawText being empty on a real image result) — this proves it
+    // actually excludes, rather than being a no-op given today's data shape.
+    const writeText = vi.fn(async () => {});
+    const app = createApp(env({ window: fakeWin(), navigator: { clipboard: asClipboard({ writeText }) } }));
+    app.renderApp();
+    app.activeTab().result = {
+      error: null, rawText: null, columns: [{ name: 'a' }], rows: [['1']],
+      image: { kind: 'image', format: 'PNG', mimeType: 'image/png', bytes: new Uint8Array([1]), width: 1, height: 1 },
+    };
+    app.actions.copyResult();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(qs(document, '.share-toast').textContent).toBe('Nothing to copy');
+  });
   it('copyResult: no clipboard → not-supported; rejection → failed', async () => {
     const app = createApp(env({ window: fakeWin(), navigator: {} }));
     app.renderApp();
@@ -3614,6 +3629,32 @@ describe('exhaustive controller coverage', () => {
     app2.downloadFile('result.csv', 'text/csv', 'a,b');
     expect(createObjectURL).toHaveBeenCalled();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:u');
+  });
+  it('createObjectUrl/revokeObjectUrl (#307): injected env seam wins; native path uses Blob + URL.createObjectURL/revokeObjectURL', () => {
+    // The Image (PNG) result view's own object-URL seam (results.ts) — mirrors
+    // downloadFile's injected-seam-with-real-fallback shape one test above.
+    const createObjectUrl = vi.fn(() => 'blob:injected');
+    const revokeObjectUrl = vi.fn();
+    const app = createApp(env({ window: fakeWin(), createObjectUrl, revokeObjectUrl }));
+    app.renderApp();
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(app.createObjectUrl(bytes, 'image/png')).toBe('blob:injected');
+    expect(createObjectUrl).toHaveBeenCalledWith(bytes, 'image/png');
+    app.revokeObjectUrl('blob:injected');
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:injected');
+
+    const createObjectURL = vi.fn(() => 'blob:native');
+    const revokeObjectURL = vi.fn();
+    const app2 = createApp(env({ window: asWindow({
+      ...fakeWin(),
+      URL: { createObjectURL, revokeObjectURL },
+      Blob: class { parts: unknown; opts: unknown; constructor(parts: unknown, opts: unknown) { this.parts = parts; this.opts = opts; } },
+    }) }));
+    app2.renderApp();
+    expect(app2.createObjectUrl(bytes, 'image/png')).toBe('blob:native');
+    expect(createObjectURL).toHaveBeenCalled();
+    app2.revokeObjectUrl('blob:native');
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:native');
   });
 
   it('shows and dismisses the auth-failure banner', () => {

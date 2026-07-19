@@ -116,6 +116,13 @@ export interface SchemaGraphHooks {
    *  `SchemaGraphAuthRequiredError` (the shell needs both: the hook to sign
    *  out, the error to pick `view.fail`'s message). */
   onAuthFailed(): void;
+  /** Frees a discarded result's own Image (PNG) object URL (#307) — called
+   *  by `show()` right before it overwrites `tab.result` wholesale with the
+   *  fresh loading placeholder. A no-op for every non-image result (matches
+   *  `WorkbenchHooks.revokeResultImage`'s own doc comment — same seam shape,
+   *  same convention: the session stays ignorant of `app.revokeObjectUrl`/
+   *  results.ts's URL cache), so this call site can invoke it unconditionally. */
+  revokeResultImage(result: unknown): void;
 }
 
 // ── Construction deps ────────────────────────────────────────────────────────
@@ -202,6 +209,7 @@ export function createSchemaGraphSession(deps: SchemaGraphDeps): SchemaGraphSess
     // system.dictionaries) is a network round trip.
     const result: SchemaGraphResult = newResult('Table');
     result.schemaGraph = { focus, loading: true, nodes: [], edges: [] };
+    deps.hooks.revokeResultImage(tab.result); // #307: free a displayed image's URL before it's overwritten
     Object.assign(tab, { result });
     // `result` is the stale-write guard (mirrors #97's identity-guard shape,
     // and WorkbenchSession's own run() guard): captured once, checked before

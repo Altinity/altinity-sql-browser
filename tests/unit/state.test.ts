@@ -420,7 +420,7 @@ describe('saved queries', () => {
       expect(commit).toHaveBeenCalledTimes(1);
     });
 
-    it('a null state.dashboard means favorite flip only — no tile change, no crash', async () => {
+    it('#307: a null state.dashboard + favorite ON on a panel-role query creates a fresh Dashboard with one tile', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
       expect(s.dashboard).toBeNull();
@@ -428,6 +428,29 @@ describe('saved queries', () => {
       const result = await toggleFavorite(s, 'p1', commit, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard).not.toBeNull();
+      expect(s.dashboard!.tiles).toEqual([{ id: 'tile-2', queryId: 'p1' }]);
+    });
+
+    it('a null state.dashboard + favorite ON on a filter-role query stays null (favorite flip only)', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'f1', sql: "SELECT ['a'] AS x", dashboard: { role: 'filter' } })];
+      expect(s.dashboard).toBeNull();
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'f1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(true);
+      expect(s.dashboard).toBeNull();
+    });
+
+    it('a null state.dashboard + favorite OFF stays null (no crash)', async () => {
+      const s = savedTestState();
+      s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', favorite: true, dashboard: { role: 'panel' } })];
+      expect(s.dashboard).toBeNull();
+      const commit = fakeWorkspaceCommit();
+      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      expect(result).toMatchObject({ ok: true });
+      expect(queryFavorite(s.savedQueries[0])).toBe(false);
       expect(s.dashboard).toBeNull();
     });
   });

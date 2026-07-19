@@ -15,10 +15,25 @@
 // Pure — no DOM, no persistence; the caller (state.ts's `toggleFavorite`)
 // folds the result into the same commit candidate as the favorite patch.
 
+import { queryFavorite } from '../../core/saved-query.js';
 import { queryDashboardRole } from '../model/workspace-semantics.js';
 import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
+
+/** Build a brand-new, empty flow@1 Dashboard document at revision 1. The
+ *  single source of truth for "what does an empty Dashboard look like" —
+ *  `dashboard-authoring-session.ts`'s `createEmptyDashboard` (the "workspace
+ *  has no Dashboard yet, start one" path for the authoring session) reuses
+ *  this rather than duplicating the shape. Pure; the id is minted by the
+ *  caller so tests stay deterministic and production stays unguessable. */
+export function createEmptyDashboardDocument(id: string): DashboardDocumentV1 {
+  return {
+    documentVersion: 1, id, title: 'Dashboard', revision: 1,
+    layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+    filters: [], tiles: [],
+  };
+}
 
 /** Remove every tile referencing `queryId`, and scrub those tile ids out of
  *  every filter's `targets` — the typed counterpart of saved-query-mutation.ts's
@@ -46,7 +61,16 @@ function removeTilesForQuery(dashboard: DashboardDocumentV1, queryId: string): D
  *   becomes a tile, matching `buildLegacyMigrationCandidate`).
  * - Star OFF → remove EVERY tile referencing the query and scrub those tile
  *   ids from every filter's `targets`.
- * - `dashboard` null in → `null` out (no Dashboard yet; favorite flip only).
+ * - `dashboard` null in + star ON on a panel-role query → a fresh empty
+ *   Dashboard is created (`createEmptyDashboardDocument(genDashboardId())`)
+ *   and the tile is added to it (#307: a fresh workspace has no Dashboard
+ *   yet, but starring a panel-role query must still be the one bridge that
+ *   creates the first tile — the bug was that `null` silently swallowed the
+ *   star forever, and File → Import queries had no membership sync at all;
+ *   see `syncFavoriteTileMembership` below for the import-side fix).
+ * - `dashboard` null in + star ON on a filter/setup-role query, or star OFF
+ *   with `dashboard` null → `null` out unchanged (nothing to create or
+ *   remove from).
  *
  * The result is always run through the ACTIVE layout engine's own
  * `normalize` (#291: flow@1 or grafana-grid@1, resolved from the document's
@@ -57,24 +81,68 @@ function removeTilesForQuery(dashboard: DashboardDocumentV1, queryId: string): D
  * regenerated too (#291 "every grid mutation regenerates the flow@1
  * fallback"; a no-op under flow@1) — this membership change adds/removes a
  * tile just like the authoring commands do. The result is always a fresh
- * copy; `dashboard` is never mutated.
+ * copy; `dashboard` is never mutated. `genDashboardId` is only ever called
+ * when a Dashboard must be created from nothing (defaults to `genTileId` —
+ * tile and Dashboard ids share the same id space in production, `uid('ws-')`
+ * off `app.genId`, so one generator covers both).
  */
 export function toggleTileMembership(
   dashboard: DashboardDocumentV1 | null,
   query: SavedQueryV2,
   favorite: boolean,
   genTileId: () => string,
+  genDashboardId: () => string = genTileId,
 ): DashboardDocumentV1 | null {
-  if (!dashboard) return null;
-  const hasTile = dashboard.tiles.some((tile) => tile.queryId === query.id);
-  let next = dashboard;
+  let base = dashboard;
+  if (!base) {
+    if (!favorite || queryDashboardRole(query) !== 'panel') return null;
+    base = createEmptyDashboardDocument(genDashboardId());
+  }
+  const hasTile = base.tiles.some((tile) => tile.queryId === query.id);
+  let next = base;
   if (favorite) {
     if (!hasTile && queryDashboardRole(query) === 'panel') {
-      next = { ...dashboard, tiles: [...dashboard.tiles, { id: genTileId(), queryId: query.id }] };
+      next = { ...base, tiles: [...base.tiles, { id: genTileId(), queryId: query.id }] };
     }
   } else if (hasTile) {
-    next = removeTilesForQuery(dashboard, query.id);
+    next = removeTilesForQuery(base, query.id);
   }
+  const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
+  regenerateGridFallback(normalized.layout, normalized.tiles);
+  return normalized;
+}
+
+/**
+ * Sync Dashboard tile membership for EVERY currently-favorited panel-role
+ * query at once (#307 "File → Import queries has no membership sync"):
+ * additive-only — appends `{ id: genTileId(), queryId }` for each favorited
+ * panel-role query with no existing tile, in `queries` order; never removes
+ * a tile for an unfavorited query (unlike `toggleTileMembership`'s star-OFF
+ * path, this is not a single flip — running it must never destroy tile
+ * membership an existing Dashboard already declared for other reasons).
+ * Creates a fresh empty Dashboard (via `createEmptyDashboardDocument`) when
+ * `dashboard` is null and at least one tile needs to be added; stays `null`
+ * when nothing qualifies. Idempotent — a second call with the same inputs is
+ * a no-op. Ends with the same normalize + `regenerateGridFallback` tail as
+ * `toggleTileMembership`, so layout stays consistent either way.
+ */
+export function syncFavoriteTileMembership(
+  dashboard: DashboardDocumentV1 | null,
+  queries: readonly SavedQueryV2[],
+  genTileId: () => string,
+  genDashboardId: () => string = genTileId,
+): DashboardDocumentV1 | null {
+  const missing = queries.filter((query) => (
+    queryFavorite(query)
+    && queryDashboardRole(query) === 'panel'
+    && !dashboard?.tiles.some((tile) => tile.queryId === query.id)
+  ));
+  if (!missing.length) return dashboard;
+  const base = dashboard ?? createEmptyDashboardDocument(genDashboardId());
+  const next: DashboardDocumentV1 = {
+    ...base,
+    tiles: [...base.tiles, ...missing.map((query) => ({ id: genTileId(), queryId: query.id }))],
+  };
   const normalized = resolveLayoutPluginSync(next.layout).normalize(next);
   regenerateGridFallback(normalized.layout, normalized.tiles);
   return normalized;

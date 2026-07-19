@@ -11,7 +11,8 @@ import { parseExceptionText, isAuthExpiredBody, authDeniedMessage } from '../cor
 import type { StreamLine } from '../core/stream.js';
 import { parseAstTables, buildSchemaGraph, externalDbs } from '../core/schema-graph.js';
 import type { SchemaGraphTableRow, SchemaGraphDictRow } from '../core/schema-graph.js';
-import { sqlString } from '../core/format.js';
+import { sqlString, isBinaryFormat } from '../core/format.js';
+import { MAX_PNG_BYTES } from '../core/png.js';
 
 // ── Injected ctx seam ────────────────────────────────────────────────────────
 
@@ -852,6 +853,75 @@ export interface RunQueryResult {
   error?: string;
   raw?: string;
   streamed?: boolean;
+  /** A raw-mode `FORMAT PNG` (or other binary format) body, read as bytes
+   *  rather than decoded as text (#307). `contentType` is normalized to
+   *  `image/png` regardless of what the server's response header says —
+   *  never base64-encoded. */
+  binary?: { bytes: Uint8Array; contentType: string };
+}
+
+/** A too-large-result error message, shared by both the header-only and the
+ *  incremental-read rejection paths so the wording stays consistent. */
+function tooLargeError(bytes: number): string {
+  return `PNG result too large (${bytes} bytes, max ${MAX_PNG_BYTES})`;
+}
+
+/**
+ * Read a raw-mode binary (`FORMAT PNG`, #307) response body while enforcing
+ * `MAX_PNG_BYTES` DURING the read, never after — an oversized response must
+ * never be fully buffered into memory first. Three paths:
+ *  - `Content-Length` present and over the cap: reject immediately without
+ *    reading the body (cancel it so the connection can be reclaimed).
+ *  - A readable stream (`resp.body`): accumulate chunks + a running byte
+ *    count via the reader, cancelling and rejecting the instant the count
+ *    exceeds the cap; on success, assemble one final `Uint8Array` (a single
+ *    allocation of the now-known total) from the collected chunks.
+ *  - No `resp.body` (defensive — some fetch polyfills/mocks omit it): fall
+ *    back to `arrayBuffer()` with a post-hoc size check (can't avoid the one
+ *    allocation in this case, but still refuses to *return* an oversized
+ *    payload).
+ * An `AbortSignal` firing mid-read rejects exactly as `arrayBuffer()` would
+ * (the reader's `read()` rejects once the underlying fetch aborts) — this
+ * function doesn't need its own abort handling, it just lets that rejection
+ * propagate to `runQuery`'s caller.
+ */
+async function readBinaryBody(resp: Response): Promise<RunQueryResult> {
+  const contentLength = resp.headers?.get?.('content-length');
+  if (contentLength != null) {
+    const len = Number(contentLength);
+    if (Number.isFinite(len) && len > MAX_PNG_BYTES) {
+      await resp.body?.cancel?.();
+      return { error: tooLargeError(len) };
+    }
+  }
+  if (!resp.body) {
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > MAX_PNG_BYTES) {
+      return { error: tooLargeError(buf.byteLength) };
+    }
+    return { binary: { bytes: new Uint8Array(buf), contentType: 'image/png' } };
+  }
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_PNG_BYTES) {
+      await reader.cancel();
+      return { error: tooLargeError(total) };
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { binary: { bytes, contentType: 'image/png' } };
 }
 
 /**
@@ -885,7 +955,13 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   // FORMAT) and 0 for EXPLAIN/PIPELINE/ESTIMATE (which also run as 'Table', so the
   // exemption can't be told apart by format here). `break` can overshoot by up to
   // a block on the streaming path, which the applyStreamLine guard trims.
-  const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0
+  // A binary format (PNG, #307) is exempt regardless of what the caller passed:
+  // capping *source* rows server-side truncates the pixel grid itself (a
+  // max_result_rows=500 cap on a 1024x1024 image only fills ~64 rows before
+  // ClickHouse stops reading, leaving the rest of the canvas black — the row
+  // cap is meaningless for a single-blob result and the real guards are the
+  // client-side PNG dimension/byte limits applied after decode).
+  const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0 && !isBinaryFormat(fmt)
     ? { max_result_rows: o.resultRowLimit!, result_overflow_mode: 'break' }
     : {};
   const url = chUrl(ctx.origin, {
@@ -907,6 +983,9 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
     return { error: parseExceptionText(await resp.text()) };
   }
   if (!isStreaming) {
+    if (isBinaryFormat(fmt)) {
+      return readBinaryBody(resp);
+    }
     return { raw: await resp.text() };
   }
   const reader = resp.body!.getReader();

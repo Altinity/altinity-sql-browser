@@ -7,6 +7,8 @@
 // `applyStreamLine` folds one parsed object into a mutable result; keeping it
 // pure (no fetch, no DOM) makes the streaming parser fully unit-testable.
 
+import type { ImageResultPayload } from './png.js';
+
 /** One streamed result column, as reported by a `{meta}` line. */
 export interface StreamColumn {
   name: string;
@@ -37,6 +39,10 @@ export interface StreamResult {
   pct: number;
   rowLimit: number;
   capped: boolean;
+  /** A validated `FORMAT PNG` image result (#307), or null for every other
+   *  format/until one is set. Mutually exclusive with `rawText`/`rows` in
+   *  practice — the transport picks one branch per query. */
+  image: ImageResultPayload | null;
 }
 
 /**
@@ -58,6 +64,7 @@ export function newResult(fmt: string, rowLimit = 0): StreamResult {
     pct: 0,
     rowLimit,
     capped: false,
+    image: null,
   };
 }
 
@@ -131,6 +138,19 @@ export function parseExceptionText(text: string): string {
     }
   }
   return text;
+}
+
+/**
+ * Heuristic: does `text` look like it carries a ClickHouse exception, rather
+ * than arbitrary/binary data? Used by the `FORMAT PNG` binary path (#307
+ * item 6) to tell a genuine CH error — which can arrive with a 2xx HTTP
+ * status once headers are already sent (see `findExceptionFrame`'s doc) — apart
+ * from a structurally invalid/garbage PNG body. Matches `DB::Exception`
+ * anywhere, a leading `Code: <n>` line (CH's plain-text error prefix), or a
+ * `{"exception": ...}` JSON line (CH's mid-stream exception frame). Pure.
+ */
+export function looksLikeChException(text: string): boolean {
+  return text.includes('DB::Exception') || /^Code:\s*\d+/m.test(text) || /^\{"exception"/m.test(text);
 }
 
 const EXCEPTION_MARKER = '__exception__'; // ClickHouse WriteBufferFromHTTPServerResponse

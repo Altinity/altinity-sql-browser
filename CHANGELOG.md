@@ -9,6 +9,58 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **ClickHouse 26.6 `FORMAT PNG` results render as real images** (#307). A
+  query with a trailing explicit `FORMAT PNG` now runs through a new binary
+  transport (`runQuery` reads bytes, never `Response.text()` — no base64
+  anywhere) and is validated client-side (PNG signature, IHDR, 8192×8192 /
+  32M-pixel / 64 MiB caps in the pure `src/core/png.ts`) before any object
+  URL exists. The Workbench shows a locked "Image (PNG)" result view —
+  centered, scrollable, aspect-preserving, alt-named from the tab/saved
+  query — with exact-bytes `Download PNG` (Copy is disabled); blob URLs are
+  revoked on rerun, tab close, and result replacement. Dashboards gain a
+  schema-validated `image` panel type (`fit` contain/cover/actual,
+  `background` theme/transparent/checkerboard, `alt`): the only tile shape
+  allowed to carry an authored `FORMAT` clause, and only `PNG` — every
+  other panel/role keeps the blanket rejection. Tiles render the image in
+  the full body, repaint on image identity (resize never re-executes), and
+  revoke the previous URL on replacement in both layout engines. Image
+  bytes are never persisted (saved queries, history, workspaces, bundles).
+  New importable demo library `examples/image-panels.json` (spiral, RGB
+  gradient, RGBA checkerboard glow, and an original ray-traced sphere
+  crediting ClickHouse's RayTracer demos) — requires ClickHouse 26.6+.
+
+### Fixed
+- **`npm run local` can now opt an OAuth connection into `ch_auth: "basic"`.**
+  `build/local.py` only ever emitted the default `bearer` auth for OAuth
+  connections read from `~/.clickhouse-client/config.xml`, so there was no way
+  to locally exercise the ch-jwt-verify path (stock/OSS ClickHouse behind a
+  Basic-password JWT verifier, `docs/CLICKHOUSE-OSS-OAUTH.md`) — the browser
+  always sent `Authorization: Bearer`, which such a server rejects
+  (`AUTHENTICATION_FAILED`, "'Bearer' HTTP Authorization scheme is not
+  supported"). A `<ch-auth>basic</ch-auth>` tag on the connection now mirrors
+  `install.sh --ch-auth basic` into the generated `config.json`'s IdP entry.
+- **Starring a query in a fresh workspace (and importing favorited queries)
+  now actually creates Dashboard tiles** (#307 merge-gate finding; pre-existing
+  Phase-8 regression). `toggleTileMembership` used to no-op while the
+  workspace's dashboard document was `null`, and **File → Import queries**
+  never synced favorite→tile membership — so the Dashboard's "star a query to
+  add it" empty-state was a dead end and README's documented `kpi-panel.json`
+  import flow showed nothing. Starring a panel-role query now creates the
+  dashboard document on demand, and `planImportQueries` runs the new
+  additive-only, idempotent `syncFavoriteTileMembership` so imported
+  favorited panel-role queries arrive with tiles. A starred query with a
+  trailing `FORMAT PNG` and no explicit panel type is now auto-inferred as an
+  Image panel (owner decision) — only explicitly-typed non-image panels keep
+  the FORMAT rejection, and for PNG that error now says how to fix it ("set
+  its panel type to Image").
+- **Large `FORMAT PNG` results are no longer truncated by the ROWS selector**
+  (#307 merge-gate finding). The row cap (`max_result_rows` +
+  `result_overflow_mode=break`) was sent for every raw-format run, so a
+  1024×1024 image lost all but its first ~64 pixel rows; `runQuery` now
+  skips the cap for binary formats — the client-side PNG dimension/byte
+  limits remain the real guards.
+
 ### Changed
 - **Grafana-grid KPI tiles are polished in both Dashboard modes** (#316,
   follow-on to #291). Edit mode keeps the full editing shell but drops the

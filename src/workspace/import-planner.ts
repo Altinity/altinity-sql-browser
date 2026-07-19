@@ -23,6 +23,7 @@ import { dashboardDependencyQueryIds } from '../dashboard/model/bundle-order.js'
 import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
+import { syncFavoriteTileMembership } from '../dashboard/application/tile-membership.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
@@ -295,6 +296,40 @@ function replaceIncomingQueries(
   return out;
 }
 
+// --- Dashboard revision bump (review item 4, #316) ---------------------------
+
+/**
+ * Repo invariant (see `workspace-repository.ts`'s `commit`, which never
+ * mutates `revision` — "the authoring session that built the candidate owns
+ * that" — and `dashboard-authoring-session.ts`'s commit path, which bumps
+ * `committedRevision + 1` exactly once per successful persisted mutation):
+ * a successful persisted Dashboard mutation increments `revision` exactly
+ * once, at the layer that builds the candidate. `syncFavoriteTileMembership`
+ * itself never touches `revision` — it is the same pure transform the
+ * star-flip path (`toggleTileMembership`, `state.ts`'s `toggleFavorite`)
+ * folds into ITS OWN commit candidate — so the import plan, as the candidate
+ * builder here, owns the bump.
+ *
+ * - `before: null` → the sync either left it `null` (nothing qualified) or
+ *   created a fresh Dashboard via `createEmptyDashboardDocument`, which
+ *   already mints `revision: 1` — matching the `legacy-migration.ts` /
+ *   `dashboard-authoring-session.ts` "brand-new Dashboard starts at revision
+ *   1" convention. Nothing to bump.
+ * - `before` non-null and `after === before` (`syncFavoriteTileMembership`'s
+ *   own no-op shortcut — no favorited panel-role query was missing a tile) →
+ *   no mutation happened; the revision, and the reference, stay untouched so
+ *   downstream change detection stays quiet.
+ * - `before` non-null and `after !== before` → the sync actually added at
+ *   least one tile to an EXISTING Dashboard; bump `revision` to
+ *   `before.revision + 1`, exactly once.
+ */
+function withImportRevisionBump(
+  before: DashboardDocumentV1 | null, after: DashboardDocumentV1 | null,
+): DashboardDocumentV1 | null {
+  if (!before || after === before || !after) return after;
+  return { ...after, revision: before.revision + 1 };
+}
+
 // --- Plans --------------------------------------------------------------------
 
 export interface PortableBundleImportPlan {
@@ -345,8 +380,18 @@ function invalidatedDashboardPlan(
   );
 }
 
-/** Queries-only import (Dashboard untouched): merge the bundle's queries into
- *  the workspace's query catalog per `decisions`, and validate the result. */
+/** Queries-only import: merge the bundle's queries into the workspace's query
+ *  catalog per `decisions`, then sync Dashboard tile membership for every
+ *  favorited panel-role query in the MERGED catalog (#307 — "File → Import
+ *  queries has no membership sync" left favorited panel-role imports
+ *  invisible on the Dashboard; `syncFavoriteTileMembership` is additive-only,
+ *  so an existing Dashboard's other tiles/layout/filters are untouched, and a
+ *  Dashboard-less workspace gets a fresh one only when at least one imported
+ *  or pre-existing favorite actually needs a tile). Validate the result.
+ *  `revision` follows `withImportRevisionBump` (#316 review item 4): bumped
+ *  exactly once when the sync actually added a tile to an EXISTING Dashboard,
+ *  left at the `createEmptyDashboardDocument` default of 1 for a freshly
+ *  created one, and untouched (same reference) for a no-op sync. */
 export function planImportQueries(
   workspace: StoredWorkspaceV1, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
@@ -355,7 +400,9 @@ export function planImportQueries(
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = mergeIncomingQueries(bundle.queries, workspace.queries, mapping);
   const candidate = importQueries(workspace, nextQueries);
-  return validatedPlan(candidate, mapping, options);
+  const syncedDashboard = syncFavoriteTileMembership(candidate.dashboard, nextQueries, genId);
+  const nextDashboard = withImportRevisionBump(candidate.dashboard, syncedDashboard);
+  return validatedPlan({ ...candidate, dashboard: nextDashboard }, mapping, options);
 }
 
 /** Import one bundled Dashboard plus its dependency closure of queries.

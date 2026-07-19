@@ -43,8 +43,11 @@ function makeTab(initial: Record<string, unknown> | null = null): SchemaGraphTab
   return { result: initial };
 }
 
-function makeHooks(): SchemaGraphHooks & { renderResults: ReturnType<typeof vi.fn>; onAuthFailed: ReturnType<typeof vi.fn> } {
-  return { renderResults: vi.fn(), onAuthFailed: vi.fn() };
+function makeHooks(): SchemaGraphHooks & {
+  renderResults: ReturnType<typeof vi.fn>; onAuthFailed: ReturnType<typeof vi.fn>;
+  revokeResultImage: ReturnType<typeof vi.fn>;
+} {
+  return { renderResults: vi.fn(), onAuthFailed: vi.fn(), revokeResultImage: vi.fn() };
 }
 
 /** One minimal `system.tables` row — every field `buildSchemaGraph` actually
@@ -141,6 +144,17 @@ describe('show()', () => {
     await svc.show({ db: 'd' });
     expect(hooks.onAuthFailed).toHaveBeenCalledTimes(1);
     expect(tab.result).toBeNull();
+  });
+
+  it('calls hooks.revokeResultImage with the old result before overwriting tab.result (#307)', async () => {
+    const oldResult = { image: { bytes: new Uint8Array(), mimeType: 'image/png', width: 1, height: 1 } };
+    const tab = makeTab(oldResult);
+    const hooks = makeHooks();
+    const deps = makeDeps({ hooks, activeTab: () => tab });
+    const svc = createSchemaGraphSession(deps);
+    await svc.show({ db: 'd' });
+    expect(hooks.revokeResultImage).toHaveBeenCalledWith(oldResult);
+    expect(tab.result).not.toBe(oldResult); // the placeholder really did overwrite it
   });
 
   it('draws a Phase-A-only graph (no progressive callbacks) and reports tableCount', async () => {

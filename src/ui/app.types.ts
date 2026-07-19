@@ -289,6 +289,14 @@ export interface App {
   saveVarRecent(): void;
   recordHistory(tab: Tab, sqlText?: string): void;
   downloadFile(filename: string, mime: string, content: BlobPart): void;
+  /** Object-URL seam for the Image (PNG) result view (#307) — mirrors
+   *  `downloadFile`'s injected-seam-with-real-fallback shape. `createObjectUrl`
+   *  mints a fresh `blob:` URL for `bytes`; `revokeObjectUrl` frees one minted
+   *  by it. results.ts creates at most one URL per `ImageResultPayload` and
+   *  revokes it when that result is replaced/discarded (workbench-session.ts's
+   *  run(), tabs.ts's closeTab). */
+  createObjectUrl(bytes: Uint8Array, mime: string): string;
+  revokeObjectUrl(url: string): void;
   /** Whether the header library-name field is in its inline-edit state. Not a
    * signal — file-menu.js renders it directly. */
   editingLibrary: boolean;

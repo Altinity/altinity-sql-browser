@@ -98,6 +98,7 @@ function makeHooks(over: Partial<WorkbenchHooks> = {}): WorkbenchHooks {
     tickElapsed: vi.fn(),
     saveJSON: vi.fn(),
     onAuthFailed: vi.fn(),
+    revokeResultImage: vi.fn(),
     ...over,
   };
 }

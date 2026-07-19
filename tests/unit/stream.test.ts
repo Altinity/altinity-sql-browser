@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   newResult, applyStreamLine, splitBuffer, parseExceptionText, isAuthExpiredBody,
-  authDeniedMessage, parseErrorPos, findExceptionFrame,
+  authDeniedMessage, parseErrorPos, findExceptionFrame, looksLikeChException,
 } from '../../src/core/stream.js';
 
 // Build a latin1 (1 byte -> 1 char) string standing in for a streamed body's
@@ -31,6 +31,9 @@ describe('newResult', () => {
   });
   it('carries the row limit when given', () => {
     expect(newResult('Table', 500)).toMatchObject({ rowLimit: 500, capped: false });
+  });
+  it('starts with a null image (#307)', () => {
+    expect(newResult('PNG')).toMatchObject({ image: null });
   });
 });
 
@@ -179,6 +182,24 @@ describe('parseErrorPos', () => {
     expect(parseErrorPos('Some other DB::Exception')).toBeNull();
     expect(parseErrorPos('')).toBeNull();
     expect(parseErrorPos(null)).toBeNull();
+  });
+});
+
+describe('looksLikeChException', () => {
+  it('matches text containing DB::Exception anywhere', () => {
+    expect(looksLikeChException('preamble\nDB::Exception: Syntax error\n')).toBe(true);
+  });
+  it('matches a leading "Code: <n>" line', () => {
+    expect(looksLikeChException('Code: 62. Something happened')).toBe(true);
+    expect(looksLikeChException('prefix\nCode: 1. Boom')).toBe(true);
+  });
+  it('matches a {"exception": ...} JSON line', () => {
+    expect(looksLikeChException('{"exception": "Boom"}')).toBe(true);
+  });
+  it('rejects arbitrary/binary-looking garbage', () => {
+    expect(looksLikeChException('\x00\x01\x02random binary junk')).toBe(false);
+    expect(looksLikeChException('')).toBe(false);
+    expect(looksLikeChException('just some ordinary text')).toBe(false);
   });
 });
 
