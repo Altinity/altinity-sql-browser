@@ -2539,6 +2539,11 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   align-content: start;
   gap: 8px;
 }
+/* A state card (loading/unfilled/zero-data/error) is always the body's sole
+   content when present (renderKpiInto) — span every track rather than being
+   squeezed into the first ~150px column of a multi-track tile (#316 review
+   finding: the unfilled/error message needs the tile's full width). */
+.dash-gg-tile.is-kpi .dash-tile-body > .dash-kpi-state-card { grid-column: 1 / -1; max-width: none; }
 /* Container-aware value typography is GRID-TILE-ONLY (#316): `container-type:
    inline-size` cannot go on the shared `.kpi-card` base because inline-size
    containment sizes the box as if empty — a flow-band card is
@@ -2563,8 +2568,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* ── #316: view-mode KPI tiles are frameless ───────────────────────────────
    `.is-view` is a static per-load class (ui/dashboard.ts sets it once per
    tile card, from the same `readOnly` that already governs drag/remove/
-   resize — it never toggles mid-session, unlike `.is-kpi`, which DOES flip
-   per reconcile if a tile's panel type changes). Scoped to
+   resize — it never toggles mid-session; `.is-kpi` is likewise fixed per
+   session today but is still re-toggled defensively on every reconcile,
+   ui/dashboard.ts `reconcileGridTile`). Scoped to
    `.dash-gg-grid .dash-gg-tile.is-kpi` so:
      - a non-KPI grid tile (`.is-view` with no `.is-kpi`) keeps its full frame
        — only KPI content gets this treatment;

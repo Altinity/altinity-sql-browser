@@ -840,6 +840,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // once) so a tile whose `isKpi`/panel type flips leaves no stale hidden
     // footer behind on a non-KPI tile, or a stale visible one on a KPI tile.
     tileEl.foot.hidden = ts.isKpi;
+    // The `.is-kpi` frame class and the group role/name live HERE — not in
+    // `reconcileGrafanaGrid`'s structural loop — because that loop is
+    // short-circuited by the grid signature (columns/span/height only), while
+    // this function runs on every publish. Today `isKpi` is fixed per session
+    // (tile runtimes are built once — dashboard-viewer-session.ts; a real Spec
+    // change recreates session + tile DOM), so the placement is equivalent —
+    // but only THIS placement stays correct if tile runtimes ever become
+    // live-updatable (#287/#288 direction), and it keeps every KPI-gated
+    // mutation (footer, class, role) in one spot. The card is the named group
+    // a frameless view-mode KPI tile relies on for its accessible name (the
+    // visual header is `display: none` in view mode, styles.css). Set in edit
+    // mode too (harmless — the visible header shows the same title) rather
+    // than branching on `readOnly`.
+    tileEl.card.classList.toggle('is-kpi', ts.isKpi);
+    if (ts.isKpi) {
+      tileEl.card.setAttribute('role', 'group');
+      // (`ts.title` is never empty — the session falls back through query
+      // name → queryId → tile id when the tile has no explicit title.)
+      tileEl.card.setAttribute('aria-label', ts.title);
+    } else {
+      tileEl.card.removeAttribute('role');
+      tileEl.card.removeAttribute('aria-label');
+    }
     if (ts.isKpi) { tileEl.foot.replaceChildren(); renderKpiInto(tileEl.body, ts); return; }
     paintTileBody(ts, tileEl);
   }
@@ -867,22 +890,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (!tileEl) continue;
       gridPlacementByTile.set(t.tileId, { span: t.span, heightUnits: t.heightUnits, colStart: t.colStart });
       tileEl.card.classList.add('dash-gg-tile');
-      tileEl.card.classList.toggle('is-kpi', t.isKpi);
-      // #316: the tile card itself is the named group a frameless view-mode
-      // KPI tile relies on for its accessible name (the visual header is
-      // `display: none` in view mode, styles.css — not a visually-hidden
-      // clone). Set/removed BOTH ways alongside the `is-kpi` toggle above so
-      // a tile switching away from KPI never keeps a stale group role. Set in
-      // edit mode too (harmless — the visible header already shows the same
-      // title there) rather than branching on `readOnly` for one extra pair
-      // of attributes.
-      if (t.isKpi) {
-        tileEl.card.setAttribute('role', 'group');
-        tileEl.card.setAttribute('aria-label', byId.get(t.tileId)?.title || '');
-      } else {
-        tileEl.card.removeAttribute('role');
-        tileEl.card.removeAttribute('aria-label');
-      }
+      // (`is-kpi` + the group role/name are maintained by `reconcileGridTile`,
+      // which runs on EVERY pass — this loop is signature-gated and would miss
+      // a panel-type flip with unchanged placement.)
       tileEl.card.style.gridColumn = `span ${t.span}`;
       setGridHeightPx(tileEl.card, t.heightUnits);
       cards.push(tileEl.card);

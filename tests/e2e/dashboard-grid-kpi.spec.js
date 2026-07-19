@@ -104,6 +104,17 @@ test.describe('Dashboard grafana-grid KPI tiles (#316)', () => {
     const wrapper = page.locator('[data-tile-id="state-loading"]');
     const wrapperStyle = await wrapper.evaluate((node) => getComputedStyle(node).backgroundColor);
     expect(wrapperStyle).toBe('rgba(0, 0, 0, 0)');
+
+    // #316 review F2: the state card spans EVERY track of the KPI body grid
+    // (grid-column: 1 / -1) instead of being squeezed into the first ~150px
+    // column — a long unfilled/error message needs the tile's full width.
+    for (const card of [loading, unfilled, zeroData, failure]) {
+      const { cardW, bodyW } = await card.evaluate((node) => ({
+        cardW: node.getBoundingClientRect().width,
+        bodyW: node.parentElement.getBoundingClientRect().width,
+      }));
+      expect(cardW).toBeGreaterThan(bodyW - 2); // full body width (minus rounding)
+    }
   });
 
   test('equal-width responsive KPI card grid: same-row cards match widths; a partial last row does not stretch', async ({ page }) => {
