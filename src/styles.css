@@ -1862,6 +1862,48 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 [data-density='compact'] table.res-table th,
 [data-density='compact'] table.res-table td { padding: 4px 10px; }
 
+/* Documentation pane (#313): buildDrawerChrome's NON-modal chrome under its
+   own 'docs' prefix — persistent, no backdrop (unlike .cd-backdrop's cell
+   detail drawer), so it's positioned fixed to the viewport's right edge
+   itself rather than centered by a flex backdrop wrapper. Width is set
+   inline (attachDrawerResize's docPanePx stateKey) from the persisted
+   docPanePx pref, clamped to [320, 92vw] — see clampDrawerWidth (#101/#313). */
+.docs-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;
+  height: 100%;
+  background: var(--bg-panel, var(--bg-editor));
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(0,0,0,.25);
+  display: flex; flex-direction: column;
+}
+.docs-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.docs-title { flex: 1; min-width: 0; }
+.docs-title-text { font-weight: 600; font-size: 13px; color: var(--fg); }
+.docs-close { border: none; background: transparent; color: var(--fg-mute); cursor: pointer; border-radius: 4px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
+.docs-close:hover { background: var(--bg-hover); color: var(--fg); }
+.docs-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.docs-state { display: flex; align-items: center; gap: 8px; color: var(--fg-mute); font-size: 13px; padding: 16px 0; }
+.docs-retry { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 12px; }
+.docs-retry:hover { background: var(--bg-hover); }
+.docs-entry { display: flex; flex-direction: column; gap: 12px; }
+.docs-head-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.docs-name { margin: 0; font-size: 15px; color: var(--fg); }
+.docs-signature { font-family: var(--mono); font-size: 12.5px; color: var(--fg); background: var(--bg-chip); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+.docs-badge { font-size: 10.5px; font-weight: 600; letter-spacing: .01em; padding: 2px 7px; border-radius: 10px; background: var(--bg-chip); color: var(--fg-mute); }
+.docs-badge-kind { background: var(--accent); color: #fff; }
+.docs-badge-on { color: var(--fg); }
+.docs-badge-off { color: var(--fg-faint); }
+.docs-alias { font-size: 12.5px; color: var(--fg-mute); }
+.docs-alias-link { border: none; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
+.docs-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-chip { font-size: 11px; padding: 3px 9px; border-radius: 10px; background: var(--bg-chip); color: var(--fg-mute); }
+.docs-field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--fg-faint); margin-bottom: 4px; }
+.docs-field-text { font-size: 13px; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+.docs-flags { display: flex; gap: 6px; flex-wrap: wrap; }
+.docs-example-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.docs-copy { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 12px; }
+.docs-copy:hover { background: var(--bg-hover); }
+
 /* placeholder body inside results (legacy step) */
 .placeholder {
   flex: 1; display: flex; align-items: center; justify-content: center;
@@ -2162,6 +2204,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .save-popover { max-width: calc(100vw - 16px); }
   /* Cell-detail drawer → full-width, non-resizable (its handle is hidden above). */
   .cd-panel { width: 100vw !important; min-width: 0; }
+  /* Documentation pane (#313) → same full-width, non-resizable treatment. */
+  .docs-panel { width: 100vw !important; min-width: 0; }
 }
 
 /* ── Dashboard (#149 D1) ───────────────────────────────────────────────────

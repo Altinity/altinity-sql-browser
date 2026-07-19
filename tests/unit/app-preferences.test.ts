@@ -29,6 +29,7 @@ describe('save()', () => {
       ['editorPct', 45, '45'],
       ['sideSplitPct', 58, '58'],
       ['cellDrawerPx', 560, '560'],
+      ['docPanePx', 420, '420'],
       ['sidePanel', 'history', 'history'],
       ['resultRowLimit', 1000, '1000'],
       ['dashLayout', 'wide', 'wide'],

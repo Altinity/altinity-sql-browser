@@ -252,6 +252,11 @@ export interface AppState {
   editorPct: number;
   sideSplitPct: number;
   cellDrawerPx: number;
+  /** The docs pane's own persisted resize width (#313) — a sibling of
+   *  `cellDrawerPx`, read/written only by the 'docPane' splitter axis
+   *  (splitters.ts) and `attachDrawerResize`'s `stateKey: 'docPanePx'` option
+   *  (drawer.ts); never shared with the cell-detail/rows-viewer drawer. */
+  docPanePx: number;
   tabs: Signal<QueryTab[]>;
   activeTabId: Signal<string>;
   schema: Signal<unknown[] | null>;
@@ -334,6 +339,7 @@ export const KEYS = {
   editorPct: 'asb:editorPct',
   sideSplitPct: 'asb:sideSplitPct',
   cellDrawerPx: 'asb:cellDrawerPx',
+  docPanePx: 'asb:docPanePx',
   sidePanel: 'asb:sidePanel',
   saved: 'asb:saved',
   history: 'asb:history',
@@ -439,6 +445,11 @@ export function createState(read: StateReader = { loadJSON, loadStr }): AppState
     // the floor is enforced here — clampDrawerWidth (splitters.js) applies the
     // full [320, 92vw] clamp whenever the drawer is opened or resized.
     cellDrawerPx: clamp(parseInt(read.loadStr(KEYS.cellDrawerPx, '560'), 10), 320, Infinity),
+    // The docs pane's own persisted width (#313) — same floor-only load-time
+    // clamp as cellDrawerPx above (clampDrawerWidth applies the full
+    // [320, 92vw] bound whenever the pane is opened/resized against the live
+    // viewport).
+    docPanePx: clamp(parseInt(read.loadStr(KEYS.docPanePx, '420'), 10), 320, Infinity),
     // Reactive (signals): mutating these drives repaints via effects in
     // createApp — no manual refresh() list to keep in sync. Read/write through
     // `.value`. tabs/activeTabId drive renderTabs + the editor + the save button;

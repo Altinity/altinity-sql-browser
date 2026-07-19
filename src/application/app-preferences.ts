@@ -29,7 +29,10 @@ import { KEYS } from '../state.js';
  *  untouched by this service. */
 export type PreferenceKey =
   | 'theme' | 'sidebarPx' | 'editorPct' | 'sideSplitPct' | 'cellDrawerPx'
-  | 'sidePanel' | 'resultRowLimit' | 'dashLayout' | 'dashCols';
+  | 'sidePanel' | 'resultRowLimit' | 'dashLayout' | 'dashCols'
+  // #313 — the documentation pane's own persisted resize width, a sibling of
+  // cellDrawerPx (never shared with it — see splitters.ts's 'docPane' axis).
+  | 'docPanePx';
 
 /** The one state field this service reads/writes (`toggleTheme` only) — a
  *  plain settable property, not a signal (matches `AppState.theme`). */

@@ -4,7 +4,12 @@
 
 import { clamp } from '../core/format.js';
 
-export type SplitterAxis = 'col' | 'sideRow' | 'row' | 'drawer';
+// 'docPane' (#313): the persistent documentation pane's own bounded-resize
+// axis — identical geometry to 'drawer' (right-edge anchored, same
+// clampDrawerWidth bounds) but writes `docPanePx` instead of `cellDrawerPx`,
+// so a docs-pane drag never clobbers (or reads) the cell-detail/rows-viewer
+// drawer's own persisted width.
+export type SplitterAxis = 'col' | 'sideRow' | 'row' | 'drawer' | 'docPane';
 
 /** The subset of a real (or fake, in tests) pointer/mouse event `dragValue`/
  *  `startDrag` read — never the full DOM `MouseEvent`, so a plain test
@@ -15,8 +20,8 @@ export interface DragPoint {
 }
 
 /** The subset of a bounding-rect-like `dragValue` reads, by axis: 'sideRow'/
- *  'row' need `top`/`bottom`; 'drawer' needs `width` (the viewport width);
- *  'col' reads neither. */
+ *  'row' need `top`/`bottom`; 'drawer'/'docPane' need `width` (the viewport
+ *  width); 'col' reads neither. */
 export interface DragRect {
   top?: number;
   bottom?: number;
@@ -44,10 +49,10 @@ export function clampDrawerWidth(px: number, viewportWidth: number): number {
 export function dragValue(axis: SplitterAxis, ev: DragPoint, rect?: DragRect): number {
   if (axis === 'col') return clamp(ev.clientX, 180, 420);
   // `!`: every real caller (startDrag's onMove, via ctx.rectFor(axis)) supplies
-  // `width` for 'drawer' and `top`/`bottom` for 'sideRow'/'row' — the axis
-  // dispatch above is exactly the contract that guarantees the field this
-  // branch reads is present.
-  if (axis === 'drawer') return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
+  // `width` for 'drawer'/'docPane' and `top`/`bottom` for 'sideRow'/'row' —
+  // the axis dispatch above is exactly the contract that guarantees the field
+  // this branch reads is present.
+  if (axis === 'drawer' || axis === 'docPane') return clampDrawerWidth(rect!.width! - ev.clientX, rect!.width!);
   const pct = clamp(((ev.clientY - rect!.top!) / (rect!.bottom! - rect!.top!)) * 100,
     axis === 'sideRow' ? 25 : 15, 85);
   return pct;
@@ -77,6 +82,9 @@ export interface DragState {
   sideSplitPct?: number;
   editorPct?: number;
   cellDrawerPx?: number;
+  /** The docs pane's own persisted width (#313) — a sibling of `cellDrawerPx`,
+   *  never read/written by the 'drawer' axis. */
+  docPanePx?: number;
 }
 
 /** `startDrag`'s injected context: the window seam, the caller's mutable
@@ -110,6 +118,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
     if (axis === 'col') ctx.state.sidebarPx = value;
     else if (axis === 'sideRow') ctx.state.sideSplitPct = value;
     else if (axis === 'row') ctx.state.editorPct = value;
+    else if (axis === 'docPane') ctx.state.docPanePx = value;
     else ctx.state.cellDrawerPx = value;
     ctx.apply(axis, value);
   };
@@ -125,6 +134,7 @@ export function startDrag(ev: DragStartEvent, axis: SplitterAxis, ctx: DragCtx):
     if (axis === 'col') ctx.save('sidebarPx', ctx.state.sidebarPx!);
     else if (axis === 'sideRow') ctx.save('sideSplitPct', ctx.state.sideSplitPct!);
     else if (axis === 'row') ctx.save('editorPct', ctx.state.editorPct!);
+    else if (axis === 'docPane') ctx.save('docPanePx', ctx.state.docPanePx!);
     else ctx.save('cellDrawerPx', ctx.state.cellDrawerPx!);
   };
   win.addEventListener('mousemove', onMove);

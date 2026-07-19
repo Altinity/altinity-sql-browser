@@ -44,6 +44,7 @@ import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
+import { closeDocPane } from './doc-pane.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
@@ -392,6 +393,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     exportService.cancelExport();
     exportService.cancelExportScript();
     catalog.invalidate();
+    // #313: pane content must never survive a connection change — closed
+    // alongside the catalog reset, before the login screen renders.
+    closeDocPane(app);
     conn.signOut();
     renderLoginApp();
   };

@@ -10,6 +10,7 @@
 import { h, withDocument } from './dom.js';
 import { Icon } from './icons.js';
 import { startDrag, clampDrawerWidth } from './splitters.js';
+import type { SplitterAxis } from './splitters.js';
 import type { PreferenceKey } from '../application/app-preferences.js';
 
 /** `buildDrawerChrome`'s options — `classPrefix` defaults to `'cd'` (the
@@ -54,10 +55,27 @@ export function buildDrawerChrome(doc: Document, opts: DrawerChromeOptions): Dra
 /** The narrow app surface `attachDrawerResize` needs: the persisted drawer
  *  width (read on open, written mid-drag) and the preference-save seam —
  *  matches `ResultsApp`'s `state`/`prefs` members structurally, so results.ts
- *  passes its `ResultsApp` straight through. */
+ *  passes its `ResultsApp` straight through. Both fields are optional so a
+ *  caller only needs to carry whichever one its `stateKey` option (below)
+ *  actually targets — the real `AppState` (state.ts) always has both
+ *  (`cellDrawerPx`/`docPanePx`, #313), so no real caller ever hits the
+ *  `undefined` branch; only a narrowly-typed test fixture (or a future
+ *  third consumer) would omit the other key entirely. */
 export interface DrawerResizeApp {
-  state: { cellDrawerPx: number };
+  state: { cellDrawerPx?: number; docPanePx?: number };
   prefs: { save(name: PreferenceKey, value: unknown): void };
+}
+
+/** `attachDrawerResize`'s options (#313): which persisted-width field this
+ *  drawer instance reads/writes, and which `splitters.ts` axis drives its
+ *  geometry. Defaults to the original cell-detail/rows-viewer drawer
+ *  (`'cellDrawerPx'` / `'drawer'`) — every existing caller (results.ts) omits
+ *  this entirely and keeps byte-identical behavior. The docs pane (#313)
+ *  passes `{ stateKey: 'docPanePx', axis: 'docPane' }` so its own resize drag
+ *  never reads or persists the cell-detail drawer's width, and vice versa. */
+export interface DrawerResizeOptions {
+  stateKey?: 'cellDrawerPx' | 'docPanePx';
+  axis?: SplitterAxis;
 }
 
 /**
@@ -76,30 +94,40 @@ export interface DrawerResizeApp {
  * ✕, or — for a non-modal caller — whatever else it wires) can fire while the
  * mouse button is still down mid-drag — without this, the abandoned drag's
  * `mousemove`/`mouseup` listeners would linger on `win` after the panel is
- * gone, so a later unrelated mouseup would still persist a stale
- * `cellDrawerPx`. The caller's close must call this before removing the
- * panel. A no-op if no drag is in progress.
+ * gone, so a later unrelated mouseup would still persist a stale width. The
+ * caller's close must call this before removing the panel. A no-op if no
+ * drag is in progress.
+ *
+ * `opts.stateKey`/`opts.axis` (#313) pick which persisted-width field and
+ * `splitters.ts` axis this instance uses — defaulting to the original
+ * `'cellDrawerPx'`/`'drawer'` pair, so every pre-#313 caller is unaffected.
  */
-export function attachDrawerResize(app: DrawerResizeApp, panel: HTMLElement, doc: Document): () => void {
+export function attachDrawerResize(
+  app: DrawerResizeApp, panel: HTMLElement, doc: Document, opts: DrawerResizeOptions = {},
+): () => void {
+  const key = opts.stateKey || 'cellDrawerPx';
+  const axis: SplitterAxis = opts.axis || 'drawer';
   // doc.defaultView is null for a detached document not yet attached to a real
   // browsing context (e.g. tests' document.implementation.createHTMLDocument());
   // a real detached tab (window.open()) always has one. Fall back to the
   // ambient window rather than crash on the (harmless) synthetic-doc case.
   const win = doc.defaultView || window;
-  panel.style.width = clampDrawerWidth(app.state.cellDrawerPx, win.innerWidth) + 'px';
+  // `!`: the real AppState (state.ts) always has both cellDrawerPx and
+  // docPanePx — every production caller's `key` resolves to a real number.
+  panel.style.width = clampDrawerWidth(app.state[key]!, win.innerWidth) + 'px';
   let cancelActive: (() => void) | null = null;
   const handle = h('div', {
     class: 'cd-resize-h',
     title: 'Drag to resize',
     onmousedown: (ev: MouseEvent) => {
-      const startPx = app.state.cellDrawerPx;
+      const startPx = app.state[key]!;
       const stopDrag = startDrag(
         // `as Element`: this handler is only ever reached via a real
         // `mousedown` dispatched on `handle` itself (the listener target),
         // so `currentTarget` is always that element, never null — the DOM
         // lib's own `EventTarget | null` is just wider than the true contract.
         { preventDefault: () => ev.preventDefault(), currentTarget: ev.currentTarget as Element },
-        'drawer',
+        axis,
         {
           win,
           state: app.state,
@@ -108,7 +136,7 @@ export function attachDrawerResize(app: DrawerResizeApp, panel: HTMLElement, doc
           save: (name, value) => app.prefs.save(name as PreferenceKey, value),
         },
       );
-      cancelActive = () => { stopDrag(); app.state.cellDrawerPx = startPx; cancelActive = null; };
+      cancelActive = () => { stopDrag(); app.state[key] = startPx; cancelActive = null; };
     },
   });
   panel.appendChild(handle);
