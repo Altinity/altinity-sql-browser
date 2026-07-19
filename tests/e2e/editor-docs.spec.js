@@ -56,17 +56,19 @@ test.describe('docs reference (#313)', () => {
   });
 
   test('Escape closes the pane from ANYWHERE — focus still in the editor (#60 live finding)', async ({ page }) => {
-    await page.keyboard.type('sum');
+    // Set the doc PROGRAMMATICALLY: CM6 only auto-opens completion on
+    // user-typed input, and its popup materializes ~100ms after a keystroke —
+    // an isVisible() guard races it (the popup then swallows the Escape:
+    // completion → pane → query is the designed layering). No typing, no
+    // popup, so the single Escape below is deterministically the pane's.
+    await page.evaluate(() => {
+      const view = window.__app.dom.sqlEditorView;
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'sum' }, selection: { anchor: 3 } });
+    });
     await page.keyboard.press('F1');
     const pane = page.locator('[role="complementary"]');
     await expect(pane).toBeVisible();
-    // Typing left the completion popup open, and CM6's own Escape closes it
-    // FIRST — the designed layering (completion → pane → running query).
-    // Dismiss it so the next Escape is the pane's.
-    if (await page.locator('.cm-tooltip-autocomplete').isVisible()) {
-      await page.keyboard.press('Escape');
-      await expect(page.locator('.cm-tooltip-autocomplete')).toBeHidden();
-    }
+    expect(await page.locator('.cm-tooltip-autocomplete').count()).toBe(0); // no popup in play
     // Focus never left the editor — Escape must close the pane regardless
     // (the global shortcut layer, not the pane's focus-inside handler).
     await page.keyboard.press('Escape');
