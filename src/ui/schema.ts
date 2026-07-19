@@ -5,10 +5,11 @@ import { batch } from '@preact/signals-core';
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { formatRows, quoteIdent, qualifyIdent } from '../core/format.js';
-import { compactType, INLINE_TYPE_MAX } from '../core/type-display.js';
+import { compactType, outerTypeName, INLINE_TYPE_MAX } from '../core/type-display.js';
 import { IDENT_MIME, SCHEMA_GRAPH_MIME, COLUMN_TYPE_MIME } from './dnd-mime.js';
 import type { AppState } from '../state.js';
 import type { AppDom, ActionsRegistry } from './app.types.js';
+import type { DocTarget, DocKind } from '../core/doc-types.js';
 
 // ── The app slice this module reads ─────────────────────────────────────────
 // The narrow slice of the real `app` controller this module reads — not the
@@ -28,6 +29,17 @@ export interface SchemaApp {
    *  module-private mutable state stashed on the app instance (per instance →
    *  tests stay isolated) rather than a dedicated signal. */
   _schemaClick?: { key: string; at: number } | null;
+  /** #314 — the schema-surface "Open type reference" action's target: a
+   *  column row's own `openDocEntry` seam (never a direct ui/doc-pane import
+   *  — see doc-pane.ts's own header comment) plus a SYNC read of whether the
+   *  `data-type` documentation source is durably known unavailable, so the
+   *  action can hide itself rather than open a pane that can only ever show
+   *  the quiet unavailable state. Both optional: a caller/test that never
+   *  exercises this action can omit them (the button then simply never
+   *  renders, `docKindAvailable` treated as absent → unknown → shown, same
+   *  as `undefined`/`null`). */
+  openDocEntry?: (target: DocTarget) => void;
+  catalog?: { docKindAvailable?: (kind: DocKind) => boolean | null };
 }
 
 // ── The schema-tree cache shape (`app.state.schema.value`) ──────────────────
@@ -335,6 +347,32 @@ export function renderSchema(app: SchemaApp): void {
         : loadedColumns;
 
       for (const c of visibleColumns) {
+        // #314 — "Open type reference": the OUTERMOST named type family
+        // (type-display.ts's `outerTypeName` — no caret position here to
+        // resolve an innermost token from, so the whole displayed type's
+        // leading wrapper name is the deliberate target; see that function's
+        // doc comment). Hidden (not disabled) when the `data-type` source is
+        // durably confirmed unavailable — `docKindAvailable` returning
+        // anything else (unknown included) still shows it, matching #314's
+        // "hide … without a toast" policy: a lookup that then fails surfaces
+        // the pane's own quiet unavailable state instead.
+        const typeName = c.type ? outerTypeName(c.type) : '';
+        const typeDocAvailable = app.catalog?.docKindAvailable?.('data-type') !== false;
+        const typeDocBtn = typeName && typeDocAvailable
+          ? h('button', {
+            class: 'schema-type-doc', type: 'button',
+            'aria-label': 'Open type reference for ' + typeName,
+            title: 'Open type reference',
+            // A NEW element with its own handler — never touches the row's
+            // own click/dblclick/shift-click gestures below, which stay
+            // byte-identical. stopPropagation so this tap never ALSO fires
+            // the row's onclick (insert/dblclick-insert).
+            onclick: (e: MouseEvent) => {
+              e.stopPropagation();
+              app.openDocEntry?.({ kind: 'data-type', name: typeName });
+            },
+          }, Icon.book())
+          : null;
         list.appendChild(h('div', {
           class: 'tree-row small mono' + (filter && matches(c.name) ? ' match' : ''),
           style: { paddingLeft: '38px' },
@@ -366,6 +404,7 @@ export function renderSchema(app: SchemaApp): void {
               ...dragTextProps(COLUMN_TYPE_MIME, c.type),
             }) : undefined,
           }),
+          typeDocBtn,
         ));
       }
     }

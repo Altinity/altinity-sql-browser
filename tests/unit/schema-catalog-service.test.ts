@@ -736,3 +736,95 @@ describe('invalidate', () => {
     expect(loadFunctionDocRow).toHaveBeenCalledTimes(2);
   });
 });
+
+// ── #314 — docKindAvailable: SYNC capability read, never a probe ───────────
+
+describe('docKindAvailable', () => {
+  it('is null (unknown) for every kind before anything has been probed — and triggers no probe', async () => {
+    const loadFunctionsDocColumns = vi.fn(async () => ['name']);
+    const loadDocTableColumns = vi.fn(async () => ['name']);
+    const deps = makeDeps({ loadFunctionsDocColumns, loadDocTableColumns });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(svc.docKindAvailable('function')).toBeNull();
+    expect(svc.docKindAvailable('aggregate-function')).toBeNull();
+    expect(svc.docKindAvailable('format')).toBeNull();
+    expect(svc.docKindAvailable('table-engine')).toBeNull();
+    expect(svc.docKindAvailable('database-engine')).toBeNull();
+    expect(svc.docKindAvailable('data-type')).toBeNull();
+    await Promise.resolve();
+    expect(loadFunctionsDocColumns).not.toHaveBeenCalled();
+    expect(loadDocTableColumns).not.toHaveBeenCalled();
+  });
+
+  it('reads true once a function-kind lookup durably confirms the capability', async () => {
+    const loadFunctionsDocColumns = vi.fn(async () => ['name']);
+    const loadFunctionDocRow = vi.fn(async () => [{ name: 'count' }]);
+    const deps = makeDeps({ loadFunctionsDocColumns, loadFunctionDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'function', name: 'count' });
+    expect(svc.docKindAvailable('function')).toBe(true);
+    // `aggregate-function` shares the SAME `system.functions` capability.
+    expect(svc.docKindAvailable('aggregate-function')).toBe(true);
+  });
+
+  it('reads false once a function-kind capability is durably confirmed absent/denied', async () => {
+    const loadFunctionsDocColumns = vi.fn(async () => []); // no `name` column → unavailable
+    const deps = makeDeps({ loadFunctionsDocColumns });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'function', name: 'count' });
+    expect(svc.docKindAvailable('function')).toBe(false);
+  });
+
+  it('reads true/false per structured kind independently, only after THAT kind has been probed', async () => {
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'formats' ? [] : ['name']));
+    const loadDocRow = vi.fn(async () => [{ name: 'MergeTree' }]);
+    const deps = makeDeps({
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    // Not yet probed at all — unknown for every structured kind.
+    expect(svc.docKindAvailable('table-engine')).toBeNull();
+    expect(svc.docKindAvailable('format')).toBeNull();
+
+    await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(svc.docKindAvailable('table-engine')).toBe(true);
+    expect(svc.docKindAvailable('format')).toBeNull(); // still unprobed — independent per kind
+    expect(svc.docKindAvailable('database-engine')).toBeNull();
+
+    await svc.docEntry({ kind: 'format', name: 'CSV' });
+    expect(svc.docKindAvailable('format')).toBe(false); // durably unavailable (denied `system.formats`)
+    expect(svc.docKindAvailable('table-engine')).toBe(true); // unaffected by format's denial
+  });
+
+  it('stays null after only a transient/superseded probe failure — never mistaken for a durable result', async () => {
+    const loadDocTableColumns = vi.fn(async () => null as unknown as string[]); // transient probe failure
+    const deps = makeDeps({ loadDocTableColumns });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' })).toEqual({ status: 'unavailable' });
+    expect(svc.docKindAvailable('table-engine')).toBeNull(); // never settled durably — stays unknown, not false
+  });
+
+  it('resets to null for every kind after invalidate()/loadReference()', async () => {
+    const loadFunctionsDocColumns = vi.fn(async () => ['name']);
+    const loadFunctionDocRow = vi.fn(async () => [{ name: 'count' }]);
+    const loadDocTableColumns = vi.fn(async () => ['name']);
+    const loadDocRow = vi.fn(async () => [{ name: 'MergeTree' }]);
+    const deps = makeDeps({ loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'function', name: 'count' });
+    await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(svc.docKindAvailable('function')).toBe(true);
+    expect(svc.docKindAvailable('table-engine')).toBe(true);
+
+    svc.invalidate();
+    expect(svc.docKindAvailable('function')).toBeNull();
+    expect(svc.docKindAvailable('table-engine')).toBeNull();
+  });
+});

@@ -1055,7 +1055,7 @@ describe('loadTableDetail', () => {
     const ctx = ctxWith((url, init) => {
       const sql = init.body; seen.push(sql);
       if (/system\.parts/.test(sql)) return jsonResp({ data: [{ partition: '2024', parts: 3, rows: 100, bytes: 5000 }] });
-      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree', comment: 'ids table' }] });
+      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree', comment: 'ids table', engine: 'MergeTree' }] });
       if (/system\.data_skipping_indices/.test(sql)) {
         return jsonResp({ data: [{ name: 'idx_d', expr: 'd', type: 'minmax', type_full: 'minmax', granularity: 1, compressed: 128, uncompressed: 256, marks: 8 }] });
       }
@@ -1068,6 +1068,7 @@ describe('loadTableDetail', () => {
     expect(d.partitions[0].partition).toBe('2024');
     expect(d.ddl).toContain('CREATE TABLE');
     expect(d.comment).toBe('ids table');
+    expect(d.engine).toBe('MergeTree');
     // the index read selects type_full + granularity (the drawer's required fields)
     // and is scoped to this one table — one read per detail-open, no duplicate.
     const idxSql = seen.filter((s) => /system\.data_skipping_indices/.test(s));
@@ -1078,7 +1079,7 @@ describe('loadTableDetail', () => {
   });
   it('degrades to empty arrays + empty DDL/comment when the system tables are denied', async () => {
     const ctx = ctxWith(() => jsonResp('Code: 497', false, 500));
-    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '' });
+    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '', engine: '' });
   });
   it('requests data-lake-catalog visibility on system.columns/system.tables (#122 — Iceberg tables\' columns/DDL otherwise hidden)', async () => {
     const seen: string[] = [];

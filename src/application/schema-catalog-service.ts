@@ -27,7 +27,7 @@ import {
   structuredCapabilityFromColumns, buildStructuredDocSelect, normalizeStructuredRow,
 } from '../core/doc-capability.js';
 import type { FunctionsDocCapability, StructuredDocCapability, StructuredDocKind } from '../core/doc-capability.js';
-import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
+import type { DocTarget, DocLookup, DocSummary, DocEntry, DocKind } from '../core/doc-types.js';
 import type { ChCtx, DocProbeTable } from '../net/ch-client.js';
 import type {
   loadServerVersion, loadSchema, loadColumns, loadReferenceData,
@@ -140,6 +140,18 @@ export interface SchemaCatalogService {
    *  capability-probe / cache / generation-safety semantics. */
   docSummary(target: DocTarget): Promise<DocLookup<DocSummary>>;
   docEntry(target: DocTarget): Promise<DocLookup<DocEntry>>;
+  /** #314 — SYNCHRONOUS read of the current capability state for `kind`,
+   *  never triggering a probe: `true`/`false` once `ensureCapability`/
+   *  `ensureStructuredCapability` has durably settled (including a durably-
+   *  unavailable result), `null` when nothing has resolved yet — either the
+   *  capability was never probed (no `docSummary`/`docEntry` lookup has run
+   *  for this connection/kind) or the last probe attempt was transient and
+   *  hasn't been retried. Schema-surface actions (#314 "Unavailable docs hide
+   *  or disable the action without a toast") render whenever this is NOT
+   *  `false` — `null` (unknown) counts as available, and a lookup that then
+   *  fails surfaces the pane's existing quiet `unavailable` state rather than
+   *  a toast. */
+  docKindAvailable(kind: DocKind): boolean | null;
   /** The editor reference data (keywords/functions/…) — a get/set ACCESSOR
    *  (not a plain field) so `app.catalog.refData` always reads the CURRENT
    *  value after a `loadReference()`/`invalidate()` rebuild, without app.ts
@@ -374,6 +386,19 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     return promise;
   }
 
+  // #314 — sync, never probes: `capability`/`structuredCapability` are only
+  // ever written by a settled `ensureCapability`/`ensureStructuredCapability`
+  // probe (never a transient/superseded one — see those functions' comments),
+  // so reading them here can't distinguish "never asked" from "asked and the
+  // probe is still in flight/transient-failed" — both correctly read `null`.
+  function docKindAvailable(kind: DocKind): boolean | null {
+    if (kind === 'function' || kind === 'aggregate-function') {
+      return capability ? capability.available : null;
+    }
+    const cap = structuredCapability.get(kind);
+    return cap ? cap.available : null;
+  }
+
   async function docSummary(target: DocTarget): Promise<DocLookup<DocSummary>> {
     const result = await docEntry(target);
     if (result.status !== 'found') return result;
@@ -466,6 +491,7 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     rebuildCompletions,
     docSummary,
     docEntry,
+    docKindAvailable,
     get refData() { return refData; },
     set refData(v: AssembledReference) { refData = v; },
     get completions() { return completions; },

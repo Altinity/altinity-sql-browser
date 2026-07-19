@@ -397,6 +397,272 @@ describe('connection change', () => {
   });
 });
 
+// #314 Phase 2 — the four structured kinds' pane rendering + related/back-
+// stack navigation.
+const T_ENGINE: DocTarget = { kind: 'table-engine', name: 'MergeTree' };
+
+function structuredEntry(over: Partial<DocEntry> = {}): DocEntry {
+  return {
+    target: T_ENGINE,
+    title: 'MergeTree',
+    signature: 'ENGINE = MergeTree() ORDER BY ...',
+    summary: 'The base MergeTree engine.',
+    categories: [],
+    ...over,
+  };
+}
+
+describe('kind labels for the #314 structured kinds', () => {
+  it.each([
+    ['format', 'format'],
+    ['table-engine', 'table engine'],
+    ['database-engine', 'database engine'],
+    ['data-type', 'data type'],
+  ] as const)('%s renders as "%s"', async (kind, label) => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: structuredEntry({ target: { kind, name: 'X' }, title: 'X' }),
+    });
+    openDocEntry(app, { kind, name: 'X' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-badge-kind')!.textContent).toBe(label);
+    closeDocPane(app);
+  });
+});
+
+describe('#314 syntaxFull / facts / related rendering', () => {
+  it('mounts the CodeViewer for syntaxFull, omitted entirely when absent', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: structuredEntry({ syntaxFull: 'ENGINE = MergeTree()\nORDER BY expr' }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-syntax')).not.toBeNull();
+    expect(app.CodeViewer).toHaveBeenCalledWith(expect.objectContaining({
+      text: 'ENGINE = MergeTree()\nORDER BY expr', language: 'sql',
+    }));
+    closeDocPane(app);
+  });
+
+  it('omits the syntax block entirely when syntaxFull is absent (e.g. a format entry)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: structuredEntry() });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-syntax')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('renders facts as label:value chips, omitted entirely when empty', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: structuredEntry({ facts: [{ label: 'Replication', value: 'yes' }, { label: 'TTL', value: 'no' }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    const chips = [...document.querySelectorAll('.docs-fact')].map((e) => e.textContent);
+    expect(chips).toEqual(['Replication: yes', 'TTL: no']);
+    closeDocPane(app);
+  });
+
+  it('omits the facts row entirely when facts is empty/absent', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: structuredEntry({ facts: [] }) });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-facts')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('a related item WITH a target renders as a button that navigates the pane in place', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'ReplacingMergeTree', target: { kind: 'table-engine', name: 'ReplacingMergeTree' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    const link = document.querySelector<HTMLButtonElement>('.docs-related-link')!;
+    expect(link.tagName).toBe('BUTTON');
+    expect(link.textContent).toBe('ReplacingMergeTree');
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found', value: structuredEntry({ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, title: 'ReplacingMergeTree' }),
+    });
+    link.click();
+    expect(app.catalog.docEntry).toHaveBeenLastCalledWith({ kind: 'table-engine', name: 'ReplacingMergeTree' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('ReplacingMergeTree');
+    closeDocPane(app);
+  });
+
+  it('a related item WITHOUT a target renders as an inert text chip (no button)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: structuredEntry({ related: [{ label: 'just a label' }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-related-link')).toBeNull();
+    const chip = document.querySelector('.docs-related-chip')!;
+    expect(chip.tagName).toBe('SPAN');
+    expect(chip.textContent).toBe('just a label');
+    closeDocPane(app);
+  });
+
+  it('omits the related section entirely when related is empty/absent', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: structuredEntry({ related: [] }) });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-related')).toBeNull();
+    closeDocPane(app);
+  });
+});
+
+describe('#314 session-local back stack', () => {
+  it('no Back button on a fresh open', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: structuredEntry() });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('a related navigation pushes the back stack; Back returns to the prior target', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'ReplacingMergeTree', target: { kind: 'table-engine', name: 'ReplacingMergeTree' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found', value: structuredEntry({ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, title: 'ReplacingMergeTree' }),
+    });
+    document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('ReplacingMergeTree');
+    const back = document.querySelector<HTMLButtonElement>('.docs-back')!;
+    expect(back).not.toBeNull();
+
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: structuredEntry({ title: 'MergeTree' }) });
+    back.click();
+    expect(app.catalog.docEntry).toHaveBeenLastCalledWith(T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('MergeTree');
+    // popped — back to empty, Back button gone again
+    expect(document.querySelector('.docs-back')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('alias navigation ALSO pushes the back stack — one unified path', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: entry({ target: { kind: 'function', name: 'toUnixTimestamp' }, title: 'toUnixTimestamp', aliasTo: 'toDateTime' }),
+    });
+    openDocEntry(app, { kind: 'function', name: 'toUnixTimestamp' });
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry() });
+    document.querySelector<HTMLButtonElement>('.docs-alias-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).not.toBeNull();
+    closeDocPane(app);
+  });
+
+  it('the back stack is capped at 20 — the oldest hop is dropped, not the most recent', async () => {
+    const app = makeApp();
+    // Build a chain of 25 related hops, each pointing to the next.
+    const chainEntry = (n: number): DocEntry => structuredEntry({
+      target: { kind: 'table-engine', name: 'E' + n }, title: 'E' + n,
+      related: [{ label: 'E' + (n + 1), target: { kind: 'table-engine', name: 'E' + (n + 1) } }],
+    });
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: chainEntry(0) });
+    openDocEntry(app, { kind: 'table-engine', name: 'E0' });
+    await Promise.resolve(); await Promise.resolve();
+    for (let i = 1; i <= 25; i++) {
+      app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: chainEntry(i) });
+      document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+      await Promise.resolve(); await Promise.resolve();
+    }
+    expect(document.querySelector('.docs-name')!.textContent).toBe('E25');
+    // Walk all the way back — never more than 20 hops even though 25 were made.
+    let steps = 0;
+    while (document.querySelector('.docs-back')) {
+      app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: structuredEntry({ title: 'popped' + steps }) });
+      document.querySelector<HTMLButtonElement>('.docs-back')!.click();
+      await Promise.resolve(); await Promise.resolve();
+      steps++;
+      if (steps > 25) throw new Error('back stack never emptied — cap not enforced');
+    }
+    expect(steps).toBe(20);
+    closeDocPane(app);
+  });
+
+  it('a fresh EXTERNAL openDocEntry call clears the back stack from a prior session', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'ReplacingMergeTree', target: { kind: 'table-engine', name: 'ReplacingMergeTree' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found', value: structuredEntry({ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, title: 'ReplacingMergeTree' }),
+    });
+    document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).not.toBeNull(); // back stack now has one entry
+
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: structuredEntry({ title: 'Log' }) });
+    openDocEntry(app, { kind: 'table-engine', name: 'Log' }); // a fresh external open — new session
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).toBeNull(); // prior session's back stack is gone
+    closeDocPane(app);
+  });
+
+  it('closing the pane clears the back stack (a later reopen starts fresh)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'ReplacingMergeTree', target: { kind: 'table-engine', name: 'ReplacingMergeTree' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found', value: structuredEntry({ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, title: 'ReplacingMergeTree' }),
+    });
+    document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    closeDocPane(app);
+
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: structuredEntry({ title: 'Log' }) });
+    openDocEntry(app, { kind: 'table-engine', name: 'Log' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).toBeNull(); // a fresh pane after close — no stale back stack
+    closeDocPane(app);
+  });
+
+  it('the Back button also appears in missing/unavailable states reached via navigation', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'GoneTree', target: { kind: 'table-engine', name: 'GoneTree' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'missing' });
+    document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-missing')).not.toBeNull();
+    expect(document.querySelector('.docs-back')).not.toBeNull();
+    closeDocPane(app);
+  });
+});
+
 describe('resize uses docPanePx, not cellDrawerPx', () => {
   it('the initial width comes from state.docPanePx', () => {
     const app = makeApp({ state: { docPanePx: 480 } });

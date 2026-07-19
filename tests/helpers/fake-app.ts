@@ -168,6 +168,7 @@ const catalogDefaults: SchemaCatalogService = {
   rebuildCompletions: vi.fn(),
   docSummary: vi.fn(async () => ({ status: 'unavailable' as const })),
   docEntry: vi.fn(async () => ({ status: 'unavailable' as const })),
+  docKindAvailable: vi.fn(() => null),
   refData: catalogRefDataDefault,
   completions: buildCompletions(catalogRefDataDefault, null),
   invalidate: vi.fn(),
@@ -313,6 +314,9 @@ const appDefaults: App = {
   serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
+  // #313 — inert placeholder; a fixture exercising the reference-pane action
+  // (hover button, F1, a schema-surface action) overrides this directly.
+  openDocEntry: vi.fn(),
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
   specValidators: { validate: () => [] },
   specCompletionSources: {},
@@ -477,6 +481,13 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     catalog: {
       loadVersion: vi.fn(),
       loadSchema: vi.fn(),
+      // #314 — a fresh-per-call vi.fn() (see this file's own note on
+      // `saveVarRecent`/the `params` group below): a fixture asserting
+      // `docKindAvailable`'s call count/args needs its OWN mock, not the
+      // shared `catalogDefaults` singleton every `makeApp()` call would
+      // otherwise accumulate calls onto. Defaults to `null` (unknown) —
+      // permissive, same as the real service before any probe.
+      docKindAvailable: vi.fn(() => null),
     },
     toggleTheme: vi.fn(),
     // #287 W5: real, state-backed implementations (mirroring app.ts's own
@@ -507,6 +518,10 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.
     saveVarRecent: vi.fn(),
+    // #314 — fresh-per-call (same reasoning as `saveVarRecent` above): a
+    // schema-surface-action fixture asserts `openDocEntry`'s call count/args
+    // directly, so it can't share `appDefaults.openDocEntry`'s singleton.
+    openDocEntry: vi.fn(),
     // `paramsDefaults`/`prefsDefaults` above are typed `: WorkbenchParameterSession`/
     // `: AppPreferences` — module-scoped SINGLETONS shared by every `makeApp()`
     // call in a test file. Widened members lose `.mock`/`.mockClear` the same

@@ -612,6 +612,13 @@ export interface TableDetail {
   partitions: PartitionDetailRow[];
   ddl: string;
   comment: string;
+  /** #314 — the table's raw `system.tables.engine` name (e.g. `MergeTree`,
+   *  `ReplicatedMergeTree`), threaded through so the node detail pane
+   *  (schema-detail.ts) can offer an `Open engine reference` documentation
+   *  action next to it. Best-effort, same degrade-to-empty-string convention
+   *  as `ddl`/`comment` above (a denied/missing `system.tables` row leaves
+   *  this `''`, never an error). */
+  engine: string;
 }
 
 /**
@@ -648,7 +655,7 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
     tryQueryData<PartitionDetailRow>(ctx,
       'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
       + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
-    trySystemAwareQueryData<{ ddl?: string; comment?: string }>(ctx, 'SELECT create_table_query AS ddl, comment FROM system.tables WHERE ' + byName),
+    trySystemAwareQueryData<{ ddl?: string; comment?: string; engine?: string }>(ctx, 'SELECT create_table_query AS ddl, comment, engine FROM system.tables WHERE ' + byName),
   ]);
   return {
     columns: columns || [],
@@ -656,6 +663,7 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
     partitions: partitions || [],
     ddl: (tableRows && tableRows[0] && tableRows[0].ddl) || '',
     comment: (tableRows && tableRows[0] && tableRows[0].comment) || '',
+    engine: (tableRows && tableRows[0] && tableRows[0].engine) || '',
   };
 }
 
