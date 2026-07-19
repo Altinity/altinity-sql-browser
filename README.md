@@ -43,7 +43,8 @@ with snapshot/metadata **log panels**) explore them with one shared `catalog`
 filter across every tile.
 The [`examples/image-panels.json`](examples/image-panels.json) library is four
 Image panels (a rainbow polar spiral, an RGB gradient, a transparent RGBA glow
-over a checkerboard background, and a small ray-traced shaded sphere) that
+over a checkerboard background, and a small ray-traced shaded sphere inspired
+by [ClickHouse/RayTracer](https://github.com/ClickHouse/RayTracer)) that
 each author an explicit `FORMAT PNG` query, demonstrating the Image result
 view and Dashboard Image panel — needs **ClickHouse 26.6+** for `FORMAT PNG`.
 
