@@ -362,17 +362,25 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // CURRENT `state.serverVersion` — not a value captured once at service
   // construction, since a connection's version is only known after
   // `loadVersion()` resolves, which can happen after this service is built):
-  // a parsed pre-26.6 version durably marks the capability unavailable
-  // WITHOUT issuing any `system.columns` probe at all (#315 "Version and
-  // capability policy"); a 26.6+/unparsable/unknown version probes exactly
-  // like #313/#314's capabilities do.
+  // a parsed pre-26.6 version marks the capability unavailable WITHOUT
+  // issuing any `system.columns` probe at all (#315 "Version and capability
+  // policy"); a 26.6+/unparsable/unknown version probes exactly like
+  // #313/#314's capabilities do.
+  //
+  // The 'skip' verdict is deliberately NON-durable (returned per-call, never
+  // written into `docsCapability`): `loadVersion()`'s network round-trip is
+  // not sequenced with `resetDocsState()`, so a lookup racing a reconnect
+  // can read the PREVIOUS connection's version — durably caching that
+  // verdict would lock documentation off for the whole new session (review
+  // finding). Re-evaluating costs zero network (that is the whole point of
+  // 'skip'), still satisfies "pre-26.6 servers produce zero requests", and
+  // self-heals the moment `state.serverVersion` catches up. Probe RESULTS
+  // (including durably-unavailable [] shapes) stay durable as before.
   function ensureDocumentationCapability(): Promise<DocumentationCapability | null> {
     if (docsCapability) return Promise.resolve(docsCapability);
     if (docsCapabilityProbe) return docsCapabilityProbe; // dedupe concurrent probes
     if (documentationProbePolicy(parseServerVersion(state.serverVersion)) === 'skip') {
-      // Durable, no query — pre-26.6 servers must produce zero requests.
-      docsCapability = documentationCapabilityFromColumns([]);
-      return Promise.resolve(docsCapability);
+      return Promise.resolve(null); // unavailable NOW, no query — re-evaluated on the next lookup
     }
     const gen = docGeneration;
     const probe = (async (): Promise<DocumentationCapability | null> => {

@@ -877,6 +877,26 @@ describe('#315 system.documentation capability + version policy', () => {
     expect(loadDocRow).not.toHaveBeenCalled();
   });
 
+  it("the 'skip' verdict is NOT durable: a version update after a skipped lookup re-enables probing (reconnect race)", async () => {
+    // loadVersion()'s round-trip is not sequenced with resetDocsState(), so a
+    // lookup racing a reconnect can read the PREVIOUS connection's version —
+    // the skip must self-heal once state.serverVersion catches up.
+    const state = makeState();
+    state.serverVersion = '26.5.9'; // stale pre-26.6 value from the old connection
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    expect(loadDocTableColumns).not.toHaveBeenCalled(); // skipped, zero network
+
+    state.serverVersion = '26.6.1.1193'; // loadVersion() resolves for the new server
+    const found = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(found.status).toBe('found'); // probe ran this time — the skip wasn't locked in
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
   it('26.6.0+ probes once, then looks up', async () => {
     const state = makeState();
     state.serverVersion = '26.6.0';
