@@ -663,6 +663,189 @@ describe('#314 session-local back stack', () => {
   });
 });
 
+function markdownEntry(over: Partial<DocEntry> = {}): DocEntry {
+  return {
+    target: { kind: 'setting', name: 'max_threads' },
+    title: 'max_threads',
+    signature: 'max_threads',
+    summary: 'Max threads.',
+    categories: [],
+    renderMode: 'markdown-subset',
+    markdown: '# max_threads\n\nThe maximum number of threads.',
+    serverTypeLabel: 'Setting',
+    ...over,
+  };
+}
+
+describe('#315 markdown-subset entries', () => {
+  it('renders the compact head + parsed Markdown body via renderDocMarkdown, not the structured layout', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: markdownEntry() });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('max_threads');
+    expect(document.querySelector('.docs-badge-kind')!.textContent).toBe('setting');
+    expect(document.querySelector('.docs-md')).not.toBeNull();
+    expect(document.querySelector('.docs-md-h')!.textContent).toBe('max_threads');
+    expect(document.querySelector('.docs-signature')).toBeNull(); // structured-only field never rendered
+    closeDocPane(app);
+  });
+
+  it('an unknown kind shows the entry\'s own serverTypeLabel as the kind badge', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: markdownEntry({ target: { kind: 'unknown', name: 'Something' }, serverTypeLabel: 'Weird New Type' }),
+    });
+    openDocEntry(app, { kind: 'unknown', name: 'Something' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-badge-kind')!.textContent).toBe('Weird New Type');
+    closeDocPane(app);
+  });
+
+  it('falls back to "unknown" when an unknown-kind entry has no serverTypeLabel at all', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: markdownEntry({ target: { kind: 'unknown', name: 'Something' }, serverTypeLabel: '' }),
+    });
+    openDocEntry(app, { kind: 'unknown', name: 'Something' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-badge-kind')!.textContent).toBe('unknown');
+    closeDocPane(app);
+  });
+
+  it('a blank markdown body still renders (empty docs-md container, no throw)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: markdownEntry({ markdown: '' }) });
+    expect(() => openDocEntry(app, { kind: 'setting', name: 'max_threads' })).not.toThrow();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md')).not.toBeNull();
+    closeDocPane(app);
+  });
+
+  it('shows the source path as small muted text when present, omitted when absent', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: markdownEntry({ source: 'docs/settings.md' }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md-source')!.textContent).toBe('docs/settings.md');
+    closeDocPane(app);
+
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: markdownEntry({ source: undefined }) });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md-source')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('oversized entries show a distinct quiet truncation note', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: markdownEntry({ oversized: true }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md-oversized')!.textContent)
+      .toBe('Documentation body truncated (too large).');
+    closeDocPane(app);
+  });
+
+  it('shows the "View latest on clickhouse.com" link only when confidently derivable from source', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: markdownEntry({ source: 'docs/en/operations/settings/settings.md' }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    const link = document.querySelector<HTMLAnchorElement>('.docs-md-latest')!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('https://clickhouse.com/docs/operations/settings/settings');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    closeDocPane(app);
+  });
+
+  it('omits the latest-link entirely when the source path is not confidently derivable', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: markdownEntry({ source: 'some/weird/path.txt' }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md-latest')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('omits the latest-link when source is absent', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: markdownEntry({ source: undefined }) });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md-latest')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('mounts a SQL-fenced code block through the injected CodeViewer, torn down on retarget', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: markdownEntry({ markdown: '```sql\nSELECT 1\n```' }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.CodeViewer).toHaveBeenCalledWith(expect.objectContaining({ text: 'SELECT 1', language: 'sql' }));
+    const firstViewer = (app.CodeViewer as ReturnType<typeof vi.fn>).mock.results[0].value;
+
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'missing' });
+    openDocEntry(app, { kind: 'function', name: 'other' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(firstViewer.destroy).toHaveBeenCalled();
+    closeDocPane(app);
+  });
+
+  it('a Copy button in the markdown body writes the exact code text via the clipboard seam', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: markdownEntry({ markdown: '```\nexact code\n```' }),
+    });
+    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
+    await Promise.resolve(); await Promise.resolve();
+    document.querySelector<HTMLButtonElement>('.docs-md-copy')!.click();
+    expect(writeText).toHaveBeenCalledWith('exact code');
+    closeDocPane(app);
+  });
+
+  it('the structured render path is unchanged for renderMode-absent entries', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry() });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-signature')!.textContent).toBe('toDateTime(expr[, timezone])');
+    expect(document.querySelector('.docs-md')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('the Back button appears when navigating away and back from a markdown entry via structured "related"', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found',
+      value: structuredEntry({ related: [{ label: 'ToNext', target: { kind: 'table-engine', name: 'ToNext' } }] }),
+    });
+    openDocEntry(app, T_ENGINE);
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: markdownEntry() });
+    document.querySelector<HTMLButtonElement>('.docs-related-link')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-md')).not.toBeNull();
+    expect(document.querySelector('.docs-back')).not.toBeNull();
+    closeDocPane(app);
+  });
+});
+
 describe('resize uses docPanePx, not cellDrawerPx', () => {
   it('the initial width comes from state.docPanePx', () => {
     const app = makeApp({ state: { docPanePx: 480 } });

@@ -40,6 +40,8 @@ import { chLanguageExtension } from '../editor/ch-lang.js';
 import type { CodeViewerFactory, CodeViewerHandle } from '../editor/code-viewer.types.js';
 import type { AssembledReference } from '../core/completions.js';
 import type { DocTarget, DocLookup, DocEntry, DocKind } from '../core/doc-types.js';
+import { parseDocMarkdown, defaultDocLinkPolicy, latestDocUrlFromSource } from '../core/doc-markdown.js';
+import { renderDocMarkdown } from './doc-markdown-view.js';
 import type { PreferenceKey } from '../application/app-preferences.js';
 
 /** The narrow app surface this module reads — not the full ~50-member `App`
@@ -62,15 +64,38 @@ export interface DocPaneApp {
 }
 
 // #314 Phase 2 — human labels for the four structured kinds, alongside
-// Phase 1's function/aggregate-function.
+// Phase 1's function/aggregate-function. #315 Phase 3 adds every broad
+// `system.documentation` kind (`doc-types.ts`'s `DocKind`) EXCEPT `'unknown'`
+// — an unknown kind always displays its entry's own `serverTypeLabel`
+// instead (see `markdownKindLabel` below), never a value from this map.
 const KIND_LABELS: Partial<Record<DocKind, string>> = {
   'aggregate-function': 'aggregate function',
   format: 'format',
   'table-engine': 'table engine',
   'database-engine': 'database engine',
   'data-type': 'data type',
+  'table-function': 'table function',
+  'dictionary-layout': 'dictionary layout',
+  'dictionary-source': 'dictionary source',
+  'aggregate-combinator': 'aggregate combinator',
+  'skipping-index': 'data-skipping index',
+  'disk-type': 'disk type',
+  setting: 'setting',
+  'mergetree-setting': 'MergeTree setting',
+  'server-setting': 'server setting',
+  codec: 'codec',
+  metric: 'metric',
+  'system-table': 'system table',
 };
 const kindLabel = (kind: DocKind): string => KIND_LABELS[kind] || 'function';
+
+// #315 — the kind badge text for a `renderMode: 'markdown-subset'` entry:
+// `'unknown'` (a server `type` label this build doesn't recognize yet) shows
+// the entry's own preserved `serverTypeLabel` verbatim rather than the
+// generic `kindLabel` fallback ('function'), which would be actively
+// misleading for e.g. a codec or metric entry.
+const markdownKindLabel = (entry: DocEntry): string =>
+  entry.target.kind === 'unknown' ? (entry.serverTypeLabel || 'unknown') : kindLabel(entry.target.kind);
 const targetKey = (t: DocTarget): string => t.kind + ':' + t.name;
 
 // #314 — the session-local "related"/alias navigation back stack is bounded
@@ -359,6 +384,58 @@ function renderFound(
     examplesBlock));
 }
 
+// #315 Phase 3 — the `renderMode: 'markdown-subset'` counterpart to
+// `renderFound` above (structured entries): a compact head (title, kind/
+// server-type badge, source path) followed by the safely-rendered Markdown
+// body (`parseDocMarkdown` -> `renderDocMarkdown`) and an optional, visually
+// secondary "View latest on clickhouse.com" link. Reuses the SAME `viewers`
+// teardown list, back-stack row, and stale-response/token machinery as the
+// structured path — `runLookup` is the only caller, and it's already guarded
+// there.
+function renderMarkdownEntry(app: DocPaneApp, doc: Document, st: PaneState, entry: DocEntry): void {
+  destroyViewers(st);
+  const backRow = backButtonRow(app, doc, st);
+
+  const sourceLine = entry.source
+    ? h('div', { class: 'docs-md-source' }, entry.source)
+    : null;
+
+  // #315 "oversized" state: the body was longer than MAX_DOC_MARKDOWN_BYTES
+  // and was truncated to that bound before it ever reached this pane — a
+  // distinct, quiet note alongside (not instead of) the truncated body.
+  const oversizedNote = entry.oversized
+    ? h('div', { class: 'docs-md-note docs-md-oversized' }, 'Documentation body truncated (too large).')
+    : null;
+
+  const parsed = parseDocMarkdown(entry.markdown || '', { linkPolicy: defaultDocLinkPolicy });
+  const body = renderDocMarkdown(doc, parsed, {
+    codeViewer: { factory: app.CodeViewer, languageExtension: chLanguageExtension(app.catalog.refData) },
+    onCopy: (text) => copyExample(app, doc, text),
+    registerViewer: (v) => st.viewers.push(v),
+  });
+
+  // "View latest on clickhouse.com" (#315 "Pane behavior") — ONLY when a URL
+  // is confidently derivable from `entry.source`; otherwise omitted entirely
+  // rather than guessed. Visually secondary (small/muted, below the body) —
+  // never competes with the connected server's own documentation.
+  const latestUrl = latestDocUrlFromSource(entry.source);
+  const latestLink = latestUrl
+    ? h('a', {
+      class: 'docs-md-latest', href: latestUrl, target: '_blank', rel: 'noopener noreferrer',
+    }, 'View latest on clickhouse.com')
+    : null;
+
+  st.body.replaceChildren(h('div', { class: 'docs-entry docs-md-entry' },
+    backRow,
+    h('div', { class: 'docs-head-row' },
+      h('h3', { class: 'docs-name' }, entry.title),
+      badge(markdownKindLabel(entry), 'docs-badge-kind')),
+    sourceLine,
+    oversizedNote,
+    body,
+    latestLink));
+}
+
 // #314 — push the target that was on screen right before a related/alias
 // navigation moves away from it, capped at BACK_STACK_CAP (drops the oldest
 // entry rather than growing unbounded).
@@ -378,14 +455,21 @@ function runLookup(app: DocPaneApp, doc: Document, st: PaneState, target: DocTar
     // discard silently rather than paint over whatever's now on screen.
     if (myToken !== st.token || !st.panel.isConnected) return;
     if (lookup.status === 'found') {
-      // #314 — the SAME navigate callback backs BOTH the alias link
-      // (renderFound's `aliasNotice`) and every "related" action button
-      // (renderFound's `related` block) — one unified in-place navigation
-      // path that also records the back-stack entry.
-      renderFound(app, doc, st, lookup.value, visited, (nextTarget, nextVisited) => {
-        pushBack(st, lookup.value.target);
-        runLookup(app, doc, st, nextTarget, nextVisited);
-      });
+      if (lookup.value.renderMode === 'markdown-subset') {
+        // #315 — the broad `system.documentation` path: no alias/related
+        // navigation exists on this entry shape (structured-only fields),
+        // so there is no `navigate` callback to thread through here.
+        renderMarkdownEntry(app, doc, st, lookup.value);
+      } else {
+        // #314 — the SAME navigate callback backs BOTH the alias link
+        // (renderFound's `aliasNotice`) and every "related" action button
+        // (renderFound's `related` block) — one unified in-place navigation
+        // path that also records the back-stack entry.
+        renderFound(app, doc, st, lookup.value, visited, (nextTarget, nextVisited) => {
+          pushBack(st, lookup.value.target);
+          runLookup(app, doc, st, nextTarget, nextVisited);
+        });
+      }
     } else if (lookup.status === 'missing') {
       renderMissing(app, doc, st, target);
     } else {

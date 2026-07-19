@@ -127,6 +127,33 @@ export function defaultDocLinkPolicy(href: string): string | null {
   return clickhouseDocUrl(href);
 }
 
+// ── Source path -> public docs URL ──────────────────────────────────────────
+
+// A confidently-derivable `system.documentation` `source` cell: a repo-
+// relative path under `docs/` (optionally with an `en/` locale segment, the
+// historical ClickHouse/ClickHouse docs-tree layout) ending in `.md`. Any
+// other shape (no recognizable prefix, no `.md` suffix, an absolute path, a
+// URL) is NOT confidently derivable — `latestDocUrlFromSource` returns `null`
+// rather than guess, and the pane omits the "View latest" link entirely.
+const SOURCE_MD_RE = /^docs\/(?:en\/)?(.+)\.md$/;
+
+/**
+ * Derive the public `https://clickhouse.com/docs/...` URL for #315's "View
+ * latest on clickhouse.com" pane link from `system.documentation`'s OPTIONAL
+ * `source` column, or `null` when the mapping isn't confidently derivable
+ * (see `SOURCE_MD_RE` above). The cleaned remainder (after stripping the
+ * `docs/`/`docs/en/` prefix and `.md` suffix) is run back through
+ * `clickhouseDocUrl` — reusing its traversal/scheme rejection and slash
+ * cleanup rather than duplicating them, so `docs/en/../../etc/passwd.md`
+ * (or any other `..`-bearing source) still comes back `null`. Pure.
+ */
+export function latestDocUrlFromSource(source: string | null | undefined): string | null {
+  if (typeof source !== 'string') return null;
+  const m = SOURCE_MD_RE.exec(source.trim());
+  if (!m) return null;
+  return clickhouseDocUrl(m[1]);
+}
+
 // ── Byte bounding ────────────────────────────────────────────────────────────
 
 const encoder = new TextEncoder();

@@ -3,6 +3,7 @@ import {
   parseDocMarkdown,
   clickhouseDocUrl,
   defaultDocLinkPolicy,
+  latestDocUrlFromSource,
   MAX_DOC_MARKDOWN_BYTES,
   MAX_DOC_AST_NODES,
   MAX_DOC_NESTING_DEPTH,
@@ -66,6 +67,34 @@ describe('defaultDocLinkPolicy', () => {
   it('rejects empty/non-string input', () => {
     expect(defaultDocLinkPolicy('')).toBeNull();
     expect(defaultDocLinkPolicy(null as unknown as string)).toBeNull();
+  });
+});
+
+describe('latestDocUrlFromSource', () => {
+  it('maps a docs/ + .md source path', () => {
+    expect(latestDocUrlFromSource('docs/sql-reference/functions/x.md'))
+      .toBe('https://clickhouse.com/docs/sql-reference/functions/x');
+  });
+  it('strips an en/ locale segment', () => {
+    expect(latestDocUrlFromSource('docs/en/sql-reference/functions/x.md'))
+      .toBe('https://clickhouse.com/docs/sql-reference/functions/x');
+  });
+  it('rejects a path with no docs/ prefix', () => {
+    expect(latestDocUrlFromSource('sql-reference/functions/x.md')).toBeNull();
+  });
+  it('rejects a path with no .md suffix', () => {
+    expect(latestDocUrlFromSource('docs/sql-reference/functions/x')).toBeNull();
+  });
+  it('rejects a traversal segment even after prefix/suffix match', () => {
+    expect(latestDocUrlFromSource('docs/en/../../etc/passwd.md')).toBeNull();
+  });
+  it('rejects an absolute URL', () => {
+    expect(latestDocUrlFromSource('https://clickhouse.com/docs/x.md')).toBeNull();
+  });
+  it('rejects undefined, null, and non-string input', () => {
+    expect(latestDocUrlFromSource(undefined)).toBeNull();
+    expect(latestDocUrlFromSource(null)).toBeNull();
+    expect(latestDocUrlFromSource(123 as unknown as string)).toBeNull();
   });
 });
 
