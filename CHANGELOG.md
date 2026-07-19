@@ -30,6 +30,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   gradient, RGBA checkerboard glow, and an original ray-traced sphere
   crediting ClickHouse's RayTracer demos) — requires ClickHouse 26.6+.
 
+### Fixed
+- **Starring a query in a fresh workspace (and importing favorited queries)
+  now actually creates Dashboard tiles** (#307 merge-gate finding; pre-existing
+  Phase-8 regression). `toggleTileMembership` used to no-op while the
+  workspace's dashboard document was `null`, and **File → Import queries**
+  never synced favorite→tile membership — so the Dashboard's "star a query to
+  add it" empty-state was a dead end and README's documented `kpi-panel.json`
+  import flow showed nothing. Starring a panel-role query now creates the
+  dashboard document on demand, and `planImportQueries` runs the new
+  additive-only, idempotent `syncFavoriteTileMembership` so imported
+  favorited panel-role queries arrive with tiles.
+- **Large `FORMAT PNG` results are no longer truncated by the ROWS selector**
+  (#307 merge-gate finding). The row cap (`max_result_rows` +
+  `result_overflow_mode=break`) was sent for every raw-format run, so a
+  1024×1024 image lost all but its first ~64 pixel rows; `runQuery` now
+  skips the cap for binary formats — the client-side PNG dimension/byte
+  limits remain the real guards.
+
 ### Changed
 - **Grafana-grid KPI tiles are polished in both Dashboard modes** (#316,
   follow-on to #291). Edit mode keeps the full editing shell but drops the

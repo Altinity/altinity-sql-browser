@@ -585,6 +585,18 @@ describe('runQuery', () => {
     await runQuery(uncapped, 'x', { format: 'Table' }); // no limit → no cap params
     expect(uncapped.fetchMock.mock.calls[0][0]).not.toContain('max_result_rows');
   });
+  it('never caps a binary (PNG) result even when resultRowLimit is set — a source-row cap truncates the pixel grid itself (#307)', async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const png = ctxWith(async () => binResp(bytes));
+    await runQuery(png, 'x', { format: 'PNG', resultRowLimit: 500 });
+    const url = png.fetchMock.mock.calls[0][0];
+    expect(url).not.toContain('max_result_rows');
+    expect(url).not.toContain('result_overflow_mode');
+    // A same-shaped text raw format is unaffected — it still gets capped.
+    const tsv = ctxWith(async () => textResp('a\tb'));
+    await runQuery(tsv, 'x', { format: 'TSV', resultRowLimit: 500 });
+    expect(tsv.fetchMock.mock.calls[0][0]).toContain('max_result_rows=500');
+  });
 });
 
 describe('killQuery', () => {

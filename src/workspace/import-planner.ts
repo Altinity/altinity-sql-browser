@@ -23,6 +23,7 @@ import { dashboardDependencyQueryIds } from '../dashboard/model/bundle-order.js'
 import { diagnostic, sortDiagnostics } from '../dashboard/model/workspace-diagnostics.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 import { cloneJson } from '../core/saved-query.js';
+import { syncFavoriteTileMembership } from '../dashboard/application/tile-membership.js';
 import {
   importQueries, replaceWorkspaceContents,
 } from './workspace-operations.js';
@@ -345,8 +346,14 @@ function invalidatedDashboardPlan(
   );
 }
 
-/** Queries-only import (Dashboard untouched): merge the bundle's queries into
- *  the workspace's query catalog per `decisions`, and validate the result. */
+/** Queries-only import: merge the bundle's queries into the workspace's query
+ *  catalog per `decisions`, then sync Dashboard tile membership for every
+ *  favorited panel-role query in the MERGED catalog (#307 — "File → Import
+ *  queries has no membership sync" left favorited panel-role imports
+ *  invisible on the Dashboard; `syncFavoriteTileMembership` is additive-only,
+ *  so an existing Dashboard's other tiles/layout/filters are untouched, and a
+ *  Dashboard-less workspace gets a fresh one only when at least one imported
+ *  or pre-existing favorite actually needs a tile). Validate the result. */
 export function planImportQueries(
   workspace: StoredWorkspaceV1, bundle: PortableBundleV1,
   decisions: readonly QueryDecision[], genId: WorkspaceIdGen,
@@ -355,7 +362,8 @@ export function planImportQueries(
   const mapping = buildQueryIdMapping(bundle.queries, workspace.queries, decisions, genId);
   const nextQueries = mergeIncomingQueries(bundle.queries, workspace.queries, mapping);
   const candidate = importQueries(workspace, nextQueries);
-  return validatedPlan(candidate, mapping, options);
+  const syncedDashboard = syncFavoriteTileMembership(candidate.dashboard, nextQueries, genId);
+  return validatedPlan({ ...candidate, dashboard: syncedDashboard }, mapping, options);
 }
 
 /** Import one bundled Dashboard plus its dependency closure of queries.

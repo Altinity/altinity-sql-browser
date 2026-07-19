@@ -890,7 +890,13 @@ export async function runQuery(ctx: ChCtx, sql: string, o: RunQueryOptions = {})
   // FORMAT) and 0 for EXPLAIN/PIPELINE/ESTIMATE (which also run as 'Table', so the
   // exemption can't be told apart by format here). `break` can overshoot by up to
   // a block on the streaming path, which the applyStreamLine guard trims.
-  const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0
+  // A binary format (PNG, #307) is exempt regardless of what the caller passed:
+  // capping *source* rows server-side truncates the pixel grid itself (a
+  // max_result_rows=500 cap on a 1024x1024 image only fills ~64 rows before
+  // ClickHouse stops reading, leaving the rest of the canvas black — the row
+  // cap is meaningless for a single-blob result and the real guards are the
+  // client-side PNG dimension/byte limits applied after decode).
+  const cap: Record<string, string | number> = (o.resultRowLimit ?? 0) > 0 && !isBinaryFormat(fmt)
     ? { max_result_rows: o.resultRowLimit!, result_overflow_mode: 'break' }
     : {};
   const url = chUrl(ctx.origin, {

@@ -31,6 +31,7 @@ import { resolveDashboardPresentations } from '../model/presentation-resolver.js
 import { buildDashboardExportBundle } from '../model/dashboard-export.js';
 import { defaultLayoutRegistry } from '../layouts/layout-registry.js';
 import { applyCommand } from './dashboard-commands.js';
+import { createEmptyDashboardDocument } from './tile-membership.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
 import { createQueryResolver } from './dashboard-query-resolver.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
@@ -83,13 +84,12 @@ export interface DashboardAuthoringSessionDeps {
   nowISO?: () => string;
 }
 
-function createEmptyDashboard(id: string): DashboardDocumentV1 {
-  return {
-    documentVersion: 1, id, title: 'Dashboard', revision: 1,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
-    filters: [], tiles: [],
-  };
-}
+// The empty-Dashboard shape is shared with `tile-membership.ts`'s
+// `createEmptyDashboardDocument` (#307: starring a query / importing queries
+// into a Dashboard-less workspace needs the exact same "start one" shape this
+// session already used) — that module owns it now, this just re-exports the
+// name this file's callers already use.
+const createEmptyDashboard = createEmptyDashboardDocument;
 
 /** Build a `DashboardAuthoringSession` bound to `deps`. */
 export function createDashboardAuthoringSession(

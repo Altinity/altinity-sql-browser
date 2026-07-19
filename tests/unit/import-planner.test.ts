@@ -281,6 +281,58 @@ describe('planImportQueries', () => {
     expect(plan.diagnostics.length).toBeGreaterThan(0);
     expect(plan.diagnostics.some((d) => d.code === 'spec-version-unsupported')).toBe(true);
   });
+
+  // #307: importing favorited panel-role queries must land matching Dashboard
+  // tiles — the bridge that was entirely missing before this fix.
+  it('creates a fresh Dashboard and a tile for an imported favorited panel-role query when the workspace has none', () => {
+    const ws = workspace({ queries: [], dashboard: null });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+    expect(plan.candidateWorkspace).not.toBeNull();
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash).not.toBeNull();
+    expect(dash.tiles).toEqual([{ id: 'id-2', queryId: 'p1' }]);
+    expect(dash.id).toBe('id-1'); // genId() called once for the Dashboard, then once per tile
+  });
+
+  it('adds a tile ONLY for the favorited panel-role query, leaving a favorited filter-role import tile-less', () => {
+    const ws = workspace({ queries: [], dashboard: null });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const favoritedFilter: SavedQueryV2 = {
+      ...filterQuery('f1'), spec: { ...filterQuery('f1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel, favoritedFilter] }), [], counter());
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash.tiles).toEqual([{ id: 'id-2', queryId: 'p1' }]);
+  });
+
+  it('is additive-only: an existing Dashboard keeps its other tiles/layout/filters and gains only the missing favorite tile', () => {
+    const existingDash = dashboardDoc({
+      title: 'My dash',
+      layout: { type: 'flow', version: 1, preset: 'report', items: { keep: { span: 2, height: 'large' } } },
+      tiles: [{ id: 'keep', queryId: 'existing-panel' }],
+      filters: [{ id: 'flt1', parameter: 'x' }],
+    });
+    const ws = workspace({
+      queries: [{ ...panelQuery('existing-panel'), spec: { ...panelQuery('existing-panel').spec, favorite: true } }],
+      dashboard: existingDash,
+    });
+    const favoritedPanel: SavedQueryV2 = {
+      ...panelQuery('p1'), spec: { ...panelQuery('p1').spec, favorite: true },
+    };
+    const plan = planImportQueries(ws, bundle({ queries: [favoritedPanel] }), [], counter());
+    const dash = plan.candidateWorkspace!.dashboard!;
+    expect(dash.title).toBe('My dash');
+    expect(dash.filters).toEqual([{ id: 'flt1', parameter: 'x' }]);
+    expect(dash.tiles).toEqual([
+      { id: 'keep', queryId: 'existing-panel' },
+      { id: 'id-1', queryId: 'p1' },
+    ]);
+  });
 });
 
 // --- planImportDashboard --------------------------------------------------------
