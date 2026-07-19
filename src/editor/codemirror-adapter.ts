@@ -20,7 +20,6 @@ import type { Tooltip } from '@codemirror/view';
 import { EditorView, keymap, dropCursor, hoverTooltip } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxTree } from '@codemirror/language';
-import { sql, SQLDialect } from '@codemirror/lang-sql';
 import type { Completion, CompletionResult } from '@codemirror/autocomplete';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { h } from '../ui/dom.js';
@@ -38,6 +37,7 @@ import type { AppState } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
 import type { EditorPort, EditorSelection } from './editor-port.types.js';
+import { chLanguageExtension } from './ch-lang.js';
 
 // ── Local typed contracts ───────────────────────────────────────────────────
 // core/completions.js's own `AssembledReference`/`CompletionContext` shapes
@@ -166,38 +166,16 @@ const LITERAL_NODE = /String|Comment|QuotedIdentifier/;
 
 /**
  * The ClickHouse-flavored SQL language extension for the current reference
- * data: server keywords/function names when loaded (#25), the built-in
- * fallback sets otherwise. Both word lists are lowercased — lang-sql looks
- * dialect words up via `word.toLowerCase()`, so a verbatim `toDateTime` would
- * never match. Backticks and double quotes are identifier quotes in
- * ClickHouse; strings take backslash escapes. Auto-close covers `(`, `[`, and
- * the three quotes (parity with the deleted core/editor-brackets.js) — `{`
- * deliberately doesn't pair (it would fight the #134 `{name:Type}` variables).
+ * data — thin adapter-shape delegate over `ch-lang.ts`'s `chLanguageExtension`
+ * (#313 extraction): server keywords/function names when loaded (#25), the
+ * built-in fallback sets otherwise. See `chLanguageExtension`'s own doc for
+ * the dialect details (word-list casing, quote/comment flags, auto-close).
  */
 export function langExtensionFor(app: DialectApp): Extension[] {
   // `as`: `app.catalog.refData` is `unknown` here (see `DialectApp`'s doc
   // comment) — this adapter is the one real consumer of its actual shape.
   const ref = app.catalog?.refData as AssembledReference | null | undefined;
-  const dialect = SQLDialect.define({
-    keywords: (ref ? ref.keywords : []).join(' ').toLowerCase(),
-    builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
-    backslashEscapes: true,
-    identifierQuotes: '`"',
-    // ClickHouse comment/heredoc forms (#182). These are editor approximations
-    // of the authoritative core scanner (sql-spans.js): `hashComments` treats
-    // every `#` as a comment (it can't express the space-or-`!` follow set), and
-    // CM6's quoted-identifier escaping differs — but these affect only CM6-owned
-    // editor behavior (highlighting, tree-based bracket/quote guards, hover),
-    // never core completion/split/param analysis. `doubleQuotedStrings` stays
-    // default-false: `"` is an identifier delimiter in ClickHouse.
-    hashComments: true,
-    slashComments: true,
-    doubleDollarQuotedStrings: true,
-  });
-  return [
-    sql({ dialect }),
-    dialect.language.data.of({ closeBrackets: { brackets: ['(', '[', "'", '"', '`'] } }),
-  ];
+  return chLanguageExtension(ref);
 }
 
 // Closers and quotes our input guard steps over when typed directly before
