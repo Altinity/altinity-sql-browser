@@ -62,7 +62,7 @@
     import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createSpecCompletionSources } from '/src/editor/spec-completion-adapter.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
-    import { openDocEntry } from '/src/ui/doc-pane.js';
+    import { openDocEntry, openDocDisambiguation } from '/src/ui/doc-pane.js';
     import { createState, activeTab, newTabObj } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
     import { createQuerySpecValidationService } from '/src/core/spec-schema.js';
@@ -139,6 +139,12 @@
           const e = window.__docLookup(target);
           return e ? { status: 'found', value: e } : { status: 'missing' };
         },
+        // #315 — F1's name-only disambiguation fallback. The harness has no
+        // multi-kind fixture data, so every name resolves `missing` (no
+        // matches) — this keeps existing F1 specs (which expect `false`/no
+        // pane change for an unresolved word with no doc data) valid; it just
+        // exercises the same missing-state path `docEntry` above does.
+        docDisambiguate: async () => ({ status: 'missing' }),
       },
       prefs: { save() {} },
       CodeViewer: (opts) => createCodeViewer(opts),
@@ -148,6 +154,8 @@
     // Mirror app.ts's wiring (#313): the adapter opens the reference pane
     // through this injected action, never by importing ui/doc-pane itself.
     app.openDocEntry = (target) => openDocEntry(app, target);
+    // #315 — mirrors app.ts's own wiring for the F1 disambiguation fallback.
+    app.openDocDisambiguation = (name) => openDocDisambiguation(app, name);
     window.__app = app;
     const port = createCodeMirrorEditor(app);
     window.__port = port;

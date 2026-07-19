@@ -204,6 +204,11 @@ export interface App {
    *  `openDocEntry(app, target)` so the editor layer never imports UI
    *  modules (build/check-boundaries.mjs enforces the direction). */
   openDocEntry: (target: DocTarget) => void;
+  /** #315 — the open-the-disambiguation-state action the F1 command falls
+   *  back to when no strong target resolves for a bare word — bound by
+   *  app.ts to ui/doc-pane.ts's `openDocDisambiguation(app, name)`, for the
+   *  identical "editor never imports UI" reason as `openDocEntry` above. */
+  openDocDisambiguation: (name: string) => void;
   /** {validate, register} — see core/spec-draft.js. Typed as the service
    *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
    *  is app.js-internal wiring, outside this contract. */

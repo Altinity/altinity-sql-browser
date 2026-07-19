@@ -314,14 +314,197 @@ describe('resolveDocTarget — #314 structured contexts', () => {
       expect(resolveDocTarget(sql, caretIn(sql, 'UInt32'), FUNCTIONS)).toEqual({ kind: 'data-type', name: 'UInt32' });
     });
 
-    it('an INDEX entry in the column list is skipped (not treated as a column type)', () => {
+    it('an INDEX entry in the column list is never treated as a column type (its own TYPE word resolves as skipping-index instead — #315)', () => {
       const sql = 'CREATE TABLE t (id UInt32, INDEX idx id TYPE minmax) ENGINE = Memory';
-      expect(resolveDocTarget(sql, caretIn(sql, 'minmax'), FUNCTIONS)).toBeNull();
+      expect(resolveDocTarget(sql, caretIn(sql, 'minmax'), FUNCTIONS)).toEqual({ kind: 'skipping-index', name: 'minmax' });
     });
 
     it('a TABLE statement with no column-list parens at all never resolves a column type (caret away from ENGINE)', () => {
       const sql = 'CREATE TABLE t ENGINE = Memory';
       expect(resolveDocTarget(sql, caretIn(sql, 't'), FUNCTIONS)).toBeNull();
+    });
+  });
+});
+
+describe('resolveDocTarget — #315 Phase 3 structured contexts', () => {
+  describe('SETTINGS name = value', () => {
+    it('resolves a query-level SETTINGS name (SELECT)', () => {
+      const sql = 'SELECT 1 SETTINGS max_threads = 4';
+      expect(resolveDocTarget(sql, caretIn(sql, 'max_threads'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'max_threads' });
+    });
+
+    it('resolves the second name in a comma-separated SETTINGS list', () => {
+      const sql = 'SELECT 1 SETTINGS max_threads = 4, max_memory_usage = 100';
+      expect(resolveDocTarget(sql, caretIn(sql, 'max_memory_usage'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'max_memory_usage' });
+    });
+
+    it('resolves a CREATE TABLE DDL SETTINGS name with no MergeTree engine as plain setting', () => {
+      const sql = 'CREATE TABLE t (id UInt32) ENGINE = Memory SETTINGS foo = 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'foo'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'foo' });
+    });
+
+    it('resolves a CREATE TABLE ... ENGINE = MergeTree SETTINGS name as mergetree-setting', () => {
+      const sql = 'CREATE TABLE t (id UInt32) ENGINE = MergeTree ORDER BY id SETTINGS index_granularity = 8192';
+      expect(resolveDocTarget(sql, caretIn(sql, 'index_granularity'), FUNCTIONS)).toEqual({ kind: 'mergetree-setting', name: 'index_granularity' });
+    });
+
+    it('resolves as mergetree-setting for any *MergeTree engine family member', () => {
+      const sql = "CREATE TABLE t (id UInt32) ENGINE = ReplicatedMergeTree('/p', 'r') SETTINGS index_granularity = 8192";
+      expect(resolveDocTarget(sql, caretIn(sql, 'index_granularity'), FUNCTIONS)).toEqual({ kind: 'mergetree-setting', name: 'index_granularity' });
+    });
+
+    it('a CREATE TABLE with no column-list parens still resolves mergetree-setting', () => {
+      const sql = 'CREATE TABLE t AS other ENGINE = MergeTree SETTINGS index_granularity = 8192';
+      expect(resolveDocTarget(sql, caretIn(sql, 'index_granularity'), FUNCTIONS)).toEqual({ kind: 'mergetree-setting', name: 'index_granularity' });
+    });
+
+    it('never resolves a bare name = value pair outside any SETTINGS clause', () => {
+      const sql = 'SELECT 1 WHERE max_threads = 4';
+      expect(resolveDocTarget(sql, caretIn(sql, 'max_threads'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves SETTINGS written inside a comment', () => {
+      const sql = '-- SETTINGS max_threads = 4\nSELECT 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'max_threads'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves the value side of a SETTINGS entry', () => {
+      const sql = 'SELECT 1 SETTINGS max_threads = maxThreadsValue';
+      expect(resolveDocTarget(sql, caretIn(sql, 'maxThreadsValue'), FUNCTIONS)).toBeNull();
+    });
+
+    it('resolves within the statement containing the caret in a multi-statement document', () => {
+      const sql = 'SELECT 1 SETTINGS a = 1; SELECT 2 SETTINGS b = 2';
+      expect(resolveDocTarget(sql, caretIn(sql, 'b'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'b' });
+      expect(resolveDocTarget(sql, caretIn(sql, 'a'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'a' });
+    });
+
+    it('ranks above a same-named known function', () => {
+      const sql = 'SELECT 1 SETTINGS toDateTime = 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'toDateTime' });
+    });
+
+    it('a CREATE DATABASE SETTINGS clause is plain setting, never mergetree-setting (not a TABLE statement)', () => {
+      const sql = 'CREATE DATABASE db ENGINE = Atomic SETTINGS x = 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'x'), FUNCTIONS)).toEqual({ kind: 'setting', name: 'x' });
+    });
+
+    it('a bare "name = value" with no preceding tokens at all never resolves (nothing to scan back through)', () => {
+      const sql = 'x = 1';
+      expect(resolveDocTarget(sql, 0, FUNCTIONS)).toBeNull();
+    });
+  });
+
+  describe('table functions', () => {
+    it('resolves FROM name(...) as a table function', () => {
+      const sql = 'SELECT * FROM numbers(10)';
+      expect(resolveDocTarget(sql, caretIn(sql, 'numbers'), FUNCTIONS)).toEqual({ kind: 'table-function', name: 'numbers' });
+    });
+
+    it('resolves INSERT INTO FUNCTION name(...) as a table function', () => {
+      const sql = "INSERT INTO FUNCTION file('out.csv', 'CSV') SELECT 1";
+      expect(resolveDocTarget(sql, caretIn(sql, 'file'), FUNCTIONS)).toEqual({ kind: 'table-function', name: 'file' });
+    });
+
+    it('never resolves a plain FROM table name (no call parens)', () => {
+      const sql = 'SELECT * FROM my_table';
+      expect(resolveDocTarget(sql, caretIn(sql, 'my_table'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves a table function written inside a string literal', () => {
+      const sql = "SELECT 'FROM numbers(10)'";
+      expect(resolveDocTarget(sql, caretIn(sql, 'numbers'), FUNCTIONS)).toBeNull();
+    });
+
+    it('resolves within the statement containing the caret in a multi-statement document', () => {
+      const sql = 'SELECT * FROM numbers(1); SELECT * FROM url(2)';
+      expect(resolveDocTarget(sql, caretIn(sql, 'url'), FUNCTIONS)).toEqual({ kind: 'table-function', name: 'url' });
+    });
+
+    it('ranks above a same-named known function', () => {
+      const sql = 'SELECT * FROM toDateTime(1)';
+      expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'table-function', name: 'toDateTime' });
+    });
+  });
+
+  describe('CODEC(...) list', () => {
+    it('resolves the first codec in a multi-element CODEC list', () => {
+      const sql = 'CREATE TABLE t (x UInt32 CODEC(ZSTD(3), Delta)) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'ZSTD'), FUNCTIONS)).toEqual({ kind: 'codec', name: 'ZSTD' });
+    });
+
+    it('resolves the second (bare, arg-less) codec in the list', () => {
+      const sql = 'CREATE TABLE t (x UInt32 CODEC(ZSTD(3), Delta)) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'Delta'), FUNCTIONS)).toEqual({ kind: 'codec', name: 'Delta' });
+    });
+
+    it('never resolves a numeric codec argument', () => {
+      const sql = 'CREATE TABLE t (x UInt32 CODEC(ZSTD(7))) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, '7'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves CODEC written inside a comment', () => {
+      const sql = '-- CODEC(ZSTD)\nSELECT 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'ZSTD'), FUNCTIONS)).toBeNull();
+    });
+
+    it('ranks above a same-named known function', () => {
+      const sql = 'CREATE TABLE t (x UInt32 CODEC(toDateTime)) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'codec', name: 'toDateTime' });
+    });
+  });
+
+  describe('data-skipping index TYPE', () => {
+    it('resolves the index TYPE word', () => {
+      const sql = 'CREATE TABLE t (id UInt32, INDEX idx id TYPE bloom_filter) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'bloom_filter'), FUNCTIONS)).toEqual({ kind: 'skipping-index', name: 'bloom_filter' });
+    });
+
+    it('never resolves the index name itself', () => {
+      const sql = 'CREATE TABLE t (id UInt32, INDEX idx id TYPE minmax) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'idx'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves a plain column type as a skipping-index', () => {
+      const sql = 'CREATE TABLE t (id UInt32, INDEX idx id TYPE minmax) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'UInt32'), FUNCTIONS)).toEqual({ kind: 'data-type', name: 'UInt32' });
+    });
+
+    it('ranks above a same-named known function', () => {
+      const sql = 'CREATE TABLE t (id UInt32, INDEX idx id TYPE toDateTime) ENGINE = Memory';
+      expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'skipping-index', name: 'toDateTime' });
+    });
+  });
+
+  describe('system.<name> in FROM', () => {
+    it('resolves a system table name after FROM', () => {
+      const sql = 'SELECT * FROM system.tables';
+      expect(resolveDocTarget(sql, caretIn(sql, 'tables'), FUNCTIONS)).toEqual({ kind: 'system-table', name: 'tables' });
+    });
+
+    it('resolves a system table name after JOIN', () => {
+      const sql = 'SELECT * FROM t JOIN system.columns ON 1';
+      expect(resolveDocTarget(sql, caretIn(sql, 'columns'), FUNCTIONS)).toEqual({ kind: 'system-table', name: 'columns' });
+    });
+
+    it('never resolves the system qualifier word itself', () => {
+      const sql = 'SELECT * FROM system.tables';
+      expect(resolveDocTarget(sql, caretIn(sql, 'system'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves system.<name> outside a FROM/JOIN position', () => {
+      const sql = "SELECT * FROM t WHERE name = 'system.tables'";
+      expect(resolveDocTarget(sql, caretIn(sql, 'tables'), FUNCTIONS)).toBeNull();
+    });
+
+    it('never resolves a table-function call in FROM as a system table', () => {
+      const sql = 'SELECT * FROM numbers(10)';
+      expect(resolveDocTarget(sql, caretIn(sql, 'numbers'), FUNCTIONS)).toEqual({ kind: 'table-function', name: 'numbers' });
+    });
+
+    it('ranks above a same-named known function', () => {
+      const sql = 'SELECT * FROM system.toDateTime';
+      expect(resolveDocTarget(sql, caretIn(sql, 'toDateTime'), FUNCTIONS)).toEqual({ kind: 'system-table', name: 'toDateTime' });
     });
   });
 });

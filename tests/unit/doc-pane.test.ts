@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { openDocEntry, closeDocPane } from '../../src/ui/doc-pane.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
-import type { DocEntry, DocLookup, DocTarget } from '../../src/core/doc-types.js';
+import type { DocEntry, DocLookup, DocSummary, DocTarget } from '../../src/core/doc-types.js';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   let resolve!: (v: T) => void;
@@ -13,16 +13,17 @@ function fakeViewer() {
   return { setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn() };
 }
 
-function makeApp(over: Partial<DocPaneApp> = {}): DocPaneApp & { catalog: { docEntry: ReturnType<typeof vi.fn> } } {
+function makeApp(over: Partial<DocPaneApp> = {}): DocPaneApp & { catalog: { docEntry: ReturnType<typeof vi.fn>; docDisambiguate: ReturnType<typeof vi.fn> } } {
   const docEntry = vi.fn();
+  const docDisambiguate = vi.fn();
   return {
     document,
     state: { docPanePx: 420 },
     prefs: { save: vi.fn() },
-    catalog: { docEntry, refData: { keywords: [], functions: {} } as never },
+    catalog: { docEntry, docDisambiguate, refData: { keywords: [], functions: {} } as never },
     CodeViewer: vi.fn(() => fakeViewer()),
     ...over,
-  } as DocPaneApp & { catalog: { docEntry: ReturnType<typeof vi.fn> } };
+  } as DocPaneApp & { catalog: { docEntry: ReturnType<typeof vi.fn>; docDisambiguate: ReturnType<typeof vi.fn> } };
 }
 
 const T_FN: DocTarget = { kind: 'function', name: 'toDateTime' };
@@ -659,6 +660,227 @@ describe('#314 session-local back stack', () => {
     await Promise.resolve(); await Promise.resolve();
     expect(document.querySelector('.docs-missing')).not.toBeNull();
     expect(document.querySelector('.docs-back')).not.toBeNull();
+    closeDocPane(app);
+  });
+});
+
+function summaryOf(over: Partial<DocSummary> = {}): DocSummary {
+  return {
+    target: { kind: 'function', name: 'X' },
+    title: 'X',
+    signature: 'X()',
+    summary: 'A summary.',
+    ...over,
+  };
+}
+
+describe('#315 openDocDisambiguation', () => {
+  it('0 matches ("missing") renders the same missing state docEntry uses', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({ status: 'missing' });
+    openDocDisambiguation(app, 'mystery');
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.catalog.docDisambiguate).toHaveBeenCalledWith('mystery');
+    expect(document.querySelector('.docs-missing')!.textContent).toContain('No documentation for mystery.');
+    closeDocPane(app);
+  });
+
+  it('exactly 1 match navigates straight to that entry — no list is rendered', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found', value: [summaryOf({ target: { kind: 'setting', name: 'max_threads' } })],
+    });
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ target: { kind: 'setting', name: 'max_threads' }, title: 'max_threads' }) });
+    openDocDisambiguation(app, 'max_threads');
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(app.catalog.docEntry).toHaveBeenCalledWith({ kind: 'setting', name: 'max_threads' });
+    expect(document.querySelector('.docs-name')!.textContent).toBe('max_threads');
+    expect(document.querySelector('.docs-disambiguate-list')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('2+ matches render an accessible labelled list of real buttons', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found',
+      value: [
+        summaryOf({ target: { kind: 'setting', name: 'connect' }, title: 'connect', summary: 'A connection setting.' }),
+        summaryOf({ target: { kind: 'function', name: 'connect' }, title: 'connect', summary: 'A connection function.' }),
+      ],
+    });
+    openDocDisambiguation(app, 'connect');
+    await Promise.resolve(); await Promise.resolve();
+    const list = document.querySelector('.docs-disambiguate-list')!;
+    expect(list).not.toBeNull();
+    expect(list.getAttribute('role')).toBe('list');
+    expect(list.getAttribute('aria-label')).toContain('connect');
+    const items = document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link');
+    expect(items).toHaveLength(2);
+    // Real, keyboard-reachable <button> elements (native tab order, no
+    // custom ARIA wiring needed) — one per candidate, each showing its kind
+    // badge, name, and summary.
+    expect(items[0].tagName).toBe('BUTTON');
+    expect(items[0].type).toBe('button');
+    expect(items[0].textContent).toContain('setting');
+    expect(items[0].textContent).toContain('connect');
+    expect(items[0].textContent).toContain('A connection setting.');
+    expect(items[1].textContent).toContain('function');
+    expect(items[1].textContent).toContain('A connection function.');
+    closeDocPane(app);
+  });
+
+  it('selecting a candidate loads it in the pane and pushes the list onto the back stack; Back returns to the list', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found',
+      value: [
+        summaryOf({ target: { kind: 'setting', name: 'connect' }, title: 'connect (setting)' }),
+        summaryOf({ target: { kind: 'function', name: 'connect' }, title: 'connect (function)' }),
+      ],
+    });
+    openDocDisambiguation(app, 'connect');
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({
+      status: 'found', value: entry({ target: { kind: 'setting', name: 'connect' }, title: 'connect (setting)' }),
+    });
+    document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link')[0].click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.catalog.docEntry).toHaveBeenCalledWith({ kind: 'setting', name: 'connect' });
+    expect(document.querySelector('.docs-name')!.textContent).toBe('connect (setting)');
+    const back = document.querySelector<HTMLButtonElement>('.docs-back')!;
+    expect(back).not.toBeNull();
+
+    app.catalog.docDisambiguate.mockResolvedValueOnce({
+      status: 'found',
+      value: [
+        summaryOf({ target: { kind: 'setting', name: 'connect' }, title: 'connect (setting)' }),
+        summaryOf({ target: { kind: 'function', name: 'connect' }, title: 'connect (function)' }),
+      ],
+    });
+    back.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-disambiguate-list')).not.toBeNull(); // back to the list, not a target
+    closeDocPane(app);
+  });
+
+  it('keyboard activation (Enter on a focused candidate button) works the same as a click', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found',
+      value: [summaryOf({ target: { kind: 'setting', name: 'a' } }), summaryOf({ target: { kind: 'function', name: 'a' } })],
+    });
+    openDocDisambiguation(app, 'a');
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ target: { kind: 'setting', name: 'a' }, title: 'a-setting' }) });
+    const btn = document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link')[0];
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    // A native <button> fires its `click` handler for both a real click and
+    // an Enter/Space keydown by browser default — no synthetic keydown
+    // dispatch needed to prove keyboard reachability; `.click()` IS what a
+    // real Enter keypress on a focused button triggers.
+    btn.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('a-setting');
+    closeDocPane(app);
+  });
+
+  it('unavailable renders the retry state, and Retry re-runs docDisambiguate', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValueOnce({ status: 'unavailable' });
+    openDocDisambiguation(app, 'x');
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-unavailable')).not.toBeNull();
+    app.catalog.docDisambiguate.mockResolvedValueOnce({ status: 'missing' });
+    document.querySelector<HTMLButtonElement>('.docs-retry')!.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.catalog.docDisambiguate).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('.docs-missing')).not.toBeNull();
+    closeDocPane(app);
+  });
+
+  it('a fresh EXTERNAL openDocDisambiguation call clears a prior session\'s back stack', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValueOnce({
+      status: 'found',
+      value: [summaryOf({ target: { kind: 'setting', name: 'connect' } }), summaryOf({ target: { kind: 'function', name: 'connect' } })],
+    });
+    openDocDisambiguation(app, 'connect');
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ target: { kind: 'setting', name: 'connect' } }) });
+    document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link')[0].click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).not.toBeNull();
+
+    app.catalog.docDisambiguate.mockResolvedValueOnce({ status: 'missing' });
+    openDocDisambiguation(app, 'other'); // fresh external open — new session
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('openDocEntry (a normal, non-disambiguation open) still clears any prior disambiguation back stack too', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValueOnce({
+      status: 'found',
+      value: [summaryOf({ target: { kind: 'setting', name: 'connect' } }), summaryOf({ target: { kind: 'function', name: 'connect' } })],
+    });
+    openDocDisambiguation(app, 'connect');
+    await Promise.resolve(); await Promise.resolve();
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ target: { kind: 'setting', name: 'connect' } }) });
+    document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link')[0].click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).not.toBeNull();
+
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ title: 'toDateTime' }) });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-back')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('stale-response safety: retargeting (openDocEntry) before docDisambiguate resolves drops the stale list', async () => {
+    const app = makeApp();
+    const first = deferred<DocLookup<DocSummary[]>>();
+    app.catalog.docDisambiguate.mockReturnValueOnce(first.promise);
+    openDocDisambiguation(app, 'connect');
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ title: 'toDateTime' }) });
+    openDocEntry(app, T_FN); // a newer lookup starts before the disambiguation settles
+    await Promise.resolve(); await Promise.resolve();
+    first.resolve({
+      status: 'found',
+      value: [summaryOf({ target: { kind: 'setting', name: 'connect' } }), summaryOf({ target: { kind: 'function', name: 'connect' } })],
+    }); // resolves AFTER the retarget
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-name')!.textContent).toBe('toDateTime'); // never overwritten by the stale list
+    expect(document.querySelector('.docs-disambiguate-list')).toBeNull();
+    closeDocPane(app);
+  });
+
+  it('closing before docDisambiguate resolves discards the result — no render, no throw', async () => {
+    const app = makeApp();
+    const { promise, resolve } = deferred<DocLookup<DocSummary[]>>();
+    app.catalog.docDisambiguate.mockReturnValue(promise);
+    openDocDisambiguation(app, 'connect');
+    closeDocPane(app);
+    resolve({ status: 'found', value: [summaryOf(), summaryOf({ target: { kind: 'function', name: 'X' } })] });
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-panel')).toBeNull();
+  });
+
+  it('an unknown-kind candidate shows the literal "unknown" badge, never a misleading generic label', async () => {
+    const app = makeApp();
+    app.catalog.docDisambiguate.mockResolvedValue({
+      status: 'found',
+      value: [
+        summaryOf({ target: { kind: 'unknown', name: 'weird' } }),
+        summaryOf({ target: { kind: 'function', name: 'weird' } }),
+      ],
+    });
+    openDocDisambiguation(app, 'weird');
+    await Promise.resolve(); await Promise.resolve();
+    const items = document.querySelectorAll<HTMLButtonElement>('.docs-disambiguate-link');
+    expect(items[0].textContent).toContain('unknown');
     closeDocPane(app);
   });
 });

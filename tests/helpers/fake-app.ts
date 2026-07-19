@@ -319,6 +319,9 @@ const appDefaults: App = {
   // #313 — inert placeholder; a fixture exercising the reference-pane action
   // (hover button, F1, a schema-surface action) overrides this directly.
   openDocEntry: vi.fn(),
+  // #315 — same inert-placeholder convention for the F1 disambiguation
+  // fallback's injected action.
+  openDocDisambiguation: vi.fn(),
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
   specValidators: { validate: () => [] },
   specCompletionSources: {},
@@ -524,6 +527,8 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     // schema-surface-action fixture asserts `openDocEntry`'s call count/args
     // directly, so it can't share `appDefaults.openDocEntry`'s singleton.
     openDocEntry: vi.fn(),
+    // #315 — same fresh-per-call reasoning for the F1 disambiguation fallback.
+    openDocDisambiguation: vi.fn(),
     // `paramsDefaults`/`prefsDefaults` above are typed `: WorkbenchParameterSession`/
     // `: AppPreferences` — module-scoped SINGLETONS shared by every `makeApp()`
     // call in a test file. Widened members lose `.mock`/`.mockClear` the same

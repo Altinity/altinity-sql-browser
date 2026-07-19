@@ -97,6 +97,28 @@ test.describe('docs reference (#313)', () => {
     await expect(pane.locator('.docs-missing')).toBeVisible();
   });
 
+  // #315 — F1's NO-STRONG-TARGET contract change: an unresolved bare word
+  // (not whitespace/punctuation — those still leave F1 to the browser, see
+  // "F1 with no resolvable target" above) now opens name-only disambiguation
+  // instead of doing nothing. The harness's `docDisambiguate` always resolves
+  // `missing` (no multi-kind fixture data), so this shows the SAME quiet
+  // missing state the structured path uses — a real accessibility/keydown
+  // gate that the fallback path actually opens the pane at all.
+  test('F1 on an unresolved bare word now opens disambiguation, which shows the missing state', async ({ page }) => {
+    await page.evaluate(() => {
+      window.__f1 = [];
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'F1') window.__f1.push(e.defaultPrevented);
+      });
+    });
+    await page.keyboard.type('mysteryWord');
+    await page.keyboard.press('F1');
+    expect(await page.evaluate(() => window.__f1)).toEqual([true]);
+    const pane = page.locator('[role="complementary"]');
+    await expect(pane).toBeVisible();
+    await expect(pane.locator('.docs-missing')).toBeVisible();
+  });
+
   // ── Phase 2 (#314): strong-context F1 routing + related navigation ────────
 
   test('F1 on a FORMAT-clause name opens format docs with capability facts', async ({ page }) => {

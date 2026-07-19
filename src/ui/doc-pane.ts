@@ -39,7 +39,7 @@ import { flashToast } from './toast.js';
 import { chLanguageExtension } from '../editor/ch-lang.js';
 import type { CodeViewerFactory, CodeViewerHandle } from '../editor/code-viewer.types.js';
 import type { AssembledReference } from '../core/completions.js';
-import type { DocTarget, DocLookup, DocEntry, DocKind } from '../core/doc-types.js';
+import type { DocTarget, DocLookup, DocEntry, DocKind, DocSummary } from '../core/doc-types.js';
 import { parseDocMarkdown, defaultDocLinkPolicy, latestDocUrlFromSource } from '../core/doc-markdown.js';
 import { renderDocMarkdown } from './doc-markdown-view.js';
 import type { PreferenceKey } from '../application/app-preferences.js';
@@ -53,6 +53,10 @@ export interface DocPaneApp {
   prefs: { save(name: PreferenceKey, value: unknown): void };
   catalog: {
     docEntry(target: DocTarget): Promise<DocLookup<DocEntry>>;
+    /** #315 — name-only disambiguation across every kind sharing a name;
+     *  backs `openDocDisambiguation` below (F1 on a bare word the classifier
+     *  couldn't resolve a strong target for). */
+    docDisambiguate(name: string): Promise<DocLookup<DocSummary[]>>;
     refData: AssembledReference;
   };
   CodeViewer: CodeViewerFactory;
@@ -104,6 +108,14 @@ const targetKey = (t: DocTarget): string => t.kind + ':' + t.name;
 // through the most recent 20 hops).
 const BACK_STACK_CAP = 20;
 
+/** #315 — one back-stack entry: either a real doc target that was on screen
+ *  (the #314 shape — popping it re-runs `docEntry`), or the name of a
+ *  disambiguation LIST that was on screen before a candidate was selected off
+ *  it (popping it re-runs `docDisambiguate` and re-renders the list, rather
+ *  than jumping straight to a target) — this is what lets Back return to the
+ *  list instead of skipping over it. */
+type BackEntry = { kind: 'target'; target: DocTarget } | { kind: 'disambiguation'; name: string };
+
 interface PaneState {
   panel: HTMLElement;
   body: HTMLElement;
@@ -118,14 +130,16 @@ interface PaneState {
    *  so a stale CM6 view is never left listening/painted underneath. */
   viewers: CodeViewerHandle[];
   keyHandler: (e: KeyboardEvent) => void;
-  /** #314 — the session-local back stack: each entry is the target that was
-   *  ON SCREEN right before a related/alias navigation replaced it. Torn down
-   *  wholesale with the rest of `PaneState` on `closeDocPane` — which is also
-   *  app.ts's `signOut` connection-change hook — so it never needs a separate
-   *  reset path (see that call site's comment). A fresh EXTERNAL `openDocEntry`
-   *  call (hover/F1/completion — never an internal related/alias/back
-   *  navigation) starts a new browsing session and clears it. */
-  backStack: DocTarget[];
+  /** #314/#315 — the session-local back stack: each entry describes what was
+   *  ON SCREEN right before a related/alias/disambiguation navigation
+   *  replaced it (see `BackEntry`). Torn down wholesale with the rest of
+   *  `PaneState` on `closeDocPane` — which is also app.ts's `signOut`
+   *  connection-change hook — so it never needs a separate reset path (see
+   *  that call site's comment). A fresh EXTERNAL `openDocEntry`/
+   *  `openDocDisambiguation` call (hover/F1/completion — never an internal
+   *  related/alias/back navigation) starts a new browsing session and clears
+   *  it. */
+  backStack: BackEntry[];
 }
 
 const panes = new WeakMap<Document, PaneState>();
@@ -212,8 +226,13 @@ function backButtonRow(app: DocPaneApp, doc: Document, st: PaneState): HTMLEleme
     h('button', {
       class: 'docs-back', type: 'button', 'aria-label': 'Back',
       onclick: () => {
-        const target = st.backStack.pop()!;
-        runLookup(app, doc, st, target, new Set());
+        const entry = st.backStack.pop()!;
+        // #315 — a popped 'disambiguation' entry re-runs docDisambiguate and
+        // re-renders the LIST state (Back returns to the list a candidate was
+        // chosen from); a 'target' entry (the #314 shape) re-runs docEntry
+        // for that target, exactly as before.
+        if (entry.kind === 'disambiguation') runDisambiguate(app, doc, st, entry.name);
+        else runLookup(app, doc, st, entry.target, new Set());
       },
     }, Icon.chevLeft(), h('span', null, 'Back')));
 }
@@ -225,11 +244,11 @@ function renderLoading(app: DocPaneApp, doc: Document, st: PaneState): void {
     h('span', { class: 'spin' }, Icon.spinner()), h('span', null, 'Loading…')));
 }
 
-function renderMissing(app: DocPaneApp, doc: Document, st: PaneState, target: DocTarget): void {
+function renderMissing(app: DocPaneApp, doc: Document, st: PaneState, name: string): void {
   destroyViewers(st);
   st.body.replaceChildren(h('div', { class: 'docs-state docs-missing' },
     backButtonRow(app, doc, st),
-    h('p', null, 'No documentation for ' + target.name + '.')));
+    h('p', null, 'No documentation for ' + name + '.')));
 }
 
 function renderUnavailable(app: DocPaneApp, doc: Document, st: PaneState, onRetry: () => void): void {
@@ -436,11 +455,11 @@ function renderMarkdownEntry(app: DocPaneApp, doc: Document, st: PaneState, entr
     latestLink));
 }
 
-// #314 — push the target that was on screen right before a related/alias
-// navigation moves away from it, capped at BACK_STACK_CAP (drops the oldest
-// entry rather than growing unbounded).
-function pushBack(st: PaneState, from: DocTarget): void {
-  st.backStack.push(from);
+// #314/#315 — push whatever was on screen right before a related/alias/
+// disambiguation-selection navigation moves away from it, capped at
+// BACK_STACK_CAP (drops the oldest entry rather than growing unbounded).
+function pushBack(st: PaneState, entry: BackEntry): void {
+  st.backStack.push(entry);
   if (st.backStack.length > BACK_STACK_CAP) st.backStack.shift();
 }
 
@@ -466,12 +485,12 @@ function runLookup(app: DocPaneApp, doc: Document, st: PaneState, target: DocTar
         // (renderFound's `related` block) — one unified in-place navigation
         // path that also records the back-stack entry.
         renderFound(app, doc, st, lookup.value, visited, (nextTarget, nextVisited) => {
-          pushBack(st, lookup.value.target);
+          pushBack(st, { kind: 'target', target: lookup.value.target });
           runLookup(app, doc, st, nextTarget, nextVisited);
         });
       }
     } else if (lookup.status === 'missing') {
-      renderMissing(app, doc, st, target);
+      renderMissing(app, doc, st, target.name);
     } else {
       renderUnavailable(app, doc, st, () => runLookup(app, doc, st, target, visited));
     }
@@ -497,4 +516,84 @@ export function openDocEntry(app: DocPaneApp, target: DocTarget): void {
   // entry point.
   st.backStack = [];
   runLookup(app, doc, st, target, new Set());
+}
+
+// ── #315 Phase 3 — disambiguation ───────────────────────────────────────────
+
+// The kind badge text for a bare `DocSummary` candidate (unlike
+// `markdownKindLabel`, a `DocSummary` never carries `serverTypeLabel` — only
+// a full `DocEntry` does — so an 'unknown' kind here shows the literal word
+// "unknown" rather than misreporting `kindLabel`'s generic 'function' fallback).
+const summaryKindLabel = (target: DocTarget): string => (target.kind === 'unknown' ? 'unknown' : kindLabel(target.kind));
+
+// The accessible disambiguation-list state: a real, keyboard-reachable
+// `<button>` per candidate (kind badge + canonical name/title + one-line
+// summary), inside a `role="list"` with an `aria-label` naming what's being
+// disambiguated — a native `<ul>`/`<li>`/`<button>` structure needs no extra
+// ARIA wiring to be tab-reachable and screen-reader-announced as a labelled
+// list of actionable items. Selecting a candidate pushes THIS list (by name)
+// onto the back stack before navigating, so Back returns to the list rather
+// than skipping over it (see `BackEntry`'s 'disambiguation' variant).
+function renderDisambiguation(app: DocPaneApp, doc: Document, st: PaneState, name: string, candidates: DocSummary[]): void {
+  destroyViewers(st);
+  const backRow = backButtonRow(app, doc, st);
+  const select = (candidate: DocSummary): void => {
+    pushBack(st, { kind: 'disambiguation', name });
+    runLookup(app, doc, st, candidate.target, new Set());
+  };
+  st.body.replaceChildren(h('div', { class: 'docs-state docs-disambiguate' },
+    backRow,
+    h('p', { class: 'docs-disambiguate-intro' }, 'Multiple documentation entries are named "' + name + '":'),
+    h('ul', { class: 'docs-disambiguate-list', role: 'list', 'aria-label': 'Documentation entries named ' + name },
+      ...candidates.map((c) => h('li', { class: 'docs-disambiguate-item' },
+        h('button', { class: 'docs-disambiguate-link', type: 'button', onclick: () => select(c) },
+          h('span', { class: 'docs-badge docs-badge-kind' }, summaryKindLabel(c.target)),
+          h('span', { class: 'docs-disambiguate-name' }, c.title || c.target.name),
+          h('span', { class: 'docs-disambiguate-summary' }, c.summary)))))));
+}
+
+// #315 — the disambiguation lookup: `docDisambiguate(name)` resolves to
+// every kind sharing `name`. Zero matches ('missing') shows the same missing
+// state `docEntry` uses; exactly one match skips the list entirely and
+// navigates straight to it (the SAME `runLookup` path a resolved target
+// takes — "when context cannot distinguish", not "when there happen to be
+// 2+ rows", is the actual disambiguation trigger); two or more renders the
+// accessible list above. Shares the pane's token/stale-response guard with
+// `runLookup`.
+function runDisambiguate(app: DocPaneApp, doc: Document, st: PaneState, name: string): void {
+  st.token++;
+  const myToken = st.token;
+  renderLoading(app, doc, st);
+  app.catalog.docDisambiguate(name).then((lookup: DocLookup<DocSummary[]>) => {
+    if (myToken !== st.token || !st.panel.isConnected) return;
+    if (lookup.status === 'found') {
+      if (lookup.value.length === 1) {
+        runLookup(app, doc, st, lookup.value[0].target, new Set());
+      } else {
+        renderDisambiguation(app, doc, st, name, lookup.value);
+      }
+    } else if (lookup.status === 'missing') {
+      renderMissing(app, doc, st, name);
+    } else {
+      renderUnavailable(app, doc, st, () => runDisambiguate(app, doc, st, name));
+    }
+  });
+}
+
+/**
+ * #315 — name-only disambiguation entry point: F1 (`codemirror-adapter.ts`'s
+ * `openReferenceCommand`) calls this when the classifier resolves NO strong
+ * target for a bare word that still looks like a plausible identifier (not a
+ * literal, not whitespace/punctuation) — the server may know it under a kind
+ * the positional classifier never guesses at (a combinator, a setting with
+ * no SETTINGS-clause caret, …). Opens the SAME persistent pane `openDocEntry`
+ * does (creating it on first use) and starts a fresh browsing session (the
+ * back stack is cleared, exactly like `openDocEntry`).
+ */
+export function openDocDisambiguation(app: DocPaneApp, name: string): void {
+  const doc = app.document;
+  const st = ensurePane(app, doc);
+  st.initiator = doc.activeElement;
+  st.backStack = [];
+  runDisambiguate(app, doc, st, name);
 }

@@ -10,7 +10,32 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
-- **Structured reference docs for formats, table/database engines, and data
+- **Broad version-exact reference via `system.documentation` (ClickHouse
+  26.6+) with safe Markdown rendering** (#60 Phase 3, #315). Servers 26.6
+  and newer contribute the full breadth of `system.documentation` — table
+  functions, settings, MergeTree/server settings, dictionary
+  layouts/sources, skipping indexes, disk types, combinators, and future
+  unknown kinds (rendered with their preserved server label) — as the
+  fallback and depth source behind the structured loaders. Parsed pre-26.6
+  servers are short-circuited without a single query or probe; 26.6+ and
+  unknown-version connections get one silent capability probe (`source`
+  column optional — real 26.6 builds ship only name/type/description).
+  Markdown bodies render through a new bounded pure parser
+  (`src/core/doc-markdown.ts`, reusing `markdown-lite`'s inline layer with
+  an injected https-only link policy — no new dependency, no `innerHTML`)
+  into strict DOM construction (`src/ui/doc-markdown-view.ts`): headings,
+  lists, quotes, tables, thematic breaks, and fenced code with exact-copy
+  buttons and ClickHouse highlighting for SQL fences; raw HTML, images, and
+  unsupported constructs stay visible as literal text; byte/node/nesting/
+  link limits truncate quietly (fixed-seed fuzz-tested never-throws
+  contract). The classifier gains strong contexts for SETTINGS names
+  (query-level and MergeTree DDL), FROM/INSERT INTO FUNCTION table
+  functions, CODEC lists, skipping-index TYPEs, and `system.*` tables; F1
+  on an unresolved bare word now opens an accessible disambiguation list
+  (kind + name + summary, back-stack integrated) instead of doing nothing.
+  A visually secondary "View latest on clickhouse.com" link appears only
+  when safely derivable from the entry's source path — the app never
+  fetches the public site.
   types** (#60 Phase 2, #314). The documentation pane and F1 now cover four
   more entity kinds, each fed by its own capability-probed system table
   (`system.formats` — which has no `syntax` column and is never asked for

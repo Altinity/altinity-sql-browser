@@ -12,7 +12,7 @@ import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { createState, activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
-import { openDocEntry, closeDocPane } from '../../src/ui/doc-pane.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
 import type { DocLookup, DocSummary } from '../../src/core/doc-types.js';
 
@@ -45,6 +45,7 @@ const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog
       completions: [],
       docSummary: undefined,
       docEntry: undefined,
+      docDisambiguate: undefined,
       ...catalogOver,
     },
     actions: { loadColumns: vi.fn() },
@@ -52,11 +53,15 @@ const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog
   };
 };
 
-// A `makeApp()` with the injected `openDocEntry` action bound the same way
-// app.ts binds it — to the REAL ui/doc-pane.ts `openDocEntry(app, target)` —
-// so "Open reference" (hover button, F1) actually opens the persistent pane
-// instead of quietly no-opping. The pane's own required fields
-// (document/prefs/CodeViewer) live on the same object, mirroring the real App.
+// A `makeApp()` with the injected `openDocEntry`/`openDocDisambiguation`
+// actions bound the same way app.ts binds them — to the REAL ui/doc-pane.ts
+// `openDocEntry(app, target)`/`openDocDisambiguation(app, name)` — so "Open
+// reference" (hover button, F1) actually opens the persistent pane instead of
+// quietly no-opping. The pane's own required fields (document/prefs/
+// CodeViewer) live on the same object, mirroring the real App.
+// `catalog.docDisambiguate` stays undefined unless a caller's override
+// supplies it (mirrors `docSummary`/`docEntry` above) — a test that only
+// exercises `openDocEntry` never touches it.
 const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEditorApp => {
   const app = makeApp(over);
   const paneApp = app as unknown as DocPaneApp;
@@ -66,6 +71,7 @@ const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEdi
     setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn(),
   }));
   app.openDocEntry = (target) => openDocEntry(paneApp, target);
+  app.openDocDisambiguation = (name) => openDocDisambiguation(paneApp, name);
   return app;
 };
 
@@ -765,11 +771,15 @@ describe('openReferenceCommand (F1, #313)', () => {
     keywords: [], functions: { sum: { kind: 'agg', sig: 'sum(x)', ret: '', desc: '' } }, formats: [],
   });
 
-  it('returns false (no target) with no refData, off-word, or an unknown identifier', () => {
+  it('returns false with no refData, or an unresolved identifier when openDocDisambiguation is not injected (#315 quiet-no-op precedent)', () => {
     const { view } = mounted();
     view.dispatch({ changes: { from: 0, to: 0, insert: 'nope' } });
     expect(openReferenceCommand(makeApp({ catalog: { refData: null } }))(view)).toBe(false);
-    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(false); // 'nope' unknown
+    // 'nope' is an unknown identifier — no strong target resolves, and this
+    // plain `makeApp` never wires `openDocDisambiguation`, so F1 still falls
+    // through to the browser default (#315 changed the NO-TARGET path, not
+    // this "no disambiguation seam injected" one).
+    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(false);
   });
 
   it('returns false inside a string/comment/quoted identifier (literal suppression)', () => {
@@ -860,6 +870,49 @@ describe('openReferenceCommand (F1, #313)', () => {
       view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
       expect(openReferenceCommand(app)(view)).toBe(true);
       expect(docEntry).toHaveBeenCalledWith({ kind: 'data-type', name: 'UInt32' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+  });
+
+  describe('#315 disambiguation fallback (no strong target resolves)', () => {
+    it('a bare unresolved word opens disambiguation and returns true when openDocDisambiguation is injected', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'mystery' }, selection: { anchor: 3 } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docDisambiguate).toHaveBeenCalledWith('mystery');
+      expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('still returns false with no word under the caret even when openDocDisambiguation IS injected (whitespace never guessed)', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'a  b' }, selection: { anchor: 2 } }); // between the two spaces — no word there
+      expect(openReferenceCommand(app)(view)).toBe(false);
+      expect(docDisambiguate).not.toHaveBeenCalled();
+    });
+
+    it('still returns false inside a literal even when openDocDisambiguation IS injected (suppression runs first)', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'mystery'" }, selection: { anchor: 10 } });
+      expect(openReferenceCommand(app)(view)).toBe(false);
+      expect(docDisambiguate).not.toHaveBeenCalled();
+    });
+
+    it('a resolved strong target never falls through to disambiguation, even when both seams are injected', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docEntry, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+      expect(docDisambiguate).not.toHaveBeenCalled();
       closeDocPane(app as unknown as DocPaneApp);
     });
   });

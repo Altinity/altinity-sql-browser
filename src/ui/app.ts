@@ -44,7 +44,7 @@ import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
-import { openDocEntry, closeDocPane } from './doc-pane.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane } from './doc-pane.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
@@ -277,6 +277,9 @@ export function createApp(env: CreateAppEnv = {}): App {
   // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
   // only for tidiness; the adapter reads it lazily at click/F1 time.
   app.openDocEntry = (target) => openDocEntry(app, target);
+  // #315 — the F1 name-only disambiguation fallback's injected action, bound
+  // the same way and for the same "editor never imports UI" reason.
+  app.openDocDisambiguation = (name) => openDocDisambiguation(app, name);
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —

@@ -42,6 +42,41 @@
 // so an incidental "FORMAT <word>" fragment that isn't a real format name
 // falls through instead of asserting a bogus target; omitting it keeps the
 // looser purely-positional check (useful before reference data has loaded).
+//
+// #315 (Phase 3) adds six more STRONG, purely-positional contexts — slotted
+// alongside the #314 ones above (positional beats the bare-word function
+// lookup either way), in this final order:
+//   5. a query-level `SETTINGS name = value` list — 'setting', or
+//      'mergetree-setting' when the statement is `CREATE|ATTACH TABLE` and an
+//      `ENGINE = *MergeTree*`-family clause precedes the SETTINGS keyword
+//      (otherwise DDL SETTINGS still falls back to plain 'setting' — e.g. a
+//      non-MergeTree engine, or no engine clause at all);
+//   6. a table-function call in FROM/`INSERT INTO FUNCTION` position —
+//      'table-function' (bare adjacency: `FROM`/`FUNCTION` word directly
+//      followed by a bare word directly followed by `(`; a plain `FROM table`
+//      with no call parens never matches);
+//   7. an element inside a DDL `CODEC(...)` list — 'codec' (each
+//      comma/paren-separated entry's own head word, so `CODEC(ZSTD(3), Delta)`
+//      resolves either ZSTD or Delta depending on where the caret sits);
+//   8. a data-skipping index's `TYPE <type>` word, inside a `CREATE|ATTACH
+//      TABLE` column list's `INDEX name expr TYPE <type>` entry —
+//      'skipping-index' (this is what #314's own test suite used to call
+//      "an INDEX entry is skipped" — Phase 3 now resolves ITS type word, so
+//      that test's expectation changed on purpose; see its updated name);
+//   9. a `system.<name>` qualified reference immediately after a bare `FROM`/
+//      `JOIN` keyword — 'system-table' (caret on the name part only; the
+//      `system` qualifier and the `.` never resolve anything themselves).
+// Aggregate-function COMBINATORS (`sumIf`, `quantileMerge`, …) are
+// deliberately NOT given a positional context here: the only signal available
+// without a real combinator-aware parser is "a known function name ending in
+// a known combinator suffix", which is a NAME-SHAPE guess, not a caret
+// POSITION — indistinguishable, at the classifier's level, from a
+// coincidentally-suffixed ordinary function/column name. Per the module's own
+// "weak identifiers are never guessed" contract this stays unresolved by
+// `resolveDocTarget`; #315's disambiguation state (doc-pane.ts's
+// `openDocDisambiguation`) is where a visitor reaches a combinator entry
+// instead — F1 on a bare, unresolved word now opens that broader search
+// rather than doing nothing (see codemirror-adapter.ts's `openReferenceCommand`).
 
 import { lexSql, tokenText } from './sql-lex.js';
 import type { Token } from './sql-lex.js';
@@ -358,35 +393,233 @@ function inParamTypeRegion(text: string, pos: number): boolean {
   return false;
 }
 
-// True when `posIdx` sits inside a column definition's type region within a
-// `CREATE|ATTACH TABLE ... (...)` column list: the statement head is
-// CREATE/ATTACH, a `TABLE` keyword appears before the list's opening paren,
-// that paren is preceded by an identifier (the table name) and sits at
-// top level (depth 0), and `posIdx` falls in some entry's post-name span.
-function inColumnListTypeRegion(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): boolean {
+// True when the statement's head is `CREATE|ATTACH TABLE` (a `TABLE` keyword
+// appears before any column-list `(` — mirrors `isDatabaseDDL`'s own
+// stop-at-`(`/`=` scan, but looking for `TABLE` instead of `DATABASE`).
+// Shared by the #315 MergeTree-settings check below (`settingsTarget`) — a
+// SETTINGS clause needs no actual column-list parens to exist for this to be
+// true (`CREATE TABLE t AS other ENGINE = MergeTree SETTINGS …` has none).
+function isCreateOrAttachTable(text: string, stmtToks: Token[]): boolean {
   const headIdx = stmtHeadIdx(stmtToks);
   const head = stmtToks[headIdx];
   if (!head || head.kind !== 'word') return false;
   const h = tokenText(text, head).toUpperCase();
   if (h !== 'CREATE' && h !== 'ATTACH') return false;
+  for (let i = headIdx + 1; i < stmtToks.length; i++) {
+    const t = stmtToks[i];
+    if (t.kind === 'word' && tokenText(text, t).toUpperCase() === 'TABLE') return true;
+    if (t.kind === 'punct' && text[t.start] === '(') break;
+  }
+  return false;
+}
+
+// The `(open, close)` token-index bounds of a `CREATE|ATTACH TABLE`'s
+// top-level column list — the paren immediately after the `TABLE` keyword
+// (skipping a possible `IF NOT EXISTS`/dotted name/etc. in between) that sits
+// at depth 0 and is preceded by an identifier (the table name). `null` when
+// this statement isn't a `CREATE|ATTACH TABLE`, or has no column-list parens
+// at all (`CREATE TABLE t ENGINE = Memory`, `CREATE TABLE t AS other`).
+// Shared by `inColumnListTypeRegion` (data-type positions) and the #315
+// skipping-index TYPE-word check below — both walk the SAME column-list
+// entries, just looking at different parts of each entry.
+function columnListBounds(text: string, stmtToks: Token[], info: ParenInfo): { open: number; close: number } | null {
+  if (!isCreateOrAttachTable(text, stmtToks)) return null;
+  const headIdx = stmtHeadIdx(stmtToks);
   let tableIdx = -1;
   for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
     if (t.kind === 'punct' && text[t.start] === '(') break; // list starts before any TABLE seen
     if (t.kind === 'word' && tokenText(text, t).toUpperCase() === 'TABLE') { tableIdx = i; break; }
   }
-  if (tableIdx < 0) return false;
+  if (tableIdx < 0) return null;
   for (let i = tableIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
     if (t.kind === 'punct' && text[t.start] === '(' && info.depth[i] === 0) {
       const prev = stmtToks[i - 1];
-      if (!prev || (prev.kind !== 'word' && prev.kind !== 'quoted-ident')) return false;
+      if (!prev || (prev.kind !== 'word' && prev.kind !== 'quoted-ident')) return null;
       const close = info.matchClose[i];
-      if (close < 0) return false;
-      return columnEntryMatches(text, stmtToks, info, i, close, posIdx);
+      if (close < 0) return null;
+      return { open: i, close };
     }
   }
+  return null;
+}
+
+// True when `posIdx` sits inside a column definition's type region within a
+// `CREATE|ATTACH TABLE ... (...)` column list — see `columnListBounds` for
+// how the list itself is located; `posIdx` must fall in some entry's
+// post-name span.
+function inColumnListTypeRegion(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): boolean {
+  const bounds = columnListBounds(text, stmtToks, info);
+  if (!bounds) return false;
+  return columnEntryMatches(text, stmtToks, info, bounds.open, bounds.close, posIdx);
+}
+
+// ── #315 Phase 3 — settings / mergetree-settings ────────────────────────────
+
+// Clause keywords that, if reached before a `SETTINGS` keyword while scanning
+// backward at the caret's own paren depth, mean "this is NOT a SETTINGS list
+// position" (some earlier clause's own name=value-shaped fragment, or simply
+// not inside a SETTINGS clause at all). `SETTINGS` itself is deliberately
+// excluded — it's the thing being searched FOR, not a stop word.
+const SETTINGS_STOP_WORDS = new Set([
+  'SELECT', 'FROM', 'WHERE', 'GROUP', 'ORDER', 'HAVING', 'LIMIT', 'INTO',
+  'VALUES', 'UNION', 'WITH', 'PREWHERE', 'FORMAT', 'JOIN',
+]);
+
+// The index of the `SETTINGS` keyword token opening the clause `posIdx` sits
+// in, or -1. Purely positional/adjacent, like `engineTarget`: `posIdx`'s own
+// token must be directly followed by a bare `=` (the "name = value" shape),
+// then a backward scan at `posIdx`'s OWN paren depth (skipping any token at a
+// deeper depth — a value that happens to be a parenthesized expression) either
+// finds `SETTINGS` (a match) or a `SETTINGS_STOP_WORDS` entry first (not a
+// SETTINGS list position at all) or runs off the front of the statement.
+function findSettingsKeywordIndex(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): number {
+  const next = stmtToks[posIdx + 1];
+  if (!next || next.kind !== 'op' || text[next.start] !== '=') return -1;
+  const depth = info.depth[posIdx];
+  for (let i = posIdx - 1; i >= 0; i--) {
+    if (info.depth[i] !== depth) continue;
+    const t = stmtToks[i];
+    if (t.kind !== 'word') continue;
+    const up = tokenText(text, t).toUpperCase();
+    if (up === 'SETTINGS') return i;
+    if (SETTINGS_STOP_WORDS.has(up)) return -1;
+  }
+  return -1;
+}
+
+// True when an `ENGINE = Name` clause whose `Name` contains "MERGETREE"
+// (case-insensitively — catches every *MergeTree engine, not just the bare
+// `MergeTree`) appears anywhere before token index `limitIdx` in this
+// statement's tokens.
+function mergeTreeEngineBefore(text: string, stmtToks: Token[], limitIdx: number): boolean {
+  for (let i = 0; i + 2 < stmtToks.length && i < limitIdx; i++) {
+    if (stmtToks[i].kind !== 'word' || tokenText(text, stmtToks[i]).toUpperCase() !== 'ENGINE') continue;
+    const eq = stmtToks[i + 1];
+    if (!eq || eq.kind !== 'op' || text[eq.start] !== '=') continue;
+    const name = stmtToks[i + 2];
+    if (name && name.kind === 'word' && tokenText(text, name).toUpperCase().includes('MERGETREE')) return true;
+  }
   return false;
+}
+
+// `toks[posIdx]` resolves as a query-level/DDL `SETTINGS name = value` target
+// — 'mergetree-setting' specifically when the statement is `CREATE|ATTACH
+// TABLE` and a *MergeTree engine clause precedes the SETTINGS keyword found;
+// plain 'setting' otherwise (a SELECT/INSERT query-level SETTINGS list, or a
+// CREATE TABLE DDL SETTINGS clause with a non-MergeTree engine or none at all).
+function settingsTarget(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): DocTarget | null {
+  const settingsIdx = findSettingsKeywordIndex(text, stmtToks, info, posIdx);
+  if (settingsIdx < 0) return null;
+  const name = tokenText(text, stmtToks[posIdx]);
+  const isMergeTreeSetting = isCreateOrAttachTable(text, stmtToks) && mergeTreeEngineBefore(text, stmtToks, settingsIdx);
+  return { kind: isMergeTreeSetting ? 'mergetree-setting' : 'setting', name };
+}
+
+// ── #315 Phase 3 — table functions ──────────────────────────────────────────
+
+// `toks[posIdx]` resolves as a table-function target when it is a bare word
+// directly preceded by a bare `FROM` or `FUNCTION` keyword (the latter from
+// `INSERT INTO FUNCTION name(...)`) AND directly followed by `(` — the same
+// bare-adjacency shape `engineTarget` uses. A plain `FROM table_name` (no call
+// parens follow) never matches, by construction: the required `(` simply
+// isn't there.
+function tableFunctionTarget(text: string, stmtToks: Token[], posIdx: number): DocTarget | null {
+  const prev = stmtToks[posIdx - 1];
+  if (!prev || prev.kind !== 'word') return null;
+  const kw = tokenText(text, prev).toUpperCase();
+  if (kw !== 'FROM' && kw !== 'FUNCTION') return null;
+  const next = stmtToks[posIdx + 1];
+  if (!next || next.kind !== 'punct' || text[next.start] !== '(') return null;
+  return { kind: 'table-function', name: tokenText(text, stmtToks[posIdx]) };
+}
+
+// ── #315 Phase 3 — codecs ────────────────────────────────────────────────────
+
+// `toks[posIdx]` resolves as a codec-list element when it sits inside some
+// `CODEC(...)` call's parens AND is itself the head word of a comma/paren
+// -separated entry (directly preceded by that `CODEC(`'s own `(` or by a `,`
+// at any depth — a nested codec's arguments, e.g. `ZSTD(3)`'s `3`, are never
+// `word`-kind tokens so they can never satisfy this regardless of adjacency).
+// `CODEC(ZSTD(3), Delta)` resolves ZSTD (preceded by CODEC's own `(`) or
+// Delta (preceded by `,`), matching the module doc comment's example.
+function codecTarget(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): DocTarget | null {
+  for (let i = 0; i < stmtToks.length - 1; i++) {
+    if (stmtToks[i].kind !== 'word' || tokenText(text, stmtToks[i]).toUpperCase() !== 'CODEC') continue;
+    const open = i + 1;
+    const openTok = stmtToks[open];
+    if (!openTok || openTok.kind !== 'punct' || text[openTok.start] !== '(') continue;
+    const close = info.matchClose[open];
+    if (close < 0 || !(posIdx > open && posIdx < close)) continue;
+    const t = stmtToks[posIdx];
+    if (t.kind !== 'word') continue;
+    const prev = stmtToks[posIdx - 1];
+    if (!prev || prev.kind !== 'punct' || (text[prev.start] !== '(' && text[prev.start] !== ',')) continue;
+    return { kind: 'codec', name: tokenText(text, t) };
+  }
+  return null;
+}
+
+// ── #315 Phase 3 — data-skipping indexes ────────────────────────────────────
+
+// The type name of the skipping-index entry (`INDEX name expr TYPE <type>`)
+// in the column list `(open, close)` whose `TYPE` keyword's next token is
+// exactly `posIdx` — or `null` when `posIdx` doesn't sit there. Walks the
+// SAME comma-separated top-level entries `columnEntryMatches` does, but looks
+// for an `INDEX`-headed entry's `TYPE` word instead of a column's type region.
+function indexTypeName(text: string, toks: Token[], info: ParenInfo, open: number, close: number, posIdx: number): string | null {
+  const baseDepth = info.depth[open] + 1;
+  let entryStart = open + 1;
+  for (let i = open + 1; i <= close; i++) {
+    const atBoundary = i === close || (info.depth[i] === baseDepth && toks[i].kind === 'punct' && text[toks[i].start] === ',');
+    if (!atBoundary) { continue; }
+    if (entryStart < i) {
+      const first = toks[entryStart];
+      const firstWord = first.kind === 'word' ? tokenText(text, first).toUpperCase() : '';
+      if (firstWord === 'INDEX') {
+        for (let j = entryStart + 1; j < i; j++) {
+          if (info.depth[j] === baseDepth && toks[j].kind === 'word' && tokenText(text, toks[j]).toUpperCase() === 'TYPE') {
+            const typeTokIdx = j + 1;
+            if (typeTokIdx === posIdx && typeTokIdx < i && toks[typeTokIdx].kind === 'word') {
+              return tokenText(text, toks[typeTokIdx]);
+            }
+          }
+        }
+      }
+    }
+    entryStart = i + 1;
+  }
+  return null;
+}
+
+// `posIdx` resolves as a data-skipping index's TYPE word within a
+// `CREATE|ATTACH TABLE` column list's `INDEX name expr TYPE <type>` entry.
+function skippingIndexTarget(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): DocTarget | null {
+  const bounds = columnListBounds(text, stmtToks, info);
+  if (!bounds) return null;
+  const name = indexTypeName(text, stmtToks, info, bounds.open, bounds.close, posIdx);
+  return name ? { kind: 'skipping-index', name } : null;
+}
+
+// ── #315 Phase 3 — system tables ────────────────────────────────────────────
+
+// `toks[posIdx]` resolves as a `system.<name>` reference's name part when it
+// is a bare word directly preceded by a bare `.` (itself directly preceded by
+// a bare `system` word), and THAT `system` word is directly preceded by a
+// bare `FROM`/`JOIN` keyword — the same bare-adjacency shape as the other
+// #315 positional contexts. A `system.name` appearing anywhere else (e.g. as
+// a function argument) never matches, by construction.
+function systemTableTarget(text: string, stmtToks: Token[], posIdx: number): DocTarget | null {
+  const dot = stmtToks[posIdx - 1];
+  if (!dot || dot.kind !== 'punct' || text[dot.start] !== '.') return null;
+  const sys = stmtToks[posIdx - 2];
+  if (!sys || sys.kind !== 'word' || tokenText(text, sys).toUpperCase() !== 'SYSTEM') return null;
+  const kwTok = stmtToks[posIdx - 3];
+  if (!kwTok || kwTok.kind !== 'word') return null;
+  const kw = tokenText(text, kwTok).toUpperCase();
+  if (kw !== 'FROM' && kw !== 'JOIN') return null;
+  return { kind: 'system-table', name: tokenText(text, stmtToks[posIdx]) };
 }
 
 // Non-column entries a column list may also contain — a name here is not a
@@ -454,6 +687,18 @@ export function resolveDocTarget(
     ) {
       return { kind: 'data-type', name: tokenText(text, stmtToks[posIdx]) };
     }
+    // #315 Phase 3 — settings, table functions, codecs, skipping indexes,
+    // system tables (see the module doc comment's numbered ranking above).
+    const setting = settingsTarget(text, stmtToks, info, posIdx);
+    if (setting) return setting;
+    const tableFn = tableFunctionTarget(text, stmtToks, posIdx);
+    if (tableFn) return tableFn;
+    const codec = codecTarget(text, stmtToks, info, posIdx);
+    if (codec) return codec;
+    const skipIdx = skippingIndexTarget(text, stmtToks, info, posIdx);
+    if (skipIdx) return skipIdx;
+    const sysTable = systemTableTarget(text, stmtToks, posIdx);
+    if (sysTable) return sysTable;
   }
   const w = wordAt(text, pos);
   if (posIdx >= 0 && inParamTypeRegion(text, pos)) {

@@ -165,9 +165,24 @@ export interface CodeMirrorEditorApp extends ReferenceApp {
     completions?: unknown;
     docSummary?: (target: DocTarget) => Promise<DocLookup<DocSummary>>;
     docEntry?: (target: DocTarget) => Promise<DocLookup<DocEntry>>;
+    /** #315 — NOT read by this adapter directly (only `doc-pane.ts`'s
+     *  `openDocDisambiguation` calls it, through the injected
+     *  `app.openDocDisambiguation` action above) — declared here purely so a
+     *  test building one `app` object for both this adapter's `catalog`
+     *  override AND a `DocPaneApp` cast (`makeDocPaneApp`, this module's own
+     *  test file) can set it in one place without an excess-property error. */
+    docDisambiguate?: (name: string) => Promise<DocLookup<DocSummary[]>>;
   };
   actions: { loadColumns(db: string, table: string): Promise<void> };
   openDocEntry?: (target: DocTarget) => void;
+  /** #315 — the injected open-the-disambiguation-state action, alongside
+   *  `openDocEntry` above (bound by app.ts to `ui/doc-pane.ts`'s
+   *  `openDocDisambiguation(app, name)`, for the identical "editor never
+   *  imports UI" reason). Optional for the same reason `openDocEntry` is:
+   *  this adapter's own tests construct a minimal app that never opens the
+   *  pane, and F1 quietly falls through to the browser default when it's
+   *  absent (see `openReferenceCommand`). */
+  openDocDisambiguation?: (name: string) => void;
 }
 
 // Programmatic state syncs (tab switch, external tab.sqlDraft reconcile) must not
@@ -540,25 +555,39 @@ export function insertTwoSpaces(view: EditorView): boolean {
 
 /**
  * F1: `Open reference for symbol` (#313's keyboard command; #314 extends its
- * classification). Resolves the doc target at `selection.main.head` — first
- * suppressing inside a comment/string/quoted identifier via the CM6 syntax
- * tree (this module's own responsibility per doc-context.ts's contract),
- * then classifying with the FULL `resolveDocTarget` (the #314 strong-context
- * classifier: top-level FORMAT clause / ENGINE / data-type positions ranked
- * above the Phase 1 function/aggregate lookup) against the WHOLE document —
- * unlike hover/completion info (line-scoped; only ever resolve a function),
- * F1 is the one caller whose target may be a statement-wide FORMAT/ENGINE/
- * type position, so it needs the surrounding statement, not just the current
- * line. Passes `refData.formats` so a FORMAT-clause match is validated
- * against known format names, mirroring the function lookup's existence
- * gate. Opens the SAME persistent pane `renderFunctionSummary`'s "Open
- * reference" button does. Returns `false` (CM6 leaves the key to the browser
- * default) when no target resolves or the caret sits inside a literal; `true`
- * (CM6 `preventDefault`s it) once a target is found — tooltip, completion
- * info, and F1 all end up calling the identical `openDocEntry` action (#313:
- * "Tooltip, completion, and F1 call the same application action"). Exported
- * for direct tests — a headless CM6 keymap `run` binding doesn't need a real
- * keydown event to exercise.
+ * classification; #315 extends its NO-STRONG-TARGET fallback — see below).
+ * Resolves the doc target at `selection.main.head` — first suppressing
+ * inside a comment/string/quoted identifier via the CM6 syntax tree (this
+ * module's own responsibility per doc-context.ts's contract), then
+ * classifying with the FULL `resolveDocTarget` (the #314/#315 strong-context
+ * classifier, ranked above the Phase 1 function/aggregate lookup) against
+ * the WHOLE document — unlike hover/completion info (line-scoped; only ever
+ * resolve a function), F1 is the one caller whose target may be a
+ * statement-wide FORMAT/ENGINE/type/setting/… position, so it needs the
+ * surrounding statement, not just the current line. Passes `refData.formats`
+ * so a FORMAT-clause match is validated against known format names,
+ * mirroring the function lookup's existence gate. Opens the SAME persistent
+ * pane `renderFunctionSummary`'s "Open reference" button does.
+ *
+ * #315 CONTRACT CHANGE (deliberate, spec-driven — see #315 "Context routing
+ * and disambiguation": "When context cannot distinguish same-name entities,
+ * open an accessible disambiguation state"): when `resolveDocTarget` finds NO
+ * strong target, F1 used to leave the key to the browser default
+ * (`return false`) unconditionally. It now instead tries the word under the
+ * caret as a NAME-ONLY disambiguation query — `app.openDocDisambiguation`
+ * (bound to `doc-pane.ts`'s `openDocDisambiguation`) — whenever there IS a
+ * plausible bare identifier there (`wordAt` resolves one) and the app carries
+ * the action; the pane itself shows its existing quiet "missing" state when
+ * the server has nothing under that name, so this never surfaces a false
+ * positive, only broadens what F1 can reach (a setting/combinator/etc. the
+ * positional classifier has no strong context for). `false` is still
+ * returned — the browser keeps its default F1 behavior — in EXACTLY the
+ * cases it always was: no reference data loaded yet, the caret sits inside a
+ * literal, or there is no word at all under the caret (whitespace/punctuation)
+ * — and now ALSO when a word exists but `app.openDocDisambiguation` isn't
+ * wired (mirrors `openDocEntry`'s own optional-seam quiet-no-op precedent).
+ * Exported for direct tests — a headless CM6 keymap `run` binding doesn't
+ * need a real keydown event to exercise.
  */
 export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorView) => boolean {
   return (view) => {
@@ -569,8 +598,17 @@ export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorVie
     const doc = view.state.doc.toString();
     const options: DocContextOptions = { formats: refData.formats };
     const target = resolveDocTarget(doc, pos, refData.functions, options);
-    if (!target) return false;
-    app.openDocEntry?.(target);
+    if (target) {
+      app.openDocEntry?.(target);
+      return true;
+    }
+    // #315 — no strong target: fall back to name-only disambiguation for a
+    // bare word under the caret (never guessed for whitespace/punctuation —
+    // `wordAt` returns null there, matching resolveDocTarget's own "no word"
+    // contract).
+    const w = wordAt(doc, pos);
+    if (!w || !app.openDocDisambiguation) return false;
+    app.openDocDisambiguation(w.word);
     return true;
   };
 }
