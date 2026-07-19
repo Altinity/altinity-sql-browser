@@ -8,8 +8,7 @@
 //
 // Pure render function over its inputs: no `app`/global access. The ONE
 // side-effecting capability it needs — mounting a read-only CM6 viewer for a
-// SQL-tagged fenced code block, and copying a code block's exact text to the
-// clipboard — is threaded in through `opts.codeViewer`/`opts.onCopy`, the
+// SQL-tagged fenced code block — is threaded in through `opts.codeViewer`, the
 // same injected-seam discipline `doc-pane.ts` already applies to its own
 // examples/syntax blocks (never a concrete CM6 import here). `opts.registerViewer`
 // is the other half of that seam: this module has no lifecycle of its own
@@ -26,7 +25,6 @@
 // site needs to change shape), not so it can be passed.
 
 import { h, withDocument } from './dom.js';
-import { Icon } from './icons.js';
 import type { CodeViewerFactory, CodeViewerHandle } from '../editor/code-viewer.types.js';
 import type { Extension } from '@codemirror/state';
 import type { DocBlock, DocInline, DocListItem, DocMarkdownResult } from '../core/doc-markdown.js';
@@ -44,12 +42,6 @@ export interface DocMarkdownCodeViewer {
 
 export interface DocMarkdownViewOptions {
   codeViewer?: DocMarkdownCodeViewer;
-  /** Called with a code block's EXACT text (including a truncated block's
-   *  truncated prefix — never re-fetched/re-derived) when its Copy button is
-   *  activated. Omitted means the Copy button is still rendered (accessible,
-   *  keyboard-reachable) but activating it is a no-op — this module has no
-   *  clipboard access of its own. */
-  onCopy?: (text: string) => void;
   /** Reserved for a later commit (#315 explicitly scopes internal doc-link
    *  navigation out of this one) — never actually passable today. */
   onNavigateRelative?: never;
@@ -117,10 +109,8 @@ function renderCodeBlock(
   } else {
     host.appendChild(h('pre', { class: 'docs-md-code-plain' }, h('code', null, block.text)));
   }
-  host.appendChild(h('button', {
-    class: 'docs-md-copy', type: 'button', 'aria-label': 'Copy code',
-    onclick: () => opts.onCopy?.(block.text),
-  }, Icon.copy(), h('span', null, 'Copy')));
+  // No per-block Copy button (owner decision at the #320 gate — the buttons
+  // read as noise under every fence); code text selects/copies normally.
   if (block.truncated) host.appendChild(h('div', { class: 'docs-md-note' }, '(truncated)'));
   return host;
 }

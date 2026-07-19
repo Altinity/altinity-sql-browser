@@ -23,8 +23,10 @@ test.describe('docs reference (#313)', () => {
     await expect(pane.locator('.docs-name')).toHaveText('sum');
     await expect(pane.locator('.docs-signature')).toHaveText('sum(x)');
     await expect(pane.locator('.docs-badge-since')).toContainText('1.1.0');
-    // Copyable example rendered through the read-only viewer.
-    await expect(pane.locator('.docs-examples .docs-copy')).toBeVisible();
+    // Example fences render through the read-only viewer (no Copy buttons —
+    // owner decision at the #320 gate).
+    await expect(pane.locator('.docs-examples .cm-editor, .docs-examples pre').first()).toBeVisible();
+    expect(await pane.locator('.docs-md-copy, .docs-copy').count()).toBe(0);
   });
 
   test('F1 with no resolvable target is left to the browser (not preventDefaulted), pane stays closed', async ({ page }) => {

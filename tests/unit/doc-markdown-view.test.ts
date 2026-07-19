@@ -171,20 +171,7 @@ describe('renderDocMarkdown — code blocks', () => {
     expect(el.querySelector('.docs-md-code-plain')!.textContent).toBe('plain');
   });
 
-  it('every code block has a Copy button that calls onCopy with the exact text', () => {
-    const onCopy = vi.fn();
-    const el = renderDocMarkdown(document, result('```\nexact text\n```'), { onCopy });
-    const btn = el.querySelector('.docs-md-copy')! as HTMLButtonElement;
-    expect(btn.getAttribute('aria-label')).toBeTruthy();
-    btn.click();
-    expect(onCopy).toHaveBeenCalledWith('exact text');
-  });
 
-  it('a Copy button with no onCopy provided is a harmless no-op click', () => {
-    const el = renderDocMarkdown(document, result('```\nx\n```'));
-    const btn = el.querySelector('.docs-md-copy')! as HTMLButtonElement;
-    expect(() => btn.click()).not.toThrow();
-  });
 
   it('a truncated code block shows a quiet "(truncated)" note', () => {
     const big = 'x'.repeat(300_000);

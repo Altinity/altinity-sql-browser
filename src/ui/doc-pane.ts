@@ -35,7 +35,6 @@
 import { h } from './dom.js';
 import { Icon } from './icons.js';
 import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
-import { flashToast } from './toast.js';
 import { chLanguageExtension } from '../editor/ch-lang.js';
 import type { CodeViewerFactory, CodeViewerHandle } from '../editor/code-viewer.types.js';
 import type { AssembledReference } from '../core/completions.js';
@@ -60,11 +59,6 @@ export interface DocPaneApp {
     refData: AssembledReference;
   };
   CodeViewer: CodeViewerFactory;
-  /** Clipboard seam override for tests (or a caller with its own injected
-   *  navigator) — mirrors app.ts's own `env.navigator` precedence over the
-   *  ambient window (see `copySnapshot`/`share`). Falls back to
-   *  `(doc.defaultView || window).navigator`. */
-  navigator?: { clipboard?: Clipboard };
 }
 
 // #314 Phase 2 — human labels for the four structured kinds, alongside
@@ -267,16 +261,6 @@ function renderUnavailable(app: DocPaneApp, doc: Document, st: PaneState, onRetr
     h('button', { class: 'docs-retry', onclick: onRetry }, Icon.refresh(), h('span', null, 'Retry'))));
 }
 
-function copyExample(app: DocPaneApp, doc: Document, text: string): void {
-  const clip = (app.navigator || (doc.defaultView || window).navigator || {}).clipboard;
-  if (clip && clip.writeText) {
-    clip.writeText(text)
-      .then(() => flashToast('Copied to clipboard', { document: doc }))
-      .catch(() => flashToast('Copy failed', { document: doc }));
-  } else {
-    flashToast('Copy not supported', { document: doc });
-  }
-}
 
 const badge = (text: string, cls: string): HTMLElement => h('span', { class: 'docs-badge ' + cls }, text);
 
@@ -286,11 +270,12 @@ const badge = (text: string, cls: string): HTMLElement => h('span', { class: 'do
 // tables, SQL fences, per a live-verified real 26.6.1 server). Rendered
 // through the SAME bounded pure parser + safe-DOM view #315's broad
 // `system.documentation` path already uses (`parseDocMarkdown` ->
-// `renderDocMarkdown`), with the SAME CodeViewer/onCopy/registerViewer
-// wiring `renderMarkdownEntry` below threads through — so a ```sql fence
-// inside a function's Arguments text gets the identical highlighting/Copy
-// treatment a broad-source entry's body does, and any mounted CM6 viewer
-// joins the pane's own per-render teardown list. Keeps the field-label
+// `renderDocMarkdown`), with the SAME CodeViewer/registerViewer wiring
+// `renderMarkdownEntry` below threads through — so a ```sql fence inside a
+// function's Arguments text gets the identical highlighting a broad-source
+// entry's body does (no per-block Copy buttons — owner decision at the #320
+// gate), and any mounted CM6 viewer joins the pane's per-render teardown
+// list. Keeps the field-label
 // structure (`.docs-field`/`.docs-field-label`) — only the value changes
 // from a plain text div to the rendered Markdown container.
 function markdownField(
@@ -300,7 +285,6 @@ function markdownField(
   const parsed = parseDocMarkdown(text, { linkPolicy: defaultDocLinkPolicy });
   const body = renderDocMarkdown(doc, parsed, {
     codeViewer: { factory: app.CodeViewer, languageExtension: chLanguageExtension(app.catalog.refData) },
-    onCopy: (t) => copyExample(app, doc, t),
     registerViewer: (v) => st.viewers.push(v),
   });
   return h('div', { class: 'docs-field' },
@@ -445,7 +429,6 @@ function renderMarkdownEntry(app: DocPaneApp, doc: Document, st: PaneState, entr
   const parsed = parseDocMarkdown(entry.markdown || '', { linkPolicy: defaultDocLinkPolicy });
   const body = renderDocMarkdown(doc, parsed, {
     codeViewer: { factory: app.CodeViewer, languageExtension: chLanguageExtension(app.catalog.refData) },
-    onCopy: (text) => copyExample(app, doc, text),
     registerViewer: (v) => st.viewers.push(v),
   });
 

@@ -252,14 +252,14 @@ describe('structured fields render through the markdown-subset renderer', () => 
     closeDocPane(app);
   });
 
-  it('a ```sql fence inside the description mounts a CodeViewer with a Copy button, and it is torn down on retarget', async () => {
+  it('a ```sql fence inside the description mounts a CodeViewer (no Copy button — owner decision), and it is torn down on retarget', async () => {
     const app = makeApp();
     const description = 'Some prose.\n\n```sql\nSELECT 1\n```\n';
     app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ description }) });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
     expect(app.CodeViewer).toHaveBeenCalledWith(expect.objectContaining({ text: 'SELECT 1', language: 'sql' }));
-    expect(document.querySelector('.docs-md-copy')).not.toBeNull();
+    expect(document.querySelector('.docs-md-copy')).toBeNull(); // per-block Copy buttons removed at the #320 gate
     const calls = (app.CodeViewer as ReturnType<typeof vi.fn>).mock;
     const mdViewer = calls.results[calls.calls.length - 1].value;
 
@@ -270,17 +270,6 @@ describe('structured fields render through the markdown-subset renderer', () => 
     closeDocPane(app);
   });
 
-  it('the Copy button on a description-body ```sql fence writes the EXACT code text via the clipboard seam', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
-    const description = '```sql\nSELECT 2\n```';
-    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ description }) });
-    openDocEntry(app, T_FN);
-    await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-md-copy')!.click();
-    expect(writeText).toHaveBeenCalledWith('SELECT 2');
-    closeDocPane(app);
-  });
 
   it('arguments/parameters/returned value are also rendered through the markdown body (not a plain text div)', async () => {
     const app = makeApp();
@@ -338,7 +327,7 @@ describe('alias navigation + cycle guard', () => {
   });
 });
 
-describe('examples: markdown-rendered fences + Copy (#60 live finding: examples are a markdown doc)', () => {
+describe('examples: markdown-rendered fences (#60 live finding: examples are a markdown doc)', () => {
   it('a ```sql fence mounts the injected CodeViewer with the exact fence text and a ClickHouse language extension', async () => {
     const app = makeApp();
     app.catalog.docEntry.mockResolvedValue({
@@ -378,30 +367,7 @@ describe('examples: markdown-rendered fences + Copy (#60 live finding: examples 
     closeDocPane(app);
   });
 
-  it('Copy shows "Copy not supported" when no clipboard seam is available', async () => {
-    const app = makeApp({ navigator: undefined });
-    const original = (globalThis as { navigator?: unknown }).navigator;
-    Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true });
-    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: '```sql\nSELECT 1\n```' }) });
-    openDocEntry(app, T_FN);
-    await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-examples .docs-md-copy')!.click();
-    expect(document.querySelector('.share-toast')!.textContent).toBe('Copy not supported');
-    closeDocPane(app);
-    Object.defineProperty(globalThis, 'navigator', { value: original, configurable: true });
-  });
 
-  it("Copy writes the fence's EXACT code text via the clipboard seam", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
-    const code = "SELECT toDateTime('2024-01-01')  -- exact";
-    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: '```sql\n' + code + '\n```' }) });
-    openDocEntry(app, T_FN);
-    await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-examples .docs-md-copy')!.click();
-    expect(writeText).toHaveBeenCalledWith(code);
-    closeDocPane(app);
-  });
 
   it('destroys the previous CodeViewer instance when the pane is retargeted', async () => {
     const app = makeApp();
@@ -1129,18 +1095,6 @@ describe('#315 markdown-subset entries', () => {
     closeDocPane(app);
   });
 
-  it('a Copy button in the markdown body writes the exact code text via the clipboard seam', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
-    app.catalog.docEntry.mockResolvedValue({
-      status: 'found', value: markdownEntry({ markdown: '```\nexact code\n```' }),
-    });
-    openDocEntry(app, { kind: 'setting', name: 'max_threads' });
-    await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-md-copy')!.click();
-    expect(writeText).toHaveBeenCalledWith('exact code');
-    closeDocPane(app);
-  });
 
   it('the structured render path is unchanged for renderMode-absent entries', async () => {
     const app = makeApp();

@@ -1909,8 +1909,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-field-text { font-size: 13px; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
 .docs-flags { display: flex; gap: 6px; flex-wrap: wrap; }
 .docs-example-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.docs-copy { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 12px; }
-.docs-copy:hover { background: var(--bg-hover); }
 /* #314 phase-2 pane elements */
 .docs-syntax-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .docs-facts-list { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1937,8 +1935,6 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-md-table th { background: var(--bg-chip); color: var(--fg); font-weight: 600; }
 .docs-md-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .docs-md-code-plain { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-.docs-md-copy { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 11.5px; }
-.docs-md-copy:hover { background: var(--bg-hover); }
 .docs-md-note { font-size: 11.5px; color: var(--fg-faint); font-style: italic; }
 .docs-md-oversized { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-chip); font-style: normal; }
 .docs-md-latest { align-self: flex-start; font-size: 11.5px; color: var(--fg-faint); text-decoration: underline; }
@@ -1971,10 +1967,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-back:focus-visible,
 .docs-related-link:focus-visible,
 .docs-alias-link:focus-visible,
-.docs-copy:focus-visible,
 .docs-retry:focus-visible,
 .docs-close:focus-visible,
-.docs-md-copy:focus-visible,
 .docs-md-latest:focus-visible,
 .docs-disambiguate-link:focus-visible,
 .schema-type-doc:focus-visible,
