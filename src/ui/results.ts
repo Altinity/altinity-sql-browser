@@ -28,7 +28,7 @@ import { openInDetachedTab } from './detached-view.js';
 import type { DetachedView, DetachedViewApp, DetachedWindowLike, MountCtx } from './detached-view.js';
 import { buildFilterBar } from './filter-bar.js';
 import type { FilterBarApp } from './filter-bar.js';
-import { startDrag, clampDrawerWidth } from './splitters.js';
+import { buildDrawerChrome, attachDrawerResize } from './drawer.js';
 import { panelExecution } from '../core/panel-execution.js';
 import { renderFilterPreview } from './filter-preview.js';
 import type { AppDom, App } from './app.types.js';
@@ -476,11 +476,13 @@ export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLEle
     doc.removeEventListener('keydown', onKey, true);
   }
   const n = entry.rows.length;
-  const head = h('div', { class: 'cd-head' },
-    h('div', { class: 'cd-title' },
+  const { panel } = buildDrawerChrome(doc, {
+    title: [
       h('span', { class: 'cd-name' }, 'Result rows'),
-      h('span', { class: 'cd-type' }, n + (entry.truncated ? '+' : '') + ' row' + (n === 1 ? '' : 's'))),
-    h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
+      h('span', { class: 'cd-type' }, n + (entry.truncated ? '+' : '') + ' row' + (n === 1 ? '' : 's')),
+    ],
+    onClose: close,
+  });
   // Local sort + width state (persist for the lifetime of this open via the entry).
   entry.viewerSort = entry.viewerSort || { col: null, dir: 'asc' };
   const widths = entry.viewerWidths || (entry.viewerWidths = {});
@@ -496,7 +498,7 @@ export function openRowsViewer(app: ResultsApp, entry: RowsViewerEntry): HTMLEle
     onCell: (name, type, value) => openCellDetail(app, name, type, value),
   }));
   paint();
-  const panel = h('div', { class: 'cd-panel' }, head, body);
+  panel.appendChild(body);
   cancelDrawerDrag = attachDrawerResize(app, panel, doc);
   backdrop = h('div', { class: 'cd-backdrop' }, panel);
   detachBackdrop = attachBackdropClose(backdrop, close);
@@ -1093,60 +1095,6 @@ function isTopDrawer(doc: Document, el: Element | undefined): boolean {
   return all[all.length - 1] === el;
 }
 
-/**
- * Wire the left-edge drag handle that resizes the cell-detail / rows-viewer
- * drawer (#101), shared by openCellDetail and openRowsViewer via splitters.js's
- * drag controller (a 'drawer' axis alongside 'col'/'sideRow'/'row'). Sets the
- * initial width from the persisted `cellDrawerPx` pref, clamped to the current
- * viewport, and appends the handle to `panel`.
- *
- * A resize drag that ends with the mouse over `.cd-backdrop` no longer needs a
- * dedicated swallow-listener here: `attachBackdropClose` (#110) tracks where
- * `mousedown` actually landed, and this handle is a `.cd-panel` descendant, so
- * that drag's trailing click — wherever it targets — never closes the drawer.
- *
- * Returns `cancelDrag()`: the drawer's own `close()` (Escape / backdrop click /
- * ✕) can fire while the mouse button is still down mid-drag — without this,
- * the abandoned drag's `mousemove`/`mouseup` listeners would linger on `win`
- * after the panel is gone, so a later unrelated mouseup would still persist a
- * stale `cellDrawerPx`. `close()` must call it before removing the backdrop.
- * A no-op if no drag is in progress.
- */
-function attachDrawerResize(app: ResultsApp, panel: HTMLElement, doc: Document): () => void {
-  // doc.defaultView is null for a detached document not yet attached to a real
-  // browsing context (e.g. tests' document.implementation.createHTMLDocument());
-  // a real detached tab (window.open()) always has one. Fall back to the
-  // ambient window rather than crash on the (harmless) synthetic-doc case.
-  const win = doc.defaultView || window;
-  panel.style.width = clampDrawerWidth(app.state.cellDrawerPx, win.innerWidth) + 'px';
-  let cancelActive: (() => void) | null = null;
-  const handle = h('div', {
-    class: 'cd-resize-h',
-    title: 'Drag to resize',
-    onmousedown: (ev: MouseEvent) => {
-      const startPx = app.state.cellDrawerPx;
-      const stopDrag = startDrag(
-        // `as Element`: this handler is only ever reached via a real
-        // `mousedown` dispatched on `handle` itself (the listener target),
-        // so `currentTarget` is always that element, never null — the DOM
-        // lib's own `EventTarget | null` is just wider than the true contract.
-        { preventDefault: () => ev.preventDefault(), currentTarget: ev.currentTarget as Element },
-        'drawer',
-        {
-          win,
-          state: app.state,
-          rectFor: () => ({ width: win.innerWidth }),
-          apply: (_axis, value) => { panel.style.width = value + 'px'; },
-          save: (name, value) => app.prefs.save(name as PreferenceKey, value),
-        },
-      );
-      cancelActive = () => { stopDrag(); app.state.cellDrawerPx = startPx; cancelActive = null; };
-    },
-  });
-  panel.appendChild(handle);
-  return () => { if (cancelActive) cancelActive(); };
-}
-
 export function openCellDetail(app: ResultsApp, name: string, type: string, value: unknown, targetDoc?: Document): HTMLElement {
   const doc = targetDoc || app.document;
   const text = value == null ? '' : String(value);
@@ -1170,13 +1118,13 @@ export function openCellDetail(app: ResultsApp, name: string, type: string, valu
     const body = h('div', { class: 'cd-body' });
     const showSource = (): void => body.replaceChildren(h('pre', { class: 'cd-pre' }, prettyValue(text)));
 
-    const head = h('div', { class: 'cd-head' },
-      h('div', { class: 'cd-title' },
+    const { panel } = buildDrawerChrome(doc, {
+      title: [
         h('span', { class: 'cd-name' }, name),
-        type ? h('span', { class: 'cd-type' }, type) : null),
-      h('button', { class: 'cd-close', title: 'Close (Esc)', onclick: close }, Icon.close()));
-
-    const panel = h('div', { class: 'cd-panel' }, head);
+        type ? h('span', { class: 'cd-type' }, type) : null,
+      ],
+      onClose: close,
+    });
     cancelDrawerDrag = attachDrawerResize(app, panel, doc);
 
     if (looksLikeHtml(text)) {
