@@ -1,0 +1,84 @@
+{
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json",
+  "format": "altinity-sql-browser/saved-queries",
+  "version": 2,
+  "exportedAt": "2026-07-19T00:00:00.000Z",
+  "queries": [
+    {
+      "id": "image-spiral",
+      "sql": "WITH\n  1024 AS size,\n  3000 AS n_points,\n  6 AS turns\nSELECT\n  toInt32(round(size / 2 + (4 + (number / n_points) * (size / 2 - 8)) * cos(turns * 2 * pi() * number / n_points))) AS x,\n  toInt32(round(size / 2 + (4 + (number / n_points) * (size / 2 - 8)) * sin(turns * 2 * pi() * number / n_points))) AS y,\n  toUInt8(round(128 + 127 * sin(turns * 2 * pi() * number / n_points))) AS r,\n  toUInt8(round(128 + 127 * sin(turns * 2 * pi() * number / n_points + 2.094))) AS g,\n  toUInt8(round(128 + 127 * sin(turns * 2 * pi() * number / n_points + 4.188))) AS b\nFROM numbers(n_points)\nFORMAT PNG\nSETTINGS output_format_image_width = 1024, output_format_image_height = 1024",
+      "specVersion": 1,
+      "spec": {
+        "name": "Image: rainbow spiral (1024×1024)",
+        "description": "Plots 3000 points along a 6-turn polar spiral as an RGB FORMAT PNG image, hue-cycling colour by phase. Needs ClickHouse 26.6+ for FORMAT PNG. Columns must be named x,y (integer) and r,g,b (UInt8) per the PNG format contract; canvas size comes from output_format_image_width/height (default 1024).",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "image",
+            "fit": "contain",
+            "background": "theme",
+            "alt": "A rainbow-coloured spiral traced by 3000 points"
+          }
+        }
+      }
+    },
+    {
+      "id": "image-rgb-gradient",
+      "sql": "SELECT\n  toUInt8(number % 256) AS r,\n  toUInt8(intDiv(number, 256) % 256) AS g,\n  toUInt8(128 + 64 * sin(number / 4096.0)) AS b\nFROM numbers(65536)\nFORMAT PNG\nSETTINGS output_format_image_width = 256, output_format_image_height = 256",
+      "specVersion": 1,
+      "spec": {
+        "name": "Image: RGB gradient (256×256)",
+        "description": "A cheap 256×256 RGB FORMAT PNG with no explicit x,y columns — row order alone (row-major, left-to-right then top-to-bottom) fills the canvas. Needs ClickHouse 26.6+ for FORMAT PNG; canvas size set via output_format_image_width/height SETTINGS.",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "image",
+            "fit": "contain",
+            "background": "theme",
+            "alt": "A smooth RGB colour gradient"
+          }
+        }
+      }
+    },
+    {
+      "id": "image-rgba-glow",
+      "sql": "WITH 256 AS size\nSELECT\n  toUInt8(60) AS r,\n  toUInt8(160) AS g,\n  toUInt8(240) AS b,\n  toUInt8(255 * exp(-1 * (\n    pow((toFloat64(number % size) - size / 2) / (size / 4), 2) +\n    pow((toFloat64(intDiv(number, size)) - size / 2) / (size / 4), 2)\n  ))) AS a\nFROM numbers(size * size)\nFORMAT PNG\nSETTINGS output_format_image_width = 256, output_format_image_height = 256",
+      "specVersion": 1,
+      "spec": {
+        "name": "Image: transparent RGBA glow (256×256)",
+        "description": "A soft blue radial glow with a Gaussian alpha falloff — an r,g,b,a FORMAT PNG demonstrating the panel's checkerboard background option for transparent images. Needs ClickHouse 26.6+ for FORMAT PNG.",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "image",
+            "fit": "contain",
+            "background": "checkerboard",
+            "alt": "A soft blue glow fading to full transparency at the edges, shown over a checkerboard background"
+          }
+        }
+      }
+    },
+    {
+      "id": "image-raytrace-sphere",
+      "sql": "-- Inspired by ClickHouse's SQL ray-tracing demos (github.com/ClickHouse/RayTracer);\n-- this is an original, minimal analytic ray/sphere scene, not a copy of that project.\nWITH\n  256 AS size,\n  0.0 AS cx, 0.0 AS cy, -3.0 AS cz, 1.0 AS cr,\n  -2.0 AS lx, 3.0 AS ly, -1.0 AS lz\nSELECT\n  x, y,\n  toUInt8(greatest(0, least(255, round(255 * (0.05 + 0.55 * shade))))) AS r,\n  toUInt8(greatest(0, least(255, round(255 * (0.08 + 0.55 * shade))))) AS g,\n  toUInt8(greatest(0, least(255, round(255 * (0.35 + 0.60 * shade))))) AS b\nFROM (\n  SELECT\n    x, y, hit,\n    if(hit, greatest(0.0, nx * lux + ny * luy + nz * luz), 1.0 - v * 0.5) AS shade\n  FROM (\n    SELECT\n      x, y, hit,\n      (px - cx) / cr AS nx, (py - cy) / cr AS ny, (pz - cz) / cr AS nz,\n      (lx - px) / llen AS lux, (ly - py) / llen AS luy, (lz - pz) / llen AS luz,\n      v\n    FROM (\n      SELECT\n        x, y, u, v, dx, dy, dz, t, hit,\n        t * dx AS px, t * dy AS py, t * dz AS pz,\n        sqrt(pow(lx - t * dx, 2) + pow(ly - t * dy, 2) + pow(lz - t * dz, 2)) AS llen\n      FROM (\n        SELECT\n          x, y, u, v, dx, dy, dz,\n          (-b - sqrt(greatest(disc, 0))) / 2 AS t,\n          disc >= 0 AS hit\n        FROM (\n          SELECT\n            x, y, u, v, dx, dy, dz,\n            2 * (-cx * dx + -cy * dy + -cz * dz) AS b,\n            (cx * cx + cy * cy + cz * cz - cr * cr) AS c,\n            2 * (-cx * dx + -cy * dy + -cz * dz) * 2 * (-cx * dx + -cy * dy + -cz * dz)\n              - 4 * (cx * cx + cy * cy + cz * cz - cr * cr) AS disc\n          FROM (\n            SELECT\n              x, y, u, v,\n              u / len AS dx, v / len AS dy, -1.0 / len AS dz\n            FROM (\n              SELECT\n                x, y, u, v, sqrt(u * u + v * v + 1.0) AS len\n              FROM (\n                SELECT\n                  toInt32(number % size) AS x,\n                  toInt32(intDiv(number, size)) AS y,\n                  (toFloat64(number % size) / size - 0.5) * 2 AS u,\n                  (0.5 - toFloat64(intDiv(number, size)) / size) * 2 AS v\n                FROM numbers(size * size)\n              )\n            )\n          )\n        )\n      )\n    )\n  )\n)\nORDER BY y, x\nFORMAT PNG\nSETTINGS output_format_image_width = 256, output_format_image_height = 256",
+      "specVersion": 1,
+      "spec": {
+        "name": "Image: ray-traced sphere (256×256)",
+        "description": "An original, minimal analytic ray/sphere-intersection scene with Lambertian shading over a sky-gradient background, rendered entirely in SQL as an RGB FORMAT PNG. Inspired by ClickHouse's SQL ray-tracing demos (github.com/ClickHouse/RayTracer) — not a copy of that project's code. CPU cost grows with the pixel count (size×size rows); keep size small (256 here) unless you deliberately want a slower, higher-resolution render — a 1024 render can take noticeably longer. Needs ClickHouse 26.6+ for FORMAT PNG.",
+        "favorite": true,
+        "view": "panel",
+        "panel": {
+          "cfg": {
+            "type": "image",
+            "fit": "contain",
+            "background": "theme",
+            "alt": "A shaded sphere lit from one side, rendered by ray-tracing math in SQL, over a gradient sky background"
+          }
+        }
+      }
+    }
+  ]
+}
