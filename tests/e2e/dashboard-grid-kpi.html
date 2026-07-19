@@ -1,0 +1,325 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard grafana-grid KPI harness (#316)</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>
+    body { overflow: auto; background: var(--bg); color: var(--fg); font-family: var(--ui); }
+    .dash-page { height: auto; }
+    section.scenario { margin-bottom: 24px; }
+    section.scenario > h2 { font: 12px var(--mono); color: var(--fg-mute); margin: 0 0 6px; }
+    .fixed-wrap { border: 1px dashed transparent; }
+  </style>
+</head>
+<body data-theme="dark">
+  <!-- #316: this fixture is a sibling of dashboard-grid.html, extended for the
+       Grafana-grid KPI polish (#316) DOM/CSS contract that harness doesn't
+       cover: `.is-kpi` footer suppression, the `.is-kpi.is-view` frameless
+       treatment, `role=group`/aria-label on the tile card itself, the
+       equal-width `.dash-tile-body` KPI card grid, container-aware value
+       typography, and delta/description rhythm. Tile cards are hand-built to
+       the EXACT `ensureTileEl`/`reconcileGridTile`/`renderKpiInto` contract
+       (src/ui/dashboard.ts) the same way dashboard-grid.html mirrors
+       `ensureTileEl` — those are internal closures inside `createApp`, not
+       exported — while KPI card CONTENT itself is the real, imported
+       `renderKpiCards`/`readKpiFields` (both pure, exported, DOM-returning). -->
+  <section class="scenario">
+    <h2>edit mode: KPI tile footer suppressed vs a normal tile's visible footer</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="editcmp-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>view mode: KPI tile frameless vs a normal tile's kept frame</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="viewframeless-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>equal-width responsive KPI card grid + partial-last-row wrapping</h2>
+    <div class="fixed-wrap" id="equalwidth-wrap" style="width:500px">
+      <div class="dash-grid dash-gg-grid" id="equalwidth-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>value+unit orphan check at representative narrow widths</h2>
+    <div class="fixed-wrap" id="unitorphan-wrap" style="width:500px">
+      <div class="dash-grid dash-gg-grid" id="unitorphan-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>delta-row bottom alignment across cards with different description lengths</h2>
+    <div class="fixed-wrap" id="delta-wrap" style="width:500px">
+      <div class="dash-grid dash-gg-grid" id="delta-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>responsive 12/6/4/2 columns (host-width driven, no viewport media query)</h2>
+    <div class="fixed-wrap" id="responsive-wrap2" style="width:1200px">
+      <div class="dash-grid dash-gg-grid" id="responsive-grid2"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>real-viewport 360px overflow + one-per-row check</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="realviewport-grid"></div>
+    </div>
+  </section>
+
+  <script type="module">
+    import {
+      computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, gridHeightUnitsToPx,
+    } from '/src/dashboard/layouts/grafana-grid-layout.js';
+    import { readKpiFields } from '/src/core/kpi.js';
+    import { renderKpiCards } from '/src/ui/kpi-panel.js';
+    import { h } from '/src/ui/dom.js';
+
+    function measuredWidth(el) {
+      const cs = getComputedStyle(el);
+      return contentBoxWidth(el.clientWidth, parseFloat(cs.paddingLeft), parseFloat(cs.paddingRight));
+    }
+
+    // Hand-built tile card matching `ui/dashboard.ts`'s `ensureTileEl` +
+    // `reconcileGridTile`/`reconcileGrafanaGrid` (#316) DOM contract:
+    //  - the generic foot is ALWAYS built but `.hidden` toggled true for a KPI
+    //    tile (both edit and view mode — reconcileGridTile: `foot.hidden = ts.isKpi`);
+    //  - `role=group`/`aria-label={title}` are set on the CARD itself for a KPI
+    //    tile in BOTH modes (reconcileGrafanaGrid comment: "set in edit mode
+    //    too — harmless");
+    //  - `.is-view` is the static per-load readOnly class (ensureTileEl);
+    //  - grip/delete/resize are built ONLY in edit mode (never merely CSS-hidden).
+    function buildTile({ id, title, heightUnits, isKpi }, mode) {
+      const readOnly = mode === 'view';
+      const card = document.createElement('div');
+      card.className = 'dash-tile dash-gg-tile' + (isKpi ? ' is-kpi' : '') + (readOnly ? ' is-view' : '');
+      card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
+      card.dataset.tileId = id;
+      if (isKpi) { card.setAttribute('role', 'group'); card.setAttribute('aria-label', title); }
+
+      const head = document.createElement('div');
+      head.className = 'dash-tile-head';
+      let grip = null;
+      if (!readOnly) {
+        grip = document.createElement('span');
+        grip.className = 'dash-gg-grip';
+        grip.title = 'Drag to reorder';
+        grip.setAttribute('aria-hidden', 'true');
+        head.appendChild(grip);
+      }
+      const name = document.createElement('span');
+      name.className = 'dash-tile-name';
+      name.title = title;
+      name.textContent = title;
+      head.appendChild(name);
+      let delBtn = null;
+      if (!readOnly) {
+        delBtn = document.createElement('button');
+        delBtn.className = 'dash-gg-del';
+        delBtn.title = 'Remove tile';
+        delBtn.setAttribute('aria-label', 'Remove ' + title + ' from the dashboard');
+        delBtn.textContent = '✕';
+        head.appendChild(delBtn);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'dash-tile-body';
+      const foot = document.createElement('div');
+      foot.className = 'dash-tile-foot';
+      foot.hidden = !!isKpi;
+      if (!isKpi) foot.textContent = '3 rows · 12ms'; // a normal tile's populated footer
+
+      card.append(head, body, foot);
+
+      let resizeHandle = null;
+      if (!readOnly) {
+        resizeHandle = document.createElement('div');
+        resizeHandle.className = 'dash-gg-resize';
+        resizeHandle.title = 'Resize';
+        card.appendChild(resizeHandle);
+      }
+      return { card, head, body, foot, grip, delBtn, resizeHandle };
+    }
+
+    // `renderKpiInto`'s non-ready state-card contract (dashboard.ts) —
+    // loading/unfilled get role=status, error/zero-data get role handled by
+    // caller; message + `${title}: ${message}` aria-label.
+    function stateCard(title, role, message) {
+      return h('div', { class: 'dash-kpi-state-card', role, 'aria-label': `${title}: ${message}` }, message);
+    }
+
+    function kpiResult(columns, row, fieldConfig) {
+      return readKpiFields({ columns, row, rowCount: row ? 1 : 0, fieldConfig: fieldConfig || {} });
+    }
+
+    // ── Scenario 1: edit-mode footer suppression ───────────────────────────
+    (function renderEditCmp() {
+      const grid = document.getElementById('editcmp-grid');
+      const tiles = [{ id: 'kpi-edit' }, { id: 'normal-edit' }];
+      const layout = { items: { 'kpi-edit': { span: 6, height: 2 }, 'normal-edit': { span: 6, height: 2 } } };
+      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(grid) });
+      grid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      const built = model.tiles.map((t) => buildTile(
+        { id: t.tileId, title: t.tileId === 'kpi-edit' ? 'Active users' : 'Row count', heightUnits: t.heightUnits, isKpi: t.tileId === 'kpi-edit' },
+        'edit',
+      ));
+      built.forEach((b, i) => { b.card.style.gridColumn = 'span ' + model.tiles[i].span; });
+      grid.replaceChildren(...built.map((b) => b.card));
+      const kpi = built.find((b) => b.card.dataset.tileId === 'kpi-edit');
+      const { cards } = renderKpiCards(kpiResult(
+        [{ name: 'active_users', type: 'UInt64' }], [12500],
+        { columns: { active_users: { displayName: 'Active users' } } },
+      ));
+      kpi.body.replaceChildren(...cards);
+    }());
+
+    // ── Scenario 2: view-mode frameless ────────────────────────────────────
+    (function renderViewFrameless() {
+      const grid = document.getElementById('viewframeless-grid');
+      const tiles = [{ id: 'kpi-view' }, { id: 'normal-view' }];
+      const layout = { items: { 'kpi-view': { span: 6, height: 2 }, 'normal-view': { span: 6, height: 2 } } };
+      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(grid) });
+      grid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      const built = model.tiles.map((t) => buildTile(
+        { id: t.tileId, title: t.tileId === 'kpi-view' ? 'Availability' : 'Recent errors', heightUnits: t.heightUnits, isKpi: t.tileId === 'kpi-view' },
+        'view',
+      ));
+      built.forEach((b, i) => { b.card.style.gridColumn = 'span ' + model.tiles[i].span; });
+      grid.replaceChildren(...built.map((b) => b.card));
+      const kpi = built.find((b) => b.card.dataset.tileId === 'kpi-view');
+      const { cards } = renderKpiCards(kpiResult(
+        [{ name: 'availability', type: 'Float64' }], [99.95],
+        { columns: { availability: { displayName: 'Availability', unit: '%', decimals: 2 } } },
+      ));
+      kpi.body.replaceChildren(...cards);
+      const normal = built.find((b) => b.card.dataset.tileId === 'normal-view');
+      normal.body.textContent = 'table content';
+    }());
+
+    // ── Scenario 3: equal-width responsive card grid ───────────────────────
+    // 5 cards at a 500px tile (auto-fill minmax(150px,1fr), 8px gap) ⇒ 3
+    // columns per row (floor((500+8)/158) = 3): row1 = 3 cards, row2 = a
+    // partial last row of 2 cards that must NOT stretch across the tile.
+    (function renderEqualWidth() {
+      const grid = document.getElementById('equalwidth-grid');
+      const { card, body } = buildTile({ id: 'ew-kpi', title: 'Multi-metric', heightUnits: 4, isKpi: true }, 'view');
+      card.style.width = '100%';
+      grid.replaceChildren(card);
+      const columns = [1, 2, 3, 4, 5].map((n) => ({ name: 'm' + n, type: 'UInt64' }));
+      const fieldConfig = { columns: Object.fromEntries(columns.map((c, i) => [c.name, { displayName: 'Metric ' + (i + 1) }])) };
+      const { cards } = renderKpiCards(kpiResult(columns, [10, 20, 30, 40, 50], fieldConfig));
+      body.replaceChildren(...cards);
+      window.__ewCardCount = cards.length;
+    }());
+
+    // ── Scenario 4: value+unit orphan check ────────────────────────────────
+    (function renderUnitOrphan() {
+      const grid = document.getElementById('unitorphan-grid');
+      const { card, body } = buildTile({ id: 'unit-kpi', title: 'Memory + CPU', heightUnits: 3, isKpi: true }, 'view');
+      card.style.width = '100%';
+      grid.replaceChildren(card);
+      const columns = [{ name: 'used_mem', type: 'UInt64' }, { name: 'cpu_pct', type: 'Float64' }];
+      const fieldConfig = { columns: {
+        used_mem: { displayName: 'Used memory', unit: ' MiB' },
+        cpu_pct: { displayName: 'CPU', unit: '%', decimals: 1 },
+      } };
+      const { cards } = renderKpiCards(kpiResult(columns, [112310, 87.5], fieldConfig));
+      body.replaceChildren(...cards);
+    }());
+    window.__setUnitOrphanWidth = (px) => { document.getElementById('unitorphan-wrap').style.width = px + 'px'; };
+
+    // ── Scenario 5: delta-row alignment ────────────────────────────────────
+    (function renderDeltaAlign() {
+      const grid = document.getElementById('delta-grid');
+      const { card, body } = buildTile({ id: 'delta-kpi', title: 'Two metrics', heightUnits: 3, isKpi: true }, 'view');
+      card.style.width = '100%';
+      grid.replaceChildren(card);
+      const columns = [
+        { name: 'short_metric', type: 'Tuple(value Float64, delta Nullable(Float64))' },
+        { name: 'long_metric', type: 'Tuple(value Float64, delta Nullable(Float64))' },
+      ];
+      const fieldConfig = { columns: {
+        short_metric: { displayName: 'Short', description: 'Brief.', delta: { positiveIsGood: true } },
+        long_metric: {
+          displayName: 'Long', delta: { positiveIsGood: true },
+          description: 'A considerably longer description that should wrap onto two lines and clamp there in the rendered card.',
+        },
+      } };
+      const { cards } = renderKpiCards(kpiResult(
+        columns, [{ value: 42, delta: 3 }, { value: 84, delta: -2 }], fieldConfig,
+      ));
+      body.replaceChildren(...cards);
+    }());
+
+    // ── Scenario 6: responsive 12/6/4/2 columns ────────────────────────────
+    (function () {
+      const wrap = document.getElementById('responsive-wrap2');
+      const grid = document.getElementById('responsive-grid2');
+      const tiles = [{ id: 'resp-kpi' }];
+      const layout = { items: { 'resp-kpi': { span: 12, height: 3 } } };
+      function render() {
+        const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(grid) });
+        grid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+        const built = buildTile({ id: 'resp-kpi', title: 'Fleet metrics', heightUnits: 3, isKpi: true }, 'view');
+        built.card.style.gridColumn = 'span ' + model.tiles[0].span;
+        grid.replaceChildren(built.card);
+        const columns = [1, 2, 3, 4].map((n) => ({ name: 'm' + n, type: 'UInt64' }));
+        const fieldConfig = { columns: Object.fromEntries(columns.map((c, i) => [c.name, { displayName: 'Metric ' + (i + 1) }])) };
+        const { cards } = renderKpiCards(kpiResult(columns, [1, 2, 3, 4], fieldConfig));
+        built.body.replaceChildren(...cards);
+        window.__responsiveKpiModel = model;
+      }
+      render();
+      window.__setResponsiveKpiWidth = (px) => { wrap.style.width = px + 'px'; render(); };
+    }());
+
+    // ── Scenario 7: real-viewport overflow at 360px ────────────────────────
+    (function () {
+      const grid = document.getElementById('realviewport-grid');
+      const tiles = [{ id: 'rv-kpi' }];
+      const layout = { items: { 'rv-kpi': { span: 12, height: 3 } } };
+      const model = computeGrafanaGridLayout({ tiles, layout, containerWidth: measuredWidth(grid) });
+      grid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      const built = buildTile({ id: 'rv-kpi', title: 'Fleet metrics', heightUnits: 3, isKpi: true }, 'view');
+      built.card.style.gridColumn = 'span ' + model.tiles[0].span;
+      grid.replaceChildren(built.card);
+      const columns = [1, 2, 3].map((n) => ({ name: 'm' + n, type: 'UInt64' }));
+      const fieldConfig = { columns: Object.fromEntries(columns.map((c, i) => [c.name, { displayName: 'Metric ' + (i + 1) }])) };
+      const { cards } = renderKpiCards(kpiResult(columns, [100, 200, 300], fieldConfig));
+      built.body.replaceChildren(...cards);
+    }());
+
+    // ── Loading / unfilled / zero-data / error state cards (view mode) ────
+    (function renderStates() {
+      const grid = document.getElementById('viewframeless-grid');
+      const loading = buildTile({ id: 'state-loading', title: 'Loading metric', heightUnits: 2, isKpi: true }, 'view');
+      loading.card.style.gridColumn = 'span 4';
+      loading.body.replaceChildren(stateCard('Loading metric', 'status', 'Loading…'));
+      const unfilled = buildTile({ id: 'state-unfilled', title: 'Unfilled metric', heightUnits: 2, isKpi: true }, 'view');
+      unfilled.card.style.gridColumn = 'span 4';
+      unfilled.body.replaceChildren(stateCard('Unfilled metric', 'status', 'Enter a value for: region'));
+      const zeroData = buildTile({ id: 'state-zero', title: 'Zero-data metric', heightUnits: 2, isKpi: true }, 'view');
+      zeroData.card.style.gridColumn = 'span 4';
+      zeroData.body.replaceChildren(stateCard('Zero-data metric', 'status', 'No data'));
+      const failure = buildTile({ id: 'state-error', title: 'Failing metric', heightUnits: 2, isKpi: true }, 'view');
+      failure.card.style.gridColumn = 'span 4';
+      failure.body.replaceChildren(stateCard('Failing metric', 'alert', 'Query failed: syntax error'));
+      grid.append(loading.card, unfilled.card, zeroData.card, failure.card);
+    }());
+
+    // The real app toggles theme via a `data-theme` attribute (ui/theme-toggle.ts
+    // sets it on `document.documentElement`; this fixture's own attribute lives
+    // on `<body>`, like dashboard-grid.html/kpi.html — the `[data-theme='...']`
+    // CSS selector (styles.css) matches either host equally).
+    window.__setTheme = (theme) => { document.body.setAttribute('data-theme', theme); };
+
+    window.__ready = true;
+  </script>
+</body>
+</html>
