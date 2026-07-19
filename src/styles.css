@@ -2354,6 +2354,15 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   border-top: 1px solid var(--border-faint); font-family: var(--mono);
   font-size: 10.5px; color: var(--fg-faint);
 }
+/* #316: a KPI grid tile's footer is built (ensureTileEl, ui/dashboard.ts) but
+   never populated — `[hidden]` alone loses the cascade to the class rule
+   above (equal specificity, this rule comes first in source order), so an
+   explicit override is needed to actually collapse the border/reserved
+   height it would otherwise leave behind. `ui/dashboard.ts` toggles the
+   `hidden` DOM property both ways on every reconcile (never just sets it
+   once), so switching a tile's panel type can't leave a stale hidden/visible
+   footer either way. */
+.dash-tile-foot[hidden] { display: none; }
 /* KPI bands (#240): a full-width composition primitive, not a tile — spans
    every Dashboard grid column regardless of the selected Full width/Report/
    2 columns/3 columns layout, so several consecutive explicit KPI favorites
@@ -2501,3 +2510,27 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    media override here does not know about a tile's span — a span>1 tile whose
    host was forced to `1fr` still tries to occupy N implicit tracks, rendering
    side-by-side/overflowing instead of the model's actual N-column layout. */
+
+/* ── #316: view-mode KPI tiles are frameless ───────────────────────────────
+   `.is-view` is a static per-load class (ui/dashboard.ts sets it once per
+   tile card, from the same `readOnly` that already governs drag/remove/
+   resize — it never toggles mid-session, unlike `.is-kpi`, which DOES flip
+   per reconcile if a tile's panel type changes). Scoped to
+   `.dash-gg-grid .dash-gg-tile.is-kpi` so:
+     - a non-KPI grid tile (`.is-view` with no `.is-kpi`) keeps its full frame
+       — only KPI content gets this treatment;
+     - a flow-rendered card is never matched — flow never applies
+       `.dash-gg-tile`/`.is-kpi` (its own KPI tiles render inside the KPI
+       band, not as `.dash-tile` cards at all).
+   The card itself stays the CSS grid item (grid-column/height/order are set
+   directly on `.dash-gg-tile` elsewhere and are untouched here) — this is the
+   "invisible structural wrapper" the issue asks for, not a new DOM node, and
+   never `display: contents` (that would drop it out of grid placement). The
+   accessible name comes from `role="group"`/`aria-label` set directly on this
+   same element (ui/dashboard.ts) — hiding the header visually here does not
+   remove it from the accessibility tree. */
+.dash-gg-grid .dash-gg-tile.is-kpi.is-view {
+  background: transparent; border-color: transparent; border-radius: 0; box-shadow: none;
+}
+.dash-gg-grid .dash-gg-tile.is-kpi.is-view > .dash-tile-head { display: none; }
+.dash-gg-grid .dash-gg-tile.is-kpi.is-view > .dash-tile-body { padding: 0; }

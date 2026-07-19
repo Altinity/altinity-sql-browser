@@ -651,7 +651,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
     const resizeHandle = !readOnly ? h('div', { class: 'dash-gg-resize', title: 'Resize' }) : null;
-    const card = h('div', { class: 'dash-tile', draggable: String(!readOnly) }, head, body, foot, resizeHandle);
+    // #316: a static, per-load mode class (view mode never toggles mid-session
+    // — `readOnly` is resolved once above, before any tile is built) — CSS
+    // scopes the frameless-KPI-in-view-mode treatment to
+    // `.dash-gg-grid .dash-gg-tile.is-kpi.is-view` (styles.css), so it never
+    // touches a non-KPI tile or a flow-rendered card (flow never adds
+    // `.dash-gg-tile`/`.is-kpi` — its own KPI tiles render inside the band).
+    const card = h('div', { class: 'dash-tile' + (readOnly ? ' is-view' : ''), draggable: String(!readOnly) }, head, body, foot, resizeHandle);
     // Pointer drag is the sole reorder mechanism (#286 owner override, reused
     // verbatim for grafana-grid@1 tiles by #291 — same move-tile command, no
     // engine branching needed): a drop persists the new dashboard.tiles[]
@@ -730,13 +736,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     paintTileBody(ts, tileEl);
   }
 
+  // A KPI state card's role, per the #316 pinned owner decision: a genuine
+  // query failure (execution error, or a blocking post-execution diagnostic
+  // whose severity is 'error' — e.g. the wrong row count, or no eligible KPI
+  // field) is `alert`; a zero-row result ('kpi-no-data', severity 'info' —
+  // kpi.js) is expected/quiet, like loading or an unfilled parameter, so it
+  // gets `status`.
+  function kpiStateRole(kind: 'loading' | 'unfilled' | 'error' | 'zero-data'): 'status' | 'alert' {
+    return kind === 'error' ? 'alert' : 'status';
+  }
+
   // Render one KPI tile's cards (or its non-ready state) into `host`. On 'ready'
-  // the viewer guarantees columns/rows (no defensive fallback).
+  // the viewer guarantees columns/rows (no defensive fallback). Every state
+  // card carries the tile/query title in its accessible name (#316) — the
+  // frameless view-mode tile has no visible header, so the state card is the
+  // only surface that can announce which tile is loading/blocked/failed.
   function renderKpiInto(host: HTMLElement, ts: ViewerTileState): void {
     if (ts.status !== 'ready') {
-      host.replaceChildren(h('div', { class: 'dash-kpi-state-card' },
-        ts.status === 'error' ? (ts.error || 'Error')
-          : ts.status === 'unfilled' ? 'Enter a value for: ' + ts.unfilled.join(', ') : 'Loading…'));
+      const kind = ts.status === 'error' ? 'error' : ts.status === 'unfilled' ? 'unfilled' : 'loading';
+      const message = ts.status === 'error' ? (ts.error || 'Error')
+        : ts.status === 'unfilled' ? 'Enter a value for: ' + ts.unfilled.join(', ') : 'Loading…';
+      host.replaceChildren(h('div', {
+        class: 'dash-kpi-state-card', role: kpiStateRole(kind), 'aria-label': `${ts.title}: ${message}`,
+      }, message));
       return;
     }
     const panel = (ts.panel || {}) as Record<string, unknown>;
@@ -746,7 +768,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       serverVersion: state.serverVersion,
     });
     const { cards, errors } = renderKpiCards(resolved.kpi);
-    host.replaceChildren(...(errors.length ? errors.map((e) => h('div', { class: 'dash-kpi-state-card' }, e.message)) : cards));
+    host.replaceChildren(...(errors.length ? errors.map((e) => h('div', {
+      class: 'dash-kpi-state-card', role: kpiStateRole(e.code === 'kpi-no-data' ? 'zero-data' : 'error'),
+      'aria-label': `${ts.title}: ${e.message}`,
+    }, e.message)) : cards));
   }
 
   // ── Grid reconciliation from the flow model ───────────────────────────────
@@ -806,7 +831,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // placement differs.
   function reconcileGridTile(ts: ViewerTileState): void {
     const tileEl = ensureTileEl(ts);
-    if (ts.isKpi) { renderKpiInto(tileEl.body, ts); return; }
+    // #316: the generic `.dash-tile-foot` (built once per tile, ensureTileEl)
+    // is never populated for a KPI tile — `paintPanel`/`paintTileBody` (the
+    // only other writers) never run on this branch — so its border/reserved
+    // height must be suppressed at the DOM level (`hidden`, backed by a
+    // styles.css `[hidden]` override strong enough to beat `.dash-tile-foot`'s
+    // own `display: flex`). Toggled BOTH ways on every reconcile (not just set
+    // once) so a tile whose `isKpi`/panel type flips leaves no stale hidden
+    // footer behind on a non-KPI tile, or a stale visible one on a KPI tile.
+    tileEl.foot.hidden = ts.isKpi;
+    if (ts.isKpi) { tileEl.foot.replaceChildren(); renderKpiInto(tileEl.body, ts); return; }
     paintTileBody(ts, tileEl);
   }
 
@@ -834,6 +868,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       gridPlacementByTile.set(t.tileId, { span: t.span, heightUnits: t.heightUnits, colStart: t.colStart });
       tileEl.card.classList.add('dash-gg-tile');
       tileEl.card.classList.toggle('is-kpi', t.isKpi);
+      // #316: the tile card itself is the named group a frameless view-mode
+      // KPI tile relies on for its accessible name (the visual header is
+      // `display: none` in view mode, styles.css — not a visually-hidden
+      // clone). Set/removed BOTH ways alongside the `is-kpi` toggle above so
+      // a tile switching away from KPI never keeps a stale group role. Set in
+      // edit mode too (harmless — the visible header already shows the same
+      // title there) rather than branching on `readOnly` for one extra pair
+      // of attributes.
+      if (t.isKpi) {
+        tileEl.card.setAttribute('role', 'group');
+        tileEl.card.setAttribute('aria-label', byId.get(t.tileId)?.title || '');
+      } else {
+        tileEl.card.removeAttribute('role');
+        tileEl.card.removeAttribute('aria-label');
+      }
       tileEl.card.style.gridColumn = `span ${t.span}`;
       setGridHeightPx(tileEl.card, t.heightUnits);
       cards.push(tileEl.card);

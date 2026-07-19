@@ -531,7 +531,7 @@ describe('renderDashboard — KPI bands (#240)', () => {
     expect(qsa(app.root, '.dash-kpi-stream .kpi-card').length).toBe(2);
   });
 
-  it('shows a KPI member state card for an errored or unfilled KPI source', async () => {
+  it('shows a KPI member state card for an errored or unfilled KPI source — error is role=alert, unfilled is role=status, both name their tile (#316)', async () => {
     const { app } = dashApp({
       responder: (sql) => (sql.includes('boom') ? { error: 'kpi down' } : { columns: [{ name: 'value', type: 'UInt64' }], rows: [[1]] }),
       workspace: wsWith({
@@ -543,18 +543,46 @@ describe('renderDashboard — KPI bands (#240)', () => {
       }),
     });
     await render(app);
-    const cards = qsa(app.root, '.dash-kpi-state-card').map((c) => c.textContent);
-    expect(cards).toContain('kpi down');
-    expect(cards.some((c) => /Enter a value/.test(c || ''))).toBe(true);
+    const cards = qsa<HTMLElement>(app.root, '.dash-kpi-state-card');
+    const errorCard = cards.find((c) => c.textContent === 'kpi down');
+    const unfilledCard = cards.find((c) => /Enter a value/.test(c.textContent || ''));
+    expect(errorCard?.getAttribute('role')).toBe('alert'); // a genuine query failure
+    expect(errorCard?.getAttribute('aria-label')).toBe('k1: kpi down');
+    expect(unfilledCard?.getAttribute('role')).toBe('status'); // blocked on a parameter, not a failure
+    expect(unfilledCard?.getAttribute('aria-label')).toContain('k2:');
   });
 
-  it('shows the KPI zero-data state card when a KPI source returns no rows', async () => {
+  it('shows the KPI zero-data state card (role=status, not alert) when a KPI source returns no rows (#316)', async () => {
     const { app } = dashApp({
       responder: () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [] }),
       workspace: wsWith({ queries: [q('k1', 'SELECT value', { panel: { cfg: { type: 'kpi' } } })], tiles: [{ id: 't1', queryId: 'k1' }] }),
     });
     await render(app);
-    expect(qs(app.root, '.dash-kpi-state-card')).not.toBeNull();
+    const card = qs<HTMLElement>(app.root, '.dash-kpi-state-card');
+    expect(card).not.toBeNull();
+    expect(card.getAttribute('role')).toBe('status'); // zero rows is expected, not a failure
+    expect(card.getAttribute('aria-label')).toBe('k1: No data');
+  });
+
+  it('shows the KPI loading state card with role=status while a query is in flight (#316)', async () => {
+    let resolveResponder!: (value: ExecResp) => void;
+    const pending = new Promise<ExecResp>((resolve) => { resolveResponder = resolve; });
+    const { app } = dashApp({
+      responder: () => pending,
+      workspace: wsWith({ queries: [q('k1', 'SELECT value', { panel: { cfg: { type: 'kpi' } } })], tiles: [{ id: 't1', queryId: 'k1' }] }),
+    });
+    const rendering = render(app);
+    // Flush the microtasks up to (but not past) the in-flight `executeRead`
+    // await — the session sets status 'loading' and publishes synchronously
+    // before awaiting the responder (dashboard-viewer-session.ts `runTile`).
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const card = qs<HTMLElement>(app.root, '.dash-kpi-state-card');
+    expect(card).not.toBeNull();
+    expect(card.textContent).toBe('Loading…');
+    expect(card.getAttribute('role')).toBe('status');
+    expect(card.getAttribute('aria-label')).toBe('k1: Loading…');
+    resolveResponder({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[1]] });
+    await rendering;
   });
 });
 
@@ -600,6 +628,95 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const card = qs(app.root, '.dash-gg-tile');
     expect(card.classList.contains('is-kpi')).toBe(true);
     expect(qs(card, '.kpi-card')).not.toBeNull();
+  });
+
+  // #316: the tile shell for a grafana-grid KPI tile — edit mode keeps the
+  // full editing chrome except the footer (which the generic KPI path never
+  // populates); view mode strips every visible frame, leaving only the KPI
+  // cards/state card, behind a still-placed, still-named wrapper.
+  const kpiGridWs = () => wsWith({
+    queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+    tiles: [{ id: 't1', queryId: 'k1' }],
+    layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 3 } } },
+  });
+  const kpiResponder: ExecResponder = () => ({ columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] });
+
+  it('edit mode: a KPI grid tile keeps its header and edit controls but hides the footer (#316)', async () => {
+    const { app } = dashApp({ responder: kpiResponder, workspace: kpiGridWs() });
+    await render(app);
+    const card = qs<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(card.classList.contains('is-kpi')).toBe(true);
+    expect(card.classList.contains('is-view')).toBe(false); // edit mode — not the view-mode modifier
+    expect(qs(card, '.dash-tile-head')).not.toBeNull(); // header retained
+    expect(qs(card, '.dash-tile-name')?.textContent).toBe('k1');
+    expect(qs(card, '.dash-gg-grip')).not.toBeNull(); // drag retained
+    expect(qs(card, '.dash-gg-del')).not.toBeNull(); // remove retained
+    expect(qs(card, '.dash-gg-resize')).not.toBeNull(); // resize retained
+    const foot = qs<HTMLElement>(card, '.dash-tile-foot');
+    expect(foot.hidden).toBe(true); // suppressed at the DOM level, not just visually
+    expect(foot.childNodes.length).toBe(0);
+  });
+
+  it('a non-KPI grid tile keeps its footer visible and populated (#316 — the KPI-only fix leaves ordinary tiles alone)', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() }); // q1/q2 — ordinary (non-KPI) queries
+    await render(app);
+    for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
+      const foot = qs<HTMLElement>(card, '.dash-tile-foot');
+      expect(foot.hidden).toBe(false);
+      expect(foot.childNodes.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('view mode: a KPI grid tile is frameless (.is-view) — header/edit controls hidden, role=group names it by title, placement survives (#316)', async () => {
+    const detached = kpiGridWs();
+    const { app } = modeApp({
+      workspace: null, detached, responder: kpiResponder,
+      openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    const card = qs<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(card.classList.contains('is-kpi')).toBe(true);
+    expect(card.classList.contains('is-view')).toBe(true);
+    // No drag/remove/resize affordances in view mode.
+    expect(qs(card, '.dash-gg-grip')).toBeNull();
+    expect(qs(card, '.dash-gg-del')).toBeNull();
+    expect(qs(card, '.dash-gg-resize')).toBeNull();
+    expect(card.getAttribute('draggable')).toBe('false');
+    // The hidden query title survives as the wrapper's accessible group name.
+    expect(card.getAttribute('role')).toBe('group');
+    expect(card.getAttribute('aria-label')).toBe('k1');
+    // The footer stays suppressed exactly as in edit mode.
+    expect(qs<HTMLElement>(card, '.dash-tile-foot').hidden).toBe(true);
+    // The wrapper still owns the CSS-grid placement (span + authored height).
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 4');
+    expect((card.style as CSSStyleDeclaration).height).not.toBe('');
+    // The KPI card itself is still rendered inside the frameless wrapper.
+    expect(qs(card, '.kpi-card')).not.toBeNull();
+  });
+
+  it('switching a tile from KPI to non-KPI (engine republish) leaves no stale hidden footer or group role behind (#316)', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('value') ? { columns: [{ name: 'value', type: 'UInt64' }], rows: [[42]] } : {}),
+      workspace: wsWith({
+        queries: [q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 't1', queryId: 'k1' }],
+        layout: { type: 'grafana-grid', version: 1, items: { t1: { span: 4 } } },
+      }),
+    });
+    await render(app);
+    let card = qs<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(card.classList.contains('is-kpi')).toBe(true);
+    expect(qs<HTMLElement>(card, '.dash-tile-foot').hidden).toBe(true);
+    expect(card.getAttribute('role')).toBe('group');
+    // Round-trip through flow and back to grid (#291's own cached-card-reuse
+    // path) — a plain re-render exercises the same reconcile functions a
+    // panel-type flip would, without needing a live Spec-editor change.
+    pickLayout(app.root, 'full-width');
+    pickLayout(app.root, 'grafana-grid');
+    card = qs<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(card.classList.contains('is-kpi')).toBe(true);
+    expect(qs<HTMLElement>(card, '.dash-tile-foot').hidden).toBe(true);
+    expect(card.getAttribute('role')).toBe('group');
   });
 
   it('reflects the active engine in the 5-option layout select and switches engines via change-layout', async () => {
