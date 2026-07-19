@@ -1,4 +1,4 @@
-import { formatKpiValue, kpiDeltaState } from '../core/kpi.js';
+import { formatKpiValue, formatKpiValueParts, kpiDeltaState } from '../core/kpi.js';
 import { h } from './dom.js';
 import type { KpiResult } from '../core/panel-cfg.js';
 
@@ -97,7 +97,14 @@ export function renderKpiCards(normalized?: KpiResult | null): KpiCardsResult {
   const cards = items.map((item) => {
     const presentation = item.presentation;
     const label = h('div', { class: 'kpi-label' }, presentation.displayName);
-    const value = h('div', { class: 'kpi-value' }, formatKpiValue({ value: item.value, clickhouseType: item.valueType, presentation }));
+    // #316: number and unit render as separate spans (`.kpi-value-number`/
+    // `.kpi-value-unit`) so CSS can keep them visually glued as one value —
+    // `.kpi-value`'s concatenated textContent still equals formatKpiValue's
+    // flat string exactly (no space is added between the two spans).
+    const { rendered, unit } = formatKpiValueParts({ value: item.value, clickhouseType: item.valueType, presentation });
+    const valueChildren: HTMLElement[] = [h('span', { class: 'kpi-value-number' }, rendered)];
+    if (unit) valueChildren.push(h('span', { class: 'kpi-value-unit' }, unit));
+    const value = h('div', { class: 'kpi-value' }, ...valueChildren);
     const children: HTMLElement[] = [label, value];
     if (presentation.description) children.push(h('div', { class: 'kpi-description' }, presentation.description));
     const delta = kpiDeltaState(item);

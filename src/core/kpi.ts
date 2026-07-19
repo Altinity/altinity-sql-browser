@@ -106,11 +106,19 @@ interface KpiValuePresentation {
   noValue?: string;
 }
 
-export function formatKpiValue(
+/** `formatKpiValue`'s rendering split into its two visual pieces (#316) — the
+ *  digits/no-value text and the unit suffix — so kpi-panel.ts's `.kpi-value`
+ *  can wrap each in its own `<span>` (keeping them visually glued together
+ *  via CSS) without duplicating any of the numeric-formatting logic below.
+ *  `formatKpiValue` itself is exactly `rendered + unit` concatenated, so every
+ *  existing caller that only wants the flat string keeps the identical
+ *  output. */
+export function formatKpiValueParts(
   { value, clickhouseType, presentation = {} }:
   { value: unknown; clickhouseType?: string | null; presentation?: KpiValuePresentation },
-): string {
-  if (value == null) return presentation.noValue ?? '—';
+): { rendered: string; unit: string } {
+  const unit = typeof presentation.unit === 'string' ? presentation.unit : '';
+  if (value == null) return { rendered: presentation.noValue ?? '—', unit: '' };
   const parsedType = parseClickHouseType(clickhouseType);
   // `!`: see isKpiNumericType above — a truthy `parsedType` always unwraps to
   // a real TypeNode.
@@ -129,11 +137,18 @@ export function formatKpiValue(
   else if (exactDecimal) rendered = decimalString(value, explicit ?? 2, explicit == null)!;
   else {
     const number = numericValue(value);
-    if (number == null) return presentation.noValue ?? '—';
+    if (number == null) return { rendered: presentation.noValue ?? '—', unit: '' };
     const fixed = explicit != null ? number.toFixed(explicit) : trimFixed(number, 2);
     rendered = /^-0(?:\.0+)?$/.test(fixed) ? fixed.slice(1) : fixed;
   }
-  return rendered + (typeof presentation.unit === 'string' ? presentation.unit : '');
+  return { rendered, unit };
+}
+
+export function formatKpiValue(
+  args: { value: unknown; clickhouseType?: string | null; presentation?: KpiValuePresentation },
+): string {
+  const { rendered, unit } = formatKpiValueParts(args);
+  return rendered + unit;
 }
 
 /** One diagnostic as `readKpiFields`/kpi-panel.js's `renderKpiCards` produce it. */

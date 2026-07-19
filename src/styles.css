@@ -19,6 +19,8 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
 }
 .kpi-card {
   --kpi-accent: var(--accent);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--border);
@@ -27,9 +29,31 @@ html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
   background: var(--bg-modal);
 }
 .kpi-label { color: var(--fg-mute); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+/* #316: value + unit render as two spans (kpi-panel.ts) but must read as one
+   visual value. No whitespace exists BETWEEN the spans (any separator space is
+   part of the author's unit string, inside the unit span), and the unit span
+   is `white-space: nowrap`, so normal wrapping can never split value from
+   unit — while `overflow-wrap: anywhere` on the value still allows a
+   last-resort break inside an exceptionally long number rather than ever
+   clipping/ellipsizing/scrolling. (`nowrap` on `.kpi-value` itself would
+   defeat that: `overflow-wrap` only applies where `white-space` allows
+   wrapping at all.) No margin between the spans — the unit string's own
+   leading space (or absence: `%`) is the author-controlled gap. */
 .kpi-value { margin-top: 6px; font-size: clamp(24px, 4vw, 38px); font-weight: 700; line-height: 1.08; overflow-wrap: anywhere; }
-.kpi-description { margin-top: 7px; color: var(--fg-mute); font-size: 12px; line-height: 1.4; }
-.kpi-delta { margin-top: 9px; font-size: 13px; font-weight: 600; }
+.kpi-value-unit { white-space: nowrap; }
+.kpi-description {
+  margin-top: 7px; color: var(--fg-mute); font-size: 12px; line-height: 1.4;
+  /* Clamp to 2 visual lines; the full text stays in the DOM for assistive
+     tech (#316) — only the rendered box is truncated. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* `margin-top: auto` bottom-anchors a present delta row inside the now-flex
+   `.kpi-card` column (#316); `padding-top` (not another margin) keeps the
+   original 9px gap above it without a collapsing-margin surprise. A card
+   with no delta renders no third row/placeholder at all — nothing forces
+   one; the label/value/description block simply sits at the card's own
+   height. */
+.kpi-delta { margin-top: auto; padding-top: 9px; font-size: 13px; font-weight: 600; }
 .kpi-delta.is-good { color: var(--success, #238636); }
 .kpi-delta.is-bad { color: var(--danger, #cf222e); }
 .kpi-delta.is-neutral { color: var(--fg-mute); }
@@ -2501,7 +2525,32 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* A grid tile's KPI content (#291: KPI tiles render inline, no band) fills the
    tile body like a chart/table does. */
 .dash-gg-tile .dash-tile-body { flex-wrap: wrap; gap: 8px; }
-.dash-gg-tile .dash-tile-body > .kpi-card { flex: 1; min-width: 0; max-width: none; inline-size: auto; }
+/* #316: KPI cards in a Grafana-grid tile use an equal-width responsive grid
+   instead of flex-growing independently — scoped to `.is-kpi` so ordinary
+   chart/table/logs grid tiles keep the flex-row body above untouched.
+   `auto-fill` (not `auto-fit`) is deliberate: it keeps the unfilled tracks
+   of a partial last row instead of collapsing them, so a lone leftover card
+   stays at one column's width rather than stretching across the tile — the
+   single-KPI case still "fills" the row because there is only one track to
+   begin with. `1fr` columns give every card in the same row equal width. */
+.dash-gg-tile.is-kpi .dash-tile-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+/* Container-aware value typography is GRID-TILE-ONLY (#316): `container-type:
+   inline-size` cannot go on the shared `.kpi-card` base because inline-size
+   containment sizes the box as if empty — a flow-band card is
+   `inline-size: fit-content` (see .dash-kpi-stream above) and would collapse
+   to its 160px minimum, changing the stream layout this issue pins as
+   untouched. Here the card's width comes from the 1fr track, not its content,
+   so containment is safe — and `14cqi` then scales the value with the card's
+   own width (narrow tile columns shrink the number toward 16px instead of
+   overflowing), while workbench/flow keep the viewport-based clamp on the
+   base `.kpi-value` rule. */
+.dash-gg-tile.is-kpi .dash-tile-body > .kpi-card { container-type: inline-size; }
+.dash-gg-tile.is-kpi .kpi-value { font-size: clamp(16px, 14cqi, 38px); }
 /* No `@media (max-width: 768px)` override here (#291 review finding F1): unlike
    flow's binary mobile flip, grafana-grid@1's ENTIRE responsive behavior is the
    JS container-width clamp (`effectiveGridColumns`, 12/6/4/2 at ≥1160/≥720/≥470)
