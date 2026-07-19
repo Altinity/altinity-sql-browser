@@ -506,11 +506,31 @@ const ADMONITION_VARIANTS = new Set(['tip', 'note', 'info', 'warning', 'danger',
 const ADMONITION_OPEN_RE = /^:::(\S+)(?:[ \t]+(.*?))?[ \t]*$/;
 const ADMONITION_CLOSE_RE = /^:::[ \t]*$/;
 // A fenced code block's OWN `:::`-lookalike content must never be mistaken
-// for an admonition boundary — track fence state across the pre-scan the
-// same permissive way `doc-markdown.ts`'s original fence handling did
-// (any ``` or ~~~-led line toggles it; marked resolves the real fencing
-// afterwards for the "plain" segments this scan hands it).
-const FENCE_TOGGLE_RE = /^(?:```|~~~)/;
+// for an admonition boundary — and the pre-scan MUST agree with marked
+// about where fences end, or an admonition boundary read inside what
+// marked considers one code block tears content apart (review finding).
+// CommonMark rule (what marked implements): a closing fence uses the SAME
+// character as the opener with a run length >= the opener's, and carries
+// nothing but whitespace after the run; a shorter/other-char run is
+// ordinary code content. Track char+length, not a boolean toggle.
+interface FenceOpen { char: string; len: number }
+const FENCE_RUN_RE = /^(`{3,}|~{3,})(.*)$/;
+
+// null → not a fence line; otherwise the run (with `rest` for close checks).
+function fenceRun(trimmed: string): { char: string; len: number; rest: string } | null {
+  const m = FENCE_RUN_RE.exec(trimmed);
+  return m ? { char: m[1][0], len: m[1].length, rest: m[2] } : null;
+}
+
+// Threads one open-fence state through a line: returns the new state.
+function nextFenceState(state: FenceOpen | null, line: string): FenceOpen | null {
+  const run = fenceRun(line.trim());
+  if (!run) return state;
+  if (state === null) return { char: run.char, len: run.len }; // opener (info string allowed)
+  // Only a same-char, >=-length, bare run closes the open fence.
+  if (run.char === state.char && run.len >= state.len && run.rest.trim() === '') return null;
+  return state; // shorter/other-char/suffixed run is code CONTENT
+}
 
 type MixedSegment =
   | { kind: 'md'; text: string }
@@ -521,7 +541,7 @@ function splitAdmonitions(text: string): MixedSegment[] {
   const lines = text.split('\n');
   const segments: MixedSegment[] = [];
   let plain: string[] = [];
-  let inFence = false;
+  let fence: FenceOpen | null = null;
   let i = 0;
 
   const flushPlain = (): void => {
@@ -533,7 +553,7 @@ function splitAdmonitions(text: string): MixedSegment[] {
 
   while (i < lines.length) {
     const line = lines[i];
-    if (!inFence) {
+    if (fence === null) {
       const openM = ADMONITION_OPEN_RE.exec(line);
       const variant = openM ? openM[1].toLowerCase() : null;
       if (openM && variant && ADMONITION_VARIANTS.has(variant)) {
@@ -546,20 +566,24 @@ function splitAdmonitions(text: string): MixedSegment[] {
         // pair the outermost opener with the INNERMOST closer instead.
         let j = i + 1;
         let closeIdx = -1;
-        let nestedFence = false;
+        let nestedFence: FenceOpen | null = null;
         let nestedAdmonitions = 0;
         while (j < lines.length) {
-          const trimmed = lines[j].trim();
-          if (FENCE_TOGGLE_RE.test(trimmed)) {
-            nestedFence = !nestedFence;
-          } else if (!nestedFence && ADMONITION_OPEN_RE.test(lines[j])) {
-            nestedAdmonitions++;
-          } else if (!nestedFence && ADMONITION_CLOSE_RE.test(lines[j])) {
-            if (nestedAdmonitions === 0) {
-              closeIdx = j;
-              break;
+          // A fence-run line is never an admonition marker itself (it starts
+          // with ` or ~), so thread the fence state and move on; markers only
+          // count while no fence is open.
+          if (fenceRun(lines[j].trim())) {
+            nestedFence = nextFenceState(nestedFence, lines[j]);
+          } else if (nestedFence === null) {
+            if (ADMONITION_OPEN_RE.test(lines[j])) {
+              nestedAdmonitions++;
+            } else if (ADMONITION_CLOSE_RE.test(lines[j])) {
+              if (nestedAdmonitions === 0) {
+                closeIdx = j;
+                break;
+              }
+              nestedAdmonitions--;
             }
-            nestedAdmonitions--;
           }
           j++;
         }
@@ -585,7 +609,7 @@ function splitAdmonitions(text: string): MixedSegment[] {
         continue;
       }
     }
-    if (FENCE_TOGGLE_RE.test(line.trim())) inFence = !inFence;
+    fence = nextFenceState(fence, line);
     plain.push(line);
     i++;
   }

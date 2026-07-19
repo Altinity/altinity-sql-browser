@@ -51,7 +51,10 @@ const OL_RE = /^\s*\d+\.\s+(.*)$/;
 // suppress emphasis inside), then bold before italic so ** isn't eaten as two
 // *. Bold content admits balanced single-star runs (`**a *b***` nests the
 // italic) via the `[^*]|\*[^*]+\*` alternation.
-const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|(\[([^\]]+)\]\(([^)\s]+)\))/;
+// The `(?<!!)` lookbehind keeps an image marker's `![alt](url)` from being
+// consumed as a LINK — images are outside this module's subset and must stay
+// inert literal text (regression: the #60 marked swap briefly dropped this).
+const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|((?<!!)\[([^\]]+)\]\(([^)\s]+)\))/;
 
 /** Only http(s) URLs may become real links; anything else stays text. */
 export function safeLinkHref(href: string): string | null {

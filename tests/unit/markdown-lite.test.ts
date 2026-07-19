@@ -65,6 +65,11 @@ describe('parseMarkdown — inline', () => {
     ]);
     expect(inline('`**not bold**`')).toEqual([{ t: 'code', text: '**not bold**' }]);
   });
+  it('an image marker `![alt](url)` stays inert literal text — never a link node', () => {
+    expect(inline('![alt text](https://evil.example/x)')).toEqual([
+      text('![alt text](https://evil.example/x)'),
+    ]);
+  });
   it('links keep http(s) hrefs; unsafe schemes render as plain text (no link node)', () => {
     expect(inline('see [docs](https://ch.example/d)')).toEqual([
       text('see '),

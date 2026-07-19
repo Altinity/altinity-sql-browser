@@ -560,6 +560,31 @@ describe('parseDocMarkdown — Docusaurus admonitions', () => {
     expect(r.blocks).toEqual([{ kind: 'code', language: null, text: ':::tip\nnot an admonition\n:::' }]);
   });
 
+  it('fence tracking matches CommonMark length rules: a shorter inner run does not close a longer fence (review finding)', () => {
+    // A 4-backtick fence containing a 3-backtick run and a ::: line — marked
+    // treats the whole span as ONE code block; the pre-scan must agree, so
+    // the admonition closes at the REAL bare ::: after the fence.
+    const md = ':::tip\n````\n```\n:::\n```\n````\n:::\ntrailing paragraph after real close';
+    const r = parseDocMarkdown(md);
+    expect(r.blocks).toEqual([
+      {
+        kind: 'admonition', variant: 'tip', title: null,
+        blocks: [{ kind: 'code', language: null, text: '```\n:::\n```' }],
+      },
+      { kind: 'paragraph', inline: [{ kind: 'text', text: 'trailing paragraph after real close' }] },
+    ]);
+  });
+
+  it('a same-char run with a trailing suffix is content, not a closer; tildes do not close backtick fences', () => {
+    const r = parseDocMarkdown(':::note\n```\n``` not-a-closer\n~~~\n:::\n```\n:::');
+    expect(r.blocks).toEqual([
+      {
+        kind: 'admonition', variant: 'note', title: null,
+        blocks: [{ kind: 'code', language: null, text: '``` not-a-closer\n~~~\n:::' }],
+      },
+    ]);
+  });
+
   it('MAX_DOC_NESTING_DEPTH: a chain of nested admonitions flattens to literal text past the bound', () => {
     const levels = MAX_DOC_NESTING_DEPTH + 3;
     let md = 'deepest';
