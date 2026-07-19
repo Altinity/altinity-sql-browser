@@ -423,6 +423,8 @@ export function createApp(env: CreateAppEnv = {}): App {
     loadColumns: ch.loadColumns,
     loadReferenceData: ch.loadReferenceData,
     loadEntityDoc: ch.loadEntityDoc,
+    loadFunctionsDocColumns: ch.loadFunctionsDocColumns,
+    loadFunctionDocRow: ch.loadFunctionDocRow,
     ctx: () => chCtx,
     ensureConfig,
     sqlString,

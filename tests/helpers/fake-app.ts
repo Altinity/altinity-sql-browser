@@ -167,6 +167,8 @@ const catalogDefaults: SchemaCatalogService = {
   loadReference: vi.fn(async () => {}),
   rebuildCompletions: vi.fn(),
   entityDoc: vi.fn(async () => null),
+  docSummary: vi.fn(async () => ({ status: 'unavailable' as const })),
+  docEntry: vi.fn(async () => ({ status: 'unavailable' as const })),
   refData: catalogRefDataDefault,
   completions: buildCompletions(catalogRefDataDefault, null),
   docCache: new Map(),

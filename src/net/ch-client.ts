@@ -788,6 +788,41 @@ export async function loadEntityDoc(ctx: ChCtx, name: string, sqlString: SqlStri
   return rows[0] ? firstLine(rows[0].description) : ''; // succeeded → '' means genuinely no doc
 }
 
+/**
+ * Silent one-time-per-connection capability probe for `system.functions`
+ * documentation (#313): which columns exist on it, read via `system.columns`
+ * — a table that ALWAYS exists, so this query only fails on a genuinely
+ * transient/denied problem, never because `system.functions` itself is
+ * missing (a missing `system.functions` just yields zero matching rows here,
+ * not an error). Returns:
+ *  - the column-name array (`[]` when `system.functions` doesn't exist on this
+ *    server — a successful probe with no matching rows — the caller treats
+ *    this as capability `unavailable`, cacheable for the connection);
+ *  - `null` when the probe query itself failed. `tryQueryData` returns null
+ *    on ANY error, so this conflates "denied `system.columns` read" with "a
+ *    transient network/auth hiccup" — there is no reliable way to tell them
+ *    apart from here. Policy (documented on the caller,
+ *    `SchemaCatalogService`): a `null` probe is retryable, but the caller
+ *    dedupes so a failed probe is retried at most once per subsequent lookup
+ *    batch — never once per individual lookup (no request storm).
+ */
+export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
+  return tryQueryData<{ name: string }>(
+    ctx,
+    "SELECT name FROM system.columns WHERE database = 'system' AND table = 'functions' FORMAT JSON",
+  ).then((rows) => (rows === null ? null : rows.map((r) => r.name)));
+}
+
+/**
+ * Run a prebuilt `system.functions` documentation-row SELECT (built by
+ * `buildFunctionDocSelect`, `core/doc-capability.ts`) for one function or
+ * aggregate-function lookup (#313). `null` on failure — transient, the caller
+ * must not cache it — the (possibly empty, on no match) row array otherwise.
+ */
+export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
+  return tryQueryData<Record<string, unknown>>(ctx, sql);
+}
+
 /** `exportQuery`'s options. */
 export interface ExportQueryOptions {
   queryId?: string;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, loadFunctionsDocColumns, loadFunctionDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
 import type { ChCtx } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
@@ -456,6 +456,40 @@ describe('loadEntityDoc (#27 — lazy hover docs)', () => {
   });
   it('returns null when the query FAILS, so the caller can retry rather than cache it (#8 review)', async () => {
     expect(await loadEntityDoc(ctxWith(async () => textResp('boom', false, 500)), 'x', sqlString)).toBeNull();
+  });
+});
+
+describe('loadFunctionsDocColumns (#313 — silent capability probe)', () => {
+  it('returns the column-name array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'name' }, { name: 'is_aggregate' }, { name: 'description' }] }));
+    expect(await loadFunctionsDocColumns(ctx)).toEqual(['name', 'is_aggregate', 'description']);
+  });
+  it('queries system.columns for system.functions', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [] }));
+    const ctx = ctxWith(fetchImpl);
+    await loadFunctionsDocColumns(ctx);
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain('FROM system.columns');
+    expect(body).toContain("table = 'functions'");
+  });
+  it('returns [] (not null) when system.functions does not exist — a successful probe with no matching rows', async () => {
+    expect(await loadFunctionsDocColumns(ctxWith(async () => jsonResp({ data: [] })))).toEqual([]);
+  });
+  it('returns null when the probe query itself fails (denied system.columns, or transient)', async () => {
+    expect(await loadFunctionsDocColumns(ctxWith(async () => textResp('boom', false, 500)))).toBeNull();
+  });
+});
+
+describe('loadFunctionDocRow (#313)', () => {
+  it('returns the row array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'count', description: 'doc' }] }));
+    expect(await loadFunctionDocRow(ctx, 'SELECT name FROM system.functions FORMAT JSON')).toEqual([{ name: 'count', description: 'doc' }]);
+  });
+  it('returns [] on a successful query with no matching rows', async () => {
+    expect(await loadFunctionDocRow(ctxWith(async () => jsonResp({ data: [] })), 'SELECT 1 FORMAT JSON')).toEqual([]);
+  });
+  it('returns null on failure (transient — not cached by the caller)', async () => {
+    expect(await loadFunctionDocRow(ctxWith(async () => textResp('boom', false, 500)), 'SELECT 1 FORMAT JSON')).toBeNull();
   });
 });
 
