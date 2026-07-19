@@ -11,9 +11,13 @@ import {
   MAX_DOC_LINKS,
 } from '../../src/core/doc-markdown.js';
 import type { DocBlock, DocInline } from '../../src/core/doc-markdown.js';
-import { parseInline, parseMarkdown, safeLinkHref } from '../../src/core/markdown-lite.js';
 
 const text = (s: string): DocInline => ({ kind: 'text', text: s });
+const code = (s: string): DocInline => ({ kind: 'code', text: s });
+const strong = (...children: DocInline[]): DocInline => ({ kind: 'strong', children });
+const em = (...children: DocInline[]): DocInline => ({ kind: 'em', children });
+const del = (...children: DocInline[]): DocInline => ({ kind: 'del', children });
+const link = (href: string, ...children: DocInline[]): DocInline => ({ kind: 'link', href, children });
 
 describe('limit constants', () => {
   it('match #315', () => {
@@ -118,32 +122,67 @@ describe('parseDocMarkdown — supported constructs', () => {
     expect(r7.blocks[0].kind).toBe('paragraph');
   });
 
-  it('bold, emphasis, and inline code render flattened (no nested children)', () => {
+  it('a heading whose ENTIRE text is just the Docusaurus anchor suffix strips to an empty inline array', () => {
+    const r = parseDocMarkdown('## {#anchor}');
+    expect(r.blocks).toEqual([{ kind: 'heading', level: 2, inline: [] }]);
+  });
+
+  it('a heading with prose plus a trailing Docusaurus anchor strips just the suffix, keeping the prose', () => {
+    const r = parseDocMarkdown('## Title {#my-anchor}');
+    expect(r.blocks).toEqual([{ kind: 'heading', level: 2, inline: [text('Title')] }]);
+  });
+
+  it('a GFM task-list item: the checkbox marker (beyond this module\'s subset) surfaces as literal nested text, never dropped', () => {
+    const r = parseDocMarkdown('- [ ] task');
+    expect(r.blocks).toEqual([
+      {
+        kind: 'list',
+        ordered: false,
+        start: 1,
+        items: [
+          {
+            inline: [text('task')],
+            children: [{ kind: 'paragraph', inline: [text('[ ] ')] }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('bold, emphasis, and inline code render as their own inline node kinds', () => {
     const r = parseDocMarkdown('a **b** *c* `d`');
     expect(r.blocks).toEqual([
       {
         kind: 'paragraph',
         inline: [
           text('a '),
-          { kind: 'strong', text: 'b' },
+          strong(text('b')),
           text(' '),
-          { kind: 'em', text: 'c' },
+          em(text('c')),
           text(' '),
-          { kind: 'code', text: 'd' },
+          code('d'),
         ],
       },
     ]);
   });
 
-  it('bold nesting italic flattens to plain text', () => {
+  it('UPGRADE: bold nesting italic stays a real nested tree (**a *b*** -> strong containing text + em), not flattened to plain text', () => {
     const r = parseDocMarkdown('**a *b***');
-    expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [{ kind: 'strong', text: 'a b' }] }]);
+    expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [strong(text('a '), em(text('b')))] }]);
   });
 
-  it('unordered lists', () => {
-    const r = parseDocMarkdown('- a\n* b');
+  it('unordered lists (same bullet char)', () => {
+    const r = parseDocMarkdown('- a\n- b');
     expect(r.blocks).toEqual([
       { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('a')] }, { inline: [text('b')] }] },
+    ]);
+  });
+
+  it('UPGRADE: a bullet-CHARACTER switch (- vs *) starts a new list too (real CommonMark rule; the old hand-parser only split on ordered vs unordered)', () => {
+    const r = parseDocMarkdown('- a\n* b');
+    expect(r.blocks).toEqual([
+      { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('a')] }] },
+      { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('b')] }] },
     ]);
   });
 
@@ -233,9 +272,9 @@ describe('parseDocMarkdown — supported constructs', () => {
         kind: 'paragraph',
         inline: [
           text('see '),
-          { kind: 'link', text: 'docs', href: 'https://clickhouse.com/docs/x' },
+          link('https://clickhouse.com/docs/x', text('docs')),
           text(' and '),
-          { kind: 'link', text: 'rel', href: 'https://clickhouse.com/docs/sql-reference/functions' },
+          link('https://clickhouse.com/docs/sql-reference/functions', text('rel')),
         ],
       },
     ]);
@@ -248,9 +287,17 @@ describe('parseDocMarkdown — supported constructs', () => {
     expect(parseDocMarkdown('- - -').blocks).toEqual([{ kind: 'break' }]);
   });
 
-  it('a thematic break terminates a pending paragraph', () => {
-    const r = parseDocMarkdown('body\n---\nafter');
+  it('a thematic break (separated by a blank line so it cannot read as a setext underline) terminates a pending paragraph', () => {
+    const r = parseDocMarkdown('body\n\n---\n\nafter');
     expect(r.blocks.map((b) => b.kind)).toEqual(['paragraph', 'break', 'paragraph']);
+  });
+
+  it('UPGRADE: text immediately followed by --- (no blank line) is a setext heading, not text + thematic-break (real CommonMark precedence; the old hand-parser read this as `body` then a break)', () => {
+    const r = parseDocMarkdown('body\n---\nafter');
+    expect(r.blocks).toEqual([
+      { kind: 'heading', level: 2, inline: [text('body')] },
+      { kind: 'paragraph', inline: [text('after')] },
+    ]);
   });
 
   it('simple block quotes', () => {
@@ -291,7 +338,7 @@ describe('parseDocMarkdown — supported constructs', () => {
       {
         kind: 'table',
         header: [[text('a')], [text('b')]],
-        rows: [[[{ kind: 'strong', text: 'x' }], [{ kind: 'code', text: 'y' }]]],
+        rows: [[[strong(text('x'))], [code('y')]]],
       },
     ]);
   });
@@ -324,12 +371,84 @@ describe('parseDocMarkdown — supported constructs', () => {
     ]);
   });
 
-  it('a non-pipe line ends the table rows without consuming a blank line', () => {
+  it('UPGRADE: a bare non-pipe line still continues the table as a single-cell row (real GFM table-continuation rule; the old hand-parser required a `|` to keep reading rows)', () => {
     const r = parseDocMarkdown('| a |\n| --- |\n| 1 |\nafter');
     expect(r.blocks).toEqual([
-      { kind: 'table', header: [[text('a')]], rows: [[[text('1')]]] },
-      { kind: 'paragraph', inline: [text('after')] },
+      { kind: 'table', header: [[text('a')]], rows: [[[text('1')]], [[text('after')]]] },
     ]);
+  });
+});
+
+describe('parseDocMarkdown — recursive inline nesting (owner decision: DocInline mirrors marked\'s inline tree 1:1)', () => {
+  it('a link keeps its own inline formatting as real nested children (link containing code)', () => {
+    const r = parseDocMarkdown('[see `code`](https://clickhouse.com/docs/x)');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [link('https://clickhouse.com/docs/x', text('see '), code('code'))] },
+    ]);
+  });
+
+  it('bold containing a link renders a real link node inside the strong node', () => {
+    const r = parseDocMarkdown('**see [x](https://clickhouse.com/docs/x)**');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [strong(text('see '), link('https://clickhouse.com/docs/x', text('x')))] },
+    ]);
+  });
+
+  it('a policy-rejected link inside bold degrades to literal text INSIDE the strong node (the strong itself stays real)', () => {
+    const r = parseDocMarkdown('**see [x](javascript:alert(1))**');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [strong(text('see '), text('[x](javascript:alert(1))'))] },
+    ]);
+  });
+
+  it('strikethrough (del) is a real recursive node, not degraded to plain text', () => {
+    const r = parseDocMarkdown('~~gone~~ and ~~**bold gone**~~');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [del(text('gone')), text(' and '), del(strong(text('bold gone')))] },
+    ]);
+  });
+
+  it('MAX_DOC_NESTING_DEPTH: inline formatting nested past the bound degrades to one literal text leaf (its own further formatting flattened to plain text, never dropped)', () => {
+    // Alternating `**`/`*` (strong/em) wrappers nest properly under marked's
+    // flanking rules (same-delimiter-repeated does NOT nest — verified
+    // against the real lexer), giving genuine deep inline nesting to bound.
+    // The innermost content is deliberately rich (hard break, codespan, raw
+    // HTML, an image, a link, and one more level of `em`) so the degrade
+    // path (`flattenTokensToText`) exercises every one of its own cases too.
+    const levels = MAX_DOC_NESTING_DEPTH + 5;
+    let md = 'x  \ny `c` <i>h</i> ![z](https://a) [w](https://b) *e*';
+    for (let i = 0; i < levels; i++) md = i % 2 === 0 ? `**${md}**` : `*${md}*`;
+    const r = parseDocMarkdown(md);
+
+    const inline = (r.blocks[0] as { inline: DocInline[] }).inline;
+    let depth = 0;
+    let node: DocInline = inline[0];
+    while (node.kind === 'em' || node.kind === 'strong') {
+      depth++;
+      node = node.children[0];
+    }
+    expect(depth).toBeLessThanOrEqual(MAX_DOC_NESTING_DEPTH);
+    expect(node.kind).toBe('text');
+    // Every flattened construct's plain-text contribution survives: the hard
+    // break and hyphen become spaces, the codespan/HTML/image/link/em all
+    // contribute their own text, nothing is silently dropped.
+    expect(node).toEqual(text('x y c <i>h</i> ![z](https://a) w e'));
+  });
+
+  it('MAX_DOC_NESTING_DEPTH: a policy-APPROVED link nested exactly at the bound stays a real link node, with its own (deeper) content flattened to one text child', () => {
+    // 20 alternating strong/em wraps around the link happens to land the
+    // link's own inline depth exactly at the bound (empirically verified
+    // against the real lexer) — the LINK ITSELF must stay a real, safe
+    // `link` node (never flattened away) while its OWN content (which would
+    // nest one level deeper still) degrades to a single text child.
+    let md = '[see `code`](https://clickhouse.com/docs/x)';
+    for (let i = 0; i < 20; i++) md = i % 2 === 0 ? `**${md}**` : `*${md}*`;
+    const r = parseDocMarkdown(md);
+
+    const inline = (r.blocks[0] as { inline: DocInline[] }).inline;
+    let node: DocInline = inline[0];
+    while (node.kind === 'em' || node.kind === 'strong') node = node.children[0];
+    expect(node).toEqual(link('https://clickhouse.com/docs/x', text('see code')));
   });
 });
 
@@ -339,28 +458,122 @@ describe('parseDocMarkdown — literal preservation', () => {
     expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [text('<script>alert(1)</script>')] }]);
   });
 
-  it('images stay literal (never become a link)', () => {
+  it('inline raw HTML (a span-level tag inside a paragraph) stays literal text', () => {
+    const r = parseDocMarkdown('hello <b>world</b> tag');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [text('hello '), text('<b>'), text('world'), text('</b>'), text(' tag')] },
+    ]);
+  });
+
+  it('images stay literal (never become a link) — marked `image` token', () => {
     const r = parseDocMarkdown('![alt text](https://example.com/img.png)');
     expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [text('![alt text](https://example.com/img.png)')] }]);
   });
 
-  it('reference-style links stay literal', () => {
+  it('a reference-style link with NO matching definition stays literal (marked leaves it untokenized)', () => {
     const r = parseDocMarkdown('[text][ref]');
     expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [text('[text][ref]')] }]);
-  });
-
-  it('setext-style underlines do not become headings', () => {
-    const r = parseDocMarkdown('Title\n===');
-    expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [text('Title ===')] }]);
-    // A `---` underline collides with the thematic-break rule instead —
-    // still never a heading, which is the only thing #315 requires.
-    const r2 = parseDocMarkdown('Title\n---');
-    expect(r2.blocks.some((b) => b.kind === 'heading')).toBe(false);
   });
 
   it('unbalanced emphasis stays literal', () => {
     const r = parseDocMarkdown('**bold without close');
     expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [text('**bold without close')] }]);
+  });
+});
+
+describe('parseDocMarkdown — behavior upgrades from the marked lexer (deliberate, tested)', () => {
+  it('UPGRADE: setext headings (Title\\n===) now parse as real headings (the hand-written parser left these literal)', () => {
+    const r1 = parseDocMarkdown('Title\n===');
+    expect(r1.blocks).toEqual([{ kind: 'heading', level: 1, inline: [text('Title')] }]);
+    const r2 = parseDocMarkdown('Title\n---');
+    expect(r2.blocks).toEqual([{ kind: 'heading', level: 2, inline: [text('Title')] }]);
+  });
+
+  it('UPGRADE: a reference-style link WITH a matching definition now resolves, through the same link policy', () => {
+    const approved = parseDocMarkdown('[text][ref]\n\n[ref]: https://clickhouse.com/docs/x');
+    expect(approved.blocks).toEqual([
+      { kind: 'paragraph', inline: [link('https://clickhouse.com/docs/x', text('text'))] },
+    ]);
+    // The def points at an http (not https) URL — the default policy rejects
+    // it exactly like a direct inline link, literal fallback to the raw
+    // reference-style construct (never the resolved-but-rejected href).
+    const rejected = parseDocMarkdown('[text][ref]\n\n[ref]: http://example.com');
+    expect(rejected.blocks).toEqual([{ kind: 'paragraph', inline: [text('[text][ref]')] }]);
+  });
+
+  it('UPGRADE: loose lists (blank line between items) now parse as a list, not list + paragraph', () => {
+    const r = parseDocMarkdown('- a\n\n- b');
+    expect(r.blocks).toEqual([
+      { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('a')] }, { inline: [text('b')] }] },
+    ]);
+  });
+});
+
+describe('parseDocMarkdown — Docusaurus admonitions', () => {
+  it('each recognized variant (tip/note/info/warning/danger/important)', () => {
+    for (const variant of ['tip', 'note', 'info', 'warning', 'danger', 'important']) {
+      const r = parseDocMarkdown(`:::${variant}\nbody text\n:::`);
+      expect(r.blocks).toEqual([
+        { kind: 'admonition', variant, title: null, blocks: [{ kind: 'paragraph', inline: [text('body text')] }] },
+      ]);
+    }
+  });
+
+  it('an optional title after the variant', () => {
+    const r = parseDocMarkdown(':::tip My Title\nbody\n:::');
+    expect(r.blocks).toEqual([
+      { kind: 'admonition', variant: 'tip', title: 'My Title', blocks: [{ kind: 'paragraph', inline: [text('body')] }] },
+    ]);
+  });
+
+  it('an unrecognized :::kind is not treated as a container (falls through to marked as literal-ish paragraph text)', () => {
+    const r = parseDocMarkdown(':::notarealvariant\nbody\n:::');
+    expect(r.blocks.every((b) => b.kind !== 'admonition')).toBe(true);
+  });
+
+  it('nested block content inside an admonition (heading, list, code)', () => {
+    const r = parseDocMarkdown(':::note\n## Heading\n- a\n- b\n\n```\ncode\n```\n:::');
+    expect(r.blocks).toEqual([
+      {
+        kind: 'admonition',
+        variant: 'note',
+        title: null,
+        blocks: [
+          { kind: 'heading', level: 2, inline: [text('Heading')] },
+          { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('a')] }, { inline: [text('b')] }] },
+          { kind: 'code', language: null, text: 'code' },
+        ],
+      },
+    ]);
+  });
+
+  it('an unterminated ::: opener never swallows content — renders as one literal text block', () => {
+    const r = parseDocMarkdown('before\n\n:::tip\nnever closed');
+    expect(r.blocks).toEqual([
+      { kind: 'paragraph', inline: [text('before')] },
+      { kind: 'paragraph', inline: [text(':::tip\nnever closed')] },
+    ]);
+  });
+
+  it('a ::: line inside a fenced code block is never mistaken for an admonition boundary', () => {
+    const r = parseDocMarkdown('```\n:::tip\nnot an admonition\n:::\n```');
+    expect(r.blocks).toEqual([{ kind: 'code', language: null, text: ':::tip\nnot an admonition\n:::' }]);
+  });
+
+  it('MAX_DOC_NESTING_DEPTH: a chain of nested admonitions flattens to literal text past the bound', () => {
+    const levels = MAX_DOC_NESTING_DEPTH + 3;
+    let md = 'deepest';
+    for (let i = 0; i < levels; i++) md = `:::note\n${md}\n:::`;
+    const r = parseDocMarkdown(md);
+
+    let depth = 0;
+    let node: DocBlock = r.blocks[0];
+    while (node.kind === 'admonition') {
+      depth++;
+      node = node.blocks[0];
+    }
+    expect(depth).toBeLessThanOrEqual(MAX_DOC_NESTING_DEPTH);
+    expect(JSON.stringify(r.blocks)).toContain('deepest');
   });
 });
 
@@ -386,7 +599,7 @@ describe('parseDocMarkdown — link policy', () => {
 
   it('accepts a custom injected linkPolicy', () => {
     const r = parseDocMarkdown('[x](anything)', { linkPolicy: () => 'https://mapped.example/x' });
-    expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [{ kind: 'link', text: 'x', href: 'https://mapped.example/x' }] }]);
+    expect(r.blocks).toEqual([{ kind: 'paragraph', inline: [link('https://mapped.example/x', text('x'))] }]);
   });
 
   it('further links beyond MAX_DOC_LINKS render as plain text', () => {
@@ -395,7 +608,7 @@ describe('parseDocMarkdown — link policy', () => {
     const r = parseDocMarkdown(md);
     const inline = (r.blocks[0] as { inline: DocInline[] }).inline;
     const links = inline.filter((n2) => n2.kind === 'link');
-    const rejectedAsText = inline.filter((n2) => n2.kind === 'text' && /^\[l\d+\]/.test(n2.text));
+    const rejectedAsText = inline.filter((n2) => n2.kind === 'text' && /^\[l\d+\]/.test((n2 as { text: string }).text));
     expect(links.length).toBe(MAX_DOC_LINKS);
     expect(rejectedAsText.length).toBe(5);
   });
@@ -569,49 +782,5 @@ describe('parseDocMarkdown — fuzz/property (fixed seed, deterministic)', () =>
       }).not.toThrow();
       expect(Array.isArray(result!.blocks)).toBe(true);
     }
-  });
-});
-
-// ── markdown-lite.ts: newly-exported `parseInline` API (unchanged internals,
-// additive coverage only — parseMarkdown's own tests are untouched below) ──
-describe('markdown-lite parseInline (newly exported, with an injected linkPolicy)', () => {
-  it('defaults to safeLinkHref (http/https) when no options are given, matching parseMarkdown', () => {
-    expect(parseInline('[x](https://example.com)')).toEqual([
-      { t: 'link', href: 'https://example.com', children: [{ t: 'text', text: 'x' }] },
-    ]);
-  });
-
-  it('accepts an injected linkPolicy that overrides the default', () => {
-    const policy = (href: string): string | null => (href === 'ok' ? 'https://mapped' : null);
-    expect(parseInline('[a](ok)', { linkPolicy: policy })).toEqual([
-      { t: 'link', href: 'https://mapped', children: [{ t: 'text', text: 'a' }] },
-    ]);
-    expect(parseInline('[a](rejected)', { linkPolicy: policy })).toEqual([{ t: 'text', text: '[a](rejected)' }]);
-  });
-
-  it('propagates the injected policy into nested bold/italic content', () => {
-    const policy = (): string | null => 'https://always';
-    expect(parseInline('**[a](x)**', { linkPolicy: policy })).toEqual([
-      { t: 'strong', children: [{ t: 'link', href: 'https://always', children: [{ t: 'text', text: 'a' }] }] },
-    ]);
-  });
-
-  it('an image marker is never mistaken for a link (shared regex fix)', () => {
-    expect(parseInline('![alt](https://example.com/x.png)')).toEqual([
-      { t: 'text', text: '![alt](https://example.com/x.png)' },
-    ]);
-  });
-});
-
-// Sanity: markdown-lite's own default profile (safeLinkHref, http-or-https)
-// is unaffected by doc-markdown's stricter default — imported here only to
-// prove both modules coexist against the one shared regex/tokenizer.
-describe('markdown-lite parseMarkdown / safeLinkHref — unaffected by doc-markdown', () => {
-  it('still allows http (not just https), unlike doc-markdown default policy', () => {
-    expect(safeLinkHref('http://example.com')).toBe('http://example.com');
-    const blocks = parseMarkdown('[x](http://example.com)');
-    expect(blocks).toEqual([
-      { t: 'p', children: [{ t: 'link', href: 'http://example.com', children: [{ t: 'text', text: 'x' }] }] },
-    ]);
   });
 });

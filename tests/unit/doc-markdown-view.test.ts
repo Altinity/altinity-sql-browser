@@ -85,6 +85,30 @@ describe('renderDocMarkdown — block rendering', () => {
   });
 });
 
+describe('renderDocMarkdown — admonitions', () => {
+  it('renders an <aside> with a variant class and nested block content', () => {
+    const el = renderDocMarkdown(document, result(':::tip\nbe careful\n:::'));
+    const aside = el.querySelector('aside.docs-md-admonition')!;
+    expect(aside).not.toBeNull();
+    expect(aside.classList.contains('docs-md-admonition-tip')).toBe(true);
+    expect(aside.querySelector('.docs-md-admonition-title')).toBeNull();
+    expect(aside.querySelector('p.docs-md-p')!.textContent).toBe('be careful');
+  });
+
+  it('renders an optional title line', () => {
+    const el = renderDocMarkdown(document, result(':::warning Heads up\nwatch out\n:::'));
+    const aside = el.querySelector('aside.docs-md-admonition-warning')!;
+    expect(aside.querySelector('.docs-md-admonition-title')!.textContent).toBe('Heads up');
+  });
+
+  it('renders nested blocks (heading, list) inside the admonition', () => {
+    const el = renderDocMarkdown(document, result(':::note\n## H\n- a\n- b\n:::'));
+    const aside = el.querySelector('aside.docs-md-admonition-note')!;
+    expect(aside.querySelector('h5.docs-md-h')!.textContent).toBe('H');
+    expect(aside.querySelectorAll('li').length).toBe(2);
+  });
+});
+
 describe('renderDocMarkdown — inline rendering', () => {
   it('renders strong, em, inline code, and text as their own leaf elements', () => {
     const el = renderDocMarkdown(document, result('a **b** *c* `d` e'));

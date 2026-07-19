@@ -1935,6 +1935,17 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-md-oversized { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-chip); font-style: normal; }
 .docs-md-latest { align-self: flex-start; font-size: 11.5px; color: var(--fg-faint); text-decoration: underline; }
 .docs-md-latest:hover { color: var(--fg-mute); }
+/* Docusaurus admonitions (marked-lexer upgrade, amending #315) — left border
+   accent per variant, subtle chip background matching the pane's other
+   quiet surfaces (`.docs-md-oversized`), nested blocks reuse the normal
+   `.docs-md-*` spacing/typography untouched. tip/note/info share the
+   pane's own accent color (an informational tri-variant, no dedicated
+   token); warning/danger/important reuse the existing warn/error tokens. */
+.docs-md-admonition { border-left: 3px solid var(--border); border-radius: 6px; padding: 8px 12px; background: var(--bg-chip); display: flex; flex-direction: column; gap: 8px; }
+.docs-md-admonition-title { font-weight: 600; font-size: 12.5px; color: var(--fg); }
+.docs-md-admonition-tip, .docs-md-admonition-note, .docs-md-admonition-info { border-left-color: var(--accent); }
+.docs-md-admonition-warning { border-left-color: var(--warn-fg); background: var(--warn-bg); }
+.docs-md-admonition-danger, .docs-md-admonition-important { border-left-color: var(--error-fg); background: var(--error-bg); }
 /* #315 phase-3 disambiguation state */
 .docs-disambiguate { flex-direction: column; align-items: stretch; gap: 10px; }
 .docs-disambiguate-intro { margin: 0; font-size: 13px; color: var(--fg); }

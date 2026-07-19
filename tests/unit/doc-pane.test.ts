@@ -226,7 +226,7 @@ describe('structured fields render through the markdown-subset renderer', () => 
     closeDocPane(app);
   });
 
-  it('a structural admonition marker line stays visible as literal text inside the rendered body', async () => {
+  it('UPGRADE: a `:::tip ... :::` admonition marker now renders as a real admonition <aside>, not literal marker text (owner decision amending #315 — see core/doc-markdown.ts)', async () => {
     const app = makeApp();
     app.catalog.docEntry.mockResolvedValue({
       status: 'found',
@@ -234,9 +234,10 @@ describe('structured fields render through the markdown-subset renderer', () => 
     });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
-    const body = document.querySelector('.docs-md')!;
-    expect(body.textContent).toContain(':::tip');
-    expect(body.textContent).toContain('Useful hint.');
+    const aside = document.querySelector('.docs-md aside.docs-md-admonition-tip')!;
+    expect(aside).not.toBeNull();
+    expect(aside.textContent).toContain('Useful hint.');
+    expect(aside.textContent).not.toContain(':::tip');
     closeDocPane(app);
   });
 

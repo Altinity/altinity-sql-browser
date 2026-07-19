@@ -8,7 +8,19 @@
 // (-/*) and ordered (1.) lists, **bold**, *italic* / _italic_, `inline code`,
 // and [links](https://…) restricted to http(s) — any other scheme renders as
 // plain text. No fences, images, tables, or raw HTML — full Markdown was
-// considered and rejected for a niche panel (hard rule 4: no new runtime dep).
+// considered and rejected for a niche panel (hard rule 4: no new runtime dep
+// — an owner decision later amended THIS constraint, but only for #315's
+// `core/doc-markdown.ts`; this module's own "no new dep" scope is unchanged).
+//
+// HISTORY: #315 briefly lifted `parseInline` out to a private-to-exported
+// function with an injected `linkPolicy` option so `doc-markdown.ts` could
+// reuse this exact tokenizer/regex for its own (stricter) inline spans,
+// rather than forking it. `doc-markdown.ts` has since moved to `marked`'s own
+// lexer (owner decision amending #315's original non-goal) and no longer
+// imports anything from this module — with zero other consumers of the
+// lifted shape, this module reverts to its original, simpler pre-lift form
+// (a private `parseInline`, no `ParseInlineOptions`/injected policy). This
+// file's own behavior and tests are unchanged either way.
 //
 // Block AST:  {t:'h', level, children} | {t:'p', children}
 //           | {t:'ul', items:[children]} | {t:'ol', items:[children]}
@@ -38,44 +50,16 @@ const OL_RE = /^\s*\d+\.\s+(.*)$/;
 // matches at the earliest offset wins. Backticks bind tightest (code spans
 // suppress emphasis inside), then bold before italic so ** isn't eaten as two
 // *. Bold content admits balanced single-star runs (`**a *b***` nests the
-// italic) via the `[^*]|\*[^*]+\*` alternation. The link alternative carries a
-// negative lookbehind for `!` so an image marker (`![alt](url)`) is never
-// mistaken for a link — the `!` plus the bracket/paren span both fall through
-// as literal text (#315's doc-markdown parser, which shares this exact regex,
-// requires images to stay literal; markdown-lite never had a test asserting
-// the opposite, so this is purely additive).
-const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|(?<!!)(\[([^\]]+)\]\(([^)\s]+)\))/;
+// italic) via the `[^*]|\*[^*]+\*` alternation.
+const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|(\[([^\]]+)\]\(([^)\s]+)\))/;
 
-/** Only http(s) URLs may become real links; anything else stays text. This is
- *  the DEFAULT link policy for `parseMarkdown`/`parseInline` (the panels.js
- *  "Grafana text panel" profile, #166). #315's `doc-markdown.ts` reuses
- *  `parseInline` with its own stricter/relative-mapping policy injected —
- *  see `parseInline`'s `opts.linkPolicy`. */
+/** Only http(s) URLs may become real links; anything else stays text. */
 export function safeLinkHref(href: string): string | null {
   return /^https?:\/\//i.test(href) ? href : null;
 }
 
-/** Options for `parseInline`. `linkPolicy` decides which `(url)` targets in a
- *  `[text](url)` construct become a real `link` node vs. render as literal
- *  text — defaults to `safeLinkHref` (http/https only) when omitted, which is
- *  markdown-lite's own (panels.js) behavior. Injecting a different policy
- *  (#315's https-only + relative ClickHouse-doc mapping) is how a second
- *  consumer reuses this SAME inline parser/regex instead of forking it. */
-export interface ParseInlineOptions {
-  linkPolicy?: (href: string) => string | null;
-}
-
-/**
- * Parse one span of text's inline formatting (bold/italic/code/links) into
- * inline nodes. Exported (lifted from a private helper) so `doc-markdown.ts`'s
- * block-level parser can reuse this exact tokenizer for its own inline spans
- * (headings, paragraphs, list items, table cells) rather than re-implementing
- * the regex — see the module doc comment. Called internally by
- * `parseMarkdown` with no `opts` (i.e. the original `safeLinkHref` policy),
- * so existing behavior is unchanged.
- */
-export function parseInline(text: string, opts?: ParseInlineOptions): MdInlineNode[] {
-  const linkPolicy = opts?.linkPolicy ?? safeLinkHref;
+// Parse one line's inline formatting into inline nodes.
+function parseInline(text: string): MdInlineNode[] {
   const out: MdInlineNode[] = [];
   let rest = text;
   while (rest) {
@@ -86,15 +70,14 @@ export function parseInline(text: string, opts?: ParseInlineOptions): MdInlineNo
     }
     if (m.index > 0) out.push({ t: 'text', text: rest.slice(0, m.index) });
     if (m[1]) out.push({ t: 'code', text: m[2] });
-    else if (m[3]) out.push({ t: 'strong', children: parseInline(m[4], opts) });
-    else if (m[5]) out.push({ t: 'em', children: parseInline(m[6], opts) });
-    else if (m[7]) out.push({ t: 'em', children: parseInline(m[8], opts) });
+    else if (m[3]) out.push({ t: 'strong', children: parseInline(m[4]) });
+    else if (m[5]) out.push({ t: 'em', children: parseInline(m[6]) });
+    else if (m[7]) out.push({ t: 'em', children: parseInline(m[8]) });
     else {
-      const href = linkPolicy(m[11]);
-      // A policy-rejected href (unsafe scheme, over a link-count budget, …)
-      // renders the whole construct as literal text — visibly not a link,
-      // nothing to click.
-      if (href) out.push({ t: 'link', href, children: parseInline(m[10], opts) });
+      const href = safeLinkHref(m[11]);
+      // An unsafe scheme (javascript:, data:, …) renders the whole construct
+      // as literal text — visibly not a link, nothing to click.
+      if (href) out.push({ t: 'link', href, children: parseInline(m[10]) });
       else out.push({ t: 'text', text: m[9] });
     }
     rest = rest.slice(m.index + m[0].length);

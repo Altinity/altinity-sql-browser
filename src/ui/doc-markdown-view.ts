@@ -62,19 +62,23 @@ export interface DocMarkdownViewOptions {
 
 // ── Inline ───────────────────────────────────────────────────────────────────
 
-// Renders every `DocInline` leaf. Links only ever arrive here already
+// Renders the RECURSIVE `DocInline` tree. Links only ever arrive here already
 // policy-approved (`parseDocMarkdown`'s `linkPolicy` turned a rejected href
 // into a plain `{kind:'text'}` leaf before this module ever sees it) — so
 // every `link` node is rendered as a real, safe `<a>` unconditionally.
+// `strong`/`em`/`del`/`link` recurse into their own `children` — a link
+// nested inside bold text renders a real `<a>` inside the `<strong>`, a
+// codespan inside a link renders a real `<code>` inside the `<a>`, etc.
 function renderInline(nodes: DocInline[]): (Node | string)[] {
   return nodes.map((n) => {
     switch (n.kind) {
       case 'text': return n.text;
-      case 'strong': return h('strong', null, n.text);
-      case 'em': return h('em', null, n.text);
       case 'code': return h('code', null, n.text);
+      case 'strong': return h('strong', null, ...renderInline(n.children));
+      case 'em': return h('em', null, ...renderInline(n.children));
+      case 'del': return h('del', null, ...renderInline(n.children));
       case 'link':
-        return h('a', { href: n.href, target: '_blank', rel: 'noopener noreferrer' }, n.text);
+        return h('a', { href: n.href, target: '_blank', rel: 'noopener noreferrer' }, ...renderInline(n.children));
     }
   });
 }
@@ -131,6 +135,17 @@ function renderListItem(doc: Document, item: DocListItem, opts: DocMarkdownViewO
   return li;
 }
 
+// ── Admonition ───────────────────────────────────────────────────────────────
+
+function renderAdmonition(
+  doc: Document, block: DocBlock & { kind: 'admonition' }, opts: DocMarkdownViewOptions,
+): HTMLElement {
+  const children: (Node | string)[] = [];
+  if (block.title) children.push(h('div', { class: 'docs-md-admonition-title' }, block.title));
+  for (const b of block.blocks) children.push(renderBlock(doc, b, opts));
+  return h('aside', { class: `docs-md-admonition docs-md-admonition-${block.variant}` }, ...children);
+}
+
 // ── Table ────────────────────────────────────────────────────────────────────
 
 function renderTable(doc: Document, block: DocBlock & { kind: 'table' }, opts: DocMarkdownViewOptions): HTMLElement {
@@ -162,6 +177,8 @@ function renderBlock(doc: Document, block: DocBlock, opts: DocMarkdownViewOption
       return h('hr', { class: 'docs-md-hr' });
     case 'table':
       return renderTable(doc, block, opts);
+    case 'admonition':
+      return renderAdmonition(doc, block, opts);
   }
 }
 
