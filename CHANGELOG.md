@@ -20,15 +20,19 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   servers are short-circuited without a single query or probe; 26.6+ and
   unknown-version connections get one silent capability probe (`source`
   column optional — real 26.6 builds ship only name/type/description).
-  Markdown bodies render through a new bounded pure parser
-  (`src/core/doc-markdown.ts`, reusing `markdown-lite`'s inline layer with
-  an injected https-only link policy — no new dependency, no `innerHTML`)
-  into strict DOM construction (`src/ui/doc-markdown-view.ts`): headings,
-  lists, quotes, tables, thematic breaks, and fenced code with exact-copy
-  buttons and ClickHouse highlighting for SQL fences; raw HTML, images, and
-  unsupported constructs stay visible as literal text; byte/node/nesting/
-  link limits truncate quietly (fixed-seed fuzz-tested never-throws
-  contract). The classifier gains strong contexts for SETTINGS names
+  Markdown bodies are tokenized by **`marked` (the sixth bundled runtime
+  dependency — used strictly as a pure lexer; `marked.parse()`/HTML output
+  is never called; measured +44 KB raw / ~3% artifact delta)** and the
+  token tree is projected 1:1 into strict DOM construction by
+  `src/core/doc-markdown.ts` + `src/ui/doc-markdown-view.ts` — no
+  `innerHTML` anywhere, an injected https-only link policy, recursive
+  inline fidelity (a link inside bold stays a link), and Docusaurus
+  `:::tip/note/info/warning/danger/important` admonitions rendered as
+  styled asides: headings (setext included), lists, quotes, tables,
+  thematic breaks, and fenced code with exact-copy buttons and ClickHouse
+  highlighting for SQL fences; raw HTML, images, and policy-rejected links
+  stay visible as literal text (fail-closed); byte/node/nesting/link limits
+  truncate quietly (fixed-seed fuzz-tested never-throws contract). The classifier gains strong contexts for SETTINGS names
   (query-level and MergeTree DDL), FROM/INSERT INTO FUNCTION table
   functions, CODEC lists, skipping-index TYPEs, and `system.*` tables; F1
   on an unresolved bare word now opens an accessible disambiguation list
