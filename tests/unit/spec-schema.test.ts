@@ -165,11 +165,11 @@ describe('schema lookup', () => {
   it('retains ordered candidates while a discriminator is incomplete', () => {
     const root = { panel: { cfg: {} } };
     const schema = querySpecSchemaService.schemaAtPath({ root, path: ['panel', 'cfg'] });
-    expect(schema.candidates).toHaveLength(10);
+    expect(schema.candidates).toHaveLength(11);
     expect(schema.common['x-altinity-discriminator']).toBe('type');
     const typeProperty = querySpecSchemaService.propertiesAtPath({ root, path: ['panel', 'cfg'] })[0];
     expect(typeProperty.name).toBe('type');
-    expect(typeProperty.schemas).toHaveLength(10);
+    expect(typeProperty.schemas).toHaveLength(11);
     expect(typeProperty.schemas.every((candidate) => candidate.title === 'Panel type'
       && candidate.type === 'string' && candidate.minLength === 1)).toBe(true);
     const unknown = querySpecSchemaService.annotationsAtPath({
@@ -179,7 +179,7 @@ describe('schema lookup', () => {
     expect(querySpecSchemaService.variantsAtPath({
       root: { panel: { cfg: { type: 'line' } } }, path: ['panel', 'cfg', 'type'],
     }).map((variant) => variant.value)).toEqual([
-      'bar', 'hbar', 'line', 'area', 'pie', 'kpi', 'table', 'logs', 'text',
+      'bar', 'hbar', 'line', 'area', 'pie', 'kpi', 'table', 'logs', 'text', 'image',
     ]);
     expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [] })).toEqual([]);
     expect(querySpecSchemaService.variantsAtPath({ root: {}, path: [0] })).toEqual([]);

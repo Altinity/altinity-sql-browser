@@ -11,6 +11,13 @@ export function isKpiPanel(panel: Panel | null | undefined): boolean {
   return panel?.cfg?.type === 'kpi';
 }
 
+/** True when `panel`'s resolved cfg is the Image (PNG) arm (#307) — the
+ *  explicit-panel type whose transport `panelExecution` also owns (a single
+ *  binary FORMAT PNG result, not a structured streaming one). */
+export function isImagePanel(panel: Panel | null | undefined): boolean {
+  return panel?.cfg?.type === 'image';
+}
+
 /** A saved query's explicit, known-typed panel payload, or null. Unknown
  *  panel-cfg shapes stay non-null-ish only through resolvePanel's diagnostic
  *  fallback. Shared by the Dashboard's ordinary-tile path and its KPI-band
@@ -51,6 +58,36 @@ export function panelExecution(
   sql: string,
   defaults: PanelExecutionDefaults = {},
 ): PanelExecutionResult {
+  if (isImagePanel(panel)) {
+    const authoredFormat = detectSqlFormat(sql);
+    if (!authoredFormat) {
+      return {
+        ...defaults,
+        owned: true,
+        error: 'Image panel requires an explicit FORMAT PNG clause.',
+        params: { ...(defaults.params || {}) },
+      };
+    }
+    if (authoredFormat.toUpperCase() !== 'PNG') {
+      return {
+        ...defaults,
+        owned: true,
+        error: `Image panel requires FORMAT PNG. Remove FORMAT ${authoredFormat} from the SQL.`,
+        params: { ...(defaults.params || {}) },
+      };
+    }
+    return {
+      ...defaults,
+      owned: true,
+      error: null,
+      format: 'PNG',
+      // rowLimit is not meaningful for a binary (single-blob) result — kept
+      // at 0 so a caller that still reads it (e.g. a shared row-cap gate)
+      // never treats an image tile as a multi-row streaming result.
+      rowLimit: 0,
+      params: { ...(defaults.params || {}) },
+    };
+  }
   if (!isKpiPanel(panel)) return { ...defaults, owned: false, error: null, params: { ...(defaults.params || {}) } };
   const authoredFormat = detectSqlFormat(sql);
   if (authoredFormat) {

@@ -12,7 +12,7 @@ const CHART_TYPES = _CHART_TYPES as { value: ChartFamilyType; label: string }[];
 
 /** The panel types the Result-choice picker actually offers as options —
  *  `table` is deliberately excluded (see PICKABLE_PANEL_TYPES below). */
-export type PickablePanelType = 'kpi' | ChartFamilyType | 'logs' | 'text';
+export type PickablePanelType = 'kpi' | ChartFamilyType | 'logs' | 'text' | 'image';
 
 /** One Panel-arm option in the Result-choice picker. */
 export interface PanelResultChoice {
@@ -36,6 +36,7 @@ export const PANEL_RESULT_CHOICES: readonly PanelResultChoice[] = Object.freeze(
     ({ id: `panel:${value}`, kind: 'panel', panelType: value, label })),
   { id: 'panel:logs', kind: 'panel', panelType: 'logs', label: 'Logs' },
   { id: 'panel:text', kind: 'panel', panelType: 'text', label: 'Text' },
+  { id: 'panel:image', kind: 'panel', panelType: 'image', label: 'Image' },
 ]);
 
 export const DASHBOARD_ROLE_RESULT_CHOICES: readonly RoleResultChoice[] = Object.freeze([

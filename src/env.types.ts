@@ -53,6 +53,13 @@ export interface CreateAppEnv {
    * `{ clipboard: { writeText } }` or omits the field entirely. */
   navigator?: { clipboard?: Clipboard } & Record<string, unknown>;
   download?: (filename: string, mime: string, content: BlobPart) => void;
+  /** Object-URL seam for the Image (PNG) result view (#307) — `Blob`/`URL`
+   * are real-browser-only (no happy-dom support), so tests always inject a
+   * fake pair. Real fallback (inside `createApp`) is
+   * `URL.createObjectURL(new Blob([bytes], {type: mime}))` /
+   * `URL.revokeObjectURL(url)`. */
+  createObjectUrl?: (bytes: Uint8Array, mime: string) => string;
+  revokeObjectUrl?: (url: string) => void;
   handoffMs?: number;
   handoffListenMs?: number;
 }

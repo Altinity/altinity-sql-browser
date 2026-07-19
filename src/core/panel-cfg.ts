@@ -6,6 +6,9 @@
 //            | table                     (no schema-bound fields)
 //            | logs                      ({time?,msg?,level?} column NAMES)
 //            | text                      ({content} — needs no result at all)
+//            | image                     ({fit?,background?,alt?} — a single
+//                                          FORMAT PNG result, #307; needs a
+//                                          query but no column-role fields)
 //
 // Field policy (pinned in #166): unknown cfg fields are ignored by validation
 // and *preserved* by clone/normalize — the additive forward-compatibility
@@ -15,7 +18,7 @@
 // storage too; rendering falls back via `resolvePanel` with a diagnostic.
 
 import type {
-  AreaPanelCfg, BarPanelCfg, FieldConfig, HbarPanelCfg, KpiPanelCfg, LinePanelCfg,
+  AreaPanelCfg, BarPanelCfg, FieldConfig, HbarPanelCfg, ImagePanelCfg, KpiPanelCfg, LinePanelCfg,
   LogsPanelCfg, Panel, PanelCfg, PiePanelCfg, TablePanelCfg, TextPanelCfg,
 } from '../generated/json-schema.types.js';
 import {
@@ -42,7 +45,7 @@ export interface Column {
 // generated schema branches themselves (no hand-duplicated literal list).
 type ChartFamilyCfg = BarPanelCfg | HbarPanelCfg | LinePanelCfg | AreaPanelCfg | PiePanelCfg;
 export type ChartFamilyType = ChartFamilyCfg['type'];
-type KnownPanelCfg = ChartFamilyCfg | KpiPanelCfg | TablePanelCfg | LogsPanelCfg | TextPanelCfg;
+type KnownPanelCfg = ChartFamilyCfg | KpiPanelCfg | TablePanelCfg | LogsPanelCfg | TextPanelCfg | ImagePanelCfg;
 export type KnownPanelTypeId = KnownPanelCfg['type'];
 
 // chart-data.js is unconverted (checkJs:false), so TS infers its exports'
@@ -63,7 +66,7 @@ const schemaKey = _schemaKey as (columns: Column[] | null | undefined) => string
 export const CHART_FAMILY: Set<ChartFamilyType> = new Set(CHART_TYPES.map((t) => t.value));
 
 /** Every v1 panel type id, in picker order (chart family first). */
-export const PANEL_TYPE_IDS: KnownPanelTypeId[] = ['kpi', ...CHART_FAMILY, 'table', 'logs', 'text'];
+export const PANEL_TYPE_IDS: KnownPanelTypeId[] = ['kpi', ...CHART_FAMILY, 'table', 'logs', 'text', 'image'];
 
 const KNOWN_TYPES: Set<KnownPanelTypeId> = new Set(PANEL_TYPE_IDS);
 
@@ -194,7 +197,7 @@ export function panelCfgValid(
   const type = (cfg as { type?: unknown }).type;
   if (isChartFamily(type)) return chartCfgValid(cfg, columns);
   if (type === 'logs') return resolveLogsShape(cfg as LogsCfgLike, columns) != null;
-  return type === 'kpi' || type === 'table' || type === 'text';
+  return type === 'kpi' || type === 'table' || type === 'text' || type === 'image';
 }
 
 /**
@@ -458,7 +461,7 @@ export function resolvePanel(saved: Panel | null | undefined, input: PanelInput)
     if (detected) return resolved({ cfg, shape: detected, rederived: true, fallback: false });
     return fallbackTo('Saved logs panel: no time + message columns in this result.');
   }
-  if (cfg.type === 'table' || cfg.type === 'text') {
+  if (cfg.type === 'table' || cfg.type === 'text' || cfg.type === 'image') {
     return resolved({ cfg, rederived: false, fallback: false });
   }
   return fallbackTo('Unknown panel type "' + String(cfg.type) + '" (saved by a newer build?).');

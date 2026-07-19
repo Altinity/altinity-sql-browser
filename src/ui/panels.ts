@@ -39,6 +39,7 @@ import {
 } from '../core/result-choice.js';
 import type { ResultChoice } from '../core/result-choice.js';
 import type { FieldConfig, PanelCfg } from '../generated/json-schema.types.js';
+import type { ImageResultPayload } from '../core/png.js';
 
 // ── Typed wrappers over still-untyped .js dependencies ──────────────────────
 // Each const pins exactly the signature this module relies on; the runtime
@@ -247,6 +248,9 @@ interface PanelResult {
   error: unknown;
   rawText: string | null;
   panelState?: Record<string, unknown>;
+  /** A validated `FORMAT PNG` image result (#307), when the run's format was
+   *  PNG (only the Image arm ever reads this). */
+  image?: ImageResultPayload | null;
 }
 
 /** Shared render-arm result shape — every `renderPanel` (and
@@ -279,6 +283,9 @@ interface PanelRenderArgs {
   onCell?: (name: string, type: string, value: unknown) => void;
   onCfgChange?: (cfg: PanelCfg) => void;
   setChart?: (chart: PanelChartInstance) => void;
+  /** Tile/query title — only the Image arm's `alt`-text fallback reads this
+   *  (#307: `cfg.alt || title`). */
+  title?: string;
 }
 
 interface PanelArm {
@@ -413,11 +420,44 @@ const textArm: PanelArm = {
   },
 };
 
+// The Image arm (#307): a single FORMAT PNG result rendered as an <img>, no
+// column-role fields. `fit`/`background`/`alt` are authored on the cfg (Spec
+// editor / presentation variants) — this arm has no inline controls, matching
+// KPI's authoring-happens-in-Spec convention rather than Logs' inline pickers.
+// The object URL is minted through the injected `app.createObjectUrl` seam
+// (real browser: `URL.createObjectURL`) and freed via the returned `destroy`
+// — the SAME `out.destroy` slot every other arm's chart/instance cleanup uses
+// (dashboard.ts's `destroyChart` calls it before every repaint and whenever a
+// tile leaves 'ready', so a stale blob: URL is never left dangling).
+const imageArm: PanelArm = {
+  controls: () => null,
+  renderPanel({ app, result, cfg, title }: {
+    app: App; result: PanelResult | null; cfg: PanelCfg; title?: string;
+  }): PanelRenderResult {
+    const image = result && result.image;
+    if (!image) return { node: panelEmpty('Run the query (with a trailing FORMAT PNG) to preview this image.') };
+    const url = app.createObjectUrl(image.bytes, image.mimeType);
+    const fit = (cfg.fit as string | undefined) || 'contain';
+    const background = (cfg.background as string | undefined) || 'theme';
+    const alt = (cfg.alt as string | undefined) || title || '';
+    const img = h('img', {
+      class: 'panel-image panel-image-fit-' + fit,
+      src: url,
+      alt,
+      width: image.width,
+      height: image.height,
+    });
+    const box = h('div', { class: 'panel-image-box panel-image-bg-' + background }, img);
+    return { node: box, destroy: () => { app.revokeObjectUrl(url); } };
+  },
+};
+
 const PANEL_TYPES: Record<string, PanelArm> = {
   kpi: kpiArm,
   table: tableArm,
   logs: logsArm,
   text: textArm,
+  image: imageArm,
 };
 for (const t of CHART_FAMILY) PANEL_TYPES[t] = chartArm;
 export { PANEL_TYPES };
@@ -431,6 +471,7 @@ export const PANEL_PICKER_OPTIONS: { value: string; label: string }[] = [
   ...CHART_TYPES,
   { value: 'logs', label: 'Logs' },
   { value: 'text', label: 'Text' },
+  { value: 'image', label: 'Image' },
 ];
 
 // ── The workbench Panel drawer tab ───────────────────────────────────────────
@@ -444,6 +485,9 @@ interface RenderResolvedPanelOpts {
   onCell?: (name: string, type: string, value: unknown) => void;
   onCfgChange?: (cfg: PanelCfg) => void;
   setChart?: (chart: PanelChartInstance) => void;
+  /** Tile/query title, threaded through to `PanelRenderArgs.title` (see its
+   *  doc comment) — the Image arm's `alt`-text fallback. */
+  title?: string;
 }
 
 /**

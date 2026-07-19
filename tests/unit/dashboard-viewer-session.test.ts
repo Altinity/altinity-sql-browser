@@ -8,8 +8,13 @@ import type {
 import type {
   DashboardDocumentV1, DashboardFilterDefinitionV1, DashboardTileV1, SavedQueryV2,
 } from '../../src/generated/json-schema.types.js';
+import type { ImageResultPayload } from '../../src/core/png.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
+
+const fakeImage = (): ImageResultPayload => ({
+  kind: 'image', format: 'PNG', mimeType: 'image/png', bytes: new Uint8Array([1, 2, 3]), width: 4, height: 5,
+});
 
 interface Resp {
   columns?: { name: string; type?: string }[];
@@ -18,6 +23,7 @@ interface Resp {
   cancelled?: boolean;
   bytes?: number;
   progressRows?: number;
+  image?: ImageResultPayload | null;
 }
 type Responder = (sql: string, req: ViewerReadRequest) => Resp | Promise<Resp>;
 
@@ -33,6 +39,7 @@ function makeExec(responder: Responder = () => ({})) {
       result.progress.bytes = resp.bytes ?? 10;
       result.error = resp.error ?? null;
       result.cancelled = resp.cancelled ?? false;
+      result.image = resp.image ?? null;
     },
   };
   return { exec, calls };
@@ -176,6 +183,83 @@ describe('createDashboardViewerSession', () => {
     await s2.start();
     expect(calls2.length).toBe(0);
     expect(s2.state.value.tiles[0].error).toContain('KPI');
+  });
+
+  it('runs an Image panel through the owned PNG transport and publishes its image state', async () => {
+    const image = fakeImage();
+    // A real binary (PNG) response never populates columns/rows (executeRead's
+    // binary branch only ever sets `result.image`) — pin that explicitly here
+    // since the fake responder otherwise defaults `columns` to `[{name:'n'}]`.
+    const { exec, calls } = makeExec(() => ({ image, columns: [], rows: [] }));
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT plot() FORMAT PNG', { panel: { cfg: { type: 'image' } } })],
+    }));
+    await session.start();
+    expect(calls[0].format).toBe('PNG');
+    const ts = session.state.value.tiles[0];
+    expect(ts.isImage).toBe(true);
+    expect(ts.status).toBe('ready');
+    expect(ts.image).toEqual(image);
+    expect(ts.columns).toEqual([]);
+    expect(ts.rows).toEqual([]);
+  });
+
+  it('rejects an Image panel whose SQL has no FORMAT clause, issuing no request', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT plot()', { panel: { cfg: { type: 'image' } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].status).toBe('error');
+    expect(session.state.value.tiles[0].error).toContain('FORMAT PNG');
+  });
+
+  it('rejects an Image panel whose authored FORMAT is not PNG, issuing no request', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT plot() FORMAT CSV', { panel: { cfg: { type: 'image' } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].error).toContain('FORMAT PNG');
+  });
+
+  it('a non-image tile with an authored FORMAT PNG is still rejected by the blanket gate', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT 1 FORMAT PNG')],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+  });
+
+  it('a stale generation cannot replace a newer Image result (stale-wave suppression)', async () => {
+    let resolveFirst!: () => void;
+    const first = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    let call = 0;
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const exec: ViewerExecutor = {
+      async executeRead(result, req) {
+        call += 1;
+        if (call === 1) { await first; result.image = fakeImage(); } // slow, stale
+        else result.image = { ...fakeImage(), width: 999 }; // fast, fresh
+        void req;
+      },
+    };
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT plot() FORMAT PNG', { panel: { cfg: { type: 'image' } } })],
+    }));
+    const firstRun = session.refreshTile('t1');
+    await session.refreshTile('t1'); // supersedes the first (still pending) run
+    resolveFirst();
+    await firstRun;
+    expect(session.state.value.tiles[0].image?.width).toBe(999); // the newer result wins
   });
 
   it('runs an optional-block tile and surfaces a query error / progress', async () => {

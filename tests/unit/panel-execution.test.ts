@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { explicitPanel, isKpiPanel, panelExecution } from '../../src/core/panel-execution.js';
+import { explicitPanel, isImagePanel, isKpiPanel, panelExecution } from '../../src/core/panel-execution.js';
 
 describe('panel execution ownership', () => {
   it('leaves non-KPI execution unchanged', () => {
@@ -18,6 +18,37 @@ describe('panel execution ownership', () => {
     expect(out).toMatchObject({ format: 'Table', owned: true, params: { p: 1 } });
     expect(out.error).toBe('KPI panel owns the result format. Remove FORMAT CSV from the SQL.');
     expect(panelExecution({ cfg: { type: 'kpi' } }, 'SELECT 1 FORMAT JSON').params).toEqual({});
+  });
+});
+
+describe('image panel ownership (#307)', () => {
+  it('isImagePanel narrows on cfg.type', () => {
+    expect(isImagePanel(null)).toBe(false);
+    expect(isImagePanel({ cfg: { type: 'table' } })).toBe(false);
+    expect(isImagePanel({ cfg: { type: 'image' } })).toBe(true);
+  });
+  it('accepts an authored FORMAT PNG (case-insensitive) with rowLimit 0', () => {
+    const out = panelExecution({ cfg: { type: 'image' } }, 'SELECT plot() FORMAT png', { params: { readonly: 2 } });
+    expect(out).toEqual({ owned: true, error: null, format: 'PNG', rowLimit: 0, params: { readonly: 2 } });
+  });
+  it('rejects a missing FORMAT clause (leaving the caller-owned format default untouched)', () => {
+    const out = panelExecution({ cfg: { type: 'image' } }, 'SELECT plot()', { format: 'Table' });
+    expect(out.owned).toBe(true);
+    expect(out.error).toBe('Image panel requires an explicit FORMAT PNG clause.');
+    expect(out.format).toBe('Table'); // an error result never overrides the caller's default
+  });
+  it('rejects an authored FORMAT other than PNG', () => {
+    const out = panelExecution({ cfg: { type: 'image' } }, 'SELECT plot() FORMAT CSV');
+    expect(out.owned).toBe(true);
+    expect(out.error).toBe('Image panel requires FORMAT PNG. Remove FORMAT CSV from the SQL.');
+  });
+  it('KPI (and any other panel) with an authored FORMAT PNG is still rejected exactly as any other FORMAT', () => {
+    const kpi = panelExecution({ cfg: { type: 'kpi' } }, 'SELECT 1 FORMAT PNG');
+    expect(kpi.error).toBe('KPI panel owns the result format. Remove FORMAT PNG from the SQL.');
+    // A non-KPI, non-image panel is a pass-through — its caller (the Dashboard
+    // viewer session) is the one that blanket-rejects an authored FORMAT.
+    const table = panelExecution({ cfg: { type: 'table' } }, 'SELECT 1 FORMAT PNG');
+    expect(table.owned).toBe(false);
   });
 });
 

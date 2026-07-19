@@ -24,6 +24,7 @@ describe('type sets', () => {
     expect(PANEL_TYPE_IDS).toContain('table');
     expect(PANEL_TYPE_IDS).toContain('logs');
     expect(PANEL_TYPE_IDS).toContain('text');
+    expect(PANEL_TYPE_IDS).toContain('image');
     expect(isChartFamily('pie')).toBe(true);
     expect(isChartFamily('table')).toBe(false);
     expect(isKnownPanelType('logs')).toBe(true);
@@ -110,9 +111,11 @@ describe('panelCfgValid', () => {
     expect(panelCfgValid({ type: 'logs' }, logCols)).toBe(true);
     expect(panelCfgValid({ type: 'logs', time: 'gone' }, logCols)).toBe(false);
   });
-  it('table and text carry no schema-bound fields (always valid); unknown/absent type is not', () => {
+  it('table, text, and image carry no schema-bound fields (always valid); unknown/absent type is not', () => {
     expect(panelCfgValid({ type: 'table' }, strCols)).toBe(true);
     expect(panelCfgValid({ type: 'text', content: 'hi' }, [])).toBe(true);
+    expect(panelCfgValid({ type: 'image' }, [])).toBe(true);
+    expect(panelCfgValid({ type: 'image', fit: 'cover' }, strCols)).toBe(true);
     expect(panelCfgValid({ type: 'gauge' }, strCols)).toBe(false);
     expect(panelCfgValid({}, strCols)).toBe(false);
     expect(panelCfgValid(null, strCols)).toBe(false);
@@ -136,6 +139,10 @@ describe('normalizePanelCfg', () => {
     const cfg = { type: 'table', futureField: 1 };
     expect(normalizePanelCfg(cfg)).toBe(cfg);
     expect(normalizePanelCfg(null)).toBeNull();
+  });
+  it('image passes through untouched (no cross-field invariants)', () => {
+    const cfg = { type: 'image', fit: 'cover', background: 'checkerboard', alt: 'chart' };
+    expect(normalizePanelCfg(cfg)).toBe(cfg);
   });
 });
 
@@ -215,6 +222,15 @@ describe('switchPanelType', () => {
   it('a null/empty payload starts from scratch', () => {
     expect(switchPanelType(null, 'text', []).cfg).toEqual({ type: 'text', content: '' });
     expect(switchPanelType({ cfg: null }, 'table', []).cfg).toEqual({ type: 'table' });
+  });
+  it('switching to image is a plain type swap; fit/background/alt ride along through a round-trip', () => {
+    const toImage = switchPanelType({ cfg: { type: 'table' } }, 'image', []);
+    expect(toImage.cfg).toEqual({ type: 'image' });
+    const authored = { cfg: { type: 'image', fit: 'cover', background: 'checkerboard', alt: 'x' } };
+    const away = switchPanelType(authored, 'table', []);
+    expect(away.cfg).toMatchObject({ type: 'table', fit: 'cover', background: 'checkerboard', alt: 'x' });
+    const back = switchPanelType({ cfg: away.cfg, key: away.key }, 'image', []);
+    expect(back.cfg).toEqual({ type: 'image', fit: 'cover', background: 'checkerboard', alt: 'x' });
   });
 });
 
@@ -320,6 +336,13 @@ describe('resolvePanel', () => {
     const text = resolvePanel({ cfg: { type: 'text', content: '# hi' } }, []);
     expect(text.cfg.content).toBe('# hi');
     expect(text.fallback).toBe(false);
+  });
+  it('image passes through for any result shape (no column-role fields)', () => {
+    const noCols = resolvePanel({ cfg: { type: 'image', fit: 'cover' } }, []);
+    expect(noCols).toMatchObject({ rederived: false, fallback: false });
+    expect(noCols.cfg).toEqual({ type: 'image', fit: 'cover' });
+    const withCols = resolvePanel({ cfg: { type: 'image' } }, chartCols);
+    expect(withCols).toMatchObject({ rederived: false, fallback: false });
   });
   it('an unknown type (newer build) falls back with a diagnostic naming it', () => {
     const out = resolvePanel({ cfg: { type: 'gauge', max: 100 } }, chartCols);

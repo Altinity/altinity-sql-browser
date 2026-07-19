@@ -944,6 +944,12 @@ export interface HistoryResultSnapshot {
   rawText: string | null;
   rows: readonly unknown[];
   progress: { elapsed_ns: number };
+  /** A validated FORMAT PNG image result (#307) — like `rawText`, recorded as
+   *  `rows: null` (no row count is meaningful for a single image), not the
+   *  always-empty `rows.length`. Optional: every OTHER `HistoryResultSnapshot`
+   *  caller (script/scriptExport runs go through `recordScriptHistory`
+   *  instead, never this function) simply omits the field. */
+  image?: unknown;
 }
 
 /**
@@ -963,7 +969,7 @@ export function recordHistory(
   pushHistory(
     state,
     sqlText != null ? sqlText : tab.sqlDraft,
-    tab.result.rawText != null ? null : tab.result.rows.length,
+    tab.result.rawText != null || tab.result.image != null ? null : tab.result.rows.length,
     Math.round(tab.result.progress.elapsed_ns / 1e6),
     save, now,
   );

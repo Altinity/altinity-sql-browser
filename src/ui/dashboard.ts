@@ -34,6 +34,7 @@ import { Icon as IconUntyped } from './icons.js';
 import { renderResolvedPanel } from './panels.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
+import type { ImageResultPayload } from '../core/png.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
 import {
   formatBytes as formatBytesUntyped, formatRows as formatRowsUntyped,
@@ -182,6 +183,12 @@ interface TileEl {
   panelState: { key: string;[k: string]: unknown } | null;
   destroy: (() => void) | null;
   paintedRows: unknown[][] | null;
+  /** The last image identity `paintPanel` painted (#307) — `rows` for an
+   *  Image tile is always an empty array (a query result never streams
+   *  `{row}` lines), so the `rows`-reference repaint gate below can't tell
+   *  a fresh Image result from an unchanged one on its own; this is checked
+   *  alongside it. */
+  paintedImage: ImageResultPayload | null;
 }
 
 /** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
@@ -674,7 +681,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       });
     }
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
-    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null };
+    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null, paintedImage: null };
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
@@ -684,8 +691,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // Paint an ordinary (non-KPI) tile's result once per new result. Only ever
   // called for a 'ready' tile, so columns/rows/meta/panel are all present.
   function paintPanel(ts: ViewerTileState, tileEl: TileEl): void {
-    if (ts.rows === tileEl.paintedRows) return;
-    destroyChart(tileEl);
+    // The rows-reference gate alone can't detect a fresh Image result (its
+    // `rows` is always an empty array — see `paintedImage`'s doc comment), so
+    // an Image tile is also gated on `ts.image` identity; this ALSO means a
+    // tile-body resize (CSS-only fit, no `syncDocument`/re-run) never repaints
+    // an Image tile, since neither identity changes.
+    if (ts.rows === tileEl.paintedRows && ts.image === tileEl.paintedImage) return;
+    destroyChart(tileEl); // also revokes the previously painted Image's object URL (#307)
     const panel = (ts.panel || {}) as Record<string, unknown>;
     const columns = ts.columns as Column[];
     const rows = ts.rows as unknown[][];
@@ -695,20 +707,25 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     tileEl.card.classList.toggle('is-kpi', resolved.cfg.type === 'kpi');
     const key = JSON.stringify(columns.map((c) => c.name + ':' + c.type));
     if (!tileEl.panelState || tileEl.panelState.key !== key) tileEl.panelState = { key };
-    const result = { columns, rows } as Parameters<typeof renderResolvedPanel>[2];
+    const result = { columns, rows, image: ts.image } as Parameters<typeof renderResolvedPanel>[2];
     const out = renderResolvedPanel(app as unknown as App, resolved, result, {
       surface: 'dashboard', state: tileEl.panelState, rerender: () => paintForce(ts, tileEl),
-      readonly: true, cap: DASH_TABLE_DISPLAY_CAP, onCell: () => {},
+      readonly: true, cap: DASH_TABLE_DISPLAY_CAP, onCell: () => {}, title: ts.title,
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
     tileEl.foot.replaceChildren(...tileFooter(ts.meta as NonNullable<ViewerTileState['meta']>));
     tileEl.paintedRows = ts.rows;
+    tileEl.paintedImage = ts.image;
   }
 
-  // A local re-paint (header-click sort) — force even when the rows ref is
-  // unchanged (the sort mutated the panel state, not the data).
-  function paintForce(ts: ViewerTileState, tileEl: TileEl): void { tileEl.paintedRows = null; paintPanel(ts, tileEl); }
+  // A local re-paint (header-click sort) — force even when the rows/image ref
+  // is unchanged (the sort mutated the panel state, not the data).
+  function paintForce(ts: ViewerTileState, tileEl: TileEl): void {
+    tileEl.paintedRows = null;
+    tileEl.paintedImage = null;
+    paintPanel(ts, tileEl);
+  }
 
   // The ordinary (non-KPI) tile body: painted result, or an error/unfilled/
   // loading state card — shared by BOTH engines' reconciliation (flow's
@@ -719,6 +736,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     if (ts.status === 'ready') { paintPanel(ts, tileEl); return; }
     destroyChart(tileEl);
     tileEl.paintedRows = null;
+    tileEl.paintedImage = null;
     tileEl.foot.replaceChildren();
     if (ts.status === 'error') {
       tileEl.body.replaceChildren(h('div', { class: 'dash-tile-error' }, ts.error || 'Error'));

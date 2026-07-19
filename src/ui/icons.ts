@@ -77,6 +77,9 @@ export const Icon = {
   code: () => svg('M5 3L2 7l3 4M9 3l3 4-3 4', 14, 14, { stroke: 1.6 }),
   copy: () => iconEl('<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><path d="M2 8.5V2.5a1 1 0 0 1 1-1h6"/>', 12, 12),
   download: () => iconEl('<path d="M6 1.5v6.5M3.5 5.5L6 8l2.5-2.5"/><path d="M2 10h8"/>', 12, 12),
+  // A FORMAT PNG result's own tab/toolbar glyph (#307) — a picture frame with
+  // a small sun + mountain, distinct from `table2`/`json`'s glyphs.
+  image: () => iconEl('<rect x="1.5" y="2" width="9" height="8" rx="1"/><circle cx="4" cy="4.5" r="1"/><path d="M2 8.5l2.3-2.3 1.7 1.7 2-2.4 2.5 3"/>', 12, 12),
   upload: () => iconEl('<path d="M6 8.5V2M3.5 4.5L6 2l2.5 2.5"/><path d="M2 10h8"/>', 12, 12),
   logout: () => iconEl('<path d="M5.5 2.5H3a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h2.5"/><path d="M7 8.5L9.5 6 7 3.5M9.5 6H4.5"/>', 12, 12),
   // Login-screen glyphs (SSO shield, password eye, host server, connect arrow).
