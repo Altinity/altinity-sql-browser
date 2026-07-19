@@ -7,6 +7,7 @@ import {
   structuredCapabilityFromColumns,
   buildStructuredDocSelect,
   normalizeStructuredRow,
+  firstProseLine,
   type FunctionsDocCapability,
   type StructuredDocKind,
 } from '../../src/core/doc-capability.js';
@@ -629,5 +630,85 @@ describe('normalizeStructuredRow', () => {
     const entry = normalizeStructuredRow('format', {}, cap);
     expect(entry.title).toBe('');
     expect(entry.signature).toBe('');
+  });
+
+  it('summary derivation (data-type) skips a leading admonition marker — live-verified real-world shape', () => {
+    const cap = structuredCapabilityFromColumns('data-type', DATA_TYPE_FULL_COLS);
+    const entry = normalizeStructuredRow('data-type', {
+      name: 'Enum', alias_to: '', syntax: '', examples: '', introduced_in: '', related: '',
+      description: ':::tip\nCheck out our [guide](/docs/x) for details.\n:::',
+    }, cap);
+    expect(entry.summary).toBe('Check out our [guide](/docs/x) for details.');
+  });
+
+  it('signature derivation (firstLine of syntax) is NOT a summary — a syntax block starting with structural lines is untouched', () => {
+    // Regression guard: only `description` (summary) goes through
+    // `firstProseLine`; `syntax` (signature) keeps the plain `firstLine`
+    // behavior even when its first line looks structural.
+    const cap = structuredCapabilityFromColumns('data-type', DATA_TYPE_FULL_COLS);
+    const entry = normalizeStructuredRow('data-type', {
+      name: 'Foo', alias_to: '', examples: '', introduced_in: '', related: '', description: '',
+      syntax: '| a | b |\nFoo(x)',
+    }, cap);
+    expect(entry.signature).toBe('| a | b |');
+  });
+});
+
+describe('firstProseLine', () => {
+  it('empty/nullish input -> ""', () => {
+    expect(firstProseLine('')).toBe('');
+    expect(firstProseLine(null)).toBe('');
+    expect(firstProseLine(undefined)).toBe('');
+  });
+
+  it("strips a heading's trailing Docusaurus explicit-anchor suffix (`Description {#description}`)", () => {
+    expect(firstProseLine('## Description {#description}\nBody.')).toBe('Description');
+    expect(firstProseLine('## Plain heading\nBody.')).toBe('Plain heading');
+  });
+
+  it('skips a leading admonition marker (`:::tip ...` and a bare `:::`) and uses raw inline markdown verbatim', () => {
+    expect(firstProseLine(':::tip\nCheck out our [guide](/docs/x) for more.')).toBe(
+      'Check out our [guide](/docs/x) for more.',
+    );
+    expect(firstProseLine(':::\nSome note.\n:::')).toBe('Some note.');
+  });
+
+  it('skips leading table rows (`|`-prefixed lines) down to the first prose line, or "" when none follow', () => {
+    expect(firstProseLine('| Input | Output | Alias |\n| --- | --- | --- |\n| yes | yes | csv |\n\nProse after.')).toBe(
+      'Prose after.',
+    );
+    expect(firstProseLine('| Input | Output | Alias |\n| --- | --- | --- |\n| yes | yes | csv |')).toBe('');
+  });
+
+  it('skips a fence delimiter line', () => {
+    expect(firstProseLine('```\ncode inside\n```\nAfter the fence.')).toBe('code inside');
+    // (the fence DELIMITER itself is skipped; the text lines between fences
+    // are not further classified by this helper — it only skips STRUCTURAL
+    // marker lines, not fence *contents*.)
+  });
+
+  it('skips a bare thematic break (---/***/___) and nothing else', () => {
+    expect(firstProseLine('---\nAfter break.')).toBe('After break.');
+    expect(firstProseLine('***\nAfter break.')).toBe('After break.');
+    expect(firstProseLine('___\nAfter break.')).toBe('After break.');
+    // a line that merely CONTAINS dashes but isn't a bare break is prose.
+    expect(firstProseLine('a - b - c')).toBe('a - b - c');
+  });
+
+  it('strips an ATX heading marker but keeps and returns its text', () => {
+    expect(firstProseLine('# Heading text\nMore.')).toBe('Heading text');
+    expect(firstProseLine('###### Deep heading\nMore.')).toBe('Deep heading');
+  });
+
+  it('a bare `#` with no following space is not recognized as a heading marker — returned as literal prose', () => {
+    expect(firstProseLine('#\nReal prose.')).toBe('#');
+  });
+
+  it('blank/whitespace-only input (every line empty) -> ""', () => {
+    expect(firstProseLine('\n   \n\t\n')).toBe('');
+  });
+
+  it('plain prose with inline markdown is returned verbatim (no inline parsing)', () => {
+    expect(firstProseLine('This is **bold** and a [link](/docs/y).')).toBe('This is **bold** and a [link](/docs/y).');
   });
 });

@@ -252,6 +252,29 @@ describe('normalizeDocumentationRow', () => {
     expect(entry.summary).toBe('Real summary line.');
   });
 
+  it('summary skips a leading Docusaurus admonition marker and uses the next prose line (live-verified real-world shape)', () => {
+    const row = {
+      name: 'X', type: 'Setting',
+      description: ':::tip\nCheck out our [guide](/docs/x) for more.\n:::',
+    };
+    const entry = normalizeDocumentationRow(row, NO_SOURCE_CAP);
+    expect(entry.summary).toBe('Check out our [guide](/docs/x) for more.');
+  });
+
+  it('summary skips a leading Markdown table and uses the first prose line after it, or "" when none', () => {
+    const withProseAfter = normalizeDocumentationRow({
+      name: 'CSV', type: 'Format',
+      description: '| Input | Output | Alias |\n| --- | --- | --- |\n| yes | yes | csv |\n\nA comma-separated format.',
+    }, NO_SOURCE_CAP);
+    expect(withProseAfter.summary).toBe('A comma-separated format.');
+
+    const tableOnly = normalizeDocumentationRow({
+      name: 'CSV', type: 'Format',
+      description: '| Input | Output | Alias |\n| --- | --- | --- |\n| yes | yes | csv |',
+    }, NO_SOURCE_CAP);
+    expect(tableOnly.summary).toBe('');
+  });
+
   it('truncates and flags oversized descriptions beyond MAX_DOC_MARKDOWN_BYTES', () => {
     const big = 'x'.repeat(MAX_DOC_MARKDOWN_BYTES + 500);
     const row = { name: 'Big', type: 'Setting', description: big };

@@ -31,6 +31,7 @@
 import type { DocKind, DocEntry, MarkdownDocEntry } from './doc-types.js';
 import type { ParsedServerVersion } from './format.js';
 import { versionAtLeast } from './format.js';
+import { firstProseLine } from './doc-capability.js';
 
 // ── Kind <-> server `type` label mapping ────────────────────────────────────
 
@@ -211,19 +212,6 @@ export function buildDocumentationNameSelect(
 // server, but stay defensive against a genuinely absent/null key.
 type RawCell = string | number | boolean | null | undefined;
 
-// First non-empty line of a (possibly multi-line Markdown) cell, trimmed —
-// mirrors `doc-capability.ts`'s own `firstLine` (kept as a small local copy
-// rather than importing a private helper across files, since the caller of
-// each is exercising a different row shape).
-function firstLine(s: unknown): string {
-  if (!s) return '';
-  for (const line of String(s).split('\n')) {
-    const t = line.trim();
-    if (t) return t;
-  }
-  return '';
-}
-
 function trimmedOrUndefined(s: unknown): string | undefined {
   const t = s == null ? '' : String(s).trim();
   return t ? t : undefined;
@@ -272,7 +260,7 @@ export function normalizeDocumentationRow(row: Record<string, RawCell>, cap: Doc
   const kind = docKindFromServerType(serverTypeLabel);
   const rawDescription = row.description == null ? '' : String(row.description);
   const { text: markdown, oversized } = boundMarkdown(rawDescription, MAX_DOC_MARKDOWN_BYTES);
-  const summary = firstLine(markdown);
+  const summary = firstProseLine(markdown);
   const source = cap.source ? trimmedOrUndefined(row.source) : undefined;
 
   const entry: MarkdownDocEntry = {

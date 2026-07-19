@@ -209,6 +209,81 @@ describe('states', () => {
   });
 });
 
+describe('structured fields render through the markdown-subset renderer', () => {
+  it('a description containing a link renders a safe anchor (target=_blank, rel=noopener noreferrer)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: entry({ description: 'See [the guide](https://clickhouse.com/docs/x) for details.' }),
+    });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    const link = document.querySelector<HTMLAnchorElement>('.docs-md a')!;
+    expect(link).not.toBeNull();
+    expect(link.getAttribute('href')).toBe('https://clickhouse.com/docs/x');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link.textContent).toBe('the guide');
+    closeDocPane(app);
+  });
+
+  it('a structural admonition marker line stays visible as literal text inside the rendered body', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: entry({ description: ':::tip\nUseful hint.\n:::' }),
+    });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    const body = document.querySelector('.docs-md')!;
+    expect(body.textContent).toContain(':::tip');
+    expect(body.textContent).toContain('Useful hint.');
+    closeDocPane(app);
+  });
+
+  it('a ```sql fence inside the description mounts a CodeViewer with a Copy button, and it is torn down on retarget', async () => {
+    const app = makeApp();
+    const description = 'Some prose.\n\n```sql\nSELECT 1\n```\n';
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ description }) });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.CodeViewer).toHaveBeenCalledWith(expect.objectContaining({ text: 'SELECT 1', language: 'sql' }));
+    expect(document.querySelector('.docs-md-copy')).not.toBeNull();
+    const calls = (app.CodeViewer as ReturnType<typeof vi.fn>).mock;
+    const mdViewer = calls.results[calls.calls.length - 1].value;
+
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'missing' });
+    openDocEntry(app, { kind: 'function', name: 'other' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(mdViewer.destroy).toHaveBeenCalled();
+    closeDocPane(app);
+  });
+
+  it('the Copy button on a description-body ```sql fence writes the EXACT code text via the clipboard seam', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
+    const description = '```sql\nSELECT 2\n```';
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ description }) });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    document.querySelector<HTMLButtonElement>('.docs-md-copy')!.click();
+    expect(writeText).toHaveBeenCalledWith('SELECT 2');
+    closeDocPane(app);
+  });
+
+  it('arguments/parameters/returned value are also rendered through the markdown body (not a plain text div)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found',
+      value: entry({ arguments: 'See [args](https://clickhouse.com/docs/args).' }),
+    });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    expect(document.querySelector('.docs-field-text')).toBeNull();
+    expect(document.querySelectorAll('.docs-md').length).toBeGreaterThan(0);
+    closeDocPane(app);
+  });
+});
+
 describe('alias navigation + cycle guard', () => {
   it('clicking "Alias of X" navigates to the canonical target', async () => {
     const app = makeApp();
@@ -1047,7 +1122,14 @@ describe('#315 markdown-subset entries', () => {
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
     expect(document.querySelector('.docs-signature')!.textContent).toBe('toDateTime(expr[, timezone])');
-    expect(document.querySelector('.docs-md')).toBeNull();
+    // The structured path's own long-text fields (Summary/Description/
+    // Arguments/…) now render through the SAME `.docs-md` markdown renderer
+    // Fix B introduces — what stays absent is the markdown-subset-ENTRY-only
+    // chrome (`renderMarkdownEntry`'s own wrapper class / source line /
+    // "View latest" link), which is a distinct render path from `renderFound`.
+    expect(document.querySelector('.docs-md-entry')).toBeNull();
+    expect(document.querySelector('.docs-md-source')).toBeNull();
+    expect(document.querySelector('.docs-md-latest')).toBeNull();
     closeDocPane(app);
   });
 

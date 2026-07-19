@@ -272,11 +272,32 @@ function copyExample(app: DocPaneApp, doc: Document, text: string): void {
 
 const badge = (text: string, cls: string): HTMLElement => h('span', { class: 'docs-badge ' + cls }, text);
 
-function field(label: string, text: string | undefined): HTMLElement | null {
+// A long-text, Markdown-bearing structured field (description/arguments/
+// parameters/returnedValue — #313/#314 `system.functions`/structured-source
+// cells frequently carry Docusaurus-flavored Markdown: admonitions, links,
+// tables, SQL fences, per a live-verified real 26.6.1 server). Rendered
+// through the SAME bounded pure parser + safe-DOM view #315's broad
+// `system.documentation` path already uses (`parseDocMarkdown` ->
+// `renderDocMarkdown`), with the SAME CodeViewer/onCopy/registerViewer
+// wiring `renderMarkdownEntry` below threads through — so a ```sql fence
+// inside a function's Arguments text gets the identical highlighting/Copy
+// treatment a broad-source entry's body does, and any mounted CM6 viewer
+// joins the pane's own per-render teardown list. Keeps the field-label
+// structure (`.docs-field`/`.docs-field-label`) — only the value changes
+// from a plain text div to the rendered Markdown container.
+function markdownField(
+  app: DocPaneApp, doc: Document, st: PaneState, label: string, text: string | undefined,
+): HTMLElement | null {
   if (!text) return null;
+  const parsed = parseDocMarkdown(text, { linkPolicy: defaultDocLinkPolicy });
+  const body = renderDocMarkdown(doc, parsed, {
+    codeViewer: { factory: app.CodeViewer, languageExtension: chLanguageExtension(app.catalog.refData) },
+    onCopy: (t) => copyExample(app, doc, t),
+    registerViewer: (v) => st.viewers.push(v),
+  });
   return h('div', { class: 'docs-field' },
     h('div', { class: 'docs-field-label' }, label),
-    h('div', { class: 'docs-field-text' }, text));
+    body);
 }
 
 // Only rendered for a real boolean — `null`/`undefined` ("not reported by
@@ -392,10 +413,10 @@ function renderFound(
     h('div', { class: 'docs-signature' }, entry.signature),
     aliasNotice,
     categories,
-    field(entry.description ? 'Description' : 'Summary', entry.description || entry.summary),
-    field('Arguments', entry.arguments),
-    field('Parameters', entry.parameters),
-    field('Returned value', entry.returnedValue),
+    markdownField(app, doc, st, entry.description ? 'Description' : 'Summary', entry.description || entry.summary),
+    markdownField(app, doc, st, 'Arguments', entry.arguments),
+    markdownField(app, doc, st, 'Parameters', entry.parameters),
+    markdownField(app, doc, st, 'Returned value', entry.returnedValue),
     h('div', { class: 'docs-flags' }, boolBadge('Deterministic', entry.deterministic), boolBadge('Higher-order', entry.higherOrder)),
     syntaxBlock,
     factsBlock,

@@ -149,6 +149,62 @@ function firstLine(s: unknown): string {
   return '';
 }
 
+// Trimmed line looks like a bare thematic break (`---`/`***`/`___`, 3+ of the
+// SAME character, nothing else) — matches the construct `doc-markdown.ts`'s
+// own `THEMATIC_BREAK_RE` treats as a block-level `break`, kept intentionally
+// simpler here since a summary derivation only needs to SKIP the line, not
+// parse it.
+const THEMATIC_BREAK_ONLY_RE = /^(-{3,}|\*{3,}|_{3,})$/;
+
+// ATX heading marker (`#` through `######` + a required space) at the start
+// of a trimmed line — captures the remaining text after the marker.
+const HEADING_MARKER_RE = /^#{1,6}\s+(.*)$/;
+
+/**
+ * First line of `s` that carries actual PROSE content — i.e. the first line
+ * (after trimming) that survives skipping every line that is purely
+ * structural Markdown: blank; a Docusaurus admonition marker (`:::tip`, bare
+ * `:::`, etc. — any line starting with `:::`); a table row (starts with
+ * `|`); a fenced-code delimiter (starts with ```` ``` ````); or a bare
+ * thematic break (`---`/`***`/`___`). An ATX heading line (`# Foo`) is NOT
+ * skipped — its `#`+space marker (requires at least one space — a bare `#`
+ * with no following space is not recognized as a heading marker and is
+ * returned as literal prose) is stripped and the remaining text is used as
+ * the candidate line (a heading is often the only prose a cell has). Real
+ * doc-source Markdown (system.functions/
+ * system.data_type_families/system.documentation descriptions) commonly
+ * opens with exactly these structural constructs (#315 follow-up, live-
+ * verified against a real 26.6.1 server) — a summary/hover-card/
+ * disambiguation-row one-liner must never surface one of them literally.
+ * Only STRUCTURAL lines are skipped; inline Markdown (links, emphasis,
+ * inline code) on an otherwise-prose line is left completely alone — this is
+ * deliberately not an inline parse. Shared by every summary derivation across
+ * `doc-capability.ts` and `doc-documentation.ts`; NOT used for signature
+ * derivation (a signature's `firstLine(syntax)` is a different concern and
+ * stays on the plain `firstLine` above). Pure.
+ */
+export function firstProseLine(s: unknown): string {
+  if (!s) return '';
+  for (const rawLine of String(s).split('\n')) {
+    const t = rawLine.trim();
+    if (!t) continue;
+    if (t.startsWith(':::')) continue;
+    if (t.startsWith('|')) continue;
+    if (t.startsWith('```')) continue;
+    if (THEMATIC_BREAK_ONLY_RE.test(t)) continue;
+    const heading = HEADING_MARKER_RE.exec(t);
+    // A matched ATX marker's captured remainder is never itself blank here:
+    // `t` was already outer-trimmed above (no trailing whitespace survives),
+    // so `HEADING_MARKER_RE`'s trailing `\s+` can only consume LEADING
+    // whitespace after the `#`s, never swallow the whole remainder to blank.
+    // A heading's trailing Docusaurus explicit-anchor suffix (`Foo {#foo}`,
+    // seen live in 26.6 doc bodies) is display noise in a one-liner — drop it.
+    if (heading) return heading[1].replace(/\s*\{#[^}]*\}\s*$/, '');
+    return t;
+  }
+  return '';
+}
+
 // Trimmed non-empty string, or undefined when absent/blank. Used for the
 // simple pass-through text fields (arguments/parameters/returned_value/examples,
 // and #314's introduced_in/examples/alias_to/content_type).
@@ -194,7 +250,7 @@ export function normalizeFunctionRow(row: Record<string, RawCell>, cap: Function
   const name = String(row.name ?? '');
   const isAggregate = cap.isAggregate && !!row.is_aggregate;
   const signature = cap.syntax ? firstLine(row.syntax) || name + '()' : name + '()';
-  const summary = cap.description ? firstLine(row.description) : '';
+  const summary = cap.description ? firstProseLine(row.description) : '';
   const description = cap.description ? trimmedBody(row.description) : undefined;
   const aliasTo = cap.aliasTo ? trimmedOrUndefined(row.alias_to) : undefined;
   const introducedIn = cap.introducedIn ? trimmedOrUndefined(row.introduced_in) : undefined;
@@ -562,7 +618,7 @@ export function normalizeStructuredRow(
   const name = String(row.name ?? '');
   const syntaxFull = cap.syntax ? trimmedBody(row.syntax) : undefined;
   const signature = syntaxFull ? firstLine(syntaxFull) : name;
-  const summary = cap.description ? firstLine(row.description) : '';
+  const summary = cap.description ? firstProseLine(row.description) : '';
   const description = cap.description ? trimmedBody(row.description) : undefined;
   const introducedIn = cap.introducedIn ? trimmedOrUndefined(row.introduced_in) : undefined;
   const examples = cap.examples ? trimmedOrUndefined(row.examples) : undefined;
