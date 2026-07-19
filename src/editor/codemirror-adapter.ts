@@ -41,10 +41,6 @@ import { chLanguageExtension } from './ch-lang.js';
 import { lookupFunctionEntry, docTargetForMatch, resolveDocTarget } from '../core/doc-context.js';
 import type { FunctionMatch } from '../core/doc-context.js';
 import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
-import { openDocEntry } from '../ui/doc-pane.js';
-import type { DocPaneApp } from '../ui/doc-pane.js';
-import type { PreferenceKey } from '../application/app-preferences.js';
-import type { CodeViewerFactory } from './code-viewer.types.js';
 
 // ── Local typed contracts ───────────────────────────────────────────────────
 // core/completions.js's own `AssembledReference`/`CompletionContext` shapes
@@ -149,13 +145,13 @@ export interface DropEvent {
  *  app itself talks through the port), the tab/schema state this port syncs
  *  against, and the FROM-scope column loader (#84).
  *
- *  `document`/`prefs`/`CodeViewer` are the extra fields `openDocEntry`
- *  (ui/doc-pane.ts) needs beyond `catalog.docEntry`/`refData` to open the
- *  persistent reference pane — optional here (unlike `DocPaneApp`'s own
- *  required fields) because this adapter's own tests construct a minimal
- *  `CodeMirrorEditorApp` that never opens the pane; the real, injected `App`
- *  (main.ts) always supplies all three, and `toDocPaneApp` below is the one
- *  place that checks for their presence before calling `openDocEntry`. */
+ *  `openDocEntry` is the INJECTED open-the-reference-pane action (#313) —
+ *  the app controller binds it to ui/doc-pane.ts's `openDocEntry(app, …)`
+ *  at wiring time (app.ts), so this adapter never imports UI modules (the
+ *  editor stays a leaf layer; enforced by build/check-boundaries.mjs).
+ *  Optional because this adapter's own tests construct a minimal
+ *  `CodeMirrorEditorApp` that never opens the pane — the hover button and
+ *  F1 quietly no-op when it's absent. */
 export interface CodeMirrorEditorApp extends ReferenceApp {
   state: AppState;
   dom: { sqlEditorView?: EditorView };
@@ -170,30 +166,7 @@ export interface CodeMirrorEditorApp extends ReferenceApp {
     docEntry?: (target: DocTarget) => Promise<DocLookup<DocEntry>>;
   };
   actions: { loadColumns(db: string, table: string): Promise<void> };
-  document?: Document;
-  prefs?: { save(name: PreferenceKey, value: unknown): void };
-  CodeViewer?: CodeViewerFactory;
-}
-
-/**
- * Narrow `app` down to `DocPaneApp` (ui/doc-pane.ts's own required-field
- * contract) when every field `openDocEntry` needs is actually present — the
- * real, injected `App` (main.ts) always supplies them; only this adapter's
- * own minimal test fixtures may omit one, in which case "Open reference"
- * quietly does nothing rather than throwing. Never caches the result: reads
- * `app.state.docPanePx`/`app.catalog` fresh on every call, matching every
- * other read in this file (refData can change mid-session, #25).
- */
-function toDocPaneApp(app: CodeMirrorEditorApp): DocPaneApp | null {
-  const { document: doc, prefs, CodeViewer, catalog } = app;
-  if (!doc || !prefs || !CodeViewer || !catalog?.docEntry) return null;
-  return {
-    document: doc,
-    state: { docPanePx: app.state.docPanePx },
-    prefs,
-    catalog: { docEntry: catalog.docEntry, refData: catalog.refData as AssembledReference },
-    CodeViewer,
-  };
+  openDocEntry?: (target: DocTarget) => void;
 }
 
 // Programmatic state syncs (tab switch, external tab.sqlDraft reconcile) must not
@@ -352,10 +325,10 @@ type InfoFn = () => Node | null | Promise<Node | null>;
  * in place once it resolves: preferring its `signature` over the local one,
  * replacing the summary line, and showing an optional `since vX` badge and
  * an `Alias of <x>` notice. Always appends an accessible, keyboard-
- * activatable `Open reference` BUTTON that opens the persistent docs pane
- * (ui/doc-pane.ts's `openDocEntry`) via `toDocPaneApp` — a quiet no-op click
- * when the injected `app` doesn't carry the pane's extra fields (this
- * adapter's own minimal test apps; the real, injected `App` always does).
+ * activatable `Open reference` BUTTON that invokes the injected
+ * `app.openDocEntry` action — a quiet no-op click when the injected `app`
+ * doesn't carry it (this adapter's own minimal test apps; the real,
+ * injected `App` always binds it to the persistent docs pane).
  *
  * `isLive()` is the caller's async-DOM-mutation guard (#313: "Async results
  * must verify the tooltip and editor are still live before updating DOM") —
@@ -372,11 +345,7 @@ function renderFunctionSummary(
     local?.ret ? h('span', { class: 'hover-ret' }, ' → ' + local.ret) : null);
   const summary = h('div', { class: 'hover-doc' }, local?.desc || '');
   const badges = h('div', { class: 'hover-badges' });
-  const openReference = (): void => {
-    const paneApp = toDocPaneApp(app);
-    if (paneApp) openDocEntry(paneApp, target);
-  };
-  const openBtn = h('button', { class: 'hover-open-ref', type: 'button', onclick: openReference }, 'Open reference');
+  const openBtn = h('button', { class: 'hover-open-ref', type: 'button', onclick: () => app.openDocEntry?.(target) }, 'Open reference');
   const dom = h('div', { class: 'hover-card' }, sig, summary, badges, openBtn);
   if (app.catalog?.docSummary) {
     Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
@@ -546,8 +515,7 @@ export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorVie
     const line = view.state.doc.lineAt(pos);
     const target = resolveDocTarget(line.text, pos - line.from, refData.functions);
     if (!target) return false;
-    const paneApp = toDocPaneApp(app);
-    if (paneApp) openDocEntry(paneApp, target);
+    app.openDocEntry?.(target);
     return true;
   };
 }

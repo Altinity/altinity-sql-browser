@@ -28,7 +28,9 @@ const SOURCE_EXT = /\.(ts|tsx|js|mjs)$/;
  *  resolves under any of `forbidden` (directories OR single files,
  *  repo-relative — `dir` itself may also name a single file, e.g.
  *  `src/ui/dashboard.ts`, since that route shell has no dedicated directory
- *  of its own the way `src/ui/workbench/**`/`src/ui/dashboard/**` do). */
+ *  of its own the way `src/ui/workbench/**`/`src/ui/dashboard/**` do).
+ *  `except` (optional) names specific files inside a forbidden directory
+ *  that stay importable — for deliberate, documented carve-outs only. */
 const RULES = [
   { dir: 'src/application', forbidden: ['src/ui', 'src/editor'], why: 'issue #276 day-1 rule' },
   {
@@ -89,6 +91,20 @@ const RULES = [
     dir: 'src/workspace',
     forbidden: ['src/ui', 'src/editor', 'src/application', 'src/state.ts', 'src/net'],
     why: 'issue #280 phase 1: the workspace aggregate layer is pure and must not depend on App, Workbench UI, editors, global AppState, or the network layer',
+  },
+  {
+    // Issue #60/#313: the editor adapters are a LEAF layer, addressed only
+    // through the injected ports (app.sqlEditor/app.specEditor) — they must
+    // not reach up into UI render modules. UI-owned actions the editor
+    // triggers (e.g. the reference pane's openDocEntry) are injected as app
+    // callbacks at wiring time (app.ts), never imported. Two deliberate
+    // carve-outs predating the rule: `dnd-mime` (pure MIME-string constants
+    // shared with the drag-source UI) and `dom` (the generic hyperscript
+    // helper — a DOM-builder utility with no app/render-module coupling).
+    dir: 'src/editor',
+    forbidden: ['src/ui'],
+    except: ['src/ui/dnd-mime.js', 'src/ui/dnd-mime.ts', 'src/ui/dom.js', 'src/ui/dom.ts'],
+    why: 'issue #60/#313: the editor layer is a leaf — UI actions are injected via app callbacks, not imported',
   },
 ];
 
@@ -154,6 +170,7 @@ for (const rule of RULES) {
       const resolved = resolveRelative(file, spec);
       const relResolved = path.relative(repoRoot, resolved).split(path.sep).join('/');
       const hit = rule.forbidden.find((f) => relResolved === f || relResolved.startsWith(`${f}/`));
+      if (hit && (rule.except ?? []).includes(relResolved)) continue;
       if (hit) {
         const relFile = path.relative(repoRoot, file).split(path.sep).join('/');
         violations.push(`${relFile} → ${spec} (resolved: ${relResolved}; ${rule.dir} must not import ${hit} — ${rule.why})`);

@@ -12,7 +12,7 @@ import { startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { createState, activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
-import { closeDocPane } from '../../src/ui/doc-pane.js';
+import { openDocEntry, closeDocPane } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
 import type { DocLookup, DocSummary } from '../../src/core/doc-types.js';
 
@@ -25,8 +25,8 @@ import type { DocLookup, DocSummary } from '../../src/core/doc-types.js';
 // state + a fresh dom bag (mount registers editorView into it), built-in
 // reference data, and NO docSummary/docEntry by default (infoFor/hoverSourceFor
 // still render the LOCAL functions-table content — #313 — they just never
-// upgrade it, and "Open reference" quietly no-ops without `document`/`prefs`/
-// `CodeViewer` too). Self-contained (not tests/helpers/fake-app.js, which
+// upgrade it, and "Open reference" quietly no-ops without an injected
+// `openDocEntry` action too). Self-contained (not tests/helpers/fake-app.js, which
 // isn't one of this change's files and doesn't statically declare the
 // catalog.refData/completions/docSummary/docEntry members this adapter needs)
 // — mirrors spec-editor.test.ts's own minimal `makeApp` for the same
@@ -52,17 +52,22 @@ const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog
   };
 };
 
-// A `makeApp()` that also carries the extra fields `toDocPaneApp`/`openDocEntry`
-// need (document/prefs/CodeViewer) so "Open reference" (hover button, F1)
-// actually opens the persistent pane instead of quietly no-opping.
-const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEditorApp => makeApp({
-  document,
-  prefs: { save: vi.fn() },
-  CodeViewer: vi.fn(() => ({
+// A `makeApp()` with the injected `openDocEntry` action bound the same way
+// app.ts binds it — to the REAL ui/doc-pane.ts `openDocEntry(app, target)` —
+// so "Open reference" (hover button, F1) actually opens the persistent pane
+// instead of quietly no-opping. The pane's own required fields
+// (document/prefs/CodeViewer) live on the same object, mirroring the real App.
+const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEditorApp => {
+  const app = makeApp(over);
+  const paneApp = app as unknown as DocPaneApp;
+  paneApp.document = document;
+  paneApp.prefs = { save: vi.fn() };
+  paneApp.CodeViewer = vi.fn(() => ({
     setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn(),
-  })),
-  ...over,
-});
+  }));
+  app.openDocEntry = (target) => openDocEntry(paneApp, target);
+  return app;
+};
 
 // Mount a fresh port + view; subscribe like app.js does (#143) so tab.sqlDraft
 // tracks the view.
@@ -699,7 +704,7 @@ describe('openReferenceCommand (F1, #313)', () => {
     closeDocPane(app as unknown as DocPaneApp);
   });
 
-  it('still returns true when a target resolves but the app cannot open the pane (no document/prefs/CodeViewer)', () => {
+  it('still returns true when a target resolves but no openDocEntry action is injected', () => {
     const { view } = mounted({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
     expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(true);

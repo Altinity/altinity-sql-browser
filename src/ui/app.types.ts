@@ -13,6 +13,7 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
+import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
@@ -198,6 +199,11 @@ export interface App {
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   CodeViewer: CodeViewerFactory;
+  /** #313: the open-the-reference-pane action the CM6 adapter's hover button
+   *  and F1 command invoke — bound by app.ts to ui/doc-pane.ts's
+   *  `openDocEntry(app, target)` so the editor layer never imports UI
+   *  modules (build/check-boundaries.mjs enforces the direction). */
+  openDocEntry: (target: DocTarget) => void;
   /** {validate, register} — see core/spec-draft.js. Typed as the service
    *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
    *  is app.js-internal wiring, outside this contract. */

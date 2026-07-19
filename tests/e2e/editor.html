@@ -62,6 +62,7 @@
     import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createSpecCompletionSources } from '/src/editor/spec-completion-adapter.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
+    import { openDocEntry } from '/src/ui/doc-pane.js';
     import { createState, activeTab, newTabObj } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
     import { createQuerySpecValidationService } from '/src/core/spec-schema.js';
@@ -87,6 +88,9 @@
       specValidators: createQuerySpecValidationService(),
       specCompletionSources: createSpecCompletionSources(),
     };
+    // Mirror app.ts's wiring (#313): the adapter opens the reference pane
+    // through this injected action, never by importing ui/doc-pane itself.
+    app.openDocEntry = (target) => openDocEntry(app, target);
     window.__app = app;
     const port = createCodeMirrorEditor(app);
     window.__port = port;

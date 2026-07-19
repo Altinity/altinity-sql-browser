@@ -44,7 +44,7 @@ import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
-import { closeDocPane } from './doc-pane.js';
+import { openDocEntry, closeDocPane } from './doc-pane.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
@@ -272,6 +272,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));
+  // #313: the editor adapter opens the reference pane through this injected
+  // action (never by importing ui/doc-pane itself — the editor stays a leaf
+  // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
+  // only for tidiness; the adapter reads it lazily at click/F1 time.
+  app.openDocEntry = (target) => openDocEntry(app, target);
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
