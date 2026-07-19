@@ -60,6 +60,13 @@ test.describe('docs reference (#313)', () => {
     await page.keyboard.press('F1');
     const pane = page.locator('[role="complementary"]');
     await expect(pane).toBeVisible();
+    // Typing left the completion popup open, and CM6's own Escape closes it
+    // FIRST — the designed layering (completion → pane → running query).
+    // Dismiss it so the next Escape is the pane's.
+    if (await page.locator('.cm-tooltip-autocomplete').isVisible()) {
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.cm-tooltip-autocomplete')).toBeHidden();
+    }
     // Focus never left the editor — Escape must close the pane regardless
     // (the global shortcut layer, not the pane's focus-inside handler).
     await page.keyboard.press('Escape');

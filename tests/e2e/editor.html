@@ -83,7 +83,10 @@
         introducedIn: '1.1.0', categories: ['Aggregate Functions'],
         description: 'Calculates the sum of the values. Works only for numbers.',
         returnedValue: 'The sum of the values.',
-        examples: 'SELECT sum(x) FROM t',
+        // Real system.functions examples are a MARKDOWN document (bold
+        // section titles between ```sql fences) — mirror that shape so the
+        // markdown examples rendering has a fence to mount a viewer for.
+        examples: '**Basic**\n\n```sql\nSELECT sum(x) FROM t\n```',
         deterministic: true, higherOrder: false,
       },
       'format:jsoneachrow': {
