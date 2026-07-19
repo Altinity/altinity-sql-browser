@@ -39,6 +39,7 @@ import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.
 import type { EditorPort, EditorSelection } from './editor-port.types.js';
 import { chLanguageExtension } from './ch-lang.js';
 import { lookupFunctionEntry, docTargetForMatch, resolveDocTarget } from '../core/doc-context.js';
+import type { DocContextOptions } from '../core/doc-context.js';
 import type { FunctionMatch } from '../core/doc-context.js';
 import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
 
@@ -363,6 +364,41 @@ function renderFunctionSummary(
   return dom;
 }
 
+/**
+ * Render the compact summary card for a #314 structured target (currently
+ * just `format` — engine/data-type completion items don't exist yet) that has
+ * NO local fallback content (unlike `renderFunctionSummary`'s functions-table
+ * seed): the card starts with just the name and fills in once
+ * `app.catalog.docSummary` resolves, following the identical async-upgrade/
+ * liveness-guard contract (`isLive()`) and the same accessible `Open
+ * reference` button wired to `app.openDocEntry`. A `missing`/`unavailable`
+ * lookup (or no `docSummary` injected at all) simply leaves the name-only
+ * card as-is — no error UI, matching #314's "unsupported/denied sources
+ * degrade silently".
+ */
+function renderStructuredSummary(
+  app: CodeMirrorEditorApp, target: DocTarget, isLive: () => boolean,
+): HTMLElement {
+  const sig = h('div', { class: 'hover-sig' }, target.name);
+  const summary = h('div', { class: 'hover-doc' }, '');
+  const badges = h('div', { class: 'hover-badges' });
+  const openBtn = h('button', { class: 'hover-open-ref', type: 'button', onclick: () => app.openDocEntry?.(target) }, 'Open reference');
+  const dom = h('div', { class: 'hover-card' }, sig, summary, badges, openBtn);
+  if (app.catalog?.docSummary) {
+    Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
+      if (!isLive()) return;
+      if (lookup.status !== 'found') return; // degrade quietly (#314)
+      const s = lookup.value;
+      sig.textContent = s.signature || s.title || target.name;
+      summary.textContent = s.summary;
+      badges.replaceChildren(
+        ...(s.introducedIn ? [h('span', { class: 'hover-since' }, 'since ' + s.introducedIn)] : []),
+      );
+    });
+  }
+  return dom;
+}
+
 // The active row's description: static keyword docs immediately, function
 // summaries via the shared `renderFunctionSummary` helper above (#313). CM6
 // shows it as a side tooltip (the old dropdown used a footer). An `info`
@@ -399,6 +435,19 @@ export function infoFor(app: CodeMirrorEditorApp, it: InfoItem): InfoFn | undefi
   // declared type here — CM6's detail column has no native title fallback.
   if (it.kind === 'column' && it.fullType && it.fullType !== it.detail) {
     return () => doc(it.fullType);
+  }
+  // #314: a FORMAT-clause completion candidate (its label IS a real format
+  // name — completions.ts only ever builds 'format'-kind items from
+  // `ref.formats`) opens the same shared summary card as a function's,
+  // querying `app.catalog.docSummary` only once CM6 actually materializes
+  // this row's info (never during ordinary typing — the completion LIST
+  // itself never calls `info`).
+  if (it.kind === 'format') {
+    const target: DocTarget = { kind: 'format', name: it.label };
+    return (): HTMLElement => {
+      const dom = renderStructuredSummary(app, target, () => dom.isConnected);
+      return dom;
+    };
   }
   return undefined;
 }
@@ -490,20 +539,26 @@ export function insertTwoSpaces(view: EditorView): boolean {
 }
 
 /**
- * F1: `Open reference for symbol` (#313's keyboard command). Resolves the doc
- * target at `selection.main.head` the SAME way hover/completion info do —
- * suppress inside a comment/string/quoted identifier via the CM6 syntax tree
- * first (this module's own responsibility per doc-context.ts's contract),
- * then classify the word with `resolveDocTarget` (the Phase 1 classifier,
- * core/doc-context.ts) against `app.catalog.refData.functions` — and opens
- * the SAME persistent pane `renderFunctionSummary`'s "Open reference" button
- * does. Returns `false` (CM6 leaves the key to the browser default) when no
- * word resolves, the word isn't a known function/aggregate, or the caret
- * sits inside a literal; `true` (CM6 `preventDefault`s it) once a target is
- * found — tooltip, completion info, and F1 all end up calling the identical
- * `openDocEntry` action (#313: "Tooltip, completion, and F1 call the same
- * application action"). Exported for direct tests — a headless CM6 keymap
- * `run` binding doesn't need a real keydown event to exercise.
+ * F1: `Open reference for symbol` (#313's keyboard command; #314 extends its
+ * classification). Resolves the doc target at `selection.main.head` — first
+ * suppressing inside a comment/string/quoted identifier via the CM6 syntax
+ * tree (this module's own responsibility per doc-context.ts's contract),
+ * then classifying with the FULL `resolveDocTarget` (the #314 strong-context
+ * classifier: top-level FORMAT clause / ENGINE / data-type positions ranked
+ * above the Phase 1 function/aggregate lookup) against the WHOLE document —
+ * unlike hover/completion info (line-scoped; only ever resolve a function),
+ * F1 is the one caller whose target may be a statement-wide FORMAT/ENGINE/
+ * type position, so it needs the surrounding statement, not just the current
+ * line. Passes `refData.formats` so a FORMAT-clause match is validated
+ * against known format names, mirroring the function lookup's existence
+ * gate. Opens the SAME persistent pane `renderFunctionSummary`'s "Open
+ * reference" button does. Returns `false` (CM6 leaves the key to the browser
+ * default) when no target resolves or the caret sits inside a literal; `true`
+ * (CM6 `preventDefault`s it) once a target is found — tooltip, completion
+ * info, and F1 all end up calling the identical `openDocEntry` action (#313:
+ * "Tooltip, completion, and F1 call the same application action"). Exported
+ * for direct tests — a headless CM6 keymap `run` binding doesn't need a real
+ * keydown event to exercise.
  */
 export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorView) => boolean {
   return (view) => {
@@ -511,9 +566,9 @@ export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorVie
     if (!refData) return false;
     const pos = view.state.selection.main.head;
     if (LITERAL_NODE.test(syntaxTree(view.state).resolveInner(pos, 0).name)) return false;
-    // Identifiers can't span lines — scan the line, matching hover's own convention.
-    const line = view.state.doc.lineAt(pos);
-    const target = resolveDocTarget(line.text, pos - line.from, refData.functions);
+    const doc = view.state.doc.toString();
+    const options: DocContextOptions = { formats: refData.formats };
+    const target = resolveDocTarget(doc, pos, refData.functions, options);
     if (!target) return false;
     app.openDocEntry?.(target);
     return true;

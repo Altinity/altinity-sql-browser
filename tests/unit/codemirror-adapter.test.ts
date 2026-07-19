@@ -464,6 +464,32 @@ describe('completionSourceFor', () => {
     expect(docSummary).toHaveBeenCalledTimes(1);
     expect(docEntry).not.toHaveBeenCalled(); // docSummary alone — Open reference wasn't clicked
   });
+
+  it('never queries docSummary for a FORMAT-clause completion candidate while typing either (#314)', () => {
+    const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const typingApp = makeApp({
+      catalog: {
+        completions: [
+          { label: 'FORMAT', kind: 'keyword', insert: 'FORMAT', detail: 'keyword' },
+          { label: 'CSV', kind: 'format', insert: 'CSV', detail: 'format' },
+        ],
+        refData: ref,
+        docSummary,
+      },
+    });
+    const typingSrc = completionSourceFor(typingApp);
+    for (const text of ['INSERT INTO t FORMAT C', 'INSERT INTO t FORMAT CS', 'INSERT INTO t FORMAT CSV']) {
+      typingSrc(ctx(text, text.length));
+    }
+    expect(docSummary).not.toHaveBeenCalled();
+    const full = 'INSERT INTO t FORMAT CSV';
+    const r = typingSrc(ctx(full, full.length))!;
+    const csvOption = r.options.find((o) => o.label === 'CSV')!;
+    expect(docSummary).not.toHaveBeenCalled(); // building the option list itself still didn't query
+    (csvOption.info as () => unknown)(); // CM6 materializing the info pane
+    expect(docSummary).toHaveBeenCalledTimes(1);
+    expect(docSummary).toHaveBeenCalledWith({ kind: 'format', name: 'CSV' });
+  });
 });
 
 describe('applyFor', () => {
@@ -556,6 +582,68 @@ describe('infoFor', () => {
     expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64', fullType: 'UInt64' })).toBeUndefined();
     // items without fullType (defensive) → no info
     expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64' })).toBeUndefined();
+  });
+
+  describe('a FORMAT-kind completion candidate (#314)', () => {
+    it('renders the shared summary card — name-only synchronously, then upgrades via docSummary', async () => {
+      const docSummary = vi.fn(async () => ({
+        status: 'found' as const,
+        value: {
+          target: { kind: 'format' as const, name: 'CSV' }, title: 'CSV', signature: 'CSV',
+          summary: 'Comma-separated values.', introducedIn: '1.0',
+        },
+      }));
+      const app = makeApp({ catalog: { docSummary } });
+      const node = infoFor(app, { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      document.body.appendChild(node);
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV'); // name-only fallback (no local table for formats)
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+      expect(docSummary).toHaveBeenCalledWith({ kind: 'format', name: 'CSV' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV');
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('Comma-separated values.');
+      expect(node.querySelector('.hover-since')!.textContent).toBe('since 1.0');
+      node.remove();
+    });
+
+    it('degrades quietly (keeps the name-only card) when docSummary resolves missing/unavailable, or is absent', async () => {
+      const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const node = infoFor(makeApp({ catalog: { docSummary } }), { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV');
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+
+      const noFetch = infoFor(makeApp(), { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
+      expect(noFetch.querySelector('.hover-sig')!.textContent).toBe('JSONEachRow');
+    });
+
+    it('Open reference on a format card opens the pane with the format target', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { docEntry } });
+      const node = infoFor(app, { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
+      document.body.appendChild(node);
+      const btn = node.querySelector('.hover-open-ref') as HTMLButtonElement;
+      expect(btn.tagName).toBe('BUTTON');
+      btn.click();
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'format', name: 'JSONEachRow' });
+      expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+      node.remove();
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('a stale/detached info node is never mutated once docSummary resolves late', async () => {
+      let resolveSummary!: (v: DocLookup<DocSummary>) => void;
+      const docSummary = vi.fn(() => new Promise<DocLookup<DocSummary>>((res) => { resolveSummary = res; }));
+      const app = makeApp({ catalog: { docSummary } });
+      const node = infoFor(app, { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      // never appended to the document — isLive() is false from the start
+      resolveSummary({ status: 'found', value: { target: { kind: 'format', name: 'CSV' }, title: 'CSV', signature: 'CSV', summary: 'late' } });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+    });
   });
 });
 
@@ -725,6 +813,55 @@ describe('openReferenceCommand (F1, #313)', () => {
     expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
     closeDocPane(app as unknown as DocPaneApp);
     port.destroy();
+  });
+
+  describe('#314 structured contexts (FORMAT / ENGINE / data-type)', () => {
+    const ref2 = assembleReferenceData({ keywords: [], functions: {}, formats: ['JSONEachRow'] });
+
+    it('resolves a FORMAT-clause target, validated against refData.formats', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'INSERT INTO t FORMAT JSONEachRow';
+      const pos = sql.indexOf('JSONEachRow') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'format', name: 'JSONEachRow' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('rejects a FORMAT-position word absent from refData.formats', () => {
+      const app = makeApp({ catalog: { refData: ref2 } });
+      const { view } = mounted(app);
+      const sql = 'INSERT INTO t FORMAT Bogus';
+      const pos = sql.indexOf('Bogus') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(false);
+    });
+
+    it('resolves a table-engine target', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'CREATE TABLE t (id UInt32) ENGINE = MergeTree';
+      const pos = sql.indexOf('MergeTree') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'table-engine', name: 'MergeTree' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('resolves a data-type target (CAST) spanning the whole document, not just the caret line', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'SELECT x,\nCAST(x AS UInt32)';
+      const pos = sql.indexOf('UInt32') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'data-type', name: 'UInt32' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
   });
 });
 
