@@ -96,4 +96,45 @@ test.describe('docs reference (#313)', () => {
     await expect(pane).toBeVisible();
     await expect(pane.locator('.docs-missing')).toBeVisible();
   });
+
+  // ── Phase 2 (#314): strong-context F1 routing + related navigation ────────
+
+  test('F1 on a FORMAT-clause name opens format docs with capability facts', async ({ page }) => {
+    await page.keyboard.type('SELECT 1 FORMAT JSONEachRow');
+    await page.keyboard.press('ArrowLeft'); // caret inside the format name
+    await page.keyboard.press('F1');
+    const pane = page.locator('[role="complementary"]');
+    await expect(pane).toBeVisible();
+    await expect(pane.locator('.docs-name')).toHaveText('JSONEachRow');
+    await expect(pane.locator('.docs-badge-kind')).toContainText('format');
+  });
+
+  test('F1 on ENGINE = <name> opens table-engine docs; related navigation works with Back', async ({ page }) => {
+    await page.keyboard.type('CREATE TABLE t (id UInt64) ENGINE = MergeTree');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('F1');
+    const pane = page.locator('[role="complementary"]');
+    await expect(pane.locator('.docs-name')).toHaveText('MergeTree');
+    // Related entry navigates in place; ReplacingMergeTree has no fixture,
+    // so the pane shows the quiet missing state.
+    await pane.getByRole('button', { name: 'ReplacingMergeTree' }).click();
+    await expect(pane.locator('.docs-missing')).toBeVisible();
+    // …and Back returns to the previous entry.
+    await pane.getByRole('button', { name: 'Back' }).click();
+    await expect(pane.locator('.docs-name')).toHaveText('MergeTree');
+  });
+
+  test('F1 on a column-definition type opens data-type docs', async ({ page }) => {
+    await page.keyboard.type('CREATE TABLE t (id UInt64) ENGINE = MergeTree');
+    // Move the caret onto 'UInt64' (inside the column list).
+    await page.evaluate(() => {
+      const view = window.__app.dom.sqlEditorView;
+      const pos = view.state.doc.toString().indexOf('UInt64') + 3;
+      view.dispatch({ selection: { anchor: pos } });
+    });
+    await page.keyboard.press('F1');
+    const pane = page.locator('[role="complementary"]');
+    await expect(pane.locator('.docs-name')).toHaveText('UInt64');
+    await expect(pane.locator('.docs-badge-kind')).toContainText('data type');
+  });
 });

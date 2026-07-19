@@ -6,12 +6,14 @@
 // resolves at most one `DocTarget` — or `null` when nothing strong resolves
 // there.
 //
-// No DOM, no syntax tree, no SQL: this module has no way to tell a bare word
-// apart from one sitting inside a comment/string/quoted identifier. That
-// suppression is a CM6 syntax-tree concern the CALLER already owns
-// (codemirror-adapter.ts's `LITERAL_NODE` check) — the contract is that the
-// caller runs that check FIRST and simply does not call into this module at
-// all when the position is inside a literal node. There is deliberately no
+// No DOM, no CM6 syntax tree, no SQL. Caller contract: CM6-level literal
+// suppression stays the CALLER's job (codemirror-adapter.ts's `LITERAL_NODE`
+// check runs FIRST, and the caller does not call in at all when the position
+// sits inside a literal node). The #314 positional contexts additionally lex
+// the statement themselves (core/sql-lex.ts), so their own matching already
+// distinguishes comment/string/quoted-identifier tokens from bare words —
+// belt on top of the caller's braces, not a replacement for them: the Phase 1
+// bare-word function lookup below still has no literal awareness of its own. There is deliberately no
 // `suppressed` boolean parameter here: threading one through would let a
 // caller "ask anyway and get null" for a case it already knows the answer to,
 // and it would give this pure module a second responsibility (literal
@@ -169,16 +171,24 @@ function formatTarget(text: string, toks: Token[], posIdx: number, formats?: str
 
 // ── ENGINE = Name (table / database DDL) ────────────────────────────────────
 
+// Index of the statement's structural head: the first non-comment token. A
+// header `-- note` / `/* … */` before a DDL statement must not hide its
+// CREATE/ATTACH keyword (from-scope.ts filters comments the same way).
+// -1 (no non-comment token) just flows into the callers' `!head` bail —
+// `stmtToks[-1]` is `undefined`.
+const stmtHeadIdx = (stmtToks: Token[]): number => stmtToks.findIndex((t) => t.kind !== 'comment');
+
 // True when the statement's head is `CREATE|ATTACH DATABASE` (scanned up to
 // the first `(`/`=` so a database name containing those chars in a quoted
 // identifier can't fool it) — the sole thing distinguishing a database engine
 // from a table engine, both spelled `ENGINE = Name`.
 function isDatabaseDDL(text: string, stmtToks: Token[]): boolean {
-  const head = stmtToks[0];
+  const headIdx = stmtHeadIdx(stmtToks);
+  const head = stmtToks[headIdx];
   if (!head || head.kind !== 'word') return false;
   const h = tokenText(text, head).toUpperCase();
   if (h !== 'CREATE' && h !== 'ATTACH') return false;
-  for (let i = 1; i < stmtToks.length; i++) {
+  for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
     if (t.kind === 'word' && tokenText(text, t).toUpperCase() === 'DATABASE') return true;
     // A top-level `(` (a TABLE's column list) or the `=` of `ENGINE = Name`
@@ -354,12 +364,13 @@ function inParamTypeRegion(text: string, pos: number): boolean {
 // that paren is preceded by an identifier (the table name) and sits at
 // top level (depth 0), and `posIdx` falls in some entry's post-name span.
 function inColumnListTypeRegion(text: string, stmtToks: Token[], info: ParenInfo, posIdx: number): boolean {
-  const head = stmtToks[0];
+  const headIdx = stmtHeadIdx(stmtToks);
+  const head = stmtToks[headIdx];
   if (!head || head.kind !== 'word') return false;
   const h = tokenText(text, head).toUpperCase();
   if (h !== 'CREATE' && h !== 'ATTACH') return false;
   let tableIdx = -1;
-  for (let i = 1; i < stmtToks.length; i++) {
+  for (let i = headIdx + 1; i < stmtToks.length; i++) {
     const t = stmtToks[i];
     if (t.kind === 'punct' && text[t.start] === '(') break; // list starts before any TABLE seen
     if (t.kind === 'word' && tokenText(text, t).toUpperCase() === 'TABLE') { tableIdx = i; break; }

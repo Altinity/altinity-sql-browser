@@ -542,6 +542,25 @@ describe('docEntry — #314 structured-source routing', () => {
     expect(loadDocTableColumns).toHaveBeenCalledTimes(1); // capability cached — no second probe
   });
 
+  it('a case-mismatched lookup caches under BOTH the requested and the canonical name key', async () => {
+    // The case-insensitive WHERE returns the server's canonically-cased row
+    // ('mergetree' -> 'MergeTree'); the generic normKey/key dual-write in
+    // docEntry then serves a later canonical-case lookup from cache.
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const lower = await svc.docEntry({ kind: 'table-engine', name: 'mergetree' });
+    expect(lower).toEqual({
+      status: 'found',
+      value: expect.objectContaining({ target: { kind: 'table-engine', name: 'MergeTree' } }),
+    });
+    const canonical = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(canonical).toEqual(lower);
+    expect(loadDocRow).toHaveBeenCalledTimes(1); // second lookup served from the dual-key cache
+  });
+
   it('dedupes a concurrent capability probe across DIFFERENT lookup keys of the SAME structured kind', async () => {
     // Two different names can't share the entry cache, so this only stays at
     // one probe if `ensureStructuredCapability` itself shares the in-flight

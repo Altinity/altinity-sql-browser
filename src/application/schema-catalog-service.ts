@@ -330,9 +330,13 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   // identical shape (probe -> SELECT -> row fetch -> normalize), just routed
   // through the structured capability/select/normalize machinery. Every
   // structured normalizer returns `entry.target.kind === kind` (no kind
-  // widening like function->aggregate-function), so there is no dual-key
-  // caching case here — `docEntry`'s generic normKey/key comparison below is
-  // simply always equal for these kinds, a no-op.
+  // widening like function->aggregate-function), but the NAME can still
+  // differ from the requested one: the case-insensitive WHERE match returns
+  // the server's canonically-cased name (lookup 'mergetree' -> row
+  // 'MergeTree'), so `docEntry`'s generic normKey/key comparison below DOES
+  // fire for a case-mismatched lookup and additionally caches the entry
+  // under the canonical key — deliberate, matching Phase 1's dual-key
+  // behavior.
   async function resolveStructuredDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
     const kind = target.kind as StructuredDocKind;
     const cap = await ensureStructuredCapability(kind);

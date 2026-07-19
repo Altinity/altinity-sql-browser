@@ -69,9 +69,13 @@
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
     const refData = assembleReferenceData(null);
-    // #313 canned version-exact entry (mirrors a real 26.6 system.functions row).
+    // #313/#314 canned version-exact entries (mirror real 26.6 system-table
+    // rows), keyed `kind:lowercased-name`. Function lookups also match under
+    // the requested 'function' kind (the catalog's kind-mismatch policy: the
+    // fetched row is the truth) — the harness mirrors that by falling back
+    // across the two function kinds.
     window.__docFixtures = {
-      sum: {
+      'aggregate-function:sum': {
         target: { kind: 'aggregate-function', name: 'sum' },
         title: 'sum', signature: 'sum(x)',
         summary: 'Calculates the sum of the values.',
@@ -81,6 +85,37 @@
         examples: 'SELECT sum(x) FROM t',
         deterministic: true, higherOrder: false,
       },
+      'format:jsoneachrow': {
+        target: { kind: 'format', name: 'JSONEachRow' },
+        title: 'JSONEachRow', signature: 'JSONEachRow',
+        summary: 'Newline-delimited JSON, one object per row.',
+        introducedIn: '1.1.0', categories: [],
+        description: 'Each row is output as one self-contained JSON object on its own line.',
+        examples: 'SELECT * FROM t FORMAT JSONEachRow',
+        facts: [{ label: 'Input', value: 'yes' }, { label: 'Output', value: 'yes' }],
+        related: [{ label: 'JSON' }],
+      },
+      'table-engine:mergetree': {
+        target: { kind: 'table-engine', name: 'MergeTree' },
+        title: 'MergeTree', signature: 'MergeTree',
+        summary: 'The main ClickHouse table engine family.',
+        introducedIn: '1.1.0', categories: [],
+        syntaxFull: 'ENGINE = MergeTree()\nORDER BY expr',
+        related: [{ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, label: 'ReplacingMergeTree' }],
+      },
+      'data-type:uint64': {
+        target: { kind: 'data-type', name: 'UInt64' },
+        title: 'UInt64', signature: 'UInt64',
+        summary: 'Unsigned 64-bit integer.',
+        introducedIn: '1.1.0', categories: [],
+      },
+    };
+    window.__docLookup = (target) => {
+      const key = (k) => k + ':' + target.name.toLowerCase();
+      return window.__docFixtures[key(target.kind)]
+        || (target.kind === 'function' && window.__docFixtures[key('aggregate-function')])
+        || (target.kind === 'aggregate-function' && window.__docFixtures[key('function')])
+        || null;
     };
     const app = {
       state, dom: {}, document,
@@ -95,13 +130,13 @@
       catalog: {
         refData, completions: buildCompletions(refData, []),
         docSummary: async (target) => {
-          const e = window.__docFixtures[target.name.toLowerCase()];
+          const e = window.__docLookup(target);
           if (!e) return { status: 'missing' };
           const { target: t, title, signature, summary, introducedIn, aliasTo } = e;
           return { status: 'found', value: { target: t, title, signature, summary, ...(introducedIn && { introducedIn }), ...(aliasTo && { aliasTo }) } };
         },
         docEntry: async (target) => {
-          const e = window.__docFixtures[target.name.toLowerCase()];
+          const e = window.__docLookup(target);
           return e ? { status: 'found', value: e } : { status: 'missing' };
         },
       },

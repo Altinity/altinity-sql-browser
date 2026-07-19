@@ -185,6 +185,17 @@ describe('resolveDocTarget — #314 structured contexts', () => {
       const sql = 'CREATE TABLE t ENGINE = Memory';
       expect(resolveDocTarget(sql, caretIn(sql, 'Memory'), FUNCTIONS)).toEqual({ kind: 'table-engine', name: 'Memory' });
     });
+
+    it('a leading line comment does not hide CREATE DATABASE (statement head skips comments)', () => {
+      const sql = '-- create the db\nCREATE DATABASE db ENGINE = Atomic';
+      expect(resolveDocTarget(sql, caretIn(sql, 'Atomic'), FUNCTIONS)).toEqual({ kind: 'database-engine', name: 'Atomic' });
+    });
+
+    it('a leading block comment does not hide CREATE TABLE (column types still resolve)', () => {
+      const sql = '/* header */ CREATE TABLE t (id UInt32) ENGINE = MergeTree';
+      expect(resolveDocTarget(sql, caretIn(sql, 'UInt32'), FUNCTIONS)).toEqual({ kind: 'data-type', name: 'UInt32' });
+      expect(resolveDocTarget(sql, caretIn(sql, 'MergeTree'), FUNCTIONS)).toEqual({ kind: 'table-engine', name: 'MergeTree' });
+    });
   });
 
   describe('data-type positions', () => {

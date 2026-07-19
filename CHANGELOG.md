@@ -10,6 +10,24 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Structured reference docs for formats, table/database engines, and data
+  types** (#60 Phase 2, #314). The documentation pane and F1 now cover four
+  more entity kinds, each fed by its own capability-probed system table
+  (`system.formats` — which has no `syntax` column and is never asked for
+  one —, `system.table_engines`, `system.database_engines`,
+  `system.data_type_families`; probed independently once per connection, so
+  a denied source degrades alone). A pure strong-context SQL classifier
+  routes the caret: top-level `FORMAT <name>` (either FORMAT/SETTINGS
+  order, never confused with `format()` calls), `ENGINE = <name>` in table
+  vs database DDL (leading comments handled), and strong data-type
+  positions — CREATE column definitions, `CAST(x AS T)`, `x::T`, `{p:T}` —
+  resolving the innermost nested type under the caret. Format completion
+  info gains Open reference; schema surfaces gain keyboard-accessible
+  `Open engine reference` / `Open type reference` buttons (tree rows +
+  detail pane, existing gestures untouched, hidden when the source is
+  durably unavailable). The pane renders the new kinds with syntax blocks,
+  capability facts, and related entries navigable in place through a
+  bounded session-local Back stack.
 - **Version-exact function reference docs from the connected server** (#60
   Phase 1, #313). CM6 hover and completion info upgrade in place with the
   connected ClickHouse server's own `system.functions` metadata (signature,

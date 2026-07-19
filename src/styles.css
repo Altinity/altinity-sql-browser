@@ -1903,6 +1903,30 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .docs-example-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .docs-copy { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 12px; }
 .docs-copy:hover { background: var(--bg-hover); }
+/* #314 phase-2 pane elements */
+.docs-syntax-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.docs-facts-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-related-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-related-link { font-size: 11px; padding: 3px 9px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: inherit; }
+.docs-related-link:hover { background: var(--bg-hover); }
+.docs-back-row { flex-shrink: 0; }
+.docs-back { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; }
+.docs-back:hover { background: var(--bg-hover); }
+/* #314 schema-surface doc actions */
+.schema-type-doc, .schema-engine-doc { border: none; background: transparent; color: var(--fg-faint); cursor: pointer; border-radius: 4px; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; padding: 0; }
+.schema-type-doc:hover, .schema-engine-doc:hover { background: var(--bg-hover); color: var(--fg); }
+.schema-detail-engine { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--fg-mute); flex-shrink: 0; }
+.schema-detail-engine-name { font-family: var(--mono); color: var(--fg); }
+.docs-back:focus-visible,
+.docs-related-link:focus-visible,
+.docs-alias-link:focus-visible,
+.docs-copy:focus-visible,
+.docs-retry:focus-visible,
+.docs-close:focus-visible,
+.schema-type-doc:focus-visible,
+.schema-engine-doc:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 
 /* placeholder body inside results (legacy step) */
 .placeholder {
