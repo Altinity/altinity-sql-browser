@@ -621,7 +621,8 @@ describe('chartJsConfig', () => {
     expect(hbar.options.scales!.y.ticks.autoSkip).toBeUndefined();
   });
 
-  // --- #309: a genuine Chart.js time scale for line/area over a time-role X ---
+  // --- #309: a genuine Chart.js time scale for every cartesian type (line,
+  // area, bar, hbar) over a time-role X column ---
   describe('time scale (#309)', () => {
     const timeCols = [{ name: 'ts', type: 'DateTime' }, { name: 'v', type: 'UInt64' }];
 
@@ -635,6 +636,23 @@ describe('chartJsConfig', () => {
       expect(line.data.datasets[0].data).toEqual(evenRows.map(([t, v]) => ({ x: chartTimeValue(t), y: v })));
       const area = chartJsConfig(timeCols, evenRows, { type: 'area', x: 0, y: [1], series: null }, colors);
       expect(area.options.scales!.x.type).toBe('time');
+    });
+
+    it('vertical bar over a time-role X gets scales.x.type "time" with {x,y} point data', () => {
+      const evenRows = [['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2]];
+      const bar = chartJsConfig(timeCols, evenRows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+      expect(bar.options.scales!.x.type).toBe('time');
+      expect(bar.data.datasets[0].data).toEqual(evenRows.map(([t, v]) => ({ x: chartTimeValue(t), y: v })));
+      expect(bar.options.scales!.x.ticks).toMatchObject({ autoSkip: true, maxRotation: 0, minRotation: 0 });
+    });
+
+    it('hbar (horizontal, category on Y) over a time-role X gets scales.y.type "time", with the epoch in Y and the value in X', () => {
+      const evenRows = [['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2]];
+      const hbar = chartJsConfig(timeCols, evenRows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
+      expect(hbar.options.scales!.y.type).toBe('time');
+      expect(hbar.options.scales!.x.type).toBeUndefined(); // the value axis never becomes a time scale
+      expect(hbar.data.datasets[0].data).toEqual(evenRows.map(([t, v]) => ({ x: v, y: chartTimeValue(t) })));
+      expect(hbar.options.scales!.y.ticks).toMatchObject({ autoSkip: true, maxRotation: 0, minRotation: 0 });
     });
 
     it('places points at real elapsed time, so an irregular/gappy sample is not evenly spaced', () => {
@@ -657,27 +675,35 @@ describe('chartJsConfig', () => {
 
     it('falls back to the category scale if any displayed category is not a parseable date (defensive)', () => {
       const badRows = [['2026-01-01 00:00:00', 1], ['not-a-date', 2]];
-      const cfg = chartJsConfig(timeCols, badRows, { type: 'line', x: 0, y: [1], series: null }, colors);
-      expect(cfg.options.scales!.x.type).toBeUndefined();
-      expect(cfg.data.datasets[0].data).toEqual([1, 2]);
+      const line = chartJsConfig(timeCols, badRows, { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(line.options.scales!.x.type).toBeUndefined();
+      expect(line.data.datasets[0].data).toEqual([1, 2]);
+      const bar = chartJsConfig(timeCols, badRows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+      expect(bar.options.scales!.x.type).toBeUndefined();
     });
 
-    it('a non-time-role X column keeps the category scale on line/area, byte-for-byte', () => {
+    it('falls back to the category scale when there are no displayed categories at all (empty result)', () => {
+      const cfg = chartJsConfig(timeCols, [], { type: 'line', x: 0, y: [1], series: null }, colors);
+      expect(cfg.options.scales!.x.type).toBeUndefined();
+      expect(cfg.data.datasets[0].data).toEqual([]); // never vacuously "time"-scaled with zero points
+    });
+
+    it('a non-time-role X column keeps the category scale on line/area/bar/hbar, byte-for-byte', () => {
       // `cols`/`rows` (outer scope) use a String X column — category role.
       const line = chartJsConfig(cols, rows, { type: 'line', x: 0, y: [1], series: null }, colors);
       expect(line.options.scales!.x.type).toBeUndefined();
       expect(line.data.datasets[0].data).toEqual([null, 20]); // rows[0][1] ('2026-01-01') isn't numeric
+      const bar = chartJsConfig(cols, rows, { type: 'bar', x: 0, y: [1], series: null }, colors);
+      expect(bar.options.scales!.x.type).toBeUndefined();
+      const hbar = chartJsConfig(cols, rows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
+      expect(hbar.options.scales!.y.type).toBeUndefined();
     });
 
-    it('bar/hbar/pie ignore a time-role X column and never switch to the time scale', () => {
+    it('pie ignores a time-role X column and never switches to the time scale (no axis at all)', () => {
       const evenRows = [['2026-01-01 00:00:00', 1], ['2026-01-01 01:00:00', 2]];
-      const bar = chartJsConfig(timeCols, evenRows, { type: 'bar', x: 0, y: [1], series: null }, colors);
-      expect(bar.options.scales!.x.type).toBeUndefined();
-      expect(bar.data.datasets[0].data).toEqual([1, 2]);
-      const hbar = chartJsConfig(timeCols, evenRows, { type: 'hbar', x: 0, y: [1], series: null }, colors);
-      expect(hbar.options.scales!.y.type).toBeUndefined();
       const pie = chartJsConfig(timeCols, evenRows, { type: 'pie', x: 0, y: [1], series: null }, colors);
       expect(pie.options.scales).toBeUndefined();
+      expect(pie.data.datasets[0].data).toEqual([1, 2]);
     });
 
     it('style.scale and axes visibility keep working the same under the time scale', () => {

@@ -10,26 +10,31 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
-- **Line/area charts over a time-role X column now draw a genuine Chart.js
-  `time` scale** (#309, follow-up to #310's category-axis mitigation).
-  `chartJsConfig` (`src/core/chart-data.ts`) switches `scales.x` to
-  `type: 'time'` and each dataset's points to `{x: epochMs, y}` whenever the
-  chart is line/area, the X column's role is `'time'`, and every displayed
-  category parses as a ClickHouse `Date`/`DateTime`/`DateTime64` string (a new
-  pure `chartTimeValue()`, reading the literal wall-clock digits with no
-  timezone conversion — same "show it exactly as written" contract as the
-  existing `chartLabel()`); any category that fails to parse falls the whole
-  axis back to the existing category scale. Chart.js then places ticks on
-  natural time boundaries and points at their real elapsed time instead of one
-  evenly-spaced category per row, so gaps in irregularly-sampled data show as
-  gaps rather than being compressed away. Bar/hbar/pie and non-time-role
-  line/area charts are unaffected. **Fifth bundled runtime dependency**
-  (CLAUDE.md rule 4): **`chartjs-adapter-date-fns`** (+ its `date-fns` peer),
-  imported for its registration side effect next to `chart.js/auto` in
-  `main.ts` — measured **+11.6 KiB gzip / +9.7 KiB brotli** to the artifact
-  (date-fns's tree-shaken surface across every add/difference/startOf/endOf
-  unit the adapter imports; larger than the issue's ~3 KB estimate, still a
-  low single-digit percent of the bundle and no new network requests).
+- **Line/area/bar/hbar charts over a time-role X column now draw a genuine
+  Chart.js `time` scale** (#309, follow-up to #310's category-axis
+  mitigation). `chartJsConfig` (`src/core/chart-data.ts`) switches the
+  category axis to `type: 'time'` and each dataset's points to `{x, y}`
+  (epoch in `y` and value in `x` for `hbar`, whose category axis is `Y`;
+  epoch in `x` for every other cartesian type) whenever the X column's role
+  is `'time'` and every displayed category parses as a ClickHouse
+  `Date`/`DateTime`/`DateTime64` string (a new pure `chartTimeValue()`,
+  reading the literal wall-clock digits with no timezone conversion — same
+  "show it exactly as written" contract as the existing `chartLabel()`, with
+  a calendar round-trip check so a date-shaped-but-invalid value like month
+  `13` falls back rather than the `Date` constructor silently rolling it
+  over); any category that fails to parse, or an empty result, falls the
+  whole axis back to the existing category scale. Chart.js then places ticks
+  on natural time boundaries and points/bars at their real elapsed time
+  instead of one evenly-spaced category per row, so gaps in
+  irregularly-sampled data show as gaps rather than being compressed away.
+  Pie and non-time-role charts are unaffected. **Fifth bundled runtime
+  dependency** (CLAUDE.md rule 4): **`chartjs-adapter-date-fns`** (+ its
+  `date-fns` peer), imported for its registration side effect next to
+  `chart.js/auto` in `main.ts` — measured **+11.6 KiB gzip / +9.7 KiB
+  brotli** to the artifact (date-fns's tree-shaken surface across every
+  add/difference/startOf/endOf unit the adapter imports; larger than the
+  issue's ~3 KB estimate, still a low single-digit percent of the bundle and
+  no new network requests).
 
 ## [0.6.0] - 2026-07-18
 
