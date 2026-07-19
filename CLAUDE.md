@@ -1,7 +1,7 @@
 # Contributor guide — altinity-sql-browser
 
 A modular ES-module SPA that builds to one self-contained HTML file served from
-ClickHouse. No framework; runtime deps are rare and deliberate (currently four,
+ClickHouse. No framework; runtime deps are rare and deliberate (currently five,
 all bundled — see hard rule 4). Quality is held by tests.
 
 ## Hard rules
@@ -36,11 +36,15 @@ all bundled — see hard rule 4). Quality is held by tests.
    `package-lock.json` is committed; use `npm ci` for a reproducible dependency
    graph in local, CI, and release builds, and update the lock only with an
    intentional dependency change.
-   There are **four** bundled runtime dependencies — **CodeMirror 6** (the SQL
+   There are **five** bundled runtime dependencies — **CodeMirror 6** (the SQL
    editor, saved-query Spec JSON editor, and read-only source viewer, behind
    injected seams — #21/#212/#213),
-   **Chart.js** (the Chart result view), **@dagrejs/dagre** (the EXPLAIN
-   pipeline-graph layout), and
+   **Chart.js** (the Chart result view) with **chartjs-adapter-date-fns**
+   (registers the date-math backend Chart.js's `time` scale needs for
+   line/area charts over a time-role X column — #309; the pure axis/role
+   decision of *whether* to use it stays in `core/chart-data.ts`, the adapter
+   is a side-effect-only import next to `Chart` itself in `main.ts`),
+   **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
    **@preact/signals-core** (the reactivity primitive — see
    `docs/ADR-0001-reactivity.md`) — all inlined into the artifact, so the page
    still makes zero third-party requests.

@@ -423,6 +423,35 @@ export function chartLabel(v: unknown): string {
   return m[1] && m[2] && m[2] !== '00:00' ? `${m[1]} ${m[2]}` : m[1];
 }
 
+const CHART_TIME_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?)?$/;
+
+/**
+ * Parse a ClickHouse Date/DateTime/DateTime64 cell value into an epoch-ms
+ * timestamp for Chart.js's `time` scale (#309), reading the literal
+ * wall-clock digits with no timezone conversion — the same "show it exactly
+ * as the server wrote it" contract `chartLabel` already applies to tick
+ * text, so a time-scale tick reads the same hour/minute the raw cell carries.
+ * Returns null for anything that isn't a plain ClickHouse date/time string,
+ * so the caller can fall back to the category scale rather than mis-plot a
+ * value that only *looks* time-like.
+ */
+export function chartTimeValue(v: unknown): number | null {
+  const m = CHART_TIME_RE.exec(String(v));
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s, frac] = m;
+  const [year, month, day, hour, min, sec] = [y, mo, d, h || '0', mi || '0', s || '0'].map(Number);
+  const ms = frac ? Number((frac + '000').slice(0, 3)) : 0;
+  const dt = new Date(year, month - 1, day, hour, min, sec, ms);
+  // The Date constructor rolls an out-of-range component over into a
+  // different date (month 13 -> next January, hour 25 -> next day) instead of
+  // failing — round-trip its own fields against the input digits so a
+  // date-shaped-but-invalid string (e.g. a mislabeled non-time column) falls
+  // back to the category scale rather than silently plotting the wrong day.
+  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day
+    || dt.getHours() !== hour || dt.getMinutes() !== min || dt.getSeconds() !== sec) return null;
+  return dt.getTime();
+}
+
 /**
  * Fold a config's cross-field invariants so a hand-edited share link / imported
  * saved query, or a live X change, can't produce a degenerate chart:
@@ -550,9 +579,14 @@ export interface ChartDataMeta {
 }
 
 /** `buildChartData`'s library-agnostic result: labels + one dataset per
- *  measure or series value, plus explicit transform metadata. */
+ *  measure or series value, plus explicit transform metadata. `categories`
+ *  is the raw, pre-`chartLabel` X key for each displayed category, aligned
+ *  index-for-index with `labels` — `chartJsConfig` reads it (via
+ *  `chartTimeValue`) to place a time-role X axis on real elapsed time (#309)
+ *  instead of the display-formatted (and lossy — seconds are dropped) text. */
 export interface ChartDataResult {
   labels: string[];
+  categories: string[];
   datasets: { label: string; data: (number | null)[] }[];
   meta: ChartDataMeta;
 }
@@ -619,7 +653,7 @@ export function buildChartData(
   // Pass 2: aggregate only rows whose X belongs to a displayed category.
   if (cfg.series != null) {
     const yi = measures[0]?.index;
-    if (yi == null) return { labels: [], datasets: [], meta: meta(false) };
+    if (yi == null) return { labels: [], categories: [], datasets: [], meta: meta(false) };
     const groups = new Map<string, Map<string, number>>(); // seriesValue -> Map(xKey -> summed y)
     const seenCells = new Map<string, Set<string>>(); // seriesValue -> Set(xKey) already seen
     let dup = false;
@@ -637,7 +671,7 @@ export function buildChartData(
       label: name,
       data: cats.map((xk) => byCat.has(xk) ? byCat.get(xk)! : null),
     }));
-    return { labels: cats.map(chartLabel), datasets, meta: meta(dup) };
+    return { labels: cats.map(chartLabel), categories: cats, datasets, meta: meta(dup) };
   }
 
   const sums: Map<string, number>[] = measures.map(() => new Map()); // per measure: xKey -> summed y
@@ -653,7 +687,7 @@ export function buildChartData(
     label: presentation.displayName,
     data: cats.map((xk) => sums[mi].has(xk) ? sums[mi].get(xk)! : null),
   }));
-  return { labels: cats.map(chartLabel), datasets, meta: meta(dup) };
+  return { labels: cats.map(chartLabel), categories: cats, datasets, meta: meta(dup) };
 }
 
 /**
@@ -696,10 +730,15 @@ export interface ChartJsConfigOptions {
 }
 
 /** One Chart.js dataset — the fields this module sets, plus whatever
- *  Chart.js-specific styling keys ride along (index signature). */
+ *  Chart.js-specific styling keys ride along (index signature). `data` is
+ *  index-aligned to `ChartJsData.labels` for a category axis, or an array of
+ *  `{x, y}` points when the chart's category axis is a `time` scale (#309) —
+ *  Chart.js's own documented shape for time-scale data. The epoch lands in
+ *  `x` for every cartesian type except `hbar` (horizontal, category on `y`),
+ *  where it lands in `y` and the measure value lands in `x` instead. */
 export interface ChartJsDataset {
   label: string;
-  data: (number | null)[];
+  data: (number | null)[] | { x: number | null; y: number | null }[];
   [k: string]: unknown;
 }
 
@@ -722,7 +761,11 @@ interface TooltipContext {
 }
 
 // A resolved Chart.js cartesian axis — the fields this module ever sets.
+// `type: 'time'` is line/area-only, set when the X column's role is 'time'
+// (#309) — every other axis (value axes, bar/hbar/pie category axes) omits
+// it and keeps Chart.js's implicit 'category' scale.
 interface ChartJsAxis {
+  type?: 'time';
   display: boolean;
   grid: { color: string; drawBorder: boolean; display: boolean };
   ticks: {
@@ -794,12 +837,29 @@ export function chartJsConfig(
   const measures = opts.measures ?? visibleChartMeasures(columns, cfg, fieldConfig);
   // `opts.data` (when the renderer already aggregated for its note) avoids a
   // second full aggregation per render; direct/test callers fall back inline.
-  const { labels, datasets } = opts.data ?? buildChartData(columns, rows, cfg, fieldConfig, measures);
+  const { labels, categories, datasets } = opts.data ?? buildChartData(columns, rows, cfg, fieldConfig, measures);
   const pal = colors.palette;
   const horizontal = cfg.type === 'hbar';
   const isPie = cfg.type === 'pie';
   const isArea = cfg.type === 'area';
   const isLine = cfg.type === 'line' || isArea;
+  // A genuine Chart.js time scale (#309): every cartesian type (line, area,
+  // bar, hbar — pie has no axis, so it stays on the category scale
+  // unconditionally), and only when there's at least one displayed category
+  // and every one of them parses as a ClickHouse date/time value — a
+  // saved/hand-edited cfg can mislabel a non-time column as time-role, so one
+  // unparseable category (or none at all) falls the whole axis back to the
+  // existing category scale rather than plotting a mix of real and garbage
+  // positions, or claiming a time axis for zero points.
+  const timeValues = !isPie && chartRole(columns[cfg.x]) === 'time' ? categories.map(chartTimeValue) : null;
+  const useTimeScale = !!timeValues && timeValues.length > 0 && timeValues.every((t) => t != null);
+  // hbar's category axis is Y (indexAxis:'y'), so its time-scale points carry
+  // the epoch in `y` and the value in `x` — the mirror of every other
+  // cartesian type, matching how `catAxis`/`valueAxis` are already assigned
+  // to x/y below by `horizontal`.
+  const timePoint = (epoch: number, value: number | null): { x: number | null; y: number | null } => (
+    horizontal ? { x: value, y: epoch } : { x: epoch, y: value }
+  );
   const chartType: 'bar' | 'line' | 'pie' = horizontal || cfg.type === 'bar' ? 'bar' : isLine ? 'line' : 'pie';
   const style = normalizeChartStyle(cfg.style, cfg.type);
   const pointsVisible = style.points === 'show'
@@ -818,9 +878,12 @@ export function chartJsConfig(
     if (isPie) {
       return { ...ds, backgroundColor: ds.data.map((_, j) => pal[j % pal.length]), borderColor: colors.bgModal, borderWidth: 1.5 };
     }
+    // `!`: useTimeScale only goes true after confirming every entry in
+    // `timeValues` is non-null (the `.every` check above).
+    const data = useTimeScale ? ds.data.map((y, j) => timePoint(timeValues![j]!, y)) : ds.data;
     if (isLine) {
       return {
-        ...ds, borderColor: color, backgroundColor: isArea ? withAlpha(color, 0.14) : color,
+        ...ds, data, borderColor: color, backgroundColor: isArea ? withAlpha(color, 0.14) : color,
         fill: isArea, borderWidth: 1.5,
         ...(isArea && style.stack === 'stacked' ? { stack: 'chart' } : {}),
         ...curveStyle, ...pointStyle,
@@ -831,7 +894,7 @@ export function chartJsConfig(
       : style.density === 'joined'
         ? { categoryPercentage: 1, barPercentage: 1, borderRadius: 0 }
         : {};
-    return { ...ds, backgroundColor: color, borderRadius: 2, borderWidth: 0, ...density };
+    return { ...ds, data, backgroundColor: color, borderRadius: 2, borderWidth: 0, ...density };
   });
 
   const multi = datasets.length > 1;
@@ -884,9 +947,15 @@ export function chartJsConfig(
             // context — the original .js read `.label` bare (a missing
             // dataset should crash loudly, not render "undefined:").
             const label = isPie ? context.label : context.dataset!.label;
+            // Under the time scale (#309) `context.raw` is the dataset's own
+            // `{x, y}` point object, not a bare number — pull `.y` back out
+            // before formatting so an authored value format doesn't format
+            // the point object itself (Number({x,y}) is NaN).
+            const raw = context.raw && typeof context.raw === 'object' && 'y' in context.raw
+              ? (context.raw as { y: unknown }).y : context.raw;
             const value = measure?.authoredValueFormat
-              ? formatChartValue(context.raw, measure.presentation)
-              : context.formattedValue ?? formatChartValue(context.raw, measure?.presentation);
+              ? formatChartValue(raw, measure.presentation)
+              : context.formattedValue ?? formatChartValue(raw, measure?.presentation);
             return `${label}: ${value}`;
           },
           afterLabel: (context: TooltipContext): string => tooltipMeasure(context)?.presentation.description || '',
@@ -912,12 +981,16 @@ export function chartJsConfig(
       beginAtZero: style.scale === 'zero'
         || (style.scale === 'auto' && (horizontal || cfg.type === 'bar')),
     };
-    // Line/area charts plot every distinct row as its own category tick (no
-    // Chart.js time scale — #309), which at a few hundred rows is unreadable
-    // rotated at Chart.js's default up-to-50°. Force horizontal labels and let
-    // autoSkip drop enough of them to fit instead.
-    const catTicks = isLine ? { ...ticks, autoSkip: true, maxRotation: 0, minRotation: 0 } : ticks;
-    const catAxis: ChartJsAxis = { display: axesVisible, grid: { ...grid, display: false }, ticks: catTicks };
+    // Line/area charts (and any chart on the time scale — #309) force
+    // horizontal, auto-skipped labels: with a real time scale Chart.js
+    // already places ticks on natural boundaries (so there are usually few
+    // enough to show), and without one every distinct row is still its own
+    // category tick, unreadable rotated at Chart.js's default up-to-50°.
+    const catTicks = (isLine || useTimeScale) ? { ...ticks, autoSkip: true, maxRotation: 0, minRotation: 0 } : ticks;
+    const catAxis: ChartJsAxis = {
+      ...(useTimeScale ? { type: 'time' as const } : {}),
+      display: axesVisible, grid: { ...grid, display: false }, ticks: catTicks,
+    };
     options.scales = horizontal ? { x: valueAxis, y: catAxis } : { x: catAxis, y: valueAxis };
     const barsStacked = (horizontal || cfg.type === 'bar') && style.mode === 'stacked';
     const areaStacked = isArea && style.stack === 'stacked';

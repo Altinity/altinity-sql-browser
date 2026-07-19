@@ -118,6 +118,6 @@ failure signs out; after, it is a query error).
 ## Build
 
 `build/build.mjs` runs esbuild (bundle + minify, IIFE), inlines the script and
-`styles.css` into `build/template.html` → a single `dist/sql.html`. Four
-bundled runtime dependencies (CodeMirror 6, Chart.js, dagre,
-`@preact/signals-core`); the served page makes zero third-party requests.
+`styles.css` into `build/template.html` → a single `dist/sql.html`. Five
+bundled runtime dependencies (CodeMirror 6, Chart.js + chartjs-adapter-date-fns,
+dagre, `@preact/signals-core`); the served page makes zero third-party requests.

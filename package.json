@@ -43,6 +43,8 @@
     "@dagrejs/dagre": "^3.0.0",
     "@lezer/highlight": "^1.2.3",
     "@preact/signals-core": "^1.14.3",
-    "chart.js": "^4.5.1"
+    "chart.js": "^4.5.1",
+    "chartjs-adapter-date-fns": "^3.0.0",
+    "date-fns": "^4.4.0"
   }
 }
