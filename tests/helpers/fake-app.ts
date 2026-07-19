@@ -168,6 +168,8 @@ const catalogDefaults: SchemaCatalogService = {
   rebuildCompletions: vi.fn(),
   docSummary: vi.fn(async () => ({ status: 'unavailable' as const })),
   docEntry: vi.fn(async () => ({ status: 'unavailable' as const })),
+  docMarkdown: vi.fn(async () => ({ status: 'unavailable' as const })),
+  docDisambiguate: vi.fn(async () => ({ status: 'unavailable' as const })),
   docKindAvailable: vi.fn(() => null),
   refData: catalogRefDataDefault,
   completions: buildCompletions(catalogRefDataDefault, null),

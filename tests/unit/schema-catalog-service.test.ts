@@ -578,7 +578,15 @@ describe('docEntry — #314 structured-source routing', () => {
   });
 
   it('an unavailable/denied source is independent: format denied does not affect table-engine (or vice versa)', async () => {
-    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'formats' ? [] : engineColumns));
+    // 'formats'/'documentation' both denied (empty columns); every other
+    // table (including 'table_engines') returns the engine columns. #315:
+    // a durably-unavailable STRUCTURED capability now falls through to the
+    // `system.documentation` capability too — so the first `format` lookup
+    // ALSO probes 'documentation' (denied here too), one extra
+    // `loadDocTableColumns` call beyond the pre-#315 count.
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (
+      table === 'formats' || table === 'documentation' ? [] : engineColumns
+    ));
     const loadDocRow = vi.fn(async () => [engineRow]);
     const deps = makeDeps({
       loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
@@ -593,9 +601,10 @@ describe('docEntry — #314 structured-source routing', () => {
     expect(engineResult.status).toBe('found');
     expect(loadDocRow).toHaveBeenCalledTimes(1);
 
-    // A later format lookup stays durably unavailable without re-probing.
+    // A later format lookup stays durably unavailable without re-probing
+    // EITHER capability (both already settled durably).
     expect(await svc.docEntry({ kind: 'format', name: 'TSV' })).toEqual({ status: 'unavailable' });
-    expect(loadDocTableColumns).toHaveBeenCalledTimes(2); // one probe per kind ever (format, table-engine)
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(3); // format, documentation (fallback), table-engine — each once ever
   });
 
   it('resolves "missing" and caches it (no second row fetch for the same key)', async () => {
@@ -845,5 +854,501 @@ describe('docKindAvailable', () => {
     svc.invalidate();
     expect(svc.docKindAvailable('function')).toBeNull();
     expect(svc.docKindAvailable('table-engine')).toBeNull();
+  });
+});
+
+// ── #315 Phase 3 — `system.documentation` capability, loader, and routing ──
+
+describe('#315 system.documentation capability + version policy', () => {
+  const settingRow = { name: 'max_threads', type: 'Setting', description: 'Max threads.' };
+  const docColumns3 = ['name', 'type', 'description'];
+  const docColumns4 = ['name', 'type', 'description', 'source'];
+
+  it('a parsed pre-26.6 version makes ZERO system.documentation requests (no probe, no lookup)', async () => {
+    const state = makeState();
+    state.serverVersion = '26.5.9';
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    expect(loadDocTableColumns).not.toHaveBeenCalled();
+    expect(loadDocRow).not.toHaveBeenCalled();
+  });
+
+  it('26.6.0+ probes once, then looks up', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.0';
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(result).toEqual({
+      status: 'found',
+      value: expect.objectContaining({ target: { kind: 'setting', name: 'max_threads' }, renderMode: 'markdown-subset' }),
+    });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+
+    // A second lookup for a different name shares the cached capability.
+    await svc.docEntry({ kind: 'setting', name: 'other' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('a version above 26.6.0 (e.g. 27.0) also probes', async () => {
+    const state = makeState();
+    state.serverVersion = '27.0.1';
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('version null (not yet loaded) performs exactly one silent probe', async () => {
+    const state = makeState(); // serverVersion stays null
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unparsable version string performs exactly one silent probe', async () => {
+    const state = makeState();
+    state.serverVersion = 'garbage-version-string';
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('26.6+ denied (empty columns) -> durably unavailable, no row fetch', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => []);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    expect(loadDocRow).not.toHaveBeenCalled();
+    // Durable — a second lookup doesn't re-probe.
+    await svc.docEntry({ kind: 'setting', name: 'other' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('26.6+ missing table (probe returns []) is indistinguishable from denied — same durable unavailable', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => [] as string[]);
+    const deps = makeDeps({ state, loadDocTableColumns });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+  });
+
+  it('missing a REQUIRED column (type) -> durably unavailable', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'description']);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    expect(loadDocRow).not.toHaveBeenCalled();
+  });
+
+  it('missing the OPTIONAL "source" column (real 26.6.1 shape) -> still available, entries just lack source', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => docColumns3); // no `source`
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(result.status).toBe('found');
+    if (result.status === 'found') expect(result.value.source).toBeUndefined();
+    expect(svc.docKindAvailable('setting')).toBe(true);
+  });
+
+  it('four-column decoding carries source through to the entry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => docColumns4);
+    const loadDocRow = vi.fn(async () => [{ ...settingRow, source: 'docs/settings/index.md' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(result.status).toBe('found');
+    if (result.status === 'found') expect(result.value.source).toBe('docs/settings/index.md');
+  });
+
+  it('reconnect (invalidate) clears the version-derived/probed capability state and rejects a stale in-flight response', async () => {
+    let resolveCols: (v: string[] | null) => void;
+    const colsPromise = new Promise<string[] | null>((res) => { resolveCols = res; });
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(() => colsPromise);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const pending = svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    svc.invalidate();
+    resolveCols!(docColumns4);
+    expect(await pending).toEqual({ status: 'unavailable' });
+
+    // A fresh lookup after invalidate re-probes from scratch.
+    const loadDocTableColumns2 = vi.fn(async () => docColumns4);
+    const loadDocRow2 = vi.fn(async () => [settingRow]);
+    const deps2 = makeDeps({ state, loadDocTableColumns: loadDocTableColumns2, loadDocRow: loadDocRow2 });
+    const svc2 = createSchemaCatalogService(deps2);
+    expect((await svc2.docEntry({ kind: 'setting', name: 'max_threads' })).status).toBe('found');
+    expect(loadDocTableColumns2).toHaveBeenCalledTimes(1);
+  });
+
+  it('a transient (null) probe result is retried on the next lookup batch, not cached', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(docColumns4);
+    const loadDocRow = vi.fn(async () => [settingRow]);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    const second = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(second.status).toBe('found');
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(2);
+  });
+
+  it('every known type label maps correctly and an unknown one maps to "unknown" with the label preserved', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => docColumns3);
+    const loadDocRow = vi.fn(async () => [{ name: 'thing', type: 'Some Brand New Kind', description: 'x' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'unknown', name: 'thing' });
+    // `docEntry`'s SELECT can't filter by an unknown label — this resolves
+    // `missing` (no `type` value to query by), never `found`/an error.
+    expect(result).toEqual({ status: 'missing' });
+  });
+});
+
+describe('#315 source preference — structured vs. system.documentation', () => {
+  it('a structured "found" result wins — no system.documentation request at all', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const engineRow = { name: 'MergeTree', description: 'The base engine.' };
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'table_engines' ? ['name', 'description'] : ['name', 'type', 'description']));
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(result.status).toBe('found');
+    if (result.status === 'found') expect(result.value.sourceTable).not.toBe('documentation');
+    // Only the table-engine probe/lookup ran — never a documentation probe.
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('a structured "missing" result does NOT fall through to system.documentation', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'description']); // table-engine capability available
+    const loadDocRow = vi.fn(async () => []); // no matching row -> missing
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'NopeTree' })).toEqual({ status: 'missing' });
+    // Only the table-engine probe ran (once) — no documentation probe.
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+  });
+
+  it('a durably-unavailable structured source falls back to system.documentation for the SAME target', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const docRow = { name: 'MergeTree', type: 'Table Engine', description: 'From documentation.' };
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'table_engines' ? [] : ['name', 'type', 'description']));
+    const loadDocRow = vi.fn(async () => [docRow]);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(result).toEqual({
+      status: 'found',
+      value: expect.objectContaining({
+        target: { kind: 'table-engine', name: 'MergeTree' },
+        sourceTable: 'documentation',
+        renderMode: 'markdown-subset',
+      }),
+    });
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+  });
+
+  it('a kind with NO structured loader at all ("setting") goes straight to system.documentation', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(async () => [{ name: 'max_threads', type: 'Setting', description: 'x' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(result.status).toBe('found');
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'documentation');
+  });
+
+  it('docKindAvailable("setting") reflects the documentation capability once probed (no structured loader exists for it)', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(async () => [{ name: 'max_threads', type: 'Setting', description: 'x' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(svc.docKindAvailable('setting')).toBeNull();
+    await svc.docEntry({ kind: 'setting', name: 'max_threads' });
+    expect(svc.docKindAvailable('setting')).toBe(true);
+  });
+
+  it('docKindAvailable stays null when the structured loader is durably false but the documentation fallback probe was only transient', async () => {
+    // `format`'s structured probe is denied (durable `false`); the FALLBACK
+    // documentation probe (triggered within the same `docEntry` call) comes
+    // back `null` (transient) — never cached — so `docsCapability` itself
+    // stays unset. `docKindAvailable('format')` must read `null` (genuinely
+    // unknown), not mistake the durable structured `false` for the whole
+    // kind's availability.
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (
+      table === 'formats' ? [] : (table === 'documentation' ? null : ['name', 'description'])
+    ));
+    const deps = makeDeps({ state, loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'] });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'format', name: 'CSV' })).toEqual({ status: 'unavailable' });
+    expect(svc.docKindAvailable('format')).toBeNull();
+  });
+
+  it('docKindAvailable stays false when both the structured loader AND the documentation fallback are durably unavailable', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => [] as string[]); // every table denied
+    const deps = makeDeps({ state, loadDocTableColumns });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' })).toEqual({ status: 'unavailable' });
+    expect(svc.docKindAvailable('table-engine')).toBe(false);
+  });
+});
+
+describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
+  const engineRow = { name: 'MergeTree', description: 'From documentation.' };
+
+  it('ALWAYS uses system.documentation, even for a kind with a working structured loader', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const docRow = { name: 'MergeTree', type: 'Table Engine', description: 'The full markdown body.' };
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'table_engines' ? ['name', 'description'] : ['name', 'type', 'description']));
+    const loadDocRow = vi.fn(async (_ctx: ChCtx, sql: string) => (String(sql).includes('system.documentation') ? [docRow] : [engineRow]));
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docMarkdown({ kind: 'table-engine', name: 'MergeTree' });
+    expect(result).toEqual({
+      status: 'found',
+      value: expect.objectContaining({ markdown: 'The full markdown body.', renderMode: 'markdown-subset' }),
+    });
+    // The structured table-engine loader was never consulted by docMarkdown.
+    expect(loadDocTableColumns).not.toHaveBeenCalledWith(fakeCtx, 'table_engines');
+  });
+
+  it('caches found/missing and dedupes concurrent lookups, separately from docEntry', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(async () => [{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const [a, b] = await Promise.all([
+      svc.docMarkdown({ kind: 'setting', name: 'max_threads' }),
+      svc.docMarkdown({ kind: 'setting', name: 'max_threads' }),
+    ]);
+    expect(a).toEqual(b);
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+
+    await svc.docMarkdown({ kind: 'setting', name: 'max_threads' }); // served from cache
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a transient row-fetch failure — retries on the next call', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns,
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).toEqual({ status: 'unavailable' });
+    const second = await svc.docMarkdown({ kind: 'setting', name: 'max_threads' });
+    expect(second.status).toBe('found');
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidate() mid-flight drops a stale docMarkdown response (no cache write, resolves unavailable)', async () => {
+    let resolveRow: (v: Record<string, unknown>[]) => void;
+    const rowPromise = new Promise<Record<string, unknown>[]>((res) => { resolveRow = res; });
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(() => rowPromise);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'] });
+    const svc = createSchemaCatalogService(deps);
+
+    const pending = svc.docMarkdown({ kind: 'setting', name: 'max_threads' });
+    svc.invalidate();
+    resolveRow!([{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    expect(await pending).toEqual({ status: 'unavailable' });
+  });
+});
+
+describe('#315 docDisambiguate — name-only, all kinds', () => {
+  it('returns every kind sharing the same name', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const rows = [
+      { name: 'Log', type: 'Table Engine', description: 'The Log engine.' },
+      { name: 'Log', type: 'Setting', description: 'A setting confusingly also named Log.' },
+    ];
+    const loadDocRow = vi.fn(async () => rows);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docDisambiguate('Log');
+    expect(result.status).toBe('found');
+    if (result.status === 'found') {
+      expect(result.value).toHaveLength(2);
+      expect(result.value.map((s) => s.target.kind).sort()).toEqual(['setting', 'table-engine']);
+    }
+  });
+
+  it('resolves "missing" when no row matches the name', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(async () => []);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docDisambiguate('NopeAtAll')).toEqual({ status: 'missing' });
+  });
+
+  it('resolves "unavailable" when the documentation capability itself is unavailable, with no row fetch', async () => {
+    const state = makeState();
+    state.serverVersion = '26.5.9'; // pre-26.6 -> skip, durably unavailable
+    const loadDocRow = vi.fn(async () => []);
+    const deps = makeDeps({ state, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docDisambiguate('Anything')).toEqual({ status: 'unavailable' });
+    expect(loadDocRow).not.toHaveBeenCalled();
+  });
+
+  it('does not cache a transient row-fetch failure', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([{ name: 'Log', type: 'Table Engine', description: 'x' }]);
+    const deps = makeDeps({
+      state,
+      loadDocTableColumns,
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docDisambiguate('Log')).toEqual({ status: 'unavailable' });
+    const second = await svc.docDisambiguate('Log');
+    expect(second.status).toBe('found');
+  });
+
+  it('invalidate() mid-flight (during the capability probe) drops a stale docDisambiguate response', async () => {
+    let resolveCols: (v: string[] | null) => void;
+    const colsPromise = new Promise<string[] | null>((res) => { resolveCols = res; });
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(() => colsPromise);
+    const deps = makeDeps({ state, loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'] });
+    const svc = createSchemaCatalogService(deps);
+
+    const pending = svc.docDisambiguate('Log');
+    svc.invalidate();
+    resolveCols!(['name', 'type', 'description']);
+    expect(await pending).toEqual({ status: 'unavailable' });
+  });
+
+  it('dedupes concurrent calls for the SAME name (one row fetch)', async () => {
+    const state = makeState();
+    state.serverVersion = '26.6.1';
+    const loadDocTableColumns = vi.fn(async () => ['name', 'type', 'description']);
+    const loadDocRow = vi.fn(async () => [{ name: 'Log', type: 'Table Engine', description: 'x' }]);
+    const deps = makeDeps({ state, loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const [a, b] = await Promise.all([svc.docDisambiguate('Log'), svc.docDisambiguate('Log')]);
+    expect(a).toEqual(b);
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 });

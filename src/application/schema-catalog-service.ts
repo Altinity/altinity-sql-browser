@@ -27,7 +27,13 @@ import {
   structuredCapabilityFromColumns, buildStructuredDocSelect, normalizeStructuredRow,
 } from '../core/doc-capability.js';
 import type { FunctionsDocCapability, StructuredDocCapability, StructuredDocKind } from '../core/doc-capability.js';
-import type { DocTarget, DocLookup, DocSummary, DocEntry, DocKind } from '../core/doc-types.js';
+import type { DocTarget, DocLookup, DocSummary, DocEntry, DocKind, MarkdownDocEntry } from '../core/doc-types.js';
+import {
+  documentationCapabilityFromColumns, documentationProbePolicy, buildDocumentationSelect,
+  buildDocumentationNameSelect, normalizeDocumentationRow, documentationEntryToDocEntry,
+} from '../core/doc-documentation.js';
+import type { DocumentationCapability } from '../core/doc-documentation.js';
+import { parseServerVersion } from '../core/format.js';
 import type { ChCtx, DocProbeTable } from '../net/ch-client.js';
 import type {
   loadServerVersion, loadSchema, loadColumns, loadReferenceData,
@@ -43,9 +49,25 @@ const STRUCTURED_PROBE_TABLE: Record<StructuredDocKind, DocProbeTable> = {
   'data-type': 'data_type_families',
 };
 
-// Every `DocKind` other than the two function kinds is a #314 structured kind.
+const STRUCTURED_KINDS = new Set<DocKind>(Object.keys(STRUCTURED_PROBE_TABLE) as StructuredDocKind[]);
+
+// The #314 four structured-source kinds — exactly `STRUCTURED_PROBE_TABLE`'s
+// keys, NOT (as pre-#315) "every kind but the two function kinds": #315
+// widened `DocKind` with a dozen kinds (settings, table functions, …) that
+// have no `system.*` structured source at all and go straight to #315's
+// `system.documentation` fallback (see `hasStructuredLoader` below).
 function isStructuredKind(kind: DocTarget['kind']): kind is StructuredDocKind {
-  return kind !== 'function' && kind !== 'aggregate-function';
+  return STRUCTURED_KINDS.has(kind);
+}
+
+// Every kind #313/#314 already have a dedicated `system.*` loader for —
+// `function`/`aggregate-function` (`system.functions`) plus the four
+// structured kinds above. #315's source-preference policy ("structured
+// loader from #313/#314 when supported; system.documentation when no
+// structured loader exists, the structured source is unavailable, or full
+// Markdown depth is requested") is keyed off exactly this set.
+function hasStructuredLoader(kind: DocKind): boolean {
+  return kind === 'function' || kind === 'aggregate-function' || STRUCTURED_KINDS.has(kind);
 }
 
 // ── The state slice this service reads/writes ───────────────────────────────
@@ -140,6 +162,19 @@ export interface SchemaCatalogService {
    *  capability-probe / cache / generation-safety semantics. */
   docSummary(target: DocTarget): Promise<DocLookup<DocSummary>>;
   docEntry(target: DocTarget): Promise<DocLookup<DocEntry>>;
+  /** #315 — explicit full-Markdown-depth lookup, ALWAYS `system.documentation`
+   *  regardless of the #313/#314 structured-source preference `docEntry`
+   *  applies (the pane's future "Full reference" section). Same dedupe/
+   *  cache/generation-safety semantics as `docEntry`, in a separate cache
+   *  keyed the same `kind:name` way (the value type differs). */
+  docMarkdown(target: DocTarget): Promise<DocLookup<MarkdownDocEntry>>;
+  /** #315 — name-only disambiguation across ALL kinds sharing this name
+   *  (bounded by `DOCUMENTATION_DISAMBIGUATION_LIMIT`, doc-documentation.ts).
+   *  `system.documentation`-only (no structured-source counterpart — the
+   *  structured sources are already kind-scoped by construction, so there is
+   *  nothing to disambiguate there). Dedupes concurrent calls for the SAME
+   *  name; not a durable cache (see `docDisambiguate`'s own comment). */
+  docDisambiguate(name: string): Promise<DocLookup<DocSummary[]>>;
   /** #314 — SYNCHRONOUS read of the current capability state for `kind`,
    *  never triggering a probe: `true`/`false` once `ensureCapability`/
    *  `ensureStructuredCapability` has durably settled (including a durably-
@@ -257,6 +292,16 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   const structuredCapability = new Map<StructuredDocKind, StructuredDocCapability | null>();
   const structuredCapabilityProbe = new Map<StructuredDocKind, Promise<StructuredDocCapability | null> | null>();
   const entryCache = new Map<string, DocLookup<DocEntry> | Promise<DocLookup<DocEntry>>>();
+  // #315 — `system.documentation`'s own capability/in-flight-probe slot,
+  // parallel to `capability`/`structuredCapability` above. `documentationCache`
+  // holds `docMarkdown`'s full-Markdown-depth results (same `kind:name` key
+  // shape as `entryCache`) — a SEPARATE map from `entryCache` because
+  // `docMarkdown` returns `MarkdownDocEntry`, not `DocEntry` (the two never
+  // collide on the same key/value type, so keeping them separate is simpler
+  // than a union-valued shared map).
+  let docsCapability: DocumentationCapability | null = null;
+  let docsCapabilityProbe: Promise<DocumentationCapability | null> | null = null;
+  const documentationCache = new Map<string, DocLookup<MarkdownDocEntry> | Promise<DocLookup<MarkdownDocEntry>>>();
 
   function resetDocsState(): void {
     docGeneration++;
@@ -265,6 +310,9 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     structuredCapability.clear();
     structuredCapabilityProbe.clear();
     entryCache.clear();
+    docsCapability = null;
+    docsCapabilityProbe = null;
+    documentationCache.clear();
   }
 
   function ensureCapability(): Promise<FunctionsDocCapability | null> {
@@ -308,7 +356,40 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     return probe;
   }
 
+  // #315 — the `system.documentation` capability probe. Unlike
+  // `ensureCapability`/`ensureStructuredCapability`, this ALSO consults the
+  // version-gate policy first (`documentationProbePolicy`, reading the
+  // CURRENT `state.serverVersion` — not a value captured once at service
+  // construction, since a connection's version is only known after
+  // `loadVersion()` resolves, which can happen after this service is built):
+  // a parsed pre-26.6 version durably marks the capability unavailable
+  // WITHOUT issuing any `system.columns` probe at all (#315 "Version and
+  // capability policy"); a 26.6+/unparsable/unknown version probes exactly
+  // like #313/#314's capabilities do.
+  function ensureDocumentationCapability(): Promise<DocumentationCapability | null> {
+    if (docsCapability) return Promise.resolve(docsCapability);
+    if (docsCapabilityProbe) return docsCapabilityProbe; // dedupe concurrent probes
+    if (documentationProbePolicy(parseServerVersion(state.serverVersion)) === 'skip') {
+      // Durable, no query — pre-26.6 servers must produce zero requests.
+      docsCapability = documentationCapabilityFromColumns([]);
+      return Promise.resolve(docsCapability);
+    }
+    const gen = docGeneration;
+    const probe = (async (): Promise<DocumentationCapability | null> => {
+      await deps.ensureConfig();
+      const cols = await deps.loadDocTableColumns(deps.ctx(), 'documentation');
+      if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
+      docsCapabilityProbe = null; // settle: clears the in-flight slot so a `null` result below lets the next lookup batch retry
+      if (cols === null) return null; // transient/denied probe failure — NOT cached into `docsCapability`
+      docsCapability = documentationCapabilityFromColumns(cols); // durable, including a durably-unavailable result ([] columns)
+      return docsCapability;
+    })();
+    docsCapabilityProbe = probe;
+    return probe;
+  }
+
   interface DocEntryResolution { lookup: DocLookup<DocEntry>; cacheable: boolean }
+  interface DocumentationEntryResolution { lookup: DocLookup<MarkdownDocEntry>; cacheable: boolean }
 
   async function resolveFunctionDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
     const cap = await ensureCapability();
@@ -354,12 +435,66 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     return { lookup: { status: 'found', value: entry }, cacheable: true };
   }
 
-  // #314 — route by kind: function kinds keep Phase 1's exact behavior
-  // (including its kind-mismatch dual-key caching, handled generically in
-  // `docEntry` below); every other kind is a structured source.
-  function resolveDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
-    if (isStructuredKind(target.kind)) return resolveStructuredDocEntry(target, gen);
-    return resolveFunctionDocEntry(target, gen);
+  // #315 — the `system.documentation` counterpart of
+  // `resolveFunctionDocEntry`/`resolveStructuredDocEntry`: probe -> SELECT (by
+  // type+name, when `target.kind` maps to a known server `type` label) -> row
+  // fetch -> normalize. Returns the RAW `MarkdownDocEntry` resolution (not yet
+  // projected to `DocEntry`) so `docMarkdown` can use it directly and
+  // `resolveDocEntry`'s fallback path can project it. A `target.kind` with no
+  // known server `type` label (`docKindToServerType` -> `null`, e.g.
+  // `'unknown'`/`'codec'`/`'metric'`/`'system-table'` on a server that
+  // doesn't emit that label) resolves `missing` once the capability itself is
+  // confirmed available — there is no `type` value to query by, and that is a
+  // successful "no such row" outcome, not an error.
+  async function resolveDocumentationEntry(target: DocTarget, gen: number): Promise<DocumentationEntryResolution> {
+    const cap = await ensureDocumentationCapability();
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
+    if (cap === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient capability-probe failure
+    if (!cap.available) return { lookup: { status: 'unavailable' }, cacheable: true }; // durably-confirmed absent/denied/pre-26.6
+    const sql = buildDocumentationSelect(cap, target.kind, target.name, deps.sqlString);
+    if (sql === null) return { lookup: { status: 'missing' }, cacheable: true }; // no server `type` label for this kind
+    await deps.ensureConfig();
+    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
+    if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
+    if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
+    const entry = normalizeDocumentationRow(rows[0] as Record<string, string | number | boolean | null | undefined>, cap);
+    return { lookup: { status: 'found', value: entry }, cacheable: true };
+  }
+
+  // #315 source preference: a kind with a #313/#314 structured loader
+  // (function/aggregate-function/format/table-engine/database-engine/
+  // data-type) tries that FIRST; a `found`/`missing` result from it is kept
+  // as-is (structured `missing` does NOT fall through to `system.documentation`
+  // — a confirmed no-match from the more specific source is the truth). Only
+  // a DURABLE `unavailable` (the structured/function capability itself is
+  // confirmed absent/denied — `cacheable: true`) falls through to
+  // `system.documentation`; a TRANSIENT failure (`cacheable: false`) is
+  // returned as-is so the caller retries the structured path rather than
+  // silently answering from a different source. A kind with NO structured
+  // loader at all (settings, table functions, dictionary layouts/sources, …)
+  // goes straight to `system.documentation`.
+  async function resolveDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
+    if (hasStructuredLoader(target.kind)) {
+      const structured = isStructuredKind(target.kind)
+        ? await resolveStructuredDocEntry(target, gen)
+        : await resolveFunctionDocEntry(target, gen);
+      if (structured.lookup.status !== 'unavailable' || !structured.cacheable) return structured;
+      if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
+      const fallback = await resolveDocumentationEntry(target, gen);
+      return projectDocumentationResolution(fallback);
+    }
+    const result = await resolveDocumentationEntry(target, gen);
+    return projectDocumentationResolution(result);
+  }
+
+  // Project a `DocumentationEntryResolution` (`DocLookup<MarkdownDocEntry>`)
+  // down to a `DocEntryResolution` (`DocLookup<DocEntry>`) — only the `found`
+  // arm actually carries a `value` to convert; `missing`/`unavailable` carry
+  // no source-specific payload, so they pass through structurally unchanged.
+  function projectDocumentationResolution(result: DocumentationEntryResolution): DocEntryResolution {
+    if (result.lookup.status !== 'found') return { lookup: result.lookup, cacheable: result.cacheable };
+    return { lookup: { status: 'found', value: documentationEntryToDocEntry(result.lookup.value) }, cacheable: result.cacheable };
   }
 
   function docEntry(target: DocTarget): Promise<DocLookup<DocEntry>> {
@@ -390,23 +525,118 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     return promise;
   }
 
-  // #314 — sync, never probes: `capability`/`structuredCapability` are only
-  // ever written by a settled `ensureCapability`/`ensureStructuredCapability`
-  // probe (never a transient/superseded one — see those functions' comments),
-  // so reading them here can't distinguish "never asked" from "asked and the
+  // Sync, never probes: `capability`/`structuredCapability` are only ever
+  // written by a settled `ensureCapability`/`ensureStructuredCapability` probe
+  // (never a transient/superseded one — see those functions' comments), so
+  // reading them here can't distinguish "never asked" from "asked and the
   // probe is still in flight/transient-failed" — both correctly read `null`.
-  function docKindAvailable(kind: DocKind): boolean | null {
-    if (kind === 'function' || kind === 'aggregate-function') {
-      return capability ? capability.available : null;
+  // `null` for a kind with no structured/function loader at all (#315).
+  function structuredOrFunctionAvailable(kind: DocKind): boolean | null {
+    if (kind === 'function' || kind === 'aggregate-function') return capability ? capability.available : null;
+    if (isStructuredKind(kind)) {
+      const cap = structuredCapability.get(kind);
+      return cap ? cap.available : null;
     }
-    const cap = structuredCapability.get(kind);
-    return cap ? cap.available : null;
+    return null;
+  }
+
+  // #314 — sync, never probes. #315 additionally consults `docsCapability`
+  // (also written only by a settled probe, or immediately/durably by a
+  // version-gate 'skip' — never a transient one) as the source that may make
+  // a BROAD kind available even when it has no structured loader, or when its
+  // structured loader is durably absent: "documentation capability may make
+  // broad kinds available" — see this method's own interface doc comment.
+  function docKindAvailable(kind: DocKind): boolean | null {
+    const structuredAvail = structuredOrFunctionAvailable(kind);
+    if (structuredAvail === true) return true;
+    const docsAvail = docsCapability ? docsCapability.available : null;
+    if (structuredAvail === false) {
+      // Structured/function loader durably absent for this kind — the
+      // documentation capability may still cover it.
+      if (docsAvail !== null) return docsAvail;
+      return null; // documentation not yet probed — genuinely unknown
+    }
+    // structuredAvail === null: either not yet probed (a kind WITH a
+    // structured/function loader — stay null, matching pre-#315 behavior
+    // exactly) or a kind with NO structured/function loader at all (purely
+    // the documentation capability).
+    if (hasStructuredLoader(kind)) return null;
+    return docsAvail;
   }
 
   async function docSummary(target: DocTarget): Promise<DocLookup<DocSummary>> {
     const result = await docEntry(target);
     if (result.status !== 'found') return result;
     return { status: 'found', value: summaryFromEntry(result.value) };
+  }
+
+  // #315 — explicit full-Markdown-depth lookup: ALWAYS `system.documentation`,
+  // never the structured preference `docEntry` applies (the pane's future
+  // "Full reference" section wants the actual Markdown body regardless of
+  // whether a structured entry already answered the compact view). Same
+  // dedupe/cache/generation-safety shape as `docEntry` — a separate
+  // `documentationCache` (keyed the same `kind:name` way) because the VALUE
+  // type differs (`MarkdownDocEntry`, not `DocEntry`).
+  function docMarkdown(target: DocTarget): Promise<DocLookup<MarkdownDocEntry>> {
+    const key = target.kind + ':' + target.name;
+    const cached = documentationCache.get(key);
+    if (cached !== undefined) return Promise.resolve(cached);
+
+    const gen = docGeneration;
+    const promise: Promise<DocLookup<MarkdownDocEntry>> = resolveDocumentationEntry(target, gen).then((result) => {
+      if (documentationCache.get(key) !== promise) return result.lookup;
+      if (result.cacheable) {
+        documentationCache.set(key, result.lookup);
+        if (result.lookup.status === 'found') {
+          const normKey = result.lookup.value.target.kind + ':' + result.lookup.value.target.name;
+          if (normKey !== key) documentationCache.set(normKey, result.lookup);
+        }
+      } else {
+        documentationCache.delete(key);
+      }
+      return result.lookup;
+    });
+    documentationCache.set(key, promise);
+    return promise;
+  }
+
+  // #315 — name-only disambiguation: no `type` filter, so it returns every
+  // kind sharing this name (bounded by `DOCUMENTATION_DISAMBIGUATION_LIMIT`).
+  // Dedupes CONCURRENT calls for the same name (an in-flight map, cleared on
+  // settle) but is not itself a durable cache — disambiguation results are
+  // cheap/rare enough (a user explicitly asking "what else is named X") that
+  // there is no lasting cache to invalidate.
+  const disambiguateInFlight = new Map<string, Promise<DocLookup<DocSummary[]>>>();
+
+  async function resolveDisambiguate(name: string, gen: number): Promise<DocLookup<DocSummary[]>> {
+    const cap = await ensureDocumentationCapability();
+    if (gen !== docGeneration) return { status: 'unavailable' };
+    if (cap === null) return { status: 'unavailable' }; // transient capability-probe failure
+    if (!cap.available) return { status: 'unavailable' }; // durably-confirmed absent/denied/pre-26.6
+    // `cap.available` guarantees `buildDocumentationNameSelect` returns a SELECT, not null.
+    const sql = buildDocumentationNameSelect(cap, name, deps.sqlString)!;
+    await deps.ensureConfig();
+    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    if (gen !== docGeneration) return { status: 'unavailable' };
+    if (rows === null) return { status: 'unavailable' }; // transient row-fetch failure
+    if (rows.length === 0) return { status: 'missing' };
+    const summaries: DocSummary[] = rows.map((r) => {
+      const entry = normalizeDocumentationRow(r as Record<string, string | number | boolean | null | undefined>, cap);
+      return { target: entry.target, title: entry.title, signature: entry.signature, summary: entry.summary };
+    });
+    return { status: 'found', value: summaries };
+  }
+
+  function docDisambiguate(name: string): Promise<DocLookup<DocSummary[]>> {
+    const inflight = disambiguateInFlight.get(name);
+    if (inflight) return inflight;
+    const gen = docGeneration;
+    const promise = resolveDisambiguate(name, gen).then((result) => {
+      disambiguateInFlight.delete(name);
+      return result;
+    });
+    disambiguateInFlight.set(name, promise);
+    return promise;
   }
 
   async function loadVersion(): Promise<void> {
@@ -495,6 +725,8 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     rebuildCompletions,
     docSummary,
     docEntry,
+    docMarkdown,
+    docDisambiguate,
     docKindAvailable,
     get refData() { return refData; },
     set refData(v: AssembledReference) { refData = v; },

@@ -10,7 +10,7 @@
 // entirely, makes the whole capability unavailable); every other column is
 // tracked individually and degrades field-by-field when absent.
 
-import type { DocEntry, DocSummary, DocKind, DocTarget } from './doc-types.js';
+import type { DocEntry, DocSummary, DocTarget } from './doc-types.js';
 
 /** Which optional `system.functions` columns are confirmed present on this
  *  connection, plus whether the capability is usable at all. `available` is
@@ -266,9 +266,15 @@ export function summaryFromEntry(entry: DocEntry): DocSummary {
 // simply never sets flags for columns it doesn't have (`format` never sets
 // `syntax`; the others never set formats' capability-flag columns).
 
-/** The four #314 structured kinds — every `DocKind` except the two function
- *  kinds Phase 1 already owns. */
-export type StructuredDocKind = Exclude<DocKind, 'function' | 'aggregate-function'>;
+/** The four #314 structured kinds. Was `Exclude<DocKind, 'function' |
+ *  'aggregate-function'>` before #315 (Phase 3) widened `DocKind` with a
+ *  dozen more kinds that have NO structured `system.*` source of their own
+ *  (settings, table functions, dictionary layouts/sources, …) — those fall
+ *  through to #315's `system.documentation` broad fallback instead
+ *  (`schema-catalog-service.ts`'s `hasStructuredLoader`/`isStructuredKind`),
+ *  so this type now names the four kinds explicitly rather than by
+ *  exclusion. */
+export type StructuredDocKind = 'format' | 'table-engine' | 'database-engine' | 'data-type';
 
 /** Which optional columns are confirmed present for one structured source on
  *  this connection, plus whether the capability is usable at all (`name`

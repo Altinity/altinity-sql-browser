@@ -800,7 +800,10 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
  *    dedupes so a failed probe is retried at most once per subsequent lookup
  *    batch — never once per individual lookup (no request storm).
  */
-export type DocProbeTable = 'functions' | 'formats' | 'table_engines' | 'database_engines' | 'data_type_families';
+export type DocProbeTable =
+  | 'functions' | 'formats' | 'table_engines' | 'database_engines' | 'data_type_families'
+  // #315 Phase 3 — the broad `system.documentation` fallback/coverage source.
+  | 'documentation';
 
 const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
   functions: 'functions',
@@ -808,6 +811,7 @@ const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
   table_engines: 'table_engines',
   database_engines: 'database_engines',
   data_type_families: 'data_type_families',
+  documentation: 'documentation',
 };
 
 export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<string[] | null> {
