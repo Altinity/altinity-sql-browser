@@ -771,15 +771,19 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
 }
 
 /**
- * Silent one-time-per-connection capability probe for `system.functions`
- * documentation (#313): which columns exist on it, read via `system.columns`
- * — a table that ALWAYS exists, so this query only fails on a genuinely
- * transient/denied problem, never because `system.functions` itself is
- * missing (a missing `system.functions` just yields zero matching rows here,
- * not an error). Returns:
- *  - the column-name array (`[]` when `system.functions` doesn't exist on this
- *    server — a successful probe with no matching rows — the caller treats
- *    this as capability `unavailable`, cacheable for the connection);
+ * Silent one-time-per-connection capability probe for a documentation source's
+ * columns (#313 `system.functions`; #314 generalizes this to the four
+ * structured sources too): which columns exist on `table`, read via
+ * `system.columns` — a table that ALWAYS exists, so this query only fails on
+ * a genuinely transient/denied problem, never because the target table itself
+ * is missing (a missing target table just yields zero matching rows here, not
+ * an error). `table` is restricted to `DocProbeTable` — a fixed internal
+ * allowlist, resolved through `DOC_PROBE_TABLE_NAMES` rather than interpolated
+ * directly, so this can never run with an arbitrary caller-supplied FROM/WHERE
+ * value even if a caller bypassed the type at the JS boundary. Returns:
+ *  - the column-name array (`[]` when the table doesn't exist on this server —
+ *    a successful probe with no matching rows — the caller treats this as
+ *    capability `unavailable`, cacheable for the connection);
  *  - `null` when the probe query itself failed. `tryQueryData` returns null
  *    on ANY error, so this conflates "denied `system.columns` read" with "a
  *    transient network/auth hiccup" — there is no reliable way to tell them
@@ -788,21 +792,47 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
  *    dedupes so a failed probe is retried at most once per subsequent lookup
  *    batch — never once per individual lookup (no request storm).
  */
-export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
+export type DocProbeTable = 'functions' | 'formats' | 'table_engines' | 'database_engines' | 'data_type_families';
+
+const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
+  functions: 'functions',
+  formats: 'formats',
+  table_engines: 'table_engines',
+  database_engines: 'database_engines',
+  data_type_families: 'data_type_families',
+};
+
+export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<string[] | null> {
+  const tableName = DOC_PROBE_TABLE_NAMES[table];
   return tryQueryData<{ name: string }>(
     ctx,
-    "SELECT name FROM system.columns WHERE database = 'system' AND table = 'functions' FORMAT JSON",
+    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON',
   ).then((rows) => (rows === null ? null : rows.map((r) => r.name)));
 }
 
 /**
- * Run a prebuilt `system.functions` documentation-row SELECT (built by
- * `buildFunctionDocSelect`, `core/doc-capability.ts`) for one function or
- * aggregate-function lookup (#313). `null` on failure — transient, the caller
- * must not cache it — the (possibly empty, on no match) row array otherwise.
+ * Run a prebuilt documentation-row SELECT (built by `buildFunctionDocSelect`/
+ * `buildStructuredDocSelect`, `core/doc-capability.ts`) for one lookup by name
+ * (#313 function/aggregate-function; #314 the four structured sources). `null`
+ * on failure — transient, the caller must not cache it — the (possibly empty,
+ * on no match) row array otherwise.
  */
-export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
+export function loadDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
   return tryQueryData<Record<string, unknown>>(ctx, sql);
+}
+
+/** #313's `system.functions`-specific capability probe — a thin wrapper over
+ *  the generalized `loadDocTableColumns` (#314). Kept as its own export so
+ *  `SchemaCatalogDeps`/existing call sites and tests don't need to change. */
+export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
+  return loadDocTableColumns(ctx, 'functions');
+}
+
+/** #313's `system.functions`-specific row loader — a thin wrapper over the
+ *  generalized `loadDocRow` (#314). Kept as its own export for the same
+ *  reason as `loadFunctionsDocColumns` above. */
+export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
+  return loadDocRow(ctx, sql);
 }
 
 /** `exportQuery`'s options. */

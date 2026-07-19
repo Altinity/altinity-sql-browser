@@ -63,6 +63,8 @@ function makeDeps(over: Partial<SchemaCatalogDeps> = {}): SchemaCatalogDeps {
     loadReferenceData: fakeLoadReferenceData({}),
     loadFunctionsDocColumns: vi.fn(async () => []),
     loadFunctionDocRow: vi.fn(async () => []),
+    loadDocTableColumns: vi.fn(async () => []),
+    loadDocRow: vi.fn(async () => []),
     ctx: () => fakeCtx,
     ensureConfig: vi.fn(async () => null),
     sqlString: (s: unknown) => String(s),
@@ -484,6 +486,228 @@ describe('docSummary / docEntry', () => {
     const svc2 = createSchemaCatalogService(deps2);
     expect((await svc2.docEntry({ kind: 'function', name: 'quantile' })).status).toBe('found');
     expect(loadFunctionsDocColumns2).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── #314 Phase 2 — structured-source docSummary/docEntry routing ───────────
+
+describe('docEntry — #314 structured-source routing', () => {
+  const engineRow = { name: 'MergeTree', description: '\nThe base MergeTree engine.', syntax: 'ENGINE = MergeTree()' };
+  const engineColumns = ['name', 'description', 'syntax'];
+
+  it('routes a "table-engine" target through the structured probe/select/normalize path', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const result = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(result).toEqual({
+      status: 'found',
+      value: expect.objectContaining({ target: { kind: 'table-engine', name: 'MergeTree' }, title: 'MergeTree' }),
+    });
+    expect(loadDocTableColumns).toHaveBeenCalledWith(fakeCtx, 'table_engines');
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes "format"/"database-engine"/"data-type" through their own probe tables', async () => {
+    const loadDocTableColumns = vi.fn(async () => ['name']);
+    const loadDocRow = vi.fn(async () => [{ name: 'X' }]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'format', name: 'CSV' });
+    await svc.docEntry({ kind: 'database-engine', name: 'Atomic' });
+    await svc.docEntry({ kind: 'data-type', name: 'Int32' });
+
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(1, fakeCtx, 'formats');
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(2, fakeCtx, 'database_engines');
+    expect(loadDocTableColumns).toHaveBeenNthCalledWith(3, fakeCtx, 'data_type_families');
+  });
+
+  it('probes each structured kind independently, once per kind, and dedupes concurrent probes for the SAME kind', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const [a, b] = await Promise.all([
+      svc.docEntry({ kind: 'table-engine', name: 'MergeTree' }),
+      svc.docEntry({ kind: 'table-engine', name: 'MergeTree' }),
+    ]);
+    expect(a).toEqual(b);
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1); // one probe, shared, for table-engine
+
+    await svc.docEntry({ kind: 'table-engine', name: 'Log' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1); // capability cached — no second probe
+  });
+
+  it('dedupes a concurrent capability probe across DIFFERENT lookup keys of the SAME structured kind', async () => {
+    // Two different names can't share the entry cache, so this only stays at
+    // one probe if `ensureStructuredCapability` itself shares the in-flight
+    // promise for that kind.
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await Promise.all([
+      svc.docEntry({ kind: 'table-engine', name: 'MergeTree' }),
+      svc.docEntry({ kind: 'table-engine', name: 'Log' }),
+    ]);
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unavailable/denied source is independent: format denied does not affect table-engine (or vice versa)', async () => {
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (table === 'formats' ? [] : engineColumns));
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'format', name: 'CSV' })).toEqual({ status: 'unavailable' });
+    expect(loadDocRow).not.toHaveBeenCalled();
+
+    const engineResult = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(engineResult.status).toBe('found');
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+
+    // A later format lookup stays durably unavailable without re-probing.
+    expect(await svc.docEntry({ kind: 'format', name: 'TSV' })).toEqual({ status: 'unavailable' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(2); // one probe per kind ever (format, table-engine)
+  });
+
+  it('resolves "missing" and caches it (no second row fetch for the same key)', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => []);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'NopeTree' })).toEqual({ status: 'missing' });
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'NopeTree' })).toEqual({ status: 'missing' });
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a transient row-fetch failure — retries on the next call', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce([engineRow]);
+    const deps = makeDeps({
+      loadDocTableColumns,
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' })).toEqual({ status: 'unavailable' });
+    const second = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(second.status).toBe('found');
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries the probe on the next lookup batch after a null (transient/denied) probe result', async () => {
+    const loadDocTableColumns = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+      loadDocRow,
+    });
+    const svc = createSchemaCatalogService(deps);
+
+    expect(await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' })).toEqual({ status: 'unavailable' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+    const result = await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(result.status).toBe('found');
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedupes concurrent lookups for the same key (one row fetch)', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    const [a, b] = await Promise.all([
+      svc.docEntry({ kind: 'table-engine', name: 'MergeTree' }),
+      svc.docEntry({ kind: 'table-engine', name: 'MergeTree' }),
+    ]);
+    expect(a).toEqual(b);
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('docSummary is served from the same fetch/cache as docEntry for a structured kind', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    const summary = await svc.docSummary({ kind: 'table-engine', name: 'MergeTree' });
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+    expect(summary).toEqual({ status: 'found', value: expect.objectContaining({ title: 'MergeTree' }) });
+  });
+
+  it('invalidate()/loadReference() reset ALL structured capability state alongside the function one', async () => {
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(async () => [engineRow]);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+
+    svc.invalidate();
+    await svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(2); // re-probed after invalidate
+  });
+
+  it('invalidate() mid-flight drops a stale in-flight structured lookup: no cache write, resolves unavailable', async () => {
+    let resolveRow: (v: Record<string, unknown>[]) => void;
+    const rowPromise = new Promise<Record<string, unknown>[]>((res) => { resolveRow = res; });
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn(() => rowPromise);
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'] });
+    const svc = createSchemaCatalogService(deps);
+
+    const pending = svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    svc.invalidate();
+    resolveRow!([engineRow]);
+    expect(await pending).toEqual({ status: 'unavailable' });
+
+    const loadDocRow2 = vi.fn(async () => [engineRow]);
+    const deps2 = makeDeps({ loadDocTableColumns: vi.fn(async () => engineColumns), loadDocRow: loadDocRow2 });
+    const svc2 = createSchemaCatalogService(deps2);
+    expect((await svc2.docEntry({ kind: 'table-engine', name: 'MergeTree' })).status).toBe('found');
+    expect(loadDocRow2).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidate() mid-flight (AFTER the structured capability probe settled, during the row fetch) also drops the stale response', async () => {
+    let resolveRow: (v: Record<string, unknown>[]) => void;
+    const rowPromise = new Promise<Record<string, unknown>[]>((res) => { resolveRow = res; });
+    // A DISTINCT row name for the warm-up lookup — normalizeStructuredRow's
+    // entry.target.name comes from the ROW, not the requested target, so
+    // reusing `engineRow` (name: 'MergeTree') here would collide with the
+    // lookup under test's own normalized cache key and short-circuit it.
+    const loadDocTableColumns = vi.fn(async () => engineColumns);
+    const loadDocRow = vi.fn()
+      .mockResolvedValueOnce([{ name: 'Warmup', description: 'x', syntax: 'ENGINE = Warmup()' }]) // primes the capability cache
+      .mockImplementationOnce(() => rowPromise); // the lookup under test — row fetch parked mid-flight
+    const deps = makeDeps({ loadDocTableColumns, loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'] });
+    const svc = createSchemaCatalogService(deps);
+
+    await svc.docEntry({ kind: 'table-engine', name: 'Warmup' }); // capability now cached, no probe left in flight
+
+    const pending = svc.docEntry({ kind: 'table-engine', name: 'MergeTree' });
+    for (let i = 0; i < 20 && loadDocRow.mock.calls.length < 2; i++) await Promise.resolve();
+    expect(loadDocRow).toHaveBeenCalledTimes(2);
+
+    svc.invalidate();
+    resolveRow!([engineRow]);
+    expect(await pending).toEqual({ status: 'unavailable' });
   });
 });
 

@@ -4,8 +4,17 @@
 // consumer's shape.
 
 /** The kind of catalog entity a documentation lookup targets. Widens in later
- *  phases (formats, engines, data types, settings, table functions, …). */
-export type DocKind = 'function' | 'aggregate-function';
+ *  phases (settings, table functions, codecs, …). #314 (Phase 2) adds the four
+ *  structured-source kinds: `format` (`system.formats`), `table-engine`
+ *  (`system.table_engines`), `database-engine` (`system.database_engines`),
+ *  `data-type` (`system.data_type_families`). */
+export type DocKind =
+  | 'function'
+  | 'aggregate-function'
+  | 'format'
+  | 'table-engine'
+  | 'database-engine'
+  | 'data-type';
 
 /** One documentation target: what kind of entity, and its name as written in
  *  SQL (case as typed — lookups match case-insensitively, see doc-capability.ts). */
@@ -47,4 +56,23 @@ export interface DocEntry extends DocSummary {
   categories: string[];
   deterministic?: boolean | null;
   higherOrder?: boolean | null;
+  /** The full multi-line syntax block, when the source exposes one (#314 —
+   *  `system.table_engines`/`system.database_engines`/`system.data_type_families`'
+   *  `syntax` column). `signature` always stays just the first line; this
+   *  carries the whole block for a caller that wants to render it verbatim
+   *  (e.g. a syntax-highlighted code block in the reference pane).
+   *  `system.formats` has no `syntax` column — format entries never set this. */
+  syntaxFull?: string;
+  /** Related entity names (#314 structured sources' `related` column). A
+   *  same-kind `target` is attached whenever the source's `related` column
+   *  is confirmed and the name is non-blank — the UI resolves it through the
+   *  normal `docEntry` lookup (getting `missing` if the name doesn't actually
+   *  exist). Pure normalizers have no way to know a related name belongs to a
+   *  DIFFERENT kind, so there is no cross-kind resolution here — see #314's
+   *  "Normalization" section ("same-kind target is the safe default"). */
+  related?: { target?: DocTarget; label: string }[];
+  /** Human-readable capability facts (#314 — `system.formats`' and
+   *  `system.table_engines`' boolean capability columns), derived only from
+   *  columns actually confirmed present AND non-null on the row. */
+  facts?: { label: string; value: string }[];
 }

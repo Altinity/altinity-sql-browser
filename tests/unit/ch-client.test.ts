@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { ChCtx } from '../../src/net/ch-client.js';
+import type { ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 import type { StreamLine } from '../../src/core/stream.js';
 
@@ -480,6 +480,71 @@ describe('loadFunctionDocRow (#313)', () => {
   });
   it('returns null on failure (transient — not cached by the caller)', async () => {
     expect(await loadFunctionDocRow(ctxWith(async () => textResp('boom', false, 500)), 'SELECT 1 FORMAT JSON')).toBeNull();
+  });
+});
+
+describe('loadDocTableColumns (#314 — generalized per-source capability probe)', () => {
+  it('returns the column-name array on success, for each allowlisted table', async () => {
+    const tables: DocProbeTable[] = ['functions', 'formats', 'table_engines', 'database_engines', 'data_type_families'];
+    for (const table of tables) {
+      const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'name' }, { name: 'description' }] }));
+      expect(await loadDocTableColumns(ctx, table)).toEqual(['name', 'description']);
+    }
+  });
+
+  it('queries system.columns for the requested table name, never interpolating it unescaped', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [] }));
+    const ctx = ctxWith(fetchImpl);
+    await loadDocTableColumns(ctx, 'formats');
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain('FROM system.columns');
+    expect(body).toContain("table = 'formats'");
+  });
+
+  it('resolves each of the four #314 structured tables to its own system.columns probe', async () => {
+    const calls: string[] = [];
+    const ctx = ctxWith(async (_url, init) => { calls.push(init.body); return jsonResp({ data: [] }); });
+    await loadDocTableColumns(ctx, 'table_engines');
+    await loadDocTableColumns(ctx, 'database_engines');
+    await loadDocTableColumns(ctx, 'data_type_families');
+    expect(calls[0]).toContain("table = 'table_engines'");
+    expect(calls[1]).toContain("table = 'database_engines'");
+    expect(calls[2]).toContain("table = 'data_type_families'");
+  });
+
+  it('returns [] (not null) when the table does not exist — a successful probe with no matching rows', async () => {
+    expect(await loadDocTableColumns(ctxWith(async () => jsonResp({ data: [] })), 'formats')).toEqual([]);
+  });
+
+  it('returns null when the probe query itself fails (denied system.columns, or transient)', async () => {
+    expect(await loadDocTableColumns(ctxWith(async () => textResp('boom', false, 500)), 'formats')).toBeNull();
+  });
+});
+
+describe('loadDocRow (#314 — generalized documentation-row loader)', () => {
+  it('returns the row array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'MergeTree', description: 'doc' }] }));
+    expect(await loadDocRow(ctx, 'SELECT name FROM system.table_engines FORMAT JSON')).toEqual([{ name: 'MergeTree', description: 'doc' }]);
+  });
+  it('returns [] on a successful query with no matching rows', async () => {
+    expect(await loadDocRow(ctxWith(async () => jsonResp({ data: [] })), 'SELECT 1 FORMAT JSON')).toEqual([]);
+  });
+  it('returns null on failure (transient — not cached by the caller)', async () => {
+    expect(await loadDocRow(ctxWith(async () => textResp('boom', false, 500)), 'SELECT 1 FORMAT JSON')).toBeNull();
+  });
+});
+
+describe('loadFunctionsDocColumns / loadFunctionDocRow delegate to the generalized loaders (#314)', () => {
+  it('loadFunctionsDocColumns probes the "functions" table via loadDocTableColumns', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [{ name: 'name' }] }));
+    const ctx = ctxWith(fetchImpl);
+    expect(await loadFunctionsDocColumns(ctx)).toEqual(['name']);
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain("table = 'functions'");
+  });
+  it('loadFunctionDocRow runs the prebuilt SELECT via loadDocRow', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'count' }] }));
+    expect(await loadFunctionDocRow(ctx, 'SELECT name FROM system.functions FORMAT JSON')).toEqual([{ name: 'count' }]);
   });
 });
 

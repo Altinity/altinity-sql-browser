@@ -22,14 +22,31 @@ import type { Signal } from '@preact/signals-core';
 import { assembleReferenceData, buildCompletions } from '../core/completions.js';
 import type { AssembledReference, CompletionItem } from '../core/completions.js';
 import type { SchemaDb, SchemaTable, SchemaColumn } from '../core/from-scope.js';
-import { functionsCapabilityFromColumns, buildFunctionDocSelect, normalizeFunctionRow, summaryFromEntry } from '../core/doc-capability.js';
-import type { FunctionsDocCapability } from '../core/doc-capability.js';
+import {
+  functionsCapabilityFromColumns, buildFunctionDocSelect, normalizeFunctionRow, summaryFromEntry,
+  structuredCapabilityFromColumns, buildStructuredDocSelect, normalizeStructuredRow,
+} from '../core/doc-capability.js';
+import type { FunctionsDocCapability, StructuredDocCapability, StructuredDocKind } from '../core/doc-capability.js';
 import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
-import type { ChCtx } from '../net/ch-client.js';
+import type { ChCtx, DocProbeTable } from '../net/ch-client.js';
 import type {
   loadServerVersion, loadSchema, loadColumns, loadReferenceData,
-  loadFunctionsDocColumns, loadFunctionDocRow,
+  loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow,
 } from '../net/ch-client.js';
+
+// #314 Phase 2 — which `system.columns` probe table backs each structured
+// kind's INDEPENDENT capability (see `ensureStructuredCapability` below).
+const STRUCTURED_PROBE_TABLE: Record<StructuredDocKind, DocProbeTable> = {
+  format: 'formats',
+  'table-engine': 'table_engines',
+  'database-engine': 'database_engines',
+  'data-type': 'data_type_families',
+};
+
+// Every `DocKind` other than the two function kinds is a #314 structured kind.
+function isStructuredKind(kind: DocTarget['kind']): kind is StructuredDocKind {
+  return kind !== 'function' && kind !== 'aggregate-function';
+}
 
 // ── The state slice this service reads/writes ───────────────────────────────
 // Pick-shaped, structurally satisfied by the real `AppState` (state.ts) — a
@@ -84,6 +101,11 @@ export interface SchemaCatalogDeps {
    *  `docEntry` below). */
   loadFunctionsDocColumns: typeof loadFunctionsDocColumns;
   loadFunctionDocRow: typeof loadFunctionDocRow;
+  /** #314 — the generalized structured-source (format/table-engine/
+   *  database-engine/data-type) capability probe and row fetch, each source
+   *  probed/cached INDEPENDENTLY (see `ensureStructuredCapability` below). */
+  loadDocTableColumns: typeof loadDocTableColumns;
+  loadDocRow: typeof loadDocRow;
   /** The live ClickHouse auth context — a *provider*, not a value: the caller
    *  may rebuild it between calls, so the service always reads the current
    *  one rather than closing over a stale snapshot (matches `exec`'s own
@@ -215,12 +237,21 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
   let docGeneration = 0;
   let capability: FunctionsDocCapability | null = null;
   let capabilityProbe: Promise<FunctionsDocCapability | null> | null = null;
+  // #314 — each of the four structured kinds gets its OWN capability/in-flight
+  // probe slot, keyed by kind: a denied/missing source (e.g. `system.formats`
+  // access denied) is durably `unavailable` for THAT kind only, and never
+  // affects the other three kinds or the function capability above (#314
+  // "Cache and lifecycle": "Capability state is independent per source").
+  const structuredCapability = new Map<StructuredDocKind, StructuredDocCapability | null>();
+  const structuredCapabilityProbe = new Map<StructuredDocKind, Promise<StructuredDocCapability | null> | null>();
   const entryCache = new Map<string, DocLookup<DocEntry> | Promise<DocLookup<DocEntry>>>();
 
   function resetDocsState(): void {
     docGeneration++;
     capability = null;
     capabilityProbe = null;
+    structuredCapability.clear();
+    structuredCapabilityProbe.clear();
     entryCache.clear();
   }
 
@@ -241,9 +272,33 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     return probe;
   }
 
+  // #314 — same lazy/dedupe/generation-safety shape as `ensureCapability`
+  // above, but keyed per structured kind so e.g. a denied `system.formats`
+  // probe never blocks or disables `table-engine`/`database-engine`/
+  // `data-type` lookups on the same connection.
+  function ensureStructuredCapability(kind: StructuredDocKind): Promise<StructuredDocCapability | null> {
+    const cached = structuredCapability.get(kind);
+    if (cached) return Promise.resolve(cached);
+    const inflight = structuredCapabilityProbe.get(kind);
+    if (inflight) return inflight; // dedupe concurrent probes for the SAME kind
+    const gen = docGeneration;
+    const probe = (async (): Promise<StructuredDocCapability | null> => {
+      await deps.ensureConfig();
+      const cols = await deps.loadDocTableColumns(deps.ctx(), STRUCTURED_PROBE_TABLE[kind]);
+      if (gen !== docGeneration) return null; // superseded by invalidate/reconnect — never write shared capability state
+      structuredCapabilityProbe.set(kind, null); // settle: clears the in-flight slot so a `null` result lets the next batch retry
+      if (cols === null) return null; // transient/denied probe failure — NOT cached
+      const cap = structuredCapabilityFromColumns(kind, cols); // durable, including a durably-unavailable result ([] columns)
+      structuredCapability.set(kind, cap);
+      return cap;
+    })();
+    structuredCapabilityProbe.set(kind, probe);
+    return probe;
+  }
+
   interface DocEntryResolution { lookup: DocLookup<DocEntry>; cacheable: boolean }
 
-  async function resolveDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
+  async function resolveFunctionDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
     const cap = await ensureCapability();
     if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
     if (cap === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient capability-probe failure
@@ -257,6 +312,38 @@ export function createSchemaCatalogService(deps: SchemaCatalogDeps): SchemaCatal
     if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
     const entry = normalizeFunctionRow(rows[0] as Record<string, string | number | boolean | null | undefined>, cap);
     return { lookup: { status: 'found', value: entry }, cacheable: true };
+  }
+
+  // #314 — the structured-kind counterpart of `resolveFunctionDocEntry`,
+  // identical shape (probe -> SELECT -> row fetch -> normalize), just routed
+  // through the structured capability/select/normalize machinery. Every
+  // structured normalizer returns `entry.target.kind === kind` (no kind
+  // widening like function->aggregate-function), so there is no dual-key
+  // caching case here — `docEntry`'s generic normKey/key comparison below is
+  // simply always equal for these kinds, a no-op.
+  async function resolveStructuredDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
+    const kind = target.kind as StructuredDocKind;
+    const cap = await ensureStructuredCapability(kind);
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
+    if (cap === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient capability-probe failure
+    if (!cap.available) return { lookup: { status: 'unavailable' }, cacheable: true }; // durably-confirmed absent/denied capability
+    // `cap.available` guarantees `buildStructuredDocSelect` returns a SELECT, not null.
+    const sql = buildStructuredDocSelect(kind, cap, target.name, deps.sqlString)!;
+    await deps.ensureConfig();
+    const rows = await deps.loadDocRow(deps.ctx(), sql);
+    if (gen !== docGeneration) return { lookup: { status: 'unavailable' }, cacheable: false };
+    if (rows === null) return { lookup: { status: 'unavailable' }, cacheable: false }; // transient row-fetch failure — not cached
+    if (rows.length === 0) return { lookup: { status: 'missing' }, cacheable: true };
+    const entry = normalizeStructuredRow(kind, rows[0] as Record<string, string | number | boolean | null | undefined | unknown[]>, cap);
+    return { lookup: { status: 'found', value: entry }, cacheable: true };
+  }
+
+  // #314 — route by kind: function kinds keep Phase 1's exact behavior
+  // (including its kind-mismatch dual-key caching, handled generically in
+  // `docEntry` below); every other kind is a structured source.
+  function resolveDocEntry(target: DocTarget, gen: number): Promise<DocEntryResolution> {
+    if (isStructuredKind(target.kind)) return resolveStructuredDocEntry(target, gen);
+    return resolveFunctionDocEntry(target, gen);
   }
 
   function docEntry(target: DocTarget): Promise<DocLookup<DocEntry>> {
