@@ -156,6 +156,14 @@ function destroyViewers(st: PaneState): void {
  * connection-change teardown hook: app.ts's `signOut` calls it alongside
  * `catalog.invalidate()` so pane content never survives a reconnect/sign-out.
  */
+/** True when a documentation pane is currently open in `app.document` —
+ *  the global Escape shortcut (ui/shortcuts.ts) closes the pane FIRST,
+ *  before its cancel-running-query action, so Esc works from anywhere
+ *  (not only with focus inside the pane). */
+export function isDocPaneOpen(app: DocPaneApp): boolean {
+  return panes.has(app.document);
+}
+
 export function closeDocPane(app: DocPaneApp): void {
   const doc = app.document;
   const st = panes.get(doc);
@@ -335,26 +343,13 @@ function renderFound(
     ? h('div', { class: 'docs-categories' }, ...entry.categories.map((c) => h('span', { class: 'docs-chip' }, c)))
     : null;
 
-  let examplesBlock: HTMLElement | null = null;
-  if (entry.examples) {
-    const exampleText = entry.examples;
-    const codeHost = h('div', { class: 'docs-example-code' });
-    // ClickHouse-flavored highlighting (ch-lang.ts's chLanguageExtension,
-    // #313) — the same keyword/function set the main editor uses — via the
-    // injected `app.CodeViewer` seam's `languageExtension` override, so this
-    // never imports a concrete CM6 adapter (rule 2).
-    st.viewers.push(app.CodeViewer({
-      parent: codeHost, document: doc, text: exampleText, language: 'sql', wrap: true,
-      languageExtension: chLanguageExtension(app.catalog.refData),
-    }));
-    examplesBlock = h('div', { class: 'docs-field docs-examples' },
-      h('div', { class: 'docs-field-label' }, 'Examples'),
-      codeHost,
-      h('button', {
-        class: 'docs-copy', title: 'Copy example',
-        onclick: () => copyExample(app, doc, exampleText),
-      }, Icon.copy(), h('span', null, 'Copy')));
-  }
+  // `examples` on real servers is a MARKDOWN document — `**bold**` section
+  // titles between ```sql / ```response fences — not one SQL snippet (#60
+  // live finding). Render it like the other long-text fields: each fence
+  // becomes its own code block with an exact-text Copy button (sql fences
+  // get the ClickHouse CM6 highlighting, other languages a plain pre).
+  const examplesBlock = markdownField(app, doc, st, 'Examples', entry.examples);
+  if (examplesBlock) examplesBlock.classList.add('docs-examples');
 
   // #314 — the full multi-line syntax block (`system.table_engines`/
   // `system.database_engines`/`system.data_type_families`'s `syntax` column;

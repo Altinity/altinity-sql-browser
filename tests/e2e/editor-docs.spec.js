@@ -53,7 +53,18 @@ test.describe('docs reference (#313)', () => {
     await expect(page.locator('[role="complementary"]')).toBeVisible(); // still open
   });
 
-  test('Escape inside the pane closes it and does not leak to other handlers; focus returns to the editor', async ({ page }) => {
+  test('Escape closes the pane from ANYWHERE — focus still in the editor (#60 live finding)', async ({ page }) => {
+    await page.keyboard.type('sum');
+    await page.keyboard.press('F1');
+    const pane = page.locator('[role="complementary"]');
+    await expect(pane).toBeVisible();
+    // Focus never left the editor — Escape must close the pane regardless
+    // (the global shortcut layer, not the pane's focus-inside handler).
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[role="complementary"]')).toHaveCount(0);
+  });
+
+  test('Escape with focus inside the pane closes it without leaking to other handlers; focus returns to the editor', async ({ page }) => {
     await page.evaluate(() => {
       window.__escapes = [];
       document.addEventListener('keydown', (e) => {
@@ -75,14 +86,15 @@ test.describe('docs reference (#313)', () => {
     expect(await page.evaluate(() => document.activeElement?.closest('.cm-editor') != null)).toBe(true);
   });
 
-  test('completion info exposes a real keyboard-activatable Open reference button that opens the same pane', async ({ page }) => {
+  test('completion info exposes the "(reference — F1)" link that opens the same pane', async ({ page }) => {
     await page.keyboard.type('sum');
     await expect(page.locator('.cm-tooltip-autocomplete li[aria-selected]')).toBeVisible();
     // The side info tooltip for the selected completion renders the shared
-    // summary card with the Open reference button.
+    // summary card with the reference link on the badges row.
     const btn = page.locator('.cm-tooltip .hover-open-ref').first();
     await expect(btn).toBeVisible();
-    expect(await btn.evaluate((el) => el.tagName)).toBe('BUTTON');
+    expect(await btn.evaluate((el) => el.tagName)).toBe('A');
+    await expect(btn).toHaveText('reference');
     await btn.click();
     const pane = page.locator('[role="complementary"][aria-label="Documentation"]');
     await expect(pane).toBeVisible();

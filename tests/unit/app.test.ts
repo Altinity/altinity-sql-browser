@@ -1488,6 +1488,16 @@ describe('query run', () => {
   // the catalog caches dropped BEFORE the login screen appears, and the
   // workbench must come back fully usable after a re-render (destroy() is
   // not one-way for the workbench session: attachShell re-attaches).
+  it('app.closeDocPane closes an open reference pane (true) and no-ops when nothing is open (false) — the global Escape wiring (#60)', async () => {
+    const app = createApp(env());
+    expect(app.closeDocPane()).toBe(false); // nothing open
+    app.openDocEntry({ kind: 'function', name: 'sum' }); // pane opens (lookup resolves unavailable — irrelevant here)
+    expect(document.querySelector('[role="complementary"]')).not.toBeNull();
+    expect(app.closeDocPane()).toBe(true);
+    expect(document.querySelector('[role="complementary"]')).toBeNull();
+    await Promise.resolve(); // drain the discarded lookup
+  });
+
   it('signOut() aborts an in-flight run, kills the server query, invalidates the catalog, and still allows a run after re-render', async () => {
     let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
     const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => {

@@ -322,6 +322,8 @@ const appDefaults: App = {
   // #315 — same inert-placeholder convention for the F1 disambiguation
   // fallback's injected action.
   openDocDisambiguation: vi.fn(),
+  // #60 — the global-Escape close hook; the inert fixture has no pane open.
+  closeDocPane: vi.fn(() => false),
   CodeViewer: () => ({ setText: () => {}, setLanguage: () => {}, setWrap: () => {}, focus: () => {}, destroy: () => {} }),
   specValidators: { validate: () => [] },
   specCompletionSources: {},
@@ -529,6 +531,8 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     openDocEntry: vi.fn(),
     // #315 — same fresh-per-call reasoning for the F1 disambiguation fallback.
     openDocDisambiguation: vi.fn(),
+    // #60 — fresh-per-call for the same reason (shortcut tests assert calls).
+    closeDocPane: vi.fn(() => false),
     // `paramsDefaults`/`prefsDefaults` above are typed `: WorkbenchParameterSession`/
     // `: AppPreferences` — module-scoped SINGLETONS shared by every `makeApp()`
     // call in a test file. Widened members lose `.mock`/`.mockClear` the same

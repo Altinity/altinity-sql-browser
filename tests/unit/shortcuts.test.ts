@@ -98,6 +98,16 @@ describe('handleKeydown', () => {
     expect(handleKeydown(ev({ key: 'Escape' }), app)).toBe('cancel');
     expect(app.actions.cancel).toHaveBeenCalled();
   });
+  it('Escape closes an open docs pane FIRST — from anywhere — before cancelling a running query (#60)', () => {
+    const app = makeApp();
+    app.closeDocPane = vi.fn(() => true); // a pane was open and got closed
+    app.state.running.value = true;
+    expect(handleKeydown(ev({ key: 'Escape' }), app)).toBe('close-doc-pane');
+    expect(app.actions.cancel).not.toHaveBeenCalled(); // layered: the second Esc cancels
+    app.closeDocPane = vi.fn(() => false); // no pane open — falls through to cancel
+    expect(handleKeydown(ev({ key: 'Escape' }), app)).toBe('cancel');
+    expect(app.actions.cancel).toHaveBeenCalled();
+  });
   it('⌘T / ⌘W are no longer intercepted (browser keeps them)', () => {
     const app = makeApp();
     expect(handleKeydown(ev({ metaKey: true, key: 't' }), app)).toBeNull();

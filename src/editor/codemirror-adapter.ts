@@ -353,6 +353,19 @@ type InfoFn = () => Node | null | Promise<Node | null>;
  * returned card is simply never mutated once the caller's own liveness check
  * says no, keeping the local fallback content on screen instead.
  */
+/** The card's open-the-reference-pane affordance: `(reference — F1)` on the
+ *  badges row (after the `since` badge when one resolves) with the single
+ *  word "reference" as a standard link — keyboard-activatable like any
+ *  anchor; href is inert (`#`, prevented) since the action is app-local. */
+function openReferenceLink(app: CodeMirrorEditorApp, target: DocTarget): HTMLElement {
+  return h('span', { class: 'hover-open-ref-wrap' }, '(',
+    h('a', {
+      class: 'hover-open-ref', href: '#',
+      onclick: (e: Event) => { e.preventDefault(); app.openDocEntry?.(target); },
+    }, 'reference'),
+    ' — F1)');
+}
+
 function renderFunctionSummary(
   app: CodeMirrorEditorApp, target: DocTarget, local: CompletionFunctionEntry | undefined,
   isLive: () => boolean,
@@ -360,9 +373,9 @@ function renderFunctionSummary(
   const sig = h('div', { class: 'hover-sig' }, local?.sig || target.name + '()',
     local?.ret ? h('span', { class: 'hover-ret' }, ' → ' + local.ret) : null);
   const summary = h('div', { class: 'hover-doc' }, local?.desc || '');
-  const badges = h('div', { class: 'hover-badges' });
-  const openBtn = h('button', { class: 'hover-open-ref', type: 'button', onclick: () => app.openDocEntry?.(target) }, 'Open reference');
-  const dom = h('div', { class: 'hover-card' }, sig, summary, badges, openBtn);
+  const badges = h('span', { class: 'hover-badges' });
+  const dom = h('div', { class: 'hover-card' }, sig, summary,
+    h('div', { class: 'hover-meta' }, badges, openReferenceLink(app, target)));
   if (app.catalog?.docSummary) {
     Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
       if (!isLive()) return;
@@ -396,9 +409,9 @@ function renderStructuredSummary(
 ): HTMLElement {
   const sig = h('div', { class: 'hover-sig' }, target.name);
   const summary = h('div', { class: 'hover-doc' }, '');
-  const badges = h('div', { class: 'hover-badges' });
-  const openBtn = h('button', { class: 'hover-open-ref', type: 'button', onclick: () => app.openDocEntry?.(target) }, 'Open reference');
-  const dom = h('div', { class: 'hover-card' }, sig, summary, badges, openBtn);
+  const badges = h('span', { class: 'hover-badges' });
+  const dom = h('div', { class: 'hover-card' }, sig, summary,
+    h('div', { class: 'hover-meta' }, badges, openReferenceLink(app, target)));
   if (app.catalog?.docSummary) {
     Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
       if (!isLive()) return;

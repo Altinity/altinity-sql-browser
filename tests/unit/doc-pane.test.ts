@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { openDocEntry, openDocDisambiguation, closeDocPane } from '../../src/ui/doc-pane.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from '../../src/ui/doc-pane.js';
 import type { DocPaneApp } from '../../src/ui/doc-pane.js';
 import type { DocEntry, DocLookup, DocSummary, DocTarget } from '../../src/core/doc-types.js';
 
@@ -40,6 +40,17 @@ function entry(over: Partial<DocEntry> = {}): DocEntry {
 }
 
 describe('doc-pane lifecycle', () => {
+  it('isDocPaneOpen tracks open/close — the global Escape shortcut keys off it (#60)', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry() });
+    expect(isDocPaneOpen(app)).toBe(false);
+    openDocEntry(app, T_FN);
+    expect(isDocPaneOpen(app)).toBe(true);
+    await Promise.resolve(); await Promise.resolve();
+    closeDocPane(app);
+    expect(isDocPaneOpen(app)).toBe(false);
+  });
+
   it('open creates the pane, complementary role + accessible name, no backdrop', async () => {
     const app = makeApp();
     app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry() });
@@ -327,11 +338,11 @@ describe('alias navigation + cycle guard', () => {
   });
 });
 
-describe('examples: CodeViewer + Copy', () => {
-  it('mounts the injected CodeViewer with the exact example text and a ClickHouse language extension', async () => {
+describe('examples: markdown-rendered fences + Copy (#60 live finding: examples are a markdown doc)', () => {
+  it('a ```sql fence mounts the injected CodeViewer with the exact fence text and a ClickHouse language extension', async () => {
     const app = makeApp();
     app.catalog.docEntry.mockResolvedValue({
-      status: 'found', value: entry({ examples: "SELECT toDateTime('2024-01-01')" }),
+      status: 'found', value: entry({ examples: "**Basic**\n\n```sql\nSELECT toDateTime('2024-01-01')\n```" }),
     });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
@@ -340,6 +351,20 @@ describe('examples: CodeViewer + Copy', () => {
     }));
     const call = (app.CodeViewer as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(call.languageExtension).toBeDefined();
+    // The **Basic** section title renders as real bold, not literal markers.
+    expect(document.querySelector('.docs-examples strong')!.textContent).toBe('Basic');
+    closeDocPane(app);
+  });
+
+  it('a non-sql fence (```response) renders as plain preformatted text, not a CodeViewer', async () => {
+    const app = makeApp();
+    app.catalog.docEntry.mockResolvedValue({
+      status: 'found', value: entry({ examples: '```response\n1 row in set\n```' }),
+    });
+    openDocEntry(app, T_FN);
+    await Promise.resolve(); await Promise.resolve();
+    expect(app.CodeViewer).not.toHaveBeenCalled();
+    expect(document.querySelector('.docs-examples pre')!.textContent).toContain('1 row in set');
     closeDocPane(app);
   });
 
@@ -357,30 +382,30 @@ describe('examples: CodeViewer + Copy', () => {
     const app = makeApp({ navigator: undefined });
     const original = (globalThis as { navigator?: unknown }).navigator;
     Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true });
-    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: 'SELECT 1' }) });
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: '```sql\nSELECT 1\n```' }) });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-copy')!.click();
+    document.querySelector<HTMLButtonElement>('.docs-examples .docs-md-copy')!.click();
     expect(document.querySelector('.share-toast')!.textContent).toBe('Copy not supported');
     closeDocPane(app);
     Object.defineProperty(globalThis, 'navigator', { value: original, configurable: true });
   });
 
-  it('Copy writes the EXACT example text via the clipboard seam', async () => {
+  it("Copy writes the fence's EXACT code text via the clipboard seam", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const app = makeApp({ navigator: { clipboard: { writeText } as unknown as Clipboard } });
-    const example = "SELECT toDateTime('2024-01-01')  -- exact\n";
-    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: example }) });
+    const code = "SELECT toDateTime('2024-01-01')  -- exact";
+    app.catalog.docEntry.mockResolvedValue({ status: 'found', value: entry({ examples: '```sql\n' + code + '\n```' }) });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
-    document.querySelector<HTMLButtonElement>('.docs-copy')!.click();
-    expect(writeText).toHaveBeenCalledWith(example);
+    document.querySelector<HTMLButtonElement>('.docs-examples .docs-md-copy')!.click();
+    expect(writeText).toHaveBeenCalledWith(code);
     closeDocPane(app);
   });
 
   it('destroys the previous CodeViewer instance when the pane is retargeted', async () => {
     const app = makeApp();
-    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ examples: 'SELECT 1' }) });
+    app.catalog.docEntry.mockResolvedValueOnce({ status: 'found', value: entry({ examples: '```sql\nSELECT 1\n```' }) });
     openDocEntry(app, T_FN);
     await Promise.resolve(); await Promise.resolve();
     const firstViewer = (app.CodeViewer as ReturnType<typeof vi.fn>).mock.results[0].value;

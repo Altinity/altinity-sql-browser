@@ -209,6 +209,9 @@ export interface App {
    *  app.ts to ui/doc-pane.ts's `openDocDisambiguation(app, name)`, for the
    *  identical "editor never imports UI" reason as `openDocEntry` above. */
   openDocDisambiguation: (name: string) => void;
+  /** #60 — closes the docs reference pane when open (true) / no-op (false);
+   *  the global Escape shortcut calls it so Esc works from anywhere. */
+  closeDocPane: () => boolean;
   /** {validate, register} — see core/spec-draft.js. Typed as the service
    *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
    *  is app.js-internal wiring, outside this contract. */

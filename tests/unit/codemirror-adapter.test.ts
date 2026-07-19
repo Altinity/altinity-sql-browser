@@ -572,7 +572,8 @@ describe('infoFor', () => {
     document.body.appendChild(node);
     const btn = node.querySelector('.hover-open-ref') as HTMLButtonElement;
     expect(btn).toBeTruthy();
-    expect(btn.tagName).toBe('BUTTON'); // a real, keyboard-activatable button
+    expect(btn.tagName).toBe('A'); // the "(reference — F1)" link — keyboard-activatable like any anchor
+    expect(btn.textContent).toBe('reference');
     btn.click();
     expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
     expect(document.querySelector('[role="complementary"]')).toBeTruthy(); // the pane opened
@@ -631,7 +632,7 @@ describe('infoFor', () => {
       const node = infoFor(app, { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
       document.body.appendChild(node);
       const btn = node.querySelector('.hover-open-ref') as HTMLButtonElement;
-      expect(btn.tagName).toBe('BUTTON');
+      expect(btn.tagName).toBe('A'); // "(reference — F1)" link
       btn.click();
       expect(docEntry).toHaveBeenCalledWith({ kind: 'format', name: 'JSONEachRow' });
       expect(document.querySelector('[role="complementary"]')).toBeTruthy();

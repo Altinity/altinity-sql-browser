@@ -1685,6 +1685,14 @@ body .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background: 
 .hover-sig { font-family: var(--mono); font-size: 12px; color: var(--fg); margin-bottom: 5px; }
 .hover-ret { color: var(--fg-faint); }
 .hover-doc { font-size: 11.5px; color: var(--fg-mute); line-height: 1.5; }
+/* #313/#60 — the since/alias badges + "(reference — F1)" affordance row. */
+.hover-meta { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--fg-mute); }
+.hover-badges { display: inline-flex; gap: 6px; }
+.hover-badges:empty { display: none; }
+.hover-since, .hover-alias { color: var(--fg-mute); }
+.hover-open-ref-wrap { color: var(--fg-faint); white-space: nowrap; }
+.hover-open-ref { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.hover-open-ref:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ------------ results ------------ */
 .results { display: flex; flex-direction: column; height: 100%; min-height: 0; }
