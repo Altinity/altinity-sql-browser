@@ -792,6 +792,56 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(commit).toHaveBeenCalled();
   });
 
+  // #318: `twoTilesGrid`'s two ordinary (non-KPI) tiles auto-chart (String +
+  // UInt64 columns → an hbar chart, chart-data.ts's `autoChart`), so each
+  // holds a live Chart.js instance behind `tileEl.destroy`. Before this fix a
+  // removed tile's `tileEls` entry (and its chart) just sat forever — never
+  // pruned, never destroyed.
+  it('destroys a removed tile\'s chart renderer instead of leaking it', async () => {
+    const instances: FakeChart[] = [];
+    class TrackedChart extends FakeChart {
+      constructor(...args: ConstructorParameters<typeof FakeChart>) { super(...args); instances.push(this); }
+    }
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    app.Chart = TrackedChart as unknown as typeof FakeChart;
+    await render(app);
+    expect(instances.length).toBe(2);
+    expect(instances.every((c) => !c.destroyed)).toBe(true);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // removes t1
+    expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    expect(instances[0].destroyed).toBe(true); // t1's chart freed
+    expect(instances[1].destroyed).toBe(false); // t2 untouched
+  });
+
+  // #291 review F4 / #318: a same-window re-render (`app.reloadDashboardRoute()`)
+  // must fully tear down the PRIOR render's live state, not just its resize
+  // listener — the prior signals effect, viewer session, and every retained
+  // tile renderer.
+  it('a repeated renderDashboard call disposes the prior render\'s tile renderers and resize listener exactly once', async () => {
+    const priorInstances: FakeChart[] = [];
+    class TrackedChart extends FakeChart {
+      constructor(...args: ConstructorParameters<typeof FakeChart>) { super(...args); priorInstances.push(this); }
+    }
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+    const { app: app1 } = dashApp({ workspace: twoTilesGrid() });
+    app1.Chart = TrackedChart as unknown as typeof FakeChart;
+    await render(app1);
+    expect(priorInstances.length).toBe(2);
+    expect(priorInstances.every((c) => !c.destroyed)).toBe(true);
+    removeSpy.mockClear();
+
+    const { app: app2 } = dashApp({ workspace: twoTilesGrid() });
+    await render(app2); // simulates app.reloadDashboardRoute() re-rendering on the same window
+
+    // The first render's chart instances are destroyed, not leaked.
+    expect(priorInstances.every((c) => c.destroyed)).toBe(true);
+    // Exactly one resize listener removed (the prior render's own) — the
+    // disposer runs once, at the start of THIS render, not on every publish.
+    const resizeRemovals = removeSpy.mock.calls.filter(([type]) => type === 'resize');
+    expect(resizeRemovals.length).toBe(1);
+    removeSpy.mockRestore();
+  });
+
   it('a delete click is a no-op while flow (not grid) is active', async () => {
     const { app, commit } = dashApp({
       workspace: wsWith({

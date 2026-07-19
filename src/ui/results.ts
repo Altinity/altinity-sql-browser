@@ -251,8 +251,23 @@ function renderImageView(app: ResultsApp, r: QueryResult): HTMLDivElement {
   const image = r.image!;
   const url = getOrCreateImageUrl(app, image);
   const alt = app.activeTab().name || 'PNG query result';
-  return h('div', { class: 'image-result-view' },
-    h('img', { src: url, width: String(image.width), height: String(image.height), alt }));
+  const wrap = h('div', { class: 'image-result-view' },
+    h('img', {
+      src: url, width: String(image.width), height: String(image.height), alt,
+      // #318: the browser couldn't decode the blob (truncated/corrupt bytes
+      // despite passing the IHDR-level validation `newResult`'s binary branch
+      // already ran) — revoke the now-useless URL and drop the cache entry
+      // (`imageResultUrls.delete`, not just the revoke) so a LATER render of
+      // the exact same payload mints a fresh URL rather than reusing a dead
+      // one `getOrCreateImageUrl`'s cache would otherwise hand back verbatim.
+      onerror: () => {
+        app.revokeObjectUrl(url);
+        imageResultUrls.delete(image);
+        wrap.replaceChildren(h('div', { class: 'results-error' },
+          'PNG decode failed — the returned bytes are not a renderable image.'));
+      },
+    }));
+  return wrap;
 }
 
 /** The `Download PNG` button's filename base — the active tab's name,

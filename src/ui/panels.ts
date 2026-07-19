@@ -437,18 +437,32 @@ const imageArm: PanelArm = {
     const image = result && result.image;
     if (!image) return { node: panelEmpty('Run the query (with a trailing FORMAT PNG) to preview this image.') };
     const url = app.createObjectUrl(image.bytes, image.mimeType);
+    // #318: `destroy` (the usual repaint/leave-'ready' cleanup path) and the
+    // `<img>` decode-failure handler below can both fire for the same minted
+    // URL — a plain revoke twice over would double-free it, so both paths
+    // share this idempotent guard.
+    let revoked = false;
+    const revoke = (): void => { if (!revoked) { revoked = true; app.revokeObjectUrl(url); } };
     const fit = (cfg.fit as string | undefined) || 'contain';
     const background = (cfg.background as string | undefined) || 'theme';
     const alt = (cfg.alt as string | undefined) || title || 'PNG query result';
+    const box = h('div', { class: 'panel-image-box panel-image-bg-' + background });
     const img = h('img', {
       class: 'panel-image panel-image-fit-' + fit,
       src: url,
       alt,
       width: image.width,
       height: image.height,
+      // The browser failed to decode the blob — revoke it (a dead URL is
+      // never reusable) and swap in the same empty-hint presentation the
+      // pre-Run state uses, rather than leaving a broken-image glyph.
+      onerror: () => {
+        revoke();
+        box.replaceChildren(panelEmpty('PNG decode failed — the returned bytes are not a renderable image.'));
+      },
     });
-    const box = h('div', { class: 'panel-image-box panel-image-bg-' + background }, img);
-    return { node: box, destroy: () => { app.revokeObjectUrl(url); } };
+    box.appendChild(img);
+    return { node: box, destroy: revoke };
   },
 };
 

@@ -6,6 +6,7 @@ import {
 import type { ChCtx } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 import type { StreamLine } from '../../src/core/stream.js';
+import { MAX_PNG_BYTES } from '../../src/core/png.js';
 
 // --- Response stubs -------------------------------------------------------
 
@@ -20,7 +21,11 @@ interface FakeResponse {
   text(): Promise<string>;
   arrayBuffer?(): Promise<ArrayBuffer>;
   clone(): FakeResponse;
-  body?: { getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }> } };
+  headers?: { get(name: string): string | null };
+  body?: {
+    getReader(): { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel?(): Promise<void> };
+    cancel?(): Promise<void>;
+  };
 }
 function jsonResp(body: unknown, ok = true, status = ok ? 200 : 500): FakeResponse {
   return {
@@ -33,17 +38,57 @@ function jsonResp(body: unknown, ok = true, status = ok ? 200 : 500): FakeRespon
 function textResp(text: string, ok = true, status = ok ? 200 : 500): FakeResponse {
   return { ok, status, text: async () => text, clone() { return this; } };
 }
-/** A raw-mode binary response (e.g. `FORMAT PNG`) — `arrayBuffer()` is the
- *  only reader `runQuery`'s binary branch calls; `text()` backs the non-2xx
- *  error path (parseExceptionText reads text, never bytes, on failure). */
-function binResp(bytes: Uint8Array, ok = true, status = ok ? 200 : 500): FakeResponse {
+/** A raw-mode binary response (e.g. `FORMAT PNG`) delivered as a single chunk
+ *  off `resp.body`'s reader (the incremental read path #307 now uses) — a
+ *  `Content-Length` header matching `bytes.length` by default (pass `null` to
+ *  simulate a server that omits it), and an `arrayBuffer()` fallback kept for
+ *  the defensive no-`body` branch. `text()` backs the non-2xx error path
+ *  (`parseExceptionText` reads text, never bytes, on failure). */
+function binResp(bytes: Uint8Array, ok = true, status = ok ? 200 : 500, contentLength: number | null = bytes.length): FakeResponse {
+  let read = false;
   return {
     ok,
     status,
     text: async () => new TextDecoder().decode(bytes),
     arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     clone() { return this; },
+    headers: { get: (name) => (name.toLowerCase() === 'content-length' ? (contentLength == null ? null : String(contentLength)) : null) },
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (read) return { done: true };
+          read = true;
+          return { done: false, value: bytes };
+        },
+        cancel: async () => {},
+      }),
+    },
   };
+}
+/** A raw-mode binary response delivered across explicit `chunks`, with a
+ *  spy-able `reader.cancel()` (`cancelSpy`) and a controllable/absent
+ *  `Content-Length` header — for #307's incremental `MAX_PNG_BYTES`
+ *  enforcement: an over-cap read must cancel the reader and never assemble
+ *  the oversized buffer; an in-bounds multi-chunk read must assemble the
+ *  bytes correctly. */
+function chunkedBinResp(chunks: Uint8Array[], contentLength: number | null = null): FakeResponse & { cancelSpy: Mock } {
+  let i = 0;
+  const cancelSpy = vi.fn(async () => {});
+  const resp: FakeResponse & { cancelSpy: Mock } = {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    clone() { return resp; },
+    headers: { get: (name) => (name.toLowerCase() === 'content-length' ? (contentLength == null ? null : String(contentLength)) : null) },
+    body: {
+      getReader: () => ({
+        read: async () => (i < chunks.length ? { done: false, value: chunks[i++] } : { done: true }),
+        cancel: cancelSpy,
+      }),
+    },
+    cancelSpy,
+  };
+  return resp;
 }
 function streamResp(chunks: string[], ok = true): FakeResponse {
   let i = 0;
@@ -539,6 +584,134 @@ describe('runQuery', () => {
     const ctx = ctxWith(async () => binResp(bytes));
     const out = await runQuery(ctx, 'x', { format: 'png' });
     expect(out.binary).toBeDefined();
+  });
+  it('rejects an over-cap Content-Length without reading the body (#307)', async () => {
+    const oversize = MAX_PNG_BYTES + 1;
+    let bodyRead = false;
+    const resp: FakeResponse = {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      clone() { return resp; },
+      headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(oversize) : null) },
+      body: {
+        getReader: () => {
+          bodyRead = true;
+          return { read: async () => ({ done: true }), cancel: async () => {} };
+        },
+        cancel: async () => {},
+      },
+    };
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeUndefined();
+    expect(out.error).toContain('too large');
+    expect(out.error).toContain(String(MAX_PNG_BYTES));
+    expect(bodyRead).toBe(false);
+  });
+  it('cancels the reader and rejects the instant a chunked read exceeds MAX_PNG_BYTES, without assembling the oversized buffer (#307)', async () => {
+    const half = Math.ceil(MAX_PNG_BYTES / 2);
+    const chunks = [new Uint8Array(half), new Uint8Array(half), new Uint8Array(1024)]; // total > cap
+    const resp = chunkedBinResp(chunks, null);
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeUndefined();
+    expect(out.error).toContain('too large');
+    expect(resp.cancelSpy).toHaveBeenCalledTimes(1);
+  });
+  it('assembles an in-bounds chunked PNG body into one correct Uint8Array (#307)', async () => {
+    const chunks = [new Uint8Array([137, 80, 78, 71]), new Uint8Array([13, 10, 26, 10]), new Uint8Array([1, 2, 3])];
+    const expected = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+    let off = 0;
+    for (const c of chunks) { expected.set(c, off); off += c.length; }
+    const resp = chunkedBinResp(chunks, null);
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeDefined();
+    expect(Array.from(out.binary!.bytes)).toEqual(Array.from(expected));
+    expect(resp.cancelSpy).not.toHaveBeenCalled();
+  });
+  it('skips a not-done chunked read with an undefined value (defensive — some reader implementations emit this) without counting it', async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    let call = 0;
+    const resp: FakeResponse = {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      clone() { return resp; },
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            call++;
+            if (call === 1) return { done: false, value: undefined }; // defensive no-op chunk
+            if (call === 2) return { done: false, value: bytes };
+            return { done: true };
+          },
+          cancel: async () => {},
+        }),
+      },
+    };
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeDefined();
+    expect(Array.from(out.binary!.bytes)).toEqual(Array.from(bytes));
+  });
+  it('an aborted signal mid-chunked-read rejects with AbortError, same as arrayBuffer() would', async () => {
+    const controller = new AbortController();
+    const abortErr = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+    let calls = 0;
+    const resp: FakeResponse = {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      clone() { return resp; },
+      headers: { get: () => null },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            calls++;
+            if (calls === 1) return { done: false, value: new Uint8Array([137, 80]) };
+            controller.abort();
+            throw abortErr;
+          },
+          cancel: async () => {},
+        }),
+      },
+    };
+    const ctx = ctxWith(async () => resp);
+    await expect(runQuery(ctx, 'x', { format: 'PNG', signal: controller.signal })).rejects.toBe(abortErr);
+  });
+  it('rejects an over-cap body via the arrayBuffer() fallback post-hoc size check when resp.body is absent', async () => {
+    const buf = new ArrayBuffer(MAX_PNG_BYTES + 1);
+    const resp: FakeResponse = {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      arrayBuffer: async () => buf,
+      clone() { return resp; },
+      headers: { get: () => null },
+    };
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeUndefined();
+    expect(out.error).toContain('too large');
+    expect(out.error).toContain(String(MAX_PNG_BYTES));
+  });
+  it('falls back to arrayBuffer() with a post-hoc size check when resp.body is absent', async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const resp: FakeResponse = {
+      ok: true,
+      status: 200,
+      text: async () => '',
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+      clone() { return resp; },
+      headers: { get: () => null },
+    };
+    const ctx = ctxWith(async () => resp);
+    const out = await runQuery(ctx, 'x', { format: 'PNG' });
+    expect(out.binary).toBeDefined();
+    expect(Array.from(out.binary!.bytes)).toEqual(Array.from(bytes));
   });
   it('PNG raw mode error response (non-2xx) is parsed as text, not bytes', async () => {
     const errText = 'Code: 62. DB::Exception: Syntax error';

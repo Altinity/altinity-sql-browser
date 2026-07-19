@@ -140,6 +140,19 @@ export function parseExceptionText(text: string): string {
   return text;
 }
 
+/**
+ * Heuristic: does `text` look like it carries a ClickHouse exception, rather
+ * than arbitrary/binary data? Used by the `FORMAT PNG` binary path (#307
+ * item 6) to tell a genuine CH error — which can arrive with a 2xx HTTP
+ * status once headers are already sent (see `findExceptionFrame`'s doc) — apart
+ * from a structurally invalid/garbage PNG body. Matches `DB::Exception`
+ * anywhere, a leading `Code: <n>` line (CH's plain-text error prefix), or a
+ * `{"exception": ...}` JSON line (CH's mid-stream exception frame). Pure.
+ */
+export function looksLikeChException(text: string): boolean {
+  return text.includes('DB::Exception') || /^Code:\s*\d+/m.test(text) || /^\{"exception"/m.test(text);
+}
+
 const EXCEPTION_MARKER = '__exception__'; // ClickHouse WriteBufferFromHTTPServerResponse
 
 // Re-decode a latin1 (1 byte -> 1 char) slice back into proper UTF-8 text.

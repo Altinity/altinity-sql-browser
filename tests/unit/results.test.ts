@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
   renderResults, renderJson, renderTable, openCellDetail, openRowsViewer, expandDataPane, revokeResultImageUrl,
 } from '../../src/ui/results.js';
@@ -216,6 +217,22 @@ describe('renderResults states', () => {
     expect(qs(app.dom.resultsRegion, '.image-result-view')).not.toBeNull();
     expect(app.dom.resultsRegion.textContent).not.toContain('Starting query…');
   });
+  it('#318: an <img> decode failure shows the standard error state, revokes the URL, and clears the cache so a re-render mints a fresh one', () => {
+    const r = imageResult();
+    const app = appWithResult(r);
+    renderResults(app);
+    const img = qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img');
+    img.dispatchEvent(new Event('error'));
+    expect(app.revokeObjectUrl).toHaveBeenCalledWith('blob:fake');
+    expect(qs(app.dom.resultsRegion, '.results-error').textContent).toContain('PNG decode failed');
+    expect(qs(app.dom.resultsRegion, '.image-result-view img')).toBeNull();
+    // The cache entry is gone — a later render of the SAME payload mints a
+    // fresh URL rather than reusing the now-dead one.
+    (app.createObjectUrl as Mock).mockReturnValueOnce('blob:fake-2');
+    renderResults(app);
+    expect(qs<HTMLImageElement>(app.dom.resultsRegion, '.image-result-view img').getAttribute('src')).toBe('blob:fake-2');
+  });
+
   it('revokeResultImageUrl (#307): frees a painted image\'s URL, once, and is a no-op otherwise', () => {
     const r = imageResult();
     const app = appWithResult(r);

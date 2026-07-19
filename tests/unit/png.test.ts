@@ -4,33 +4,39 @@ import {
 } from '../../src/core/png.js';
 
 const SIG = [137, 80, 78, 71, 13, 10, 26, 10];
+// PNG's IEND chunk is always zero-length with a constant CRC-32 (CRC of just
+// the 4 type bytes 'IEND', since IEND never carries data) — the same
+// structural tail `validatePng` now requires.
+const IEND_TAIL = [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
 
-/** Build minimal PNG bytes: signature + an IHDR chunk (length/type/width/
- *  height only — no CRC, no other chunks; `validatePng` never reads past
- *  IHDR's first 8 header bytes so this is sufficient). `ihdrLength` and
- *  `type` are overridable to exercise the malformed-chunk branches. */
+/** Build a structurally-COMPLETE minimal PNG: signature + a real IHDR chunk
+ *  (13-byte data + 4-byte CRC, CRC bytes are dummy zeros — `validatePng`
+ *  never verifies the IHDR CRC's *value*, only that it's in bounds) + a real
+ *  terminal IEND chunk. `ihdrLength`/`type` are overridable to exercise the
+ *  malformed-chunk branches. */
 function makePng(opts: {
   width?: number;
   height?: number;
   ihdrLength?: number;
   type?: string;
-  extraTrailingBytes?: number;
 } = {}): Uint8Array {
   const {
-    width = 100, height = 50, ihdrLength = 13, type = 'IHDR', extraTrailingBytes = 0,
+    width = 100, height = 50, ihdrLength = 13, type = 'IHDR',
   } = opts;
-  const bytes = new Uint8Array(8 + 8 + 13 + extraTrailingBytes);
+  const bytes = new Uint8Array(8 + 8 + 13 + 4 + IEND_TAIL.length);
   bytes.set(SIG, 0);
   const view = new DataView(bytes.buffer);
   view.setUint32(8, ihdrLength, false);
   for (let i = 0; i < 4; i++) bytes[12 + i] = type.charCodeAt(i);
   view.setUint32(16, width, false);
   view.setUint32(20, height, false);
+  // bytes[24..27] is the IHDR CRC — left as zeros (dummy; never verified).
+  bytes.set(IEND_TAIL, 8 + 8 + 13 + 4);
   return bytes;
 }
 
 describe('validatePng', () => {
-  it('accepts a well-formed minimal PNG', () => {
+  it('accepts a well-formed, structurally complete minimal PNG', () => {
     expect(validatePng(makePng({ width: 100, height: 50 }))).toEqual({ ok: true, width: 100, height: 50 });
   });
 
@@ -66,6 +72,36 @@ describe('validatePng', () => {
   it('rejects an IHDR chunk shorter than 13 bytes', () => {
     const bytes = makePng({ ihdrLength: 12 });
     expect(validatePng(bytes)).toEqual({ ok: false, reason: 'Not a valid PNG (IHDR chunk too short)' });
+  });
+
+  it('rejects an IHDR chunk longer than 13 bytes (length must be exactly 13)', () => {
+    const bytes = makePng({ ihdrLength: 14 });
+    expect(validatePng(bytes)).toEqual({ ok: false, reason: 'Not a valid PNG (IHDR chunk too short)' });
+  });
+
+  it('rejects a payload truncated right after IHDR data (missing CRC bytes)', () => {
+    const full = makePng({ width: 100, height: 50 });
+    const truncated = full.slice(0, 8 + 8 + 13); // IHDR data present, no CRC, no IEND
+    const r = validatePng(truncated);
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; reason: string }).reason).toMatch(/truncated/);
+  });
+
+  it('rejects a payload with a valid IHDR but no terminal IEND chunk (structurally incomplete)', () => {
+    const full = makePng({ width: 100, height: 50 });
+    const noIend = full.slice(0, 8 + 8 + 13 + 4); // IHDR + CRC only, IEND missing entirely
+    const r = validatePng(noIend);
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; reason: string }).reason).toMatch(/IEND/);
+  });
+
+  it('rejects a payload with a corrupted/incomplete IEND tail', () => {
+    const full = makePng({ width: 100, height: 50 });
+    const corrupted = full.slice();
+    corrupted[corrupted.length - 1] = 0; // flip a byte of IEND's constant CRC
+    const r = validatePng(corrupted);
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; reason: string }).reason).toMatch(/IEND/);
   });
 
   it('rejects zero/negative-equivalent (unsigned zero) width or height', () => {

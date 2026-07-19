@@ -125,14 +125,19 @@ export interface DashboardApp {
 const valueString = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
 
-/** #291 review F4: `renderDashboard` can run more than once against the SAME
- *  window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place after
- *  an import-commit while already on `/dashboard` (file-menu.ts's Import
- *  flow). Module-level so a later call can find and remove the PRIOR call's
- *  resize listener before installing its own; without this, repeated renders
- *  stack listeners that all still close over their own render's now-stale
+/** #291 review F4 / #318: `renderDashboard` can run more than once against the
+ *  SAME window — `app.reloadDashboardRoute()` (app.ts) re-invokes it in place
+ *  after an import-commit while already on `/dashboard` (file-menu.ts's Import
+ *  flow). Module-level so a later call can fully tear down the PRIOR call's
+ *  live state before installing its own: the resize listener (#291's own
+ *  fix), the signals `effect()` (its own `dispose` — a second live effect
+ *  would double-publish/double-paint over the new render's DOM), the
+ *  `DashboardViewerSession` (in-flight requests, generations — `session.
+ *  destroy()`), and every retained per-tile renderer (Chart.js instances,
+ *  #307 image blob URLs — `destroyChart`). Without this, a repeated render
+ *  leaks all of the above, each still closing over its own render's now-stale
  *  `session`/`currentDoc`/`containerWidthPx`. */
-let installedGridResizeListener: { win: Window; handler: () => void } | null = null;
+let installedDashboardDisposer: (() => void) | null = null;
 
 /**
  * Build the flow preset switcher as a compact `<select>` (2026-07-18 owner
@@ -297,12 +302,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   doc.documentElement.setAttribute('data-density', state.density);
   app.dom = {};
 
-  // #291 review F4: remove any grid resize listener a PRIOR renderDashboard
-  // call installed on this window before this call installs its own (see
-  // `installedGridResizeListener`'s own doc comment above).
-  if (installedGridResizeListener) {
-    installedGridResizeListener.win.removeEventListener('resize', installedGridResizeListener.handler);
-    installedGridResizeListener = null;
+  // #291 review F4 / #318: tear down a PRIOR renderDashboard call's live state
+  // on this window before this call builds its own (see
+  // `installedDashboardDisposer`'s own doc comment above).
+  if (installedDashboardDisposer) {
+    installedDashboardDisposer();
+    installedDashboardDisposer = null;
   }
 
   // #288 Phase 6: resolve WHICH dashboard this tab shows and in which MODE from
@@ -688,6 +693,27 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
 
   function destroyChart(tileEl: TileEl): void { if (tileEl.destroy) { tileEl.destroy(); tileEl.destroy = null; } }
 
+  // #318: a tile removed from the document (remove-tile, or a syncDocument
+  // whose new tile set drops one) stops appearing in `sview.tiles` — the
+  // session itself drops the runtime record (`syncDocument`) — but its
+  // `tileEls` entry, and any live chart/image renderer it holds, were never
+  // cleaned up: `reconcileGrid`/`reconcileGrafanaGrid` only ever ADD/update
+  // cards for tiles that are still present, so a stale entry just sat in the
+  // map forever (leaking a Chart.js instance or, since #307, an image blob
+  // URL). Called once per publish, before either engine reconciles, so both
+  // paths share the same prune regardless of which is active.
+  function pruneRemovedTiles(sview: DashboardViewState): void {
+    if (!tileEls.size) return;
+    const liveIds = new Set(sview.tiles.map((t) => t.tileId));
+    for (const [tileId, tileEl] of tileEls) {
+      if (liveIds.has(tileId)) continue;
+      destroyChart(tileEl);
+      tileEl.card.remove();
+      tileEls.delete(tileId);
+      gridPlacementByTile.delete(tileId);
+    }
+  }
+
   // Paint an ordinary (non-KPI) tile's result once per new result. Only ever
   // called for a 'ready' tile, so columns/rows/meta/panel are all present.
   function paintPanel(ts: ViewerTileState, tileEl: TileEl): void {
@@ -944,8 +970,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // default-filled published bag and persist defaults on first open, freezing
   // them against later Spec-editor changes to a filter's default.
   let lastFilterPersistSig = filterBagSignature(persistBagOf(session.state.value.filters));
-  effect(() => {
+  const disposeEffect = effect(() => {
     const sview = session.state.value;
+    pruneRemovedTiles(sview);
     const mobileNow = state.isMobile.value; // tracked so a breakpoint flip re-runs the effect
     // A breakpoint flip after the last publish needs a fresh flow model —
     // republish through the viewer (recomputes it with the new mobile flag).
@@ -1012,16 +1039,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     containerWidthPx = w > 0 ? w : undefined;
   }
   measureGridWidth();
-  // #291 review F4: unlike a repeatedly-opened modal (e.g. the EXPLAIN graph
-  // overlay), the Dashboard page is normally a single full-page navigation —
-  // BUT `renderDashboard` can still run again against this SAME window
-  // in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
+  // #291 review F4 / #318: unlike a repeatedly-opened modal (e.g. the EXPLAIN
+  // graph overlay), the Dashboard page is normally a single full-page
+  // navigation — BUT `renderDashboard` can still run again against this SAME
+  // window in place (`app.reloadDashboardRoute()`, app.ts, re-invoked from
   // file-menu.ts's Import flow while already on `/dashboard`). This module
-  // never disconnects/observes page teardown, so the listener installed here
-  // is removed at the START of the NEXT `renderDashboard` call instead (see
-  // `installedGridResizeListener` above) rather than relying on the page
-  // itself never rendering twice.
+  // never disconnects/observes page teardown, so everything this render
+  // installed/started is torn down at the START of the NEXT `renderDashboard`
+  // call instead (see `installedDashboardDisposer`'s doc comment above)
+  // rather than relying on the page itself never rendering twice.
   const gridWin = doc.defaultView;
+  let removeGridResizeListener: (() => void) | null = null;
   if (gridWin) {
     const onGridResize = (): void => {
       if (activeEngine !== 'grafana-grid') return;
@@ -1030,8 +1058,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (containerWidthPx !== prevWidth) session.syncDocument(currentDoc);
     };
     gridWin.addEventListener('resize', onGridResize);
-    installedGridResizeListener = { win: gridWin, handler: onGridResize };
+    removeGridResizeListener = () => gridWin.removeEventListener('resize', onGridResize);
   }
+
+  // #318: the ONE disposer for everything this render started — found and run
+  // by the NEXT same-window `renderDashboard` call (above), so re-entry never
+  // leaks the previous call's effect, session, tile renderers, or listener.
+  installedDashboardDisposer = () => {
+    disposeEffect();
+    session.destroy();
+    for (const tileEl of tileEls.values()) destroyChart(tileEl);
+    removeGridResizeListener?.();
+  };
 
   await session.start();
 }

@@ -773,6 +773,27 @@ describe('image panel arm', () => {
     expect(img.alt).toBe('PNG query result');
   });
 
+  it('#318: an <img> decode failure revokes the URL and swaps in the empty-hint presentation', () => {
+    const image = fakeImage();
+    const revoked: string[] = [];
+    const app = makeApp({
+      createObjectUrl: vi.fn(() => 'blob:test-2'),
+      revokeObjectUrl: vi.fn((url: string) => { revoked.push(url); }),
+    });
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image }, cfg: { type: 'image' },
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    img.dispatchEvent(new Event('error'));
+    expect(revoked).toEqual(['blob:test-2']);
+    expect(qs(out.node, 'img')).toBeNull();
+    expect(out.node.textContent).toContain('PNG decode failed');
+    // `destroy` (the normal repaint-cleanup path) is idempotent against the
+    // SAME revoke the decode-failure handler already fired — no double-free.
+    out.destroy!();
+    expect(revoked).toEqual(['blob:test-2']);
+  });
+
   it('renders through renderResolvedPanel end to end (resolvePanel → registry dispatch)', () => {
     const app = makeApp();
     const image = fakeImage();

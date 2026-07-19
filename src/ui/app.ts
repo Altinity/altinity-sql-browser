@@ -596,6 +596,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       showExportProgress: (onCancel) => showExportProgress(onCancel),
       toast: (message) => flashToast(message, { document: doc }),
       loadSchema: () => { void catalog.loadSchema(); },
+      revokeResultImage: (result) => revokeResultImageUrl(app, result),
     },
   });
   app.exports = exportService;
