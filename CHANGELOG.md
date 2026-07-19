@@ -31,6 +31,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   crediting ClickHouse's RayTracer demos) — requires ClickHouse 26.6+.
 
 ### Fixed
+- **`npm run local` can now opt an OAuth connection into `ch_auth: "basic"`.**
+  `build/local.py` only ever emitted the default `bearer` auth for OAuth
+  connections read from `~/.clickhouse-client/config.xml`, so there was no way
+  to locally exercise the ch-jwt-verify path (stock/OSS ClickHouse behind a
+  Basic-password JWT verifier, `docs/CLICKHOUSE-OSS-OAUTH.md`) — the browser
+  always sent `Authorization: Bearer`, which such a server rejects
+  (`AUTHENTICATION_FAILED`, "'Bearer' HTTP Authorization scheme is not
+  supported"). A `<ch-auth>basic</ch-auth>` tag on the connection now mirrors
+  `install.sh --ch-auth basic` into the generated `config.json`'s IdP entry.
 - **Starring a query in a fresh workspace (and importing favorited queries)
   now actually creates Dashboard tiles** (#307 merge-gate finding; pre-existing
   Phase-8 regression). `toggleTileMembership` used to no-op while the

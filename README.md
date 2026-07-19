@@ -652,6 +652,13 @@ by default, so a stock server works. For an **OAuth** connection you also regist
 `http://localhost:8900/sql` as a redirect URI with the IdP. Override the serve port
 with `PORT` and the config path with `LOCAL_CH_CONFIG`. Ctrl-C stops it.
 
+If that cluster is stock/OSS ClickHouse behind a
+[ch-jwt-verify](https://github.com/Altinity/ch-jwt-verify) deployment rather than
+an Antalya `<token_processors>` build, add `<ch-auth>basic</ch-auth>` to the
+`<connection>` so the browser sends the JWT as the HTTP Basic password instead of
+`Authorization: Bearer` — see
+[docs/CLICKHOUSE-OSS-OAUTH.md](docs/CLICKHOUSE-OSS-OAUTH.md).
+
 **From Docker** — the container is a static nginx server that takes an explicit
 `config.json` rather than reading `~/.clickhouse-client`. See
 [Run in Docker](#run-in-docker) above.
