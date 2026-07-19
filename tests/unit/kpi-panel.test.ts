@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { formatKpiValue } from '../../src/core/kpi.js';
 import { renderKpiCards, renderKpiPanel } from '../../src/ui/kpi-panel.js';
 
 const item = (over: Record<string, unknown> = {}) => ({
@@ -19,10 +20,33 @@ describe('renderKpiPanel', () => {
     expect(node.querySelector('.kpi-card')!.getAttribute('aria-label')).toBe('Availability');
     expect((node.querySelector('.kpi-card') as HTMLElement).style.getPropertyValue('--kpi-accent')).toBe('#123456');
     expect(node.querySelector('.kpi-value')!.textContent).toBe('12.4%');
+    // #316: number and unit are separate spans, but concatenate back to the
+    // exact same flat value text — no space is introduced between them.
+    expect(node.querySelector('.kpi-value-number')!.textContent).toBe('12.4');
+    expect(node.querySelector('.kpi-value-unit')!.textContent).toBe('%');
     expect(node.querySelector('.kpi-description')!.textContent).toBe('Current service level');
     expect(node.querySelector('.kpi-delta')!.classList.contains('is-good')).toBe(true);
     expect(node.querySelector('.kpi-delta')!.textContent).toBe('↓ Change 1.5 pp');
     expect(node.querySelector('.kpi-warnings')!.textContent).toContain('Ignored region');
+  });
+  it('renders no unit span when the field has no unit, and no delta element when there is no delta (#316)', () => {
+    const node = renderKpiPanel({
+      items: [item({ presentation: { displayName: 'Rows', noValue: '—', delta: {} } })],
+      diagnostics: [],
+    });
+    const value = node.querySelector('.kpi-value')!;
+    expect(value.querySelector('.kpi-value-number')!.textContent).toBe('12.4');
+    expect(value.querySelector('.kpi-value-unit')).toBeNull();
+    expect(value.textContent).toBe(formatKpiValue({ value: 12.4, clickhouseType: 'Float64', presentation: { noValue: '—' } }));
+    expect(node.querySelector('.kpi-delta')).toBeNull();
+  });
+  it('keeps the full description text in the DOM even though CSS visually clamps it (#316)', () => {
+    const longDescription = 'A very long description that would visually wrap past two lines in a narrow KPI card, but the complete text must still be readable by assistive technology.';
+    const node = renderKpiPanel({
+      items: [item({ presentation: { displayName: 'Rows', description: longDescription, noValue: '—', delta: {} } })],
+      diagnostics: [],
+    });
+    expect(node.querySelector('.kpi-description')!.textContent).toBe(longDescription);
   });
   it('renders no-data and errors as visible states', () => {
     const noData = renderKpiPanel({ items: [], diagnostics: [{ severity: 'info', code: 'kpi-no-data', message: 'No data' }] });

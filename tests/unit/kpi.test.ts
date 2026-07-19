@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatKpiValue, isKpiNumericType, kpiDeltaState, parseKpiTupleType, readKpiFields, resolveKpiPresentation } from '../../src/core/kpi.js';
+import { formatKpiValue, formatKpiValueParts, isKpiNumericType, kpiDeltaState, parseKpiTupleType, readKpiFields, resolveKpiPresentation } from '../../src/core/kpi.js';
 
 describe('KPI ClickHouse types', () => {
   it('recognizes numeric families and nullable wrappers only', () => {
@@ -66,6 +66,23 @@ describe('KPI presentation and formatting', () => {
     expect(formatKpiValue({ value: 'nope', clickhouseType: 'Float64' })).toBe('—');
     expect(formatKpiValue({ value: false, clickhouseType: 'UInt8' })).toBe('—');
     expect(formatKpiValue({ value: 5n, clickhouseType: 'UInt64' })).toBe('5');
+  });
+  it('formatKpiValueParts splits the same rendering formatKpiValue concatenates (#316)', () => {
+    const cases: { args: Parameters<typeof formatKpiValue>[0] }[] = [
+      { args: { value: 12.345, clickhouseType: 'Float64', presentation: { decimals: 2, unit: '%' } } },
+      { args: { value: 1_500_000, clickhouseType: 'UInt64' } },
+      { args: { value: null, clickhouseType: 'UInt64', presentation: { noValue: 'None', unit: 'MiB' } } },
+      { args: { value: Infinity, clickhouseType: 'Float64', presentation: { unit: 'ms' } } },
+      { args: { value: '12.40', clickhouseType: 'Decimal(10,2)', presentation: { unit: ' MiB' } } },
+    ];
+    for (const { args } of cases) {
+      const parts = formatKpiValueParts(args);
+      expect(parts.rendered + parts.unit).toBe(formatKpiValue(args));
+    }
+    // A no-value/invalid-number result never carries a unit onto the noValue text.
+    expect(formatKpiValueParts({ value: null, clickhouseType: 'UInt64', presentation: { unit: 'MiB' } })).toEqual({ rendered: '—', unit: '' });
+    expect(formatKpiValueParts({ value: 'nope', clickhouseType: 'Float64', presentation: { unit: 'MiB' } })).toEqual({ rendered: '—', unit: '' });
+    expect(formatKpiValueParts({ value: 999, clickhouseType: 'UInt64', presentation: { unit: 'MiB' } })).toEqual({ rendered: '999', unit: 'MiB' });
   });
   it('derives delta direction and good/bad/neutral semantics', () => {
     const item = (delta: unknown, config: { positiveIsGood?: boolean; show?: boolean } = {}) => ({ delta, presentation: { delta: config } });

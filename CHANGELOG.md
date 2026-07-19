@@ -9,6 +9,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Changed
+- **Grafana-grid KPI tiles are polished in both Dashboard modes** (#316,
+  follow-on to #291). Edit mode keeps the full editing shell but drops the
+  never-populated tile footer (no more phantom separator line). View mode
+  strips all outer tile chrome — header, border, background, radius, body
+  padding — leaving the KPI cards (or the loading/unfilled/error state card,
+  now full-width with `role="status"`/`role="alert"` and the tile title in
+  its accessible name) as the only visible surfaces; the tile element stays
+  the CSS-grid item and carries `role="group"` + the query title as its
+  accessible name. KPI cards inside grid tiles lay out as an equal-width
+  responsive grid (`auto-fill`, min 150px — a lone last-row card no longer
+  stretches) with container-query value typography
+  (`clamp(16px, 14cqi, 38px)`). Shared card polish everywhere (workbench,
+  flow bands, grid tiles — owner decision pinned on #316): the value's
+  number+unit render as glued spans that never orphan the unit to its own
+  line, descriptions clamp to two visual lines (full text stays in the DOM),
+  and delta rows anchor to the card bottom for consistent rhythm. Flow-band
+  stream layout, ordinary tiles, schemas, persistence, and KPI value
+  semantics are unchanged. New real-browser e2e suite
+  (`tests/e2e/dashboard-grid-kpi.spec.js`) covers the frameless view, equal
+  widths, unit orphaning, delta alignment, 12/6/4/2 responsive columns,
+  themes, and 360px no-overflow.
+
 ### Added
 - **Line/area/bar/hbar charts over a time-role X column now draw a genuine
   Chart.js `time` scale** (#309, follow-up to #310's category-axis
