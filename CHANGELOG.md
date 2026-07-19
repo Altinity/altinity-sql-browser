@@ -10,6 +10,29 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Version-exact function reference docs from the connected server** (#60
+  Phase 1, #313). CM6 hover and completion info upgrade in place with the
+  connected ClickHouse server's own `system.functions` metadata (signature,
+  one-line summary, `since` version badge, `Alias of` notice) and expose a
+  keyboard-activatable **Open reference** button; **F1** in the editor opens
+  the same entry for the symbol at the caret (documented in the shortcuts
+  dialog). A persistent, **non-modal** right-side documentation pane
+  (`src/ui/doc-pane.ts`, resizable, `role="complementary"`, Escape/close
+  with focus restore) renders the full structured entry: description,
+  arguments/parameters, returned value, categories,
+  deterministic/higher-order badges, and copyable examples highlighted with
+  the shared ClickHouse CM6 dialect (extracted to `src/editor/ch-lang.ts`).
+  Availability is **capability-gated, not version-gated**: the actual
+  `system.functions` columns are probed once per connection (works on
+  pre-26.6 servers; missing optional columns degrade field-by-field; denied
+  or absent sources degrade silently, cached per connection), lookups are
+  deduplicated, keyed `kind:name`, and connection-generation-safe across
+  reconnects, and no documentation SQL ever runs on the keystroke path. The
+  shared non-modal drawer chrome behind the pane was extracted from the
+  cell-detail/rows-viewer scaffold (`src/ui/drawer.ts` — the shared Drawer
+  primitive deferred to #60), and the editor layer is now an enforced leaf
+  (`build/check-boundaries.mjs`: `src/editor` must not import `src/ui`; UI
+  actions are injected app callbacks).
 - **Line/area/bar/hbar charts over a time-role X column now draw a genuine
   Chart.js `time` scale** (#309, follow-up to #310's category-axis
   mitigation). `chartJsConfig` (`src/core/chart-data.ts`) switches the
