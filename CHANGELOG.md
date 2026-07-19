@@ -9,6 +9,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **ClickHouse 26.6 `FORMAT PNG` results render as real images** (#307). A
+  query with a trailing explicit `FORMAT PNG` now runs through a new binary
+  transport (`runQuery` reads bytes, never `Response.text()` — no base64
+  anywhere) and is validated client-side (PNG signature, IHDR, 8192×8192 /
+  32M-pixel / 64 MiB caps in the pure `src/core/png.ts`) before any object
+  URL exists. The Workbench shows a locked "Image (PNG)" result view —
+  centered, scrollable, aspect-preserving, alt-named from the tab/saved
+  query — with exact-bytes `Download PNG` (Copy is disabled); blob URLs are
+  revoked on rerun, tab close, and result replacement. Dashboards gain a
+  schema-validated `image` panel type (`fit` contain/cover/actual,
+  `background` theme/transparent/checkerboard, `alt`): the only tile shape
+  allowed to carry an authored `FORMAT` clause, and only `PNG` — every
+  other panel/role keeps the blanket rejection. Tiles render the image in
+  the full body, repaint on image identity (resize never re-executes), and
+  revoke the previous URL on replacement in both layout engines. Image
+  bytes are never persisted (saved queries, history, workspaces, bundles).
+  New importable demo library `examples/image-panels.json` (spiral, RGB
+  gradient, RGBA checkerboard glow, and an original ray-traced sphere
+  crediting ClickHouse's RayTracer demos) — requires ClickHouse 26.6+.
+
 ### Changed
 - **Grafana-grid KPI tiles are polished in both Dashboard modes** (#316,
   follow-on to #291). Edit mode keeps the full editing shell but drops the

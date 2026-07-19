@@ -239,6 +239,32 @@ describe('createDashboardViewerSession', () => {
     expect(session.state.value.tiles[0].error).toContain('FORMAT');
   });
 
+  it('a chart (line) panel with an authored FORMAT PNG is rejected by the blanket gate', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('q1', 'SELECT 1 FORMAT PNG', { panel: { cfg: { type: 'line', x: 0, y: [1] } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].status).toBe('error');
+    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+  });
+
+  it('a table panel with an authored FORMAT PNG is rejected by the blanket gate', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('q1', 'SELECT 1 FORMAT PNG', { panel: { cfg: { type: 'table' } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].status).toBe('error');
+    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+  });
+
   it('a stale generation cannot replace a newer Image result (stale-wave suppression)', async () => {
     let resolveFirst!: () => void;
     const first = new Promise<void>((resolve) => { resolveFirst = resolve; });

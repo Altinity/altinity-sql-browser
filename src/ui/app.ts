@@ -954,6 +954,7 @@ export function createApp(env: CreateAppEnv = {}): App {
     hooks: {
       renderResults: () => renderResults(app),
       onAuthFailed: () => chCtx.onSignedOut(),
+      revokeResultImage: (result) => revokeResultImageUrl(app, result),
     },
   });
   app.graph = graph;

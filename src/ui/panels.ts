@@ -439,7 +439,7 @@ const imageArm: PanelArm = {
     const url = app.createObjectUrl(image.bytes, image.mimeType);
     const fit = (cfg.fit as string | undefined) || 'contain';
     const background = (cfg.background as string | undefined) || 'theme';
-    const alt = (cfg.alt as string | undefined) || title || '';
+    const alt = (cfg.alt as string | undefined) || title || 'PNG query result';
     const img = h('img', {
       class: 'panel-image panel-image-fit-' + fit,
       src: url,
@@ -698,6 +698,13 @@ export function renderPanelView(app: App, r: PanelResult | null, hooks: PanelHoo
       ? 'Panel renders when the query completes.'
       : 'Run the query (⌘↵) to preview this panel.'));
   } else {
+    // `destroy` is unreachable here today: this call site always has
+    // `hasGrid ? r : null` — a completed/live result — while the Image arm's
+    // `result.image` (the only arm whose `destroy` does anything, #307) only
+    // ever arrives already-rendered through renderResults' own dedicated
+    // image branch, never through this Panel-drawer path. Comment only, no
+    // behavior change — a future reorder that lets an image result reach here
+    // must wire `destroy` or it'll leak the object URL.
     const { node } = renderResolvedPanel(app, resolved, hasGrid ? r : null, {
       surface: 'workbench',
       state: r ? (r.panelState = r.panelState || {}) : {},
@@ -710,6 +717,7 @@ export function renderPanelView(app: App, r: PanelResult | null, hooks: PanelHoo
       // the fallback preview must never be able to replace the saved Logs cfg.
       onCfgChange: rescueLogs ? undefined : onCfgChange,
       setChart: (c: PanelChartInstance) => { app.chart = c; }, // renderResults' destroy-before-rebuild slot
+      title: app.activeTab().name || undefined, // #307: Image arm's alt-text source
     });
     body.appendChild(node);
   }

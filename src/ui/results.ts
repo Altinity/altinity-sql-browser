@@ -899,6 +899,12 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
   const r = result;
   if (view === 'panel') {
     if (panel.mode === 'readonly') {
+      // `destroy` is unreachable here today: the Image arm's `destroy` only
+      // ever matters for a real `result.image` (#307), and an image result
+      // always renders via renderResults' own dedicated image branch before
+      // reaching this readonly Panel path. Comment only, no behavior change —
+      // a future reorder that lets an image result reach here must wire
+      // `destroy` or it'll leak the object URL.
       const { node } = renderResolvedPanel(app, panel.resolved, r, {
         surface: 'workbench',
         state: panel.state,
@@ -907,6 +913,7 @@ export function renderResultView({ app, view, result, sort, setSort, widths, rer
         cap,
         onCell,
         setChart: panel.setChart,
+        title: app.activeTab().name || undefined, // #307: Image arm's alt-text source
       });
       return node;
     }

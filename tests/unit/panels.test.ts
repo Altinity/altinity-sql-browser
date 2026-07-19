@@ -762,6 +762,17 @@ describe('image panel arm', () => {
     expect(img.alt).toBe('Fallback title');
   });
 
+  it('falls back to "PNG query result" when no cfg.alt and no title are given', () => {
+    const app = makeApp();
+    const image = fakeImage();
+    const out = PANEL_TYPES.image.renderPanel({
+      app, result: { columns: [], rows: [], error: null, rawText: null, image },
+      cfg: { type: 'image' },
+    });
+    const img = qs<HTMLImageElement>(out.node, 'img');
+    expect(img.alt).toBe('PNG query result');
+  });
+
   it('renders through renderResolvedPanel end to end (resolvePanel → registry dispatch)', () => {
     const app = makeApp();
     const image = fakeImage();
