@@ -18,6 +18,20 @@ export function isImagePanel(panel: Panel | null | undefined): boolean {
   return panel?.cfg?.type === 'image';
 }
 
+/** #307 UX fix: should an UNCONFIGURED panel-role tile (no explicit `panel.cfg`
+ *  at all — `panel` is null or has no `cfg`) be treated as an Image panel? True
+ *  only when the authored SQL's trailing FORMAT clause is exactly `PNG`
+ *  (case-insensitive, via `detectSqlFormat`). An explicitly-typed panel (any
+ *  type, including a non-image one) never re-types here — this is purely the
+ *  "nothing chosen yet" heuristic, parallel to `autoPanel`'s result-shape
+ *  heuristic but keyed on the authored SQL rather than the result. */
+export function shouldInferImagePanel(panel: Panel | Record<string, unknown> | null | undefined, sql: string): boolean {
+  const cfg = panel && typeof panel === 'object' ? (panel as { cfg?: unknown }).cfg : undefined;
+  if (cfg && typeof cfg === 'object') return false;
+  const format = detectSqlFormat(sql);
+  return !!format && format.toUpperCase() === 'PNG';
+}
+
 /** A saved query's explicit, known-typed panel payload, or null. Unknown
  *  panel-cfg shapes stay non-null-ish only through resolvePanel's diagnostic
  *  fallback. Shared by the Dashboard's ordinary-tile path and its KPI-band

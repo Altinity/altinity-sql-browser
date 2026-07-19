@@ -40,7 +40,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   import flow showed nothing. Starring a panel-role query now creates the
   dashboard document on demand, and `planImportQueries` runs the new
   additive-only, idempotent `syncFavoriteTileMembership` so imported
-  favorited panel-role queries arrive with tiles.
+  favorited panel-role queries arrive with tiles. A starred query with a
+  trailing `FORMAT PNG` and no explicit panel type is now auto-inferred as an
+  Image panel (owner decision) — only explicitly-typed non-image panels keep
+  the FORMAT rejection, and for PNG that error now says how to fix it ("set
+  its panel type to Image").
 - **Large `FORMAT PNG` results are no longer truncated by the ROWS selector**
   (#307 merge-gate finding). The row cap (`max_result_rows` +
   `result_overflow_mode=break`) was sent for every raw-format run, so a

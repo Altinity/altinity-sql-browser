@@ -34,7 +34,7 @@ import { hasOptionalBlocks } from '../../core/optional-blocks.js';
 import { detectSqlFormat } from '../../core/format.js';
 import { DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP } from '../../core/dashboard.js';
 import { queryName } from '../../core/saved-query.js';
-import { panelExecution } from '../../core/panel-execution.js';
+import { panelExecution, shouldInferImagePanel } from '../../core/panel-execution.js';
 import type { ImageResultPayload } from '../../core/png.js';
 import { filterExecution } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
@@ -327,8 +327,19 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
         `No saved query ${JSON.stringify(tile.queryId)} for tile ${JSON.stringify(tile.id)}`, tile.id);
     } else {
       const resolved = resolvePresentation({ query, tile });
-      if (resolved.ok) panel = resolved.panel;
-      else presentationError = resolved.diagnostics[0];
+      if (resolved.ok) {
+        panel = resolved.panel;
+        // #307 UX fix: an unconfigured panel-role tile (no explicit
+        // `panel.cfg` at all) whose authored SQL ends in `FORMAT PNG` is
+        // treated as an Image panel — same as if `cfg.type:'image'` had been
+        // saved. Must run BEFORE the isKpi/isText/isImage derivation below so
+        // `explicit`, `state.panel`, and `panelExecution` (via
+        // `runtime.explicit`) all see a real image panel. Uses the base
+        // authored SQL (`query.sql`), not any later filter/param merge.
+        if (!cfgType(panel) && shouldInferImagePanel(panel, query.sql)) {
+          panel = { ...panel, cfg: { type: 'image' } };
+        }
+      } else presentationError = resolved.diagnostics[0];
     }
     const type = cfgType(panel);
     const isKpi = type === 'kpi';
@@ -496,10 +507,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // above already validated it's exactly `FORMAT PNG`, and set `execution.error`
     // otherwise). Every other panel/role keeps the blanket rejection.
     const checkFormat = !runtime.isKpi && !runtime.isImage;
-    if (execution.error || (checkFormat && detectSqlFormat(execSql))) {
+    const rejectedFormat = checkFormat ? detectSqlFormat(execSql) : null;
+    if (execution.error || rejectedFormat) {
       runtime.state.status = 'error';
+      // #307: an explicitly-typed non-image panel whose authored format is
+      // specifically PNG gets an actionable message pointing at the fix
+      // (retype the panel to Image) rather than the generic "remove FORMAT"
+      // guidance, which would be wrong advice for a PNG-producing query.
       runtime.state.error = execution.error
-        || 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.';
+        || (rejectedFormat && rejectedFormat.toUpperCase() === 'PNG'
+          ? 'This query returns FORMAT PNG — set its panel type to Image to show it on the Dashboard.'
+          : 'Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.');
       publish();
       return;
     }

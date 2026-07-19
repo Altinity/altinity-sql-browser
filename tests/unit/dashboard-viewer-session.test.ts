@@ -228,18 +228,39 @@ describe('createDashboardViewerSession', () => {
     expect(session.state.value.tiles[0].error).toContain('FORMAT PNG');
   });
 
-  it('a non-image tile with an authored FORMAT PNG is still rejected by the blanket gate', async () => {
-    const { exec, calls } = makeExec();
+  it('#307: an unconfigured panel-role tile with authored FORMAT PNG is inferred as an Image panel and runs', async () => {
+    const image = fakeImage();
+    const { exec, calls } = makeExec(() => ({ image, columns: [], rows: [] }));
     const document = doc({ tiles: [tile('t1', 'q1')] });
     const session = createDashboardViewerSession(makeDeps({
       document, exec, queries: [query('q1', 'SELECT 1 FORMAT PNG')],
     }));
     await session.start();
-    expect(calls.length).toBe(0);
-    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+    expect(calls.length).toBe(1);
+    expect(calls[0].format).toBe('PNG');
+    const ts = session.state.value.tiles[0];
+    expect(ts.isImage).toBe(true);
+    expect(ts.status).toBe('ready');
+    expect(ts.error).toBeNull();
+    expect(ts.image).toEqual(image);
+    expect(ts.panel?.cfg).toEqual({ type: 'image' });
   });
 
-  it('a chart (line) panel with an authored FORMAT PNG is rejected by the blanket gate', async () => {
+  it('#307: an unconfigured panel-role tile with no FORMAT clause is unaffected (ordinary auto panel)', async () => {
+    const { exec, calls } = makeExec((sql) => ({ columns: [{ name: 'n' }], rows: [[sql.length]] }));
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('q1', 'SELECT 1')],
+    }));
+    await session.start();
+    expect(calls.length).toBe(1);
+    const ts = session.state.value.tiles[0];
+    expect(ts.isImage).toBe(false);
+    expect(ts.status).toBe('ready');
+    expect(ts.panel?.cfg).toBeUndefined();
+  });
+
+  it('a chart (line) panel with an authored FORMAT PNG is rejected with the guided Image message', async () => {
     const { exec, calls } = makeExec();
     const document = doc({ tiles: [tile('t1', 'q1')] });
     const session = createDashboardViewerSession(makeDeps({
@@ -249,10 +270,11 @@ describe('createDashboardViewerSession', () => {
     await session.start();
     expect(calls.length).toBe(0);
     expect(session.state.value.tiles[0].status).toBe('error');
-    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+    expect(session.state.value.tiles[0].error)
+      .toBe('This query returns FORMAT PNG — set its panel type to Image to show it on the Dashboard.');
   });
 
-  it('a table panel with an authored FORMAT PNG is rejected by the blanket gate', async () => {
+  it('#307: an explicit table panel with an authored FORMAT PNG is rejected with the guided Image message', async () => {
     const { exec, calls } = makeExec();
     const document = doc({ tiles: [tile('t1', 'q1')] });
     const session = createDashboardViewerSession(makeDeps({
@@ -262,7 +284,22 @@ describe('createDashboardViewerSession', () => {
     await session.start();
     expect(calls.length).toBe(0);
     expect(session.state.value.tiles[0].status).toBe('error');
-    expect(session.state.value.tiles[0].error).toContain('FORMAT');
+    expect(session.state.value.tiles[0].error)
+      .toBe('This query returns FORMAT PNG — set its panel type to Image to show it on the Dashboard.');
+  });
+
+  it('#307: an explicit table panel with an authored FORMAT CSV keeps the original blanket-gate message', async () => {
+    const { exec, calls } = makeExec();
+    const document = doc({ tiles: [tile('t1', 'q1')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('q1', 'SELECT 1 FORMAT CSV', { panel: { cfg: { type: 'table' } } })],
+    }));
+    await session.start();
+    expect(calls.length).toBe(0);
+    expect(session.state.value.tiles[0].status).toBe('error');
+    expect(session.state.value.tiles[0].error)
+      .toBe('Dashboard panels require structured streaming results. Remove the explicit FORMAT clause.');
   });
 
   it('a stale generation cannot replace a newer Image result (stale-wave suppression)', async () => {

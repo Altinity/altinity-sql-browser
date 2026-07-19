@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { explicitPanel, isImagePanel, isKpiPanel, panelExecution } from '../../src/core/panel-execution.js';
+import {
+  explicitPanel, isImagePanel, isKpiPanel, panelExecution, shouldInferImagePanel,
+} from '../../src/core/panel-execution.js';
 
 describe('panel execution ownership', () => {
   it('leaves non-KPI execution unchanged', () => {
@@ -49,6 +51,23 @@ describe('image panel ownership (#307)', () => {
     // viewer session) is the one that blanket-rejects an authored FORMAT.
     const table = panelExecution({ cfg: { type: 'table' } }, 'SELECT 1 FORMAT PNG');
     expect(table.owned).toBe(false);
+  });
+});
+
+describe('shouldInferImagePanel (#307)', () => {
+  it('fires for an unconfigured panel (null or no cfg) with a trailing FORMAT PNG (case-insensitive)', () => {
+    expect(shouldInferImagePanel(null, 'SELECT 1 FORMAT PNG')).toBe(true);
+    expect(shouldInferImagePanel(undefined, 'SELECT 1 FORMAT png')).toBe(true);
+    expect(shouldInferImagePanel({}, 'SELECT 1 FORMAT PNG')).toBe(true);
+    expect(shouldInferImagePanel({ cfg: null }, 'SELECT 1 FORMAT PNG')).toBe(true);
+  });
+  it('never fires without a trailing FORMAT PNG', () => {
+    expect(shouldInferImagePanel(null, 'SELECT 1')).toBe(false);
+    expect(shouldInferImagePanel(null, 'SELECT 1 FORMAT CSV')).toBe(false);
+  });
+  it('never fires when the panel already has ANY explicit cfg, even a non-image one', () => {
+    expect(shouldInferImagePanel({ cfg: { type: 'table' } }, 'SELECT 1 FORMAT PNG')).toBe(false);
+    expect(shouldInferImagePanel({ cfg: { type: 'image' } }, 'SELECT 1 FORMAT PNG')).toBe(false);
   });
 });
 
