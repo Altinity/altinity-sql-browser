@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   migrate-and-verify:
-    if: ${{ github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[examples migrated]') }}
+    if: ${{ github.event_name == 'pull_request' || (!contains(github.event.head_commit.message, '[examples migrated]') && !contains(github.event.head_commit.message, '[migration debug]')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -24,7 +24,12 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Rewrite generators and tests
-        run: node examples/mjs/rewrite-example-generators.mjs
+        run: |
+          if ! node examples/mjs/rewrite-example-generators.mjs > /tmp/rewrite.log 2>&1; then
+            cat /tmp/rewrite.log
+            cp /tmp/rewrite.log examples/rewrite-error.log
+            exit 1
+          fi
       - name: Normalize checked-in examples
         run: node examples/mjs/normalize-examples.mjs
       - name: Verify normalization
@@ -38,10 +43,20 @@ jobs:
       - name: Build
         run: npm run build
       - name: Commit migrated examples
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ success() && github.event_name == 'push' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add examples tests/unit/spec-examples.test.js
           git commit -m "docs(examples): migrate to portable dashboard bundles [examples migrated]"
           git push origin HEAD:examples-rework-bootstrap
+      - name: Persist rewrite failure
+        if: ${{ failure() && github.event_name == 'push' }}
+        run: |
+          if [ -f examples/rewrite-error.log ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add examples/rewrite-error.log
+            git commit -m "chore(examples): capture migration failure [migration debug]"
+            git push origin HEAD:examples-rework-bootstrap
+          fi
