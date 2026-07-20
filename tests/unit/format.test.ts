@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   clamp, formatRows, formatBytes, timeAgo, sqlString, quoteIdent, qualifyIdent, inferQueryName, isNumericType, shortVersion, supportsExplainPretty, userShortName, withStatementBreak, detectSqlFormat, isSchemaMutatingSql, toSubquery, prepareExportSql, truncate, formatCompressionRatio,
+  parseServerVersion, versionAtLeast,
 } from '../../src/core/format.js';
 
 describe('clamp', () => {
@@ -304,6 +305,41 @@ describe('shortVersion', () => {
     expect(shortVersion('26.3')).toBe('26.3');
     expect(shortVersion('')).toBe('');
     expect(shortVersion(null)).toBe('');
+  });
+});
+
+describe('parseServerVersion', () => {
+  it('parses the leading major.minor off a full ClickHouse version string', () => {
+    expect(parseServerVersion('26.3.10.20001.altinityantalya')).toEqual({ major: 26, minor: 3 });
+    expect(parseServerVersion('26.6')).toEqual({ major: 26, minor: 6 });
+    expect(parseServerVersion('27.0.1')).toEqual({ major: 27, minor: 0 });
+  });
+
+  it('returns null for empty/nullish/malformed input', () => {
+    expect(parseServerVersion('')).toBeNull();
+    expect(parseServerVersion(null)).toBeNull();
+    expect(parseServerVersion(undefined)).toBeNull();
+    expect(parseServerVersion('not-a-version')).toBeNull();
+  });
+});
+
+describe('versionAtLeast', () => {
+  it('true when parsed is above the bound (major or minor)', () => {
+    expect(versionAtLeast({ major: 27, minor: 0 }, 26, 6)).toBe(true);
+    expect(versionAtLeast({ major: 26, minor: 7 }, 26, 6)).toBe(true);
+  });
+
+  it('true when parsed exactly matches the bound', () => {
+    expect(versionAtLeast({ major: 26, minor: 6 }, 26, 6)).toBe(true);
+  });
+
+  it('false when parsed is below the bound (major or minor)', () => {
+    expect(versionAtLeast({ major: 26, minor: 5 }, 26, 6)).toBe(false);
+    expect(versionAtLeast({ major: 25, minor: 9 }, 26, 6)).toBe(false);
+  });
+
+  it('false for null (unparsable/absent) — never >= anything', () => {
+    expect(versionAtLeast(null, 0, 0)).toBe(false);
   });
 });
 

@@ -287,16 +287,42 @@ export function shortVersion(v?: string | null): string {
   return parts.length > 3 ? parts.slice(0, 3).join('.') : String(v || '');
 }
 
+/** A ClickHouse version string's major/minor, as parsed by `parseServerVersion`. */
+export interface ParsedServerVersion {
+  major: number;
+  minor: number;
+}
+
+/**
+ * Parse the leading `major.minor` off a ClickHouse version string (e.g.
+ * '26.3.10.20001.altinityantalya' → `{major: 26, minor: 3}`). Returns `null`
+ * for empty/malformed input (no leading `\d+.\d+`) — callers that need a
+ * tri-state "not yet known / unparsable" distinct from a real version use
+ * `null` for both (see `documentationProbePolicy`, doc-documentation.ts,
+ * which treats them identically: one silent probe rather than assuming
+ * either support or non-support). Pure.
+ */
+export function parseServerVersion(v: string | null | undefined): ParsedServerVersion | null {
+  const m = /^(\d+)\.(\d+)/.exec(String(v || ''));
+  if (!m) return null;
+  return { major: Number(m[1]), minor: Number(m[2]) };
+}
+
+/**
+ * True when `parsed` (from `parseServerVersion`) is at or above `major.minor`.
+ * `null` (unparsable/absent) is never >= anything — false. Pure.
+ */
+export function versionAtLeast(parsed: ParsedServerVersion | null, major: number, minor: number): boolean {
+  if (!parsed) return false;
+  return parsed.major > major || (parsed.major === major && parsed.minor >= minor);
+}
+
 /**
  * True when `v` (a ClickHouse version string) is >= 26.3, the release that
  * added EXPLAIN's `pretty`/`compact` settings. Malformed/empty input → false.
  */
 export function supportsExplainPretty(v?: string | null): boolean {
-  const m = /^(\d+)\.(\d+)/.exec(String(v || ''));
-  if (!m) return false;
-  const major = Number(m[1]);
-  const minor = Number(m[2]);
-  return major > 26 || (major === 26 && minor >= 3);
+  return versionAtLeast(parseServerVersion(v), 26, 3);
 }
 
 /**

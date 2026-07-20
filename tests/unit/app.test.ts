@@ -633,34 +633,6 @@ describe('loadReference / rebuildCompletions (#25)', () => {
     await app.actions.loadColumns('d', 't');
     expect(completionsOf(app).some((c) => c.kind === 'column' && c.label === 'id' && c.parent === 't')).toBe(true);
   });
-  it('entityDoc fetches a hover description on demand and caches it (#27)', async () => {
-    const fetch = makeFetch([
-      [(u, sql) => /system\.functions/.test(sql) && /description/.test(sql),
-        resp({ json: { data: [{ description: '\nCounts rows.' }] } })],
-    ]);
-    const app = createApp(env({ fetch }));
-    const first = await app.catalog.entityDoc('count');
-    const second = await app.catalog.entityDoc('count'); // served from cache, no second query
-    expect(first).toBe('Counts rows.'); // first non-empty line (CH leading blank stripped)
-    expect(second).toBe('Counts rows.');
-    const docQueries = asMock(fetch).mock.calls.filter(([, init]) => init && /system\.functions/.test(init.body) && /description/.test(init.body));
-    expect(docQueries.length).toBe(1);
-  });
-  it('does not cache a FAILED doc fetch — it retries on the next hover (#8 review)', async () => {
-    let calls = 0;
-    const fetch = makeFetch([
-      [(u, sql) => /system\.functions/.test(sql) && /description/.test(sql), () => {
-        calls += 1;
-        return calls === 1
-          ? resp({ ok: false, status: 500, text: 'boom' })            // transient failure
-          : resp({ json: { data: [{ description: 'Now works.' }] } }); // later succeeds
-      }],
-    ]);
-    const app = createApp(env({ fetch }));
-    expect(await app.catalog.entityDoc('count')).toBeNull(); // failed → null, not cached
-    expect(await app.catalog.entityDoc('count')).toBe('Now works.'); // retried, not served from a cached error
-    expect(calls).toBe(2);
-  });
 });
 
 describe('query run', () => {
@@ -1516,6 +1488,16 @@ describe('query run', () => {
   // the catalog caches dropped BEFORE the login screen appears, and the
   // workbench must come back fully usable after a re-render (destroy() is
   // not one-way for the workbench session: attachShell re-attaches).
+  it('app.closeDocPane closes an open reference pane (true) and no-ops when nothing is open (false) — the global Escape wiring (#60)', async () => {
+    const app = createApp(env());
+    expect(app.closeDocPane()).toBe(false); // nothing open
+    app.openDocEntry({ kind: 'function', name: 'sum' }); // pane opens (lookup resolves unavailable — irrelevant here)
+    expect(document.querySelector('[role="complementary"]')).not.toBeNull();
+    expect(app.closeDocPane()).toBe(true);
+    expect(document.querySelector('[role="complementary"]')).toBeNull();
+    await Promise.resolve(); // drain the discarded lookup
+  });
+
   it('signOut() aborts an in-flight run, kills the server query, invalidates the catalog, and still allows a run after re-render', async () => {
     let resolveRunFetch!: (value: FakeResponse | Promise<FakeResponse>) => void;
     const fetch = asFetch(vi.fn((_url: string, init?: { body?: string }) => {
@@ -1530,16 +1512,16 @@ describe('query run', () => {
       return Promise.resolve(resp({ json: { data: [] } })); // version/schema/reference background loads
     }));
     const { app, e } = appForRun([], { fetch });
-    app.catalog.docCache.set('system.one', 'cached doc');
+    const invalidateSpy = vi.spyOn(app.catalog, 'invalidate');
     app.activeTab().sqlDraft = 'SELECT 1';
     const pending = app.actions.run();
     await new Promise((r) => setTimeout(r));
     expect(app.state.running.value).toBe(true);
     const runCall = asMock(fetch).mock.calls.find((c) => c[1] && /SELECT 1\b/.test(c[1].body || ''))!;
     app.signOut();
-    // Teardown fired before login rendered: stream aborted, caches dropped.
+    // Teardown fired before login rendered: stream aborted, catalog invalidated.
     expect((runCall[1].signal as AbortSignal).aborted).toBe(true);
-    expect(app.catalog.docCache.size).toBe(0);
+    expect(invalidateSpy).toHaveBeenCalled();
     expect(qs(app.root!, '.login-card')).toBeTruthy();
     await new Promise((r) => setTimeout(r));
     const kill = asMock(e.fetch!).mock.calls.find((c) => /KILL QUERY/.test((c[1] && c[1].body) || ''));

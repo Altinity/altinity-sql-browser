@@ -45,6 +45,7 @@
     "@preact/signals-core": "^1.14.3",
     "chart.js": "^4.5.1",
     "chartjs-adapter-date-fns": "^3.0.0",
-    "date-fns": "^4.4.0"
+    "date-fns": "^4.4.0",
+    "marked": "^18.0.6"
   }
 }

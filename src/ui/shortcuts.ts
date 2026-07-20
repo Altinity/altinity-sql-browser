@@ -13,6 +13,12 @@ export interface ShortcutsApp {
   document?: Document;
   state: Pick<State, 'shortcutsOpen' | 'running'>;
   conn: Pick<ConnectionSession, 'isSignedIn'>;
+  /** #60 — closes the docs reference pane when one is open (returns true),
+   *  no-op returning false otherwise. Injected by app.ts (bound to
+   *  ui/doc-pane's isDocPaneOpen/closeDocPane) so Esc closes the pane from
+   *  ANYWHERE — not only with focus inside it — layered BEFORE the
+   *  cancel-running-query action below. Optional: minimal test apps omit it. */
+  closeDocPane?: () => boolean;
   activeTab(): Pick<Tab, 'editorMode'>;
   actions: Pick<
     ActionsRegistry,
@@ -29,6 +35,7 @@ const SHORTCUTS: string[][] = [
   ['Spec editor mode', '⌘⌥2'],
   ['Undo', '⌘Z'],
   ['Redo', '⌘⇧Z'],
+  ['Open reference for symbol', 'F1'], // #313 — in-editor only (CM6 keymap, codemirror-adapter.ts)
   ['Show this dialog', '?'],
   ['Close dialog', 'Esc'],
 ];
@@ -106,6 +113,12 @@ export function handleKeydown(e: ShortcutKeydownEvent, app: ShortcutsApp): strin
   const mod = e.metaKey || e.ctrlKey;
   const signedIn = app.conn.isSignedIn();
   const editorMode = app.activeTab().editorMode || 'sql';
+  // Esc closes the docs reference pane first — from anywhere, not only with
+  // focus inside it (#60 live finding). A second Esc then cancels a query.
+  if (e.key === 'Escape' && app.closeDocPane?.()) {
+    e.preventDefault();
+    return 'close-doc-pane';
+  }
   // Esc cancels an in-flight query (aborts the stream + KILL QUERY).
   if (e.key === 'Escape' && app.state.running.value) {
     e.preventDefault();

@@ -3,16 +3,18 @@ import { undoDepth, undo } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import {
-  createCodeMirrorEditor, langExtensionFor, completionSourceFor, applyFor,
-  infoFor, hoverSourceFor, handleDrop, insertTwoSpaces, inputGuards, syncTx,
+  createCodeMirrorEditor, completionSourceFor, applyFor,
+  infoFor, hoverSourceFor, openReferenceCommand, handleDrop, insertTwoSpaces, inputGuards, syncTx,
   loadScopeColumns,
 } from '../../src/editor/codemirror-adapter.js';
 import type { CodeMirrorEditorApp, DropEvent, SqlCompletionContext } from '../../src/editor/codemirror-adapter.js';
 import { startCompletion, completionStatus } from '@codemirror/autocomplete';
-import { syntaxTree } from '@codemirror/language';
 import { createState, activeTab, newTabObj } from '../../src/state.js';
 import { assembleReferenceData } from '../../src/core/completions.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mime.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane } from '../../src/ui/doc-pane.js';
+import type { DocPaneApp } from '../../src/ui/doc-pane.js';
+import type { DocLookup, DocSummary } from '../../src/core/doc-types.js';
 
 // The CM6 adapter runs against the REAL CodeMirror under happy-dom — no fake
 // editor. Construction, dispatch, undo, and keymaps all work headless; only
@@ -21,15 +23,17 @@ import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../../src/ui/dnd-mi
 
 // A minimal `app` controller stub, narrowed to what the adapter reads: fresh
 // state + a fresh dom bag (mount registers editorView into it), built-in
-// reference data, and NO entityDoc by default (infoFor treats a missing
-// loader as "no info"). Self-contained (not tests/helpers/fake-app.js, which
+// reference data, and NO docSummary/docEntry by default (infoFor/hoverSourceFor
+// still render the LOCAL functions-table content — #313 — they just never
+// upgrade it, and "Open reference" quietly no-ops without an injected
+// `openDocEntry` action too). Self-contained (not tests/helpers/fake-app.js, which
 // isn't one of this change's files and doesn't statically declare the
-// catalog.refData/completions/entityDoc members this adapter needs) — mirrors
-// spec-editor.test.ts's own minimal `makeApp` for the same editor/* seam.
-// `catalog` overrides merge onto the default stub (not a full-object
-// replace), same convention as tests/helpers/fake-app.ts's own nested
-// `conn`/`chCtx` merges — a caller overriding just `refData` (the common
-// case) doesn't have to re-supply `completions`/`entityDoc` too.
+// catalog.refData/completions/docSummary/docEntry members this adapter needs)
+// — mirrors spec-editor.test.ts's own minimal `makeApp` for the same
+// editor/* seam. `catalog` overrides merge onto the default stub (not a
+// full-object replace), same convention as tests/helpers/fake-app.ts's own
+// nested `conn`/`chCtx` merges — a caller overriding just `refData` (the
+// common case) doesn't have to re-supply `completions`/`docSummary` too.
 type Catalog = NonNullable<CodeMirrorEditorApp['catalog']>;
 const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog?: Partial<Catalog> } = {}): CodeMirrorEditorApp => {
   const { catalog: catalogOver, ...rest } = over;
@@ -39,12 +43,36 @@ const makeApp = (over: Partial<Omit<CodeMirrorEditorApp, 'catalog'>> & { catalog
     catalog: {
       refData: assembleReferenceData(null),
       completions: [],
-      entityDoc: undefined,
+      docSummary: undefined,
+      docEntry: undefined,
+      docDisambiguate: undefined,
       ...catalogOver,
     },
     actions: { loadColumns: vi.fn() },
     ...rest,
   };
+};
+
+// A `makeApp()` with the injected `openDocEntry`/`openDocDisambiguation`
+// actions bound the same way app.ts binds them — to the REAL ui/doc-pane.ts
+// `openDocEntry(app, target)`/`openDocDisambiguation(app, name)` — so "Open
+// reference" (hover button, F1) actually opens the persistent pane instead of
+// quietly no-opping. The pane's own required fields (document/prefs/
+// CodeViewer) live on the same object, mirroring the real App.
+// `catalog.docDisambiguate` stays undefined unless a caller's override
+// supplies it (mirrors `docSummary`/`docEntry` above) — a test that only
+// exercises `openDocEntry` never touches it.
+const makeDocPaneApp = (over: Parameters<typeof makeApp>[0] = {}): CodeMirrorEditorApp => {
+  const app = makeApp(over);
+  const paneApp = app as unknown as DocPaneApp;
+  paneApp.document = document;
+  paneApp.prefs = { save: vi.fn() };
+  paneApp.CodeViewer = vi.fn(() => ({
+    setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn(),
+  }));
+  app.openDocEntry = (target) => openDocEntry(paneApp, target);
+  app.openDocDisambiguation = (name) => openDocDisambiguation(paneApp, name);
+  return app;
 };
 
 // Mount a fresh port + view; subscribe like app.js does (#143) so tab.sqlDraft
@@ -341,61 +369,6 @@ describe('per-tab EditorState (syncFromState)', () => {
   });
 });
 
-describe('langExtensionFor', () => {
-  it('builds an empty-set dialect when refData is absent', () => {
-    const ext = langExtensionFor({ catalog: { refData: null } });
-    expect(Array.isArray(ext)).toBe(true);
-    const st = EditorState.create({ doc: 'x', extensions: ext });
-    expect(st.languageDataAt('closeBrackets', 0)[0]).toEqual({ brackets: ['(', '[', "'", '"', '`'] }); // quotes pair (editor-brackets.js parity)
-  });
-});
-
-describe('langExtensionFor — ClickHouse dialect flags (#182)', () => {
-  const ext = langExtensionFor({ catalog: { refData: assembleReferenceData(null) } });
-  const nodesOf = (doc: string): { name: string; from: number; to: number }[] => {
-    const st = EditorState.create({ doc, extensions: ext });
-    const out: { name: string; from: number; to: number }[] = [];
-    syntaxTree(st).iterate({ enter: (n) => { out.push({ name: n.name, from: n.from, to: n.to }); } });
-    return out;
-  };
-  const has = (doc: string, name: string) => nodesOf(doc).some((n) => n.name === name);
-
-  // The core scanner (sql-spans.js) is authoritative; these lock the CM6
-  // editor behavior that is actually available, not exact parity.
-  it('enables hash and slash line comments', () => {
-    expect(has('SELECT 1 # note', 'LineComment')).toBe(true);
-    expect(has('SELECT 1 #! note', 'LineComment')).toBe(true);
-    expect(has('SELECT 1 // note', 'LineComment')).toBe(true);
-  });
-  it('recognizes # broadly (even #x) — a KNOWN editor approximation', () => {
-    // hashComments can't express ClickHouse's space-or-`!` follow set, so CM6
-    // treats `#x` as a comment. This affects only editor highlighting; the core
-    // scanner keeps `#x` as code for all application analysis.
-    expect(has('SELECT 1 #x', 'LineComment')).toBe(true);
-  });
-  it('enables $$…$$ and $tag$…$tag$ dollar-quoted strings', () => {
-    expect(has('SELECT $$a$$', 'String')).toBe(true);
-    expect(has('SELECT $tag$a$tag$', 'String')).toBe(true);
-  });
-  it('treats a nested block comment as one BlockComment construct', () => {
-    const blocks = nodesOf('SELECT /* a /* b */ c */ 1').filter((n) => n.name === 'BlockComment');
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].to - blocks[0].from).toBe('/* a /* b */ c */'.length);
-  });
-  it('treats double-quoted / backtick forms as identifiers, not strings', () => {
-    expect(has('SELECT "c"', 'QuotedIdentifier')).toBe(true);
-    expect(has('SELECT "c"', 'String')).toBe(false);
-    expect(has('SELECT `c`', 'QuotedIdentifier')).toBe(true);
-  });
-  it('does NOT form the same doubled-delimiter boundary as core — a documented approximation', () => {
-    // CM6 reads `"a""b"` as TWO adjacent QuotedIdentifier tokens; the core
-    // scanner reads it as ONE quoted-ident span (doubled `""` escape). Core
-    // logic never consults CM6 token boundaries, so this divergence is safe.
-    const idents = nodesOf('SELECT "a""b"').filter((n) => n.name === 'QuotedIdentifier');
-    expect(idents).toHaveLength(2);
-  });
-});
-
 describe('completionSourceFor', () => {
   const ref = assembleReferenceData(null);
   const app = makeApp({
@@ -468,6 +441,61 @@ describe('completionSourceFor', () => {
     const r = s(ctx('SELECT e. FROM events e', 9))!;
     expect(r.options.map((o) => o.label)).toEqual(['ts']);
   });
+
+  it('never queries docSummary/docEntry while typing — only once the info is actually materialized (#313)', () => {
+    const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const typingApp = makeApp({
+      catalog: {
+        completions: [
+          { label: 'SELECT', kind: 'keyword', insert: 'SELECT', detail: 'keyword' },
+          { label: 'sum', kind: 'agg', insert: 'sum()', caretBack: 1, detail: '()' },
+        ],
+        refData: ref,
+        docSummary,
+        docEntry,
+      },
+    });
+    const typingSrc = completionSourceFor(typingApp);
+    // Simulate a burst of keystrokes re-running the completion source.
+    for (const text of ['s', 'su', 'sum', 'sum(']) typingSrc(ctx(text, text.length));
+    expect(docSummary).not.toHaveBeenCalled();
+    expect(docEntry).not.toHaveBeenCalled();
+    // Only once CM6 actually materializes the 'sum' row's info (hover/focus)
+    // does the shared summary helper ask the catalog for the rich version.
+    const r = typingSrc(ctx('sum', 3))!;
+    const sumOption = r.options.find((o) => o.label === 'sum')!;
+    expect(docSummary).not.toHaveBeenCalled(); // building the option list itself still didn't query
+    (sumOption.info as () => unknown)(); // CM6 materializing the info pane
+    expect(docSummary).toHaveBeenCalledTimes(1);
+    expect(docEntry).not.toHaveBeenCalled(); // docSummary alone — Open reference wasn't clicked
+  });
+
+  it('never queries docSummary for a FORMAT-clause completion candidate while typing either (#314)', () => {
+    const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const typingApp = makeApp({
+      catalog: {
+        completions: [
+          { label: 'FORMAT', kind: 'keyword', insert: 'FORMAT', detail: 'keyword' },
+          { label: 'CSV', kind: 'format', insert: 'CSV', detail: 'format' },
+        ],
+        refData: ref,
+        docSummary,
+      },
+    });
+    const typingSrc = completionSourceFor(typingApp);
+    for (const text of ['INSERT INTO t FORMAT C', 'INSERT INTO t FORMAT CS', 'INSERT INTO t FORMAT CSV']) {
+      typingSrc(ctx(text, text.length));
+    }
+    expect(docSummary).not.toHaveBeenCalled();
+    const full = 'INSERT INTO t FORMAT CSV';
+    const r = typingSrc(ctx(full, full.length))!;
+    const csvOption = r.options.find((o) => o.label === 'CSV')!;
+    expect(docSummary).not.toHaveBeenCalled(); // building the option list itself still didn't query
+    (csvOption.info as () => unknown)(); // CM6 materializing the info pane
+    expect(docSummary).toHaveBeenCalledTimes(1);
+    expect(docSummary).toHaveBeenCalledWith({ kind: 'format', name: 'CSV' });
+  });
 });
 
 describe('applyFor', () => {
@@ -489,6 +517,17 @@ describe('applyFor', () => {
   });
 });
 
+// A `found` docSummary/docEntry fixture shared by the infoFor/hoverSourceFor
+// upgrade tests below.
+const describedTarget = { kind: 'function' as const, name: 'described' };
+const foundSummary: DocLookup<DocSummary> = {
+  status: 'found',
+  value: {
+    target: describedTarget, title: 'described', signature: 'described(x) -> UInt8',
+    summary: 'The rich version-exact summary.', introducedIn: '24.3', aliasTo: 'other',
+  },
+};
+
 describe('infoFor', () => {
   const ref = assembleReferenceData(null);
   it('keywords resolve the static doc as a DOM node (CM6 appendChild()s an info fn result)', () => {
@@ -499,16 +538,47 @@ describe('infoFor', () => {
     expect(infoFor(app, { kind: 'keyword', label: 'ZZZ' })!()).toBe(null);
     expect(infoFor(makeApp({ catalog: { refData: null } }), { kind: 'keyword', label: 'FORMAT' })!()).toBe(null);
   });
-  it('functions fetch lazily through app.entityDoc; empty doc → null', async () => {
-    const app = makeApp({ catalog: { entityDoc: vi.fn(async (n: string) => (n === 'sum' ? 'adds things' : '')) } });
-    const node = (await infoFor(app, { kind: 'agg', label: 'sum' })!()) as Node;
-    expect(node.nodeType).toBe(1);
-    expect(node.textContent).toBe('adds things');
-    await expect(infoFor(app, { kind: 'fn', label: 'nope' })!() as Promise<Node | null>).resolves.toBe(null);
+  it('a known function renders the local sig/ret/desc synchronously, then upgrades via docSummary (#313)', async () => {
+    const functions = { sum: { kind: 'agg' as const, sig: 'sum(x)', ret: 'Float64', desc: 'adds things' } };
+    const ref2 = assembleReferenceData({ keywords: [], functions, formats: [] });
+    const docSummary = vi.fn(async () => foundSummary);
+    const app = makeApp({ catalog: { refData: ref2, docSummary } });
+    const node = infoFor(app, { kind: 'agg', label: 'sum' })!() as HTMLElement;
+    document.body.appendChild(node); // "connected" for the async upgrade's isLive check
+    expect(node.nodeType).toBe(1); // a DOM node, never a bare string
+    expect(node.textContent).toContain('sum(x)');
+    expect(node.textContent).toContain('→ Float64');
+    expect(node.textContent).toContain('adds things');
+    expect(docSummary).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(node.textContent).toContain('described(x) -> UInt8'); // docSummary's richer signature won
+    expect(node.textContent).toContain('The rich version-exact summary.');
+    expect(node.textContent).toContain('since 24.3');
+    expect(node.textContent).toContain('Alias of other');
+    node.remove();
   });
-  it('no entityDoc / other kinds → no info', () => {
-    expect(infoFor(makeApp(), { kind: 'fn', label: 'sum' })).toBeUndefined();
+  it('unknown identifier / other kinds → no info (the functions-table existence gate)', () => {
+    expect(infoFor(makeApp(), { kind: 'fn', label: 'totallyUnknownName' })).toBeUndefined();
+    expect(infoFor(makeApp({ catalog: { refData: null } }), { kind: 'fn', label: 'sum' })).toBeUndefined();
     expect(infoFor(makeApp(), { kind: 'table', label: 't' })).toBeUndefined();
+  });
+  it("Open reference button calls openDocEntry with the resolved target, when the app can open the pane", () => {
+    const functions = { sum: { kind: 'agg' as const, sig: 'sum(x)', ret: '', desc: '' } };
+    const ref2 = assembleReferenceData({ keywords: [], functions, formats: [] });
+    const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+    const node = infoFor(app, { kind: 'agg', label: 'sum' })!() as HTMLElement;
+    document.body.appendChild(node);
+    const btn = node.querySelector('.hover-open-ref') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.tagName).toBe('A'); // the "(reference — F1)" link — keyboard-activatable like any anchor
+    expect(btn.textContent).toBe('reference');
+    btn.click();
+    expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+    expect(document.querySelector('[role="complementary"]')).toBeTruthy(); // the pane opened
+    node.remove();
+    closeDocPane(app as unknown as DocPaneApp);
   });
   it('a column with a compacted type exposes the full declared type; an unchanged one stays quiet (#177)', () => {
     const full = "Enum8('started' = 1, 'running' = 2, 'done' = 3, 'failed' = 4)";
@@ -519,6 +589,68 @@ describe('infoFor', () => {
     expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64', fullType: 'UInt64' })).toBeUndefined();
     // items without fullType (defensive) → no info
     expect(infoFor(makeApp(), { kind: 'column', label: 'id', detail: 'UInt64' })).toBeUndefined();
+  });
+
+  describe('a FORMAT-kind completion candidate (#314)', () => {
+    it('renders the shared summary card — name-only synchronously, then upgrades via docSummary', async () => {
+      const docSummary = vi.fn(async () => ({
+        status: 'found' as const,
+        value: {
+          target: { kind: 'format' as const, name: 'CSV' }, title: 'CSV', signature: 'CSV',
+          summary: 'Comma-separated values.', introducedIn: '1.0',
+        },
+      }));
+      const app = makeApp({ catalog: { docSummary } });
+      const node = infoFor(app, { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      document.body.appendChild(node);
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV'); // name-only fallback (no local table for formats)
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+      expect(docSummary).toHaveBeenCalledWith({ kind: 'format', name: 'CSV' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV');
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('Comma-separated values.');
+      expect(node.querySelector('.hover-since')!.textContent).toBe('since 1.0');
+      node.remove();
+    });
+
+    it('degrades quietly (keeps the name-only card) when docSummary resolves missing/unavailable, or is absent', async () => {
+      const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const node = infoFor(makeApp({ catalog: { docSummary } }), { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV');
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+
+      const noFetch = infoFor(makeApp(), { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
+      expect(noFetch.querySelector('.hover-sig')!.textContent).toBe('JSONEachRow');
+    });
+
+    it('Open reference on a format card opens the pane with the format target', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { docEntry } });
+      const node = infoFor(app, { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
+      document.body.appendChild(node);
+      const btn = node.querySelector('.hover-open-ref') as HTMLButtonElement;
+      expect(btn.tagName).toBe('A'); // "(reference — F1)" link
+      btn.click();
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'format', name: 'JSONEachRow' });
+      expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+      node.remove();
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('a stale/detached info node is never mutated once docSummary resolves late', async () => {
+      let resolveSummary!: (v: DocLookup<DocSummary>) => void;
+      const docSummary = vi.fn(() => new Promise<DocLookup<DocSummary>>((res) => { resolveSummary = res; }));
+      const app = makeApp({ catalog: { docSummary } });
+      const node = infoFor(app, { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      // never appended to the document — isLive() is false from the start
+      resolveSummary({ status: 'found', value: { target: { kind: 'format', name: 'CSV' }, title: 'CSV', signature: 'CSV', summary: 'late' } });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+    });
   });
 });
 
@@ -534,15 +666,15 @@ describe('hoverSourceFor', () => {
 
   it('returns null off-word or without refData', () => {
     const { view } = mounted({ catalog: { refData: ref } });
-    const hover = hoverSourceFor({ catalog: { refData: ref } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref } }));
     view.dispatch({ changes: { from: 0, to: 0, insert: '   ' } });
     expect(hover(view, 1)).toBe(null); // whitespace
-    expect(hoverSourceFor({ catalog: { refData: null } })(view, 1)).toBe(null);
+    expect(hoverSourceFor(makeApp({ catalog: { refData: null } }))(view, 1)).toBe(null);
   });
 
   it('unknown words get no tooltip; keywords get their static doc (multi-line offsets)', () => {
     const { view } = mounted({ catalog: { refData: ref } });
-    const hover = hoverSourceFor({ catalog: { refData: ref } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref } }));
     // Line 3 — pins the line.from offset arithmetic (word lookup AND tooltip range)
     view.dispatch({ changes: { from: 0, to: 0, insert: '\n\nmystery PREWHERE' } });
     expect(hover(view, 4)).toBe(null);
@@ -552,23 +684,238 @@ describe('hoverSourceFor', () => {
     expect(tip.create(view).dom.textContent).toMatch(/before reading other columns/);
   });
 
-  it('functions show sig → ret + description; missing desc fetches via entityDoc', async () => {
-    const entityDoc = vi.fn(async () => 'fetched doc');
+  it('functions show local sig → ret + description synchronously; docSummary upgrades in place (#313)', async () => {
+    const docSummary = vi.fn(async () => foundSummary);
     const { view } = mounted({ catalog: { refData: ref } });
-    const hover = hoverSourceFor({ catalog: { refData: ref, entityDoc } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref, docSummary } }));
     view.dispatch({ changes: { from: 0, to: 0, insert: 'described bare' } });
     const rich = hover(view, 3)!.create(view).dom;
+    document.body.appendChild(rich); // "connected" so the async upgrade's isLive check passes
     expect(rich.textContent).toContain('described(x)');
     expect(rich.textContent).toContain('→ UInt8');
     expect(rich.textContent).toContain('has a doc');
-    expect(entityDoc).not.toHaveBeenCalled(); // desc already known — no fetch
+    expect(docSummary).toHaveBeenCalledWith({ kind: 'function', name: 'described' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rich.textContent).toContain('described(x) -> UInt8'); // upgraded signature
+    expect(rich.textContent).toContain('The rich version-exact summary.');
+    rich.remove();
     const lazy = hover(view, 12)!.create(view).dom;
     expect(lazy.textContent).toContain('bare()'); // sig fallback
-    await Promise.resolve();
-    expect(lazy.querySelector('.hover-doc')!.textContent).toBe('fetched doc');
-    // no entityDoc injected → the empty desc just stays empty
-    const noFetch = hoverSourceFor({ catalog: { refData: ref } })(view, 12)!.create(view).dom;
+    // no docSummary injected on THIS call → the empty desc just stays empty
+    const noFetch = hoverSourceFor(makeApp({ catalog: { refData: ref } }))(view, 12)!.create(view).dom;
     expect(noFetch.querySelector('.hover-doc')!.textContent).toBe('');
+  });
+
+  it('degrades quietly (keeps the local fallback) when docSummary resolves missing/unavailable', async () => {
+    const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const { view } = mounted({ catalog: { refData: ref } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref, docSummary } }));
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'described' } });
+    const dom = hover(view, 3)!.create(view).dom;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dom.textContent).toContain('described(x)'); // local content untouched
+    expect(dom.textContent).toContain('has a doc');
+  });
+
+  it('a stale/detached tooltip node is never mutated once docSummary resolves late (no throw)', async () => {
+    let resolveSummary!: (v: DocLookup<DocSummary>) => void;
+    const docSummary = vi.fn(() => new Promise<DocLookup<DocSummary>>((res) => { resolveSummary = res; }));
+    const { view } = mounted({ catalog: { refData: ref } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref, docSummary } }));
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'described' } });
+    const dom = hover(view, 3)!.create(view).dom;
+    // The caller (CM6) already threw this tooltip away — never attached to the doc.
+    resolveSummary(foundSummary);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dom.textContent).toContain('described(x)'); // unmutated local content, no throw
+    expect(dom.textContent).not.toContain('The rich version-exact summary.');
+  });
+
+  it('a torn-down editor view also blocks the async upgrade (view.dom.isConnected guard)', async () => {
+    let resolveSummary!: (v: DocLookup<DocSummary>) => void;
+    const docSummary = vi.fn(() => new Promise<DocLookup<DocSummary>>((res) => { resolveSummary = res; }));
+    const { view, port } = mounted({ catalog: { refData: ref, docSummary } });
+    const app = makeApp({ catalog: { refData: ref, docSummary } });
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'described' } });
+    const hover = hoverSourceFor(app);
+    const dom = hover(view, 3)!.create(view).dom;
+    document.body.appendChild(dom); // dom itself stays connected…
+    port.destroy(); // …but the owning editor is torn down
+    resolveSummary(foundSummary);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dom.textContent).not.toContain('The rich version-exact summary.');
+    dom.remove();
+  });
+
+  it("hover's Open reference button opens the pane with the resolved target", () => {
+    const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const app = makeDocPaneApp({ catalog: { refData: ref, docEntry } });
+    const { view } = mounted(app);
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'described' } });
+    const dom = hoverSourceFor(app)(view, 3)!.create(view).dom;
+    document.body.appendChild(dom);
+    const btn = dom.querySelector('.hover-open-ref') as HTMLButtonElement;
+    btn.click();
+    expect(docEntry).toHaveBeenCalledWith({ kind: 'function', name: 'described' });
+    expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+    dom.remove();
+    closeDocPane(app as unknown as DocPaneApp);
+  });
+});
+
+describe('openReferenceCommand (F1, #313)', () => {
+  const ref = assembleReferenceData({
+    keywords: [], functions: { sum: { kind: 'agg', sig: 'sum(x)', ret: '', desc: '' } }, formats: [],
+  });
+
+  it('returns false with no refData, or an unresolved identifier when openDocDisambiguation is not injected (#315 quiet-no-op precedent)', () => {
+    const { view } = mounted();
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'nope' } });
+    expect(openReferenceCommand(makeApp({ catalog: { refData: null } }))(view)).toBe(false);
+    // 'nope' is an unknown identifier — no strong target resolves, and this
+    // plain `makeApp` never wires `openDocDisambiguation`, so F1 still falls
+    // through to the browser default (#315 changed the NO-TARGET path, not
+    // this "no disambiguation seam injected" one).
+    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(false);
+  });
+
+  it('returns false inside a string/comment/quoted identifier (literal suppression)', () => {
+    const { view } = mounted({ catalog: { refData: ref } });
+    view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'sum' -- sum" } });
+    view.dispatch({ selection: { anchor: 10 } }); // inside the string 'sum'
+    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(false);
+    view.dispatch({ selection: { anchor: 17 } }); // inside the trailing comment's 'sum'
+    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(false);
+  });
+
+  it('resolves a known function at selection.main.head, opens the pane, and returns true', () => {
+    const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const app = makeDocPaneApp({ catalog: { refData: ref, docEntry } });
+    const { view } = mounted(app);
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
+    expect(openReferenceCommand(app)(view)).toBe(true);
+    expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+    expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+    closeDocPane(app as unknown as DocPaneApp);
+  });
+
+  it('still returns true when a target resolves but no openDocEntry action is injected', () => {
+    const { view } = mounted({ catalog: { refData: ref } });
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
+    expect(openReferenceCommand(makeApp({ catalog: { refData: ref } }))(view)).toBe(true);
+  });
+
+  it('is wired into the CM6 keymap: a real F1 keydown resolves through the same path', () => {
+    const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const app = makeDocPaneApp({ catalog: { refData: ref, docEntry } });
+    const port = createCodeMirrorEditor(app);
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    port.mount(host);
+    const view = app.dom.sqlEditorView!;
+    view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
+    const f1 = new KeyboardEvent('keydown', { key: 'F1', bubbles: true, cancelable: true });
+    view.contentDOM.dispatchEvent(f1);
+    expect(f1.defaultPrevented).toBe(true);
+    expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+    closeDocPane(app as unknown as DocPaneApp);
+    port.destroy();
+  });
+
+  describe('#314 structured contexts (FORMAT / ENGINE / data-type)', () => {
+    const ref2 = assembleReferenceData({ keywords: [], functions: {}, formats: ['JSONEachRow'] });
+
+    it('resolves a FORMAT-clause target, validated against refData.formats', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'INSERT INTO t FORMAT JSONEachRow';
+      const pos = sql.indexOf('JSONEachRow') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'format', name: 'JSONEachRow' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('rejects a FORMAT-position word absent from refData.formats', () => {
+      const app = makeApp({ catalog: { refData: ref2 } });
+      const { view } = mounted(app);
+      const sql = 'INSERT INTO t FORMAT Bogus';
+      const pos = sql.indexOf('Bogus') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(false);
+    });
+
+    it('resolves a table-engine target', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'CREATE TABLE t (id UInt32) ENGINE = MergeTree';
+      const pos = sql.indexOf('MergeTree') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'table-engine', name: 'MergeTree' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('resolves a data-type target (CAST) spanning the whole document, not just the caret line', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref2, docEntry } });
+      const { view } = mounted(app);
+      const sql = 'SELECT x,\nCAST(x AS UInt32)';
+      const pos = sql.indexOf('UInt32') + 1;
+      view.dispatch({ changes: { from: 0, to: 0, insert: sql }, selection: { anchor: pos } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'data-type', name: 'UInt32' });
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+  });
+
+  describe('#315 disambiguation fallback (no strong target resolves)', () => {
+    it('a bare unresolved word opens disambiguation and returns true when openDocDisambiguation is injected', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'mystery' }, selection: { anchor: 3 } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docDisambiguate).toHaveBeenCalledWith('mystery');
+      expect(document.querySelector('[role="complementary"]')).toBeTruthy();
+      closeDocPane(app as unknown as DocPaneApp);
+    });
+
+    it('still returns false with no word under the caret even when openDocDisambiguation IS injected (whitespace never guessed)', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'a  b' }, selection: { anchor: 2 } }); // between the two spaces — no word there
+      expect(openReferenceCommand(app)(view)).toBe(false);
+      expect(docDisambiguate).not.toHaveBeenCalled();
+    });
+
+    it('still returns false inside a literal even when openDocDisambiguation IS injected (suppression runs first)', () => {
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'mystery'" }, selection: { anchor: 10 } });
+      expect(openReferenceCommand(app)(view)).toBe(false);
+      expect(docDisambiguate).not.toHaveBeenCalled();
+    });
+
+    it('a resolved strong target never falls through to disambiguation, even when both seams are injected', () => {
+      const docEntry = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const docDisambiguate = vi.fn(async () => ({ status: 'unavailable' as const }));
+      const app = makeDocPaneApp({ catalog: { refData: ref, docEntry, docDisambiguate } });
+      const { view } = mounted(app);
+      view.dispatch({ changes: { from: 0, to: 0, insert: 'sum' }, selection: { anchor: 2 } });
+      expect(openReferenceCommand(app)(view)).toBe(true);
+      expect(docEntry).toHaveBeenCalledWith({ kind: 'aggregate-function', name: 'sum' });
+      expect(docDisambiguate).not.toHaveBeenCalled();
+      closeDocPane(app as unknown as DocPaneApp);
+    });
   });
 });
 
@@ -777,7 +1124,7 @@ describe('input guards (the old editor-brackets.js role)', () => {
     const ref = assembleReferenceData(null);
     const { view } = mounted({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: "SELECT 'count' -- count rows" } });
-    const hover = hoverSourceFor({ catalog: { refData: ref } });
+    const hover = hoverSourceFor(makeApp({ catalog: { refData: ref } }));
     expect(hover(view, 10)).toBe(null); // 'count' inside the string
     expect(hover(view, 20)).toBe(null); // 'count' inside the comment
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: 'SELECT count(x)' } });
@@ -792,7 +1139,7 @@ describe('input guards (the old editor-brackets.js role)', () => {
     });
     const { view } = mounted({ catalog: { refData: ref } });
     view.dispatch({ changes: { from: 0, to: 0, insert: 'SELECT SUM(x)' } });
-    const tip = hoverSourceFor({ catalog: { refData: ref } })(view, 9);
+    const tip = hoverSourceFor(makeApp({ catalog: { refData: ref } }))(view, 9);
     expect(tip).not.toBe(null);
     expect(tip!.create(view).dom.textContent).toContain('sum(x)');
   });

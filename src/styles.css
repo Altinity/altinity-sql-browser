@@ -1709,6 +1709,14 @@ body .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] { background: 
 .hover-sig { font-family: var(--mono); font-size: 12px; color: var(--fg); margin-bottom: 5px; }
 .hover-ret { color: var(--fg-faint); }
 .hover-doc { font-size: 11.5px; color: var(--fg-mute); line-height: 1.5; }
+/* #313/#60 — the since/alias badges + "(reference — F1)" affordance row. */
+.hover-meta { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--fg-mute); }
+.hover-badges { display: inline-flex; gap: 6px; }
+.hover-badges:empty { display: none; }
+.hover-since, .hover-alias { color: var(--fg-mute); }
+.hover-open-ref-wrap { color: var(--fg-faint); white-space: nowrap; }
+.hover-open-ref { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.hover-open-ref:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ------------ results ------------ */
 .results { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1885,6 +1893,112 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .cd-frame { width: 100%; height: 100%; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
 [data-density='compact'] table.res-table th,
 [data-density='compact'] table.res-table td { padding: 4px 10px; }
+
+/* Documentation pane (#313): buildDrawerChrome's NON-modal chrome under its
+   own 'docs' prefix — persistent, no backdrop (unlike .cd-backdrop's cell
+   detail drawer), so it's positioned fixed to the viewport's right edge
+   itself rather than centered by a flex backdrop wrapper. Width is set
+   inline (attachDrawerResize's docPanePx stateKey) from the persisted
+   docPanePx pref, clamped to [320, 92vw] — see clampDrawerWidth (#101/#313). */
+.docs-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 55;
+  height: 100%;
+  background: var(--bg-panel, var(--bg-editor));
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(0,0,0,.25);
+  display: flex; flex-direction: column;
+}
+.docs-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.docs-title { flex: 1; min-width: 0; }
+.docs-title-text { font-weight: 600; font-size: 13px; color: var(--fg); }
+.docs-close { border: none; background: transparent; color: var(--fg-mute); cursor: pointer; border-radius: 4px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
+.docs-close:hover { background: var(--bg-hover); color: var(--fg); }
+.docs-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.docs-state { display: flex; align-items: center; gap: 8px; color: var(--fg-mute); font-size: 13px; padding: 16px 0; }
+.docs-retry { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 5px 11px; font: inherit; font-size: 12px; }
+.docs-retry:hover { background: var(--bg-hover); }
+.docs-entry { display: flex; flex-direction: column; gap: 12px; }
+.docs-head-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.docs-name { margin: 0; font-size: 15px; color: var(--fg); }
+.docs-signature { font-family: var(--mono); font-size: 12.5px; color: var(--fg); background: var(--bg-chip); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+.docs-badge { font-size: 10.5px; font-weight: 600; letter-spacing: .01em; padding: 2px 7px; border-radius: 10px; background: var(--bg-chip); color: var(--fg-mute); }
+.docs-badge-kind { background: var(--accent); color: #fff; }
+.docs-badge-on { color: var(--fg); }
+.docs-badge-off { color: var(--fg-faint); }
+.docs-alias { font-size: 12.5px; color: var(--fg-mute); }
+.docs-alias-link { border: none; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
+.docs-categories { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-chip { font-size: 11px; padding: 3px 9px; border-radius: 10px; background: var(--bg-chip); color: var(--fg-mute); }
+.docs-field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--fg-faint); margin-bottom: 4px; }
+.docs-field-text { font-size: 13px; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+.docs-flags { display: flex; gap: 6px; flex-wrap: wrap; }
+.docs-example-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+/* #314 phase-2 pane elements */
+.docs-syntax-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.docs-facts-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-related-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.docs-related-link { font-size: 11px; padding: 3px 9px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--accent); cursor: pointer; font-family: inherit; }
+.docs-related-link:hover { background: var(--bg-hover); }
+.docs-back-row { flex-shrink: 0; }
+.docs-back { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; }
+.docs-back:hover { background: var(--bg-hover); }
+/* #315 phase-3 markdown-subset pane elements */
+.docs-md-entry { gap: 10px; }
+.docs-md-source { font-size: 11.5px; color: var(--fg-faint); word-break: break-word; }
+.docs-md { display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--fg); }
+.docs-md-h { margin: 6px 0 0; color: var(--fg); line-height: 1.3; }
+.docs-md-h:first-child { margin-top: 0; }
+.docs-md-p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.docs-md-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.docs-md-li { word-break: break-word; }
+.docs-md-li > .docs-md-list { margin-top: 4px; }
+.docs-md-quote { margin: 0; padding: 4px 12px; border-left: 3px solid var(--border); color: var(--fg-mute); }
+.docs-md-hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+.docs-md-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.docs-md-table th, .docs-md-table td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; word-break: break-word; }
+.docs-md-table th { background: var(--bg-chip); color: var(--fg); font-weight: 600; }
+.docs-md-code { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.docs-md-code-plain { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.docs-md-note { font-size: 11.5px; color: var(--fg-faint); font-style: italic; }
+.docs-md-oversized { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-chip); font-style: normal; }
+.docs-md-latest { align-self: flex-start; font-size: 11.5px; color: var(--fg-faint); text-decoration: underline; }
+.docs-md-latest:hover { color: var(--fg-mute); }
+/* Docusaurus admonitions (marked-lexer upgrade, amending #315) — left border
+   accent per variant, subtle chip background matching the pane's other
+   quiet surfaces (`.docs-md-oversized`), nested blocks reuse the normal
+   `.docs-md-*` spacing/typography untouched. tip/note/info share the
+   pane's own accent color (an informational tri-variant, no dedicated
+   token); warning/danger/important reuse the existing warn/error tokens. */
+.docs-md-admonition { border-left: 3px solid var(--border); border-radius: 6px; padding: 8px 12px; background: var(--bg-chip); display: flex; flex-direction: column; gap: 8px; }
+.docs-md-admonition-title { font-weight: 600; font-size: 12.5px; color: var(--fg); }
+.docs-md-admonition-tip, .docs-md-admonition-note, .docs-md-admonition-info { border-left-color: var(--accent); }
+.docs-md-admonition-warning { border-left-color: var(--warn-fg); background: var(--warn-bg); }
+.docs-md-admonition-danger, .docs-md-admonition-important { border-left-color: var(--error-fg); background: var(--error-bg); }
+/* #315 phase-3 disambiguation state */
+.docs-disambiguate { flex-direction: column; align-items: stretch; gap: 10px; }
+.docs-disambiguate-intro { margin: 0; font-size: 13px; color: var(--fg); }
+.docs-disambiguate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.docs-disambiguate-item { margin: 0; }
+.docs-disambiguate-link { display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 8px 10px; font: inherit; }
+.docs-disambiguate-link:hover { background: var(--bg-hover); }
+.docs-disambiguate-name { font-weight: 600; font-family: var(--mono); font-size: 12.5px; }
+.docs-disambiguate-summary { color: var(--fg-mute); font-size: 12px; flex: 1; min-width: 0; }
+/* #314 schema-surface doc actions */
+.schema-type-doc, .schema-engine-doc { border: none; background: transparent; color: var(--fg-faint); cursor: pointer; border-radius: 4px; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; padding: 0; }
+.schema-type-doc:hover, .schema-engine-doc:hover { background: var(--bg-hover); color: var(--fg); }
+.schema-detail-engine { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--fg-mute); flex-shrink: 0; }
+.schema-detail-engine-name { font-family: var(--mono); color: var(--fg); }
+.docs-back:focus-visible,
+.docs-related-link:focus-visible,
+.docs-alias-link:focus-visible,
+.docs-retry:focus-visible,
+.docs-close:focus-visible,
+.docs-md-latest:focus-visible,
+.docs-disambiguate-link:focus-visible,
+.schema-type-doc:focus-visible,
+.schema-engine-doc:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 
 /* placeholder body inside results (legacy step) */
 .placeholder {
@@ -2186,6 +2300,8 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   .save-popover { max-width: calc(100vw - 16px); }
   /* Cell-detail drawer → full-width, non-resizable (its handle is hidden above). */
   .cd-panel { width: 100vw !important; min-width: 0; }
+  /* Documentation pane (#313) → same full-width, non-resizable treatment. */
+  .docs-panel { width: 100vw !important; min-width: 0; }
 }
 
 /* ── Dashboard (#149 D1) ───────────────────────────────────────────────────

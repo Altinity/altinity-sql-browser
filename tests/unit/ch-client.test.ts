@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import {
-  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadEntityDoc, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
+  chUrl, authedFetch, queryJson, loadServerVersion, loadSchema, loadColumns, loadReferenceData, loadFunctionsDocColumns, loadFunctionDocRow, loadDocTableColumns, loadDocRow, runQuery, killQuery, exportQuery, loadSchemaLineage, loadSchemaCards, loadLineageTransitive, loadTableDetail, AST_PROGRESSIVE_THRESHOLD, byUnderscoreThenName,
 } from '../../src/net/ch-client.js';
-import type { ChCtx } from '../../src/net/ch-client.js';
+import type { ChCtx, DocProbeTable } from '../../src/net/ch-client.js';
 import { sqlString } from '../../src/core/format.js';
 import type { StreamLine } from '../../src/core/stream.js';
 
@@ -425,8 +425,18 @@ describe('loadReferenceData', () => {
         : jsonResp({ data: [{ name: 'toDate', is_aggregate: 0, syntax: 'toDate(x)' }] })
     ));
     const ref = await loadReferenceData(ctx);
-    // desc stays '' here — hover docs are fetched on demand via loadEntityDoc.
+    // desc stays '' here — rich docs are fetched on demand via the catalog's
+    // target-aware docSummary/docEntry (schema-catalog-service.ts, #313).
     expect(ref.functions!.toDate).toEqual({ kind: 'fn', sig: 'toDate(x)', ret: '', desc: '' });
+  });
+  it('falls back to name() when the syntax column is present but entirely blank lines', async () => {
+    const ctx = ctxWith(async (url, o) => (
+      o.body.includes('system.keywords')
+        ? jsonResp({ data: [{ keyword: 'SELECT' }] })
+        : jsonResp({ data: [{ name: 'blankSyntax', is_aggregate: 0, syntax: '\n   \n' }] })
+    ));
+    const ref = await loadReferenceData(ctx);
+    expect(ref.functions!.blankSyntax).toEqual({ kind: 'fn', sig: 'blankSyntax()', ret: '', desc: '' });
   });
   it('falls back to the minimal function query when the syntax column is absent (older CH)', async () => {
     const ctx = ctxWith(async (url, o) => {
@@ -439,23 +449,102 @@ describe('loadReferenceData', () => {
   });
 });
 
-describe('loadEntityDoc (#27 — lazy hover docs)', () => {
-  it('returns the first NON-empty line (CH descriptions begin with a blank line)', async () => {
-    const ctx = ctxWith(async () => jsonResp({ data: [{ description: '\nCalculates a hash.\nMore detail here.' }] }));
-    expect(await loadEntityDoc(ctx, 'BLAKE3', sqlString)).toBe('Calculates a hash.');
+describe('loadFunctionsDocColumns (#313 — silent capability probe)', () => {
+  it('returns the column-name array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'name' }, { name: 'is_aggregate' }, { name: 'description' }] }));
+    expect(await loadFunctionsDocColumns(ctx)).toEqual(['name', 'is_aggregate', 'description']);
   });
-  it('escapes the name through sqlString and queries system.functions', async () => {
-    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [{ description: 'doc' }] }));
+  it('queries system.columns for system.functions', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [] }));
     const ctx = ctxWith(fetchImpl);
-    await loadEntityDoc(ctx, "o'brien", sqlString);
-    expect(fetchImpl.mock.calls[0][1].body).toContain("WHERE name = 'o''brien'");
+    await loadFunctionsDocColumns(ctx);
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain('FROM system.columns');
+    expect(body).toContain("table = 'functions'");
   });
-  it('returns "" when the query succeeds but there is no description (unknown name / blank)', async () => {
-    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [] })), 'nope', sqlString)).toBe('');
-    expect(await loadEntityDoc(ctxWith(async () => jsonResp({ data: [{ description: '\n   \n' }] })), 'blank', sqlString)).toBe('');
+  it('returns [] (not null) when system.functions does not exist — a successful probe with no matching rows', async () => {
+    expect(await loadFunctionsDocColumns(ctxWith(async () => jsonResp({ data: [] })))).toEqual([]);
   });
-  it('returns null when the query FAILS, so the caller can retry rather than cache it (#8 review)', async () => {
-    expect(await loadEntityDoc(ctxWith(async () => textResp('boom', false, 500)), 'x', sqlString)).toBeNull();
+  it('returns null when the probe query itself fails (denied system.columns, or transient)', async () => {
+    expect(await loadFunctionsDocColumns(ctxWith(async () => textResp('boom', false, 500)))).toBeNull();
+  });
+});
+
+describe('loadFunctionDocRow (#313)', () => {
+  it('returns the row array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'count', description: 'doc' }] }));
+    expect(await loadFunctionDocRow(ctx, 'SELECT name FROM system.functions FORMAT JSON')).toEqual([{ name: 'count', description: 'doc' }]);
+  });
+  it('returns [] on a successful query with no matching rows', async () => {
+    expect(await loadFunctionDocRow(ctxWith(async () => jsonResp({ data: [] })), 'SELECT 1 FORMAT JSON')).toEqual([]);
+  });
+  it('returns null on failure (transient — not cached by the caller)', async () => {
+    expect(await loadFunctionDocRow(ctxWith(async () => textResp('boom', false, 500)), 'SELECT 1 FORMAT JSON')).toBeNull();
+  });
+});
+
+describe('loadDocTableColumns (#314 — generalized per-source capability probe)', () => {
+  it('returns the column-name array on success, for each allowlisted table', async () => {
+    const tables: DocProbeTable[] = ['functions', 'formats', 'table_engines', 'database_engines', 'data_type_families'];
+    for (const table of tables) {
+      const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'name' }, { name: 'description' }] }));
+      expect(await loadDocTableColumns(ctx, table)).toEqual(['name', 'description']);
+    }
+  });
+
+  it('queries system.columns for the requested table name, never interpolating it unescaped', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [] }));
+    const ctx = ctxWith(fetchImpl);
+    await loadDocTableColumns(ctx, 'formats');
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain('FROM system.columns');
+    expect(body).toContain("table = 'formats'");
+  });
+
+  it('resolves each of the four #314 structured tables to its own system.columns probe', async () => {
+    const calls: string[] = [];
+    const ctx = ctxWith(async (_url, init) => { calls.push(init.body); return jsonResp({ data: [] }); });
+    await loadDocTableColumns(ctx, 'table_engines');
+    await loadDocTableColumns(ctx, 'database_engines');
+    await loadDocTableColumns(ctx, 'data_type_families');
+    expect(calls[0]).toContain("table = 'table_engines'");
+    expect(calls[1]).toContain("table = 'database_engines'");
+    expect(calls[2]).toContain("table = 'data_type_families'");
+  });
+
+  it('returns [] (not null) when the table does not exist — a successful probe with no matching rows', async () => {
+    expect(await loadDocTableColumns(ctxWith(async () => jsonResp({ data: [] })), 'formats')).toEqual([]);
+  });
+
+  it('returns null when the probe query itself fails (denied system.columns, or transient)', async () => {
+    expect(await loadDocTableColumns(ctxWith(async () => textResp('boom', false, 500)), 'formats')).toBeNull();
+  });
+});
+
+describe('loadDocRow (#314 — generalized documentation-row loader)', () => {
+  it('returns the row array on success', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'MergeTree', description: 'doc' }] }));
+    expect(await loadDocRow(ctx, 'SELECT name FROM system.table_engines FORMAT JSON')).toEqual([{ name: 'MergeTree', description: 'doc' }]);
+  });
+  it('returns [] on a successful query with no matching rows', async () => {
+    expect(await loadDocRow(ctxWith(async () => jsonResp({ data: [] })), 'SELECT 1 FORMAT JSON')).toEqual([]);
+  });
+  it('returns null on failure (transient — not cached by the caller)', async () => {
+    expect(await loadDocRow(ctxWith(async () => textResp('boom', false, 500)), 'SELECT 1 FORMAT JSON')).toBeNull();
+  });
+});
+
+describe('loadFunctionsDocColumns / loadFunctionDocRow delegate to the generalized loaders (#314)', () => {
+  it('loadFunctionsDocColumns probes the "functions" table via loadDocTableColumns', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: FetchInit) => jsonResp({ data: [{ name: 'name' }] }));
+    const ctx = ctxWith(fetchImpl);
+    expect(await loadFunctionsDocColumns(ctx)).toEqual(['name']);
+    const body = fetchImpl.mock.calls[0][1].body;
+    expect(body).toContain("table = 'functions'");
+  });
+  it('loadFunctionDocRow runs the prebuilt SELECT via loadDocRow', async () => {
+    const ctx = ctxWith(async () => jsonResp({ data: [{ name: 'count' }] }));
+    expect(await loadFunctionDocRow(ctx, 'SELECT name FROM system.functions FORMAT JSON')).toEqual([{ name: 'count' }]);
   });
 });
 
@@ -966,7 +1055,7 @@ describe('loadTableDetail', () => {
     const ctx = ctxWith((url, init) => {
       const sql = init.body; seen.push(sql);
       if (/system\.parts/.test(sql)) return jsonResp({ data: [{ partition: '2024', parts: 3, rows: 100, bytes: 5000 }] });
-      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree', comment: 'ids table' }] });
+      if (/create_table_query/.test(sql)) return jsonResp({ data: [{ ddl: 'CREATE TABLE a.t (id UInt64) ENGINE = MergeTree', comment: 'ids table', engine: 'MergeTree' }] });
       if (/system\.data_skipping_indices/.test(sql)) {
         return jsonResp({ data: [{ name: 'idx_d', expr: 'd', type: 'minmax', type_full: 'minmax', granularity: 1, compressed: 128, uncompressed: 256, marks: 8 }] });
       }
@@ -979,6 +1068,7 @@ describe('loadTableDetail', () => {
     expect(d.partitions[0].partition).toBe('2024');
     expect(d.ddl).toContain('CREATE TABLE');
     expect(d.comment).toBe('ids table');
+    expect(d.engine).toBe('MergeTree');
     // the index read selects type_full + granularity (the drawer's required fields)
     // and is scoped to this one table — one read per detail-open, no duplicate.
     const idxSql = seen.filter((s) => /system\.data_skipping_indices/.test(s));
@@ -989,7 +1079,7 @@ describe('loadTableDetail', () => {
   });
   it('degrades to empty arrays + empty DDL/comment when the system tables are denied', async () => {
     const ctx = ctxWith(() => jsonResp('Code: 497', false, 500));
-    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '' });
+    expect(await loadTableDetail(ctx, 'a', 't')).toEqual({ columns: [], indexes: [], partitions: [], ddl: '', comment: '', engine: '' });
   });
   it('requests data-lake-catalog visibility on system.columns/system.tables (#122 — Iceberg tables\' columns/DDL otherwise hidden)', async () => {
     const seen: string[] = [];

@@ -200,3 +200,28 @@ export function compactType(type: unknown, maxLen: number): string {
   const out = compacted == null ? s : compacted;
   return out.length <= maxLen ? out : truncate(out, maxLen);
 }
+
+/**
+ * The OUTERMOST named type family of a declared ClickHouse type — #314's
+ * schema-surface "Open type reference" action target. A column type surface
+ * (the schema tree, the schema-detail columns table) has no caret position to
+ * resolve an INNERMOST token from (unlike `core/doc-context.ts`'s CM6
+ * strong-context classifier, which — with a caret — resolves the innermost
+ * type under it, e.g. `String` inside `Nullable(String)`): the whole
+ * declared type is the "thing displayed", so the deliberate choice here is
+ * the leading wrapper name instead — `Nullable` for `Nullable(String)`,
+ * `Array` for `Array(Tuple(UInt64, String))`, `LowCardinality` for
+ * `LowCardinality(String)`, or the bare name itself for an unparameterized
+ * type (`String`) or a parameterized leaf (`Decimal` for `Decimal(38, 10)`).
+ * Just the leading run of word characters — never runs the full
+ * bracket/opacity scan `compactType` does, since it only needs where the
+ * head name ends, not how to summarize what follows. Pure; `''` for
+ * nullish/blank input or a type string that doesn't start with a word
+ * character.
+ */
+export function outerTypeName(type: unknown): string {
+  const s = type == null ? '' : String(type).trim();
+  let i = 0;
+  while (i < s.length && isWordChar(s[i])) i += 1;
+  return s.slice(0, i);
+}

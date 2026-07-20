@@ -35,6 +35,7 @@ export const createCodeViewer: CodeViewerFactory = ({
   text = '',
   language = 'text',
   wrap = false,
+  languageExtension: initialLanguageExtension,
 }): CodeViewerHandle => {
   const languageCompartment = new Compartment();
   const wrapping = createWrapCompartment(wrap);
@@ -52,7 +53,7 @@ export const createCodeViewer: CodeViewerFactory = ({
         EditorView.contentAttributes.of({ tabindex: '0' }),
         ...codePresentationExtensions(),
         codeSearchKeymap,
-        languageCompartment.of(languageExtension(language)),
+        languageCompartment.of(initialLanguageExtension ?? languageExtension(language)),
         wrapping.extension,
       ],
     }),

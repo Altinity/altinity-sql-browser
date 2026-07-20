@@ -20,7 +20,6 @@ import type { Tooltip } from '@codemirror/view';
 import { EditorView, keymap, dropCursor, hoverTooltip } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
 import { bracketMatching, syntaxTree } from '@codemirror/language';
-import { sql, SQLDialect } from '@codemirror/lang-sql';
 import type { Completion, CompletionResult } from '@codemirror/autocomplete';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, startCompletion, completionStatus } from '@codemirror/autocomplete';
 import { h } from '../ui/dom.js';
@@ -38,6 +37,11 @@ import type { AppState } from '../state.js';
 import { IDENT_MIME, SUBQUERY_MIME, COLUMN_TYPE_MIME } from '../ui/dnd-mime.js';
 import { codePresentationExtensions, codeSearchKeymap } from './codemirror-base.js';
 import type { EditorPort, EditorSelection } from './editor-port.types.js';
+import { chLanguageExtension } from './ch-lang.js';
+import { lookupFunctionEntry, docTargetForMatch, resolveDocTarget } from '../core/doc-context.js';
+import type { DocContextOptions } from '../core/doc-context.js';
+import type { FunctionMatch } from '../core/doc-context.js';
+import type { DocTarget, DocLookup, DocSummary, DocEntry } from '../core/doc-types.js';
 
 // ── Local typed contracts ───────────────────────────────────────────────────
 // core/completions.js's own `AssembledReference`/`CompletionContext` shapes
@@ -113,11 +117,16 @@ interface DialectApp {
 }
 
 /** `hoverSourceFor`/`infoFor`'s own narrow app slice: the reference data plus
- *  the lazily-fetched entity-doc loader — independent of the fuller
- *  `CodeMirrorEditorApp` the port itself needs (tests call these two
- *  directly with exactly this shape). */
+ *  the target-aware `docSummary`/`docEntry` catalog lookups (#313 — replaces
+ *  the old `entityDoc(name)` seam entirely; nothing reads it anymore) —
+ *  independent of the fuller `CodeMirrorEditorApp` the port itself needs
+ *  (tests call these two directly with exactly this shape). */
 interface ReferenceApp extends DialectApp {
-  catalog?: { refData?: unknown; entityDoc?: (name: string) => Promise<string | null> };
+  catalog?: {
+    refData?: unknown;
+    docSummary?: (target: DocTarget) => Promise<DocLookup<DocSummary>>;
+    docEntry?: (target: DocTarget) => Promise<DocLookup<DocEntry>>;
+  };
 }
 
 /** The subset of a DOM drag event `handleDrop` reads — real `DragEvent`s (the
@@ -132,10 +141,18 @@ export interface DropEvent {
 
 /** The injected app controller's slice this adapter reads/writes: the
  *  reference/completion data assembled from core/completions.js, the
- *  lazily-fetched entity-doc loader, the `dom.sqlEditorView` handoff other
- *  app code reads (e2e/debug only — the app itself talks through the port),
- *  the tab/schema state this port syncs against, and the FROM-scope column
- *  loader (#84). */
+ *  target-aware `docSummary`/`docEntry` catalog lookups (#313), the
+ *  `dom.sqlEditorView` handoff other app code reads (e2e/debug only — the
+ *  app itself talks through the port), the tab/schema state this port syncs
+ *  against, and the FROM-scope column loader (#84).
+ *
+ *  `openDocEntry` is the INJECTED open-the-reference-pane action (#313) —
+ *  the app controller binds it to ui/doc-pane.ts's `openDocEntry(app, …)`
+ *  at wiring time (app.ts), so this adapter never imports UI modules (the
+ *  editor stays a leaf layer; enforced by build/check-boundaries.mjs).
+ *  Optional because this adapter's own tests construct a minimal
+ *  `CodeMirrorEditorApp` that never opens the pane — the hover button and
+ *  F1 quietly no-op when it's absent. */
 export interface CodeMirrorEditorApp extends ReferenceApp {
   state: AppState;
   dom: { sqlEditorView?: EditorView };
@@ -143,8 +160,29 @@ export interface CodeMirrorEditorApp extends ReferenceApp {
    *  `catalog.refData` above (matches `SchemaCatalogService.completions`'s
    *  real, always-populated shape); narrowed with a local `as` in
    *  `completionSourceFor`. */
-  catalog?: { refData?: unknown; completions?: unknown; entityDoc?: (name: string) => Promise<string | null> };
+  catalog?: {
+    refData?: unknown;
+    completions?: unknown;
+    docSummary?: (target: DocTarget) => Promise<DocLookup<DocSummary>>;
+    docEntry?: (target: DocTarget) => Promise<DocLookup<DocEntry>>;
+    /** #315 — NOT read by this adapter directly (only `doc-pane.ts`'s
+     *  `openDocDisambiguation` calls it, through the injected
+     *  `app.openDocDisambiguation` action above) — declared here purely so a
+     *  test building one `app` object for both this adapter's `catalog`
+     *  override AND a `DocPaneApp` cast (`makeDocPaneApp`, this module's own
+     *  test file) can set it in one place without an excess-property error. */
+    docDisambiguate?: (name: string) => Promise<DocLookup<DocSummary[]>>;
+  };
   actions: { loadColumns(db: string, table: string): Promise<void> };
+  openDocEntry?: (target: DocTarget) => void;
+  /** #315 — the injected open-the-disambiguation-state action, alongside
+   *  `openDocEntry` above (bound by app.ts to `ui/doc-pane.ts`'s
+   *  `openDocDisambiguation(app, name)`, for the identical "editor never
+   *  imports UI" reason). Optional for the same reason `openDocEntry` is:
+   *  this adapter's own tests construct a minimal app that never opens the
+   *  pane, and F1 quietly falls through to the browser default when it's
+   *  absent (see `openReferenceCommand`). */
+  openDocDisambiguation?: (name: string) => void;
 }
 
 // Programmatic state syncs (tab switch, external tab.sqlDraft reconcile) must not
@@ -166,38 +204,16 @@ const LITERAL_NODE = /String|Comment|QuotedIdentifier/;
 
 /**
  * The ClickHouse-flavored SQL language extension for the current reference
- * data: server keywords/function names when loaded (#25), the built-in
- * fallback sets otherwise. Both word lists are lowercased — lang-sql looks
- * dialect words up via `word.toLowerCase()`, so a verbatim `toDateTime` would
- * never match. Backticks and double quotes are identifier quotes in
- * ClickHouse; strings take backslash escapes. Auto-close covers `(`, `[`, and
- * the three quotes (parity with the deleted core/editor-brackets.js) — `{`
- * deliberately doesn't pair (it would fight the #134 `{name:Type}` variables).
+ * data — thin adapter-shape delegate over `ch-lang.ts`'s `chLanguageExtension`
+ * (#313 extraction): server keywords/function names when loaded (#25), the
+ * built-in fallback sets otherwise. See `chLanguageExtension`'s own doc for
+ * the dialect details (word-list casing, quote/comment flags, auto-close).
  */
 export function langExtensionFor(app: DialectApp): Extension[] {
   // `as`: `app.catalog.refData` is `unknown` here (see `DialectApp`'s doc
   // comment) — this adapter is the one real consumer of its actual shape.
   const ref = app.catalog?.refData as AssembledReference | null | undefined;
-  const dialect = SQLDialect.define({
-    keywords: (ref ? ref.keywords : []).join(' ').toLowerCase(),
-    builtin: Object.keys(ref ? ref.functions : {}).join(' ').toLowerCase(),
-    backslashEscapes: true,
-    identifierQuotes: '`"',
-    // ClickHouse comment/heredoc forms (#182). These are editor approximations
-    // of the authoritative core scanner (sql-spans.js): `hashComments` treats
-    // every `#` as a comment (it can't express the space-or-`!` follow set), and
-    // CM6's quoted-identifier escaping differs — but these affect only CM6-owned
-    // editor behavior (highlighting, tree-based bracket/quote guards, hover),
-    // never core completion/split/param analysis. `doubleQuotedStrings` stays
-    // default-false: `"` is an identifier delimiter in ClickHouse.
-    hashComments: true,
-    slashComments: true,
-    doubleDollarQuotedStrings: true,
-  });
-  return [
-    sql({ dialect }),
-    dialect.language.data.of({ closeBrackets: { brackets: ['(', '[', "'", '"', '`'] } }),
-  ];
+  return chLanguageExtension(ref);
 }
 
 // Closers and quotes our input guard steps over when typed directly before
@@ -245,7 +261,8 @@ export function inputGuards(view: EditorView, from: number, to: number, text: st
  * `filter: false` keeps `rankCompletions`' order (CM6 would fuzzy-rescore and
  * dedup otherwise). Candidates come from `app.catalog.completions` at call time, so
  * schema/reference updates need no reconfigure. Never queries — `info` resolves
- * through app.catalog.entityDoc's lazy cache, and only for the row the user rests on.
+ * through `app.catalog.docSummary`'s cache (#313), and only for the row the
+ * user rests on.
  */
 export function completionSourceFor(app: CodeMirrorEditorApp): (ctx: SqlCompletionContext) => CompletionResult | null {
   return (ctx) => {
@@ -312,12 +329,110 @@ export function applyFor(it: ApplyItem): Completion['apply'] {
  *  result, so a FUNCTION must yield a real DOM node. */
 type InfoFn = () => Node | null | Promise<Node | null>;
 
+/**
+ * Render the compact function/aggregate summary CM6's hover tooltip AND
+ * completion info SHARE (#313: "Hover and completion info must share
+ * rendering helpers") — one card, two callers. Paints the LOCAL
+ * functions-table entry (signature/return/description) synchronously, the
+ * same zero-latency first paint the pre-#313 adapter had, then — ONLY
+ * because `match` already proved this is a known function (the existence
+ * gate; no SQL for an arbitrary identifier) — asks the catalog for the
+ * richer, version-exact `DocSummary` (`app.catalog.docSummary`) and upgrades
+ * in place once it resolves: preferring its `signature` over the local one,
+ * replacing the summary line, and showing an optional `since vX` badge and
+ * an `Alias of <x>` notice. Always appends an accessible, keyboard-
+ * activatable `Open reference` BUTTON that invokes the injected
+ * `app.openDocEntry` action — a quiet no-op click when the injected `app`
+ * doesn't carry it (this adapter's own minimal test apps; the real,
+ * injected `App` always binds it to the persistent docs pane).
+ *
+ * `isLive()` is the caller's async-DOM-mutation guard (#313: "Async results
+ * must verify the tooltip and editor are still live before updating DOM") —
+ * CM6 tears a tooltip/info node down without notice (mouse moved off, popup
+ * closed, the editor destroyed) well before `docSummary` settles; the
+ * returned card is simply never mutated once the caller's own liveness check
+ * says no, keeping the local fallback content on screen instead.
+ */
+/** The card's open-the-reference-pane affordance: `(reference — F1)` on the
+ *  badges row (after the `since` badge when one resolves) with the single
+ *  word "reference" as a standard link — keyboard-activatable like any
+ *  anchor; href is inert (`#`, prevented) since the action is app-local. */
+function openReferenceLink(app: CodeMirrorEditorApp, target: DocTarget): HTMLElement {
+  return h('span', { class: 'hover-open-ref-wrap' }, '(',
+    h('a', {
+      class: 'hover-open-ref', href: '#',
+      onclick: (e: Event) => { e.preventDefault(); app.openDocEntry?.(target); },
+    }, 'reference'),
+    ' — F1)');
+}
+
+function renderFunctionSummary(
+  app: CodeMirrorEditorApp, target: DocTarget, local: CompletionFunctionEntry | undefined,
+  isLive: () => boolean,
+): HTMLElement {
+  const sig = h('div', { class: 'hover-sig' }, local?.sig || target.name + '()',
+    local?.ret ? h('span', { class: 'hover-ret' }, ' → ' + local.ret) : null);
+  const summary = h('div', { class: 'hover-doc' }, local?.desc || '');
+  const badges = h('span', { class: 'hover-badges' });
+  const dom = h('div', { class: 'hover-card' }, sig, summary,
+    h('div', { class: 'hover-meta' }, badges, openReferenceLink(app, target)));
+  if (app.catalog?.docSummary) {
+    Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
+      if (!isLive()) return;
+      if (lookup.status !== 'found') return; // degrade quietly — keep the local fallback (#313 fallback behavior)
+      const s = lookup.value;
+      sig.replaceChildren(s.signature);
+      summary.textContent = s.summary;
+      badges.replaceChildren(
+        ...(s.introducedIn ? [h('span', { class: 'hover-since' }, 'since ' + s.introducedIn)] : []),
+        ...(s.aliasTo ? [h('span', { class: 'hover-alias' }, 'Alias of ' + s.aliasTo)] : []),
+      );
+    });
+  }
+  return dom;
+}
+
+/**
+ * Render the compact summary card for a #314 structured target (currently
+ * just `format` — engine/data-type completion items don't exist yet) that has
+ * NO local fallback content (unlike `renderFunctionSummary`'s functions-table
+ * seed): the card starts with just the name and fills in once
+ * `app.catalog.docSummary` resolves, following the identical async-upgrade/
+ * liveness-guard contract (`isLive()`) and the same accessible `Open
+ * reference` button wired to `app.openDocEntry`. A `missing`/`unavailable`
+ * lookup (or no `docSummary` injected at all) simply leaves the name-only
+ * card as-is — no error UI, matching #314's "unsupported/denied sources
+ * degrade silently".
+ */
+function renderStructuredSummary(
+  app: CodeMirrorEditorApp, target: DocTarget, isLive: () => boolean,
+): HTMLElement {
+  const sig = h('div', { class: 'hover-sig' }, target.name);
+  const summary = h('div', { class: 'hover-doc' }, '');
+  const badges = h('span', { class: 'hover-badges' });
+  const dom = h('div', { class: 'hover-card' }, sig, summary,
+    h('div', { class: 'hover-meta' }, badges, openReferenceLink(app, target)));
+  if (app.catalog?.docSummary) {
+    Promise.resolve(app.catalog.docSummary(target)).then((lookup: DocLookup<DocSummary>) => {
+      if (!isLive()) return;
+      if (lookup.status !== 'found') return; // degrade quietly (#314)
+      const s = lookup.value;
+      sig.textContent = s.signature || s.title || target.name;
+      summary.textContent = s.summary;
+      badges.replaceChildren(
+        ...(s.introducedIn ? [h('span', { class: 'hover-since' }, 'since ' + s.introducedIn)] : []),
+      );
+    });
+  }
+  return dom;
+}
+
 // The active row's description: static keyword docs immediately, function
-// docs lazily via app.catalog.entityDoc (cached, one query per name ever — #27).
-// CM6 shows it as a side tooltip (the old dropdown used a footer). An `info`
+// summaries via the shared `renderFunctionSummary` helper above (#313). CM6
+// shows it as a side tooltip (the old dropdown used a footer). An `info`
 // FUNCTION must yield a DOM node (a bare string is only legal when `info`
 // itself is the string) — CM6's addInfoPane appendChild()s the result.
-export function infoFor(app: ReferenceApp, it: InfoItem): InfoFn | undefined {
+export function infoFor(app: CodeMirrorEditorApp, it: InfoItem): InfoFn | undefined {
   const doc = (text: string | null | undefined): Node | null => (text ? h('div', null, text) : null);
   if (it.kind === 'keyword') {
     // `as`: `app.catalog.refData` is `unknown` (see `DialectApp`'s doc
@@ -330,37 +445,51 @@ export function infoFor(app: ReferenceApp, it: InfoItem): InfoFn | undefined {
     };
   }
   if (it.kind === 'fn' || it.kind === 'agg' || it.kind === 'cast') {
-    if (!app.catalog?.entityDoc) return undefined;
-    // `!`: just checked above; a deferred closure doesn't retain that
-    // narrowing across the function boundary, but the guard already ran.
-    return () => Promise.resolve(app.catalog!.entityDoc!(it.label)).then(doc);
+    // `as`: `app.catalog.refData` is `unknown` (see `DialectApp`'s doc comment);
+    // read fresh (not hoisted) — same reasoning as the keyword arm above.
+    const refData = app.catalog?.refData as AssembledReference | null | undefined;
+    if (!refData) return undefined;
+    // The existence gate (#313): `docSummary` is only ever requested for a
+    // NAME the functions table already lists — never for an arbitrary label.
+    const match = lookupFunctionEntry(refData.functions, it.label);
+    if (!match) return undefined;
+    const target = docTargetForMatch(match);
+    return (): HTMLElement => {
+      const dom = renderFunctionSummary(app, target, match.entry, () => dom.isConnected);
+      return dom;
+    };
   }
   // A column whose `detail` is a compacted type summary (#177) exposes the full
   // declared type here — CM6's detail column has no native title fallback.
   if (it.kind === 'column' && it.fullType && it.fullType !== it.detail) {
     return () => doc(it.fullType);
   }
+  // #314: a FORMAT-clause completion candidate (its label IS a real format
+  // name — completions.ts only ever builds 'format'-kind items from
+  // `ref.formats`) opens the same shared summary card as a function's,
+  // querying `app.catalog.docSummary` only once CM6 actually materializes
+  // this row's info (never during ordinary typing — the completion LIST
+  // itself never calls `info`).
+  if (it.kind === 'format') {
+    const target: DocTarget = { kind: 'format', name: it.label };
+    return (): HTMLElement => {
+      const dom = renderStructuredSummary(app, target, () => dom.isConnected);
+      return dom;
+    };
+  }
   return undefined;
 }
 
-// SQL function calls are case-insensitive: resolve the hovered word against
-// the reference keys the way the old editor-intel lookupFn did (#27) — exact,
-// then lower (server keys are mostly canonical-lowercase), then UPPER. Own
-// properties only: a column named `constructor` must not hover a phantom card
-// off Object.prototype.
-const own = <T>(m: Record<string, T>, k: string): T | undefined =>
-  (Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined);
-const lookupFn = (functions: Record<string, CompletionFunctionEntry>, word: string): CompletionFunctionEntry | undefined =>
-  own(functions, word) || own(functions, word.toLowerCase()) || own(functions, word.toUpperCase());
-
 /**
- * Hover docs (#27 parity v0): keyword docs from the static set, function
- * signature + return type + lazily-fetched description. Quiet inside
+ * Hover docs (#313: extends the #27 v0 foundation): keyword docs from the
+ * static set, function signature/return/summary via the shared
+ * `renderFunctionSummary` helper (local synchronous content, then a
+ * `docSummary` upgrade + `Open reference` button). Quiet inside
  * strings/comments/quoted identifiers (no phantom docs over literal prose).
- * Signature help (the caret-following arg highlighter) is dropped in v0 —
- * #60 rebuilds docs properly on this foundation.
+ * Signature help (the caret-following arg highlighter) stays out of scope —
+ * #60 rebuilds it on this foundation.
  */
-export function hoverSourceFor(app: ReferenceApp): (view: EditorView, pos: number) => Tooltip | null {
+export function hoverSourceFor(app: CodeMirrorEditorApp): (view: EditorView, pos: number) => Tooltip | null {
   return (view, pos) => {
     // `as`: `app.catalog.refData` is `unknown` here (see `DialectApp`'s doc comment).
     const refData = app.catalog?.refData as AssembledReference | null | undefined;
@@ -371,24 +500,19 @@ export function hoverSourceFor(app: ReferenceApp): (view: EditorView, pos: numbe
     const w = wordAt(line.text, pos - line.from);
     if (!w) return null;
     const kwDoc = refData.keywordDocs[w.word.toUpperCase()];
-    const fn = lookupFn(refData.functions, w.word);
-    if (!kwDoc && !fn) return null;
+    const match = lookupFunctionEntry(refData.functions, w.word);
+    if (!kwDoc && !match) return null;
     return {
       pos: line.from + w.from,
       end: line.from + w.to,
       create: () => {
-        const dom = h('div', { class: 'hover-card' });
-        if (fn) {
-          dom.appendChild(h('div', { class: 'hover-sig' }, fn.sig || w.word + '()',
-            fn.ret ? h('span', { class: 'hover-ret' }, ' → ' + fn.ret) : null));
-          const doc = h('div', { class: 'hover-doc' }, fn.desc || '');
-          dom.appendChild(doc);
-          if (!fn.desc && app.catalog?.entityDoc) {
-            Promise.resolve(app.catalog.entityDoc(w.word)).then((d) => { if (d) doc.textContent = d; });
-          }
-        } else {
-          dom.appendChild(h('div', { class: 'hover-doc' }, kwDoc));
-        }
+        if (!match) return { dom: h('div', { class: 'hover-card' }, h('div', { class: 'hover-doc' }, kwDoc)) };
+        const target = docTargetForMatch(match);
+        // Staleness guard (#313): a tooltip node the caller already threw
+        // away, OR the editor itself torn down, must never be mutated by a
+        // `docSummary` resolving late — check BOTH the tooltip dom and the
+        // owning view's own liveness.
+        const dom = renderFunctionSummary(app, target, match.entry, () => dom.isConnected && view.dom.isConnected);
         return { dom };
       },
     };
@@ -440,6 +564,66 @@ export function handleDrop(app: CodeMirrorEditorApp, view: EditorView, e: DropEv
 export function insertTwoSpaces(view: EditorView): boolean {
   view.dispatch(view.state.replaceSelection('  '), { userEvent: 'input.type', scrollIntoView: true });
   return true;
+}
+
+/**
+ * F1: `Open reference for symbol` (#313's keyboard command; #314 extends its
+ * classification; #315 extends its NO-STRONG-TARGET fallback — see below).
+ * Resolves the doc target at `selection.main.head` — first suppressing
+ * inside a comment/string/quoted identifier via the CM6 syntax tree (this
+ * module's own responsibility per doc-context.ts's contract), then
+ * classifying with the FULL `resolveDocTarget` (the #314/#315 strong-context
+ * classifier, ranked above the Phase 1 function/aggregate lookup) against
+ * the WHOLE document — unlike hover/completion info (line-scoped; only ever
+ * resolve a function), F1 is the one caller whose target may be a
+ * statement-wide FORMAT/ENGINE/type/setting/… position, so it needs the
+ * surrounding statement, not just the current line. Passes `refData.formats`
+ * so a FORMAT-clause match is validated against known format names,
+ * mirroring the function lookup's existence gate. Opens the SAME persistent
+ * pane `renderFunctionSummary`'s "Open reference" button does.
+ *
+ * #315 CONTRACT CHANGE (deliberate, spec-driven — see #315 "Context routing
+ * and disambiguation": "When context cannot distinguish same-name entities,
+ * open an accessible disambiguation state"): when `resolveDocTarget` finds NO
+ * strong target, F1 used to leave the key to the browser default
+ * (`return false`) unconditionally. It now instead tries the word under the
+ * caret as a NAME-ONLY disambiguation query — `app.openDocDisambiguation`
+ * (bound to `doc-pane.ts`'s `openDocDisambiguation`) — whenever there IS a
+ * plausible bare identifier there (`wordAt` resolves one) and the app carries
+ * the action; the pane itself shows its existing quiet "missing" state when
+ * the server has nothing under that name, so this never surfaces a false
+ * positive, only broadens what F1 can reach (a setting/combinator/etc. the
+ * positional classifier has no strong context for). `false` is still
+ * returned — the browser keeps its default F1 behavior — in EXACTLY the
+ * cases it always was: no reference data loaded yet, the caret sits inside a
+ * literal, or there is no word at all under the caret (whitespace/punctuation)
+ * — and now ALSO when a word exists but `app.openDocDisambiguation` isn't
+ * wired (mirrors `openDocEntry`'s own optional-seam quiet-no-op precedent).
+ * Exported for direct tests — a headless CM6 keymap `run` binding doesn't
+ * need a real keydown event to exercise.
+ */
+export function openReferenceCommand(app: CodeMirrorEditorApp): (view: EditorView) => boolean {
+  return (view) => {
+    const refData = app.catalog?.refData as AssembledReference | null | undefined;
+    if (!refData) return false;
+    const pos = view.state.selection.main.head;
+    if (LITERAL_NODE.test(syntaxTree(view.state).resolveInner(pos, 0).name)) return false;
+    const doc = view.state.doc.toString();
+    const options: DocContextOptions = { formats: refData.formats };
+    const target = resolveDocTarget(doc, pos, refData.functions, options);
+    if (target) {
+      app.openDocEntry?.(target);
+      return true;
+    }
+    // #315 — no strong target: fall back to name-only disambiguation for a
+    // bare word under the caret (never guessed for whitespace/punctuation —
+    // `wordAt` returns null there, matching resolveDocTarget's own "no word"
+    // contract).
+    const w = wordAt(doc, pos);
+    if (!w || !app.openDocDisambiguation) return false;
+    app.openDocDisambiguation(w.word);
+    return true;
+  };
 }
 
 // Idle delay before the FROM-scope column prefetch runs (#84). Column metadata
@@ -522,6 +706,7 @@ export function createCodeMirrorEditor(app: CodeMirrorEditorApp): EditorPort {
     keymap.of([
       { key: 'Tab', run: acceptCompletion },
       { key: 'Tab', run: insertTwoSpaces },
+      { key: 'F1', run: openReferenceCommand(app) }, // #313 — same action as hover/completion's "Open reference"
       ...closeBracketsKeymap,
       ...historyKeymap,
       // Global chords (⌘↵ run, ⌘⇧↵ format, ⌘S/⌘⇧S, Esc) live on the document

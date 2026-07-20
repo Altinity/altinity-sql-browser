@@ -36,7 +36,7 @@ all bundled — see hard rule 4). Quality is held by tests.
    `package-lock.json` is committed; use `npm ci` for a reproducible dependency
    graph in local, CI, and release builds, and update the lock only with an
    intentional dependency change.
-   There are **five** bundled runtime dependencies — **CodeMirror 6** (the SQL
+   There are **six** bundled runtime dependencies — **CodeMirror 6** (the SQL
    editor, saved-query Spec JSON editor, and read-only source viewer, behind
    injected seams — #21/#212/#213),
    **Chart.js** (the Chart result view) with **chartjs-adapter-date-fns**
@@ -44,10 +44,16 @@ all bundled — see hard rule 4). Quality is held by tests.
    line/area charts over a time-role X column — #309; the pure axis/role
    decision of *whether* to use it stays in `core/chart-data.ts`, the adapter
    is a side-effect-only import next to `Chart` itself in `main.ts`),
-   **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout), and
+   **@dagrejs/dagre** (the EXPLAIN pipeline-graph layout),
    **@preact/signals-core** (the reactivity primitive — see
-   `docs/ADR-0001-reactivity.md`) — all inlined into the artifact, so the page
-   still makes zero third-party requests.
+   `docs/ADR-0001-reactivity.md`), and **marked** (the Markdown LEXER for
+   #60/#315 reference-doc bodies — used strictly as a pure tokenizer in
+   `core/doc-markdown.ts`, like the signals precedent it needs no seam;
+   `marked.parse()`/HTML-string output and `innerHTML` are FORBIDDEN — the
+   token tree is projected into DOM by `ui/doc-markdown-view.ts` under the
+   fail-closed policy: images/raw HTML/rejected links render as literal
+   text; measured +44 KB raw / ~3% artifact delta) — all inlined into the
+   artifact, so the page still makes zero third-party requests.
    Adding *another* runtime dependency is a deliberate decision (it grows the
    single served file) — don't do it casually. When a feature needs a library,
    keep the testable logic pure in `src/core/` (chart axis/role/pivot math in

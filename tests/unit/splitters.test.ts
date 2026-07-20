@@ -35,6 +35,12 @@ describe('dragValue', () => {
     expect(dragValue('drawer', { clientX: 900, clientY: 0 }, vw)).toBe(320); // 1000-900=100 → floor
     expect(dragValue('drawer', { clientX: -100, clientY: 0 }, vw)).toBe(920); // 1000-(-100)=1100 → 92vw cap
   });
+  it('docPane maps viewportWidth-clientX to px clamped [320, 92vw] — same geometry as drawer (#313)', () => {
+    const vw = { width: 1000 };
+    expect(dragValue('docPane', { clientX: 500, clientY: 0 }, vw)).toBe(500);
+    expect(dragValue('docPane', { clientX: 900, clientY: 0 }, vw)).toBe(320);
+    expect(dragValue('docPane', { clientX: -100, clientY: 0 }, vw)).toBe(920);
+  });
 });
 
 function fakeWin() {
@@ -109,6 +115,22 @@ describe('startDrag', () => {
     expect(apply).toHaveBeenCalledWith('drawer', 500);
     win._fire('mouseup');
     expect(save).toHaveBeenCalledWith('cellDrawerPx', 500);
+  });
+  it('docPane: updates docPanePx + persists, independent of cellDrawerPx (#313)', () => {
+    const win = fakeWin();
+    const handle = document.createElement('div');
+    const state = { cellDrawerPx: 777, docPanePx: 0 };
+    const apply = vi.fn();
+    const save = vi.fn();
+    const ctx = { win, state, apply, save, rectFor: () => ({ width: 1000 }) };
+    startDrag({ preventDefault: vi.fn(), currentTarget: handle }, 'docPane', ctx);
+    win._fire('mousemove', { clientX: 500, clientY: 0 });
+    expect(state.docPanePx).toBe(500); // 1000-500
+    expect(state.cellDrawerPx).toBe(777); // untouched
+    expect(apply).toHaveBeenCalledWith('docPane', 500);
+    win._fire('mouseup');
+    expect(save).toHaveBeenCalledWith('docPanePx', 500);
+    expect(save).not.toHaveBeenCalledWith('cellDrawerPx', expect.anything());
   });
   it('defaults win to global window when ctx.win is absent', () => {
     const handle = document.createElement('div');

@@ -612,6 +612,13 @@ export interface TableDetail {
   partitions: PartitionDetailRow[];
   ddl: string;
   comment: string;
+  /** #314 — the table's raw `system.tables.engine` name (e.g. `MergeTree`,
+   *  `ReplicatedMergeTree`), threaded through so the node detail pane
+   *  (schema-detail.ts) can offer an `Open engine reference` documentation
+   *  action next to it. Best-effort, same degrade-to-empty-string convention
+   *  as `ddl`/`comment` above (a denied/missing `system.tables` row leaves
+   *  this `''`, never an error). */
+  engine: string;
 }
 
 /**
@@ -648,7 +655,7 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
     tryQueryData<PartitionDetailRow>(ctx,
       'SELECT partition, count() AS parts, sum(rows) AS rows, sum(bytes_on_disk) AS bytes '
       + 'FROM system.parts WHERE ' + byCol + ' AND active GROUP BY partition ORDER BY partition FORMAT JSON'),
-    trySystemAwareQueryData<{ ddl?: string; comment?: string }>(ctx, 'SELECT create_table_query AS ddl, comment FROM system.tables WHERE ' + byName),
+    trySystemAwareQueryData<{ ddl?: string; comment?: string; engine?: string }>(ctx, 'SELECT create_table_query AS ddl, comment, engine FROM system.tables WHERE ' + byName),
   ]);
   return {
     columns: columns || [],
@@ -656,6 +663,7 @@ export async function loadTableDetail(ctx: ChCtx, db: string, table: string): Pr
     partitions: partitions || [],
     ddl: (tableRows && tableRows[0] && tableRows[0].ddl) || '',
     comment: (tableRows && tableRows[0] && tableRows[0].comment) || '',
+    engine: (tableRows && tableRows[0] && tableRows[0].engine) || '',
   };
 }
 
@@ -735,10 +743,11 @@ interface FormatRow { name: string }
  * signature help are version-correct. This is the only *bulk* reference fetch;
  * everything then runs off this in-memory data, never a query per keystroke (the
  * keystroke rule, #25). Hover descriptions are NOT loaded here — they are large
- * and most are never read — they're fetched on demand per entity and cached
- * (loadEntityDoc, #27). Each source is best-effort; a missing/denied system
- * table yields null for that piece and the caller (assembleReferenceData) falls
- * back to the built-in set.
+ * and most are never read — they're fetched on demand per target and cached by
+ * the catalog's `docSummary`/`docEntry` (schema-catalog-service.ts, #313).
+ * Each source is best-effort; a missing/denied system table yields null for
+ * that piece and the caller (assembleReferenceData) falls back to the
+ * built-in set.
  * Returns { keywords, functions, formats } — each null when its source is
  * missing/denied (the caller falls back to a built-in set).
  */
@@ -758,7 +767,7 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
         kind: r.is_aggregate ? 'agg' : 'fn',
         sig: firstLine(r.syntax) || r.name + '()',
         ret: '',
-        desc: '', // hover docs are fetched lazily per entity + cached (loadEntityDoc, #27)
+        desc: '', // rich docs are fetched lazily per target via the catalog's docSummary/docEntry (#313)
       };
     }
   }
@@ -770,22 +779,72 @@ export async function loadReferenceData(ctx: ChCtx): Promise<ReferenceData> {
 }
 
 /**
- * Fetch one function's documentation on demand for hover docs (#27). Kept OUT of
- * the bulk reference load: descriptions are large and most are never hovered, so
- * loading every one would bloat connect time. The caller (app.entityDoc) caches
- * the result so each entity is queried at most once per connection. Returns the
- * first non-empty line (CH descriptions begin with a blank line), `''` when the
- * query SUCCEEDS but there's no description (unknown name / older server / blank),
- * or `null` when the query itself FAILED — so the caller can cache the former but
- * retry the latter rather than sticking a transient error (#8 review).
+ * Silent one-time-per-connection capability probe for a documentation source's
+ * columns (#313 `system.functions`; #314 generalizes this to the four
+ * structured sources too): which columns exist on `table`, read via
+ * `system.columns` — a table that ALWAYS exists, so this query only fails on
+ * a genuinely transient/denied problem, never because the target table itself
+ * is missing (a missing target table just yields zero matching rows here, not
+ * an error). `table` is restricted to `DocProbeTable` — a fixed internal
+ * allowlist, resolved through `DOC_PROBE_TABLE_NAMES` rather than interpolated
+ * directly, so this can never run with an arbitrary caller-supplied FROM/WHERE
+ * value even if a caller bypassed the type at the JS boundary. Returns:
+ *  - the column-name array (`[]` when the table doesn't exist on this server —
+ *    a successful probe with no matching rows — the caller treats this as
+ *    capability `unavailable`, cacheable for the connection);
+ *  - `null` when the probe query itself failed. `tryQueryData` returns null
+ *    on ANY error, so this conflates "denied `system.columns` read" with "a
+ *    transient network/auth hiccup" — there is no reliable way to tell them
+ *    apart from here. Policy (documented on the caller,
+ *    `SchemaCatalogService`): a `null` probe is retryable, but the caller
+ *    dedupes so a failed probe is retried at most once per subsequent lookup
+ *    batch — never once per individual lookup (no request storm).
  */
-export async function loadEntityDoc(ctx: ChCtx, name: string, sqlString: SqlStringFn): Promise<string | null> {
-  const rows = await tryQueryData<{ description?: string }>(
+export type DocProbeTable =
+  | 'functions' | 'formats' | 'table_engines' | 'database_engines' | 'data_type_families'
+  // #315 Phase 3 — the broad `system.documentation` fallback/coverage source.
+  | 'documentation';
+
+const DOC_PROBE_TABLE_NAMES: Record<DocProbeTable, string> = {
+  functions: 'functions',
+  formats: 'formats',
+  table_engines: 'table_engines',
+  database_engines: 'database_engines',
+  data_type_families: 'data_type_families',
+  documentation: 'documentation',
+};
+
+export function loadDocTableColumns(ctx: ChCtx, table: DocProbeTable): Promise<string[] | null> {
+  const tableName = DOC_PROBE_TABLE_NAMES[table];
+  return tryQueryData<{ name: string }>(
     ctx,
-    'SELECT description FROM system.functions WHERE name = ' + sqlString(name) + ' LIMIT 1 FORMAT JSON',
-  );
-  if (rows === null) return null;                  // query failed → retryable, don't cache
-  return rows[0] ? firstLine(rows[0].description) : ''; // succeeded → '' means genuinely no doc
+    "SELECT name FROM system.columns WHERE database = 'system' AND table = " + sqlString(tableName) + ' FORMAT JSON',
+  ).then((rows) => (rows === null ? null : rows.map((r) => r.name)));
+}
+
+/**
+ * Run a prebuilt documentation-row SELECT (built by `buildFunctionDocSelect`/
+ * `buildStructuredDocSelect`, `core/doc-capability.ts`) for one lookup by name
+ * (#313 function/aggregate-function; #314 the four structured sources). `null`
+ * on failure — transient, the caller must not cache it — the (possibly empty,
+ * on no match) row array otherwise.
+ */
+export function loadDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
+  return tryQueryData<Record<string, unknown>>(ctx, sql);
+}
+
+/** #313's `system.functions`-specific capability probe — a thin wrapper over
+ *  the generalized `loadDocTableColumns` (#314). Kept as its own export so
+ *  `SchemaCatalogDeps`/existing call sites and tests don't need to change. */
+export function loadFunctionsDocColumns(ctx: ChCtx): Promise<string[] | null> {
+  return loadDocTableColumns(ctx, 'functions');
+}
+
+/** #313's `system.functions`-specific row loader — a thin wrapper over the
+ *  generalized `loadDocRow` (#314). Kept as its own export for the same
+ *  reason as `loadFunctionsDocColumns` above. */
+export function loadFunctionDocRow(ctx: ChCtx, sql: string): Promise<Record<string, unknown>[] | null> {
+  return loadDocRow(ctx, sql);
 }
 
 /** `exportQuery`'s options. */

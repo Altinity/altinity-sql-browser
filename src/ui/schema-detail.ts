@@ -13,7 +13,8 @@ import { loadingPlaceholder } from './placeholder.js';
 import { clamp, formatRows, formatBytes, formatCompressionRatio, qualifyIdent, truncate } from '../core/format.js';
 import { columnRoles } from '../core/schema-cards.js';
 import type { ColumnRoleFlags } from '../core/schema-cards.js';
-import { compactType } from '../core/type-display.js';
+import { compactType, outerTypeName } from '../core/type-display.js';
+import type { DocTarget, DocKind } from '../core/doc-types.js';
 
 /** The clicked graph node `openDetailPane` describes — the schema-graph node
  *  shape (core/schema-graph.ts's `SchemaGraphNode`, read loosely here since
@@ -63,6 +64,12 @@ export interface NodeDetail {
   partitions?: DetailPartition[];
   ddl?: string;
   comment?: string;
+  /** #314 — the raw `system.tables.engine` name (ch-client.ts's
+   *  `TableDetail.engine`), threaded through so the pane can offer an
+   *  `Open engine reference` action next to it. Absent/blank omits the row
+   *  entirely (a view/dictionary/external leaf, or a denied `system.tables`
+   *  read — same best-effort convention as `ddl`/`comment`). */
+  engine?: string;
 }
 
 /** The narrow slice of the real `app` controller this module reads — just
@@ -72,6 +79,13 @@ export interface NodeDetail {
  *  have a full controller to hand it. */
 export interface SchemaDetailApp {
   document?: Document;
+  /** #314 — the schema-surface "Open engine/type reference" actions' target,
+   *  same optional seam convention as schema.ts's own `SchemaApp` slice: a
+   *  caller/test that never exercises these actions omits them, and the
+   *  buttons simply render permissively (an absent `docKindAvailable` counts
+   *  as unknown → shown, an absent `openDocEntry` no-ops on click). */
+  openDocEntry?: (target: DocTarget) => void;
+  catalog?: { docKindAvailable?: (kind: DocKind) => boolean | null };
 }
 
 const MIN_H = 90; // smallest pane height; max is panel height - this margin
@@ -102,8 +116,28 @@ const commentCell = (text: string | undefined): HTMLTableCellElement => cappedCe
 const codecCell = (text: string | undefined): HTMLTableCellElement => cappedCell(text, MAX_COL_CODEC);
 
 // The type cell: compact display form (#177), full declared type in the native
-// hover tooltip so compaction never actually loses information.
-const typeCell = (type: string | undefined): HTMLTableCellElement => h('td', { title: type }, compactType(type, MAX_COL_TYPE));
+// hover tooltip so compaction never actually loses information. #314 appends
+// an `Open type reference` action for the OUTERMOST named type family
+// (type-display.ts's `outerTypeName` — no caret position here, see that
+// function's doc comment) — a NEW element alongside the existing text, never
+// a new handler on the cell itself. Hidden (not disabled) when the
+// `data-type` source is durably confirmed unavailable.
+function typeCell(app: SchemaDetailApp | null | undefined, type: string | undefined): HTMLTableCellElement {
+  const typeName = type ? outerTypeName(type) : '';
+  const docAvailable = app?.catalog?.docKindAvailable?.('data-type') !== false;
+  const btn = typeName && docAvailable
+    ? h('button', {
+      class: 'schema-type-doc', type: 'button',
+      'aria-label': 'Open type reference for ' + typeName,
+      title: 'Open type reference',
+      onclick: (e: MouseEvent) => {
+        e.stopPropagation();
+        app?.openDocEntry?.({ kind: 'data-type', name: typeName });
+      },
+    }, Icon.book())
+    : null;
+  return h('td', { title: type }, compactType(type, MAX_COL_TYPE), btn);
+}
 
 // The table's own comment, next to the kind badge in the pane header — omitted
 // entirely (not just empty) when there is none, so the flex row's gap doesn't
@@ -132,7 +166,7 @@ export function openDetailPane(
   if (prior) closeDetailPane(prior as HTMLElement); // re-opening for another node replaces the pane
 
   return withDocument(doc, () => {
-    const pane = buildDetailPane(node, detail, panel);
+    const pane = buildDetailPane(app, node, detail, panel);
     markSelected(doc, node.id); // ring the clicked card so the selection is visible
     return pane;
   });
@@ -183,7 +217,7 @@ function markSelected(doc: Document, nodeId: string): void {
 }
 
 // Build + mount the pane (created in the active document via withDocument).
-function buildDetailPane(node: DetailNode, detail: NodeDetail, panel: Element): HTMLElement {
+function buildDetailPane(app: SchemaDetailApp | null | undefined, node: DetailNode, detail: NodeDetail, panel: Element): HTMLElement {
   const doc = panel.ownerDocument;
   const ident = qualifyIdent(node.db, node.name);
   // `columns === 'loading'` is the sentinel openNodeDetail mounts before the
@@ -206,7 +240,7 @@ function buildDetailPane(node: DetailNode, detail: NodeDetail, panel: Element): 
         h('th', null, 'column'), h('th', null, 'type'), h('th', null, 'codec'), h('th', null, 'comment'),
         h('th', { class: 'num' }, 'compressed'), h('th', { class: 'num', title: '% of the uncompressed size remaining on disk' }, 'size %'), h('th', null, 'key'))),
       h('tbody', null, ...cols.map((c) => h('tr', null,
-        h('td', null, c.name), typeCell(c.type), codecCell(c.codec), commentCell(c.comment),
+        h('td', null, c.name), typeCell(app, c.type), codecCell(c.codec), commentCell(c.comment),
         h('td', { class: 'num' }, formatBytes(c.compressed)),
         h('td', { class: 'num' }, formatCompressionRatio(c.compressed, c.uncompressed)),
         h('td', { class: 'schema-detail-roles' }, columnRoles(c).join(' '))))));
@@ -252,6 +286,28 @@ function buildDetailPane(node: DetailNode, detail: NodeDetail, panel: Element): 
       detail.ddl ? h('pre', { class: 'schema-detail-ddl' }, detail.ddl) : null);
   }
 
+  // #314 — the table engine's name (ch-client.ts's `TableDetail.engine`) plus
+  // an `Open engine reference` action, rendered as ITS OWN row below the head
+  // (never inside `.schema-detail-head` — that row stays exactly what it was:
+  // ident + kind badge + comment, no action button, preserving the pane's own
+  // "no action button in the head" contract). Omitted entirely when the
+  // engine name is absent (a view/dictionary/external leaf, or a denied
+  // `system.tables` read) or the `table-engine` source is durably unavailable.
+  const engineName = (detail.engine || '').trim();
+  const engineDocAvailable = app?.catalog?.docKindAvailable?.('table-engine') !== false;
+  const engineRow = engineName
+    ? h('div', { class: 'schema-detail-engine' },
+      h('span', { class: 'schema-detail-engine-name' }, engineName),
+      engineDocAvailable
+        ? h('button', {
+          class: 'schema-engine-doc', type: 'button',
+          'aria-label': 'Open engine reference for ' + engineName,
+          title: 'Open engine reference',
+          onclick: () => app?.openDocEntry?.({ kind: 'table-engine', name: engineName }),
+        }, Icon.book(), h('span', null, 'Open engine reference'))
+        : null)
+    : null;
+
   const handle = h('div', { class: 'schema-detail-handle', title: 'Drag to resize' });
   const pane = h('div', { class: 'schema-detail' },
     handle,
@@ -260,6 +316,7 @@ function buildDetailPane(node: DetailNode, detail: NodeDetail, panel: Element): 
       h('div', { class: 'schema-detail-head' },
         h('b', null, ident), h('span', { class: 'schema-detail-kind' }, node.kind || 'table'),
         headComment(detail.comment)),
+      engineRow,
       body));
   panel.appendChild(pane);
 

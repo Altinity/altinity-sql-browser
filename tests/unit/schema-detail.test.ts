@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { openDetailPane } from '../../src/ui/schema-detail.js';
 import type { SchemaDetailApp, DetailNode, NodeDetail } from '../../src/ui/schema-detail.js';
 
@@ -320,5 +320,75 @@ describe('openDetailPane', () => {
     // a short type passes through; an absent codec still renders its (empty) cell
     expect(rows[1].children[1].textContent).toBe('UInt64');
     expect(rows[1].children[2].textContent).toBe('');
+  });
+});
+
+// #314 — schema-surface documentation actions: `Open engine reference` (next
+// to the table's engine name — its own row BELOW the head, never inside
+// `.schema-detail-head`, so the "no action button in the head" contract above
+// stays intact) and `Open type reference` (a NEW element in each column's
+// type cell, alongside — not replacing — the existing compact-type text).
+describe('#314 schema-surface documentation actions', () => {
+  it('renders the engine name + an Open engine reference button below the head (not inside it)', () => {
+    mountPanel();
+    const openDocEntry = vi.fn();
+    const pane = openDetailPane(APP({ openDocEntry }), NODE, { ...DETAIL, engine: 'MergeTree' })!;
+    expect(pane.querySelector('.schema-detail-head .schema-engine-doc')).toBeNull(); // never in the head
+    const row = pane.querySelector('.schema-detail-engine')!;
+    expect(row.querySelector('.schema-detail-engine-name')!.textContent).toBe('MergeTree');
+    const btn = row.querySelector<HTMLButtonElement>('.schema-engine-doc')!;
+    expect(btn.getAttribute('aria-label')).toBe('Open engine reference for MergeTree');
+    btn.click();
+    expect(openDocEntry).toHaveBeenCalledWith({ kind: 'table-engine', name: 'MergeTree' });
+  });
+
+  it('omits the engine row entirely when the engine name is absent', () => {
+    mountPanel();
+    const pane = openDetailPane(APP(), NODE, DETAIL)!; // DETAIL carries no `engine`
+    expect(pane.querySelector('.schema-detail-engine')).toBeNull();
+  });
+
+  it('hides the engine action when the table-engine doc source is durably unavailable, but still shows the name', () => {
+    mountPanel();
+    const catalog = { docKindAvailable: vi.fn(() => false) };
+    const pane = openDetailPane(APP({ catalog }), NODE, { ...DETAIL, engine: 'MergeTree' })!;
+    const row = pane.querySelector('.schema-detail-engine')!;
+    expect(row.querySelector('.schema-detail-engine-name')!.textContent).toBe('MergeTree');
+    expect(row.querySelector('.schema-engine-doc')).toBeNull();
+  });
+
+  it('renders an Open type reference button per column, targeting the OUTERMOST type family', () => {
+    mountPanel();
+    const openDocEntry = vi.fn();
+    const detail: NodeDetail = {
+      ...DETAIL,
+      columns: [{ name: 'v', type: 'Nullable(String)', compressed: 1, uncompressed: 2 }],
+    };
+    const pane = openDetailPane(APP({ openDocEntry }), NODE, detail)!;
+    const btn = pane.querySelector<HTMLButtonElement>('.schema-detail-cols .schema-type-doc')!;
+    expect(btn.getAttribute('aria-label')).toBe('Open type reference for Nullable');
+    btn.click();
+    expect(openDocEntry).toHaveBeenCalledWith({ kind: 'data-type', name: 'Nullable' });
+  });
+
+  it('omits the type-doc button for a column with no type', () => {
+    mountPanel();
+    const detail: NodeDetail = { ...DETAIL, columns: [{ name: 'odd', compressed: 1, uncompressed: 2 }] };
+    const pane = openDetailPane(APP(), NODE, detail)!;
+    expect(pane.querySelector('.schema-detail-cols .schema-type-doc')).toBeNull();
+  });
+
+  it('hides the type-doc button when the data-type source is durably unavailable', () => {
+    mountPanel();
+    const catalog = { docKindAvailable: vi.fn(() => false) };
+    const pane = openDetailPane(APP({ catalog }), NODE, DETAIL)!;
+    expect(pane.querySelector('.schema-detail-cols .schema-type-doc')).toBeNull();
+  });
+
+  it('tolerates a bare app ({}) — no openDocEntry/catalog — without throwing, action still renders permissively', () => {
+    mountPanel();
+    const pane = openDetailPane({}, NODE, { ...DETAIL, engine: 'MergeTree' })!;
+    expect(pane.querySelector('.schema-engine-doc')).not.toBeNull();
+    expect(() => pane.querySelector<HTMLButtonElement>('.schema-engine-doc')!.click()).not.toThrow();
   });
 });

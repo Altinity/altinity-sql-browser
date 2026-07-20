@@ -13,6 +13,7 @@ import type { EditorPort } from '../editor/editor-port.types.js';
 import type { SpecEditorPort } from '../editor/spec-editor.types.js';
 import type { CodeViewerFactory } from '../editor/code-viewer.types.js';
 import type { QueryTab as Tab, AppState as State, SpecValidationService } from '../state.js';
+import type { DocTarget } from '../core/doc-types.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { ConnectionSession, SessionChCtx } from '../application/connection-session.js';
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
@@ -198,6 +199,19 @@ export interface App {
   sqlEditor: EditorPort;
   specEditor: SpecEditorPort;
   CodeViewer: CodeViewerFactory;
+  /** #313: the open-the-reference-pane action the CM6 adapter's hover button
+   *  and F1 command invoke — bound by app.ts to ui/doc-pane.ts's
+   *  `openDocEntry(app, target)` so the editor layer never imports UI
+   *  modules (build/check-boundaries.mjs enforces the direction). */
+  openDocEntry: (target: DocTarget) => void;
+  /** #315 — the open-the-disambiguation-state action the F1 command falls
+   *  back to when no strong target resolves for a bare word — bound by
+   *  app.ts to ui/doc-pane.ts's `openDocDisambiguation(app, name)`, for the
+   *  identical "editor never imports UI" reason as `openDocEntry` above. */
+  openDocDisambiguation: (name: string) => void;
+  /** #60 — closes the docs reference pane when open (true) / no-op (false);
+   *  the global Escape shortcut calls it so Esc works from anywhere. */
+  closeDocPane: () => boolean;
   /** {validate, register} — see core/spec-draft.js. Typed as the service
    *  surface consumers feed into patchSpecDraft/setTabSpecDraft; `register`
    *  is app.js-internal wiring, outside this contract. */
@@ -297,7 +311,7 @@ export interface App {
   /** The server-metadata/reference lifecycle service (#276 Phase 4A) —
    *  `src/application/schema-catalog-service.ts`, constructible without
    *  App/AppState/DOM: `loadVersion`/`loadSchema`/`loadReference`/
-   *  `rebuildCompletions`/`entityDoc`/`docCache`/`refData`/`completions` all
+   *  `rebuildCompletions`/`docSummary`/`docEntry`/`refData`/`completions` all
    *  live on it now — the flat `App` delegates that used to forward onto
    *  them were deleted in #276 Phase 5; every consumer reads `app.catalog.*`
    *  directly. */

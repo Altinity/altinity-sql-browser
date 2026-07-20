@@ -33,6 +33,76 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   themes, and 360px no-overflow.
 
 ### Added
+- **Broad version-exact reference via `system.documentation` (ClickHouse
+  26.6+) with safe Markdown rendering** (#60 Phase 3, #315). Servers 26.6
+  and newer contribute the full breadth of `system.documentation` — table
+  functions, settings, MergeTree/server settings, dictionary
+  layouts/sources, skipping indexes, disk types, combinators, and future
+  unknown kinds (rendered with their preserved server label) — as the
+  fallback and depth source behind the structured loaders. Parsed pre-26.6
+  servers are short-circuited without a single query or probe; 26.6+ and
+  unknown-version connections get one silent capability probe (`source`
+  column optional — real 26.6 builds ship only name/type/description).
+  Markdown bodies are tokenized by **`marked` (the sixth bundled runtime
+  dependency — used strictly as a pure lexer; `marked.parse()`/HTML output
+  is never called; measured +44 KB raw / ~3% artifact delta)** and the
+  token tree is projected 1:1 into strict DOM construction by
+  `src/core/doc-markdown.ts` + `src/ui/doc-markdown-view.ts` — no
+  `innerHTML` anywhere, an injected https-only link policy, recursive
+  inline fidelity (a link inside bold stays a link), and Docusaurus
+  `:::tip/note/info/warning/danger/important` admonitions rendered as
+  styled asides: headings (setext included), lists, quotes, tables,
+  thematic breaks, and fenced code with exact-copy buttons and ClickHouse
+  highlighting for SQL fences; raw HTML, images, and policy-rejected links
+  stay visible as literal text (fail-closed); byte/node/nesting/link limits
+  truncate quietly (fixed-seed fuzz-tested never-throws contract). The classifier gains strong contexts for SETTINGS names
+  (query-level and MergeTree DDL), FROM/INSERT INTO FUNCTION table
+  functions, CODEC lists, skipping-index TYPEs, and `system.*` tables; F1
+  on an unresolved bare word now opens an accessible disambiguation list
+  (kind + name + summary, back-stack integrated) instead of doing nothing.
+  A visually secondary "View latest on clickhouse.com" link appears only
+  when safely derivable from the entry's source path — the app never
+  fetches the public site.
+  types** (#60 Phase 2, #314). The documentation pane and F1 now cover four
+  more entity kinds, each fed by its own capability-probed system table
+  (`system.formats` — which has no `syntax` column and is never asked for
+  one —, `system.table_engines`, `system.database_engines`,
+  `system.data_type_families`; probed independently once per connection, so
+  a denied source degrades alone). A pure strong-context SQL classifier
+  routes the caret: top-level `FORMAT <name>` (either FORMAT/SETTINGS
+  order, never confused with `format()` calls), `ENGINE = <name>` in table
+  vs database DDL (leading comments handled), and strong data-type
+  positions — CREATE column definitions, `CAST(x AS T)`, `x::T`, `{p:T}` —
+  resolving the innermost nested type under the caret. Format completion
+  info gains Open reference; schema surfaces gain keyboard-accessible
+  `Open engine reference` / `Open type reference` buttons (tree rows +
+  detail pane, existing gestures untouched, hidden when the source is
+  durably unavailable). The pane renders the new kinds with syntax blocks,
+  capability facts, and related entries navigable in place through a
+  bounded session-local Back stack.
+- **Version-exact function reference docs from the connected server** (#60
+  Phase 1, #313). CM6 hover and completion info upgrade in place with the
+  connected ClickHouse server's own `system.functions` metadata (signature,
+  one-line summary, `since` version badge, `Alias of` notice) and expose a
+  keyboard-activatable **Open reference** button; **F1** in the editor opens
+  the same entry for the symbol at the caret (documented in the shortcuts
+  dialog). A persistent, **non-modal** right-side documentation pane
+  (`src/ui/doc-pane.ts`, resizable, `role="complementary"`, Escape/close
+  with focus restore) renders the full structured entry: description,
+  arguments/parameters, returned value, categories,
+  deterministic/higher-order badges, and copyable examples highlighted with
+  the shared ClickHouse CM6 dialect (extracted to `src/editor/ch-lang.ts`).
+  Availability is **capability-gated, not version-gated**: the actual
+  `system.functions` columns are probed once per connection (works on
+  pre-26.6 servers; missing optional columns degrade field-by-field; denied
+  or absent sources degrade silently, cached per connection), lookups are
+  deduplicated, keyed `kind:name`, and connection-generation-safe across
+  reconnects, and no documentation SQL ever runs on the keystroke path. The
+  shared non-modal drawer chrome behind the pane was extracted from the
+  cell-detail/rows-viewer scaffold (`src/ui/drawer.ts` — the shared Drawer
+  primitive deferred to #60), and the editor layer is now an enforced leaf
+  (`build/check-boundaries.mjs`: `src/editor` must not import `src/ui`; UI
+  actions are injected app callbacks).
 - **Line/area/bar/hbar charts over a time-role X column now draw a genuine
   Chart.js `time` scale** (#309, follow-up to #310's category-axis
   mitigation). `chartJsConfig` (`src/core/chart-data.ts`) switches the

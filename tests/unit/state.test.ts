@@ -106,6 +106,7 @@ describe('createState', () => {
     expect(s.editorPct).toBe(45);
     expect(s.sideSplitPct).toBe(58);
     expect(s.cellDrawerPx).toBe(560);
+    expect(s.docPanePx).toBe(420); // #313 — a sibling default, independent of cellDrawerPx
     expect(s.tabs.value).toHaveLength(1);
     expect(s.savedQueries).toEqual([]);
     expect(s.savedQueryLoadDiagnostics).toEqual([]);
@@ -139,6 +140,7 @@ describe('createState', () => {
       [KEYS.editorPct]: '5', // clamps to 15
       [KEYS.sideSplitPct]: '99', // clamps to 85
       [KEYS.cellDrawerPx]: '100', // clamps up to the 320 floor
+      [KEYS.docPanePx]: '50', // clamps up to the 320 floor, independent of cellDrawerPx
       [KEYS.sidePanel]: 'history',
       [KEYS.saved]: [{ id: 's1', sql: 'x', name: 'n', starred: true }],
       [KEYS.history]: [{ id: 'h1', sql: 'y', ts: 1, rows: 1, ms: 2 }],
@@ -158,6 +160,7 @@ describe('createState', () => {
     expect(s.editorPct).toBe(15);
     expect(s.sideSplitPct).toBe(85);
     expect(s.cellDrawerPx).toBe(320);
+    expect(s.docPanePx).toBe(320); // #313
     expect(s.sidePanel.value).toBe('history');
     expect(s.savedQueries).toHaveLength(1);
     expect(s.history).toHaveLength(1);

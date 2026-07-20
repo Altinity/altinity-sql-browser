@@ -450,6 +450,73 @@ describe('renderSchema drag sources', () => {
   });
 });
 
+// #314 — the column-row "Open type reference" schema-surface action: a NEW
+// element alongside the existing name/type drag spans, never a new handler
+// on them (every drag/click/dblclick/shift-click assertion above stays
+// unmodified and green).
+describe('column row — #314 "Open type reference" action', () => {
+  function withColumn(type: string | undefined): FakeApp {
+    const app = withSchema();
+    dbs(app)[0].tables[0].columns = [{ name: 'id', type, comment: '' }];
+    setExpanded(app, 'tb:db1.orders');
+    return app;
+  }
+
+  it('renders a button targeting the OUTERMOST type family, not the inner/nested type', () => {
+    const app = withColumn('Nullable(String)');
+    renderSchema(app);
+    const btn = colRow(app, 'id')!.querySelector<HTMLButtonElement>('.schema-type-doc')!;
+    expect(btn).not.toBeNull();
+    expect(btn.getAttribute('aria-label')).toBe('Open type reference for Nullable');
+    btn.click();
+    expect(app.openDocEntry).toHaveBeenCalledWith({ kind: 'data-type', name: 'Nullable' });
+  });
+
+  it('clicking the button does not trigger the row\'s own click/dblclick insertion path', () => {
+    const app = withColumn('UInt64');
+    renderSchema(app);
+    const btn = colRow(app, 'id')!.querySelector<HTMLButtonElement>('.schema-type-doc')!;
+    btn.click();
+    btn.click(); // even a same-row "double-click" on the button itself
+    expect(app.actions.insertAtCursor).not.toHaveBeenCalled();
+    expect(app.openDocEntry).toHaveBeenCalledTimes(2);
+  });
+
+  it('omits the button entirely for a type-less column', () => {
+    const app = withColumn(undefined);
+    renderSchema(app);
+    expect(colRow(app, 'id')!.querySelector('.schema-type-doc')).toBeNull();
+  });
+
+  it('hides the button when the data-type doc source is durably unavailable', () => {
+    const app = withColumn('String');
+    (app.catalog.docKindAvailable as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    renderSchema(app);
+    expect(colRow(app, 'id')!.querySelector('.schema-type-doc')).toBeNull();
+  });
+
+  it('shows the button when availability is unknown (null) or confirmed true', () => {
+    const app = withColumn('String');
+    (app.catalog.docKindAvailable as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    renderSchema(app);
+    expect(colRow(app, 'id')!.querySelector('.schema-type-doc')).not.toBeNull();
+
+    (app.catalog.docKindAvailable as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    renderSchema(app);
+    expect(colRow(app, 'id')!.querySelector('.schema-type-doc')).not.toBeNull();
+  });
+
+  it('the drag/click/shift-click gestures on name/type spans are untouched by the new button', () => {
+    const app = withColumn('UInt64');
+    renderSchema(app);
+    const row = colRow(app, 'id')!;
+    expect(row.querySelector('.label')!.getAttribute('draggable')).toBe('true');
+    expect(row.querySelector('.meta')!.getAttribute('draggable')).toBe('true');
+    shiftClick(row);
+    expect(app.actions.insertAtCursor).toHaveBeenCalledWith('id::UInt64');
+  });
+});
+
 describe('renderSchema in mobile mode (#126)', () => {
   // Below the breakpoint, a row's drag source and hover `title` are both
   // pointer-only, so neither is rendered — only the tap-native click behaviour.

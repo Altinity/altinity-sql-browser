@@ -113,6 +113,15 @@ describe('read-only code viewer', () => {
     }
   });
 
+  it('uses a caller-supplied languageExtension instead of the language-string default (#313)', () => {
+    // A caller-built SQL dialect extension (e.g. ch-lang.ts's chLanguageExtension)
+    // takes over the initial compartment contents; `language: 'text'` (the
+    // default) would otherwise install no syntax tree at all.
+    const { view, viewer } = mounted({ text: 'SELECT 1', language: 'text', languageExtension: languageExtension('sql') });
+    expect(syntaxTree(view.state).type.name).toBe('Script');
+    viewer.destroy();
+  });
+
   it('mounts every viewer node in the supplied detached document realm', () => {
     const detached = document.implementation.createHTMLDocument('detached');
     const parent = detached.createElement('div');

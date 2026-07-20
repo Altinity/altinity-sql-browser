@@ -44,6 +44,7 @@ import { openSchemaView } from './explain-graph.js';
 import type { SchemaLineageNode, DetachedGraphApp } from './explain-graph.js';
 import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
+import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
 import { renderSavedHistory } from './saved-history.js';
 import { applyFieldState } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
@@ -271,6 +272,21 @@ export function createApp(env: CreateAppEnv = {}): App {
   app.CodeViewer = env.CodeViewer || (() => ({
     setText() {}, setLanguage() {}, setWrap() {}, focus() {}, destroy() {},
   }));
+  // #313: the editor adapter opens the reference pane through this injected
+  // action (never by importing ui/doc-pane itself — the editor stays a leaf
+  // layer, enforced by build/check-boundaries.mjs). Bound before Editor(app)
+  // only for tidiness; the adapter reads it lazily at click/F1 time.
+  app.openDocEntry = (target) => openDocEntry(app, target);
+  // #60 — the global Escape shortcut closes the pane from anywhere (layered
+  // before cancel-query in shortcuts.ts's handleKeydown).
+  app.closeDocPane = () => {
+    if (!isDocPaneOpen(app)) return false;
+    closeDocPane(app);
+    return true;
+  };
+  // #315 — the F1 name-only disambiguation fallback's injected action, bound
+  // the same way and for the same "editor never imports UI" reason.
+  app.openDocDisambiguation = (name) => openDocDisambiguation(app, name);
   app.sqlEditor = Editor(app);
   app.specEditor = SpecEditor(app);
   // The Spec-evaluation/document lifecycle (#276 Phase 4C) —
@@ -392,6 +408,9 @@ export function createApp(env: CreateAppEnv = {}): App {
     exportService.cancelExport();
     exportService.cancelExportScript();
     catalog.invalidate();
+    // #313: pane content must never survive a connection change — closed
+    // alongside the catalog reset, before the login screen renders.
+    closeDocPane(app);
     conn.signOut();
     renderLoginApp();
   };
@@ -422,7 +441,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     loadSchema: ch.loadSchema,
     loadColumns: ch.loadColumns,
     loadReferenceData: ch.loadReferenceData,
-    loadEntityDoc: ch.loadEntityDoc,
+    loadFunctionsDocColumns: ch.loadFunctionsDocColumns,
+    loadFunctionDocRow: ch.loadFunctionDocRow,
+    loadDocTableColumns: ch.loadDocTableColumns,
+    loadDocRow: ch.loadDocRow,
     ctx: () => chCtx,
     ensureConfig,
     sqlString,
@@ -435,7 +457,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   });
   app.catalog = catalog;
   // `loadVersion`/`loadSchema`/`loadReference`/`rebuildCompletions`/
-  // `entityDoc`/`refData`/`completions`/`docCache` all live on `catalog`
+  // `docSummary`/`docEntry`/`refData`/`completions` all live on `catalog`
   // itself now (#276 Phase 5 deleted the flat `App` delegates) —
   // codemirror-adapter.ts and every other consumer reads `app.catalog.*`
   // directly.

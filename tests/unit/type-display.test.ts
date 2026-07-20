@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compactType } from '../../src/core/type-display.js';
+import { compactType, outerTypeName } from '../../src/core/type-display.js';
 
 // A budget small enough that every non-trivial fixture must compact, but large
 // enough that the compacted summaries fit without generic truncation.
@@ -264,5 +264,44 @@ describe('compactType — malformed and edge input', () => {
   it('deeply nested wrappers beyond the depth cap → generic truncation', () => {
     const deep = 'Array('.repeat(12) + 'String' + ')'.repeat(12);
     expect(compactType(deep, 20)).toBe(deep.slice(0, 19) + '…');
+  });
+});
+
+// #314 — the outermost named type family (the "Open type reference"
+// schema-surface action's target: no caret position to resolve an innermost
+// token from, so the leading wrapper name is the deliberate choice — see the
+// function's own doc comment).
+describe('outerTypeName', () => {
+  it('a bare (unparameterized) type is itself', () => {
+    expect(outerTypeName('String')).toBe('String');
+    expect(outerTypeName('UInt64')).toBe('UInt64');
+  });
+
+  it('a single-level wrapper yields the wrapper name, not the inner type', () => {
+    expect(outerTypeName('Nullable(String)')).toBe('Nullable');
+    expect(outerTypeName('LowCardinality(String)')).toBe('LowCardinality');
+  });
+
+  it('a nested wrapper still yields just the OUTERMOST name', () => {
+    expect(outerTypeName('Array(Tuple(UInt64, String))')).toBe('Array');
+    expect(outerTypeName('Nullable(Array(String))')).toBe('Nullable');
+  });
+
+  it('a parameterized leaf type yields its bare head name', () => {
+    expect(outerTypeName('Decimal(38, 10)')).toBe('Decimal');
+    expect(outerTypeName("Enum8('a' = 1, 'b' = 2)")).toBe('Enum8');
+    expect(outerTypeName('FixedString(16)')).toBe('FixedString');
+  });
+
+  it('trims surrounding whitespace before scanning', () => {
+    expect(outerTypeName('  Nullable(String)  ')).toBe('Nullable');
+  });
+
+  it('nullish/blank/non-word input yields the empty string', () => {
+    expect(outerTypeName(null)).toBe('');
+    expect(outerTypeName(undefined)).toBe('');
+    expect(outerTypeName('')).toBe('');
+    expect(outerTypeName('   ')).toBe('');
+    expect(outerTypeName('(no head)')).toBe('');
   });
 });

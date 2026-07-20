@@ -36,6 +36,7 @@
        artifact. -->
   <script type="importmap">
     { "imports": {
+      "marked": "/node_modules/marked/lib/marked.esm.js",
       "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
       "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
       "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
@@ -62,22 +63,114 @@
     import { createSpecEditor } from '/src/editor/spec-editor.js';
     import { createSpecCompletionSources } from '/src/editor/spec-completion-adapter.js';
     import { createCodeViewer } from '/src/editor/code-viewer.js';
+    import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from '/src/ui/doc-pane.js';
     import { createState, activeTab, newTabObj } from '/src/state.js';
     import { assembleReferenceData, buildCompletions } from '/src/core/completions.js';
     import { createQuerySpecValidationService } from '/src/core/spec-schema.js';
 
     const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
     const refData = assembleReferenceData(null);
+    // #313/#314 canned version-exact entries (mirror real 26.6 system-table
+    // rows), keyed `kind:lowercased-name`. Function lookups also match under
+    // the requested 'function' kind (the catalog's kind-mismatch policy: the
+    // fetched row is the truth) — the harness mirrors that by falling back
+    // across the two function kinds.
+    window.__docFixtures = {
+      'aggregate-function:sum': {
+        target: { kind: 'aggregate-function', name: 'sum' },
+        title: 'sum', signature: 'sum(x)',
+        summary: 'Calculates the sum of the values.',
+        introducedIn: '1.1.0', categories: ['Aggregate Functions'],
+        description: 'Calculates the sum of the values. Works only for numbers.',
+        returnedValue: 'The sum of the values.',
+        // Real system.functions examples are a MARKDOWN document (bold
+        // section titles between ```sql fences) — mirror that shape so the
+        // markdown examples rendering has a fence to mount a viewer for.
+        examples: '**Basic**\n\n```sql\nSELECT sum(x) FROM t\n```',
+        deterministic: true, higherOrder: false,
+      },
+      'format:jsoneachrow': {
+        target: { kind: 'format', name: 'JSONEachRow' },
+        title: 'JSONEachRow', signature: 'JSONEachRow',
+        summary: 'Newline-delimited JSON, one object per row.',
+        introducedIn: '1.1.0', categories: [],
+        description: 'Each row is output as one self-contained JSON object on its own line.',
+        examples: 'SELECT * FROM t FORMAT JSONEachRow',
+        facts: [{ label: 'Input', value: 'yes' }, { label: 'Output', value: 'yes' }],
+        related: [{ label: 'JSON' }],
+      },
+      'table-engine:mergetree': {
+        target: { kind: 'table-engine', name: 'MergeTree' },
+        title: 'MergeTree', signature: 'MergeTree',
+        summary: 'The main ClickHouse table engine family.',
+        introducedIn: '1.1.0', categories: [],
+        syntaxFull: 'ENGINE = MergeTree()\nORDER BY expr',
+        related: [{ target: { kind: 'table-engine', name: 'ReplacingMergeTree' }, label: 'ReplacingMergeTree' }],
+      },
+      'data-type:uint64': {
+        target: { kind: 'data-type', name: 'UInt64' },
+        title: 'UInt64', signature: 'UInt64',
+        summary: 'Unsigned 64-bit integer.',
+        introducedIn: '1.1.0', categories: [],
+      },
+    };
+    window.__docLookup = (target) => {
+      const key = (k) => k + ':' + target.name.toLowerCase();
+      return window.__docFixtures[key(target.kind)]
+        || (target.kind === 'function' && window.__docFixtures[key('aggregate-function')])
+        || (target.kind === 'aggregate-function' && window.__docFixtures[key('function')])
+        || null;
+    };
     const app = {
       state, dom: {}, document,
       // #276 Phase 5: the CM6 adapter reads the reference data through
       // `app.catalog.*` (the SchemaCatalogService member) — this harness
       // mirrors that shape with a writable plain object (editor-cm6.spec.js
       // reassigns `catalog.completions` to test dynamic sources).
-      catalog: { refData, completions: buildCompletions(refData, []), entityDoc: async () => null },
+      // #313: `docSummary`/`docEntry` replace the old `entityDoc(name)` seam.
+      // The harness serves one canned rich entry ('sum') so editor-docs.spec.js
+      // can exercise the found path (hover upgrade, pane rendering); every
+      // other name resolves `missing`, matching a live server's no-match.
+      catalog: {
+        refData, completions: buildCompletions(refData, []),
+        docSummary: async (target) => {
+          const e = window.__docLookup(target);
+          if (!e) return { status: 'missing' };
+          const { target: t, title, signature, summary, introducedIn, aliasTo } = e;
+          return { status: 'found', value: { target: t, title, signature, summary, ...(introducedIn && { introducedIn }), ...(aliasTo && { aliasTo }) } };
+        },
+        docEntry: async (target) => {
+          const e = window.__docLookup(target);
+          return e ? { status: 'found', value: e } : { status: 'missing' };
+        },
+        // #315 — F1's name-only disambiguation fallback. The harness has no
+        // multi-kind fixture data, so every name resolves `missing` (no
+        // matches) — this keeps existing F1 specs (which expect `false`/no
+        // pane change for an unresolved word with no doc data) valid; it just
+        // exercises the same missing-state path `docEntry` above does.
+        docDisambiguate: async () => ({ status: 'missing' }),
+      },
+      prefs: { save() {} },
+      CodeViewer: (opts) => createCodeViewer(opts),
       specValidators: createQuerySpecValidationService(),
       specCompletionSources: createSpecCompletionSources(),
     };
+    // Mirror app.ts's wiring (#313): the adapter opens the reference pane
+    // through this injected action, never by importing ui/doc-pane itself.
+    app.openDocEntry = (target) => openDocEntry(app, target);
+    // #315 — mirrors app.ts's own wiring for the F1 disambiguation fallback.
+    app.openDocDisambiguation = (name) => openDocDisambiguation(app, name);
+    // #60 — mirror shortcuts.ts's global-Escape layering (the harness has no
+    // full handleKeydown dispatcher): Esc closes an open pane from ANYWHERE.
+    app.closeDocPane = () => {
+      if (!isDocPaneOpen(app)) return false;
+      closeDocPane(app);
+      return true;
+    };
+    document.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape' && app.closeDocPane()) e.preventDefault();
+    });
     window.__app = app;
     const port = createCodeMirrorEditor(app);
     window.__port = port;

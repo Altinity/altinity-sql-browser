@@ -8,7 +8,19 @@
 // (-/*) and ordered (1.) lists, **bold**, *italic* / _italic_, `inline code`,
 // and [links](https://…) restricted to http(s) — any other scheme renders as
 // plain text. No fences, images, tables, or raw HTML — full Markdown was
-// considered and rejected for a niche panel (hard rule 4: no new runtime dep).
+// considered and rejected for a niche panel (hard rule 4: no new runtime dep
+// — an owner decision later amended THIS constraint, but only for #315's
+// `core/doc-markdown.ts`; this module's own "no new dep" scope is unchanged).
+//
+// HISTORY: #315 briefly lifted `parseInline` out to a private-to-exported
+// function with an injected `linkPolicy` option so `doc-markdown.ts` could
+// reuse this exact tokenizer/regex for its own (stricter) inline spans,
+// rather than forking it. `doc-markdown.ts` has since moved to `marked`'s own
+// lexer (owner decision amending #315's original non-goal) and no longer
+// imports anything from this module — with zero other consumers of the
+// lifted shape, this module reverts to its original, simpler pre-lift form
+// (a private `parseInline`, no `ParseInlineOptions`/injected policy). This
+// file's own behavior and tests are unchanged either way.
 //
 // Block AST:  {t:'h', level, children} | {t:'p', children}
 //           | {t:'ul', items:[children]} | {t:'ol', items:[children]}
@@ -39,7 +51,10 @@ const OL_RE = /^\s*\d+\.\s+(.*)$/;
 // suppress emphasis inside), then bold before italic so ** isn't eaten as two
 // *. Bold content admits balanced single-star runs (`**a *b***` nests the
 // italic) via the `[^*]|\*[^*]+\*` alternation.
-const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|(\[([^\]]+)\]\(([^)\s]+)\))/;
+// The `(?<!!)` lookbehind keeps an image marker's `![alt](url)` from being
+// consumed as a LINK — images are outside this module's subset and must stay
+// inert literal text (regression: the #60 marked swap briefly dropped this).
+const INLINE_RE = /(`([^`]+)`)|(\*\*((?:[^*]|\*[^*]+\*)+)\*\*)|(\*([^*]+)\*)|(_([^_]+)_)|((?<!!)\[([^\]]+)\]\(([^)\s]+)\))/;
 
 /** Only http(s) URLs may become real links; anything else stays text. */
 export function safeLinkHref(href: string): string | null {
