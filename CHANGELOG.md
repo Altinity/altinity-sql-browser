@@ -10,6 +10,26 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Compact, type-aware widths for every `{name:Type}` variable/filter
+  input** (#345). `.var-input` no longer reserves a flat 150px for every
+  field regardless of its declared ClickHouse type — a new pure
+  `filterWidthCategory`/`filterInputWidthCh` (`core/filter-width.ts`) resolves
+  a stable `ch`-unit width from the type's effective base (`Nullable`/
+  `LowCardinality` already unwrapped by `parseParamType`), or from `'enum'`
+  for a dropdown/curated field: boolean/tiny-int 9ch, numeric 13ch, `Date`
+  13ch, `DateTime`/relative-time 17ch (narrower than `DateTime` even though
+  both share the same relative-time combobox control), enum/curated 14ch,
+  generic string/UUID/unknown 16ch. Applied exactly once per field build via
+  the shared `applyFieldWidth` (`ui/var-field.ts`, next to the existing
+  `applyFieldState`) from both `{name:Type}` surfaces — the Workbench
+  var-strip (`ui/app.ts`) and the Dashboard/detached-view/curated shared
+  filter bar (`ui/filter-bar.ts`) — through a `--var-input-ch` CSS custom
+  property, so the width never shifts while typing. The curated Dashboard
+  Filter field's inline clear-button padding (18px wider than a plain
+  field's) is compensated in its own `.filter-select .var-input` rule so its
+  usable text room matches a plain field at the same width category. Long
+  values still scroll horizontally inside the input; combobox/curated
+  popups are unaffected and can render wider than their input.
 - **Dashboard tiles move with a grip drag + live reflow, plain drags select
   text, and table/log cells open the shared cell-detail drawer** (#332). Native
   whole-card HTML5 `draggable` is removed. A tile move now starts from the
