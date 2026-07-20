@@ -408,6 +408,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // dispatched against) is what makes a failed/aborted command's effect
   // disappear from every commit that resolves after it.
   let pendingCommands: DashboardCommand[] = [];
+  // #350: set when a rebase RESTORES membership `syncDocument` cannot apply
+  // (see `settleCommand`) — the route rebuilds once the queue drains.
+  let needsRebuild = false;
 
   // Merge explicit + synthesized implicit filters for the viewer.
   const withImplicitFilters = (d: DashboardDocumentV1): DashboardDocumentV1 => (
@@ -693,7 +696,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // already-stale) optimistic doc it was dispatched against — so the
     // persisted revision is always base+1 over whatever the truth actually is
     // by the time this op runs, regardless of who else committed meanwhile.
+    // #344 review 2: what the transform SAW as committed truth at dequeue
+    // time. A failure/abort must refresh the route cache from this before
+    // rebasing — the null-abort case exists precisely BECAUSE committed truth
+    // moved past the route cache, so rebasing from the stale cache would
+    // re-publish a document containing what the concurrent commit removed.
+    // Stays `undefined` when the queued op rejected before the transform ran.
+    let observed: StoredWorkspaceV1 | null | undefined;
     void app.mutateWorkspace((latest) => {
+      observed = latest;
       if (!latest || !latest.dashboard) return null;
       const base = latest.dashboard;
       const reapplied = applyCommand(base, command, ctxFor(base, latest.queries));
@@ -703,20 +714,20 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
         dashboard: { ...committedDoc, revision: base.revision + 1 },
       };
-    }).then((result) => settleCommand(result), () => {
+    }).then((result) => settleCommand(result, observed), () => {
       // The queued op itself REJECTED (blocked/quota/private-mode storage —
       // `loadCurrent`/the store threw, distinct from an `ok:false` commit).
       // Without this handler the rejection is unhandled and, worse, this
       // command would stay in `pendingCommands` forever, corrupting every
       // future rebase.
-      settleCommand({ ok: false, diagnostics: [] });
+      settleCommand({ ok: false, diagnostics: [] }, observed);
     });
   }
 
   // One command's resolution — success, `ok:false`, transform null-abort, or
   // storage rejection (mapped to `ok:false` by the caller) — always: drop the
-  // head descriptor, book success, toast failure, rebase.
-  function settleCommand(result: WorkspaceCommitResult | null): void {
+  // head descriptor, refresh committed truth, toast failure, rebase.
+  function settleCommand(result: WorkspaceCommitResult | null, observed: StoredWorkspaceV1 | null | undefined): void {
     // FIFO queue — every resolution arrives in dispatch order, so this
     // command is always the head.
     pendingCommands.shift();
@@ -726,16 +737,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // Project committed truth onto app.state unconditionally — exports
       // and any other consumer of `app.state` read it.
       app.applyCommittedWorkspace(result.workspace);
-    } else if (result) {
-      // Rejected against committed truth at commit time (a real validation
-      // failure — schema/aggregate-level) or a storage rejection.
-      flashToast('✕ ' + (result.diagnostics[0]?.message ?? 'Could not save dashboard'), { document: doc });
     } else {
-      // `null`: the transform aborted — this command no longer applies to
-      // committed truth (e.g. a concurrent commit already removed the tile
-      // it targeted). Quieter toast: this isn't a save failure, it's a
-      // stale edit being dropped.
-      flashToast('Change no longer applies — undone', { document: doc });
+      // #344 review 2: refresh the route cache from the DEQUEUE-TIME truth
+      // the transform observed — the truth that rejected/invalidated this
+      // command — so the rebase below never re-publishes a stale document
+      // (a tile a concurrent producer removed staying visible). `undefined`
+      // means the op rejected before `loadCurrent()` resolved: nothing
+      // fresher was observed, keep the current cache.
+      if (observed !== undefined) {
+        committedWorkspace = observed;
+        committedRevision = observed?.dashboard ? observed.dashboard.revision : committedRevision;
+        if (observed) app.applyCommittedWorkspace(observed);
+      }
+      if (result) {
+        // Rejected against committed truth at commit time (a real validation
+        // failure — schema/aggregate-level) or a storage rejection.
+        flashToast('✕ ' + (result.diagnostics[0]?.message ?? 'Could not save dashboard'), { document: doc });
+      } else {
+        // `null`: the transform aborted — this command no longer applies to
+        // committed truth (e.g. a concurrent commit already removed the tile
+        // it targeted). Quieter toast: this isn't a save failure, it's a
+        // stale edit being dropped.
+        flashToast('Change no longer applies — undone', { document: doc });
+      }
     }
     // Rebase UNCONDITIONALLY: recompute the rendered document by replaying
     // every STILL-pending descriptor on top of (the now possibly-advanced)
@@ -756,8 +780,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (r.ok) rebased = resolveLayoutPluginSync(r.dashboard.layout).normalize(r.dashboard);
     }
     currentDoc = rebased;
+    // #350: `syncDocument` can apply reorders and REMOVALS (it drops the
+    // runtime record of any tile absent from the synced doc) but can never
+    // REINSTATE a tile whose record it already dropped — e.g. a remove-tile
+    // whose commit failed and rolled back, or dequeue-time truth restoring a
+    // tile this route optimistically dropped. A membership-RESTORING rebase
+    // therefore rebuilds the whole route (a fresh session re-reads committed
+    // truth via `loadDashboardWorkspace`) — deferred until the queue is idle
+    // so no in-flight resolution handler from THIS render survives into the
+    // rebuilt one.
+    if (rebased.tiles.some((t) => !sessionTileIds().has(t.id))) needsRebuild = true;
+    if (needsRebuild) {
+      if (pendingCommands.length > 0) return; // rebuild once the queue drains
+      session.destroy();
+      void renderDashboard(app);
+      return;
+    }
     session.syncDocument(withImplicitFilters(rebased));
     layoutSelect.sync();
+  }
+
+  /** Tile ids the viewer session still tracks a runtime record for. */
+  function sessionTileIds(): Set<string> {
+    return new Set(session.state.value.tiles.map((ts) => ts.tileId));
   }
 
   // ── Tile DOM ──────────────────────────────────────────────────────────────

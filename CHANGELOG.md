@@ -285,7 +285,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   abort, or a storage rejection) the still-pending descriptors are **rebased**
   onto committed truth and re-published, so a failed command's effect
   disappears everywhere, revisions stay strictly monotonic, the diagnostic is
-  toasted, and the shared queue is never wedged. Dashboard export and
+  toasted, and the shared queue is never wedged. A failed or no-longer-applies
+  command rolls back to the **dequeue-time** committed truth its queued op
+  observed (never a stale route-local cache — so a tile a concurrent producer
+  removed disappears from the render, too), and a rollback that must *restore*
+  a removed tile rebuilds the Dashboard route from committed truth (#350),
+  since the viewer session's `syncDocument` can reorder and drop tiles but
+  never reinstate one. Dashboard export and
   Workbench workspace export both now `flushWorkspaceWrites()` (await pending
   writes) then build from the latest committed `StoredWorkspaceV1`
   (`workspace.loadCurrent()`), falling back to `app.state` only when no

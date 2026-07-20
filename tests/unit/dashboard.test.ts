@@ -320,7 +320,11 @@ function dashApp(opts: {
   const app = makeApp({
     exec: { executeRead },
     workspace: { commit, loadCurrent: async () => current },
-    loadDashboardWorkspace: async () => (opts.workspace === undefined ? null : opts.workspace) as never,
+    // Mirrors production (`app.loadDashboardWorkspace` = migrate + `loadCurrent()`):
+    // reads the fixture's stateful `current`, so a route REBUILD (#350 —
+    // membership-restoring rollback) re-renders from committed truth, not the
+    // initially-loaded snapshot.
+    loadDashboardWorkspace: async () => current as never,
   }) as TestApp;
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
   return { app, calls, commit };
@@ -3285,7 +3289,6 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     const gridEl = qs(app.root, '.dash-gg-grid');
     Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
     const [card0] = qsa<HTMLElement>(app.root, '.dash-gg-tile');
-    const originalSpanStyle = card0.style.gridColumn;
     // Directly commit a workspace with t1 already removed — simulates another
     // producer (not routed through THIS route's `runCommand`) having removed
     // it moments before the command below dequeues. This never touches
@@ -3305,17 +3308,53 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     window.dispatchEvent(new PointerEvent('pointerup'));
     await flush();
     expect(document.querySelector('.share-toast')?.textContent).toBe('Change no longer applies — undone');
-    // The optimistic placement edit rolled back — the rendered card is back to
-    // its pre-command span, never left standing on the now-invalid resize.
-    expect(card0.style.gridColumn).toBe(originalSpanStyle);
+    // #344 review 2: the abort rebased from the DEQUEUE-TIME committed truth
+    // (the transform's observed `latest`), not the stale route cache — t1
+    // (which the concurrent commit removed) is GONE from the rendered
+    // Dashboard, not restored by a stale two-tile rollback.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
+    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
     // The queue is not wedged — a later, valid command (removing t2, which IS
-    // still present in committed truth — t1's own del button would null-abort
-    // again, same as the resize) still commits successfully. Committed truth
-    // only ever had t2 (the external mutation above already dropped t1), so
-    // removing it empties the persisted tiles list.
-    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();
+    // still present in committed truth) still commits successfully. Committed
+    // truth only ever had t2 (the external mutation above already dropped t1),
+    // so removing it empties the persisted tiles list.
+    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[0].click();
     await flush();
     expect((await app.workspace.loadCurrent())?.dashboard?.tiles).toEqual([]);
+  });
+
+  // #350 (pulled into scope by review 2): a rebase that RESTORES membership —
+  // a remove-tile whose commit failed and rolled back — cannot be applied by
+  // `syncDocument` (the session already dropped the tile's runtime record and
+  // never reinstates unknown ids), so the route must REBUILD from committed
+  // truth: the restored tile's DOM comes back, not just `app.state`.
+  it('a failed remove-tile rolls back by rebuilding the route — the removed tile is rendered again', async () => {
+    const commit = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
+      })
+      .mockImplementation(async (candidate: StoredWorkspaceV1) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      ));
+    const { app } = dashApp({ workspace: twoTilesGrid(), commit });
+    await render(app);
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // remove t1 — its commit fails
+    // Optimistic removal is instant.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
+    await flush();
+    await flush(); // the rebuild is itself an async render pass
+    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ boom');
+    // Rolled back: BOTH tiles are rendered again (route rebuilt from committed
+    // truth), and nothing was persisted.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
+    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    // The rebuilt route is fully functional — a later command still commits.
+    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();
+    await flush();
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t1']);
   });
 
   // #344 review fix (coordinator hardening): a commit that REJECTS (the store
