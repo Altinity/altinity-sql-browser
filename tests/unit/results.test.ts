@@ -452,6 +452,32 @@ describe('openCellDetail', () => {
     expect(qs(bd, 'iframe.cd-frame')).not.toBeNull();
     bd.remove();
   });
+  it('Markdown value → Rendered (doc viewer) ↔ Source toggle (#332)', () => {
+    openCellDetail(makeApp(), 'notes', 'String', '# Title\n\n- one\n- two\n\n[link](https://example.com)');
+    const bd = qs(document, '.cd-backdrop');
+    expect([...qsa(bd, '.cd-seg')].map((s) => s.textContent)).toEqual(['Rendered', 'Source']);
+    // Rendered by default, using the shared doc-markdown viewer (`.docs-md`).
+    const md = qs(bd, '.docs-md');
+    expect(md).not.toBeNull();
+    expect(qs(md, 'h4')?.textContent).toBe('Title'); // doc viewer offsets headings (level1 → h4)
+    expect(qsa(md, 'li').length).toBe(2);
+    expect(qs(md, 'a')?.getAttribute('href')).toBe('https://example.com');
+    expect(qs(bd, 'iframe')).toBeNull(); // Markdown never uses the HTML iframe path
+    click(qsa(bd, '.cd-seg')[1]); // → Source
+    expect(qs(bd, '.docs-md')).toBeNull();
+    expect(qs(bd, '.cd-pre').textContent).toContain('# Title');
+    click(qsa(bd, '.cd-seg')[0]); // → Rendered again
+    expect(qs(bd, '.docs-md')).not.toBeNull();
+    bd.remove();
+  });
+  it('plain (non-HTML, non-Markdown) text stays a source-only view — no toggle', () => {
+    openCellDetail(makeApp(), 'c', 'String', 'just a plain sentence with no markup.');
+    const bd = qs(document, '.cd-backdrop');
+    expect(qs(bd, '.cd-toggle')).toBeNull();
+    expect(qs(bd, '.docs-md')).toBeNull();
+    expect(qs(bd, '.cd-pre').textContent).toBe('just a plain sentence with no markup.');
+    bd.remove();
+  });
   it('Escape closes; backdrop click closes; panel click does not', () => {
     const app = makeApp();
     openCellDetail(app, 'c', 'String', 'x');

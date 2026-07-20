@@ -27,7 +27,8 @@ import type { App, Tab } from './app.types.js';
 import { patchQueryPanel } from '../core/saved-query.js';
 import { renderGridView as renderGridViewUntyped, GRID_VIS_CAP } from './grid-render.js';
 import { renderLogs as renderLogsUntyped } from './logs.js';
-import { parseMarkdown as parseMarkdownUntyped } from '../core/markdown-lite.js';
+import { parseDocMarkdown } from '../core/doc-markdown.js';
+import { renderDocMarkdown } from './doc-markdown-view.js';
 import {
   resolvePanel, resolveLogsShape, isChartFamily, CHART_FAMILY, clonePanelCfg,
 } from '../core/panel-cfg.js';
@@ -94,6 +95,7 @@ interface RenderLogsArgs {
   rows: unknown[][];
   shape: LogsShape;
   cap: number;
+  onCell?: (name: string, type: string, value: unknown) => void;
 }
 const renderLogs: (args: RenderLogsArgs) => HTMLElement = renderLogsUntyped;
 
@@ -105,59 +107,27 @@ const renderKpiPanel: (normalized?: KpiResult | null) => HTMLElement = renderKpi
 const CHART_TYPES = CHART_TYPES_UNTYPED as { value: ChartFamilyType; label: string }[];
 const schemaKey: (columns: Column[] | null | undefined) => string = schemaKeyUntyped;
 
-// ── Markdown AST → DOM ───────────────────────────────────────────────────────
-
-// The core/markdown-lite.js AST shapes this module builds DOM from. Pinned
-// here (markdown-lite.js is unconverted) rather than re-derived per call site.
-interface MdTextNode { t: 'text'; text: string }
-interface MdStrongNode { t: 'strong'; children: MdInlineNode[] }
-interface MdEmNode { t: 'em'; children: MdInlineNode[] }
-interface MdCodeNode { t: 'code'; text: string }
-interface MdLinkNode { t: 'link'; href: string; children: MdInlineNode[] }
-type MdInlineNode = MdTextNode | MdStrongNode | MdEmNode | MdCodeNode | MdLinkNode;
-
-interface MdHeadingBlock { t: 'h'; level: number; children: MdInlineNode[] }
-interface MdParagraphBlock { t: 'p'; children: MdInlineNode[] }
-interface MdListBlock { t: 'ul' | 'ol'; items: MdInlineNode[][] }
-type MdBlock = MdHeadingBlock | MdParagraphBlock | MdListBlock;
-
-const parseMarkdown: (text: string) => MdBlock[] = parseMarkdownUntyped;
-
-// Inline nodes. Everything is built element-by-element with textContent-style
-// children (h() sets strings as text nodes) — raw HTML in the source parsed as
-// literal text and can only ever BE a text node here.
-function inlineNodes(children: MdInlineNode[]): (HTMLElement | string)[] {
-  return children.map((n) => {
-    if (n.t === 'strong') return h('strong', null, ...inlineNodes(n.children));
-    if (n.t === 'em') return h('em', null, ...inlineNodes(n.children));
-    if (n.t === 'code') return h('code', null, n.text);
-    if (n.t === 'link') {
-      // Href already restricted to http(s) by the parser; target+rel keep a
-      // panel link from reaching back into the app's browsing context.
-      return h('a', { href: n.href, target: '_blank', rel: 'noopener noreferrer' }, ...inlineNodes(n.children));
-    }
-    return n.text; // {t:'text'} — h() appends strings as text nodes
-  });
-}
+// ── Markdown → DOM ───────────────────────────────────────────────────────────
 
 /**
- * Render a markdown-lite AST (core/markdown-lite.js) into a `.md-view` block.
- * Exported for the detached pane and tests. DOM-building only — no innerHTML
- * anywhere, so injection cases stay inert by construction.
+ * Render a Text panel's Markdown `content` into a `.md-view` block using the
+ * shared, bounded, fail-closed doc viewer (`core/doc-markdown.ts` +
+ * `ui/doc-markdown-view.ts`) — the SAME top-quality renderer the reference-docs
+ * pane and the cell-detail drawer use (#332), replacing the former markdown-lite
+ * path so the app has a single Markdown paradigm. No CodeViewer seam is threaded
+ * (a Text panel mounts no CM6), so SQL-tagged fences fall back to a plain
+ * `<pre><code>`; images/raw HTML/rejected links render as literal text. The link
+ * policy is panel-appropriate (any absolute `http(s)` URL passes; everything
+ * else — other schemes, protocol-relative, scheme-less — is rejected to literal
+ * text), NOT the docs pane's `defaultDocLinkPolicy` (which would rewrite a
+ * scheme-less link to `clickhouse.com/docs`). The `.md-view` wrapper is kept so
+ * the dashboard's tile-containment CSS (`.dash-tile-body > .md-view`) applies.
  */
-export function renderMarkdown(blocks: MdBlock[]): HTMLDivElement {
-  const box = h('div', { class: 'md-view' });
-  for (const b of blocks) {
-    if (b.t === 'h') box.appendChild(h('h' + b.level, null, ...inlineNodes(b.children)));
-    else if (b.t === 'ul' || b.t === 'ol') {
-      box.appendChild(h(b.t, null, ...b.items.map((item) => h('li', null, ...inlineNodes(item)))));
-      // `else if (b.t === 'p')` (not a bare `else`): TS doesn't narrow a
-      // discriminated union past a negated `||` condition into a bare final
-      // `else` — the explicit check is a type-checker nudge only, MdBlock is
-      // still the same closed 3-member union at runtime.
-    } else if (b.t === 'p') box.appendChild(h('p', null, ...inlineNodes(b.children)));
-  }
-  return box;
+const panelLinkPolicy = (href: string): string | null => (/^https?:\/\//i.test(href) ? href : null);
+
+export function renderPanelMarkdown(doc: Document, content: string): HTMLDivElement {
+  return h('div', { class: 'md-view' },
+    renderDocMarkdown(doc, parseDocMarkdown(content, { linkPolicy: panelLinkPolicy }))) as HTMLDivElement;
 }
 
 // ── Per-arm helpers ──────────────────────────────────────────────────────────
@@ -373,7 +343,7 @@ const logsArm: PanelArm = {
       logsRoleSelect('Message', 'msg', args),
       logsRoleSelect('Level', 'level', args));
   },
-  renderPanel({ result, cfg, cap, shape }: NarrowRenderArgs<{
+  renderPanel({ result, cfg, cap, shape, onCell }: NarrowRenderArgs<{
     result: PanelResult; cfg: PanelCfg;
   }>): PanelRenderResult {
     // `shape` arrives pre-resolved from resolvePanel when the caller went
@@ -381,7 +351,7 @@ const logsArm: PanelArm = {
     // after a name mismatch); a direct call re-resolves from the cfg.
     const s = shape || resolveLogsShape(cfg, result.columns);
     if (!s) return { node: panelEmpty('No time + message columns in this result — pick them above or adjust the query.') };
-    return { node: renderLogs({ columns: result.columns, rows: result.rows, shape: s, cap: cap ?? GRID_VIS_CAP }) };
+    return { node: renderLogs({ columns: result.columns, rows: result.rows, shape: s, cap: cap ?? GRID_VIS_CAP, onCell }) };
   },
 };
 
@@ -406,10 +376,10 @@ const textArm: PanelArm = {
     ta.value = (cfg.content as string | undefined) || '';
     return h('div', { class: 'panel-text-edit' }, ta);
   },
-  renderPanel({ cfg }: { cfg: PanelCfg }): PanelRenderResult {
+  renderPanel({ app, cfg }: { app: App; cfg: PanelCfg }): PanelRenderResult {
     // Needs no result at all — the one arm that renders without a Run.
     // `as`: same ingress note as the controls arm above.
-    return { node: renderMarkdown(parseMarkdown((cfg.content as string | undefined) || '')) };
+    return { node: renderPanelMarkdown(app.document, (cfg.content as string | undefined) || '') };
   },
 };
 

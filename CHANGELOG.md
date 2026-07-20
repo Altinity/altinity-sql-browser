@@ -10,6 +10,40 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Dashboard tiles move with a grip drag + live reflow, plain drags select
+  text, and table/log cells open the shared cell-detail drawer** (#332). Native
+  whole-card HTML5 `draggable` is removed. A tile move now starts from the
+  top-left **grip** with no modifier, or from anywhere on the tile body with
+  **⌘/Ctrl** held (the schema-graph modifier model) — so an unmodified body drag
+  selects and copies text inside Markdown/text, table, and logs tiles instead of
+  dragging the tile. On the Grid Tiles (grafana-grid) engine the dragged tile
+  **lifts and follows the cursor** while the other tiles reflow live to open a
+  gap at the insertion point; the move **commits only when the dragged tile
+  covers ≥2/3 of a destination slot's area** (`resolveOverlapInsertIndex`
+  in `core/tile-reorder.ts`) and otherwise **snaps back** — the snap-back restore
+  is synchronous and independent of the signature-gated grid reconcile. Sibling
+  motion uses a FLIP animation that honors `prefers-reduced-motion`. The flow
+  engine keeps the simpler point-hit-test drag (its KPI band has no grid slot to
+  reflow into). A move still dispatches the existing atomic `move-tile` command
+  exactly once and preserves canonical `dashboard.tiles[]` order; a cancelled
+  gesture (pointercancel / window blur / Escape) changes nothing, and the click a
+  completed move would synthesize is suppressed so it never activates a cell.
+  While ⌘/Ctrl is held the grid shows a grab affordance (`.dash-grid.modkey`).
+  Dashboard table cells and log fields now open the **same** right-side
+  cell-detail drawer used by Workbench results (shared `openCellDetail`, no
+  Dashboard-specific viewer) — in both edit and read-only modes, over the
+  Dashboard's own document — passing the source column name/type and the raw
+  (untruncated) value; each source-backed log field (time, level, message, and
+  each extra) is independently clickable and keyboard-operable (Enter/Space).
+  A cell value that looks like **Markdown** now opens the drawer on a rendered
+  preview (with a Rendered↔Source toggle, like HTML) using the same bounded,
+  fail-closed `renderDocMarkdown` viewer the reference-docs pane uses; plain,
+  non-markup text still shows as source only. **Dashboard Text (Markdown) tiles**
+  now render inline through that same top-quality doc viewer (the lightweight
+  `core/markdown-lite.ts` renderer is retired — the app has a single Markdown
+  paradigm), and a Text tile is click/Enter-Space-openable into the shared
+  preview drawer (a drag-select or an inner-link click never opens it). Read-only
+  Dashboards never enable tile movement.
 - **Grid Tiles is the default Dashboard style; Full view replaces the old
   Full width preset** (#321). The `grafana-grid@1` engine is renamed to
   **Grid Tiles** in the UI (the persisted `{type:'grafana-grid',version:1}`
