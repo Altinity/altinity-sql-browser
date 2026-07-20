@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-16T00:00:00.000Z",
+  "metadata": {
+    "name": "ClickHouse operations",
+    "description": "Operational ClickHouse dashboard adapted from the Grafana dashboard."
+  },
   "queries": [
     {
       "id": "gco-filter",
@@ -9,7 +14,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Grafana port filters",
-        "favorite": true,
+        "favorite": false,
         "description": "Filter source for is_initial_query, query_kind, user, exception_code, query_hash, and metric. Dynamic query-log options use a fixed last-seven-days window. Controls are single-select; blank means Grafana All. Query hashes are capped at the 80 most frequent.",
         "dashboard": {
           "role": "filter"
@@ -52,6 +57,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -90,6 +103,14 @@
                 "description": "Average active merge tasks in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -130,6 +151,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -168,6 +197,14 @@
                 "description": "Average active move tasks in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -208,6 +245,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -246,6 +291,14 @@
                 "description": "Average active replication-check tasks in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -286,6 +339,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -324,6 +385,14 @@
                 "description": "Average active replication-send tasks in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -364,6 +433,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -402,6 +479,14 @@
                 "description": "Average active refreshable-view tasks in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -442,6 +527,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -480,6 +573,14 @@
                 "description": "Average active BackgroundSchedulePool tasks."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -520,6 +621,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -558,6 +667,14 @@
                 "description": "Average active BackgroundMovePool tasks."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -598,6 +715,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -636,6 +761,14 @@
                 "description": "Average active background merge and mutation tasks."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -676,6 +809,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -714,6 +855,14 @@
                 "description": "Average active message-broker schedule tasks."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -754,6 +903,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -793,6 +950,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -831,6 +996,14 @@
                 "description": "ClickHouse timing components normalized to microseconds."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -872,6 +1045,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -910,6 +1091,14 @@
                 "description": "Average ZooKeeper transactions in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -950,6 +1139,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -988,6 +1185,14 @@
                 "description": "p95 in-flight ZooKeeper requests."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1028,6 +1233,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1067,6 +1280,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1105,6 +1326,14 @@
                 "description": "Maximum ClickHouse memory tracking in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1146,6 +1375,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1183,6 +1420,14 @@
                 "description": "Maximum one-minute system load average."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1224,6 +1469,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1262,6 +1515,14 @@
                 "description": "Receive traffic is positive and send traffic is negative, split by interface."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1302,6 +1563,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1340,6 +1609,14 @@
                 "description": "ClickHouse-scoped CPU wait time."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1380,6 +1657,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1419,6 +1704,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1456,6 +1749,14 @@
                 "description": "Read values are positive and write values are negative, split by device."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1496,6 +1797,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1534,6 +1843,14 @@
                 "description": "Average queries started in each bucket."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1575,6 +1892,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1614,6 +1939,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1651,6 +1984,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1666,6 +2007,14 @@
         "panel": {
           "cfg": {
             "type": "table"
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
           }
         }
       }
@@ -1704,6 +2053,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1740,6 +2097,14 @@
                 "description": "Metric selected by the Dashboard metric filter; blank means count."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1778,6 +2143,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1814,6 +2187,14 @@
                 "description": "Metric selected by the Dashboard metric filter; blank means count."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1852,6 +2233,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1888,6 +2277,14 @@
                 "description": "Metric selected by the Dashboard metric filter; blank means count."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -1926,6 +2323,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -1962,6 +2367,14 @@
                 "description": "Metric selected by the Dashboard metric filter; blank means count."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -2000,6 +2413,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -2036,6 +2457,14 @@
                 "description": "Metric selected by the Dashboard metric filter; blank means count."
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -2092,6 +2521,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
         }
       }
     },
@@ -2126,6 +2563,14 @@
                 "decimals": 0
               }
             }
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
           }
         }
       }
@@ -2165,6 +2610,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -2203,8 +2656,530 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "clickhouse-ops-enhanced",
+      "title": "ClickHouse operations",
+      "description": "Operational ClickHouse dashboard adapted from the Grafana dashboard.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-gco-029-running-queries": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-047-merges": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-048-mutations": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-049-moves": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-050-distributed-send": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-064-replicated-checks": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-061-replicated-fetch": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-062-replicated-send": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-063-kafka-background-reads": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-065-refreshing-views": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-077-kafka-writes": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-071-background-schedule": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-068-background-common": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-069-background-move": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-067-background-fetches": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-066-background-merges-mutations": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-074-background-distributed": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-075-background-message-broker": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-073-background-buffer-flush": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-078-global-thread-active": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-094-accounted-time": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-076-active-pools": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-095-zk-transactions": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-096-zk-latency": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-097-zk-inflight": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-098-zk-traffic": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-041-cpus-loaded": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-053-memory": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-093-cpu-system": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-028-load-average": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-058-io-util": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-046-network": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-042-io-wait": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-043-cpu-wait": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-044-disk-io": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-045-page-cache-io": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-059-io-bytes": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-060-iops": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-040-queries-started": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-055-connections": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-099-error-log": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-025-query-hash": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-030-query-hash-details": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-gco-056-query-table": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-037-query-user": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-026-query-host": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-079-query-views": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-newpart": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-downloadpart": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-mergeparts": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-mutatepart": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-movepart": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-part-removepart": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-kpi-overview": {
+            "span": 1,
+            "height": "compact"
+          },
+          "tile-gco-donut-query-kind": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-spark-memory": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-gco-smooth-load": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-from",
+          "parameter": "from"
+        },
+        {
+          "id": "filter-to",
+          "parameter": "to"
+        },
+        {
+          "id": "filter-exception_code",
+          "parameter": "exception_code",
+          "sourceQueryId": "gco-filter"
+        },
+        {
+          "id": "filter-metric",
+          "parameter": "metric",
+          "sourceQueryId": "gco-filter"
+        },
+        {
+          "id": "filter-is_initial_query",
+          "parameter": "is_initial_query",
+          "sourceQueryId": "gco-filter"
+        },
+        {
+          "id": "filter-query_kind",
+          "parameter": "query_kind",
+          "sourceQueryId": "gco-filter"
+        },
+        {
+          "id": "filter-user",
+          "parameter": "user",
+          "sourceQueryId": "gco-filter"
+        },
+        {
+          "id": "filter-query_hash",
+          "parameter": "query_hash",
+          "sourceQueryId": "gco-filter"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-gco-029-running-queries",
+          "queryId": "gco-029-running-queries"
+        },
+        {
+          "id": "tile-gco-047-merges",
+          "queryId": "gco-047-merges"
+        },
+        {
+          "id": "tile-gco-048-mutations",
+          "queryId": "gco-048-mutations"
+        },
+        {
+          "id": "tile-gco-049-moves",
+          "queryId": "gco-049-moves"
+        },
+        {
+          "id": "tile-gco-050-distributed-send",
+          "queryId": "gco-050-distributed-send"
+        },
+        {
+          "id": "tile-gco-064-replicated-checks",
+          "queryId": "gco-064-replicated-checks"
+        },
+        {
+          "id": "tile-gco-061-replicated-fetch",
+          "queryId": "gco-061-replicated-fetch"
+        },
+        {
+          "id": "tile-gco-062-replicated-send",
+          "queryId": "gco-062-replicated-send"
+        },
+        {
+          "id": "tile-gco-063-kafka-background-reads",
+          "queryId": "gco-063-kafka-background-reads"
+        },
+        {
+          "id": "tile-gco-065-refreshing-views",
+          "queryId": "gco-065-refreshing-views"
+        },
+        {
+          "id": "tile-gco-077-kafka-writes",
+          "queryId": "gco-077-kafka-writes"
+        },
+        {
+          "id": "tile-gco-071-background-schedule",
+          "queryId": "gco-071-background-schedule"
+        },
+        {
+          "id": "tile-gco-068-background-common",
+          "queryId": "gco-068-background-common"
+        },
+        {
+          "id": "tile-gco-069-background-move",
+          "queryId": "gco-069-background-move"
+        },
+        {
+          "id": "tile-gco-067-background-fetches",
+          "queryId": "gco-067-background-fetches"
+        },
+        {
+          "id": "tile-gco-066-background-merges-mutations",
+          "queryId": "gco-066-background-merges-mutations"
+        },
+        {
+          "id": "tile-gco-074-background-distributed",
+          "queryId": "gco-074-background-distributed"
+        },
+        {
+          "id": "tile-gco-075-background-message-broker",
+          "queryId": "gco-075-background-message-broker"
+        },
+        {
+          "id": "tile-gco-073-background-buffer-flush",
+          "queryId": "gco-073-background-buffer-flush"
+        },
+        {
+          "id": "tile-gco-078-global-thread-active",
+          "queryId": "gco-078-global-thread-active"
+        },
+        {
+          "id": "tile-gco-094-accounted-time",
+          "queryId": "gco-094-accounted-time"
+        },
+        {
+          "id": "tile-gco-076-active-pools",
+          "queryId": "gco-076-active-pools"
+        },
+        {
+          "id": "tile-gco-095-zk-transactions",
+          "queryId": "gco-095-zk-transactions"
+        },
+        {
+          "id": "tile-gco-096-zk-latency",
+          "queryId": "gco-096-zk-latency"
+        },
+        {
+          "id": "tile-gco-097-zk-inflight",
+          "queryId": "gco-097-zk-inflight"
+        },
+        {
+          "id": "tile-gco-098-zk-traffic",
+          "queryId": "gco-098-zk-traffic"
+        },
+        {
+          "id": "tile-gco-041-cpus-loaded",
+          "queryId": "gco-041-cpus-loaded"
+        },
+        {
+          "id": "tile-gco-053-memory",
+          "queryId": "gco-053-memory"
+        },
+        {
+          "id": "tile-gco-093-cpu-system",
+          "queryId": "gco-093-cpu-system"
+        },
+        {
+          "id": "tile-gco-028-load-average",
+          "queryId": "gco-028-load-average"
+        },
+        {
+          "id": "tile-gco-058-io-util",
+          "queryId": "gco-058-io-util"
+        },
+        {
+          "id": "tile-gco-046-network",
+          "queryId": "gco-046-network"
+        },
+        {
+          "id": "tile-gco-042-io-wait",
+          "queryId": "gco-042-io-wait"
+        },
+        {
+          "id": "tile-gco-043-cpu-wait",
+          "queryId": "gco-043-cpu-wait"
+        },
+        {
+          "id": "tile-gco-044-disk-io",
+          "queryId": "gco-044-disk-io"
+        },
+        {
+          "id": "tile-gco-045-page-cache-io",
+          "queryId": "gco-045-page-cache-io"
+        },
+        {
+          "id": "tile-gco-059-io-bytes",
+          "queryId": "gco-059-io-bytes"
+        },
+        {
+          "id": "tile-gco-060-iops",
+          "queryId": "gco-060-iops"
+        },
+        {
+          "id": "tile-gco-040-queries-started",
+          "queryId": "gco-040-queries-started"
+        },
+        {
+          "id": "tile-gco-055-connections",
+          "queryId": "gco-055-connections"
+        },
+        {
+          "id": "tile-gco-099-error-log",
+          "queryId": "gco-099-error-log"
+        },
+        {
+          "id": "tile-gco-025-query-hash",
+          "queryId": "gco-025-query-hash"
+        },
+        {
+          "id": "tile-gco-030-query-hash-details",
+          "queryId": "gco-030-query-hash-details"
+        },
+        {
+          "id": "tile-gco-056-query-table",
+          "queryId": "gco-056-query-table"
+        },
+        {
+          "id": "tile-gco-037-query-user",
+          "queryId": "gco-037-query-user"
+        },
+        {
+          "id": "tile-gco-026-query-host",
+          "queryId": "gco-026-query-host"
+        },
+        {
+          "id": "tile-gco-079-query-views",
+          "queryId": "gco-079-query-views"
+        },
+        {
+          "id": "tile-gco-part-newpart",
+          "queryId": "gco-part-newpart"
+        },
+        {
+          "id": "tile-gco-part-downloadpart",
+          "queryId": "gco-part-downloadpart"
+        },
+        {
+          "id": "tile-gco-part-mergeparts",
+          "queryId": "gco-part-mergeparts"
+        },
+        {
+          "id": "tile-gco-part-mutatepart",
+          "queryId": "gco-part-mutatepart"
+        },
+        {
+          "id": "tile-gco-part-movepart",
+          "queryId": "gco-part-movepart"
+        },
+        {
+          "id": "tile-gco-part-removepart",
+          "queryId": "gco-part-removepart"
+        },
+        {
+          "id": "tile-gco-kpi-overview",
+          "queryId": "gco-kpi-overview"
+        },
+        {
+          "id": "tile-gco-donut-query-kind",
+          "queryId": "gco-donut-query-kind"
+        },
+        {
+          "id": "tile-gco-spark-memory",
+          "queryId": "gco-spark-memory"
+        },
+        {
+          "id": "tile-gco-smooth-load",
+          "queryId": "gco-smooth-load"
+        }
+      ]
     }
   ]
 }

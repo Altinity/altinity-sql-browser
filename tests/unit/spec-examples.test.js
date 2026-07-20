@@ -3,13 +3,20 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertValidLibraryDocument } from '../../examples/mjs/validate-library.mjs';
-import { parseImportDoc } from '../../src/core/saved-io.js';
+import { assertValidExampleBundle } from '../../examples/mjs/example-bundle.mjs';
+import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
 import { querySpecSchemaService } from '../../src/core/spec-schema.js';
 import { filterExecution } from '../../src/core/filter-execution.js';
 import { effectiveDashboardRole } from '../../src/core/result-choice.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+function decodeExample(text, name) {
+  const result = decodePortableBundleJson(text);
+  expect(result.ok, result.ok ? name : name + ': ' + result.diagnostics.map((d) => d.message).join('; ')).toBe(true);
+  if (!result.ok) throw new Error(name);
+  return result.value;
+}
 
 describe('schema artifacts and examples', () => {
   it('keeps generated schema artifacts deterministic and current', () => {
@@ -18,24 +25,41 @@ describe('schema artifacts and examples', () => {
     })).not.toThrow();
   });
 
-  it('validates every checked-in example Library and the generated drilldown template', () => {
+  it('keeps every checked-in JSON example on portable bundle v1 with explicit Dashboard v1 documents', () => {
     const examples = resolve(root, 'examples');
     for (const name of readdirSync(examples).filter((item) => item.endsWith('.json'))) {
-      const { queries } = parseImportDoc(readFileSync(resolve(examples, name), 'utf8'));
-      expect(queries.length, name).toBeGreaterThan(0);
+      const text = readFileSync(resolve(examples, name), 'utf8');
+      const bundle = decodeExample(text, name);
+      expect(bundle.format, name).toBe('altinity-sql-browser/portable-bundle');
+      expect(bundle.version, name).toBe(1);
+      expect(bundle.queries.length, name).toBeGreaterThan(0);
+      expect(() => assertValidExampleBundle(bundle), name).not.toThrow();
+      for (const dashboard of bundle.dashboards) {
+        expect(dashboard.documentVersion, name).toBe(1);
+        expect(dashboard.layout.type, name).toBe('flow');
+        expect(dashboard.tiles.length, name).toBeGreaterThan(0);
+      }
     }
-    const template = readFileSync(resolve(examples, 'iceberg-templates/ice_meta_drilldown.json.tmpl'), 'utf8')
-      .replaceAll('__CATALOG__', 'demo');
-    expect(parseImportDoc(template).queries.length).toBeGreaterThan(0);
+    expect(() => execFileSync(process.execPath, ['examples/mjs/normalize-examples.mjs', '--check'], {
+      cwd: root, stdio: 'pipe',
+    })).not.toThrow();
   });
 
-  it('every Filter-role example query is a valid Filter source (single row-returning statement, no params/FORMAT)', () => {
+  it('validates the generated Iceberg drilldown portable-bundle template', () => {
+    const template = readFileSync(resolve(root, 'examples/iceberg-templates/ice_meta_drilldown.json.tmpl'), 'utf8')
+      .replaceAll('__CATALOG__', 'demo');
+    const bundle = decodeExample(template, 'ice_meta_drilldown.json.tmpl');
+    expect(bundle.dashboards).toHaveLength(1);
+    expect(bundle.dashboards[0].tiles.length).toBeGreaterThan(0);
+  });
+
+  it('every Filter-role example query is a valid Filter source', () => {
     const examples = resolve(root, 'examples');
     for (const name of readdirSync(examples).filter((item) => item.endsWith('.json'))) {
-      const { queries } = parseImportDoc(readFileSync(resolve(examples, name), 'utf8'));
-      for (const q of queries) {
-        if (effectiveDashboardRole(q.spec) !== 'filter') continue;
-        expect(filterExecution(q.sql).diagnostics, `${name}:${q.id}`).toEqual([]);
+      const bundle = decodeExample(readFileSync(resolve(examples, name), 'utf8'), name);
+      for (const query of bundle.queries) {
+        if (effectiveDashboardRole(query.spec) !== 'filter') continue;
+        expect(filterExecution(query.sql).diagnostics, name + ':' + query.id).toEqual([]);
       }
     }
   });
@@ -49,13 +73,15 @@ describe('schema artifacts and examples', () => {
     }
   });
 
-  it('makes generator validation fail before an invalid document can be written', () => {
+  it('makes example validation fail before an invalid document can be written', () => {
     const valid = {
-      format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: '2026-07-14T00:00:00.000Z',
+      $schema: 'https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json',
+      format: 'altinity-sql-browser/portable-bundle', version: 1,
+      exportedAt: '2026-07-14T00:00:00.000Z', dashboards: [],
       queries: [{ id: 'q', sql: 'SELECT 1', specVersion: 1, spec: { panel: { cfg: { type: 'table' } } } }],
     };
-    expect(assertValidLibraryDocument(valid).queries).toHaveLength(1);
-    valid.queries[0].spec.panel.cfg = { type: 'pie', x: 0, y: [1, 2] };
-    expect(() => assertValidLibraryDocument(valid)).toThrow('panel.cfg.y must contain at most 1 item');
+    expect(assertValidExampleBundle(valid).queries).toHaveLength(1);
+    valid.queries[0].spec.panel = {};
+    expect(() => assertValidExampleBundle(valid)).toThrow('panel requires cfg.type');
   });
 });

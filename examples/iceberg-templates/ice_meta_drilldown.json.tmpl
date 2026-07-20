@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-01-01T00:00:00.000Z",
+  "metadata": {
+    "name": "Iceberg __CATALOG__ drill-down",
+    "description": "Generated per-catalog Iceberg drill-down bundle."
+  },
   "queries": [
     {
       "id": "iced-__CATALOG__-0",
@@ -16,6 +21,14 @@
           "cfg": {
             "type": "text",
             "content": "## __CATALOG__ — per-table drill-down\n\nThese tiles use the parameterized views `ice_meta___CATALOG__.data_files(prefix)` and `parquet_stats(prefix)`, which need a table **prefix** in slash form (`namespace/table`).\n\nFill the shared **prefix** filter above — valid values come from:\n\n```sql\nSELECT s3_prefix FROM ice_meta___CATALOG__.tables\n```\n\nThe Parquet footer stats entry is deliberately **not** on the dashboard (it reads every data-file footer — slow); run it from the Library when needed."
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 2
           }
         }
       }
@@ -32,6 +45,14 @@
         "panel": {
           "cfg": {
             "type": "table"
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
           }
         }
       }
@@ -54,6 +75,14 @@
             ],
             "series": null
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -75,6 +104,14 @@
             ],
             "series": null
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -93,6 +130,62 @@
           }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "iceberg-__CATALOG__-drilldown",
+      "title": "Iceberg __CATALOG__ drill-down",
+      "description": "Per-table data-file, size, and partition analysis.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-iced-__CATALOG__-0": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-iced-__CATALOG__-1": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-iced-__CATALOG__-2": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-__CATALOG__-3": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-prefix",
+          "parameter": "prefix"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-iced-__CATALOG__-0",
+          "queryId": "iced-__CATALOG__-0"
+        },
+        {
+          "id": "tile-iced-__CATALOG__-1",
+          "queryId": "iced-__CATALOG__-1"
+        },
+        {
+          "id": "tile-iced-__CATALOG__-2",
+          "queryId": "iced-__CATALOG__-2"
+        },
+        {
+          "id": "tile-iced-__CATALOG__-3",
+          "queryId": "iced-__CATALOG__-3"
+        }
+      ]
     }
   ]
 }

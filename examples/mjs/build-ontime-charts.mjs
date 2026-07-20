@@ -12,10 +12,9 @@
 // Out:  examples/ontime-charts.json
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { assertValidLibraryDocument } from './validate-library.mjs';
+import { buildDashboard, writeExampleBundle } from './example-bundle.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONNECTION = 'antalya';
@@ -190,15 +189,20 @@ const queries = SPECS.map((s, i) => {
   };
 });
 
-const doc = {
-  format: 'altinity-sql-browser/saved-queries',
-  version: 2,
-  exportedAt: new Date().toISOString(),
+const dashboard = buildDashboard({
+  id: 'ontime-chart-gallery',
+  title: 'On-time chart gallery',
+  description: 'Chart gallery over the public ontime flight dataset.',
   queries,
-};
-
-assertValidLibraryDocument(doc);
+  tileQueryIds: queries.map((query) => query.id),
+  preset: 'columns-2',
+});
 
 const outPath = resolve(here, 'ontime-charts.json');
-writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n');
+writeExampleBundle(outPath, {
+  exportedAt: new Date().toISOString(),
+  metadata: { name: dashboard.title, description: dashboard.description },
+  queries,
+  dashboards: [dashboard],
+});
 console.log(`\nwrote ${outPath} (${queries.length} queries)`);

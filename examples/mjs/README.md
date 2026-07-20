@@ -1,23 +1,32 @@
-# Example Generators
+# Example Bundles and Generators
 
-This directory contains the maintenance scripts that regenerate the checked-in
-example libraries in `examples/`.
+The checked-in JSON files under `examples/` are canonical **portable bundle
+v1** documents. Query definitions use saved-query **Spec v1** and every
+Dashboard example includes an explicit **Dashboard document v1** with tile
+membership, flow-layout placement, and filter definitions.
 
-## Scripts
+Legacy Library v1/v2 JSON remains importable for compatibility, but it is not an
+authoring format for new or regenerated examples.
 
-- `build-ontime-charts.mjs` regenerates `ontime-charts.json`
-- `build-system-explorer-charts.mjs` regenerates `system-explorer-charts.json`
-- `build-iceberg-install.mjs` regenerates `iceberg-install.json`
-- `build-iceberg-dashboards.mjs` regenerates `iceberg-catalog-dashboard.json`
-  and `iceberg-dba-dashboard.json`
-- `validate-library.mjs` is the shared validator used by the generators and
-  tests before any generated Library JSON is written
+## Maintenance commands
 
-## Notes
+- `node examples/mjs/normalize-examples.mjs --check` verifies that every
+  checked-in example and the Iceberg drill-down template use the canonical
+  envelope and explicit Dashboard model.
+- `node examples/mjs/normalize-examples.mjs` migrates/normalizes existing
+  checked-in artifacts without changing their SQL or panel schema keys.
 
-- These are build-time helpers, not app runtime code.
-- The dashboard generators need a ClickHouse client connection that can read
-  the referenced datasets so they can derive live schema keys.
-- The install generator uses the local Iceberg templates in
-  `examples/iceberg-templates/`.
+## Generators
 
+- `build-ontime-charts.mjs` regenerates `ontime-charts.json`.
+- `build-system-explorer-charts.mjs` regenerates
+  `system-explorer-charts.json`.
+- `build-iceberg-install.mjs` regenerates `iceberg-install.json`.
+- `build-iceberg-dashboards.mjs` regenerates
+  `iceberg-catalog-dashboard.json` and `iceberg-dba-dashboard.json`.
+- `example-bundle.mjs` owns the shared portable-bundle and Dashboard authoring
+  helpers used by those generators.
+
+The dashboard generators that derive live result schema keys require an
+appropriately privileged ClickHouse client connection. The install generator
+uses the templates in `examples/iceberg-templates/`.

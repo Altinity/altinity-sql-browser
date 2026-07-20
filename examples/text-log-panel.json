@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-13T05:01:01.000Z",
+  "metadata": {
+    "name": "Server log panel example",
+    "description": "Parameterized system.text_log dashboard example."
+  },
   "queries": [
     {
       "id": "log-1",
@@ -19,8 +24,64 @@
             "msg": "message",
             "level": "level"
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "text-log-panel-example",
+      "title": "Server log panel example",
+      "description": "Parameterized system.text_log dashboard example.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "report",
+        "items": {
+          "tile-log-1": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-from",
+          "parameter": "from"
+        },
+        {
+          "id": "filter-to",
+          "parameter": "to"
+        },
+        {
+          "id": "filter-level",
+          "parameter": "level"
+        },
+        {
+          "id": "filter-logger",
+          "parameter": "logger"
+        },
+        {
+          "id": "filter-message",
+          "parameter": "message"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-log-1",
+          "queryId": "log-1"
+        }
+      ]
     }
   ]
 }

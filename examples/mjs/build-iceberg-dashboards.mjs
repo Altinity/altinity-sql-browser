@@ -24,11 +24,10 @@
 // Out:  examples/iceberg-catalog-dashboard.json, examples/iceberg-dba-dashboard.json
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { assertValidLibraryDocument } from './validate-library.mjs';
+import { buildDashboard, writeExampleBundle } from './example-bundle.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CH_CMD = (process.env.ICE_CH_CMD || `${homedir()}/bin/cl cw-metrics`).split(' ');
@@ -345,14 +344,29 @@ function buildEntries(specs, idPrefix) {
 }
 
 const stamp = new Date().toISOString();
-for (const [file, specs, prefix] of [
-  ['iceberg-catalog-dashboard.json', BI, 'iceb'],
-  ['iceberg-dba-dashboard.json', DBA, 'iced'],
+for (const [file, specs, prefix, dashboardMeta] of [
+  ['iceberg-catalog-dashboard.json', BI, 'iceb', {
+    id: 'iceberg-catalog-explorer', title: 'Iceberg catalog explorer — BI',
+    description: 'Business intelligence view of Iceberg catalog metadata.',
+  }],
+  ['iceberg-dba-dashboard.json', DBA, 'iced', {
+    id: 'iceberg-dba-explorer', title: 'Iceberg catalog explorer — DBA',
+    description: 'Maintenance and health view of Iceberg catalog metadata.',
+  }],
 ]) {
   const queries = buildEntries(specs, prefix);
-  const doc = { format: 'altinity-sql-browser/saved-queries', version: 2, exportedAt: stamp, queries };
-  assertValidLibraryDocument(doc);
+  const dashboard = buildDashboard({
+    ...dashboardMeta,
+    queries,
+    tileQueryIds: queries.filter((query) => query.spec.favorite).map((query) => query.id),
+    preset: 'columns-2',
+  });
   const out = resolve(here, file);
-  writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
-  console.log(`wrote ${out} (${queries.length} entries, ${queries.filter((q) => q.spec.favorite).length} on the dashboard)`);
+  writeExampleBundle(out, {
+    exportedAt: stamp,
+    metadata: { name: dashboard.title, description: dashboard.description },
+    queries,
+    dashboards: [dashboard],
+  });
+  console.log(`wrote ${out} (${queries.length} entries, ${dashboard.tiles.length} on the dashboard)`);
 }
