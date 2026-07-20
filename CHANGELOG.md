@@ -225,6 +225,35 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no new network requests).
 
 ### Fixed
+- **Editable Dashboard and Workbench are now two editors over one committed
+  workspace, with consistent exports** (#341). Previously the standalone
+  Dashboard persisted layout/order/resize/delete edits with a fire-and-forget
+  `workspace.commit()` that only bumped a route-local revision counter — it
+  never projected the committed aggregate back through
+  `app.applyCommittedWorkspace`, so `app.state.dashboard` (which both exports
+  read) went stale, rapid edits could start overlapping commits outside the
+  saved-query write queue, and an older commit resolving after a newer one
+  could clobber tile order/placement/style. Every editable Dashboard command
+  (`move-tile`, `update-placement`, `change-layout`, `remove-tile`) now runs
+  through the **same** `app.serializeWrite` queue that saved-query mutations and
+  File-menu import/replace use, so all workspace writes share one serialization
+  order; each command's candidate is built **inside** its queued op from the
+  freshest committed baseline (strictly monotonic revisions, no stale-closure
+  duplicates), commits atomically, then projects the returned workspace onto
+  `app.state` and re-syncs the Dashboard from the committed result. An optimistic
+  preview stays instant; a slower-to-resolve older commit no longer regresses a
+  newer command's already-applied draft, and a **failed** commit deterministically
+  rolls back to the last committed Dashboard, toasts the diagnostic, does not
+  advance the revision, and never wedges the shared queue. Dashboard export and
+  Workbench workspace export both now `flushWorkspaceWrites()` (await pending
+  writes) then build from the latest committed `StoredWorkspaceV1`
+  (`workspace.loadCurrent()`), falling back to `app.state` only when no
+  aggregate is persisted or the read rejects — so the Dashboard document and
+  every shared saved-query resource are **canonically identical** across both
+  bundles, and export/import preserves exact tile order, shape, style, filters,
+  and membership. Same-tab writes are strictly serialized here; cross-tab
+  optimistic-concurrency (revision CAS) is a scoped follow-up (#343), consistent
+  with #341's cross-tab minimum contract (reload consistency).
 - **Dashboard KPI bands now render as one horizontal wrapping row in flow
   layouts** (#331). The flow renderer emitted each consecutive-KPI band member
   as `.dash-kpi-member`, but the `display:contents` flattening rule targeted a

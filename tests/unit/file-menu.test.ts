@@ -10,7 +10,7 @@ import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -260,18 +260,18 @@ describe('Export', () => {
   // #302: Export Dashboard is invoked from the Dashboard page's own File menu
   // (`app.actions.exportDashboard` → `exportDashboardAction`), not the
   // Workbench menu — drive it directly.
-  it('exportDashboardAction toasts "No dashboard to export" and does not download when there is no Dashboard', () => {
+  it('exportDashboardAction toasts "No dashboard to export" and does not download when there is no Dashboard', async () => {
     const app = mount();
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('No dashboard to export');
   });
 
-  it('exportDashboardAction downloads a valid bundle containing only its query dependencies', () => {
+  it('exportDashboardAction downloads a valid bundle containing only its query dependencies', async () => {
     const app = mount();
     app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
     app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Ops.json');
     expect(mime).toBe('application/json');
@@ -284,7 +284,7 @@ describe('Export', () => {
     expect(toast()).toBe('Exported → .json');
   });
 
-  it('exportDashboardAction toasts the encode diagnostic instead of downloading for a role-incompatible Dashboard', () => {
+  it('exportDashboardAction toasts the encode diagnostic instead of downloading for a role-incompatible Dashboard', async () => {
     const filterQuery: SavedQueryV2 = {
       id: 'f1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'F', dashboard: { role: 'filter' } },
     };
@@ -294,17 +294,74 @@ describe('Export', () => {
     // re-validation catches the role mismatch.
     app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
     app.state.savedQueries = [filterQuery];
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);
   });
 
-  it('Export workspace downloads a valid bundle containing the whole catalog', () => {
+  // #341: the export must build from the latest COMMITTED workspace
+  // (`loadCurrent`), not stale `app.state` — the whole reason the actions
+  // became async (flush pending writes → read back the aggregate).
+  it('exportWorkspaceAction builds the bundle from the committed workspace (loadCurrent), not stale app.state (#341)', async () => {
+    const committed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Committed Lib',
+      queries: [panelQuery('c1', 'Committed')], dashboard: null,
+    };
+    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    // app.state is deliberately DIFFERENT — a regression reading state instead
+    // of the committed aggregate would export THIS, failing the id assertion.
+    app.state.savedQueries = [panelQuery('stale', 'Stale')];
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    const [, , content] = app.downloadFile.mock.calls[0];
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['c1']);
+  });
+
+  it('exportDashboardAction builds from the committed dashboard (loadCurrent), not stale app.state (#341)', async () => {
+    const committed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib',
+      queries: [panelQuery('c1', 'Committed')],
+      dashboard: dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] }),
+    };
+    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
+    app.state.savedQueries = [panelQuery('stale', 'Stale')];
+    await exportDashboardAction(app);
+    const [fname, , content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('Committed.json'); // committed title, not the stale one
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['c1']);
+  });
+
+  // #341: `loadCurrent()` (IndexedDB) can REJECT (blocked/quota/private-mode) —
+  // the export must fall back to `app.state`, never become a silent no-op on an
+  // unhandled rejection (a regression from the pre-#341 synchronous export).
+  it('exportWorkspaceAction falls back to app.state when loadCurrent rejects — never a silent no-op (#341)', async () => {
+    const app = mount({ workspace: { loadCurrent: async () => { throw new Error('idb blocked'); } } });
+    app.state.libraryName.value = 'My Lib';
+    app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    expect(app.downloadFile).toHaveBeenCalled();
+    const [fname, , content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('My Lib.json');
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['p1', 'p2']);
+  });
+
+  it('Export workspace downloads a valid bundle containing the whole catalog', async () => {
     const app = mount();
     app.state.libraryName.value = 'My Lib';
     app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
     openFileMenu(app);
     click(item(/Export workspace/)!);
+    await flush();
     const [fname, , content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('My Lib.json');
     const decoded = decodePortableBundleJson(content as string);

@@ -314,6 +314,9 @@ const appDefaults: App = {
   genId: () => 'gen-id',
   // Inert passthrough — `base` overrides with a real per-instance queue.
   serializeWrite: <T,>(op: () => Promise<T>): Promise<T> => op(),
+  // #341: inert no-op — `base` overrides with the real per-instance flush that
+  // shares `serializeWrite`'s own queue.
+  flushWorkspaceWrites: async () => {},
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   // #313 — inert placeholder; a fixture exercising the reference-pane action
@@ -514,13 +517,18 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     // #287 review fix: a real per-instance serialization queue (mirrors app.ts)
     // so a test firing two overlapping CRUD ops observes them applied in order,
     // not interleaved. Per-instance (own `chain`), so no leak across makeApp calls.
-    serializeWrite: (() => {
+    ...(() => {
       let chain: Promise<unknown> = Promise.resolve();
-      return <T,>(op: () => Promise<T>): Promise<T> => {
+      const serializeWrite = <T,>(op: () => Promise<T>): Promise<T> => {
         const run = chain.then(op, op);
         chain = run.then(() => undefined, () => undefined);
         return run;
       };
+      // #341: shares the SAME `chain` `serializeWrite` advances, so a test
+      // awaiting `app.flushWorkspaceWrites()` sees every write queued before
+      // this call resolve — mirrors app.ts's own `writeChain`-backed pair.
+      const flushWorkspaceWrites = (): Promise<void> => chain.then(() => undefined, () => undefined);
+      return { serializeWrite, flushWorkspaceWrites };
     })(),
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.

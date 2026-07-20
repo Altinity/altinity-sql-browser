@@ -294,7 +294,10 @@ function afterLibraryChange(app: App): void {
  *  success. A rejected commit toasts the first diagnostic and leaves `state`
  *  untouched — never a partial write. */
 async function commitWorkspace(app: App, candidate: StoredWorkspaceV1, successMsg?: string): Promise<boolean> {
-  const result = await app.workspace.commit(candidate);
+  // #341: share the SAME serialized write queue saved-query mutations and
+  // Dashboard commands use, so an import/replace/rename can never interleave
+  // with (or be clobbered by/clobber) a concurrent write.
+  const result = await app.serializeWrite(() => app.workspace.commit(candidate));
   if (!result.ok) {
     flashToast('✕ ' + first(result.diagnostics, 'Could not save workspace'), { document: app.document });
     return false;
@@ -574,18 +577,37 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
   flashToast('Exported → .json', { document: app.document });
 }
 
-export function exportDashboardAction(app: App): void {
+/** #341: flush every write already queued through `serializeWrite` (a Dashboard
+ *  command, a saved-query mutation, an import) then read the latest COMMITTED
+ *  aggregate — the truth an export must build from, never mid-flight `state`.
+ *  Returns `null` when no aggregate is persisted (legacy/degraded install) OR
+ *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
+ *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
+ *  export never becomes a silent no-op on an unhandled rejection. */
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV1 | null> {
+  try {
+    await app.flushWorkspaceWrites();
+    return await app.workspace.loadCurrent();
+  } catch {
+    return null;
+  }
+}
+
+export async function exportDashboardAction(app: App): Promise<void> {
+  const ws = await flushAndLoadCommitted(app);
   // #302: invoked from the Dashboard page's File menu (via
   // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
   // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
-  const dashboard = app.state.dashboard;
+  const dashboard = ws ? ws.dashboard : app.state.dashboard;
   if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
-  const bundle = buildDashboardExportBundle(dashboard, app.state.savedQueries, new Date(app.wallNow()).toISOString());
+  const queryList = ws ? ws.queries : app.state.savedQueries;
+  const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
 }
 
-function exportWorkspaceAction(app: App): void {
-  const bundle = buildWorkspaceExportBundle(currentWorkspace(app), new Date(app.wallNow()).toISOString());
+async function exportWorkspaceAction(app: App): Promise<void> {
+  const ws = await flushAndLoadCommitted(app);
+  const bundle = buildWorkspaceExportBundle(ws ?? currentWorkspace(app), new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, app.state.libraryName.value);
 }
 

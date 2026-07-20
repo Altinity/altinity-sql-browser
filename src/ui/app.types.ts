@@ -458,6 +458,11 @@ export interface App {
    *  (or clobber a concurrent edit). Rejections propagate to the caller; the
    *  queue itself never rejects. */
   serializeWrite<T>(op: () => Promise<T>): Promise<T>;
+  /** #341: resolve once every write already queued through `serializeWrite`
+   *  has settled — the flush point exports use so a bundle is built from the
+   *  latest COMMITTED workspace, never mid-flight state. A write queued AFTER
+   *  this call is intentionally not awaited by it. */
+  flushWorkspaceWrites(): Promise<void>;
 
   actions: ActionsRegistry;
 }

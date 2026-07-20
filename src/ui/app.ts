@@ -1498,6 +1498,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     writeChain = run.then(() => undefined, () => undefined);
     return run;
   };
+  // #341: resolve once every write accepted BEFORE this call has settled (export
+  // waits on this so a bundle is built from the latest committed workspace, never
+  // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
+  app.flushWorkspaceWrites = () => writeChain.then(() => undefined, () => undefined);
 
   // #300: the Reset action offered on the corrupt-workspace toast below.
   // `loadCurrent()`/`clearCurrent()`'s callers rely on a corrupt record

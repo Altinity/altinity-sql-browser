@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDashboardExportBundle, buildWorkspaceExportBundle,
 } from '../../src/dashboard/model/dashboard-export.js';
+import { canonicalEqual } from '../../src/dashboard/model/canonical-json.js';
 import type {
   DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1,
 } from '../../src/generated/json-schema.types.js';
@@ -127,5 +128,47 @@ describe('buildWorkspaceExportBundle', () => {
     buildWorkspaceExportBundle(ws, '2020-01-01T00:00:00Z');
     expect(ws.dashboard).toBe(originalDashboardRef);
     expect(ws.dashboard?.revision).toBe(originalRevision);
+  });
+});
+
+// #341 canonical-consistency invariant: given ONE committed workspace and the
+// SAME export timestamp, the Dashboard document and every SHARED saved-query
+// resource must be canonically identical across both bundles — only unrelated
+// Workbench-only queries may differ (present in the workspace bundle, absent
+// from the Dashboard dependency closure).
+describe('canonical consistency between the two export bundles (#341)', () => {
+  const nowISO = '2020-01-01T00:00:00Z';
+  // A workspace whose Dashboard depends on q1 (tile) + q2 (filter source), plus
+  // an unrelated q3 that only the Workbench export carries.
+  const ws: StoredWorkspaceV1 = {
+    storageVersion: 1, id: 'ws', name: 'WS',
+    queries: [query('q3'), query('q1'), query('q2')], // deliberately not tile order
+    dashboard: dashboard('d1', ['q1'], ['q2']),
+  };
+
+  it('the Dashboard document is canonically identical in both bundles', () => {
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
+    expect(canonicalEqual(dashboardBundle.dashboards[0], workspaceBundle.dashboards[0])).toBe(true);
+  });
+
+  it('every query in the Dashboard dependency closure is canonically identical in both bundles', () => {
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
+    for (const dashboardQuery of dashboardBundle.queries) {
+      const workspaceQuery = workspaceBundle.queries.find((q) => q.id === dashboardQuery.id);
+      expect(workspaceQuery).toBeDefined();
+      expect(canonicalEqual(dashboardQuery, workspaceQuery)).toBe(true);
+    }
+  });
+
+  it('only unrelated Workbench-only queries differ — the extra query is absent from the Dashboard closure', () => {
+    const dashboardBundle = buildDashboardExportBundle(ws.dashboard!, ws.queries, nowISO);
+    const workspaceBundle = buildWorkspaceExportBundle(ws, nowISO);
+    const dashIds = dashboardBundle.queries.map((q) => q.id).sort();
+    const wsIds = workspaceBundle.queries.map((q) => q.id).sort();
+    expect(dashIds).toEqual(['q1', 'q2']); // closure only
+    expect(wsIds).toEqual(['q1', 'q2', 'q3']); // full catalog
+    expect(wsIds.filter((id) => !dashIds.includes(id))).toEqual(['q3']); // the only difference
   });
 });

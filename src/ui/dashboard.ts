@@ -33,6 +33,7 @@ import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
 import { openMenu } from './menu.js';
 import type { MenuHandle, MenuRow } from './menu.js';
+import { flashToast } from './toast.js';
 import { renderResolvedPanel } from './panels.js';
 import { openCellDetail } from './results.js';
 import type { ResultsApp } from './results.js';
@@ -128,6 +129,11 @@ export interface DashboardApp {
   detachedViews: Pick<DetachedViewsStore, 'get'>;
   consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
   applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
+  // #341: every editable Dashboard command commits through the SAME
+  // serialized write queue saved-query mutations use, so a rapid sequence of
+  // drag/resize/preset/delete commands can't interleave or let a slow-to-
+  // resolve older commit clobber a faster newer one.
+  serializeWrite<T>(op: () => Promise<T>): Promise<T>;
   // #302 — the Dashboard page's own File-menu operations.
   actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openDashboardForViewing'>;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
@@ -377,11 +383,25 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       filters: [], tiles: [],
     };
   let committedRevision = currentDoc.revision;
+  // #341: the latest SAME-TAB committed truth — the single source of truth a
+  // command's candidate is built from (never the render-time `workspace`
+  // closure, which goes stale after the first successful commit). `null` when
+  // no persisted aggregate exists yet (legacy/empty) — commands then stay
+  // optimistic-only, same as before #341.
+  let committedWorkspace: StoredWorkspaceV1 | null = workspace;
+  // #341: the most-recently applied optimistic document — the last-writer
+  // marker a resolving commit checks before it re-publishes/rolls back the
+  // draft. When two commands are issued back-to-back, the OLDER commit's
+  // resolution must NOT stomp the NEWER command's already-applied optimistic
+  // edit back down to its own (now-stale) snapshot; it still advances the
+  // committed-truth bookkeeping, but leaves the further-ahead draft alone.
+  let latestOptimistic: DashboardDocumentV1 | null = null;
 
   // Merge explicit + synthesized implicit filters for the viewer.
-  const viewerDoc: DashboardDocumentV1 = {
-    ...currentDoc, filters: [...(currentDoc.filters || []), ...synthesizeImplicitFilters(currentDoc, queryById)],
-  };
+  const withImplicitFilters = (d: DashboardDocumentV1): DashboardDocumentV1 => (
+    { ...d, filters: [...(d.filters || []), ...synthesizeImplicitFilters(d, queryById)] }
+  );
+  const viewerDoc: DashboardDocumentV1 = withImplicitFilters(currentDoc);
 
   // #303: seed each filter's initial value/active from the isolated
   // per-dashboard store (never the Workbench's asb:varValues/asb:filterActive
@@ -616,23 +636,72 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // A UI-driven command (drag move-tile, preset change-layout, grid
     // resize/delete) is always valid; a rejected candidate is simply ignored
     // (no draft change).
-    if (applied.ok) {
-      const resultPlugin = resolveLayoutPluginSync(applied.dashboard.layout);
-      const normalized = resultPlugin.normalize(applied.dashboard);
-      currentDoc = normalized;
-      layoutSelect.sync();
-      session.syncDocument({
-        ...normalized, filters: [...(normalized.filters || []), ...synthesizeImplicitFilters(normalized, queryById)],
-      });
-      // Best-effort persistence (revision increments once per successful commit).
-      if (workspace) {
-        const candidate: StoredWorkspaceV1 = {
-          storageVersion: 1, id: workspace.id, name: workspace.name, queries: workspace.queries,
-          dashboard: { ...normalized, revision: committedRevision + 1 },
-        };
-        app.workspace.commit(candidate).then((result) => { if (result.ok) committedRevision += 1; });
+    if (!applied.ok) return;
+    const resultPlugin = resolveLayoutPluginSync(applied.dashboard.layout);
+    const normalized = resultPlugin.normalize(applied.dashboard);
+    // #341: apply OPTIMISTICALLY first so a drag/resize preview stays
+    // instant — the commit below either confirms this (a no-op re-apply once
+    // it resolves) or, on failure, deterministically rolls it back to the
+    // last committed truth. `optimistic` doubles as this command's identity:
+    // the resolving commit only re-publishes/rolls back the draft while it is
+    // still the LATEST optimistic edit (see `latestOptimistic`).
+    const optimistic = normalized;
+    latestOptimistic = optimistic;
+    currentDoc = optimistic;
+    layoutSelect.sync();
+    session.syncDocument(withImplicitFilters(optimistic));
+
+    // No persisted aggregate to commit to (legacy/empty Dashboard) — stays
+    // optimistic-only, same as pre-#341 behavior.
+    if (!committedWorkspace) return;
+
+    // #341: THE serialized write pipeline — the same one saved-query
+    // mutations and file-menu commits use (`app.serializeWrite`), so
+    // overlapping commands can never interleave or let a slow-to-resolve
+    // OLDER commit clobber a faster newer one. The candidate is built INSIDE
+    // the queued op (not synchronously at dispatch) so it reads the freshest
+    // `committedWorkspace`/revision — the PRIOR command's resolution has
+    // already advanced them by the time this op runs — which keeps the
+    // persisted revision strictly monotonic across rapid commits (base+1 per
+    // successful commit, never a duplicated number from a stale closure).
+    void app.serializeWrite(() => {
+      const baseline = committedWorkspace!;
+      const baseRevision = baseline.dashboard ? baseline.dashboard.revision : committedRevision;
+      const candidate: StoredWorkspaceV1 = {
+        storageVersion: 1, id: baseline.id, name: baseline.name, queries: baseline.queries,
+        dashboard: { ...optimistic, revision: baseRevision + 1 },
+      };
+      return app.workspace.commit(candidate);
+    }).then((result) => {
+      if (result.ok) {
+        committedWorkspace = result.workspace;
+        committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
+        // Project committed truth onto app.state unconditionally (exports read
+        // it) — but only re-publish the DRAFT/session when this command is
+        // still the latest optimistic edit. A newer command already applied a
+        // further-ahead draft; re-publishing this older snapshot would regress
+        // it (and needlessly re-run tiles) until the newer commit resolved.
+        app.applyCommittedWorkspace(result.workspace);
+        if (optimistic === latestOptimistic) {
+          currentDoc = result.workspace.dashboard ?? currentDoc;
+          session.syncDocument(withImplicitFilters(currentDoc));
+          layoutSelect.sync();
+        }
+        return;
       }
-    }
+      // Deterministic rollback to the last committed truth — but only when
+      // this failed command is still the latest optimistic edit; a newer
+      // command's draft (and its own pending commit) must be left intact.
+      if (optimistic === latestOptimistic) {
+        const restored = committedWorkspace ? committedWorkspace.dashboard : null;
+        if (restored) {
+          currentDoc = restored;
+          session.syncDocument(withImplicitFilters(restored));
+          layoutSelect.sync();
+        }
+      }
+      flashToast('✕ ' + (result.diagnostics[0]?.message ?? 'Could not save dashboard'), { document: doc });
+    });
   }
 
   // ── Tile DOM ──────────────────────────────────────────────────────────────
