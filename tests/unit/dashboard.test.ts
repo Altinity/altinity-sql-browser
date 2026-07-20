@@ -1673,6 +1673,32 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
     expect(qsa(app.root, '.dash-tile.dash-floating').length).toBe(0);
   });
 
+  it('floats the tile at its HOME left, not the placeholder-displaced left (r0 captured pre-placeholder)', async () => {
+    // Real-browser regression: `grid.insertBefore(placeholder, card)` pushes the
+    // card into the NEXT CSS-grid cell, so the home rect MUST be read before the
+    // placeholder is inserted — else the fixed `left` is a column off and the
+    // floated tile sits horizontally offset from the cursor (vertical stays
+    // fine, same row). happy-dom ignores grid layout, so model the displacement:
+    // the dragged card reports HOME left until a `.dash-tile-placeholder` exists.
+    const { app } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grid = qs<HTMLElement>(app.root, '.dash-grid');
+    const HOME_LEFT = 20, DISPLACED_LEFT = 431; // displaced = one column+gap over
+    cards[0].getBoundingClientRect = () => {
+      const left = grid.querySelector('.dash-tile-placeholder') ? DISPLACED_LEFT : HOME_LEFT;
+      return { left, right: left + 150, top: 0, bottom: 50, width: 150, height: 50, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+    const grip = qs(cards[0], '.dash-gg-grip');
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: HOME_LEFT + 10, clientY: 25 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: HOME_LEFT + 20, clientY: 25 })); // crosses threshold → beginMove floats
+    expect(cards[0].style.position).toBe('fixed');
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(1); // placeholder IS inserted…
+    expect(cards[0].style.left).toBe(HOME_LEFT + 'px'); // …but the float used the pre-placeholder home left
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: HOME_LEFT + 20, clientY: 25 }));
+  });
+
   it('forward drag: the placeholder preview lands at the SAME slot the commit does (no off-by-one)', async () => {
     // 4 tiles; drag t1 (index 0) forward onto t3's slot (index 2). The dragged
     // tile "takes" t3's slot, so both the live gap and the committed order must

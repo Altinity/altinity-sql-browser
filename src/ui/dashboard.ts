@@ -903,6 +903,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           const r = c.getBoundingClientRect();
           return [{ tileId: t.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom }];
         });
+        // Capture the card's HOME rect and inline styles BEFORE inserting the
+        // grid placeholder: `grid.insertBefore(placeholder, card)` displaces
+        // the card into the NEXT grid cell, so reading getBoundingClientRect()
+        // after it would capture the shifted (wrong-column) left and the
+        // floated tile would sit a column off from the cursor horizontally
+        // (real-browser only — happy-dom ignores grid placement).
+        const r0 = card.getBoundingClientRect();
+        savedHeight = card.style.height;
+        savedDisplay = card.style.display;
         if (liveReflow) {
           // Insert a same-size placeholder in the card's slot so the grid can
           // FLIP-reflow into the gap; the flow path has no slot grid, so no
@@ -919,9 +928,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         // would otherwise scroll off-screen with the rest of the content).
         // The card stays a DOM child of its container (position:fixed pulls
         // it out of flow in place — simpler cleanup than reparenting).
-        const r0 = card.getBoundingClientRect();
-        savedHeight = card.style.height;
-        savedDisplay = card.style.display;
         // Defensive: a KPI-band card's WRAPPER is display:contents, not the
         // card itself, but if some path ever leaves the card's own computed
         // display as 'contents' it can't be position:fixed meaningfully —
