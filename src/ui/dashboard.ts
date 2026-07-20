@@ -38,6 +38,8 @@ import { openCellDetail } from './results.js';
 import type { ResultsApp } from './results.js';
 import { movedPastThreshold, hitTestTile, resolveOverlapInsertIndex, flipDelta } from '../core/tile-reorder.js';
 import type { TileRect } from '../core/tile-reorder.js';
+import { createDragAutoScroll } from '../core/dashboard-autoscroll.js';
+import type { DragAutoScrollController, DragAutoScrollTarget, FrameScheduler } from '../core/dashboard-autoscroll.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
 import { DASH_TILE_ROW_CAP, DASH_TABLE_DISPLAY_CAP } from '../core/dashboard.js';
@@ -806,6 +808,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       let lastReflowId: string | null = null;          // grid path: last resolved insertion slot
       const touched = new Set<HTMLElement>();           // grid path: siblings carrying a FLIP transform
       const win = doc.defaultView || window;
+      // #338: edge auto-scroll while a move is active. `wireTileDrag` runs
+      // BEFORE `.dash-page` is inserted (app.root!.replaceChildren happens
+      // once, later, at the end of renderDashboard), so the scroll host and
+      // its sticky topbar are resolved here, at pointerdown runtime, when the
+      // page IS mounted. A `scrollEl === null` (e.g. a test fixture with no
+      // `.dash-page`) degrades cleanly: `autoScroll` stays null and
+      // `currentRects()` always returns the unadjusted home rects.
+      const scrollEl = app.root!.querySelector('.dash-page') as HTMLElement | null;
+      const topbar = scrollEl?.querySelector('.dash-topbar') as HTMLElement | null;
+      let scrollTop0 = 0;
+      let autoScroll: DragAutoScrollController | null = null;
+      let lastPointerX = startX;
+      let lastPointerY = startY;
+      // Candidate HOME rects, shifted by however far the page has scrolled
+      // since `beginMove` captured them — the floating dragged card is
+      // position:fixed (viewport-anchored), so it never needs this
+      // adjustment; only the STATIONARY siblings' captured rects go stale as
+      // the page scrolls under them.
+      const currentRects = (): TileRect[] => {
+        const dy = (scrollEl ? scrollEl.scrollTop : 0) - scrollTop0;
+        if (dy === 0) return rects;
+        return rects.map((r) => ({ ...r, top: r.top - dy, bottom: r.bottom - dy }));
+      };
       const gridTiles = (): HTMLElement[] =>
         [...grid.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.classList.contains('dash-gg-tile'));
       const setDrop = (id: string | null): void => {
@@ -845,10 +870,24 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         void grid.offsetWidth; // flush the inverted transforms before playing them back to 0
         touched.forEach((c) => { c.style.transition = animate ? 'transform 160ms ease' : ''; c.style.transform = ''; });
       };
+      // #338: the single resolution body shared by a real pointermove AND an
+      // auto-scroll animation frame (which has no new pointer event of its
+      // own — the pointer is stationary while tiles scroll underneath it).
+      // `px`/`py` are the LATEST known pointer coords; `currentRects()` folds
+      // in however far the page has scrolled since `beginMove`.
+      const resolveFromPointer = (px: number, py: number): void => {
+        if (liveReflow) {
+          const floating = card.getBoundingClientRect();
+          reflowTo(resolveOverlapInsertIndex(floating, currentRects()));
+        } else {
+          setDrop(hitTestTile(currentRects(), px, py));
+        }
+      };
       const beginMove = (): void => {
         moving = true;
         if (!liveReflow) card.classList.add('dash-moving'); // flow: dim in place (grid path floats instead)
         grid.classList.add('dash-reordering'); // user-select:none + grabbing, only now
+        scrollTop0 = scrollEl ? scrollEl.scrollTop : 0;
         // Capture every grid-placed tile's home rect once, in canonical order —
         // overlap/hit-testing always measures against these home positions, so a
         // live sibling shift never feeds back into the decision.
@@ -879,6 +918,34 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           card.style.height = r0.height + 'px';
           card.style.zIndex = '40';
         }
+        // #338: while the drag is active, the pointer nearing the top/bottom
+        // edge of the visible `.dash-page` viewport auto-scrolls it — both
+        // engines (a grid live-reflow AND a flow reorder can both need more
+        // room than the viewport shows). No scroll host (e.g. a fixture with
+        // no `.dash-page`) → no auto-scroll, everything else is unaffected.
+        if (scrollEl) {
+          const el = scrollEl;
+          const target: DragAutoScrollTarget = {
+            visibleTop: () => el.getBoundingClientRect().top + (topbar ? topbar.offsetHeight : 0),
+            visibleBottom: () => el.getBoundingClientRect().bottom,
+            scrollBy: (dy: number): number => {
+              const before = el.scrollTop;
+              const max = Math.max(0, el.scrollHeight - el.clientHeight);
+              el.scrollTop = Math.max(0, Math.min(max, before + dy));
+              return el.scrollTop - before;
+            },
+            canScrollUp: () => el.scrollTop > 0,
+            canScrollDown: () => el.scrollTop < Math.max(0, el.scrollHeight - el.clientHeight),
+          };
+          const scheduler: FrameScheduler = {
+            request: (cb) => win.requestAnimationFrame(cb),
+            cancel: (h2) => win.cancelAnimationFrame(h2),
+          };
+          autoScroll = createDragAutoScroll(target, scheduler, {
+            reducedMotion: prefersReducedMotion(),
+            onScrollFrame: () => resolveFromPointer(lastPointerX, lastPointerY),
+          });
+        }
       };
       const restoreDrag = (): void => {
         // Deterministic, synchronous DOM restore — never rely on the signature-
@@ -897,13 +964,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           if (!movedPastThreshold(ev.clientX - startX, ev.clientY - startY)) return;
           beginMove();
         }
-        if (liveReflow) {
-          card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)';
-          const floating = card.getBoundingClientRect();
-          reflowTo(resolveOverlapInsertIndex(floating, rects));
-        } else {
-          setDrop(hitTestTile(rects, ev.clientX, ev.clientY));
-        }
+        lastPointerX = ev.clientX;
+        lastPointerY = ev.clientY;
+        if (liveReflow) card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)';
+        resolveFromPointer(ev.clientX, ev.clientY);
+        // Latest pointer Y (viewport coords — unaffected by scroll, the card
+        // is position:fixed) drives the edge-proximity check every move, on
+        // top of whatever a running auto-scroll frame already applied.
+        autoScroll?.setPointerY(ev.clientY);
       };
       const cleanup = (): void => {
         win.removeEventListener('pointermove', onMove as EventListener);
@@ -911,6 +979,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         win.removeEventListener('pointercancel', onCancel as EventListener);
         win.removeEventListener('blur', onCancel);
         doc.removeEventListener('keydown', onKey, true);
+        autoScroll?.stop();
+        autoScroll = null;
         if (moving) { if (liveReflow) restoreDrag(); else setDrop(null); }
         card.classList.remove('dash-moving');
         grid.classList.remove('dash-reordering');
@@ -919,8 +989,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       const onUp = (ev: PointerEvent): void => {
         const wasMoving = moving;
         const targetId = !wasMoving ? null
-          : liveReflow ? resolveOverlapInsertIndex(card.getBoundingClientRect(), rects)
-            : hitTestTile(rects, ev.clientX, ev.clientY);
+          : liveReflow ? resolveOverlapInsertIndex(card.getBoundingClientRect(), currentRects())
+            : hitTestTile(currentRects(), ev.clientX, ev.clientY);
         cleanup();
         if (!wasMoving) return; // never crossed the threshold: leave the click alone
         // A completed drag that releases back over its origin card synthesizes a

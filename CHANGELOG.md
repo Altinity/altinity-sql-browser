@@ -97,6 +97,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   themes, and 360px no-overflow.
 
 ### Added
+- **Long Dashboards auto-scroll while a tile is being dragged** (#338, extends
+  the #332 grip / ⌘/Ctrl tile move). Once an active move crosses the movement
+  threshold, holding the pointer near the top or bottom edge of the visible
+  `.dash-page` viewport scrolls it continuously — direction and speed follow
+  the pointer's distance from the edge (bounded, proportional acceleration;
+  a lower bounded speed under `prefers-reduced-motion`), and scrolling
+  continues with the pointer held stationary. The destination preview
+  recomputes every frame the page scrolls (captured tile home rects are
+  shifted by the scroll delta, so a stationary pointer lands on the newly
+  revealed slot), yet the move still persists exactly **one** atomic
+  `move-tile` command on release and nothing during the gesture; a cancel
+  (pointerup outside / pointercancel / window blur / Escape) changes neither
+  tile order nor revision. The effective top edge sits below the sticky
+  Dashboard topbar. Plain text selection, chart brushing, cell interaction,
+  tile resize, and read-only Dashboards never start auto-scroll. The
+  edge-velocity math and the single-`requestAnimationFrame`-loop controller
+  are a pure, injected-seam module (`core/dashboard-autoscroll.ts`,
+  `DragAutoScrollTarget` + `FrameScheduler`) so a future nested Dashboard
+  scroll container can reuse the controller unchanged; both the Grid Tiles
+  live-reflow and the flow (Report / 2-column / 3-column) reorder paths
+  auto-scroll. No new bundled runtime dependency.
 - **Broad version-exact reference via `system.documentation` (ClickHouse
   26.6+) with safe Markdown rendering** (#60 Phase 3, #315). Servers 26.6
   and newer contribute the full breadth of `system.documentation` — table
