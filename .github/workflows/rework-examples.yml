@@ -28,16 +28,19 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           path = Path('examples/mjs/rewrite-example-generators.mjs')
-          text = path.read_text()
-          text = text.replace(
-              "expect(result.ok, result.ok ? name : \\`${name}: \\${result.diagnostics.map((d) => d.message).join('; ')}\\`).toBe(true);",
-              "expect(result.ok, result.ok ? name : name + ': ' + result.diagnostics.map((d) => d.message).join('; ')).toBe(true);",
-          )
-          text = text.replace(
-              "expect(filterExecution(query.sql).diagnostics, \\`${name}:\\${query.id}\\`).toEqual([]);",
-              "expect(filterExecution(query.sql).diagnostics, name + ':' + query.id).toEqual([]);",
-          )
-          path.write_text(text)
+          lines = path.read_text().splitlines()
+          result_hits = 0
+          filter_hits = 0
+          for i, line in enumerate(lines):
+              if 'expect(result.ok, result.ok ? name :' in line:
+                  lines[i] = "  expect(result.ok, result.ok ? name : name + ': ' + result.diagnostics.map((d) => d.message).join('; ')).toBe(true);"
+                  result_hits += 1
+              elif 'expect(filterExecution(query.sql).diagnostics,' in line:
+                  lines[i] = "        expect(filterExecution(query.sql).diagnostics, name + ':' + query.id).toEqual([]);"
+                  filter_hits += 1
+          if result_hits != 1 or filter_hits != 1:
+              raise SystemExit(f'expected one result and filter patch, got {result_hits} and {filter_hits}')
+          path.write_text('\n'.join(lines) + '\n')
           PY
       - name: Rewrite generators and tests
         run: |
