@@ -57,6 +57,13 @@
     </div>
   </section>
 
+  <section class="scenario">
+    <h2>Full view (#321 transient render-mode override) — vertical-only resize</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid is-full" id="full-grid"></div>
+    </div>
+  </section>
+
   <script type="module">
     import {
       computeGrafanaGridLayout, contentBoxWidth, GRID_GAP_PX, gridHeightUnitsToPx, snapGridSpan, snapGridHeight,
@@ -284,6 +291,64 @@
         return card;
       }));
     }());
+
+    // ── Scenario 6: Full view (#321) — every tile full width, one per row;
+    // resize is VERTICAL-ONLY and re-dispatches the UNCHANGED persisted
+    // (authored) span, never the full-width override — mirrors
+    // `ui/dashboard.ts`'s `wireGridResize` full-mode branch.
+    const fullTiles = [{ id: 'f1' }, { id: 'f2' }];
+    const fullLayout = { items: { f1: { span: 4, height: 2 }, f2: { span: 8, height: 2 } } };
+    const fullGrid = document.getElementById('full-grid');
+    let fullColumns = 12;
+    const fullPlacementByTile = new Map();
+    window.__fullResizeEvents = [];
+    function wireFullResize(tileId, card, handle) {
+      handle.addEventListener('pointerdown', (start) => {
+        start.preventDefault();
+        start.stopPropagation();
+        const placement = fullPlacementByTile.get(tileId);
+        const persistedSpan = placement.persistedSpan;
+        let curHeight = placement.heightUnits;
+        const rect = card.getBoundingClientRect();
+        card.classList.add('dash-gg-resizing');
+        const move = (ev) => {
+          // Horizontal movement is ignored entirely — no grid-column re-pin,
+          // the card stays full width throughout.
+          const height = snapGridHeight(ev.clientY - rect.top);
+          if (height !== curHeight) { curHeight = height; setHeightPx(card, height); }
+        };
+        const up = () => {
+          card.classList.remove('dash-gg-resizing');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          // The re-dispatched span is the PERSISTED (authored) one, never the
+          // full-width override span the card is currently rendered at.
+          window.__fullResizeEvents.push({ tileId, span: persistedSpan, height: curHeight });
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+    }
+    function renderFull() {
+      const model = computeGrafanaGridLayout({
+        tiles: fullTiles, layout: fullLayout, containerWidth: measuredWidth(fullGrid), renderMode: 'full',
+      });
+      fullColumns = model.columns;
+      fullGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      fullGrid.replaceChildren();
+      for (const t of model.tiles) {
+        fullPlacementByTile.set(t.tileId, { span: t.span, persistedSpan: t.persistedSpan, heightUnits: t.heightUnits, colStart: t.colStart });
+        const { card, resizeHandle } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'edit');
+        card.style.gridColumn = 'span ' + t.span; // full-width override — always the full column count
+        if (resizeHandle) { resizeHandle.title = 'Resize tile height'; resizeHandle.setAttribute('aria-label', 'Resize tile height'); }
+        fullGrid.appendChild(card);
+        wireFullResize(t.tileId, card, resizeHandle);
+      }
+      window.__fullModel = model;
+    }
+    renderFull();
+    window.__fullColumns = () => fullColumns;
+    window.__fullPersistedSpan = (tileId) => fullPlacementByTile.get(tileId).persistedSpan;
 
     window.__ready = true;
   </script>

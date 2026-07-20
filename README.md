@@ -91,7 +91,7 @@ Panel preview and an unconfigured Dashboard KPI tile show the cards inside the
 ordinary `.kpi-panel` grid, while a **favorited, explicitly-KPI-typed** Dashboard
 query instead joins a full-width **KPI band** — a flat, wrapping card stream
 with no per-favorite name, description, or statistics footer, spanning every
-Dashboard layout (Full width/Report/2/3 columns). Consecutive explicit KPI
+flow Dashboard layout (Report/2/3 columns). Consecutive explicit KPI
 favorites merge into one shared band. The complete
 [`kpi-panel.json`](examples/kpi-panel.json) Library example can be opened from
 **File ▾ → Import queries** to see both.

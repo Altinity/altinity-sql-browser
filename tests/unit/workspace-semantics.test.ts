@@ -19,7 +19,7 @@ const panelQuery = (id: string, over: Record<string, unknown> = {}, dashboard?: 
 const filterQuery = (id: string, sql = "SELECT ['a','b'] AS country") => ({
   id, sql, specVersion: 1, spec: { name: id, dashboard: { role: 'filter' } },
 });
-const flowLayout = (items: Record<string, unknown> = {}) => ({ type: 'flow', version: 1, preset: 'full-width', items });
+const flowLayout = (items: Record<string, unknown> = {}) => ({ type: 'flow', version: 1, preset: 'report', items });
 const gridLayout = (items: Record<string, unknown> = {}) => ({ type: 'grafana-grid', version: 1, items });
 const dashboardDoc = (over: Record<string, unknown> = {}) => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
@@ -287,12 +287,12 @@ describe('validateDashboardSemantics', () => {
   });
 
   it('enforces the serialized layout-config byte limit', () => {
-    const layout = { type: 'flow', version: 1, preset: 'full-width', items: {}, config: { blob: 'x'.repeat(PORTABLE_LIMITS.maxSerializedLayoutConfigBytes + 10) } };
+    const layout = { type: 'flow', version: 1, preset: 'report', items: {}, config: { blob: 'x'.repeat(PORTABLE_LIMITS.maxSerializedLayoutConfigBytes + 10) } };
     expect(has(validateDashboardSemantics(dashboardDoc({ layout })), 'limit-layout-config-bytes')).toBe(true);
   });
 
   it('skips layout item checks when items is not an object', () => {
-    const layout = { type: 'flow', version: 1, preset: 'full-width' };
+    const layout = { type: 'flow', version: 1, preset: 'report' };
     // Missing `items` is a schema error, but checkItems must not throw.
     expect(has(validateDashboardSemantics(dashboardDoc({ layout })), 'schema-required')).toBe(true);
   });

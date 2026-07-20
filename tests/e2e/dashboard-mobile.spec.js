@@ -68,7 +68,9 @@ test.describe('Dashboard mobile layout', () => {
 
   test('visually normalizes every saved layout on mobile and restores desktop CSS on resize', async ({ page }) => {
     await openAt(page, 390);
-    for (const mode of ['wide', 'report', 'columns-2', 'columns-3']) {
+    // 'wide'/'full-width' removed (#321) — every remaining flow preset still
+    // normalizes to one column on mobile.
+    for (const mode of ['report', 'columns-2', 'columns-3']) {
       await page.evaluate((next) => window.__setLayout(next), mode);
       const layout = await page.locator('.dash-grid').evaluate((grid) => {
         const tile = grid.querySelector('.dash-tile');

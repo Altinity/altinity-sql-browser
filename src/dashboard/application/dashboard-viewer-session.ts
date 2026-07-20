@@ -49,7 +49,7 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { computeFlowLayout } from '../layouts/flow-layout.js';
 import type { FlowLayoutModel } from '../layouts/flow-layout.js';
 import { computeGrafanaGridLayout } from '../layouts/grafana-grid-layout.js';
-import type { GrafanaGridLayoutModel } from '../layouts/grafana-grid-layout.js';
+import type { GrafanaGridLayoutModel, GridRenderMode } from '../layouts/grafana-grid-layout.js';
 import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import type { DashboardLayoutRegistry } from '../layouts/layout-registry.js';
 import type {
@@ -109,7 +109,7 @@ export interface ViewerFilterState {
  *  same-named fields (both have `columns`) never collide on one object. */
 export type DashboardLayoutView =
   | (FlowLayoutModel & { engine: 'flow' })
-  | { engine: 'grafana-grid'; grid: GrafanaGridLayoutModel };
+  | { engine: 'grafana-grid'; grid: GrafanaGridLayoutModel; renderMode: GridRenderMode };
 
 export interface DashboardViewState {
   tiles: ViewerTileState[];
@@ -220,6 +220,15 @@ export interface DashboardViewerSession {
    *  flow model is recomputed. The tile SET must be unchanged (a membership
    *  change rebuilds the session). */
   syncDocument(next: DashboardDocumentV1): void;
+  /** #321 "Full view": set the TRANSIENT grafana-grid render-mode override
+   *  ('tiles' = today's packed multi-tile-per-row grid, 'full' = every tile
+   *  full-width, one per row). Runtime-only — never persisted, never a
+   *  document mutation, never a commit/revision bump; it just republishes the
+   *  current document through the new mode. Survives every other command
+   *  (add/remove/reorder/height/syncDocument) since it lives outside
+   *  `documentRef` entirely. A fresh session (reload/new viewer) always starts
+   *  at 'tiles'. */
+  setGridRenderMode(mode: GridRenderMode): void;
   /** Cancel all work and turn every later entry point into a no-op. */
   destroy(): void;
 }
@@ -297,6 +306,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // re-running tiles; the initial tile SET is fixed for the session's analysis.
   let documentRef: DashboardDocumentV1 = deps.document;
   let destroyed = false;
+  // #321 "Full view": a TRANSIENT runtime render-mode override, entirely
+  // outside `documentRef` — never read/written by any command, never
+  // persisted. A fresh session always starts at 'tiles'.
+  let gridRenderMode: GridRenderMode = 'tiles';
 
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) {
@@ -429,8 +442,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       ? {
         engine: 'grafana-grid',
         grid: computeGrafanaGridLayout({
-          tiles: visible, layout: documentRef.layout, containerWidth: deps.containerWidth?.(),
+          tiles: visible, layout: documentRef.layout, containerWidth: deps.containerWidth?.(), renderMode: gridRenderMode,
         }),
+        renderMode: gridRenderMode,
       }
       : { engine: 'flow', ...computeFlowLayout({ tiles: visible, layout: documentRef.layout, mobile }) };
     return {
@@ -747,6 +761,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     publish();
   }
 
+  function setGridRenderMode(mode: GridRenderMode): void {
+    if (destroyed || gridRenderMode === mode) return;
+    gridRenderMode = mode;
+    publish();
+  }
+
   function destroy(): void {
     destroyed = true;
     for (const runtime of tiles) {
@@ -762,6 +782,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   return {
     state: stateSignal as ReadonlySignal<DashboardViewState>,
     controls, getFilterField,
-    start, refresh, refreshTile, setFilter, applyFilter, clearFilter, clearAllFilters, cancelTile, syncDocument, destroy,
+    start, refresh, refreshTile, setFilter, applyFilter, clearFilter, clearAllFilters, cancelTile, syncDocument,
+    setGridRenderMode, destroy,
   };
 }

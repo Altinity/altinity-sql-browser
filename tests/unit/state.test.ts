@@ -366,7 +366,7 @@ describe('saved queries', () => {
   describe('toggleFavorite wires Dashboard tile membership (#299)', () => {
     const blankDashboard = (): DashboardDocumentV1 => ({
       documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       filters: [], tiles: [],
     });
 

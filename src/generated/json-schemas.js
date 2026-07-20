@@ -1251,10 +1251,9 @@ export const flowLayoutV1Schema = {
   "$defs": {
     "flowPresetV1": {
       "title": "Flow preset",
-      "description": "Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.",
+      "description": "Desktop column arrangement: report renders one constrained-width centered column, columns-2 and columns-3 render equal columns.",
       "type": "string",
       "enum": [
-        "full-width",
         "report",
         "columns-2",
         "columns-3"

@@ -18,7 +18,7 @@ const filterQuery = (id: string) => ({
 
 const emptyDash = () => ({
   documentVersion: 1 as const, id: 'dash', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [],
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [],
 });
 
 const workspaceFixture = (over: Partial<StoredWorkspaceV1> = {}): StoredWorkspaceV1 => ({
@@ -194,10 +194,14 @@ describe('DashboardAuthoringSession — revision semantics and commit', () => {
     expect(retry.ok && retry.dashboardRevision).toBe(2); // the failed attempt did not consume a revision
   });
 
-  it('starts an empty flow Dashboard (revision 1) when the workspace has none', async () => {
+  it('starts an empty grafana-grid Dashboard (revision 1) with a columns-2 flow fallback when the workspace has none', async () => {
     const { session } = makeSession({ workspace: workspaceFixture({ dashboard: null }) });
     expect(session.state.value.document.id).toBe('g1');
     expect(session.state.value.document.revision).toBe(1);
+    expect(session.state.value.document.layout).toEqual({
+      type: 'grafana-grid', version: 1, items: {},
+      fallback: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+    });
     await session.execute({ type: 'add-query', queryId: 'q1' });
     const committed = await session.commit();
     expect(committed.ok && committed.dashboardRevision).toBe(1);

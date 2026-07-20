@@ -686,6 +686,90 @@ describe('grafana-grid engine routing (#291)', () => {
   });
 });
 
+// #321 "Full view": setGridRenderMode is a TRANSIENT runtime override — never
+// a document mutation, never a commit (there is nothing to commit against;
+// the session has no `workspace.commit` seam at all), never a revision bump.
+describe('setGridRenderMode / Full view (#321)', () => {
+  const gridDoc = (over: Partial<DashboardDocumentV1> = {}) => doc({
+    tiles: [tile('a', 'qa'), tile('b', 'qb')],
+    layout: { type: 'grafana-grid', version: 1, items: { a: { span: 4, height: 2 } } },
+    ...over,
+  });
+  const gridQueries = () => [query('qa', 'SELECT 1'), query('qb', 'SELECT 2')];
+
+  it('defaults to tiles mode; every tile keeps its authored/effective span', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: gridDoc(), exec, queries: gridQueries() }));
+    await session.start();
+    const layout = session.state.value.layout;
+    if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
+    expect(layout.renderMode).toBe('tiles');
+    expect(layout.grid.tiles[0]).toMatchObject({ tileId: 'a', span: 4, persistedSpan: 4 });
+    expect(layout.grid.tiles[1]).toMatchObject({ tileId: 'b', span: 6, persistedSpan: 6 });
+  });
+
+  it('setGridRenderMode(\'full\') republishes with every tile spanning the full column count, ' +
+    'WITHOUT touching the document or committing', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = gridDoc();
+    const itemsBefore = JSON.stringify(document.layout.items);
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
+    await session.start();
+    session.setGridRenderMode('full');
+    const layout = session.state.value.layout;
+    if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
+    expect(layout.renderMode).toBe('full');
+    expect(layout.grid.tiles.every((t) => t.span === layout.grid.columns)).toBe(true);
+    // persistedSpan is untouched — the authored spans still travel.
+    expect(layout.grid.tiles[0].persistedSpan).toBe(4);
+    expect(layout.grid.tiles[1].persistedSpan).toBe(6);
+    // The caller's own document object (and its items) is bit-identical.
+    expect(JSON.stringify(document.layout.items)).toBe(itemsBefore);
+  });
+
+  it('setGridRenderMode(\'tiles\') after \'full\' restores the exact authored spans', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: gridDoc(), exec, queries: gridQueries() }));
+    await session.start();
+    session.setGridRenderMode('full');
+    session.setGridRenderMode('tiles');
+    const layout = session.state.value.layout;
+    if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
+    expect(layout.renderMode).toBe('tiles');
+    expect(layout.grid.tiles[0]).toMatchObject({ span: 4, persistedSpan: 4 });
+    expect(layout.grid.tiles[1]).toMatchObject({ span: 6, persistedSpan: 6 });
+  });
+
+  it('survives a subsequent syncDocument (placement command) — the render-mode override is session-owned, not document-owned', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = gridDoc();
+    const session = createDashboardViewerSession(makeDeps({ document, exec, queries: gridQueries() }));
+    await session.start();
+    session.setGridRenderMode('full');
+    // A placement-command-style syncDocument (a height change on tile 'a').
+    session.syncDocument({
+      ...document,
+      layout: { type: 'grafana-grid', version: 1, items: { a: { span: 4, height: 5 } } },
+    });
+    const layout = session.state.value.layout;
+    if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
+    expect(layout.renderMode).toBe('full');
+    expect(layout.grid.tiles.every((t) => t.span === layout.grid.columns)).toBe(true);
+    expect(layout.grid.tiles[0].heightUnits).toBe(5);
+  });
+
+  it('is a no-op after destroy', async () => {
+    const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const session = createDashboardViewerSession(makeDeps({ document: gridDoc(), exec, queries: gridQueries() }));
+    await session.start();
+    session.destroy();
+    session.setGridRenderMode('full');
+    const layout = session.state.value.layout;
+    if (layout.engine !== 'grafana-grid') throw new Error('expected grafana-grid engine');
+    expect(layout.renderMode).toBe('tiles');
+  });
+});
+
 describe('flow layout (mobile normalization)', () => {
   it('normalizes the flow layout on mobile and coerces filter values to strings', async () => {
     const { exec } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));

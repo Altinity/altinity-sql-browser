@@ -300,6 +300,14 @@ export interface GrafanaGridTileRender {
   tileId: string;
   index: number;
   span: number;
+  /** The tile's resolved STORED span (`resolveGridPlacement(items[id]).span`)
+   *  before any render-mode override and before the effective-columns clamp
+   *  (#321 Full view). In `'tiles'` mode this equals the clamped `span`'s
+   *  pre-clamp source value; in `'full'` mode `span` is overwritten to
+   *  `columns` for the row-per-tile layout, so `persistedSpan` is the only
+   *  place the unchanged stored span still travels — the UI's full-view
+   *  resize must persist THIS value, never the overridden `span`. */
+  persistedSpan: number;
   /** Row units (1..16), already canonicalized/defaulted by
    *  `resolveGridPlacement` — never the legacy string form (#291
    *  height-units follow-up: renamed from `height` so a discriminating
@@ -329,6 +337,13 @@ export interface GrafanaGridVisibleTile {
   isKpi?: boolean;
 }
 
+/** The grafana-grid@1 render mode (#321 "Full view"): `'tiles'` is today's
+ *  packed multi-tile-per-row grid; `'full'` renders every visible tile at the
+ *  full effective column count — one tile per row — for the transient
+ *  "Full view" render mode. Persistence is unaffected either way: the stored
+ *  placement (`persistedSpan`) is never rewritten by a render-mode change. */
+export type GridRenderMode = 'tiles' | 'full';
+
 export interface ComputeGrafanaGridLayoutInput {
   tiles: readonly GrafanaGridVisibleTile[];
   /** The grafana-grid layout document (or any object whose `items` holds
@@ -337,6 +352,9 @@ export interface ComputeGrafanaGridLayoutInput {
   layout: unknown;
   /** The rendering container's width in px; see `effectiveGridColumns`. */
   containerWidth?: number;
+  /** Render mode (#321); defaults to `'tiles'` (today's packed behavior)
+   *  when absent. */
+  renderMode?: GridRenderMode;
 }
 
 function gridItemsFor(layout: unknown): Record<string, unknown> {
@@ -351,7 +369,7 @@ function gridItemsFor(layout: unknown): Record<string, unknown> {
  * no row-grouping type, band, or fold (rowless). Pure and non-mutating.
  */
 export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): GrafanaGridLayoutModel {
-  const { tiles, layout, containerWidth } = input;
+  const { tiles, layout, containerWidth, renderMode = 'tiles' } = input;
   const columns = effectiveGridColumns(containerWidth);
   const items = gridItemsFor(layout);
 
@@ -359,13 +377,20 @@ export function computeGrafanaGridLayout(input: ComputeGrafanaGridLayoutInput): 
   let cursor = 0;
   const renders: GrafanaGridTileRender[] = tiles.map((tile, index) => {
     const placement = resolveGridPlacement(items[tile.id]);
-    const span = effectiveGridSpan(placement.span, columns);
+    const span = renderMode === 'full' ? columns : effectiveGridSpan(placement.span, columns);
     if (cursor + span > columns) {
       row += 1;
       cursor = 0;
     }
     const render: GrafanaGridTileRender = {
-      tileId: tile.id, index, span, heightUnits: placement.height, isKpi: !!tile.isKpi, row, colStart: cursor,
+      tileId: tile.id,
+      index,
+      span,
+      persistedSpan: placement.span,
+      heightUnits: placement.height,
+      isKpi: !!tile.isKpi,
+      row,
+      colStart: cursor,
     };
     cursor += span;
     return render;
@@ -389,8 +414,9 @@ export interface GrafanaGridFallbackTile {
  * an explicit flow item — even one with no persisted grid placement, which
  * resolves to the grid default (span 6) and maps to its flow equivalent
  * (span 2), rather than silently falling through to flow's own unrelated
- * default (span 1). `full-width` is the fallback preset: the closest single-
- * column analog to a rowless grid with no fixed column count.
+ * default (span 1). `columns-2` is the fallback preset (#321: full-width was
+ * removed from flow@1 entirely) — the canonical remaining single-decision
+ * fallback for a rowless grid with no fixed column count.
  */
 export function deriveFlowFallback(
   gridLayout: unknown, tiles: readonly GrafanaGridFallbackTile[],
@@ -403,7 +429,7 @@ export function deriveFlowFallback(
       span: flowSpanFromGridSpan(gridPlacement.span), height: gridHeightUnitsToFlowHeight(gridPlacement.height),
     };
   }
-  return { type: 'flow', version: 1, preset: 'full-width', items: flowItems };
+  return { type: 'flow', version: 1, preset: 'columns-2', items: flowItems };
 }
 
 // ── Pure resize math (#291 Wave 3 — corner-drag resize): the DOM listener in

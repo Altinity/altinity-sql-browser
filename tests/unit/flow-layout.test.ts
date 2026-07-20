@@ -6,7 +6,7 @@ import {
 } from '../../src/dashboard/layouts/flow-layout.js';
 import type { DashboardDocumentV1 } from '../../src/generated/json-schema.types.js';
 
-const flowLayout = (items: Record<string, Record<string, unknown>> = {}) => ({ type: 'flow', version: 1, preset: 'full-width', items });
+const flowLayout = (items: Record<string, Record<string, unknown>> = {}) => ({ type: 'flow', version: 1, preset: 'report', items });
 const doc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: flowLayout(), filters: [], tiles: [], ...over,
 } as DashboardDocumentV1);
@@ -33,7 +33,7 @@ describe('setFlowPlacement', () => {
   });
 
   it('creates the items map when the flow layout is missing one', () => {
-    const layout: Record<string, unknown> = { type: 'flow', version: 1, preset: 'full-width' };
+    const layout: Record<string, unknown> = { type: 'flow', version: 1, preset: 'report' };
     setFlowPlacement(layout, 't1', { span: 1 });
     expect(layout.items).toEqual({ t1: { span: 1 } });
   });
@@ -45,7 +45,7 @@ describe('setFlowPlacement', () => {
   });
 
   it('creates the items map on a fallback that lacks one', () => {
-    const layout: Record<string, unknown> = { type: 'grid', version: 9, fallback: { type: 'flow', version: 1, preset: 'full-width' } };
+    const layout: Record<string, unknown> = { type: 'grid', version: 9, fallback: { type: 'flow', version: 1, preset: 'report' } };
     setFlowPlacement(layout, 't1', { span: 1 });
     expect((layout.fallback as { items: unknown }).items).toEqual({ t1: { span: 1 } });
   });
@@ -109,14 +109,15 @@ describe('flowLayoutPlugin.validatePlacement', () => {
 
 describe('presetColumns', () => {
   it('maps each preset to its desktop column count', () => {
-    expect(presetColumns('full-width')).toBe(1);
     expect(presetColumns('report')).toBe(1);
     expect(presetColumns('columns-2')).toBe(2);
     expect(presetColumns('columns-3')).toBe(3);
     expect(FLOW_PRESET_COLUMNS['columns-3']).toBe(3);
+    expect(Object.keys(FLOW_PRESET_COLUMNS).sort()).toEqual(['columns-2', 'columns-3', 'report']);
   });
 
-  it('falls back to full-width (1) for an unknown or non-string preset', () => {
+  it('falls back to 1 column for an unknown or non-string preset (full-width removed, #321)', () => {
+    expect(presetColumns('full-width')).toBe(1);
     expect(presetColumns('masonry')).toBe(1);
     expect(presetColumns(undefined)).toBe(1);
     expect(presetColumns(2)).toBe(1);
@@ -228,15 +229,17 @@ describe('computeFlowLayout', () => {
     expect(model.rows[0].tiles[0].span).toBe(2);
   });
 
-  it('falls back to full-width with defaults when the layout has no flow surface', () => {
+  it('falls back to report with defaults when the layout has no flow surface', () => {
     const model = computeFlowLayout({ tiles: tiles('a', 'b'), layout: { type: 'grid', version: 9 } });
-    expect(model.preset).toBe('full-width');
+    expect(model.preset).toBe('report');
     expect(model.columns).toBe(1);
     expect(model.rows.map((row) => row.tiles.map((tile) => tile.tileId))).toEqual([['a'], ['b']]);
     // A non-object layout is tolerated too.
-    expect(computeFlowLayout({ tiles: tiles('a'), layout: null }).preset).toBe('full-width');
-    // An unknown preset string on a flow surface degrades to full-width.
-    expect(computeFlowLayout({ tiles: tiles('a'), layout: flow('bogus') }).preset).toBe('full-width');
+    expect(computeFlowLayout({ tiles: tiles('a'), layout: null }).preset).toBe('report');
+    // An unknown/invalid preset string on a flow surface (including the
+    // removed full-width) degrades to report, the nearest single-column preset.
+    expect(computeFlowLayout({ tiles: tiles('a'), layout: flow('bogus') }).preset).toBe('report');
+    expect(computeFlowLayout({ tiles: tiles('a'), layout: flow('full-width') }).preset).toBe('report');
   });
 
   it('exposes the mobile breakpoint constant', () => {

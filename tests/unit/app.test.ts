@@ -4359,7 +4359,7 @@ describe('mobile best-effort mode (#126)', () => {
 describe('Dashboard viewing (open-source, handoff, actions) — #288/#302', () => {
   const vdash = () => ({
     documentVersion: 1, id: 'd', title: 'My View', revision: 1,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     filters: [], tiles: [{ id: 't1', queryId: 'q1' }],
   });
   const vquery = () => savedQuery({ id: 'q1', name: 'q1', sql: 'SELECT 1' });

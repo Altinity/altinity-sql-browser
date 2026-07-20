@@ -49,11 +49,12 @@ export interface LegacyWorkspaceInput {
 
 /** Map the legacy Dashboard layout preferences to a normative flow@1 preset.
  *  Reuses the existing `activeDashboardView` derivation (core/dashboard.ts) and
- *  remaps its `wide` value to the flow preset name `full-width`; `report`,
+ *  remaps its `wide` value to the nearest valid single-column flow preset,
+ *  `report` (#321: `full-width` was removed from flow@1 entirely); `report`,
  *  `columns-2`, and `columns-3` already match the flow preset names. */
 export function legacyLayoutToFlowPreset(dashLayout: string, dashCols: number): FlowPresetV1 {
   const view = activeDashboardView({ dashLayout, dashCols });
-  return view === 'wide' ? 'full-width' : view;
+  return view === 'wide' ? 'report' : view;
 }
 
 /** Build the one candidate StoredWorkspaceV1 from the legacy state (steps 2-4).

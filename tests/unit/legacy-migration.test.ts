@@ -35,7 +35,7 @@ const legacy = (over: Partial<LegacyWorkspaceInput> = {}): LegacyWorkspaceInput 
 
 describe('legacyLayoutToFlowPreset', () => {
   it('maps every legacy layout preference to a normative flow@1 preset', () => {
-    expect(legacyLayoutToFlowPreset('wide', 3)).toBe('full-width');
+    expect(legacyLayoutToFlowPreset('wide', 3)).toBe('report');
     expect(legacyLayoutToFlowPreset('report', 3)).toBe('report');
     expect(legacyLayoutToFlowPreset('arrange', 2)).toBe('columns-2');
     expect(legacyLayoutToFlowPreset('arrange', 3)).toBe('columns-3');
@@ -61,7 +61,7 @@ describe('buildLegacyMigrationCandidate', () => {
     expect(dash.id).toBe('id-2');
     expect(dash.title).toBe('My Library');
     expect(dash.revision).toBe(1);
-    expect(dash.layout).toEqual({ type: 'flow', version: 1, preset: 'full-width', items: {} });
+    expect(dash.layout).toEqual({ type: 'flow', version: 1, preset: 'report', items: {} });
     // Only the two favorites became tiles, in catalog order, each with a fresh ID.
     expect(dash.tiles).toEqual([
       { id: 'id-3', queryId: 'fav1' },

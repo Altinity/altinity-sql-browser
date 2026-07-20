@@ -17,7 +17,7 @@ const dashboardDoc = (
 ): DashboardDocumentV1 => ({
   documentVersion: 1, id, title, revision: 1,
   layout: {
-    type: 'flow', version: 1, preset: 'full-width',
+    type: 'flow', version: 1, preset: 'report',
     items: Object.fromEntries(tileQueryIds.map((_, index) => [`${id}-t${index}`, {}])),
   },
   filters: [],

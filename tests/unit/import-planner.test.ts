@@ -24,7 +24,7 @@ const filterQuery = (id: string, name = id): SavedQueryV2 => ({
 
 const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [], ...over,
 });
 
@@ -176,7 +176,7 @@ describe('rewriteDashboardReferences', () => {
   const dashboard = dashboardDoc({
     tiles: [{ id: 't1', queryId: 'p1' }],
     filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }, { id: 'flt2', parameter: 'q' }],
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
   });
 
   it('rewrites BOTH tile.queryId and filter.sourceQueryId via an IdMapping', () => {
@@ -292,7 +292,7 @@ describe('planImportDashboard', () => {
       id: 'd1', revision: 5,
       tiles: [{ id: 't1', queryId: 'p1' }],
       filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }],
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     })],
   });
 
@@ -355,7 +355,7 @@ describe('planImportDashboard', () => {
         id: 'd1',
         tiles: [{ id: 't1', queryId: 'p1' }],
         // 'ghost' names no tile — layout-orphan-placement, unrelated to query mapping.
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {}, ghost: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, ghost: {} } },
       })],
     });
     const plan = planImportDashboard(ws, badBundle, 'd1', [], 'replace', counter());
@@ -392,7 +392,7 @@ describe('planReplaceWorkspace', () => {
         id: 'd1', revision: 2,
         tiles: [{ id: 't1', queryId: 'p1' }],
         filters: [{ id: 'flt1', parameter: 'p', sourceQueryId: 'f1' }],
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
       })],
     });
     const plan = planReplaceWorkspace(ws, bundleWithDashboard, 'd1', [], counter());
@@ -416,7 +416,7 @@ describe('planReplaceWorkspace', () => {
       dashboards: [dashboardDoc({
         id: 'd1',
         tiles: [{ id: 't1', queryId: 'p1' }],
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
       })],
     });
     const decisions: QueryDecision[] = [{ sourceId: 'p1', action: 'skip' }];

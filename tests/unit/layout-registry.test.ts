@@ -9,7 +9,7 @@ import type { DashboardLayoutPlugin } from '../../src/dashboard/layouts/flow-lay
 import type { DashboardLayoutRegistration } from '../../src/dashboard/layouts/layout-registry.js';
 
 const flow = (items: Record<string, Record<string, unknown>> = {}) =>
-  ({ type: 'flow', version: 1, preset: 'full-width', items });
+  ({ type: 'flow', version: 1, preset: 'report', items });
 
 // A stub grid plugin for a second registered engine.
 const gridPlugin: DashboardLayoutPlugin = {

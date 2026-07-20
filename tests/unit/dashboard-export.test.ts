@@ -14,7 +14,7 @@ const dashboard = (
   id: string, tileQueryIds: string[], filterSourceIds: string[] = [],
 ): DashboardDocumentV1 => ({
   documentVersion: 1, id, title: `Dashboard ${id}`, revision: 3,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   tiles: tileQueryIds.map((queryId, index) => ({
     id: `${id}-t${index}`, queryId, presentation: { kind: 'table' },
   } as unknown as DashboardDocumentV1['tiles'][number])),

@@ -10,6 +10,36 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Grid Tiles is the default Dashboard style; Full view replaces the old
+  Full width preset** (#321). The `grafana-grid@1` engine is renamed to
+  **Grid Tiles** in the UI (the persisted `{type:'grafana-grid',version:1}`
+  identifier is unchanged) and is now the layout every newly created
+  Dashboard starts in (empty `items`, a `columns-2` flow fallback; new tiles
+  keep the span-6/height-2 default). The old `flow@1/full-width` preset is
+  removed completely — from the flow JSON Schema and generated types, flow
+  normalization/render, the selector, `is-wide` CSS, legacy layout mapping
+  (`wide` now maps to `report`), grid→flow fallback generation (now
+  `columns-2`), and all fixtures/tests; valid flow presets are now only
+  `report`, `columns-2`, `columns-3`. **Full view** is introduced as a
+  transient, never-persisted render mode over Grid Tiles: every tile renders
+  one-per-row at the full effective column count (12/6/4/2 responsive) while
+  the authored spans are left untouched. Toggling Grid Tiles ↔ Full view runs
+  no `change-layout`, never commits, and never bumps the Dashboard revision;
+  a reload or a newly opened viewer session always starts in Grid Tiles.
+  Selecting Full view from a flow preset performs exactly one persisted
+  flow→grid conversion, then only the transient override; selecting a flow
+  preset from Full view clears the override and persists the flow change.
+  While Full view is active, reorder/add/delete and vertical height changes
+  still persist, but the corner resize becomes **vertical-only** (a
+  `ns-resize` affordance with a "Resize tile height" label) — horizontal
+  pointer movement can never change a span. The editable style selector is
+  ordered `Grid Tiles, Full view, Report, 2 columns, 3 columns`; a read-only
+  Dashboard exposes a reduced `Grid Tiles / Full view` runtime toggle (only
+  when its layout is grafana-grid — a read-only flow Dashboard shows no
+  selector), and the selector's accessible name is now `Dashboard style`.
+  Export/import never carry Full view state. There is no read-compatibility
+  path for `flow@1/full-width` development data (owner decision — the project
+  has no production compatibility requirement for it).
 - **Grafana-grid KPI tiles are polished in both Dashboard modes** (#316,
   follow-on to #291). Edit mode keeps the full editing shell but drops the
   never-populated tile footer (no more phantom separator line). View mode

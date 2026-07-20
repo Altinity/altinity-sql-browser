@@ -11,6 +11,9 @@ import {
   snapshotAuth, restoreAuth, hasAuth, isAuthRequest, isAuthGrant,
 } from '../../src/core/auth-handoff.js';
 import { renderDashboard } from '../../src/ui/dashboard.js';
+import { applyCommand } from '../../src/dashboard/application/dashboard-commands.js';
+import { createQueryResolver } from '../../src/dashboard/application/dashboard-query-resolver.js';
+import { resolveLayoutPluginSync } from '../../src/dashboard/layouts/layout-registry.js';
 import { applyStreamLine } from '../../src/core/stream.js';
 import { emptyRecentMap, recordRecent } from '../../src/core/recent-values.js';
 import { makeApp, FakeChart } from '../helpers/fake-app.js';
@@ -403,14 +406,14 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
     expect(layoutSelect(app.root).value).toBe('columns-2');
     const rows = qsa(app.root, '.dash-row');
     expect((rows[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(2');
-    // Switch to full-width — one column.
-    pickLayout(app.root, 'full-width');
-    expect(layoutSelect(app.root).value).toBe('full-width');
+    // Switch to report — one column (full-width was removed, #321).
+    pickLayout(app.root, 'report');
+    expect(layoutSelect(app.root).value).toBe('report');
     expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
     expect(commit).toHaveBeenCalled();
   });
 
-  it('defaults the preset to full-width when the layout omits it', async () => {
+  it('defaults the preset to report when the layout omits it (full-width removed, #321)', async () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')],
@@ -419,7 +422,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
       }),
     });
     await render(app);
-    expect(layoutSelect(app.root).value).toBe('full-width');
+    expect(layoutSelect(app.root).value).toBe('report');
     expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
   });
@@ -448,7 +451,7 @@ describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
   const twoTiles = () => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
     tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   });
   const order = (app: TestApp): string[] => qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent || '');
 
@@ -711,7 +714,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // Round-trip through flow and back to grid (#291's own cached-card-reuse
     // path) — a plain re-render exercises the same reconcile functions a
     // panel-type flip would, without needing a live Spec-editor change.
-    pickLayout(app.root, 'full-width');
+    pickLayout(app.root, 'report');
     pickLayout(app.root, 'grafana-grid');
     card = qs<HTMLElement>(app.root, '.dash-gg-tile');
     expect(card.classList.contains('is-kpi')).toBe(true);
@@ -719,7 +722,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(card.getAttribute('role')).toBe('group');
   });
 
-  it('reflects the active engine in the 5-option layout select and switches engines via change-layout', async () => {
+  it('reflects the active engine in the 5-option editable layout select and switches engines via change-layout', async () => {
     const { app, commit } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')],
@@ -729,11 +732,18 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     });
     await render(app);
     const select = layoutSelect(app.root);
+    // #321: 'full-width' removed; 'Grid Tiles'/'Full view' are the two new
+    // grafana-grid-related entries (Full view is a transient render-mode
+    // override, never an engine of its own).
     expect([...select.options].map((o) => o.value)).toEqual(
-      ['full-width', 'report', 'columns-2', 'columns-3', 'grafana-grid'],
+      ['grafana-grid', 'full', 'report', 'columns-2', 'columns-3'],
     );
+    expect([...select.options].map((o) => o.textContent)).toEqual(
+      ['Grid Tiles', 'Full view', 'Report', '2 columns', '3 columns'],
+    );
+    expect(select.getAttribute('aria-label')).toBe('Dashboard style');
     expect(select.value).toBe('columns-2');
-    // Picking "Grafana grid" sends change-layout {type:'grafana-grid',version:1}.
+    // Picking "Grid Tiles" sends change-layout {type:'grafana-grid',version:1}.
     pickLayout(app.root, 'grafana-grid');
     expect(layoutSelect(app.root).value).toBe('grafana-grid');
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
@@ -741,8 +751,8 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // Picking a flow preset while grid is active restores the regenerated
     // flow@1 fallback (bare {type:'flow',version:1,preset} — grid carries no
     // flow items/preset shape to spread).
-    pickLayout(app.root, 'full-width');
-    expect(layoutSelect(app.root).value).toBe('full-width');
+    pickLayout(app.root, 'report');
+    expect(layoutSelect(app.root).value).toBe('report');
     expect(qs(app.root, '.dash-gg-grid')).toBeNull(); // cleaned up, not just hidden
     expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
     // The cached tile card sheds its grid-only chrome, not just the host.
@@ -796,7 +806,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const { app, commit } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       }),
     });
     await render(app);
@@ -865,7 +875,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const { app, commit } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       }),
     });
     await render(app);
@@ -889,7 +899,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     const { app } = dashApp({
       workspace: wsWith({
         queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
       }),
     });
     await render(app);
@@ -926,6 +936,224 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     // at the start of the second `renderDashboard` call, so it never saw
     // this resize event (it would otherwise have reflowed to 2 columns).
     expect((qs(app1.root, '.dash-gg-grid').style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+  });
+});
+
+// #321 "Full view": a TRANSIENT grafana-grid render-mode override — every
+// tile renders full width, never persisted, never a commit.
+describe('renderDashboard — Full view (#321)', () => {
+  // A valid flow@1 fallback is required for the grid->flow direction of
+  // change-layout (dashboard-commands.ts) — unlike the sibling grafana-grid
+  // describe block above, this one exercises grid<->flow round-trips.
+  const twoTilesGrid = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: {
+      type: 'grafana-grid', version: 1, items: { t1: { span: 4, height: 'compact' } },
+      fallback: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+    },
+  });
+
+  it('selecting Full view makes every tile span the full column count without committing; Grid Tiles restores authored spans', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs<HTMLElement>(app.root, '.dash-gg-grid');
+    expect((gridEl.style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(12');
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
+      expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+    }
+    expect(commit).not.toHaveBeenCalled();
+    expect(qs(app.root, '.dash-gg-grid')?.classList.contains('is-full')).toBe(true);
+    // Grid Tiles restores the exact authored spans — still no commit.
+    pickLayout(app.root, 'grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    expect((cards[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
+    expect((cards[1].style as CSSStyleDeclaration).gridColumn).toBe('span 6'); // grid default
+    expect(commit).not.toHaveBeenCalled();
+    expect(qs(app.root, '.dash-gg-grid')?.classList.contains('is-full')).toBe(false);
+  });
+
+  it('delete still dispatches remove-tile and persists while Full view is active', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    // Delete still dispatches remove-tile and persists.
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    expect(commit).toHaveBeenCalled();
+    // Full view survives the commit-driven republish.
+    expect(layoutSelect(app.root).value).toBe('full');
+    expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+  });
+
+  it('reorder (drag) still dispatches move-tile and persists while Full view is active', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    const nameOf = (el: Element): string | null => qs(el, '.dash-tile-name')?.getAttribute('title') ?? null;
+    const before = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
+    expect(before).toEqual(['q1', 'q2']);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    // Same drag mechanism as the flow reorder suite above (#153/#280) — the
+    // grafana-grid engine reuses the identical move-tile command/DOM wiring
+    // (#291), just scoped to `.dash-gg-tile`.
+    cards[1].dispatchEvent(new Event('dragstart', { bubbles: true }));
+    cards[0].dispatchEvent(new Event('dragover', { bubbles: true }));
+    cards[0].dispatchEvent(new Event('drop', { bubbles: true }));
+    const after = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
+    expect(after).toEqual(['q2', 'q1']); // move-tile applied — persisted order
+    expect(commit).toHaveBeenCalled();
+    // Full view survives the commit-driven republish; every tile still full width.
+    expect(layoutSelect(app.root).value).toBe('full');
+    for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
+      expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+    }
+  });
+
+  it('adding a tile (add-query) seeds the grafana-grid default placement (span 6 / height 2), which renders full-width while Full view is active', async () => {
+    // #321 SHOULD-FIX: dashboard.ts itself never dispatches `add-query` (no
+    // add affordance lives in this render module — that command comes from
+    // the Library/Spec-editor "add to dashboard" path); this drives the SAME
+    // command path `runCommand` uses (`applyCommand` + `createQueryResolver`
+    // + `resolveLayoutPluginSync`, dashboard.ts:576-593) to build a workspace
+    // as-if a tile had just been added, then renders it to assert the
+    // resulting placement.
+    const q3 = q('q3', 'SELECT k, v FROM c');
+    const base = twoTilesGrid();
+    const queries = [...base.queries, q3];
+    const added = applyCommand(
+      base.dashboard as unknown as Parameters<typeof applyCommand>[0],
+      { type: 'add-query', queryId: 'q3' },
+      { resolver: createQueryResolver(queries), genTileId: () => 't3', plugin: resolveLayoutPluginSync(base.dashboard.layout) },
+    );
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    const normalized = resolveLayoutPluginSync(added.dashboard.layout).normalize(added.dashboard);
+    const workspace = { ...base, queries, dashboard: normalized };
+
+    const { app, commit } = dashApp({ workspace: workspace as unknown as ReturnType<typeof wsWith> });
+    await render(app);
+    pickLayout(app.root, 'full');
+    const addedCard = qsa<HTMLElement>(app.root, '.dash-gg-tile')
+      .find((card) => qs(card, '.dash-tile-name')?.getAttribute('title') === 'q3')!;
+    expect(addedCard).toBeTruthy();
+    expect((addedCard.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // full-width override
+    expect(commit).not.toHaveBeenCalled(); // Full view itself never persists
+
+    // Switch back to Grid Tiles: the PERSISTED default placement — span 6,
+    // height 2 (208px = 32 + 88*2) — is exactly what add-query seeded, not
+    // the transient full-width render.
+    pickLayout(app.root, 'grafana-grid');
+    const restoredCard = qsa<HTMLElement>(app.root, '.dash-gg-tile')
+      .find((card) => qs(card, '.dash-tile-name')?.getAttribute('title') === 'q3')!;
+    expect((restoredCard.style as CSSStyleDeclaration).gridColumn).toBe('span 6');
+    expect((restoredCard.style as CSSStyleDeclaration).height).toBe('208px');
+  });
+
+  it('a resize gesture in Full view is vertical-only: dispatches update-placement with the UNCHANGED persisted span', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs<HTMLElement>(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    pickLayout(app.root, 'full');
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0]; // t1, authored span 4
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // full-width override
+    const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+    expect(handle.title).toBe('Resize tile height');
+    expect(handle.getAttribute('aria-label')).toBe('Resize tile height');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    // Horizontal movement has no effect — gridColumn is never re-pinned to a
+    // sub-span (the card stays full width) even with a large clientX delta.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100000, clientY: 280 }));
+    expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+    expect((card.style as CSSStyleDeclaration).height).toBe('296px'); // height still snaps (3 row units)
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    expect(commit).toHaveBeenCalledTimes(1);
+    // The persisted (authored) span — 4, NOT the full-width 12 — survives.
+    const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
+    expect((after.style as CSSStyleDeclaration).gridColumn).toBe('span 12'); // still rendered full width
+    // Switching back to Grid Tiles proves the PERSISTED span was 4, not 12.
+    pickLayout(app.root, 'grafana-grid');
+    expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
+  });
+
+  it('a resize handle reads "Resize" (two-dimensional) in tiles mode', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const handle = qs<HTMLElement>(app.root, '.dash-gg-resize');
+    expect(handle.title).toBe('Resize');
+    expect(handle.getAttribute('aria-label')).toBe('Resize');
+  });
+
+  it('read-only view: the reduced selector only calls session.setGridRenderMode — never a command', async () => {
+    const detached = twoTilesGrid();
+    const { app, commit } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    const select = layoutSelect(app.root);
+    expect([...select.options].map((o) => o.value)).toEqual(['grafana-grid', 'full']);
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    for (const card of qsa<HTMLElement>(app.root, '.dash-gg-tile')) {
+      expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+    }
+    expect(commit).not.toHaveBeenCalled();
+    pickLayout(app.root, 'grafana-grid');
+    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('selecting Full view from a flow preset performs exactly ONE persisted conversion, then stays runtime-only', async () => {
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a')], tiles: [{ id: 't1', queryId: 'q1' }],
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      }),
+    });
+    await render(app);
+    expect(commit).not.toHaveBeenCalled();
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    expect(commit).toHaveBeenCalledTimes(1); // the ONE flow->grid conversion
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    expect((qs<HTMLElement>(app.root, '.dash-gg-tile').style as CSSStyleDeclaration).gridColumn).toBe('span 12');
+  });
+
+  it('selecting a flow preset from Full view clears the override and persists the selected flow layout', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    pickLayout(app.root, 'full');
+    expect(commit).not.toHaveBeenCalled();
+    pickLayout(app.root, 'columns-2');
+    expect(layoutSelect(app.root).value).toBe('columns-2');
+    expect(commit).toHaveBeenCalledTimes(1); // the grid->flow conversion
+    expect(qs(app.root, '.dash-gg-grid')).toBeNull();
+    expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
+  });
+
+  it('a fresh render (new viewer session) always starts in Grid Tiles mode', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    expect(layoutSelect(app.root).value).toBe('grafana-grid');
+    expect((qsa<HTMLElement>(app.root, '.dash-gg-tile')[0].style as CSSStyleDeclaration).gridColumn).toBe('span 4');
+  });
+
+  it('no is-wide class is ever present on the grid host, in any mode', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('is-wide')).toBe(false);
+    pickLayout(app.root, 'full');
+    expect(qs(app.root, '.dash-grid')?.classList.contains('is-wide')).toBe(false);
+    pickLayout(app.root, 'grafana-grid');
+    expect(qs(app.root, '.dash-grid')?.classList.contains('is-wide')).toBe(false);
+    pickLayout(app.root, 'columns-2');
+    expect(qs(app.root, '.dash-grid')?.classList.contains('is-wide')).toBe(false);
   });
 });
 
@@ -1112,7 +1340,7 @@ describe('renderDashboard — isolated per-dashboard filter persistence (#303)',
     // A structural republish (preset switch → syncDocument) with the SAME
     // filter value/active must not persist again (the dedicated persist
     // signature, not the bar-rebuild signature, gates the write).
-    pickLayout(app.root, 'full-width');
+    pickLayout(app.root, 'report');
     expect(saveJSON.mock.calls.length).toBe(callsAfterCommit);
   });
 });
@@ -1292,7 +1520,7 @@ describe('app.renderDashboard', () => {
     const query = savedQuery({ id: '1', name: 'Q', sql: 'SELECT k, v FROM mychart' });
     app.loadDashboardWorkspace = async () => ({
       storageVersion: 1, id: 'w', name: 'W', queries: [query],
-      dashboard: { documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] },
+      dashboard: { documentVersion: 1, id: 'd', title: 'D', revision: 1, layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [{ id: 't1', queryId: '1' }] },
     });
     await app.renderDashboard();
     expect(qs(app.root, '.dash-tile canvas')).not.toBeNull();
@@ -1427,7 +1655,12 @@ describe('renderDashboard — open-source modes (#288)', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('current-workspace: id resolves only in the detached store → read-only view (no drag, no layout switcher)', async () => {
+  it('current-workspace: id resolves only in the detached store → read-only view (no drag, no layout selector for a flow doc, #321)', async () => {
+    // `wsWith`'s default layout is flow@1 — this is the pre-#321 shape any
+    // existing shared doc has. The reduced read-only selector is a
+    // grafana-grid-only render-mode toggle; for a read-only FLOW doc there is
+    // no engine switch possible read-only, so the selector must be HIDDEN
+    // entirely (not shown with a dead 'Full view' option over a flow layout).
     const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
     await render(app);
@@ -1435,6 +1668,25 @@ describe('renderDashboard — open-source modes (#288)', () => {
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
     expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('false');
     expect(layoutSelect(app.root)).toBeNull();
+  });
+
+  it('current-workspace: read-only + grafana-grid doc → the reduced Grid Tiles / Full view selector IS shown and functional (#321)', async () => {
+    const detached = wsWith({
+      id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }],
+      layout: { type: 'grafana-grid', version: 1, items: {} },
+    });
+    const { app, commit } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeNull();
+    // #321: read-only still shows the REDUCED Grid Tiles / Full view selector
+    // (a runtime-only render-mode toggle, never persistence) — the flow
+    // presets and the flow<->grid engine switch stay edit-mode-only.
+    const select = layoutSelect(app.root);
+    expect(select).not.toBeNull();
+    expect([...select.options].map((o) => o.value)).toEqual(['grafana-grid', 'full']);
+    pickLayout(app.root, 'full');
+    expect(layoutSelect(app.root).value).toBe('full');
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('session-bundle: consumes the one-time handoff into a read-only view', async () => {

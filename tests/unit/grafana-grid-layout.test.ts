@@ -305,7 +305,7 @@ describe('computeGrafanaGridLayout', () => {
     const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout: gridLayout() });
     expect(model.engine).toBe('grafana-grid');
     expect(model.columns).toBe(12);
-    expect(model.tiles[0]).toMatchObject({ tileId: 'a', span: 6, heightUnits: 2, row: 0, colStart: 0 });
+    expect(model.tiles[0]).toMatchObject({ tileId: 'a', span: 6, persistedSpan: 6, heightUnits: 2, row: 0, colStart: 0 });
   });
 
   it('clamps effective span per responsive breakpoint without mutating stored spans', () => {
@@ -313,6 +313,7 @@ describe('computeGrafanaGridLayout', () => {
     const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout, containerWidth: 470 });
     expect(model.columns).toBe(4);
     expect(model.tiles[0].span).toBe(4); // 12 clamped to 4
+    expect(model.tiles[0].persistedSpan).toBe(12); // resolved stored span, before the effective clamp
     expect(layout.items.a.span).toBe(12); // persisted span untouched
   });
 
@@ -370,6 +371,48 @@ describe('computeGrafanaGridLayout', () => {
     const model = computeGrafanaGridLayout({ tiles: tiles('a', 'b'), layout: null });
     expect(model.tiles.map((t) => t.span)).toEqual([6, 6]);
   });
+
+  // #321 "Full view": renderMode:'full' overrides every tile's effective span
+  // to the full column count (one tile per row), while the resolved STORED
+  // span still travels, unchanged, as `persistedSpan`.
+  describe('renderMode', () => {
+    it('defaults to tiles-mode behavior when renderMode is absent', () => {
+      const layout = gridLayout({ a: { span: 4 }, b: { span: 8 } });
+      const withMode = computeGrafanaGridLayout({ tiles: tiles('a', 'b'), layout, containerWidth: 1200, renderMode: 'tiles' });
+      const withoutMode = computeGrafanaGridLayout({ tiles: tiles('a', 'b'), layout, containerWidth: 1200 });
+      expect(withoutMode).toEqual(withMode);
+    });
+
+    it.each([
+      [1200, 12], [800, 6], [500, 4], [300, 2],
+    ])('at containerWidth %d (columns %d), every tile spans the full column count and gets its own row', (containerWidth, columns) => {
+      const layout = gridLayout({ a: { span: 4 }, b: { span: 8 }, c: { span: 12 } });
+      const model = computeGrafanaGridLayout({
+        tiles: tiles('a', 'b', 'c'), layout, containerWidth, renderMode: 'full',
+      });
+      expect(model.columns).toBe(columns);
+      for (const render of model.tiles) {
+        expect(render.span).toBe(columns);
+        expect(render.colStart).toBe(0);
+      }
+      expect(model.tiles.map((t) => t.row)).toEqual([0, 1, 2]); // each tile on its own row
+    });
+
+    it('preserves the resolved stored span, unchanged, as persistedSpan in full mode', () => {
+      const layout = gridLayout({ a: { span: 4 }, b: { span: 8 } });
+      const model = computeGrafanaGridLayout({ tiles: tiles('a', 'b'), layout, containerWidth: 1200, renderMode: 'full' });
+      expect(model.tiles.map((t) => t.persistedSpan)).toEqual([4, 8]);
+      expect(model.tiles.map((t) => t.span)).toEqual([12, 12]); // effective span overridden to full width
+      expect(layout.items.a.span).toBe(4); // persistence untouched
+      expect(layout.items.b.span).toBe(8);
+    });
+
+    it('still resolves persistedSpan to the grid default for a tile with no persisted placement', () => {
+      const model = computeGrafanaGridLayout({ tiles: tiles('a'), layout: gridLayout(), renderMode: 'full' });
+      expect(model.tiles[0].persistedSpan).toBe(6); // DEFAULT_GRID_PLACEMENT.span
+      expect(model.tiles[0].span).toBe(12);
+    });
+  });
 });
 
 describe('deriveFlowFallback', () => {
@@ -379,7 +422,7 @@ describe('deriveFlowFallback', () => {
     });
     const fallback = deriveFlowFallback(layout, [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     expect(fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width',
+      type: 'flow', version: 1, preset: 'columns-2',
       items: {
         a: { span: 1, height: 'compact' },
         b: { span: 2, height: 'large' },
@@ -400,7 +443,7 @@ describe('deriveFlowFallback', () => {
   });
 
   it('handles an empty tile list and a non-object layout', () => {
-    expect(deriveFlowFallback(gridLayout(), [])).toEqual({ type: 'flow', version: 1, preset: 'full-width', items: {} });
+    expect(deriveFlowFallback(gridLayout(), [])).toEqual({ type: 'flow', version: 1, preset: 'columns-2', items: {} });
     const fallback = deriveFlowFallback(null, [{ id: 't1' }]);
     expect(fallback.items).toEqual({ t1: { span: 2, height: 'medium' } });
   });
@@ -500,7 +543,7 @@ describe('regenerateGridFallback', () => {
     const layout = gridLayout({ a: { span: 4, height: 1 } });
     regenerateGridFallback(layout, [{ id: 'a' }, { id: 'b' }]);
     expect((layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width',
+      type: 'flow', version: 1, preset: 'columns-2',
       items: { a: { span: 1, height: 'compact' }, b: { span: 2, height: 'medium' } },
     });
   });
@@ -508,11 +551,11 @@ describe('regenerateGridFallback', () => {
   it('overwrites a stale fallback already present on the layout', () => {
     const layout = { ...gridLayout({ a: { span: 12 } }), fallback: { type: 'flow', version: 1, preset: 'report', items: {} } };
     regenerateGridFallback(layout, [{ id: 'a' }]);
-    expect(layout.fallback).toEqual({ type: 'flow', version: 1, preset: 'full-width', items: { a: { span: 3, height: 'medium' } } });
+    expect(layout.fallback).toEqual({ type: 'flow', version: 1, preset: 'columns-2', items: { a: { span: 3, height: 'medium' } } });
   });
 
   it('is a no-op on a non-grid layout or a non-object value', () => {
-    const flow = { type: 'flow', version: 1, preset: 'full-width', items: {} };
+    const flow = { type: 'flow', version: 1, preset: 'columns-2', items: {} };
     regenerateGridFallback(flow, [{ id: 'a' }]);
     expect(flow).not.toHaveProperty('fallback');
     expect(() => regenerateGridFallback(null, [{ id: 'a' }])).not.toThrow();
@@ -531,7 +574,7 @@ describe('regenerateGridFallback', () => {
       null, 'nope', { queryId: 'q3' }, { id: 42 },
     ]);
     expect((layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width',
+      type: 'flow', version: 1, preset: 'columns-2',
       items: { a: { span: 1, height: 'medium' }, b: { span: 2, height: 'medium' } },
     });
   });
