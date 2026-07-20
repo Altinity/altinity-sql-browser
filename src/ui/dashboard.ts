@@ -29,8 +29,10 @@
 // is injected on the `app` controller.
 
 import { effect } from '@preact/signals-core';
-import { h, fixedAnchor } from './dom.js';
+import { h } from './dom.js';
 import { Icon as IconUntyped } from './icons.js';
+import { openMenu } from './menu.js';
+import type { MenuHandle, MenuRow } from './menu.js';
 import { renderResolvedPanel } from './panels.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
@@ -87,6 +89,10 @@ const Icon: {
   moon(): SVGElement;
   arrow(): SVGElement;
   trash(): SVGElement;
+  chevDown(): SVGElement;
+  download(): SVGElement;
+  upload(): SVGElement;
+  eye(): SVGElement;
 } = IconUntyped;
 
 const formatRows: (n: number | null | undefined) => string = formatRowsUntyped;
@@ -225,65 +231,63 @@ function renderDashboardNotFound(app: DashboardApp): void {
       back)));
 }
 
-/** #302 — the standalone Dashboard header's own "File" menu: a keyboard- and
- *  screen-reader-accessible dropdown owning Dashboard-scoped operations. Edit
- *  mode offers Export / Import / Open for viewing; a read-only (detached) view
- *  offers Export only (import + re-preview are edit-context operations). Every
- *  item delegates to an `app.actions.*` seam (dashboard.ts never reaches into
- *  app.ts). Esc/outside-click close and restore focus; arrows move between
- *  items. */
+/** #302/#331 — the standalone Dashboard header's own "File" menu: a keyboard-
+ *  and screen-reader-accessible dropdown owning Dashboard-scoped operations,
+ *  built on the shared `openMenu` primitive (menu.ts) — the same structure +
+ *  interaction grammar (icons, `.fm-section` headings, Esc/outside-click
+ *  close + focus-restore, ArrowUp/ArrowDown roving focus) as the Workbench
+ *  File menu, with Dashboard-specific CONTENTS:
+ *    EXPORT   ⭳ Export Dashboard…   .json
+ *    IMPORT   ⭱ Import Dashboard…
+ *    OPEN     ◇ Open for viewing…
+ *  Edit mode offers all three sections; a read-only (detached) view offers
+ *  EXPORT only (import + re-preview are edit-context operations). Every item
+ *  delegates to an `app.actions.*` seam (dashboard.ts never reaches into
+ *  app.ts). The trigger uses the shared downward-chevron treatment
+ *  (`Icon.chevDown()`, matching the Workbench File button) rather than a
+ *  right-pointing arrow, which would misread as navigation. The trigger owns
+ *  its own open/close TOGGLE (unlike the Workbench menu, which only ever
+ *  opens) — clicking it again while open closes the menu and restores focus,
+ *  tracked here via the returned `MenuHandle` rather than a second
+ *  `openMenu` call. */
 function buildDashboardFileMenu(app: DashboardApp, readOnly: boolean): HTMLElement {
   const doc = app.document;
   const btn = h('button', {
     class: 'dash-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
     title: 'File — dashboard import/export', 'aria-label': 'Dashboard File menu',
-  }, h('span', null, 'File'), Icon.arrow()) as HTMLButtonElement;
-  let menu: HTMLElement | null = null;
-  let overlay: HTMLElement | null = null;
+  }, h('span', null, 'File'), Icon.chevDown()) as HTMLButtonElement;
 
-  const close = (): void => {
-    doc.removeEventListener('keydown', onKey, true);
-    menu?.remove(); overlay?.remove();
-    menu = null; overlay = null;
-    btn.setAttribute('aria-expanded', 'false');
-  };
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); return; }
-    if (!menu) return;
-    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('.dash-fm-item'));
-    const at = items.indexOf(doc.activeElement as HTMLButtonElement);
-    if (e.key === 'ArrowDown') { e.preventDefault(); items[(at + 1) % items.length]?.focus(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(at - 1 + items.length) % items.length]?.focus(); }
-  };
-
-  const item = (label: string, onClick: () => void): HTMLButtonElement => h('button', {
-    class: 'fm-item dash-fm-item', role: 'menuitem',
-    onclick: () => { close(); onClick(); },
-  }, h('span', { class: 'fm-label' }, label)) as HTMLButtonElement;
+  let handle: MenuHandle | null = null;
 
   const open = (): void => {
-    overlay = h('div', { class: 'fm-overlay', onclick: close });
-    const items = [item('Export Dashboard…', () => app.actions.exportDashboard())];
+    const rows: MenuRow[] = [
+      { kind: 'section', label: 'Export' },
+      {
+        kind: 'item', icon: Icon.download(), label: 'Export Dashboard…', meta: '.json', extraClass: 'dash-fm-item',
+        onClick: () => app.actions.exportDashboard(),
+      },
+    ];
     if (!readOnly) {
-      items.push(
-        item('Import Dashboard…', () => app.actions.importDashboard()),
-        item('Open for viewing…', () => app.actions.openDashboardForViewing()),
+      rows.push(
+        { kind: 'section', label: 'Import' },
+        {
+          kind: 'item', icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
+          onClick: () => app.actions.importDashboard(),
+        },
+        { kind: 'section', label: 'Open' },
+        {
+          kind: 'item', icon: Icon.eye(), label: 'Open for viewing…', extraClass: 'dash-fm-item',
+          onClick: () => app.actions.openDashboardForViewing(),
+        },
       );
     }
-    menu = h('div', { class: 'file-menu dash-file-menu', role: 'menu' }, ...items);
-    doc.body.appendChild(overlay);
-    doc.body.appendChild(menu);
-    const r = btn.getBoundingClientRect();
-    const a = fixedAnchor(r) as { top: number; left: number };
-    menu.style.position = 'fixed';
-    menu.style.top = a.top + 'px';
-    menu.style.left = a.left + 'px';
-    btn.setAttribute('aria-expanded', 'true');
-    doc.addEventListener('keydown', onKey, true);
-    items[0].focus();
+    handle = openMenu({
+      document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
+      onClose: () => { handle = null; },
+    });
   };
 
-  btn.onclick = () => { if (menu) { close(); btn.focus(); } else open(); };
+  btn.onclick = () => { if (handle) { handle.close(); btn.focus(); } else open(); };
   return btn;
 }
 
@@ -778,6 +782,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // Paint an ordinary (non-KPI) tile's result once per new result. Only ever
   // called for a 'ready' tile, so columns/rows/meta/panel are all present.
   function paintPanel(ts: ViewerTileState, tileEl: TileEl): void {
+    // #331: reasserted BEFORE the unchanged-rows early return below — a
+    // republish that repaints a DIFFERENT tile (e.g. a sibling's query
+    // finishing) still runs this function for every ready tile with the
+    // SAME `ts.rows` reference this tile painted last time, which would
+    // otherwise skip past the meta check entirely and leave whatever
+    // `reconcileGridTile`'s unconditional `foot.hidden = ts.isKpi` (#316)
+    // last wrote in place — stale-visible for a metaless tile once any
+    // other tile's data arrives.
+    tileEl.foot.hidden = !ts.meta;
     if (ts.rows === tileEl.paintedRows) return;
     destroyChart(tileEl);
     const panel = (ts.panel || {}) as Record<string, unknown>;

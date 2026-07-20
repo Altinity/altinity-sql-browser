@@ -65,8 +65,6 @@ export interface SchemaFocus {
 export interface AppDom {
   fileBtn?: HTMLElement;
   fileDialog?: HTMLElement;
-  fileMenu?: HTMLElement;
-  fileMenuOverlay?: HTMLElement;
   libraryTitle?: HTMLElement;
   /** #302 — the Workbench header "Dashboard →" nav control (shown only when the
    *  current workspace has a Dashboard). */

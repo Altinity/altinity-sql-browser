@@ -225,6 +225,9 @@ describe('file menu structure', () => {
     expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in workspace');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
+    // …and the aria-expanded re-entrancy guard means the redundant open added
+    // no orphan hidden pickers either (exactly the two from the first open).
+    expect(document.querySelectorAll('.file-menu input[type=file]')).toHaveLength(2);
   });
 
   it('autofocuses the first item (New workspace…) on open', async () => {

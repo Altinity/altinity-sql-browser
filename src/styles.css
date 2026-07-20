@@ -2426,15 +2426,26 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   font-size: 11px; color: var(--fg-mute); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; }
+.dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; overflow: hidden; }
 .dash-tile-body > .chart-view,
 .dash-tile-body > .kpi-panel { flex: 1; min-width: 0; }
-/* Table/logs tiles (#149 D9): explicit flex constraints so content scrolls
-   inside the tile instead of clipping; the workbench grid's height:100% is
-   overridden back to auto (flex sizes it here). */
+/* Table/logs/markdown-text tiles (#149 D9, #331): explicit flex + overflow
+   containment so tall content scrolls inside the tile body instead of
+   growing past it and painting over the footer/other tiles; the workbench
+   grid's height:100% is overridden back to auto (flex sizes it here). */
 .dash-tile-body > .res-table-wrap,
-.dash-tile-body > .dash-logs { flex: 1; min-width: 0; min-height: 0; }
+.dash-tile-body > .dash-logs,
+.dash-tile-body > .md-view {
+  flex: 1 1 auto; min-width: 0; min-height: 0; max-height: 100%; overflow: auto;
+}
 .dash-tile-body > .res-table-wrap { height: auto; }
+/* #331: a diagnostic wrapper (schema-mismatch/staleness note + the actual
+   panel root) may be the direct child instead — same containment contract,
+   plus a column flex so the wrapped panel root can still scroll within it. */
+.dash-tile-body > .panel-with-note {
+  flex: 1 1 auto; min-width: 0; min-height: 0; max-height: 100%; overflow: hidden;
+  display: flex; flex-direction: column;
+}
 /* Logs view (#149 D9): a compact, scroll-only reading surface — level colors
    via the --log-* theme vars, monospace, wrapped messages. */
 .dash-logs {
@@ -2508,9 +2519,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-kpi-stream .kpi-card {
   flex: 0 1 auto; inline-size: fit-content; min-inline-size: 160px; max-inline-size: 320px;
 }
-/* A source's stable host contributes its children (cards, or a state card)
+/* A member's stable host contributes its children (cards, or a state card)
    directly to the stream's flex-wrap — it is never itself a visible box. */
-.dash-kpi-source { display: contents; }
+.dash-kpi-member { display: contents; }
 .dash-kpi-state-card {
   --kpi-accent: var(--accent);
   min-width: 160px; max-width: 320px; padding: 14px 16px;

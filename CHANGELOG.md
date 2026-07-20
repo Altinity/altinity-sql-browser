@@ -159,6 +159,39 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   issue's ~3 KB estimate, still a low single-digit percent of the bundle and
   no new network requests).
 
+### Fixed
+- **Dashboard KPI bands now render as one horizontal wrapping row in flow
+  layouts** (#331). The flow renderer emitted each consecutive-KPI band member
+  as `.dash-kpi-member`, but the `display:contents` flattening rule targeted a
+  never-emitted `.dash-kpi-source` class, so members stayed block-level and the
+  KPI cards stacked vertically instead of sharing the band's `flex-wrap` stream.
+  The class contract is unified on `.dash-kpi-member` across renderer, CSS, and
+  tests; Report / 2-column / 3-column bands are now a single horizontal card
+  stream in canonical tile order. Grid Tiles (#321) and frameless (#316) KPI
+  behavior are unchanged.
+- **Dashboard File menu now shares the Workbench File-menu primitive** (#331).
+  A new data-driven `src/ui/menu.ts` (`openMenu`) owns the shared dropdown
+  structure and interaction grammar — icon/label/metadata columns, section
+  headings, separators, overlay/outside-click dismiss, Escape + focus-restore,
+  ArrowUp/Down roving focus, `aria-haspopup`/`aria-expanded`, and anchored
+  placement — and both the Workbench (`file-menu.ts`) and Dashboard
+  (`buildDashboardFileMenu`) menus are rebuilt on it, ending the duplicated
+  builders. The Dashboard File trigger now uses the same downward-chevron
+  treatment as Workbench (no more right-arrow that misread as navigation) and
+  its menu gains EXPORT/IMPORT/OPEN section headings, icons, and `.json`
+  metadata; read-only Dashboards still expose Export only. Actions and
+  permission rules are unchanged.
+- **Dashboard tile content stays inside the tile body, above the footer**
+  (#331). `.dash-tile-body` gained `overflow:hidden`, and the tall-panel
+  containment contract (`flex:1 1 auto; min-width/min-height:0; max-height:100%;
+  overflow:auto`) now covers Markdown/text (`.md-view`) and the diagnostic
+  `.panel-with-note` wrapper alongside tables and logs, so long content scrolls
+  inside the body instead of painting over the footer or neighbouring tiles
+  (both flow and Grid Tiles engines, which share the tile shell). A metaless
+  panel (e.g. a Text tile that never runs a query) now hides its footer rather
+  than reserving an empty footer line, reasserted before the unchanged-rows
+  repaint short-circuit so a sibling tile's refresh can't leave it stale.
+
 ## [0.6.0] - 2026-07-18
 
 ### Added
