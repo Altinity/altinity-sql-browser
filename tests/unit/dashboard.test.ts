@@ -633,6 +633,57 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qs(card, '.kpi-card')).not.toBeNull();
   });
 
+  // #329: a Dashboard tile that is 'ready' but carries NO result meta — a Text
+  // panel renders static content and never executes a query, so `ts.meta` stays
+  // null. `paintPanel` used to pass it to `tileFooter` via a false
+  // `as NonNullable` cast, throwing `Cannot read properties of null (reading
+  // 'rows')` — and because that ran inside `reconcileGrafanaGrid`'s per-tile
+  // loop BEFORE the host gains `dash-gg-grid`, one such tile aborted the whole
+  // Grid Tiles render (blank grid). #321 made Grid Tiles the default, so this
+  // pre-existing crash sat on the primary path.
+  it('renders a metaless (Text) tile in grafana-grid without crashing — footer is simply empty (#329)', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('data')
+        ? { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }
+        : {}),
+      workspace: wsWith({
+        queries: [
+          q('tq', "SELECT 'hello' AS body", { panel: { cfg: { type: 'text' } } }),
+          q('dq', 'SELECT k, v FROM data', { panel: { cfg: { type: 'table' } } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'tq' }, { id: 't2', queryId: 'dq' }],
+        layout: { type: 'grafana-grid', version: 1, items: {} },
+      }),
+    });
+    await render(app);
+    // The grid actually rendered (pre-fix it threw and left 0 tiles / no host).
+    expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    const cards = qsa(app.root, '.dash-gg-tile');
+    expect(cards.length).toBe(2);
+    // The metaless (Text) tile has an EMPTY footer; the data tile has the
+    // rows·ms·bytes footer.
+    const foots = cards.map((c) => qs(c, '.dash-tile-foot'));
+    const footTexts = foots.map((f) => (f ? f.textContent || '' : ''));
+    expect(footTexts.some((t) => t === '')).toBe(true);
+    expect(footTexts.some((t) => t.includes('rows'))).toBe(true);
+  });
+
+  it('renders a metaless (Text) tile in a flow layout without crashing (#329 — shared paintPanel path)', async () => {
+    const { app } = dashApp({
+      responder: () => ({}),
+      workspace: wsWith({
+        queries: [q('tq', "SELECT 'hello' AS body", { panel: { cfg: { type: 'text' } } })],
+        tiles: [{ id: 't1', queryId: 'tq' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      }),
+    });
+    await render(app);
+    // Flow rendered its rows structure and the tile's footer is empty (no meta).
+    const foot = qs(app.root, '.dash-tile-foot');
+    expect(foot).not.toBeNull();
+    expect(foot.textContent).toBe('');
+  });
+
   // #316: the tile shell for a grafana-grid KPI tile — edit mode keeps the
   // full editing chrome except the footer (which the generic KPI path never
   // populates); view mode strips every visible frame, leaving only the KPI

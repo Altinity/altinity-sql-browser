@@ -796,7 +796,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
-    tileEl.foot.replaceChildren(...tileFooter(ts.meta as NonNullable<ViewerTileState['meta']>));
+    // #329: a 'ready' tile can legitimately carry no result meta (`ts.meta`
+    // is `… | null`, only set after a query executes — a Text panel renders
+    // static content and never does), so the footer is rendered only when
+    // there IS meta. The previous `as NonNullable` cast lied and threw
+    // `Cannot read properties of null (reading 'rows')` in `tileFooter`,
+    // which — reached inside the grafana-grid reconcile loop BEFORE the host
+    // gets `dash-gg-grid` — aborted the entire Grid Tiles render (#321 made
+    // that the default engine). The flow renderer shares this path and had
+    // the same latent crash.
+    tileEl.foot.replaceChildren(...(ts.meta ? tileFooter(ts.meta) : []));
     tileEl.paintedRows = ts.rows;
   }
 
