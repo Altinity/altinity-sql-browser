@@ -1,8 +1,13 @@
 // The header "File ▾" menu (#287 W5): resource-oriented portable-bundle
 // workspace operations — New workspace / Import queries / Import Dashboard /
-// Replace workspace / Export Dashboard / Export workspace — plus the kept
+// Open workspace / Export Dashboard / Export workspace — plus the kept
 // "Open as dashboard" (#149), the Variable history section, and the one-way
 // Markdown/SQL "share" downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
+// #342 reordered the Workbench menu around an unlabeled primary group (New /
+// Open / Export workspace / Import queries), renamed "Replace workspace…" to
+// "Open workspace…" (same destructive whole-workspace replace semantics —
+// see `startOpenWorkspace`/`confirmOpenWorkspace` below), and moved Share/
+// Publish above Variable history.
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
 // write here resolves a `PortableBundleImportPlan` (workspace/import-planner.js)
 // or a repository-level primitive (workspace/workspace-operations.js), then
@@ -137,7 +142,7 @@ export function openFileMenu(app: App): void {
   // (`libraryControls`), and Dashboard import/export moved to the Dashboard
   // page's own File menu — none of them appear here anymore.
   const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
-  const replaceWorkspaceInput = pickerInput(app, (f) => onReplaceWorkspaceFile(app, f));
+  const openWorkspaceInput = pickerInput(app, (f) => onOpenWorkspaceFile(app, f));
 
   // Variable recent-value history (#171): this is the closest thing the app
   // has to a "settings" surface today (no dedicated preferences panel exists
@@ -158,8 +163,18 @@ export function openFileMenu(app: App): void {
     h('span', { class: 'fm-label' }, 'Remember recent variable values'));
   const countRow = h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace');
 
+  // #342: the first four rows are one unlabeled primary-workspace-action
+  // group (no heading) in this exact order, followed by Share / Publish,
+  // then Variable history — the query-count footer stays last.
   const rows: MenuRow[] = [
     { kind: 'item', icon: Icon.plus(), label: 'New workspace…', onClick: () => newWorkspaceAction(app) },
+    { kind: 'item', icon: Icon.folderOpen(), label: 'Open workspace…', onClick: () => openWorkspaceInput.click() },
+    { kind: 'item', icon: Icon.download(), label: 'Export workspace…', meta: '.json', onClick: () => exportWorkspaceAction(app) },
+    { kind: 'item', icon: Icon.upload(), label: 'Import queries…', onClick: () => importQueriesInput.click() },
+    { kind: 'sep' },
+    { kind: 'section', label: 'Share / Publish' },
+    { kind: 'item', icon: Icon.download(), label: 'Download Markdown', meta: '.md', onClick: () => downloadAction(app, 'md') },
+    { kind: 'item', icon: Icon.download(), label: 'Download SQL', meta: '.sql', onClick: () => downloadAction(app, 'sql') },
     { kind: 'sep' },
     { kind: 'section', label: 'Variable history' },
     { kind: 'custom', node: historyToggle, focusable: true },
@@ -170,24 +185,13 @@ export function openFileMenu(app: App): void {
         flashToast('Cleared recent variable values', { document: app.document });
       },
     },
-    { kind: 'sep' },
-    { kind: 'section', label: 'Import / replace' },
-    { kind: 'item', icon: Icon.upload(), label: 'Import queries…', onClick: () => importQueriesInput.click() },
-    { kind: 'item', icon: Icon.refresh(), label: 'Replace workspace…', onClick: () => replaceWorkspaceInput.click() },
-    { kind: 'sep' },
-    { kind: 'section', label: 'Export' },
-    { kind: 'item', icon: Icon.download(), label: 'Export workspace…', meta: '.json', onClick: () => exportWorkspaceAction(app) },
-    { kind: 'sep' },
-    { kind: 'section', label: 'Share / publish' },
-    { kind: 'item', icon: Icon.download(), label: 'Download Markdown', meta: '.md', onClick: () => downloadAction(app, 'md') },
-    { kind: 'item', icon: Icon.download(), label: 'Download SQL', meta: '.sql', onClick: () => downloadAction(app, 'sql') },
     { kind: 'custom', node: countRow },
   ];
 
   const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows });
   // The hidden file pickers aren't menu ROWS (no label/click chrome of their
   // own) — they're display:none inputs `.click()`-triggered by the Import
-  // queries / Replace workspace items above. Parent them to the mounted menu
+  // queries / Open workspace items above. Parent them to the mounted menu
   // so they're torn down with it on close (no leak) and `picker(i)`-style
   // lookups (`.file-menu input[type=file]`) keep finding them. The item click
   // closes the menu (detaching these) BEFORE running its onClick, so the
@@ -196,7 +200,7 @@ export function openFileMenu(app: App): void {
   // the document (the standard detached-input pattern), and it still runs
   // synchronously inside the original user gesture.
   handle.el.appendChild(importQueriesInput);
-  handle.el.appendChild(replaceWorkspaceInput);
+  handle.el.appendChild(openWorkspaceInput);
 }
 
 // ── file pickers + bundle decode ────────────────────────────────────────────
@@ -286,7 +290,7 @@ function afterLibraryChange(app: App): void {
   app.updateEditorModeUi!();
   renderSavedHistory(app);
   // Keep the header "Dashboard →" control in sync when a commit adds/removes
-  // the workspace's Dashboard (e.g. Replace workspace / Import queries).
+  // the workspace's Dashboard (e.g. Open workspace / Import queries).
   renderDashboardNav(app);
 }
 
@@ -398,7 +402,7 @@ function openConflictDialog(
 // ── multi-dashboard picker ───────────────────────────────────────────────────
 
 /** Show a picker over `dashboards` (bundle array order — presentation order,
- *  not re-sorted); `allowNone` adds a "No dashboard" row (Replace workspace's
+ *  not re-sorted); `allowNone` adds a "No dashboard" row (Open workspace's
  *  own owner decision — Import Dashboard never offers it, since it must
  *  import exactly one). Cancelling calls neither branch of `onPick`. */
 function openDashboardPicker(
@@ -498,8 +502,8 @@ function startImportDashboard(app: App, bundle: PortableBundleV1): void {
 function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
   // v1 holds at most one Dashboard, so importing one REPLACES the current
   // Dashboard (its tiles/layout/filters). Confirm first when that would discard
-  // an existing Dashboard — matching New/Replace-workspace, which also gate
-  // destructive commits (#287; flagged in review — silent, unrecoverable loss).
+  // an existing Dashboard — matching New workspace/Open workspace, which also
+  // gate destructive commits (#287; flagged in review — silent, unrecoverable loss).
   if (app.state.dashboard) {
     openConfirm(app, {
       title: 'Import and replace current Dashboard?',
@@ -529,37 +533,41 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
   });
 }
 
-// ── actions: Replace workspace ───────────────────────────────────────────────
+// ── actions: Open workspace ──────────────────────────────────────────────────
+// #342: user-facing rename of "Replace workspace…" — same destructive
+// whole-workspace replace semantics (picker → plan → confirm → commit), just
+// relabeled. `planReplaceWorkspace` (import-planner.js) keeps its own name;
+// it's an internal primitive, not user-facing copy.
 
-function onReplaceWorkspaceFile(app: App, file: File): void {
-  readBundleFile(app, file, (bundle) => startReplaceWorkspace(app, bundle));
+function onOpenWorkspaceFile(app: App, file: File): void {
+  readBundleFile(app, file, (bundle) => startOpenWorkspace(app, bundle));
 }
 
-function startReplaceWorkspace(app: App, bundle: PortableBundleV1): void {
+function startOpenWorkspace(app: App, bundle: PortableBundleV1): void {
   const dashboards = listBundleDashboards(bundle);
   if (dashboards.length > 1) {
-    openDashboardPicker(app, 'Replace workspace — which dashboard?', dashboards, true, (id) => {
-      confirmReplaceWorkspace(app, bundle, id === null ? undefined : id);
+    openDashboardPicker(app, 'Open workspace — which dashboard?', dashboards, true, (id) => {
+      confirmOpenWorkspace(app, bundle, id === null ? undefined : id);
     });
     return;
   }
-  confirmReplaceWorkspace(app, bundle, dashboards[0]?.id);
+  confirmOpenWorkspace(app, bundle, dashboards[0]?.id);
 }
 
-function confirmReplaceWorkspace(app: App, bundle: PortableBundleV1, sourceDashboardId: string | undefined): void {
+function confirmOpenWorkspace(app: App, bundle: PortableBundleV1, sourceDashboardId: string | undefined): void {
   const cur = currentWorkspace(app);
   openConfirm(app, {
-    title: 'Replace workspace?',
-    body: ['This replaces your current ', h('b', null, String(cur.queries.length)), ' saved ',
+    title: 'Open workspace?',
+    body: ['Opening this file replaces your current ', h('b', null, String(cur.queries.length)), ' saved ',
       cur.queries.length === 1 ? 'query' : 'queries', cur.dashboard ? ' and your Dashboard' : '',
       ' with ', h('b', null, String(bundle.queries.length)), ' ', queries(bundle.queries.length),
       sourceDashboardId ? ' and the selected Dashboard' : '', ' from the file. Open editor tabs are unaffected.'],
-    confirmLabel: 'Replace',
+    confirmLabel: 'Open workspace',
     onConfirm: () => {
       const workspace = currentWorkspace(app);
       withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
         const plan = planReplaceWorkspace(workspace, bundle, sourceDashboardId, decisions, app.genId);
-        void commitPlan(app, plan, 'Replaced workspace');
+        void commitPlan(app, plan, 'Opened workspace');
       });
     },
   });

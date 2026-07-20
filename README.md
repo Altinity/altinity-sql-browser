@@ -437,33 +437,43 @@ publishes once persistence succeeds. The header **File ▾** menu carries a name
 unsaved-changes dot (changes since the last export or import), and these
 resource-oriented operations (#287):
 
+The first four rows are one unlabeled primary-workspace-action group, in this
+order (#342):
+
 - **New workspace…** — clears to an empty, default-named workspace (confirms first
   when non-empty). Open editor tabs are unaffected.
+- **Open workspace…** — atomically replace **both** the query collection and
+  the Dashboard from a file (confirms first). A multi-Dashboard file asks which
+  Dashboard to adopt (or none).
+- **Export workspace…** (`.json`) — write the one canonical
+  **`altinity-sql-browser/portable-bundle`** interchange format: every saved
+  query (catalog order) plus the zero-or-one Dashboard. Uses the deterministic
+  canonical encoder and never mutates the workspace's identity or Dashboard
+  revision.
 - **Import queries…** — merge a file's queries into the current collection. When
   an incoming query's id collides with an existing one, a **conflict dialog**
   offers a default action plus per-row overrides — *use existing*, *copy* (import
   under a fresh id), *replace*, or *skip*; a byte-identical incoming query is
   reused automatically. The Dashboard is untouched (imported favorite flags never
   add tiles).
-- **Import Dashboard…** — replace the current Dashboard with one from a file
-  (confirms first when a Dashboard already exists), importing only its referenced
-  queries. A multi-Dashboard file asks which one.
-- **Replace workspace…** — atomically replace **both** the query collection and
-  the Dashboard from a file (confirms first). A multi-Dashboard file asks which
-  Dashboard to adopt (or none).
-- **Export Dashboard… / Export workspace…** (`.json`) — write the one canonical
-  **`altinity-sql-browser/portable-bundle`** interchange format. *Export Dashboard*
-  emits the selected Dashboard plus exactly its dependency-closure of queries;
-  *Export workspace* emits every saved query (catalog order) plus the zero-or-one
-  Dashboard. Both use the deterministic canonical encoder and never mutate the
-  workspace's identity or Dashboard revision. Legacy Library v1/v2 files remain
-  **importable** (decoded to an in-memory bundle); no new Library-only JSON is
-  written. See the [schema contracts](docs/library-json-schema.md). Imported SQL
-  is never run automatically.
-- **Share / publish** — **Download Markdown** (`.md`, a `### heading` + fenced
-  ` ```sql ` cookbook) and **Download SQL** (`.sql`, `/* name + description */`
-  comment blocks, `;`-delimited). Both are **one-way** — lossy by design (no ids
-  or Spec metadata), so the portable bundle stays the canonical round-trip format.
+
+Below a separator, **Share / Publish** — **Download Markdown** (`.md`, a
+`### heading` + fenced ` ```sql ` cookbook) and **Download SQL** (`.sql`,
+`/* name + description */` comment blocks, `;`-delimited). Both are **one-way**
+— lossy by design (no ids or Spec metadata), so the portable bundle stays the
+canonical round-trip format. **Variable history** (the recent-values toggle +
+clear-all) follows below its own separator.
+
+The standalone Dashboard has its own **File ▾** menu (#302) for **Import
+Dashboard…** / **Export Dashboard…** — importing replaces the current
+Dashboard with one from a file (confirms first when a Dashboard already
+exists, importing only its referenced queries; a multi-Dashboard file asks
+which one), and exporting emits the selected Dashboard plus exactly its
+dependency-closure of queries. Legacy Library v1/v2 files remain
+**importable** everywhere (decoded to an in-memory bundle); no new
+Library-only JSON is written. See the [schema
+contracts](docs/library-json-schema.md). Imported SQL is never run
+automatically.
 
 The workspace name is editable inline (click it in the header). The **•** dot
 appears after any change not yet written to a file and clears on export / import /

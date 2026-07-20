@@ -272,7 +272,8 @@ function mergeIncomingQueries(
   return [...merged, ...additions];
 }
 
-/** REPLACE the query catalog wholesale (Replace workspace): only queries
+/** REPLACE the query catalog wholesale (File menu's "Open workspace…", #342):
+ *  only queries
  *  reachable from the incoming bundle survive, in bundle order; 'use-existing'
  *  keeps the existing query's own content (still under the shared id) rather
  *  than the incoming content. */

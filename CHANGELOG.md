@@ -10,6 +10,20 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Workbench File menu reorganized around primary workspace actions, with
+  `Replace workspace…` renamed to `Open workspace…`** (#342). The first four
+  rows are now one unlabeled group in a fixed order — New workspace…, Open
+  workspace…, Export workspace… (`.json`), Import queries… — with the
+  `IMPORT / REPLACE` and `EXPORT` section headings removed. Below a
+  separator, `Share / Publish` (Download Markdown/SQL) now comes before
+  `Variable history` (recent-values toggle + clear-all); the query-count
+  footer stays last. `Open workspace…` is a pure rename — the picker,
+  transactional planner (`planReplaceWorkspace`), conflict resolution, and
+  destructive-replace confirmation are unchanged, with the confirm dialog and
+  success toast copy updated to match ("Open workspace?" / "Opened
+  workspace"). New `Icon.folderOpen()` (`ui/icons.ts`) replaces the reused
+  `refresh` glyph on that row. The standalone Dashboard's own File menu
+  (#302) is untouched.
 - **Compact, type-aware widths for every `{name:Type}` variable/filter
   input** (#345). `.var-input` no longer reserves a flat 150px for every
   field regardless of its declared ClickHouse type — a new pure
