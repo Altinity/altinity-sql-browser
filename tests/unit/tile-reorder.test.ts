@@ -46,41 +46,61 @@ describe('hitTestTile', () => {
 });
 
 describe('resolveOverlapInsertIndex', () => {
-  // Three same-size 100×100 home slots side by side (no overlap between them).
+  // Three same-size 90×100 home slots side by side (area 9000, so a 2/3 commit
+  // threshold is exactly 6000 — integer, no float-boundary fragility). Overlap
+  // is measured against the TARGET slot's area, not the dragged tile's.
   const slots: TileRect[] = [
-    { tileId: 'a', left: 0, top: 0, right: 100, bottom: 100 },
-    { tileId: 'b', left: 100, top: 0, right: 200, bottom: 100 },
-    { tileId: 'c', left: 200, top: 0, right: 300, bottom: 100 },
+    { tileId: 'a', left: 0, top: 0, right: 90, bottom: 100 },
+    { tileId: 'b', left: 90, top: 0, right: 180, bottom: 100 },
+    { tileId: 'c', left: 180, top: 0, right: 270, bottom: 100 },
   ];
 
   it('no candidates → null', () => {
-    expect(resolveOverlapInsertIndex({ left: 0, top: 0, right: 100, bottom: 100 }, [])).toBeNull();
+    expect(resolveOverlapInsertIndex({ left: 0, top: 0, right: 90, bottom: 100 }, [])).toBeNull();
   });
-  it('100% overlap of a slot → that slot id', () => {
-    expect(resolveOverlapInsertIndex({ left: 100, top: 0, right: 200, bottom: 100 }, slots)).toBe('b');
+  it('fully covering a slot → that slot id', () => {
+    expect(resolveOverlapInsertIndex({ left: 90, top: 0, right: 180, bottom: 100 }, slots)).toBe('b');
   });
-  it('exactly 2/3 area overlap (inclusive) commits', () => {
-    // Dragged 90×100 (area 9000, need = 6000) overlapping slot b by exactly 60px width.
-    const dragged = { left: 140, top: 0, right: 230, bottom: 100 };
+  it('covering exactly 2/3 of the TARGET slot area (inclusive) commits', () => {
+    // Cover slot b by 60px of its 90px width → 6000 of its 9000 area = 2/3.
+    const dragged = { left: 120, top: 0, right: 210, bottom: 100 };
     expect(resolveOverlapInsertIndex(dragged, slots, OVERLAP_COMMIT_RATIO)).toBe('b');
   });
-  it('just under 2/3 area overlap → null (snap back)', () => {
-    // Same dragged shifted 1px: b overlap 59px (5900 < 6000), c overlap 31px, a none.
-    const dragged = { left: 141, top: 0, right: 231, bottom: 100 };
+  it('just under 2/3 of the target → null (snap back)', () => {
+    // Shift 1px: b coverage 59px (5900 < 6000), c 31px (3100), a none.
+    const dragged = { left: 121, top: 0, right: 211, bottom: 100 };
     expect(resolveOverlapInsertIndex(dragged, slots, OVERLAP_COMMIT_RATIO)).toBeNull();
   });
+  it('measures the TARGET slot, not the dragged tile: a small tile inside a big slot does NOT commit', () => {
+    // A 30×30 tile fully inside slot b covers only 900/9000 = 10% of the slot —
+    // under a "2/3 of the dragged tile" rule this would (wrongly) commit at 100%.
+    const small = { left: 120, top: 30, right: 150, bottom: 60 };
+    expect(resolveOverlapInsertIndex(small, slots, OVERLAP_COMMIT_RATIO)).toBeNull();
+  });
+  it('a large tile commits once it blankets ≥2/3 of the (smaller) target slot', () => {
+    // A tall/wide tile fully covering slot b's area → 9000/9000 = 100% ≥ 2/3.
+    const big = { left: 85, top: -20, right: 185, bottom: 120 };
+    expect(resolveOverlapInsertIndex(big, slots, OVERLAP_COMMIT_RATIO)).toBe('b');
+  });
   it('straddling two slots: first in array order that clears the threshold wins', () => {
-    // Dragged 90 wide overlapping a by 60 (≥2/3) and b by 0 → a wins.
+    // Cover slot a by 60px (6000 ≥ 2/3) and slot b by 0 → a wins.
     const dragged = { left: -30, top: 0, right: 60, bottom: 100 };
     expect(resolveOverlapInsertIndex(dragged, slots, OVERLAP_COMMIT_RATIO)).toBe('a');
   });
-  it('both slots clear the threshold (large dragged tile) → first in array order', () => {
-    // A wide dragged rect fully covering a AND b; ratio measured vs dragged area.
-    const wide = { left: 0, top: 0, right: 200, bottom: 100 }; // area 20000; covers a fully (10000 = 50%)
-    // With ratio 0.5, a is the first to reach it.
-    expect(resolveOverlapInsertIndex(wide, slots, 0.5)).toBe('a');
+  it('both slots clear the threshold → first in array order', () => {
+    // Wide tile fully covering a AND b (each 100%) → first (a) wins.
+    const wide = { left: 0, top: 0, right: 180, bottom: 100 };
+    expect(resolveOverlapInsertIndex(wide, slots)).toBe('a');
   });
-  it('zero-area dragged rect → null (never divide by zero / never commit)', () => {
+  it('a zero-area candidate slot is skipped (never a spurious 0≥0 match)', () => {
+    const withDegenerate: TileRect[] = [
+      { tileId: 'z', left: 50, top: 50, right: 50, bottom: 50 }, // zero area
+      ...slots,
+    ];
+    // Dragged sits over z's point but z is skipped; nothing else overlaps → null.
+    expect(resolveOverlapInsertIndex({ left: 40, top: 40, right: 60, bottom: 60 }, withDegenerate)).toBeNull();
+  });
+  it('zero-area dragged rect → null (covers nothing)', () => {
     expect(resolveOverlapInsertIndex({ left: 0, top: 0, right: 0, bottom: 0 }, slots)).toBeNull();
   });
   it('no overlap with anything → null', () => {

@@ -19,7 +19,7 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   dragging the tile. On the Grid Tiles (grafana-grid) engine the dragged tile
   **lifts and follows the cursor** while the other tiles reflow live to open a
   gap at the insertion point; the move **commits only when the dragged tile
-  overlaps a destination slot by ≥2/3 of its own area** (`resolveOverlapInsertIndex`
+  covers ≥2/3 of a destination slot's area** (`resolveOverlapInsertIndex`
   in `core/tile-reorder.ts`) and otherwise **snaps back** — the snap-back restore
   is synchronous and independent of the signature-gated grid reconcile. Sibling
   motion uses a FLIP animation that honors `prefers-reduced-motion`. The flow
@@ -35,7 +35,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   Dashboard's own document — passing the source column name/type and the raw
   (untruncated) value; each source-backed log field (time, level, message, and
   each extra) is independently clickable and keyboard-operable (Enter/Space).
-  Read-only Dashboards never enable tile movement.
+  A cell value that looks like **Markdown** now opens the drawer on a rendered
+  preview (with a Rendered↔Source toggle, like HTML) using the same bounded,
+  fail-closed `renderDocMarkdown` viewer the reference-docs pane uses; plain,
+  non-markup text still shows as source only. Read-only Dashboards never enable
+  tile movement.
 - **Grid Tiles is the default Dashboard style; Full view replaces the old
   Full width preset** (#321). The `grafana-grid@1` engine is renamed to
   **Grid Tiles** in the UI (the persisted `{type:'grafana-grid',version:1}`

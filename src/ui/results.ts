@@ -7,7 +7,9 @@ import { h, withDocument, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
 import { loadingPlaceholder } from './placeholder.js';
 import { formatRows, formatBytes } from '../core/format.js';
-import { looksLikeHtml, prettyValue } from '../core/cell.js';
+import { looksLikeHtml, looksLikeMarkdown, prettyValue } from '../core/cell.js';
+import { parseDocMarkdown, defaultDocLinkPolicy } from '../core/doc-markdown.js';
+import { renderDocMarkdown } from './doc-markdown-view.js';
 import { renderPanelView, renderPanelTypePicker, renderResolvedPanel } from './panels.js';
 import { renderGridView, resizeHandle, reapplyWidths, PLAIN_KEY, visCap } from './grid-render.js';
 import { EXPLAIN_VIEWS } from '../core/explain.js';
@@ -1127,22 +1129,34 @@ export function openCellDetail(app: ResultsApp, name: string, type: string, valu
     });
     cancelDrawerDrag = attachDrawerResize(app, panel, doc);
 
-    if (looksLikeHtml(text)) {
+    // A Rendered ↔ Source toggle, defaulting to Rendered. `renderRendered`
+    // builds the rendered node; Source is always the reindented `<pre>`. Shared
+    // by the HTML (sandboxed iframe) and Markdown (#332: the doc-pane's
+    // top-quality `renderDocMarkdown` viewer) previews.
+    const mountToggle = (renderRendered: () => Node): void => {
       const seg = h('div', { class: 'cd-toggle' });
       const setMode = (mode: 'rendered' | 'source'): void => withDocument(doc, () => {
         seg.replaceChildren(
           h('button', { class: 'cd-seg' + (mode === 'rendered' ? ' on' : ''), onclick: () => setMode('rendered') }, 'Rendered'),
           h('button', { class: 'cd-seg' + (mode === 'source' ? ' on' : ''), onclick: () => setMode('source') }, 'Source'));
-        if (mode === 'rendered') {
-          const frame = h('iframe', { class: 'cd-frame', sandbox: '' });
-          frame.setAttribute('srcdoc', text);
-          body.replaceChildren(frame);
-        } else {
-          showSource();
-        }
+        if (mode === 'rendered') body.replaceChildren(renderRendered());
+        else showSource();
       });
       panel.append(seg, body);
       setMode('rendered');
+    };
+
+    if (looksLikeHtml(text)) {
+      mountToggle(() => {
+        const frame = h('iframe', { class: 'cd-frame', sandbox: '' });
+        frame.setAttribute('srcdoc', text);
+        return frame;
+      });
+    } else if (looksLikeMarkdown(text)) {
+      // No `codeViewer` seam → SQL-tagged fences fall back to a plain
+      // `<pre><code>` (the cell drawer mounts no CM6), everything else renders
+      // through the same bounded, fail-closed viewer the docs pane uses.
+      mountToggle(() => renderDocMarkdown(doc, parseDocMarkdown(text, { linkPolicy: defaultDocLinkPolicy })));
     } else {
       panel.appendChild(body);
       showSource();

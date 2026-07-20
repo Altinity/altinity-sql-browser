@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { looksLikeHtml, prettyValue } from '../../src/core/cell.js';
+import { looksLikeHtml, looksLikeMarkdown, prettyValue } from '../../src/core/cell.js';
 
 describe('looksLikeHtml', () => {
   it('true for tag pairs and self-closing tags', () => {
@@ -13,6 +13,35 @@ describe('looksLikeHtml', () => {
     expect(looksLikeHtml('a < b and c > d')).toBe(false);
     expect(looksLikeHtml('')).toBe(false);
     expect(looksLikeHtml(null)).toBe(false);
+  });
+});
+
+describe('looksLikeMarkdown', () => {
+  it('true for each block-level signal', () => {
+    expect(looksLikeMarkdown('# Heading')).toBe(true);
+    expect(looksLikeMarkdown('## Sub heading')).toBe(true);
+    expect(looksLikeMarkdown('- item\n- item')).toBe(true);
+    expect(looksLikeMarkdown('* bullet')).toBe(true);
+    expect(looksLikeMarkdown('1. first\n2. second')).toBe(true);
+    expect(looksLikeMarkdown('3) alt ordered')).toBe(true);
+    expect(looksLikeMarkdown('> a quote')).toBe(true);
+    expect(looksLikeMarkdown('```\ncode\n```')).toBe(true);
+    expect(looksLikeMarkdown('intro\n~~~\ncode\n~~~')).toBe(true);
+    expect(looksLikeMarkdown('---')).toBe(true);
+    expect(looksLikeMarkdown('***')).toBe(true);
+    expect(looksLikeMarkdown('see [the docs](https://example.com) now')).toBe(true);
+    expect(looksLikeMarkdown('a heading below\n### Details')).toBe(true); // not only at line 0
+  });
+  it('false for plain prose, ambiguous emphasis, empty, and null', () => {
+    expect(looksLikeMarkdown('just a normal sentence.')).toBe(false);
+    expect(looksLikeMarkdown('use the *args and **kwargs identifiers')).toBe(false); // lone emphasis ignored
+    expect(looksLikeMarkdown('a-b-c hyphenated')).toBe(false);
+    expect(looksLikeMarkdown('1.5 is a number, not a list')).toBe(false);
+    expect(looksLikeMarkdown('#nospace is not a heading')).toBe(false);
+    expect(looksLikeMarkdown('   ')).toBe(false);
+    expect(looksLikeMarkdown('')).toBe(false);
+    expect(looksLikeMarkdown(null)).toBe(false);
+    expect(looksLikeMarkdown(undefined)).toBe(false);
   });
 });
 

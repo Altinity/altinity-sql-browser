@@ -42,34 +42,36 @@ export interface Rect {
   bottom: number;
 }
 
-/** Default fraction of the dragged tile's own area that must overlap a
- *  destination slot before a move commits (owner decision, #332 redesign). */
+/** Default fraction of the DESTINATION slot's area that the dragged tile must
+ *  cover before a move commits (owner decision, #332 redesign). Measured
+ *  against the target slot (not the dragged tile) so a small tile dragged onto
+ *  a large slot commits by covering enough of that slot, and a large tile onto
+ *  a small slot commits once it blankets the slot. */
 export const OVERLAP_COMMIT_RATIO = 2 / 3;
 
 /**
  * Resolve which tile's slot the dragged rect now occupies, for the grafana-grid
  * live-reflow drag: the first candidate (in canonical `dashboard.tiles[]`
- * order) whose captured HOME rect overlaps `dragged` by at least `ratio` of the
- * DRAGGED rect's own area. Overlap is always measured against the tiles' home
- * positions (captured once at drag-start), so a live sibling shift never feeds
- * back into the decision. Returns that candidate's tileId — which may be the
- * dragged tile's own id when it still overlaps home (the caller reads that as
+ * order) whose captured HOME rect is covered by `dragged` for at least `ratio`
+ * of THAT CANDIDATE SLOT'S area. Overlap is always measured against the tiles'
+ * home positions (captured once at drag-start), so a live sibling shift never
+ * feeds back into the decision. Returns that candidate's tileId — which may be
+ * the dragged tile's own id when it still covers home (the caller reads that as
  * "stay / snap back") — or null when nothing clears the threshold.
  *
- * A degenerate dragged rect (zero/negative area, e.g. happy-dom's unstubbed
- * {0,0,0,0}) returns null: never divide by zero, never spuriously commit.
+ * A degenerate candidate rect (zero/negative area, e.g. happy-dom's unstubbed
+ * {0,0,0,0}) is skipped: never divide by zero, never spuriously commit.
  */
 export function resolveOverlapInsertIndex(
   dragged: Rect, candidates: TileRect[], ratio: number = OVERLAP_COMMIT_RATIO,
 ): string | null {
-  const draggedArea = (dragged.right - dragged.left) * (dragged.bottom - dragged.top);
-  if (draggedArea <= 0) return null;
-  const need = ratio * draggedArea;
   for (const c of candidates) {
+    const candArea = (c.right - c.left) * (c.bottom - c.top);
+    if (candArea <= 0) continue;
     const w = Math.min(dragged.right, c.right) - Math.max(dragged.left, c.left);
     const h = Math.min(dragged.bottom, c.bottom) - Math.max(dragged.top, c.top);
     const overlap = Math.max(0, w) * Math.max(0, h);
-    if (overlap >= need) return c.tileId;
+    if (overlap >= ratio * candArea) return c.tileId;
   }
   return null;
 }
