@@ -549,7 +549,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
   });
 
   it('⌘-drag (metaKey) completes a move and persists the new order', async () => {
@@ -588,7 +588,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x + 2, clientY: start.y }));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -613,12 +613,17 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     }));
     const to = tileCenter(1);
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
-    expect(cards[0].classList.contains('dash-moving')).toBe(true);
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].style.position).toBe('fixed');
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(true);
     window.dispatchEvent(new PointerEvent('pointercancel'));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(cards[0].style.position).toBe('');
+    expect(cards[0].style.transform).toBe('');
+    expect(cards[0].style.height).toBe('');
+    expect(cards[0].style.display).toBe('');
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -636,7 +641,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     window.dispatchEvent(new Event('blur'));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -654,8 +659,29 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('the dragged tile floats (position:fixed) and its transform follows the pointer during a flow drag', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    // Cross the threshold — beginMove lifts the card to a fixed follower.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: start.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].style.position).toBe('fixed');
+    // A further move updates the follower transform to the new pointer delta.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 37, clientY: start.y + 11 }));
+    expect(cards[0].style.transform).toBe('translate(37px,11px)');
+    window.dispatchEvent(new PointerEvent('pointercancel'));
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(cards[0].style.transform).toBe('');
   });
 
   it('a click synthesized after a completed same-tile move is suppressed — no cell-detail drawer opens', async () => {
@@ -1647,6 +1673,32 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
     expect(qsa(app.root, '.dash-tile.dash-floating').length).toBe(0);
   });
 
+  it('floats the tile at its HOME left, not the placeholder-displaced left (r0 captured pre-placeholder)', async () => {
+    // Real-browser regression: `grid.insertBefore(placeholder, card)` pushes the
+    // card into the NEXT CSS-grid cell, so the home rect MUST be read before the
+    // placeholder is inserted — else the fixed `left` is a column off and the
+    // floated tile sits horizontally offset from the cursor (vertical stays
+    // fine, same row). happy-dom ignores grid layout, so model the displacement:
+    // the dragged card reports HOME left until a `.dash-tile-placeholder` exists.
+    const { app } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grid = qs<HTMLElement>(app.root, '.dash-grid');
+    const HOME_LEFT = 20, DISPLACED_LEFT = 431; // displaced = one column+gap over
+    cards[0].getBoundingClientRect = () => {
+      const left = grid.querySelector('.dash-tile-placeholder') ? DISPLACED_LEFT : HOME_LEFT;
+      return { left, right: left + 150, top: 0, bottom: 50, width: 150, height: 50, x: left, y: 0, toJSON: () => ({}) } as DOMRect;
+    };
+    const grip = qs(cards[0], '.dash-gg-grip');
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: HOME_LEFT + 10, clientY: 25 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: HOME_LEFT + 20, clientY: 25 })); // crosses threshold → beginMove floats
+    expect(cards[0].style.position).toBe('fixed');
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(1); // placeholder IS inserted…
+    expect(cards[0].style.left).toBe(HOME_LEFT + 'px'); // …but the float used the pre-placeholder home left
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: HOME_LEFT + 20, clientY: 25 }));
+  });
+
   it('forward drag: the placeholder preview lands at the SAME slot the commit does (no off-by-one)', async () => {
     // 4 tiles; drag t1 (index 0) forward onto t3's slot (index 2). The dragged
     // tile "takes" t3's slot, so both the live gap and the committed order must
@@ -1754,6 +1806,340 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
       expect(commit).toHaveBeenCalled();
     } finally {
       win.matchMedia = realMatchMedia;
+    }
+  });
+});
+
+// #338: edge auto-scroll while a tile move is active. `wireTileDrag`
+// (ui/dashboard.ts) resolves `.dash-page` at pointerdown runtime, so these
+// tests stub its geometry (happy-dom returns an all-zero rect and readonly-0
+// scroll metrics otherwise) BEFORE arming a drag, and install a manually
+// drained fake `requestAnimationFrame`/`cancelAnimationFrame` on `window` (the
+// same `win` `wireTileDrag` resolves via `doc.defaultView || window`) so the
+// auto-scroll controller's frame loop never actually waits on a real paint.
+/** Stubs `.dash-page`'s viewport rect and scroll metrics. `top`/`bottom` are
+ *  the STUBBED `getBoundingClientRect` (the auto-scroll target's visible
+ *  viewport, sans any topbar offset — the topbar's `offsetHeight` is left at
+ *  happy-dom's real 0 default, so `visibleTop` here IS the page top). */
+function stubScrollHost(
+  page: HTMLElement,
+  opts: { top?: number; bottom?: number; scrollHeight?: number; clientHeight?: number; scrollTop?: number } = {},
+): void {
+  const top = opts.top ?? 0;
+  const bottom = opts.bottom ?? 400;
+  const rect = { top, bottom, left: 0, right: 800, width: 800, height: bottom - top, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+  page.getBoundingClientRect = () => rect;
+  Object.defineProperty(page, 'scrollHeight', { value: opts.scrollHeight ?? 2000, configurable: true });
+  Object.defineProperty(page, 'clientHeight', { value: opts.clientHeight ?? (bottom - top), configurable: true });
+  let st = opts.scrollTop ?? 0;
+  Object.defineProperty(page, 'scrollTop', { get: () => st, set: (v: number) => { st = v; }, configurable: true });
+}
+
+/** Installs a manually-drained fake rAF pair on `win`, returning `flush()` (run
+ *  every queued callback once — one simulated paint tick), `pending` (queue
+ *  size, for single-loop assertions), and `restore()` (put the real pair back
+ *  — call in a `finally`, mirroring the `matchMedia` stub/restore above). */
+function fakeRaf(win: Window & typeof globalThis) {
+  let queue: { id: number; cb: FrameRequestCallback }[] = [];
+  let nextId = 1;
+  const realRaf = win.requestAnimationFrame;
+  const realCaf = win.cancelAnimationFrame;
+  win.requestAnimationFrame = ((cb: FrameRequestCallback): number => {
+    const id = nextId++;
+    queue.push({ id, cb });
+    return id;
+  }) as typeof win.requestAnimationFrame;
+  win.cancelAnimationFrame = ((id: number): void => {
+    queue = queue.filter((q) => q.id !== id);
+  }) as typeof win.cancelAnimationFrame;
+  return {
+    flush(): void { const run = queue; queue = []; for (const q of run) q.cb(0); },
+    get pending(): number { return queue.length; },
+    restore(): void { win.requestAnimationFrame = realRaf; win.cancelAnimationFrame = realCaf; },
+  };
+}
+
+describe('renderDashboard — drag auto-scroll (#338)', () => {
+  const gridWs = () => wsWith({
+    queries: [q('q1', 'SELECT k FROM a'), q('q2', 'SELECT k FROM b'), q('q3', 'SELECT k FROM c')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }, { id: 't3', queryId: 'q3' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+  const order = (app: TestApp): string[] => qsa(app.root, '.dash-gg-tile .dash-tile-name').map((n) => n.textContent || '');
+
+  it('a stationary pointer near the bottom edge scrolls .dash-page down after flushing rAF frames', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 }); // room below to scroll (scrollHeight 2000 > clientHeight 400)
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y })); // cross threshold
+      // Pointer at y=390: inside the bottom 80px edge zone of [0,400].
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 390 }));
+      expect(page.scrollTop).toBe(0);
+      raf.flush();
+      expect(page.scrollTop).toBeGreaterThan(0);
+      const afterOne = page.scrollTop;
+      raf.flush(); // stationary pointer keeps scrolling frame after frame
+      expect(page.scrollTop).toBeGreaterThan(afterOne);
+      // Release outside every stubbed tile rect so no move commits (irrelevant
+      // to this assertion — just clean teardown).
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: OUTSIDE_ALL_TILES.x, clientY: OUTSIDE_ALL_TILES.y }));
+      expect(commit).not.toHaveBeenCalled();
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('after scrolling down, a stationary pointer near the top edge scrolls back up', async () => {
+    const { app } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400, scrollTop: 500 }); // already scrolled down
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+      // Pointer at y=10: inside the top 80px edge zone.
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 10 }));
+      const before = page.scrollTop;
+      raf.flush();
+      expect(page.scrollTop).toBeLessThan(before);
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: OUTSIDE_ALL_TILES.x, clientY: OUTSIDE_ALL_TILES.y }));
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('a plain drag that never crosses the move threshold never starts auto-scroll', async () => {
+    const { app } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      // 2px < the 4px move threshold — never arms the drag (beginMove, which
+      // creates the auto-scroll controller, never runs) — so no auto-scroll,
+      // even though this point is already inside the top edge zone.
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 2, clientY: from.y }));
+      expect(raf.pending).toBe(0);
+      raf.flush();
+      expect(page.scrollTop).toBe(0);
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: from.x + 2, clientY: from.y }));
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('destination recomputes from an auto-scroll frame alone, with no new pointermove (flow engine)', async () => {
+    // Two tiles stacked vertically (custom rects, NOT stubTileRects's default
+    // horizontal layout): tile A occupies y:[300,350], tile B y:[350,400] —
+    // a pointer at y=345 starts inside A and, as the page auto-scrolls (the
+    // pointer sitting in the BOTTOM edge zone at visibleBottom=400), the
+    // captured home rects shift up under it until B is what the stationary
+    // pointer now sits over — with no second pointermove.
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    const rectFor = (top: number, bottom: number): DOMRect =>
+      ({ left: 0, right: 150, top, bottom, width: 150, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
+    cards[0].getBoundingClientRect = () => rectFor(300, 350);
+    cards[1].getBoundingClientRect = () => rectFor(350, 400);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const start = { x: 75, y: 320 };
+      cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+      }));
+      // Crosses the 4px move threshold (captures home rects) AND lands the
+      // pointer at y=345 — inside tile A's [300,350] rect and inside the
+      // bottom edge zone ([320,400], edgePx=80).
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x, clientY: 345 }));
+      expect(cards[0].classList.contains('dash-drop-target')).toBe(false); // the dragged tile is never its own target
+      expect(cards[1].classList.contains('dash-drop-target')).toBe(false); // not (yet) over tile B
+      raf.flush(); // one auto-scroll frame — no new pointermove
+      expect(cards[1].classList.contains('dash-drop-target')).toBe(true); // scroll alone revealed tile B under the stationary pointer
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x, clientY: 345 }));
+      expect(commit).toHaveBeenCalledTimes(1); // released over tile B → one move-tile commit
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('exactly one move-tile command commits on release even after several auto-scroll frames', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 390 })); // bottom edge zone
+      raf.flush();
+      raf.flush();
+      // Land the floating card over tile 2's CURRENT (scroll-shifted) home
+      // slot — `currentRects()` shifts every captured home rect by the page's
+      // accumulated scroll delta, so the dragged rect must match that shifted
+      // position for the overlap resolver to commit onto it.
+      const dy = page.scrollTop; // scrollTop0 was 0 at this drag's start
+      const home2 = cards[2].getBoundingClientRect();
+      const land = { ...home2, top: home2.top - dy, bottom: home2.bottom - dy };
+      cards[0].getBoundingClientRect = () => ({ ...land, toJSON: () => ({}) }) as DOMRect;
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
+      expect(commit).toHaveBeenCalledTimes(1);
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('a cancelled gesture (Escape) stops the auto-scroll loop and dispatches no command', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 390 }));
+      raf.flush();
+      const scrolledTo = page.scrollTop;
+      expect(scrolledTo).toBeGreaterThan(0);
+      expect(raf.pending).toBe(1); // one loop still running
+      app.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(raf.pending).toBe(0); // stop() cancelled the pending frame
+      raf.flush(); // draining an empty queue is a no-op
+      expect(page.scrollTop).toBe(scrolledTo); // no further scroll after cancel
+      expect(commit).not.toHaveBeenCalled();
+      expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('read-only: no drag listeners wired, so no auto-scroll ever starts', async () => {
+    const detached = gridWs();
+    const { app, commit } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(qs(app.root, '.dash-gg-grip')).toBeNull(); // no grip built in read-only mode
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const from = tileCenter(0);
+      cards[0].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y, metaKey: true }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 390 }));
+      expect(raf.pending).toBe(0);
+      raf.flush();
+      expect(page.scrollTop).toBe(0);
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: from.x + 10, clientY: 390 }));
+      expect(commit).not.toHaveBeenCalled();
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('the flow engine also auto-scrolls and still reorders on release', async () => {
+    const flowOrder = (app: TestApp): string[] => qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent || '');
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400 });
+    const raf = fakeRaf(window);
+    try {
+      const start = tileCenter(0);
+      cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+      }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: 390 })); // crosses threshold near the bottom edge
+      expect(raf.pending).toBe(1);
+      raf.flush();
+      expect(page.scrollTop).toBeGreaterThan(0);
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+      expect(flowOrder(app)).toEqual(['q2', 'q1']);
+      expect(commit).toHaveBeenCalledTimes(1);
+    } finally {
+      raf.restore();
+    }
+  });
+
+  it('the sticky topbar offsets the effective top edge (a pointer under the header scrolls up)', async () => {
+    // The issue requires the effective upper interaction boundary to be the
+    // first Dashboard content coordinate BELOW the sticky topbar, not the raw
+    // page top. With the topbar 100px tall and the page rect starting at y=0,
+    // `visibleTop` is 100, so a pointer at y=90 (over the header strip, ABOVE
+    // the content) counts as above the top edge → scroll up at max. With no
+    // topbar offset (the other #338 tests' degenerate case) y=90 would be dead
+    // center and NOT scroll — so a change dropping the `topbar.offsetHeight`
+    // term, using the wrong element, or flipping its sign fails this test.
+    const { app } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const page = qs<HTMLElement>(app.root, '.dash-page');
+    stubScrollHost(page, { top: 0, bottom: 400, scrollTop: 500 }); // room above to scroll up
+    const topbar = qs<HTMLElement>(page, '.dash-topbar');
+    Object.defineProperty(topbar, 'offsetHeight', { value: 100, configurable: true });
+    const raf = fakeRaf(window);
+    try {
+      const grip = qs(cards[0], '.dash-gg-grip');
+      const from = tileCenter(0);
+      grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y })); // cross threshold
+      // y=90 is below the raw page top (0) but ABOVE visibleTop (0 + topbar 100).
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: 90 }));
+      const before = page.scrollTop;
+      raf.flush();
+      expect(page.scrollTop).toBeLessThan(before); // scrolled up — proves the topbar offset shifted the edge zone
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: OUTSIDE_ALL_TILES.x, clientY: OUTSIDE_ALL_TILES.y }));
+    } finally {
+      raf.restore();
     }
   });
 });

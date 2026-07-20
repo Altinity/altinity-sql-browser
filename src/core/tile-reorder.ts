@@ -42,38 +42,40 @@ export interface Rect {
   bottom: number;
 }
 
-/** Default fraction of the DESTINATION slot's area that the dragged tile must
- *  cover before a move commits (owner decision, #332 redesign). Measured
- *  against the target slot (not the dragged tile) so a small tile dragged onto
- *  a large slot commits by covering enough of that slot, and a large tile onto
- *  a small slot commits once it blankets the slot. */
-export const OVERLAP_COMMIT_RATIO = 2 / 3;
-
 /**
  * Resolve which tile's slot the dragged rect now occupies, for the grafana-grid
- * live-reflow drag: the first candidate (in canonical `dashboard.tiles[]`
- * order) whose captured HOME rect is covered by `dragged` for at least `ratio`
- * of THAT CANDIDATE SLOT'S area. Overlap is always measured against the tiles'
- * home positions (captured once at drag-start), so a live sibling shift never
- * feeds back into the decision. Returns that candidate's tileId — which may be
- * the dragged tile's own id when it still covers home (the caller reads that as
- * "stay / snap back") — or null when nothing clears the threshold.
+ * live-reflow drag: MAX-OVERLAP — the candidate (in canonical
+ * `dashboard.tiles[]` order) whose captured HOME rect the dragged rect
+ * overlaps by the GREATEST area wins. Overlap is always measured against the
+ * tiles' home positions (captured once at drag-start), so a live sibling
+ * shift never feeds back into the decision. A tie is broken by canonical
+ * order (the first candidate to reach that overlap amount keeps it — strict
+ * `>` required to beat it). The dragged tile's own home rect is among the
+ * candidates, so a tile still mostly over its origin resolves to its own id
+ * (the caller reads that as "stay / snap back"). Returns null only when the
+ * dragged rect overlaps NO candidate (dropped in empty space).
+ *
+ * This replaces the earlier "commits once it covers ≥2/3 of the destination
+ * slot's area" threshold (#332): a short tile (e.g. a 403×120 KPI) can never
+ * cover 2/3 of a taller 403×296 slot's area, so under that rule it always
+ * snapped back. Max-overlap has no such floor — whichever slot it overlaps
+ * most, wins — so it resolves correctly regardless of the dragged tile's
+ * aspect ratio.
  *
  * A degenerate candidate rect (zero/negative area, e.g. happy-dom's unstubbed
- * {0,0,0,0}) is skipped: never divide by zero, never spuriously commit.
+ * {0,0,0,0}) contributes an overlap of 0 and so can never win — no explicit
+ * skip needed.
  */
-export function resolveOverlapInsertIndex(
-  dragged: Rect, candidates: TileRect[], ratio: number = OVERLAP_COMMIT_RATIO,
-): string | null {
+export function resolveOverlapInsertIndex(dragged: Rect, candidates: TileRect[]): string | null {
+  let bestId: string | null = null;
+  let bestOverlap = 0;
   for (const c of candidates) {
-    const candArea = (c.right - c.left) * (c.bottom - c.top);
-    if (candArea <= 0) continue;
     const w = Math.min(dragged.right, c.right) - Math.max(dragged.left, c.left);
     const h = Math.min(dragged.bottom, c.bottom) - Math.max(dragged.top, c.top);
     const overlap = Math.max(0, w) * Math.max(0, h);
-    if (overlap >= ratio * candArea) return c.tileId;
+    if (overlap > bestOverlap) { bestOverlap = overlap; bestId = c.tileId; }
   }
-  return null;
+  return bestId;
 }
 
 /** The FLIP delta (First-minus-Last) that pre-positions an element at its old

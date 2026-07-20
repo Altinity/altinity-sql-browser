@@ -2422,9 +2422,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-grid.modkey .dash-tile { cursor: grab; }
 .dash-grid.dash-reordering { user-select: none; cursor: grabbing; }
 .dash-grid.dash-reordering .dash-tile { cursor: grabbing; }
-/* Flow-engine path: the moving tile dims in place and the hovered destination
-   tile is outlined (no float/reflow — flow's KPI band has no grid slot). */
-.dash-tile.dash-moving { opacity: .6; }
+/* Flow-engine path: the hovered destination tile is outlined (point-hit-test,
+   no live grid reflow/placeholder — flow's KPI band has no grid slot). The
+   dragged tile itself floats via `.dash-floating` below, same as grid. */
 .dash-tile.dash-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* Grafana-grid live-reflow path: the dragged tile lifts and follows the cursor
    (translated in JS per frame — no transition on `transform` here, or the
