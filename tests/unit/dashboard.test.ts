@@ -549,7 +549,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
   });
 
   it('⌘-drag (metaKey) completes a move and persists the new order', async () => {
@@ -588,7 +588,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x + 2, clientY: start.y }));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -613,12 +613,17 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     }));
     const to = tileCenter(1);
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
-    expect(cards[0].classList.contains('dash-moving')).toBe(true);
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].style.position).toBe('fixed');
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(true);
     window.dispatchEvent(new PointerEvent('pointercancel'));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(cards[0].style.position).toBe('');
+    expect(cards[0].style.transform).toBe('');
+    expect(cards[0].style.height).toBe('');
+    expect(cards[0].style.display).toBe('');
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -636,7 +641,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     window.dispatchEvent(new Event('blur'));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
   });
 
@@ -654,8 +659,29 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(order(app)).toEqual(['q1', 'q2']);
     expect(commit).not.toHaveBeenCalled();
-    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('the dragged tile floats (position:fixed) and its transform follows the pointer during a flow drag', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    // Cross the threshold — beginMove lifts the card to a fixed follower.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: start.y }));
+    expect(cards[0].classList.contains('dash-floating')).toBe(true);
+    expect(cards[0].style.position).toBe('fixed');
+    // A further move updates the follower transform to the new pointer delta.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 37, clientY: start.y + 11 }));
+    expect(cards[0].style.transform).toBe('translate(37px,11px)');
+    window.dispatchEvent(new PointerEvent('pointercancel'));
+    expect(cards[0].classList.contains('dash-floating')).toBe(false);
+    expect(cards[0].style.transform).toBe('');
   });
 
   it('a click synthesized after a completed same-tile move is suppressed — no cell-detail drawer opens', async () => {

@@ -18,13 +18,18 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   selects and copies text inside Markdown/text, table, and logs tiles instead of
   dragging the tile. On the Grid Tiles (grafana-grid) engine the dragged tile
   **lifts and follows the cursor** while the other tiles reflow live to open a
-  gap at the insertion point; the move **commits only when the dragged tile
-  covers ≥2/3 of a destination slot's area** (`resolveOverlapInsertIndex`
-  in `core/tile-reorder.ts`) and otherwise **snaps back** — the snap-back restore
+  gap at the insertion point; the move **commits to whichever slot the dragged
+  tile overlaps by the greatest area** (max-overlap, `resolveOverlapInsertIndex`
+  in `core/tile-reorder.ts` — replaces an earlier ≥2/3-of-destination-area
+  threshold that a short tile, e.g. a KPI, could never reach against a taller
+  neighbor and so always snapped back) and otherwise **snaps back** when it
+  still overlaps its own origin most or overlaps nothing — the snap-back restore
   is synchronous and independent of the signature-gated grid reconcile. Sibling
   motion uses a FLIP animation that honors `prefers-reduced-motion`. The flow
-  engine keeps the simpler point-hit-test drag (its KPI band has no grid slot to
-  reflow into). A move still dispatches the existing atomic `move-tile` command
+  engine also lifts the dragged tile to a floating follower under the cursor,
+  but still resolves its destination by the simpler point-hit-test (its KPI
+  band has no grid slot to live-reflow into, so there is no placeholder or
+  FLIP there). A move still dispatches the existing atomic `move-tile` command
   exactly once and preserves canonical `dashboard.tiles[]` order; a cancelled
   gesture (pointercancel / window blur / Escape) changes nothing, and the click a
   completed move would synthesize is suppressed so it never activates a cell.
@@ -117,7 +122,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `DragAutoScrollTarget` + `FrameScheduler`) so a future nested Dashboard
   scroll container can reuse the controller unchanged; both the Grid Tiles
   live-reflow and the flow (Report / 2-column / 3-column) reorder paths
-  auto-scroll. No new bundled runtime dependency.
+  auto-scroll. Fixed alongside: the grabbed tile now floats (`position:fixed`)
+  and follows the cursor in **every** editable layout, not just Grid Tiles —
+  a flow-layout tile used to stay `position:static` while dragging, so
+  auto-scroll carried it off-screen with the rest of the page instead of
+  keeping it under the pointer; this covers the KPI band tile as well. No new
+  bundled runtime dependency.
 - **Broad version-exact reference via `system.documentation` (ClickHouse
   26.6+) with safe Markdown rendering** (#60 Phase 3, #315). Servers 26.6
   and newer contribute the full breadth of `system.documentation` — table

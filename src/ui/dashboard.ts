@@ -763,10 +763,13 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // no modifier, OR from anywhere on the body with ⌘/Ctrl held (the schema-graph
   // modifier model). On the grafana-grid engine the dragged tile lifts and
   // follows the pointer while the siblings reflow live to open a gap; the move
-  // commits only when the dragged tile overlaps a destination slot by ≥2/3 of
-  // its own area (`resolveOverlapInsertIndex`, core/tile-reorder.ts) else it
-  // snaps back. The flow engine keeps the simpler point-hit-test path (its KPI
-  // tiles render detached in a band, with no coherent grid slot to reflow into).
+  // commits to whichever slot the dragged tile overlaps most
+  // (`resolveOverlapInsertIndex`, core/tile-reorder.ts, max-overlap — no area
+  // threshold, so a short tile like a KPI still resolves correctly against a
+  // taller neighbor); it snaps back when it still overlaps its own origin
+  // slot most, or overlaps nothing. The flow engine keeps the simpler
+  // point-hit-test path (its KPI tiles render detached in a band, with no
+  // coherent grid slot to reflow into).
   // A completed move dispatches the same atomic `move-tile` command exactly once;
   // a cancelled move (pointercancel / window blur / Escape) leaves the document,
   // revision, and fallback untouched. Read-only never wires it.
@@ -805,6 +808,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       let dropId: string | null = null;               // flow path: outlined hover target
       let placeholder: HTMLElement | null = null;      // grid path: holds the dragged tile's slot
       let savedHeight = '';                            // grid path: the card's grid height inline style
+      let savedDisplay = '';                           // both paths: the card's inline display, restored after the float
       let lastReflowId: string | null = null;          // grid path: last resolved insertion slot
       const touched = new Set<HTMLElement>();           // grid path: siblings carrying a FLIP transform
       const win = doc.defaultView || window;
@@ -885,7 +889,6 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       };
       const beginMove = (): void => {
         moving = true;
-        if (!liveReflow) card.classList.add('dash-moving'); // flow: dim in place (grid path floats instead)
         grid.classList.add('dash-reordering'); // user-select:none + grabbing, only now
         scrollTop0 = scrollEl ? scrollEl.scrollTop : 0;
         // Capture every grid-placed tile's home rect once, in canonical order —
@@ -901,23 +904,36 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
           return [{ tileId: t.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom }];
         });
         if (liveReflow) {
-          // Insert a same-size placeholder in the card's slot, then lift the card
-          // to a fixed follower. The card stays a grid child (position:fixed pulls
-          // it out of flow in place — simpler cleanup than reparenting).
-          const r0 = card.getBoundingClientRect();
-          savedHeight = card.style.height;
+          // Insert a same-size placeholder in the card's slot so the grid can
+          // FLIP-reflow into the gap; the flow path has no slot grid, so no
+          // placeholder there — the remaining flow tiles simply reflow to
+          // close the gap while the dragged tile floats above them.
           placeholder = h('div', { class: 'dash-tile-placeholder' });
           placeholder.style.gridColumn = card.style.gridColumn;
           placeholder.style.height = card.style.height;
           grid.insertBefore(placeholder, card);
-          card.classList.add('dash-floating');
-          card.style.position = 'fixed';
-          card.style.left = r0.left + 'px';
-          card.style.top = r0.top + 'px';
-          card.style.width = r0.width + 'px';
-          card.style.height = r0.height + 'px';
-          card.style.zIndex = '40';
         }
+        // Lift the card to a fixed follower — BOTH engines float, so the
+        // dragged tile stays under the cursor even while #338 auto-scroll
+        // moves the page underneath it (a flow tile left position:static
+        // would otherwise scroll off-screen with the rest of the content).
+        // The card stays a DOM child of its container (position:fixed pulls
+        // it out of flow in place — simpler cleanup than reparenting).
+        const r0 = card.getBoundingClientRect();
+        savedHeight = card.style.height;
+        savedDisplay = card.style.display;
+        // Defensive: a KPI-band card's WRAPPER is display:contents, not the
+        // card itself, but if some path ever leaves the card's own computed
+        // display as 'contents' it can't be position:fixed meaningfully —
+        // force a real box for the duration of the drag.
+        if (win.getComputedStyle(card).display === 'contents') card.style.display = 'block';
+        card.classList.add('dash-floating');
+        card.style.position = 'fixed';
+        card.style.left = r0.left + 'px';
+        card.style.top = r0.top + 'px';
+        card.style.width = r0.width + 'px';
+        card.style.height = r0.height + 'px';
+        card.style.zIndex = '40';
         // #338: while the drag is active, the pointer nearing the top/bottom
         // edge of the visible `.dash-page` viewport auto-scrolls it — both
         // engines (a grid live-reflow AND a flow reorder can both need more
@@ -955,6 +971,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         card.classList.remove('dash-floating');
         card.style.position = card.style.left = card.style.top = card.style.width = card.style.zIndex = card.style.transform = '';
         card.style.height = savedHeight; // restore the grid height inline style (not clear it)
+        card.style.display = savedDisplay; // restore the card's own display (only forced when computed 'contents')
         touched.forEach((c) => { c.style.transition = ''; c.style.transform = ''; });
         touched.clear();
         lastGridSig = ''; // defense-in-depth: force a full grid rebuild on the next publish
@@ -966,7 +983,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         }
         lastPointerX = ev.clientX;
         lastPointerY = ev.clientY;
-        if (liveReflow) card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)';
+        card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)'; // both engines float and follow the cursor
         resolveFromPointer(ev.clientX, ev.clientY);
         // Latest pointer Y (viewport coords — unaffected by scroll, the card
         // is position:fixed) drives the edge-proximity check every move, on
@@ -981,8 +998,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         doc.removeEventListener('keydown', onKey, true);
         autoScroll?.stop();
         autoScroll = null;
-        if (moving) { if (liveReflow) restoreDrag(); else setDrop(null); }
-        card.classList.remove('dash-moving');
+        if (moving) { restoreDrag(); setDrop(null); }
         grid.classList.remove('dash-reordering');
         gestureActive = false;
       };
