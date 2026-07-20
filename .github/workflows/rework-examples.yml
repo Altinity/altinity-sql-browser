@@ -49,18 +49,19 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           path = Path('tests/unit/spec-examples.test.js')
-          text = path.read_text()
-          text, count = re.subn(
-              r"const snippets = \[\.\.\.source\.matchAll\(/```json[\s\S]*?g\)\]\.map\(\(match\) => JSON\.parse\(match\[1\]\)\);",
-              "const snippets = [...source.matchAll(new RegExp('```json\\\\n([\\\\s\\\\S]*?)```', 'g'))].map((match) => JSON.parse(match[1]));",
-              text,
-              count=1,
-          )
-          if count != 1:
+          lines = path.read_text().splitlines()
+          start = next((i for i, line in enumerate(lines) if 'const snippets = [...source.matchAll(' in line), None)
+          if start is None:
               raise SystemExit('generated markdown regex was not found')
-          path.write_text(text)
+          end = start
+          while end < len(lines) and 'JSON.parse(match[1]));' not in lines[end]:
+              end += 1
+          if end >= len(lines):
+              raise SystemExit('generated markdown regex end was not found')
+          replacement = r"      const snippets = [...source.matchAll(/```json\n([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]));"
+          lines[start:end + 1] = [replacement]
+          path.write_text('\n'.join(lines) + '\n')
           PY
       - name: Upload rewrite diagnostics
         if: ${{ failure() }}
