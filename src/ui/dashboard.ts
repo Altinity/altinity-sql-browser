@@ -941,6 +941,29 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     });
   }
 
+  // #332: a Dashboard Text (Markdown) tile is click/keyboard-openable into the
+  // SAME shared cell-detail drawer (the full Markdown, resizable, over the doc
+  // viewer) — useful when the authored content overflows the tile. A drag-select
+  // inside the tile, or a click on an inner link, never opens it. Wired on the
+  // freshly-rendered `.md-view` each paint (so listeners never stack), in edit
+  // and read-only modes alike. `title`/`content` come from the resolved tile.
+  function wireTextPreview(node: HTMLElement, title: string, content: string): void {
+    node.setAttribute('role', 'button');
+    node.setAttribute('tabindex', '0');
+    node.setAttribute('aria-label', title + ' — open Markdown preview');
+    node.classList.add('dash-text-preview');
+    const open = (): void => { openCellDetail(app as unknown as ResultsApp, title, 'Markdown', content, doc); };
+    node.addEventListener('click', (e) => {
+      if ((e.target as Element).closest('a, button, input, textarea, select')) return; // let inner links/controls act
+      const sel = doc.getSelection();
+      if (sel && !sel.isCollapsed && String(sel)) return; // a selection gesture, not a click
+      open();
+    });
+    node.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  }
+
   function ensureTileEl(ts: ViewerTileState): TileEl {
     const existing = tileEls.get(ts.tileId);
     if (existing) return existing;
@@ -1020,6 +1043,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
+    // #332: a Text (Markdown) tile opens the shared preview drawer on click /
+    // Enter-Space. Wired on the fresh node each paint (out.node is the `.md-view`
+    // renderPanelMarkdown returns; recreated per paint, so no listener stacking).
+    if (resolved.cfg.type === 'text') {
+      wireTextPreview(out.node as HTMLElement, ts.title, String((resolved.cfg as { content?: unknown }).content ?? ''));
+    }
     // #329: a 'ready' tile can legitimately carry no result meta (`ts.meta`
     // is `… | null`, only set after a query executes — a Text panel renders
     // static content and never does), so the footer is rendered only when

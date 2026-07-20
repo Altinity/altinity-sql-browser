@@ -1542,6 +1542,71 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
   });
 });
 
+describe('renderDashboard — Text (Markdown) tile preview (#332)', () => {
+  const textWs = (content: string) => wsWith({
+    queries: [q('tq', "SELECT '' AS body", { panel: { cfg: { type: 'text', content } } })],
+    tiles: [{ id: 't1', queryId: 'tq' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+
+  it('renders the Text tile inline through the shared doc viewer (.md-view > .docs-md)', async () => {
+    const { app } = dashApp({ responder: () => ({}), workspace: textWs('# Title\n\n- one\n- two') });
+    await render(app);
+    const view = qs(app.root, '.dash-tile-body .md-view .docs-md');
+    expect(view).not.toBeNull();
+    expect(qs(view, 'h4')?.textContent).toBe('Title'); // doc viewer offsets headings
+    expect(qsa(view, 'li').length).toBe(2);
+  });
+
+  it('clicking the Text tile opens the shared cell-detail drawer with the rendered Markdown', async () => {
+    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
+    const { app } = dashApp({ responder: () => ({}), workspace: textWs('# Hi\n\n- a\n- b') });
+    await render(app);
+    const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
+    expect(mdView.getAttribute('role')).toBe('button');
+    expect(mdView.getAttribute('tabindex')).toBe('0');
+    mdView.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const bd = qs(document, '.cd-backdrop');
+    expect(bd).not.toBeNull();
+    expect(qs(bd, '.docs-md h4')?.textContent).toBe('Hi');
+    bd.remove();
+  });
+
+  it('Enter/Space open the drawer; other keys do not', async () => {
+    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
+    const { app } = dashApp({ responder: () => ({}), workspace: textWs('# K') });
+    await render(app);
+    const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
+    mdView.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+    expect(qs(document, '.cd-backdrop')).toBeNull();
+    mdView.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+    qs(document, '.cd-backdrop').remove();
+    mdView.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+    qs(document, '.cd-backdrop').remove();
+  });
+
+  it('a click on an inner link, and a click while text is selected, do NOT open the drawer', async () => {
+    document.querySelectorAll('.cd-backdrop').forEach((b) => b.remove());
+    const { app } = dashApp({ responder: () => ({}), workspace: textWs('see [docs](https://example.com/x)') });
+    await render(app);
+    const mdView = qs<HTMLElement>(app.root, '.dash-tile-body .md-view');
+    // Inner link click → defers to the link, no drawer.
+    qs(mdView, 'a').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(qs(document, '.cd-backdrop')).toBeNull();
+    // A click that ends a text selection → no drawer (selection guard).
+    const realGetSel = document.getSelection.bind(document);
+    document.getSelection = () => ({ isCollapsed: false, toString: () => 'selected' }) as unknown as Selection;
+    try {
+      mdView.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      expect(qs(document, '.cd-backdrop')).toBeNull();
+    } finally {
+      document.getSelection = realGetSel;
+    }
+  });
+});
+
 // #332 redesign: grafana-grid tile reorder is a LIVE-REFLOW drag — grip-drag
 // with no modifier (or ⌘/Ctrl body-drag), the dragged tile lifts and follows,
 // siblings reflow, and the move commits only on ≥2/3 overlap else snaps back.

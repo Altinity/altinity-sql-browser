@@ -1,10 +1,11 @@
 // #315 Phase 3 — the bounded pure AST (`core/doc-markdown.ts`'s `DocBlock`/
-// `DocInline`) -> safe DOM view. Companion to `src/ui/panels.ts`'s
-// `renderMarkdown` (the `core/markdown-lite.js` Grafana-text-panel view) —
-// same "build DOM by construction, never innerHTML" discipline, but over
-// `doc-markdown.ts`'s richer, FLATTENED block/inline union (headings up to
-// h6, lists with nested sub-lists, quotes, thematic breaks, tables, fenced
-// code) rather than panels.js's 3-block subset.
+// `DocInline`) -> safe DOM view. This is the app's single Markdown renderer:
+// the reference-docs pane, the cell-detail drawer, and the Text panel
+// (`panels.ts`'s `renderPanelMarkdown`, #332) all project through it — "build
+// DOM by construction, never innerHTML" over `doc-markdown.ts`'s FLATTENED
+// block/inline union (headings up to h6, lists with nested sub-lists, quotes,
+// thematic breaks, tables, fenced code). The former lightweight
+// `core/markdown-lite.ts` 3-block renderer it once accompanied was retired.
 //
 // Pure render function over its inputs: no `app`/global access. The ONE
 // side-effecting capability it needs — mounting a read-only CM6 viewer for a

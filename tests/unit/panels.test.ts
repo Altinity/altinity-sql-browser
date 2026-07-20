@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { renderMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/panels.js';
+import { renderPanelMarkdown, renderResolvedPanel, PANEL_TYPES } from '../../src/ui/panels.js';
 import { renderResults } from '../../src/ui/results.js';
-import { parseMarkdown } from '../../src/core/markdown-lite.js';
 import { resolvePanel } from '../../src/core/panel-cfg.js';
 import { newResult as newResultUntyped } from '../../src/core/stream.js';
 import { makeApp } from '../helpers/fake-app.js';
@@ -35,7 +34,7 @@ interface StreamResult {
 }
 const newResult = (fmt: string, rowLimit = 0): StreamResult => newResultUntyped(fmt, rowLimit) as StreamResult;
 
-const md = (text: string) => renderMarkdown(parseMarkdown(text));
+const md = (text: string) => renderPanelMarkdown(document, text);
 
 function chartResult(): StreamResult {
   const r = newResult('Table');
@@ -165,27 +164,36 @@ const pickType = (app: TestApp, type: string): void => {
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
-// ── renderMarkdown (AST → DOM, injection-inert by construction) ──────────────
-describe('renderMarkdown', () => {
-  it('renders every block/inline construct as real elements', () => {
+// ── renderPanelMarkdown (Text panel → the shared doc viewer, #332) ───────────
+describe('renderPanelMarkdown', () => {
+  it('renders through the shared doc viewer: `.md-view > .docs-md` with real elements', () => {
     const el = md('# T\n\npara **b** *i* `c`\n\n- item\n\n1. one\n\n[d](https://x.example/)');
-    expect(el.querySelector('h1')!.textContent).toBe('T');
-    expect(el.querySelector('p strong')!.textContent).toBe('b');
-    expect(el.querySelector('p em')!.textContent).toBe('i');
-    expect(el.querySelector('p code')!.textContent).toBe('c');
-    expect(el.querySelector('ul li')!.textContent).toBe('item');
-    expect(el.querySelector('ol li')!.textContent).toBe('one');
-    const a = el.querySelector('a')!;
+    expect(el.classList.contains('md-view')).toBe(true); // wrapper kept for tile-containment CSS
+    const view = el.querySelector('.docs-md')!;
+    expect(view).not.toBeNull();
+    expect(view.querySelector('h4')!.textContent).toBe('T'); // doc viewer offsets headings (level 1 → h4)
+    expect(view.querySelector('p strong')!.textContent).toBe('b');
+    expect(view.querySelector('p em')!.textContent).toBe('i');
+    expect(view.querySelector('p code')!.textContent).toBe('c');
+    expect(view.querySelector('ul li')!.textContent).toContain('item');
+    expect(view.querySelector('ol li')!.textContent).toContain('one');
+    const a = view.querySelector('a')!;
     expect(a.getAttribute('href')).toBe('https://x.example/');
     expect(a.getAttribute('target')).toBe('_blank');
     expect(a.getAttribute('rel')).toBe('noopener noreferrer');
   });
-  it('raw HTML and unsafe links stay inert (text nodes, no elements)', () => {
+  it('raw HTML and unsafe links stay inert (fail-closed: literal text, no elements)', () => {
     const el = md('<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[x](javascript:alert1)');
     expect(el.querySelector('script')).toBeNull();
     expect(el.querySelector('img')).toBeNull();
     expect(el.querySelector('a')).toBeNull();
     expect(el.textContent).toContain('<script>alert(1)</script>'); // literal text
+  });
+  it('the panel link policy allows http(s) but rejects a scheme-less link (no clickhouse.com rewrite)', () => {
+    const el = md('[rel](getting-started) and [ok](http://plain.example/)');
+    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    expect(hrefs).toEqual(['http://plain.example/']); // scheme-less → literal text, not a docs link
+    expect(el.textContent).toContain('rel'); // the rejected link's text survives as plain text
   });
 });
 
@@ -609,12 +617,13 @@ describe('Panel drawer tab', () => {
   it('text: renders from cfg.content with NO result; textarea edits update cfg + preview', () => {
     const app = panelApp(null, { type: 'text', content: '# Hello' });
     renderResults(app);
-    expect(qs(region(app), '.md-view h1').textContent).toBe('Hello');
+    // Text panels render through the shared doc viewer (#332): `# ` → h4 inside `.md-view .docs-md`.
+    expect(qs(region(app), '.md-view .docs-md h4').textContent).toBe('Hello');
     const ta = qs<HTMLTextAreaElement>(region(app), '.panel-text-input');
     ta.value = '# Bye';
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     expect((app.activeTab().panelCfg as PanelCfg).content).toBe('# Bye');
-    expect(qs(region(app), '.md-view h1').textContent).toBe('Bye');
+    expect(qs(region(app), '.md-view .docs-md h4').textContent).toBe('Bye');
     expect(app.activeTab().dirtySpec).toBe(true);
   });
   it('query-backed types show the empty-preview hint before any Run (and while running)', () => {

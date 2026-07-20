@@ -38,8 +38,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   A cell value that looks like **Markdown** now opens the drawer on a rendered
   preview (with a Rendered↔Source toggle, like HTML) using the same bounded,
   fail-closed `renderDocMarkdown` viewer the reference-docs pane uses; plain,
-  non-markup text still shows as source only. Read-only Dashboards never enable
-  tile movement.
+  non-markup text still shows as source only. **Dashboard Text (Markdown) tiles**
+  now render inline through that same top-quality doc viewer (the lightweight
+  `core/markdown-lite.ts` renderer is retired — the app has a single Markdown
+  paradigm), and a Text tile is click/Enter-Space-openable into the shared
+  preview drawer (a drag-select or an inner-link click never opens it). Read-only
+  Dashboards never enable tile movement.
 - **Grid Tiles is the default Dashboard style; Full view replaces the old
   Full width preset** (#321). The `grafana-grid@1` engine is renamed to
   **Grid Tiles** in the UI (the persisted `{type:'grafana-grid',version:1}`

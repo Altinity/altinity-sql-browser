@@ -2430,6 +2430,9 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
    (translated in JS per frame — no transition on `transform` here, or the
    follow would lag), the siblings FLIP-animate as the gap opens, and a
    same-size placeholder holds the tile's grid slot. */
+/* #332: a Text/Markdown tile is click/keyboard-openable into the preview drawer. */
+.dash-text-preview { cursor: pointer; }
+.dash-text-preview:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .dash-tile.dash-floating {
   box-shadow: 0 8px 24px rgba(0, 0, 0, .28); opacity: .92; pointer-events: none;
 }
