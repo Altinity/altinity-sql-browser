@@ -92,7 +92,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: Commit migrated examples
-        if: ${{ success() && github.event_name == 'push' }}
+        if: ${{ success() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
