@@ -65,6 +65,7 @@ import {
 } from '../dashboard/layouts/grafana-grid-layout.js';
 import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
+import type { DashboardCommand } from '../dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import { resolveDashboardMode } from '../dashboard/application/session-bundle.js';
 import {
@@ -84,7 +85,7 @@ import type { AppState } from '../state.js';
 import type { ConnectionSession } from '../application/connection-session.js';
 import type { QueryExecutionService } from '../application/query-execution-service.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
-import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceCommitResult, WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { AppPreferences } from '../application/app-preferences.js';
 
 // icons.js is unconverted — the six icons this module appends, pinned to the
@@ -129,11 +130,14 @@ export interface DashboardApp {
   detachedViews: Pick<DetachedViewsStore, 'get'>;
   consumeDashboardHandoff(): Promise<StoredWorkspaceV1 | null>;
   applyCommittedWorkspace(workspace: StoredWorkspaceV1): void;
-  // #341: every editable Dashboard command commits through the SAME
-  // serialized write queue saved-query mutations use, so a rapid sequence of
-  // drag/resize/preset/delete commands can't interleave or let a slow-to-
-  // resolve older commit clobber a faster newer one.
-  serializeWrite<T>(op: () => Promise<T>): Promise<T>;
+  // #341/#344: every editable Dashboard command commits through
+  // `mutateWorkspace` — the same serialized-queue-plus-read-at-dequeue seam
+  // saved-query mutations use, so a rapid sequence of drag/resize/preset/
+  // delete commands can't interleave, and a Dashboard commit's candidate is
+  // always built from whatever the LATEST committed workspace is (any
+  // producer's), never a route-local snapshot that another producer's
+  // in-flight commit could make stale.
+  mutateWorkspace: App['mutateWorkspace'];
   // #302 — the Dashboard page's own File-menu operations.
   actions: Pick<ActionsRegistry, 'exportDashboard' | 'importDashboard' | 'openDashboardForViewing'>;
   /** #303: persists the isolated per-dashboard filter store (`KEYS.dashFilters`). */
@@ -383,19 +387,27 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       filters: [], tiles: [],
     };
   let committedRevision = currentDoc.revision;
-  // #341: the latest SAME-TAB committed truth — the single source of truth a
-  // command's candidate is built from (never the render-time `workspace`
-  // closure, which goes stale after the first successful commit). `null` when
-  // no persisted aggregate exists yet (legacy/empty) — commands then stay
-  // optimistic-only, same as before #341.
+  // #341/#344 review fix: `committedWorkspace` is now ONLY a render/rollback
+  // CACHE of the last commit this route observed — never the baseline a
+  // command's candidate is built from. A route-local baseline goes stale the
+  // moment ANY other producer (a saved-query star/delete from the drawer, a
+  // File-menu import/rename) commits through the shared queue while a
+  // Dashboard commit is pending: the next Dashboard command would otherwise
+  // rebuild its candidate from this stale snapshot and silently reverse that
+  // other producer's mutation. `null` when no persisted aggregate exists yet
+  // (legacy/empty) — commands then stay optimistic-only, same as before #341.
   let committedWorkspace: StoredWorkspaceV1 | null = workspace;
-  // #341: the most-recently applied optimistic document — the last-writer
-  // marker a resolving commit checks before it re-publishes/rolls back the
-  // draft. When two commands are issued back-to-back, the OLDER commit's
-  // resolution must NOT stomp the NEWER command's already-applied optimistic
-  // edit back down to its own (now-stale) snapshot; it still advances the
-  // committed-truth bookkeeping, but leaves the further-ahead draft alone.
-  let latestOptimistic: DashboardDocumentV1 | null = null;
+  // #344 review fix: queued command DESCRIPTORS (dispatch order), not
+  // pre-built document snapshots. A snapshot-based queue (the pre-#344
+  // `latestOptimistic` scheme) still lost updates: command B's optimistic doc
+  // is built by applying B on top of A's optimistic doc, so if A's commit
+  // FAILS after B has already published, A's rollback was skipped (gate
+  // failed for A) and B's later successful commit persisted a document that
+  // structurally CONTAINED A's rejected edit. Re-applying each descriptor
+  // against COMMITTED truth at dequeue time (never the optimistic doc it was
+  // dispatched against) is what makes a failed/aborted command's effect
+  // disappear from every commit that resolves after it.
+  let pendingCommands: DashboardCommand[] = [];
 
   // Merge explicit + synthesized implicit filters for the viewer.
   const withImplicitFilters = (d: DashboardDocumentV1): DashboardDocumentV1 => (
@@ -618,90 +630,134 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     return contentBoxWidth(grid.clientWidth, parseFloat(cs.paddingLeft), parseFloat(cs.paddingRight));
   }
 
+  // #344 review fix: build the ApplyCommandContext against a SPECIFIC document
+  // snapshot (never the route-level `queries` closure directly) — used both
+  // for the optimistic apply against `currentDoc` and, at commit/rebase time,
+  // against committed truth (`latest`/`committedWorkspace`), whose `queries`
+  // may have moved on since this route was opened (another producer's saved-
+  // query CRUD op committed through the same shared queue).
+  function ctxFor(baseDoc: DashboardDocumentV1, queriesForResolver: SavedQueryV2[]) {
+    return {
+      resolver: createQueryResolver(queriesForResolver), genTileId: () => 'tile',
+      plugin: resolveLayoutPluginSync(baseDoc.layout),
+    };
+  }
+
   // ── Structural commands (reorder via drag, preset) ────────────────────────
   // move-tile / update-placement / change-layout are the phase-3 authoring
   // commands; the dashboard UI drives only move-tile (drag) and change-layout
   // (preset) — span/height (update-placement) is tuned in the Spec editor.
-  function runCommand(command: Parameters<typeof applyCommand>[1]): void {
+  //
+  // #344 review fix: the queue holds COMMAND DESCRIPTORS (`pendingCommands`),
+  // never pre-built document snapshots. The pre-#344 scheme built each
+  // command's optimistic doc by applying it on top of the PRIOR command's own
+  // optimistic doc, so a fast command B's whole document structurally
+  // contained a slower command A's edit — if A's commit then FAILED after B
+  // had already published, A's rollback was skipped (B was the newer "latest
+  // optimistic" marker) and B's later successful commit persisted A's
+  // rejected edit anyway. Re-applying each descriptor against COMMITTED truth
+  // at DEQUEUE time (`app.mutateWorkspace`), and rebasing every still-pending
+  // descriptor onto committed truth after every resolution, means a rejected
+  // or invalidated command can never survive inside a later commit — its
+  // absence, not its optimistic doc, is what every later command builds from.
+  function runCommand(command: DashboardCommand): void {
     // #291: validate/seed against whichever engine is ACTIVE before the
     // command applies (`resolveLayoutPluginSync` — grid: span 1..12, flow:
     // span 1..3). A `change-layout` engine switch is normalized through the
     // RESULTING document's own engine, so a post-switch grid document is
     // pruned by the grid plugin (its own `items`), not flow's (which would
     // only ever see its own fallback surface).
-    const activePlugin = resolveLayoutPluginSync(currentDoc.layout);
-    const applied = applyCommand(currentDoc, command, {
-      resolver: createQueryResolver(queries), genTileId: () => 'tile', plugin: activePlugin,
-    });
+    const applied = applyCommand(currentDoc, command, ctxFor(currentDoc, queries));
     // A UI-driven command (drag move-tile, preset change-layout, grid
     // resize/delete) is always valid; a rejected candidate is simply ignored
     // (no draft change).
     if (!applied.ok) return;
-    const resultPlugin = resolveLayoutPluginSync(applied.dashboard.layout);
-    const normalized = resultPlugin.normalize(applied.dashboard);
-    // #341: apply OPTIMISTICALLY first so a drag/resize preview stays
-    // instant — the commit below either confirms this (a no-op re-apply once
-    // it resolves) or, on failure, deterministically rolls it back to the
-    // last committed truth. `optimistic` doubles as this command's identity:
-    // the resolving commit only re-publishes/rolls back the draft while it is
-    // still the LATEST optimistic edit (see `latestOptimistic`).
-    const optimistic = normalized;
-    latestOptimistic = optimistic;
-    currentDoc = optimistic;
+    const normalized = resolveLayoutPluginSync(applied.dashboard.layout).normalize(applied.dashboard);
+    // Apply OPTIMISTICALLY first so a drag/resize preview stays instant — the
+    // commit below either confirms this (this command's own commit round-
+    // trips its own edit) or a rebase corrects it once resolutions land.
+    currentDoc = normalized;
     layoutSelect.sync();
-    session.syncDocument(withImplicitFilters(optimistic));
+    session.syncDocument(withImplicitFilters(normalized));
 
     // No persisted aggregate to commit to (legacy/empty Dashboard) — stays
-    // optimistic-only, same as pre-#341 behavior.
+    // optimistic-only, same as pre-#341 behavior. (`committedWorkspace` can
+    // still start being populated later, e.g. by a File-menu action on this
+    // same route — this command itself just never gets queued.)
     if (!committedWorkspace) return;
 
-    // #341: THE serialized write pipeline — the same one saved-query
-    // mutations and file-menu commits use (`app.serializeWrite`), so
-    // overlapping commands can never interleave or let a slow-to-resolve
-    // OLDER commit clobber a faster newer one. The candidate is built INSIDE
-    // the queued op (not synchronously at dispatch) so it reads the freshest
-    // `committedWorkspace`/revision — the PRIOR command's resolution has
-    // already advanced them by the time this op runs — which keeps the
-    // persisted revision strictly monotonic across rapid commits (base+1 per
-    // successful commit, never a duplicated number from a stale closure).
-    void app.serializeWrite(() => {
-      const baseline = committedWorkspace!;
-      const baseRevision = baseline.dashboard ? baseline.dashboard.revision : committedRevision;
-      const candidate: StoredWorkspaceV1 = {
-        storageVersion: 1, id: baseline.id, name: baseline.name, queries: baseline.queries,
-        dashboard: { ...optimistic, revision: baseRevision + 1 },
+    pendingCommands.push(command);
+
+    // `app.mutateWorkspace` reads the latest COMMITTED aggregate at DEQUEUE
+    // time and re-applies THIS descriptor to it — never to the (possibly
+    // already-stale) optimistic doc it was dispatched against — so the
+    // persisted revision is always base+1 over whatever the truth actually is
+    // by the time this op runs, regardless of who else committed meanwhile.
+    void app.mutateWorkspace((latest) => {
+      if (!latest || !latest.dashboard) return null;
+      const base = latest.dashboard;
+      const reapplied = applyCommand(base, command, ctxFor(base, latest.queries));
+      if (!reapplied.ok) return null;
+      const committedDoc = resolveLayoutPluginSync(reapplied.dashboard.layout).normalize(reapplied.dashboard);
+      return {
+        storageVersion: 1, id: latest.id, name: latest.name, queries: latest.queries,
+        dashboard: { ...committedDoc, revision: base.revision + 1 },
       };
-      return app.workspace.commit(candidate);
-    }).then((result) => {
-      if (result.ok) {
-        committedWorkspace = result.workspace;
-        committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
-        // Project committed truth onto app.state unconditionally (exports read
-        // it) — but only re-publish the DRAFT/session when this command is
-        // still the latest optimistic edit. A newer command already applied a
-        // further-ahead draft; re-publishing this older snapshot would regress
-        // it (and needlessly re-run tiles) until the newer commit resolved.
-        app.applyCommittedWorkspace(result.workspace);
-        if (optimistic === latestOptimistic) {
-          currentDoc = result.workspace.dashboard ?? currentDoc;
-          session.syncDocument(withImplicitFilters(currentDoc));
-          layoutSelect.sync();
-        }
-        return;
-      }
-      // Deterministic rollback to the last committed truth — but only when
-      // this failed command is still the latest optimistic edit; a newer
-      // command's draft (and its own pending commit) must be left intact.
-      if (optimistic === latestOptimistic) {
-        const restored = committedWorkspace ? committedWorkspace.dashboard : null;
-        if (restored) {
-          currentDoc = restored;
-          session.syncDocument(withImplicitFilters(restored));
-          layoutSelect.sync();
-        }
-      }
-      flashToast('✕ ' + (result.diagnostics[0]?.message ?? 'Could not save dashboard'), { document: doc });
+    }).then((result) => settleCommand(result), () => {
+      // The queued op itself REJECTED (blocked/quota/private-mode storage —
+      // `loadCurrent`/the store threw, distinct from an `ok:false` commit).
+      // Without this handler the rejection is unhandled and, worse, this
+      // command would stay in `pendingCommands` forever, corrupting every
+      // future rebase.
+      settleCommand({ ok: false, diagnostics: [] });
     });
+  }
+
+  // One command's resolution — success, `ok:false`, transform null-abort, or
+  // storage rejection (mapped to `ok:false` by the caller) — always: drop the
+  // head descriptor, book success, toast failure, rebase.
+  function settleCommand(result: WorkspaceCommitResult | null): void {
+    // FIFO queue — every resolution arrives in dispatch order, so this
+    // command is always the head.
+    pendingCommands.shift();
+    if (result && result.ok) {
+      committedWorkspace = result.workspace;
+      committedRevision = result.workspace.dashboard ? result.workspace.dashboard.revision : committedRevision + 1;
+      // Project committed truth onto app.state unconditionally — exports
+      // and any other consumer of `app.state` read it.
+      app.applyCommittedWorkspace(result.workspace);
+    } else if (result) {
+      // Rejected against committed truth at commit time (a real validation
+      // failure — schema/aggregate-level) or a storage rejection.
+      flashToast('✕ ' + (result.diagnostics[0]?.message ?? 'Could not save dashboard'), { document: doc });
+    } else {
+      // `null`: the transform aborted — this command no longer applies to
+      // committed truth (e.g. a concurrent commit already removed the tile
+      // it targeted). Quieter toast: this isn't a save failure, it's a
+      // stale edit being dropped.
+      flashToast('Change no longer applies — undone', { document: doc });
+    }
+    // Rebase UNCONDITIONALLY: recompute the rendered document by replaying
+    // every STILL-pending descriptor on top of (the now possibly-advanced)
+    // committed truth. Even a pure success with nothing pending must
+    // re-publish — the committed doc can differ from the published
+    // optimistic one whenever a foreign producer's commit landed between
+    // dispatch and dequeue (this command was re-applied to THAT base, e.g.
+    // a saved-query delete whose resolver pruned a tile), and after every
+    // resolution the rendered doc must equal committed truth exactly.
+    let rebased: DashboardDocumentV1 | null = committedWorkspace ? committedWorkspace.dashboard : null;
+    if (!rebased) return;
+    const rebaseQueries = committedWorkspace!.queries;
+    for (const pending of pendingCommands) {
+      const r = applyCommand(rebased, pending, ctxFor(rebased, rebaseQueries));
+      // A replay that no longer applies is simply skipped here — its own
+      // queued `mutateWorkspace` call will independently null-abort and
+      // toast when its turn comes.
+      if (r.ok) rebased = resolveLayoutPluginSync(r.dashboard.layout).normalize(r.dashboard);
+    }
+    currentDoc = rebased;
+    session.syncDocument(withImplicitFilters(rebased));
+    layoutSelect.sync();
   }
 
   // ── Tile DOM ──────────────────────────────────────────────────────────────

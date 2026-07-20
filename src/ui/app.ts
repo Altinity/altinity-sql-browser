@@ -1502,6 +1502,22 @@ export function createApp(env: CreateAppEnv = {}): App {
   // waits on this so a bundle is built from the latest committed workspace, never
   // mid-flight state). Writes queued AFTER this call are intentionally not awaited.
   app.flushWorkspaceWrites = () => writeChain.then(() => undefined, () => undefined);
+  // #341/#344 review fix: the ONLY correct way to build a workspace-mutation
+  // candidate. `serializeWrite` alone only serializes EXECUTION — a producer
+  // that builds its whole candidate from `state`/`app.workspace` BEFORE
+  // entering the queue (e.g. across an awaited user dialog) can still have it
+  // clobber a mutation that committed while it waited, because its candidate
+  // was already stale the moment it was built. Reading `app.workspace
+  // .loadCurrent()` INSIDE the queued op (never cached in an outer variable)
+  // is what makes it authoritative: every write is serialized through this
+  // same queue, so by the time this op runs, `loadCurrent()` reflects every
+  // write queued before it.
+  app.mutateWorkspace = (transform) => app.serializeWrite(async () => {
+    const latest = await app.workspace.loadCurrent();
+    const candidate = await transform(latest);
+    if (!candidate) return null;
+    return app.workspace.commit(candidate);
+  });
 
   // #300: the Reset action offered on the corrupt-workspace toast below.
   // `loadCurrent()`/`clearCurrent()`'s callers rely on a corrupt record

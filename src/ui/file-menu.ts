@@ -4,15 +4,17 @@
 // "Open as dashboard" (#149), the Variable history section, and the one-way
 // Markdown/SQL "share" downloads (buildMarkdownDoc/buildSqlDoc, unchanged).
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
-// write here resolves a `PortableBundleImportPlan` (workspace/import-planner.js)
-// or a repository-level primitive (workspace/workspace-operations.js), then
-// commits the WHOLE candidate through `app.workspace.commit` and projects the
-// result onto `state` via `app.applyCommittedWorkspace` before repainting
-// (`afterLibraryChange`). External read-only "Open for viewing" + a trust
-// preflight are DEFERRED to #288 — every operation here only COMMITS to the
-// workspace, never executes a query. Render module over the `app`
+// write here builds a `PortableBundleImportPlan` (workspace/import-planner.js)
+// or a repository-level primitive (workspace/workspace-operations.js) INSIDE
+// the transform passed to `app.mutateWorkspace` (#341/#344 review fix — never
+// from a pre-queue snapshot: `commitWorkspace`/`planBuild` below are the only
+// path every mutation here goes through), commits the WHOLE candidate, and
+// projects the result onto `state` via `app.applyCommittedWorkspace` before
+// repainting (`afterLibraryChange`). External read-only "Open for viewing" +
+// a trust preflight are DEFERRED to #288 — every operation here only COMMITS
+// to the workspace, never executes a query. Render module over the `app`
 // controller; every side effect goes through an injected seam
-// (app.workspace.commit / app.downloadFile / app.FileReader / app.document /
+// (app.mutateWorkspace / app.downloadFile / app.FileReader / app.document /
 // app.genId / app.wallNow), so it is fully testable.
 
 import { h, attachBackdropClose } from './dom.js';
@@ -290,14 +292,21 @@ function afterLibraryChange(app: App): void {
   renderDashboardNav(app);
 }
 
-/** Commit one whole candidate `StoredWorkspaceV1`, then project + repaint on
- *  success. A rejected commit toasts the first diagnostic and leaves `state`
- *  untouched — never a partial write. */
-async function commitWorkspace(app: App, candidate: StoredWorkspaceV1, successMsg?: string): Promise<boolean> {
-  // #341: share the SAME serialized write queue saved-query mutations and
-  // Dashboard commands use, so an import/replace/rename can never interleave
-  // with (or be clobbered by/clobber) a concurrent write.
-  const result = await app.serializeWrite(() => app.workspace.commit(candidate));
+/** Commit ONE workspace mutation through `app.mutateWorkspace`, then project +
+ *  repaint on success. `build` receives the latest COMMITTED aggregate at
+ *  DEQUEUE time (never a pre-queue snapshot — #341/#344 review fix: a queue
+ *  around an independently pre-built candidate does not prevent lost
+ *  updates); every file-menu commit goes through this one function so none of
+ *  them can fork from that discipline. `build` returning `null` aborts the
+ *  commit — the caller is expected to have already toasted its own reason (a
+ *  plan invalidation), so this stays silent for that case. A rejected commit
+ *  (schema/persistence failure) toasts the first diagnostic. Never a partial
+ *  write either way. */
+async function commitWorkspace(
+  app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null, successMsg?: string,
+): Promise<boolean> {
+  const result = await app.mutateWorkspace(build);
+  if (!result) return false; // `build` declined — its own toast (if any) already fired.
   if (!result.ok) {
     flashToast('✕ ' + first(result.diagnostics, 'Could not save workspace'), { document: app.document });
     return false;
@@ -308,15 +317,23 @@ async function commitWorkspace(app: App, candidate: StoredWorkspaceV1, successMs
   return true;
 }
 
-/** Commit an import-planner plan, or toast + abort when it invalidated
- *  (`candidateWorkspace: null` — e.g. a skipped required Dashboard
- *  dependency). Never commits a partial/invalid candidate. */
-async function commitPlan(app: App, plan: PortableBundleImportPlan, successMsg: string): Promise<void> {
-  if (!plan.candidateWorkspace) {
-    flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
-    return;
-  }
-  await commitWorkspace(app, plan.candidateWorkspace, successMsg);
+/** Wrap an import-planner call as a `commitWorkspace` builder: `run` plans
+ *  against `latest` (falling back to the `state`-projected `currentWorkspace`
+ *  when no aggregate is persisted yet — as fresh as it gets), and an
+ *  invalidated plan (`candidateWorkspace: null` — e.g. a skipped required
+ *  Dashboard dependency) toasts the first diagnostic and returns `null`,
+ *  aborting the commit rather than persisting a partial/invalid candidate. */
+function planBuild(
+  app: App, run: (base: StoredWorkspaceV1) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null {
+  return (latest) => {
+    const plan = run(latest ?? currentWorkspace(app));
+    if (!plan.candidateWorkspace) {
+      flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
+      return null;
+    }
+    return plan.candidateWorkspace;
+  };
 }
 
 // ── conflict resolution (global default + per-row override) ────────────────
@@ -432,8 +449,10 @@ function newWorkspaceAction(app: App): void {
 }
 
 async function doNewWorkspace(app: App): Promise<void> {
-  const candidate = createNewWorkspace(app.genId);
-  await commitWorkspace(app, candidate, 'Started a new workspace');
+  // Independent of `latest` (a brand-new workspace never derives from the
+  // current one) — still routed through `commitWorkspace`/`mutateWorkspace`
+  // for the same one write-path discipline every other mutation here uses.
+  await commitWorkspace(app, () => createNewWorkspace(app.genId), 'Started a new workspace');
 }
 
 function confirmNewWorkspace(app: App, cur: StoredWorkspaceV1): void {
@@ -450,8 +469,10 @@ function confirmNewWorkspace(app: App, cur: StoredWorkspaceV1): void {
 // ── actions: rename ──────────────────────────────────────────────────────────
 
 async function renameWorkspaceAction(app: App, name: string): Promise<void> {
-  const candidate = renameWorkspace(currentWorkspace(app), name);
-  await commitWorkspace(app, candidate);
+  // `latest ?? currentWorkspace(app)` covers the no-persisted-aggregate
+  // (legacy/first-run) case — reading `app.state` inside the queued build is
+  // at-DEQUEUE-time, as fresh as it gets when there's no aggregate to read.
+  await commitWorkspace(app, (latest) => renameWorkspace(latest ?? currentWorkspace(app), name));
 }
 
 // ── actions: Import queries ─────────────────────────────────────────────────
@@ -461,10 +482,18 @@ function onImportQueriesFile(app: App, file: File): void {
 }
 
 function startImportQueries(app: App, bundle: PortableBundleV1): void {
+  // The conflict dialog is shown against this snapshot — unavoidable, since it
+  // needs SOMETHING to detect conflicts against before the user decides. The
+  // commit below re-plans against the LATEST committed baseline right before
+  // writing, so a mutation that lands while the dialog is open is folded in
+  // rather than clobbered (#341/#344) — only the CONFLICT SET shown to the
+  // user can be (harmlessly) stale, never the committed candidate.
   const workspace = currentWorkspace(app);
   withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
-    const plan = planImportQueries(workspace, bundle, decisions, app.genId);
-    void commitPlan(app, plan, 'Imported ' + queries(bundle.queries.length));
+    void commitWorkspace(
+      app, planBuild(app, (base) => planImportQueries(base, bundle, decisions, app.genId)),
+      'Imported ' + queries(bundle.queries.length),
+    );
   });
 }
 
@@ -477,7 +506,7 @@ function onImportDashboardFile(app: App, file: File): void {
 /** #302 — programmatically trigger the "Import Dashboard…" flow (used by the
  *  Dashboard page's own File menu via `app.actions.importDashboard`): open a
  *  file picker, then run the same transactional import as the Workbench used to.
- *  On success `commitPlan` → `afterLibraryChange` repaints the active surface
+ *  On success `commitWorkspace` → `afterLibraryChange` repaints the active surface
  *  (the Dashboard route re-renders itself). */
 export function triggerImportDashboard(app: App): void {
   const input = pickerInput(app, (f) => onImportDashboardFile(app, f));
@@ -518,6 +547,8 @@ function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: str
 }
 
 function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
+  // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit split
+  // as `startImportQueries` above (#341/#344).
   const workspace = currentWorkspace(app);
   const source = bundle.dashboards.find((d) => d.id === dashboardId);
   const closureIds = new Set(dashboardDependencyQueryIds(source));
@@ -527,8 +558,10 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
     // which then REPLACES the workspace's zero-or-one current Dashboard
     // (v1 single-Dashboard model, #280 "Import Dashboard replaces the current
     // Dashboard"). The confirm above gates the destructive case.
-    const plan = planImportDashboard(workspace, bundle, dashboardId, decisions, 'copy', app.genId);
-    void commitPlan(app, plan, 'Imported dashboard');
+    void commitWorkspace(
+      app, planBuild(app, (base) => planImportDashboard(base, bundle, dashboardId, decisions, 'copy', app.genId)),
+      'Imported dashboard',
+    );
   });
 }
 
@@ -559,10 +592,15 @@ function confirmReplaceWorkspace(app: App, bundle: PortableBundleV1, sourceDashb
       sourceDashboardId ? ' and the selected Dashboard' : '', ' from the file. Open editor tabs are unaffected.'],
     confirmLabel: 'Replace',
     onConfirm: () => {
+      // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit
+      // split as `startImportQueries`/`doImportDashboard` above (#341/#344) —
+      // `cur` above (the confirm body's own snapshot) has the same property.
       const workspace = currentWorkspace(app);
       withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
-        const plan = planReplaceWorkspace(workspace, bundle, sourceDashboardId, decisions, app.genId);
-        void commitPlan(app, plan, 'Replaced workspace');
+        void commitWorkspace(
+          app, planBuild(app, (base) => planReplaceWorkspace(base, bundle, sourceDashboardId, decisions, app.genId)),
+          'Replaced workspace',
+        );
       });
     },
   });

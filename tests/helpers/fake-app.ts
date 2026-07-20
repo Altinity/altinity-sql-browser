@@ -73,6 +73,28 @@ export function fakeWorkspaceCommit() {
   return vi.fn(createWorkspaceRepository({ store: memWorkspaceStore() }).commit);
 }
 
+/** A STATEFUL in-memory `WorkspaceRepository` fake (#341/#344 review fix):
+ *  `commit` stores the candidate and `loadCurrent`/`loadCurrentResult` return
+ *  the LAST committed value — unlike the module-default `appDefaults.workspace`
+ *  (a stateless echo `commit` paired with a `loadCurrent` that always answers
+ *  `null`), so a mixed-producer test (a pending write, then a second op queued
+ *  through `app.mutateWorkspace` behind it) can assert the second op's
+ *  transform actually observed the first commit's effect. No schema
+ *  validation (unlike `fakeWorkspaceCommit`'s real-repository-backed spy) —
+ *  just enough state to make read-after-write hold. */
+export function statefulWorkspaceRepo(initial: StoredWorkspaceV1 | null = null): WorkspaceRepository {
+  let current = initial;
+  return {
+    loadCurrent: async () => current,
+    loadCurrentResult: async () => (current ? { status: 'ok', workspace: current } : { status: 'empty' }),
+    commit: async (candidate) => {
+      current = candidate;
+      return { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard === null ? null : candidate.dashboard.revision };
+    },
+    clearCurrent: async () => { current = null; },
+  };
+}
+
 // `app.conn.chCtx`'s defaults (#276 Phase 2; Phase 5 deleted the flat
 // `App.chCtx` alias this file used to also mirror it onto).
 const chCtxDefaults: ChCtx = {
@@ -317,6 +339,16 @@ const appDefaults: App = {
   // #341: inert no-op — `base` overrides with the real per-instance flush that
   // shares `serializeWrite`'s own queue.
   flushWorkspaceWrites: async () => {},
+  // #341/#344: inert placeholder — `transform` still runs (so a fixture that
+  // never overrides this still exercises the caller's build-from-latest
+  // logic), but `latest` is always `null` (no queue, no read-back) and the
+  // result is never actually persisted anywhere. `base` overrides with the
+  // real per-instance queue backed by `workspaceRepo`.
+  mutateWorkspace: async (transform) => {
+    const candidate = await transform(null);
+    if (!candidate) return null;
+    return appDefaults.workspace.commit(candidate);
+  },
   sqlEditor: {} as App['sqlEditor'],
   specEditor: {} as App['specEditor'],
   // #313 — inert placeholder; a fixture exercising the reference-pane action
@@ -462,6 +494,12 @@ type AppOverrides = Partial<Omit<App, 'dom' | 'actions' | 'exec' | 'conn' | 'cat
 export function makeApp<O extends AppOverrides = Record<string, never>>(overrides: O = {} as O) {
   const state = createState({ loadStr: (k, d) => d, loadJSON: (k, d) => d });
   const root = document.createElement('div');
+  // Resolved BEFORE `base` so the `mutateWorkspace` queue below (which needs to
+  // call `.loadCurrent()`/`.commit()` on the SAME repository the rest of the
+  // fake app sees) can close over it directly — the final `workspace` field is
+  // this exact object, not a fresh merge (`overrides.workspace` layers under
+  // `appDefaults.workspace`, same three-way convention as `dom`/`conn`/etc.).
+  const workspaceRepo: WorkspaceRepository = { ...appDefaults.workspace, ...(overrides.workspace ?? {}) };
   const base = {
     state,
     root,
@@ -528,7 +566,18 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
       // awaiting `app.flushWorkspaceWrites()` sees every write queued before
       // this call resolve — mirrors app.ts's own `writeChain`-backed pair.
       const flushWorkspaceWrites = (): Promise<void> => chain.then(() => undefined, () => undefined);
-      return { serializeWrite, flushWorkspaceWrites };
+      // #341/#344: mirrors app.ts's own `mutateWorkspace` — reads `workspaceRepo
+      // .loadCurrent()` (the SAME repo `workspace.commit` below publishes
+      // through) at DEQUEUE time, never a value captured at enqueue time, so a
+      // mixed-producer test (a pending saved-query-style commit, then a
+      // rename/import queued behind it) observes the first commit's effect.
+      const mutateWorkspace: App['mutateWorkspace'] = (transform) => serializeWrite(async () => {
+        const latest = await workspaceRepo.loadCurrent();
+        const candidate = await transform(latest);
+        if (!candidate) return null;
+        return workspaceRepo.commit(candidate);
+      });
+      return { serializeWrite, flushWorkspaceWrites, mutateWorkspace };
     })(),
     // The one deliberate delegate survivor of #276 Phase 5's params-group
     // cleanup — see `App.saveVarRecent`'s own doc comment.
@@ -656,7 +705,7 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
     exports: { ...exportsDefaults, ...(overrides.exports ?? {}) },
     graph: { ...graphDefaults, ...(overrides.graph ?? {}) },
     prefs: { ...prefsDefaults, ...base.prefs, ...(overrides.prefs ?? {}) },
-    workspace: { ...appDefaults.workspace, ...(overrides.workspace ?? {}) },
+    workspace: workspaceRepo,
   };
   // Assignability check only (a variable reference, not a fresh literal, so
   // this never trips an excess-property error) — `merged`'s own inferred type

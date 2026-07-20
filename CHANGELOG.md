@@ -233,18 +233,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `app.applyCommittedWorkspace`, so `app.state.dashboard` (which both exports
   read) went stale, rapid edits could start overlapping commits outside the
   saved-query write queue, and an older commit resolving after a newer one
-  could clobber tile order/placement/style. Every editable Dashboard command
-  (`move-tile`, `update-placement`, `change-layout`, `remove-tile`) now runs
-  through the **same** `app.serializeWrite` queue that saved-query mutations and
-  File-menu import/replace use, so all workspace writes share one serialization
-  order; each command's candidate is built **inside** its queued op from the
-  freshest committed baseline (strictly monotonic revisions, no stale-closure
-  duplicates), commits atomically, then projects the returned workspace onto
-  `app.state` and re-syncs the Dashboard from the committed result. An optimistic
-  preview stays instant; a slower-to-resolve older commit no longer regresses a
-  newer command's already-applied draft, and a **failed** commit deterministically
-  rolls back to the last committed Dashboard, toasts the diagnostic, does not
-  advance the revision, and never wedges the shared queue. Dashboard export and
+  could clobber tile order/placement/style. All workspace writes now go through
+  one app-level primitive, **`app.mutateWorkspace(transform)`**: a queued op
+  (the same `serializeWrite` chain saved-query mutations use) that reads the
+  latest **committed** aggregate via `workspace.loadCurrent()` at dequeue time,
+  applies the caller's transform to it, and commits — because a queue around
+  independently pre-built full snapshots still loses updates, every File-menu
+  mutation (rename, import queries/dashboard, replace, new) builds its
+  candidate **inside** the transform from that dequeue-time baseline (the
+  conflict dialog's snapshot is UX-only), and every editable Dashboard command
+  (`move-tile`, `update-placement`, `change-layout`, `remove-tile`) is queued
+  as a **command descriptor** re-applied to committed truth when its turn
+  arrives — never as a document snapshot derived from a prior command's
+  still-uncommitted optimistic doc, so a rejected command can't be smuggled
+  into a later command's successful commit. An optimistic preview stays
+  instant; after every resolution (success, `ok:false`, no-longer-applies
+  abort, or a storage rejection) the still-pending descriptors are **rebased**
+  onto committed truth and re-published, so a failed command's effect
+  disappears everywhere, revisions stay strictly monotonic, the diagnostic is
+  toasted, and the shared queue is never wedged. Dashboard export and
   Workbench workspace export both now `flushWorkspaceWrites()` (await pending
   writes) then build from the latest committed `StoredWorkspaceV1`
   (`workspace.loadCurrent()`), falling back to `app.state` only when no

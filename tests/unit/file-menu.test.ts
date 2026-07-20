@@ -5,7 +5,7 @@ import {
 } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
-import { makeApp } from '../helpers/fake-app.js';
+import { makeApp, statefulWorkspaceRepo } from '../helpers/fake-app.js';
 import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
@@ -829,6 +829,86 @@ describe('decode failures', () => {
     pickFile(picker(0));
     expect(toast()).toMatch(/^✕ /);
     expect(toast()).not.toContain('Unrecognized file format');
+  });
+});
+
+// #341/#344 review fix: `commitWorkspace`/`app.mutateWorkspace` must build the
+// candidate from the LATEST committed aggregate at dequeue time, never from a
+// snapshot taken before a producer entered the write queue. Both regression
+// cases mirror saved-history.test.ts's own "concurrent saved-query writes"
+// test — a first write is gated open manually so it stays pending in the
+// queue while a SECOND op (here, a rename / an import) is fired behind it.
+describe('mixed-producer serialization (#341/#344 review fix)', () => {
+  it('a pending saved-query-style mutation commits before a queued rename builds its candidate — the rename lands on top, nothing reverts', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({ workspace: statefulWorkspaceRepo(seed) });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+    renderLibraryTitle(app);
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate; // stays pending in the queue until released below
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
+    });
+
+    // Fire the rename UI flow (inline title edit, Enter commits) while the
+    // mutation above is still queued ahead of it — `renameWorkspaceAction`
+    // isn't exported, so drive it the same way `workspace title` above does.
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
+    input.value = 'Renamed';
+    key(input, 'Enter');
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // A `renameWorkspaceAction` that built its candidate from a pre-queue
+    // snapshot would have re-committed the ORIGINAL [q1] catalog, silently
+    // reverting the q2 mutation that landed while it waited.
+    expect(finalWs!.queries.map((q) => q.id)).toEqual(['q1', 'q2']);
+    expect(finalWs!.name).toBe('Renamed');
+  });
+
+  it('a pending saved-query-style mutation commits before a queued Import queries builds its candidate — the import lands on top of the post-mutation catalog', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'New1')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
+    });
+
+    // No incoming/existing id overlap (`new1` vs `q1`/eventual `q2`) → the
+    // import commits directly, no conflict dialog — queued behind the pending
+    // mutation above the moment the file is picked.
+    openFileMenu(app);
+    pickFile(picker(0));
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // A stale-snapshot import would have planned against [q1] only, dropping
+    // q2 from the committed candidate.
+    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1', 'q2']);
   });
 });
 
