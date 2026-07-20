@@ -403,18 +403,62 @@ function mapListItem(item: Tokens.ListItem, ctx: Ctx, depth: number): DocListIte
   return result;
 }
 
+// Each list item counts once against `ctx`'s shared `MAX_DOC_AST_NODES`
+// budget for its OWN container (mirroring every other `mapBlocks` case,
+// which counts the container it just pushed) — `mapListItem`'s own nested
+// `mapInline`/`mapBlocks` calls separately count that item's CONTENT. A
+// plain `.map` over `t.items` would keep manufacturing `DocListItem`
+// entries even once the budget is exhausted (`mapInline` inside them just
+// starts returning `[]`), so a 250k-item list would still yield 250k
+// (empty) list items -> 250k DOM nodes in `doc-markdown-view.ts`. Instead:
+// stop enumerating items entirely once over budget. `countNode` already
+// flips `ctx.truncated` the moment the counter hits the cap, so no item is
+// EVER silently dropped without `truncated` being set — the `break` only
+// ever runs after the item that tripped `truncated` (or on an already-set
+// budget from earlier sibling content).
 function mapList(t: Tokens.List, ctx: Ctx, depth: number): DocBlock & { kind: 'list' } {
   const ordered = t.ordered;
   const start = ordered && typeof t.start === 'number' ? t.start : 1;
-  const items = t.items.map((item) => mapListItem(item, ctx, depth));
+  const items: DocListItem[] = [];
+  for (const item of t.items) {
+    if (overBudget(ctx)) break;
+    countNode(ctx);
+    items.push(mapListItem(item, ctx, depth));
+  }
   return { kind: 'list', ordered, start, items };
 }
 
 // ── Table mapping ────────────────────────────────────────────────────────────
 
+// Same reasoning as `mapList` above, applied to header cells, rows, and the
+// cells within each row: a plain `.map` over `t.header`/`t.rows`/`row` would
+// keep manufacturing header cells / row containers / cell containers forever
+// once the budget is exhausted (their `mapInline` content just goes empty),
+// so a 250k-row table would still yield 250k empty rows -> 250k `<tr>`s in
+// `doc-markdown-view.ts`. Instead stop enumerating as soon as the shared
+// budget is spent, at each of the three levels independently — a table can
+// run out of budget mid-row (some cells present, rest dropped) or between
+// rows (whole row dropped), and either way `countNode` has already set
+// `ctx.truncated` before the corresponding `break` fires.
 function mapTable(t: Tokens.Table, ctx: Ctx): DocBlock & { kind: 'table' } {
-  const header = t.header.map((cell) => mapInline(cell.tokens, ctx));
-  const rows = t.rows.map((row) => row.map((cell) => mapInline(cell.tokens, ctx)));
+  const header: DocInline[][] = [];
+  for (const cell of t.header) {
+    if (overBudget(ctx)) break;
+    countNode(ctx);
+    header.push(mapInline(cell.tokens, ctx));
+  }
+  const rows: DocInline[][][] = [];
+  for (const row of t.rows) {
+    if (overBudget(ctx)) break;
+    countNode(ctx);
+    const mappedRow: DocInline[][] = [];
+    for (const cell of row) {
+      if (overBudget(ctx)) break;
+      countNode(ctx);
+      mappedRow.push(mapInline(cell.tokens, ctx));
+    }
+    rows.push(mappedRow);
+  }
   return { kind: 'table', header, rows };
 }
 

@@ -670,6 +670,56 @@ describe('parseDocMarkdown — limits', () => {
     expect(r.blocks).toEqual([expect.objectContaining({ kind: 'paragraph' })]);
   });
 
+  it('MAX_DOC_AST_NODES: a list with more items than the node budget stops enumerating items (not just their content) — regression for the mapList bypass', () => {
+    // 25,000 tight list items is comfortably more than MAX_DOC_AST_NODES
+    // (20,000): before the fix, `mapList` mapped every item unconditionally
+    // via `.map`, so once the shared budget was exhausted each further item
+    // still became an (empty-content) DocListItem — 25,000 of them, one per
+    // <li> `doc-markdown-view.ts` would render. The fix bounds the item
+    // COUNT itself, not just each item's inline content.
+    const md = Array.from({ length: 25_000 }, () => '- x').join('\n');
+    const r = parseDocMarkdown(md);
+    expect(r.truncated).toBe(true);
+    const list = r.blocks[0] as DocBlock & { kind: 'list' };
+    expect(list.kind).toBe('list');
+    // Bounded well under the source's 25,000 items, and consistent with the
+    // shared MAX_DOC_AST_NODES budget (one count per item, plus the list
+    // container itself and this doc's other blocks).
+    expect(list.items.length).toBeLessThan(25_000);
+    expect(list.items.length).toBeLessThanOrEqual(MAX_DOC_AST_NODES);
+  });
+
+  it('MAX_DOC_AST_NODES: a table with more rows than the node budget stops enumerating rows — regression for the mapTable bypass', () => {
+    // Same bug, table shape: header + 25,000 one-cell rows. Before the fix,
+    // `mapTable` mapped every row (and every cell) unconditionally via
+    // `.map`, so exhausting the budget still produced 25,000 (empty-content)
+    // rows — 25,000 <tr>s in `doc-markdown-view.ts`.
+    const header = '| h |\n| --- |\n';
+    const rows = Array.from({ length: 25_000 }, () => '| a |').join('\n');
+    const r = parseDocMarkdown(header + rows);
+    expect(r.truncated).toBe(true);
+    const table = r.blocks[0] as DocBlock & { kind: 'table' };
+    expect(table.kind).toBe('table');
+    expect(table.rows.length).toBeLessThan(25_000);
+    expect(table.rows.length).toBeLessThanOrEqual(MAX_DOC_AST_NODES);
+  });
+
+  it('a normal-sized list and table stay fully intact (unaffected by the budget-bypass fix)', () => {
+    const r = parseDocMarkdown('- a\n- b\n- c\n\n| h1 | h2 |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |');
+    expect(r.truncated).toBe(false);
+    expect(r.blocks).toEqual([
+      { kind: 'list', ordered: false, start: 1, items: [{ inline: [text('a')] }, { inline: [text('b')] }, { inline: [text('c')] }] },
+      {
+        kind: 'table',
+        header: [[text('h1')], [text('h2')]],
+        rows: [
+          [[text('1')], [text('2')]],
+          [[text('3')], [text('4')]],
+        ],
+      },
+    ]);
+  });
+
   it('MAX_DOC_NESTING_DEPTH: deeply nested lists flatten past the bound', () => {
     const levels = MAX_DOC_NESTING_DEPTH + 5;
     const lines: string[] = [];
