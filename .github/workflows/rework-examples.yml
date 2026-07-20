@@ -3,13 +3,15 @@ name: Rework examples
 on:
   push:
     branches: [examples-rework-bootstrap]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   migrate-and-verify:
-    if: ${{ !contains(github.event.head_commit.message, '[examples migrated]') }}
+    if: ${{ github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[examples migrated]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,6 +38,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: Commit migrated examples
+        if: ${{ github.event_name == 'push' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
