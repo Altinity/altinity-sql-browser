@@ -45,6 +45,23 @@ jobs:
             cat /tmp/rewrite.log
             exit 1
           fi
+      - name: Patch generated test regex
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('tests/unit/spec-examples.test.js')
+          text = path.read_text()
+          text, count = re.subn(
+              r"const snippets = \[\.\.\.source\.matchAll\(/```json[\s\S]*?g\)\]\.map\(\(match\) => JSON\.parse\(match\[1\]\)\);",
+              "const snippets = [...source.matchAll(new RegExp('```json\\\\n([\\\\s\\\\S]*?)```', 'g'))].map((match) => JSON.parse(match[1]));",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('generated markdown regex was not found')
+          path.write_text(text)
+          PY
       - name: Upload rewrite diagnostics
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
