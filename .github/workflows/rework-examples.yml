@@ -51,7 +51,7 @@ jobs:
           git commit -m "docs(examples): migrate to portable dashboard bundles [examples migrated]"
           git push origin HEAD:examples-rework-bootstrap
       - name: Persist rewrite failure
-        if: ${{ failure() && github.event_name == 'push' }}
+        if: ${{ failure() }}
         run: |
           if [ -f examples/rewrite-error.log ]; then
             git config user.name "github-actions[bot]"
