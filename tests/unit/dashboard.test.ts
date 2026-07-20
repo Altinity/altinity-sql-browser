@@ -530,8 +530,22 @@ describe('renderDashboard — KPI bands (#240)', () => {
       }),
     });
     await render(app);
-    expect(qs(app.root, '.dash-kpi-band')).not.toBeNull();
+    const band = qs(app.root, '.dash-kpi-band');
+    expect(band).not.toBeNull();
+    const stream = qs<HTMLElement>(band, '.dash-kpi-stream');
+    expect(stream).not.toBeNull();
+    // The stream's DIRECT children must be `.dash-kpi-member` hosts (the
+    // class the CSS `display: contents` pass-through rule actually targets)
+    // — one per KPI tile, in canonical `dashboard.tiles[]` order — so the
+    // renderer and stylesheet agree on the same class and the cards join
+    // the flex-wrap row instead of stacking.
+    const members = Array.from(stream.children) as HTMLElement[];
+    expect(members.length).toBe(2);
+    for (const member of members) expect(member.classList.contains('dash-kpi-member')).toBe(true);
+    expect(members.map((m) => m.dataset.tile)).toEqual(['t1', 't2']);
+    for (const member of members) expect(member.getAttribute('data-tile')).toBeTruthy();
     expect(qsa(app.root, '.dash-kpi-stream .kpi-card').length).toBe(2);
+    for (const member of members) expect(qsa(member, '.kpi-card').length).toBe(1);
   });
 
   it('shows a KPI member state card for an errored or unfilled KPI source — error is role=alert, unfilled is role=status, both name their tile (#316)', async () => {
@@ -660,12 +674,27 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
     const cards = qsa(app.root, '.dash-gg-tile');
     expect(cards.length).toBe(2);
-    // The metaless (Text) tile has an EMPTY footer; the data tile has the
-    // rows·ms·bytes footer.
-    const foots = cards.map((c) => qs(c, '.dash-tile-foot'));
+    // The metaless (Text) tile has an EMPTY, DOM-hidden footer (#331 — no
+    // reserved empty footer line); the data tile has the rows·ms·bytes
+    // footer, visible.
+    const foots = cards.map((c) => qs<HTMLElement>(c, '.dash-tile-foot'));
     const footTexts = foots.map((f) => (f ? f.textContent || '' : ''));
     expect(footTexts.some((t) => t === '')).toBe(true);
     expect(footTexts.some((t) => t.includes('rows'))).toBe(true);
+    const metalessFoot = foots[footTexts.findIndex((t) => t === '')] as HTMLElement;
+    const dataFoot = foots[footTexts.findIndex((t) => t.includes('rows'))] as HTMLElement;
+    expect(metalessFoot.hidden).toBe(true);
+    expect(dataFoot.hidden).toBe(false);
+    // #331: the panel root (.md-view for Text) is a direct child of
+    // .dash-tile-body so the CSS containment `>` selector applies to it.
+    const metalessCard = cards[footTexts.findIndex((t) => t === '')];
+    const dataCard = cards[footTexts.findIndex((t) => t.includes('rows'))];
+    const metalessBody = qs<HTMLElement>(metalessCard, '.dash-tile-body');
+    expect(metalessBody.children.length).toBe(1);
+    expect(metalessBody.children[0]!.classList.contains('md-view')).toBe(true);
+    const dataBody = qs<HTMLElement>(dataCard, '.dash-tile-body');
+    expect(dataBody.children.length).toBe(1);
+    expect(dataBody.children[0]!.classList.contains('res-table-wrap')).toBe(true);
   });
 
   it('renders a metaless (Text) tile in a flow layout without crashing (#329 — shared paintPanel path)', async () => {
@@ -678,10 +707,44 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
       }),
     });
     await render(app);
-    // Flow rendered its rows structure and the tile's footer is empty (no meta).
-    const foot = qs(app.root, '.dash-tile-foot');
+    // Flow rendered its rows structure and the tile's footer is empty (no
+    // meta) and DOM-hidden (#331 — no reserved empty footer line).
+    const foot = qs<HTMLElement>(app.root, '.dash-tile-foot');
     expect(foot).not.toBeNull();
     expect(foot.textContent).toBe('');
+    expect(foot.hidden).toBe(true);
+    // The panel root (.md-view for Text) is a direct child of .dash-tile-body.
+    const body = qs<HTMLElement>(app.root, '.dash-tile-body');
+    expect(body.children.length).toBe(1);
+    expect(body.children[0]!.classList.contains('md-view')).toBe(true);
+  });
+
+  it('flips .dash-tile-foot.hidden both ways on republish (query-backed <-> metaless, #331)', async () => {
+    const ws = wsWith({
+      queries: [q('tq', "SELECT 'hello' AS body", { panel: { cfg: { type: 'text' } } })],
+      tiles: [{ id: 't1', queryId: 'tq' }],
+      layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+    });
+    const { app } = dashApp({ workspace: ws, responder: () => ({}) });
+    await render(app);
+    const foot = qs<HTMLElement>(app.root, '.dash-tile-foot');
+    expect(foot.hidden).toBe(true); // metaless Text tile — no meta, footer hidden
+
+    // Republish the same tile as a query-backed table query (a real Spec
+    // change recreates session + tile DOM — dashApp's loadDashboardWorkspace
+    // reads `ws` by reference, so mutating it in place and re-rendering
+    // exercises exactly that path) — meta is now present.
+    ws.queries[0] = q('tq', 'SELECT 1 AS v', { panel: { cfg: { type: 'table' } } });
+    await render(app);
+    const footAfter = qs<HTMLElement>(app.root, '.dash-tile-foot');
+    expect(footAfter.hidden).toBe(false);
+    expect(footAfter.childNodes.length).toBeGreaterThan(0);
+
+    // And back to metaless — the footer hides again (both directions).
+    ws.queries[0] = q('tq', "SELECT 'hello' AS body", { panel: { cfg: { type: 'text' } } });
+    await render(app);
+    const footBack = qs<HTMLElement>(app.root, '.dash-tile-foot');
+    expect(footBack.hidden).toBe(true);
   });
 
   // #316: the tile shell for a grafana-grid KPI tile — edit mode keeps the
@@ -1678,8 +1741,12 @@ function modeApp(opts: {
 const openFileMenuBtn = (root: ParentNode | null): void => {
   qs<HTMLButtonElement>(root, '.dash-file-btn').click();
 };
+// #331: item labels are read via `.fm-label` (not the full `.dash-fm-item`
+// textContent, which now also carries an icon + optional `.fm-meta`).
 const menuItems = (): string[] =>
-  qsa(document, '.dash-file-menu .dash-fm-item').map((b) => b.textContent || '');
+  qsa(document, '.dash-file-menu .fm-label').map((b) => b.textContent || '');
+const menuSections = (): string[] =>
+  qsa(document, '.dash-file-menu .fm-section').map((b) => b.textContent || '');
 
 describe('renderDashboard — open-source modes (#288)', () => {
   afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
@@ -1774,14 +1841,28 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
   });
 
-  it('edit mode: opens Export / Import / Open-for-viewing, each wired to its action; re-click + Escape close', async () => {
+  it('the trigger uses the shared downward-chevron treatment, never a right-pointing arrow', async () => {
+    const { app } = editApp();
+    await render(app);
+    const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
+    const path = qs<SVGPathElement>(btn, 'svg path').getAttribute('d');
+    // Icon.chevDown()'s path — distinct from Icon.arrow()'s right-pointing
+    // 'M2 6h7.5M7 3.5L9.5 6 7 8.5' (icons.ts), which the old trigger used and
+    // wrongly suggested navigation rather than a dropdown.
+    expect(path).toBe('M2 3l3 3 3-3');
+    expect(path).not.toBe('M2 6h7.5M7 3.5L9.5 6 7 8.5');
+  });
+
+  it('edit mode: opens Export / Import / Open-for-viewing (with sections + Export\'s .json meta), each wired to its action; re-click + Escape close', async () => {
     const { app } = editApp();
     app.actions = { ...app.actions, exportDashboard: vi.fn(), importDashboard: vi.fn(), openDashboardForViewing: vi.fn() };
     await render(app);
     const btn = qs<HTMLButtonElement>(app.root, '.dash-file-btn');
     openFileMenuBtn(app.root);
     expect(btn.getAttribute('aria-expanded')).toBe('true');
+    expect(menuSections()).toEqual(['Export', 'Import', 'Open']);
     expect(menuItems()).toEqual(['Export Dashboard…', 'Import Dashboard…', 'Open for viewing…']);
+    expect(qs(document, '.dash-file-menu .fm-meta').textContent).toBe('.json');
     // arrow-key navigation between items
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
@@ -1820,6 +1901,7 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
     await render(app);
     openFileMenuBtn(app.root);
+    expect(menuSections()).toEqual(['Export']);
     expect(menuItems()).toEqual(['Export Dashboard…']);
   });
 

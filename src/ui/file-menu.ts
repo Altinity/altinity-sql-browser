@@ -15,8 +15,10 @@
 // (app.workspace.commit / app.downloadFile / app.FileReader / app.document /
 // app.genId / app.wallNow), so it is fully testable.
 
-import { h, fixedAnchor, attachBackdropClose } from './dom.js';
+import { h, attachBackdropClose } from './dom.js';
 import { Icon } from './icons.js';
+import { openMenu } from './menu.js';
+import type { MenuRow } from './menu.js';
 import { flashToast } from './toast.js';
 import { renderSavedHistory } from './saved-history.js';
 import { buildMarkdownDoc, buildSqlDoc } from '../core/saved-io.js';
@@ -48,6 +50,7 @@ const first = (diagnostics: readonly WorkspaceDiagnostic[], fallback: string): s
 export function libraryControls(app: App): HTMLElement[] {
   app.dom.fileBtn = h('button', {
     class: 'hd-file-btn', title: 'File — workspace and dashboard import/export',
+    'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: () => openFileMenu(app),
   }, h('span', null, 'File'), Icon.chevDown());
   app.dom.libraryTitle = h('div', { class: 'lib-title' });
@@ -113,31 +116,29 @@ export function renderLibraryTitle(app: App): void {
      state.libraryDirty.value ? h('span', { class: 'lib-dirty', title: 'Changes since the last export or import' }) : null));
 }
 
-/** Open the File dropdown anchored under the File button (Esc / outside-click close). */
+/** Open the File dropdown anchored under the File button (Esc / outside-click
+ *  close; #331 area 2 — built on the shared `openMenu` primitive, which is
+ *  itself idempotent per trigger, so re-opening while already open is a
+ *  no-op). */
 export function openFileMenu(app: App): void {
-  if (app.dom.fileMenu) return;
   const doc = app.document;
+  // Re-entrancy guard: `openMenu` itself dedups per trigger, but the picker
+  // setup + `handle.el.appendChild(...)` below run BEFORE that call, so a
+  // redundant open (e.g. a keyboard shortcut fired while the menu is already
+  // up) would splice two orphaned hidden inputs into the live menu. The
+  // trigger's `aria-expanded` — set to 'true' by `openMenu` on open and back
+  // to 'false' on close — is the authoritative open-state flag to bail on.
+  if (app.dom.fileBtn!.getAttribute('aria-expanded') === 'true') return;
   const list = app.state.savedQueries;
-  const close = (): void => {
-    doc.removeEventListener('keydown', onKey, true);
-    if (app.dom.fileMenu) { app.dom.fileMenu.remove(); app.dom.fileMenu = undefined; }
-    if (app.dom.fileMenuOverlay) { app.dom.fileMenuOverlay.remove(); app.dom.fileMenuOverlay = undefined; }
-  };
-  const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-
-  const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
-  const replaceWorkspaceInput = pickerInput(app, (f) => onReplaceWorkspaceFile(app, f));
-  const item = (icon: Node, label: string, meta: string | null, onClick: () => void): HTMLButtonElement => h('button', { class: 'fm-item', onclick: onClick },
-    h('span', { class: 'fm-icon' }, icon), h('span', { class: 'fm-label' }, label),
-    meta ? h('span', { class: 'fm-meta' }, meta) : null);
-  const sep = (): HTMLDivElement => h('div', { class: 'fm-sep' });
   const empty = list.length === 0;
 
   // #302: the Workbench File menu owns workspace + query-collection operations
   // ONLY. Dashboard navigation moved to the header "Dashboard →" control
   // (`libraryControls`), and Dashboard import/export moved to the Dashboard
   // page's own File menu — none of them appear here anymore.
-  const newWorkspaceItem = item(Icon.plus(), 'New workspace…', null, () => { close(); newWorkspaceAction(app); });
+  const importQueriesInput = pickerInput(app, (f) => onImportQueriesFile(app, f));
+  const replaceWorkspaceInput = pickerInput(app, (f) => onReplaceWorkspaceFile(app, f));
+
   // Variable recent-value history (#171): this is the closest thing the app
   // has to a "settings" surface today (no dedicated preferences panel exists
   // yet — rg for one turned up nothing), so it follows the File menu's own
@@ -155,47 +156,47 @@ export function openFileMenu(app: App): void {
       },
     }),
     h('span', { class: 'fm-label' }, 'Remember recent variable values'));
-  const clearAllRecentItem = item(Icon.trash(), 'Clear all recent values', null, () => {
-    close();
-    app.params.clearAllVarRecent();
-    flashToast('Cleared recent variable values', { document: app.document });
-  });
-  const menu = h('div', { class: 'file-menu' },
-    newWorkspaceItem,
-    sep(),
-    h('div', { class: 'fm-section' }, 'Variable history'),
-    historyToggle,
-    clearAllRecentItem,
-    sep(),
-    h('div', { class: 'fm-section' }, 'Import / replace'),
-    item(Icon.upload(), 'Import queries…', null, () => { importQueriesInput.click(); close(); }),
-    item(Icon.refresh(), 'Replace workspace…', null, () => { replaceWorkspaceInput.click(); close(); }),
-    sep(),
-    h('div', { class: 'fm-section' }, 'Export'),
-    item(Icon.download(), 'Export workspace…', '.json', () => { close(); exportWorkspaceAction(app); }),
-    sep(),
-    h('div', { class: 'fm-section' }, 'Share / publish'),
-    item(Icon.download(), 'Download Markdown', '.md', () => { close(); downloadAction(app, 'md'); }),
-    item(Icon.download(), 'Download SQL', '.sql', () => { close(); downloadAction(app, 'sql'); }),
-    h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace'),
-    importQueriesInput, replaceWorkspaceInput);
+  const countRow = h('div', { class: 'fm-count' }, empty ? 'Workspace is empty' : queries(list.length) + ' in workspace');
 
-  const overlay = h('div', { class: 'fm-overlay', onclick: close });
-  app.dom.fileMenuOverlay = overlay;
-  app.dom.fileMenu = menu;
-  doc.body.appendChild(overlay);
-  const r = app.dom.fileBtn!.getBoundingClientRect();
-  // Anchor under the button. fixedAnchor's return type is a `{top,left}` /
-  // `{top,right}` union (the right-align branch only fires when a
-  // `viewportW` option is passed); this call site never passes one, so it's
-  // always the `{top,left}` shape.
-  const a = fixedAnchor(r) as { top: number; left: number };
-  menu.style.position = 'fixed';
-  menu.style.top = a.top + 'px';
-  menu.style.left = a.left + 'px';
-  doc.body.appendChild(menu);
-  doc.addEventListener('keydown', onKey, true);
-  setTimeout(() => newWorkspaceItem.focus());
+  const rows: MenuRow[] = [
+    { kind: 'item', icon: Icon.plus(), label: 'New workspace…', onClick: () => newWorkspaceAction(app) },
+    { kind: 'sep' },
+    { kind: 'section', label: 'Variable history' },
+    { kind: 'custom', node: historyToggle, focusable: true },
+    {
+      kind: 'item', icon: Icon.trash(), label: 'Clear all recent values',
+      onClick: () => {
+        app.params.clearAllVarRecent();
+        flashToast('Cleared recent variable values', { document: app.document });
+      },
+    },
+    { kind: 'sep' },
+    { kind: 'section', label: 'Import / replace' },
+    { kind: 'item', icon: Icon.upload(), label: 'Import queries…', onClick: () => importQueriesInput.click() },
+    { kind: 'item', icon: Icon.refresh(), label: 'Replace workspace…', onClick: () => replaceWorkspaceInput.click() },
+    { kind: 'sep' },
+    { kind: 'section', label: 'Export' },
+    { kind: 'item', icon: Icon.download(), label: 'Export workspace…', meta: '.json', onClick: () => exportWorkspaceAction(app) },
+    { kind: 'sep' },
+    { kind: 'section', label: 'Share / publish' },
+    { kind: 'item', icon: Icon.download(), label: 'Download Markdown', meta: '.md', onClick: () => downloadAction(app, 'md') },
+    { kind: 'item', icon: Icon.download(), label: 'Download SQL', meta: '.sql', onClick: () => downloadAction(app, 'sql') },
+    { kind: 'custom', node: countRow },
+  ];
+
+  const handle = openMenu({ document: doc, trigger: app.dom.fileBtn!, rows });
+  // The hidden file pickers aren't menu ROWS (no label/click chrome of their
+  // own) — they're display:none inputs `.click()`-triggered by the Import
+  // queries / Replace workspace items above. Parent them to the mounted menu
+  // so they're torn down with it on close (no leak) and `picker(i)`-style
+  // lookups (`.file-menu input[type=file]`) keep finding them. The item click
+  // closes the menu (detaching these) BEFORE running its onClick, so the
+  // `.click()` fires on a now-detached input — which is fine: a programmatic
+  // `.click()` opens the native file chooser whether or not the input is in
+  // the document (the standard detached-input pattern), and it still runs
+  // synchronously inside the original user gesture.
+  handle.el.appendChild(importQueriesInput);
+  handle.el.appendChild(replaceWorkspaceInput);
 }
 
 // ── file pickers + bundle decode ────────────────────────────────────────────

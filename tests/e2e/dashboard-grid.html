@@ -19,6 +19,13 @@
     section.scenario > h2 { font: 12px var(--mono); color: var(--fg-mute); margin: 0 0 6px; }
     #responsive-wrap { border: 1px dashed transparent; }
     .dash-tile-body { align-items: center; justify-content: center; font: 11px var(--mono); color: var(--fg-mute); }
+    /* #331: the containment scenario renders REAL panel-root markup
+       (.res-table-wrap / .md-view), not the generic title-text placeholder
+       the other scenarios use — the generic center/placeholder styling above
+       would fight the real panels' own layout, so it's unset here. */
+    #containment-grid .dash-tile-body {
+      align-items: stretch; justify-content: flex-start; font: inherit; color: inherit;
+    }
   </style>
 </head>
 <body data-theme="dark">
@@ -61,6 +68,13 @@
     <h2>Full view (#321 transient render-mode override) — vertical-only resize</h2>
     <div class="dash-page">
       <div class="dash-grid dash-gg-grid is-full" id="full-grid"></div>
+    </div>
+  </section>
+
+  <section class="scenario">
+    <h2>content containment (#331) — tall table/markdown must stay inside .dash-tile-body</h2>
+    <div class="dash-page">
+      <div class="dash-grid dash-gg-grid" id="containment-grid"></div>
     </div>
   </section>
 
@@ -349,6 +363,67 @@
     renderFull();
     window.__fullColumns = () => fullColumns;
     window.__fullPersistedSpan = (tileId) => fullPlacementByTile.get(tileId).persistedSpan;
+
+    // ── Scenario 7: content containment (#331) ──────────────────────────────
+    // Real panel-root markup (`.res-table-wrap` / `.md-view`), the SAME
+    // classes `ui/dashboard.ts`'s `paintPanel` appends into `.dash-tile-body`
+    // (via `renderResolvedPanel` → the table/markdown result views) — a tall
+    // table and a tall markdown body, deliberately taller than the tile's
+    // fixed height, so the styles.css containment contract (flex + min-height
+    // 0 + max-height 100% + overflow auto on `.dash-tile-body`'s children,
+    // `overflow: hidden` on `.dash-tile-body` itself) is what keeps them from
+    // growing past the body and painting over the footer — not a lucky fit.
+    const containmentTiles = [{ id: 'ct-table' }, { id: 'ct-md' }];
+    const containmentLayout = { items: {
+      'ct-table': { span: 6, height: 2 }, 'ct-md': { span: 6, height: 2 },
+    } };
+    const containmentGrid = document.getElementById('containment-grid');
+
+    function buildTallTable(rowCount) {
+      const wrap = document.createElement('div');
+      wrap.className = 'res-table-wrap';
+      const table = document.createElement('table');
+      table.className = 'res-table';
+      const tbody = document.createElement('tbody');
+      for (let i = 0; i < rowCount; i++) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.className = 'cell';
+        td.textContent = 'row ' + i;
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      return wrap;
+    }
+
+    function buildTallMarkdown(paraCount) {
+      const box = document.createElement('div');
+      box.className = 'md-view';
+      for (let i = 0; i < paraCount; i++) {
+        const p = document.createElement('p');
+        p.textContent = 'Paragraph ' + i + ' of static markdown content, long enough to take up real vertical space in the tile body.';
+        box.appendChild(p);
+      }
+      return box;
+    }
+
+    (function renderContainment() {
+      const model = computeGrafanaGridLayout({
+        tiles: containmentTiles, layout: containmentLayout, containerWidth: measuredWidth(containmentGrid),
+      });
+      containmentGrid.style.gridTemplateColumns = `repeat(${model.columns}, 1fr)`;
+      containmentGrid.replaceChildren();
+      for (const t of model.tiles) {
+        const { card } = buildTile({ id: t.tileId, title: t.tileId, heightUnits: t.heightUnits }, 'view');
+        card.style.gridColumn = 'span ' + t.span;
+        const body = card.querySelector('.dash-tile-body');
+        body.textContent = ''; // drop the generic title placeholder
+        body.appendChild(t.tileId === 'ct-table' ? buildTallTable(80) : buildTallMarkdown(40));
+        containmentGrid.appendChild(card);
+      }
+    }());
 
     window.__ready = true;
   </script>

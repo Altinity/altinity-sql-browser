@@ -324,4 +324,49 @@ test.describe('Dashboard grafana-grid layout', () => {
     expect(events[0].tileId).toBe('f1');
     expect(events[0].span).toBe(4);
   });
+
+  // #331: tall Table/Markdown panel content must stay clipped/scrollable
+  // inside `.dash-tile-body`, never grow past it and paint over the footer —
+  // a real-browser check, since happy-dom's getComputedStyle never resolves
+  // actual overflow/scroll geometry the way a real layout engine does.
+  test('a tall table and a tall markdown panel stay contained within .dash-tile-body and never overlap the footer (#331)', async ({ page }) => {
+    await openWide(page);
+    const body = page.locator('#containment-grid .dash-tile[data-tile-id="ct-table"] .dash-tile-body');
+    await expect(body).toHaveCSS('overflow', 'hidden');
+
+    for (const [tileId, panelSelector] of [['ct-table', '.res-table-wrap'], ['ct-md', '.md-view']]) {
+      const card = page.locator(`#containment-grid .dash-tile[data-tile-id="${tileId}"]`);
+      const tileBody = card.locator('.dash-tile-body');
+      const panel = card.locator(panelSelector);
+      const foot = card.locator('.dash-tile-foot');
+
+      const geometry = await page.evaluate(({ cardSel, panelSel, footSel }) => {
+        const bodyEl = document.querySelector(cardSel + ' .dash-tile-body');
+        const panelEl = document.querySelector(cardSel + ' ' + panelSel);
+        const footEl = document.querySelector(cardSel + ' ' + footSel);
+        const bodyRect = bodyEl.getBoundingClientRect();
+        const panelRect = panelEl.getBoundingClientRect();
+        const footRect = footEl.getBoundingClientRect();
+        return {
+          bodyBottom: bodyRect.bottom, panelBottom: panelRect.bottom, footTop: footRect.top,
+          scrollHeight: panelEl.scrollHeight, clientHeight: panelEl.clientHeight,
+        };
+      }, { cardSel: `#containment-grid .dash-tile[data-tile-id="${tileId}"]`, panelSel: panelSelector, footSel: '.dash-tile-foot' });
+
+      // The panel's rendered bottom never extends past the tile body's own
+      // bottom (a 1px tolerance for subpixel rounding).
+      expect(geometry.panelBottom).toBeLessThanOrEqual(geometry.bodyBottom + 1);
+      // The footer's top is never above the body's bottom — i.e. the panel
+      // never paints underneath/over the footer bar.
+      expect(geometry.footTop).toBeGreaterThanOrEqual(geometry.bodyBottom - 1);
+      // The content genuinely overflows its own box (proving containment is
+      // doing real work, not just fitting by coincidence) and scrolls
+      // internally rather than growing the box.
+      expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+
+      await expect(panel).toHaveCSS('overflow', 'auto');
+      await expect(tileBody).toBeVisible();
+      await expect(foot).toBeVisible();
+    }
+  });
 });
