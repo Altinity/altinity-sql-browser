@@ -294,16 +294,25 @@ test.describe('Dashboard grafana-grid layout', () => {
     expect(before).toBe(`span ${columns}`);
 
     await handle.scrollIntoViewIfNeeded();
+    const rect = await card.evaluate((node) => { const r = node.getBoundingClientRect(); return { left: r.left, top: r.top }; });
     const handleBox = await handle.boundingBox();
     await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
     await page.mouse.down();
     await expect(card).toHaveClass(/dash-gg-resizing/);
 
-    // A large horizontal + vertical drag: gridColumn is untouched (still full
-    // width) despite the large clientX delta; only height changes.
-    await page.mouse.move(handleBox.x + 2000, handleBox.y + 250, { steps: 5 });
+    // A large horizontal + vertical drag, dispatched synthetically on window
+    // (where the wiring listens): Firefox does not deliver a real mouse move
+    // this far outside the viewport. Height is measured from the CARD's top
+    // (`clientY - rect.top`, the exact math the app uses), so drive clientY to
+    // `rect.top + 390` for a deterministic 4-row-unit result — distinct from
+    // the tile's authored 2 units, proving the height actually changed — while
+    // the huge clientX delta proves horizontal movement is ignored (span
+    // stays the full column count, no grid-column re-pin).
+    await page.evaluate(({ x, y }) => {
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y }));
+    }, { x: rect.left + 100000, y: rect.top + 390 });
     expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${columns}`);
-    const expectedHeight = await page.evaluate((dy) => window.__gridHeightUnitsToPx(window.__snapGridHeight(dy)) + 'px', 250);
+    const expectedHeight = await page.evaluate(() => window.__gridHeightUnitsToPx(window.__snapGridHeight(390)) + 'px');
     expect(await card.evaluate((node) => node.style.height)).toBe(expectedHeight);
 
     await page.mouse.up();
