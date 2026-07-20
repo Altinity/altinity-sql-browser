@@ -64,7 +64,7 @@ const panelQuery = (id: string, name = id, sql = 'SELECT 1'): SavedQueryV2 => ({
 });
 const dashboardDoc = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [], ...over,
 });
 const bundleDoc = (over: Partial<PortableBundleV1> = {}): PortableBundleV1 => ({

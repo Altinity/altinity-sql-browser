@@ -17,8 +17,9 @@
           <div class="dash-title">A deliberately long production operations Dashboard name</div>
           <span class="dash-chip dash-fav">6 favorites</span>
           <div class="dash-layout-wrap">
-            <select class="result-panel-select dash-layout-select" aria-label="Dashboard layout" title="Dashboard layout">
-              <option value="full-width">Full width</option>
+            <select class="result-panel-select dash-layout-select" aria-label="Dashboard style" title="Dashboard style">
+              <option value="grafana-grid">Grid Tiles</option>
+              <option value="full">Full view</option>
               <option value="report" selected>Report</option>
               <option value="columns-2">2 columns</option>
               <option value="columns-3">3 columns</option>
@@ -91,8 +92,9 @@
     localStorage.setItem('asb:dashCols', '3');
     window.__layoutApplyCount = 0;
     window.__setLayout = (mode) => {
+      // #321: 'full-width'/'wide' removed — every mode this harness exercises
+      // is a flow preset (report/columns-2/columns-3).
       const grid = document.querySelector('.dash-grid');
-      grid.classList.toggle('is-wide', mode === 'wide');
       grid.classList.toggle('is-report', mode === 'report');
       grid.style.setProperty('--dash-cols', mode === 'columns-2' ? '2' : '3');
       window.__layoutApplyCount++;

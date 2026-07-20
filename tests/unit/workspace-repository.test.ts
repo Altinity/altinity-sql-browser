@@ -43,7 +43,7 @@ const withDashboard = (over: Record<string, unknown> = {}): StoredWorkspaceV1 =>
   queries: [panelQuery('p1')],
   dashboard: {
     documentVersion: 1, id: 'd1', title: 'D', revision: 7,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     filters: [], tiles: [{ id: 't1', queryId: 'p1' }],
   },
   ...over,
@@ -109,7 +109,7 @@ describe('createWorkspaceRepository.commit', () => {
     const bad = workspace({
       dashboard: {
         documentVersion: 1, id: 'd', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
         filters: [], tiles: [{ id: 't1', queryId: 'gone' }],
       },
     });

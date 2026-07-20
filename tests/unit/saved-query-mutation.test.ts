@@ -27,7 +27,7 @@ const baseWorkspace = (): StoredWorkspaceV1 => ({
   ],
   dashboard: {
     documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+    layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
     filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
     tiles: [{ id: 't1', queryId: 'p1' }],
   },
@@ -80,7 +80,7 @@ describe('planSavedQueryMutation — rejection without repair', () => {
       queries: [panelQuery('p1', 'SELECT a,b WHERE c={country:String}'), filterQuery('f1'), filterQuery('f2')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
         filters: [{ id: 'flt', parameter: 'country', sourceQueryId: 'f1', targets: ['t1'] }],
         tiles: [{ id: 't1', queryId: 'p1' }],
       },
@@ -122,7 +122,7 @@ describe('planSavedQueryMutation — atomic repair', () => {
       queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } })],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } },
         filters: [], tiles: [{ id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }],
       },
     } as StoredWorkspaceV1;
@@ -163,7 +163,7 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
     queries: [panelQuery('p1', 'SELECT a,b', { variants: { alt: {}, other: {} } }), panelQuery('p2', 'SELECT a,b')],
     dashboard: {
       documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {}, t2: {}, t3: {}, t4: {} } },
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, t2: {}, t3: {}, t4: {} } },
       filters: [{ id: 'flt', parameter: 'x' }], // no source, no targets
       tiles: [
         { id: 't1', queryId: 'p1', presentation: { variant: 'alt' } }, // has a presentation, gets switched
@@ -198,7 +198,7 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
       queries: [panelQuery('p1', 'SELECT a,b'), panelQuery('p2', 'SELECT a,b')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {}, t2: {} } },
+        layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {}, t2: {} } },
         filters: [{ id: 'flt', parameter: 'x' }], // no source
         tiles: [{ id: 't1', queryId: 'p1' }, { id: 't2', queryId: 'p2' }],
       },
@@ -214,7 +214,7 @@ describe('planSavedQueryMutation — repairs skip unaffected and target-less ent
       storageVersion: 1, id: 'ws', name: 'WS', queries: [panelQuery('p1', 'SELECT a,b')],
       dashboard: {
         documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-        layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
         filters: ['bad', { id: 'flt', parameter: 'x' }], tiles: ['bad', { id: 't1', queryId: 'p1' }],
       },
     } as unknown as StoredWorkspaceV1;
@@ -244,7 +244,7 @@ describe('planSavedQueryMutation — grafana-grid@1 engine awareness (#291)', ()
     expect(dashboard.tiles).toEqual([]);
     expect(dashboard.layout.items).toEqual({}); // orphan grid placement pruned
     expect((dashboard.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width', items: {},
+      type: 'flow', version: 1, preset: 'columns-2', items: {},
     });
   });
 });

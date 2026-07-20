@@ -3809,7 +3809,7 @@ function validate44(data, { instancePath = "", parentData, parentDataProperty, r
 }
 validate44.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 var validateFlowLayoutV1 = validate46;
-var schema57 = { "title": "Flow preset", "description": "Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.", "type": "string", "enum": ["full-width", "report", "columns-2", "columns-3"] };
+var schema57 = { "title": "Flow preset", "description": "Desktop column arrangement: report renders one constrained-width centered column, columns-2 and columns-3 render equal columns.", "type": "string", "enum": ["report", "columns-2", "columns-3"] };
 var schema58 = { "title": "Tile placement", "description": "Closed placement contract: unknown fields fail validation. Future extension requires flow@2 or an explicit extension namespace.", "type": "object", "properties": { "span": { "title": "Column span", "description": "Columns the tile occupies; the effective span is clamped to the active column count.", "type": "integer", "enum": [1, 2, 3] }, "height": { "$ref": "#/$defs/flowHeightV1" } }, "additionalProperties": false, "x-altinity-order": ["span", "height"] };
 var schema59 = { "title": "Tile height", "description": "Normative height ordering is compact < medium < large; exact pixels are renderer-defined.", "type": "string", "enum": ["compact", "medium", "large"] };
 function validate47(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
@@ -4001,7 +4001,7 @@ function validate46(data, { instancePath = "", parentData, parentDataProperty, r
         }
         errors++;
       }
-      if (!(data2 === "full-width" || data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
+      if (!(data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
         const err10 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/enum", keyword: "enum", params: { allowedValues: schema57.enum }, message: "must be equal to one of the allowed values" };
         if (vErrors === null) {
           vErrors = [err10];
@@ -4586,7 +4586,7 @@ function validate54(data, { instancePath = "", parentData, parentDataProperty, r
         }
         errors++;
       }
-      if (!(data2 === "full-width" || data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
+      if (!(data2 === "report" || data2 === "columns-2" || data2 === "columns-3")) {
         const err10 = { instancePath: instancePath + "/preset", schemaPath: "#/$defs/flowPresetV1/enum", keyword: "enum", params: { allowedValues: schema57.enum }, message: "must be equal to one of the allowed values" };
         if (vErrors === null) {
           vErrors = [err10];

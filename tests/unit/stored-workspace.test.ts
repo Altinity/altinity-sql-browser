@@ -11,7 +11,7 @@ const has = (d: WorkspaceDiagnostic[], code: string): boolean => d.some((x) => x
 const panelQuery = (id: string) => ({ id, sql: 'SELECT 1', specVersion: 1, spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } } } });
 const dashboardDoc = (over: Record<string, unknown> = {}) => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [], ...over,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
 });
 const workspace = (over: Record<string, unknown> = {}) => ({
   storageVersion: 1, id: 'w1', name: 'W', queries: [], dashboard: null, ...over,
@@ -23,7 +23,7 @@ describe('validateStoredWorkspaceDocument', () => {
     expect(validateStoredWorkspaceDocument(workspace({ queries: [panelQuery('p1')] }))).toEqual([]);
     const withDashboard = workspace({
       queries: [panelQuery('p1')],
-      dashboard: dashboardDoc({ tiles: [{ id: 't1', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } } }),
+      dashboard: dashboardDoc({ tiles: [{ id: 't1', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } } }),
     });
     expect(validateStoredWorkspaceDocument(withDashboard)).toEqual([]);
   });
@@ -55,7 +55,7 @@ describe('validateStoredWorkspaceDocument', () => {
     expect(has(d, 'workspace-duplicate-query-id')).toBe(true);
     // Dashboard-side semantics run against the workspace queries.
     const bad = validateStoredWorkspaceDocument(workspace({
-      dashboard: dashboardDoc({ tiles: [{ id: 't1', queryId: 'gone' }], layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } } }),
+      dashboard: dashboardDoc({ tiles: [{ id: 't1', queryId: 'gone' }], layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } } }),
     }));
     expect(has(bad, 'dashboard-tile-query-missing')).toBe(true);
   });

@@ -126,11 +126,11 @@ export const flowLayoutPlugin: DashboardLayoutPlugin = {
 // stay renderer/theme concerns; this module owns column count, effective span,
 // deterministic row-major packing, KPI-band grouping, and mobile normalization.
 
-/** Desktop column count for each flow preset (#280 "Presets"). full-width and
- *  report render one column (report centers a constrained-width column);
+/** Desktop column count for each flow preset (#280 "Presets"; full-width
+ *  removed #321). report renders one column (centered, constrained-width);
  *  columns-2/columns-3 render two/three equal columns. */
 export const FLOW_PRESET_COLUMNS: Record<FlowPresetV1, number> = {
-  'full-width': 1, report: 1, 'columns-2': 2, 'columns-3': 3,
+  report: 1, 'columns-2': 2, 'columns-3': 3,
 };
 
 const FLOW_PRESETS = new Set<string>(Object.keys(FLOW_PRESET_COLUMNS));
@@ -141,7 +141,8 @@ const FLOW_PRESETS = new Set<string>(Object.keys(FLOW_PRESET_COLUMNS));
 export const FLOW_MOBILE_BREAKPOINT = 768;
 
 /** The desktop column count for a preset; an unknown/absent preset falls back
- *  to full-width (1). */
+ *  to 1 column (the same column count as `report`, the nearest valid single-
+ *  column preset since full-width was removed, #321). */
 export function presetColumns(preset: unknown): number {
   return typeof preset === 'string' && Object.hasOwn(FLOW_PRESET_COLUMNS, preset)
     ? FLOW_PRESET_COLUMNS[preset as FlowPresetV1] : 1;
@@ -238,7 +239,7 @@ export function computeFlowLayout(input: ComputeFlowLayoutInput): FlowLayoutMode
   const { tiles, layout, mobile = false } = input;
   const surface = flowSurface(layout);
   const rawPreset = surface && typeof surface.preset === 'string' ? surface.preset : undefined;
-  const preset: FlowPresetV1 = rawPreset && FLOW_PRESETS.has(rawPreset) ? rawPreset as FlowPresetV1 : 'full-width';
+  const preset: FlowPresetV1 = rawPreset && FLOW_PRESETS.has(rawPreset) ? rawPreset as FlowPresetV1 : 'report';
   const items = surface && isObject(surface.items) ? surface.items as Record<string, unknown> : {};
   const columns = mobile ? 1 : presetColumns(preset);
 

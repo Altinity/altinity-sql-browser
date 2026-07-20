@@ -30,6 +30,7 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { resolveDashboardPresentations } from '../model/presentation-resolver.js';
 import { buildDashboardExportBundle } from '../model/dashboard-export.js';
 import { defaultLayoutRegistry } from '../layouts/layout-registry.js';
+import { deriveFlowFallback } from '../layouts/grafana-grid-layout.js';
 import { applyCommand } from './dashboard-commands.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
 import { createQueryResolver } from './dashboard-query-resolver.js';
@@ -86,7 +87,12 @@ export interface DashboardAuthoringSessionDeps {
 function createEmptyDashboard(id: string): DashboardDocumentV1 {
   return {
     documentVersion: 1, id, title: 'Dashboard', revision: 1,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+    layout: {
+      type: 'grafana-grid',
+      version: 1,
+      items: {},
+      fallback: deriveFlowFallback({ type: 'grafana-grid', version: 1, items: {} }, []),
+    },
     filters: [], tiles: [],
   };
 }

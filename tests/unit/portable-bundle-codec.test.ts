@@ -11,7 +11,7 @@ const has = (d: WorkspaceDiagnostic[], code: string): boolean => d.some((x) => x
 const panelQuery = (id: string) => ({ id, sql: 'SELECT 1', specVersion: 1, spec: { name: id, panel: { cfg: { type: 'bar', x: 0, y: [1] } } } });
 const dashboardDoc = (over: Record<string, unknown> = {}) => ({
   documentVersion: 1, id: 'd1', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [], ...over,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
 });
 const bundle = (over: Record<string, unknown> = {}) => ({
   format: PORTABLE_BUNDLE_FORMAT, version: 1, exportedAt: '2026-07-17T00:00:00.000Z',
@@ -23,7 +23,7 @@ describe('validatePortableBundleDocument', () => {
     expect(validatePortableBundleDocument(bundle())).toEqual([]);
     const full = bundle({
       queries: [panelQuery('p1')],
-      dashboards: [dashboardDoc({ tiles: [{ id: 't1', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: {} } } })],
+      dashboards: [dashboardDoc({ tiles: [{ id: 't1', queryId: 'p1' }], layout: { type: 'flow', version: 1, preset: 'report', items: { t1: {} } } })],
     });
     expect(validatePortableBundleDocument(full)).toEqual([]);
   });

@@ -261,4 +261,67 @@ test.describe('Dashboard grafana-grid layout', () => {
     await expect(page.locator('#viewonly-grid .dash-gg-del')).toHaveCount(0);
     await expect(page.locator('#viewonly-grid .dash-gg-resize')).toHaveCount(0);
   });
+
+  // #321 "Full view": a TRANSIENT grafana-grid render-mode override — every
+  // tile spans the full effective column count, and resize is vertical-only.
+  test('Full view renders every tile at the full effective column count (#321)', async ({ page }) => {
+    await openWide(page);
+    const columns = await page.evaluate(() => window.__fullColumns());
+    const cards = page.locator('#full-grid .dash-tile');
+    await expect(cards).toHaveCount(2);
+    for (const id of ['f1', 'f2']) {
+      const card = page.locator(`#full-grid .dash-tile[data-tile-id="${id}"]`);
+      expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${columns}`);
+    }
+    // The authored (persisted) spans still travel on the model, unchanged by
+    // the full-width override.
+    expect(await page.evaluate(() => window.__fullPersistedSpan('f1'))).toBe(4);
+    expect(await page.evaluate(() => window.__fullPersistedSpan('f2'))).toBe(8);
+    // The resize handle's accessible label reflects vertical-only resize.
+    const handle = page.locator('#full-grid .dash-tile[data-tile-id="f1"] .dash-gg-resize');
+    await expect(handle).toHaveAttribute('aria-label', 'Resize tile height');
+    // The CSS vertical-resize cursor hook is present on the grid host.
+    expect(await page.locator('#full-grid').evaluate((node) => node.classList.contains('is-full'))).toBe(true);
+    expect(await page.locator('#full-grid .dash-gg-resize').first().evaluate((node) => getComputedStyle(node).cursor)).toBe('ns-resize');
+  });
+
+  test('Full view resize is vertical-only: horizontal movement never changes span, and the dispatched span is the UNCHANGED persisted one', async ({ page }) => {
+    await openWide(page);
+    const card = page.locator('#full-grid .dash-tile[data-tile-id="f1"]'); // authored span 4, rendered full width
+    const handle = page.locator('#full-grid .dash-tile[data-tile-id="f1"] .dash-gg-resize');
+    const columns = await page.evaluate(() => window.__fullColumns());
+    const before = await card.evaluate((node) => node.style.gridColumn);
+    expect(before).toBe(`span ${columns}`);
+
+    await handle.scrollIntoViewIfNeeded();
+    const rect = await card.evaluate((node) => { const r = node.getBoundingClientRect(); return { left: r.left, top: r.top }; });
+    const handleBox = await handle.boundingBox();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await expect(card).toHaveClass(/dash-gg-resizing/);
+
+    // A large horizontal + vertical drag, dispatched synthetically on window
+    // (where the wiring listens): Firefox does not deliver a real mouse move
+    // this far outside the viewport. Height is measured from the CARD's top
+    // (`clientY - rect.top`, the exact math the app uses), so drive clientY to
+    // `rect.top + 390` for a deterministic 4-row-unit result — distinct from
+    // the tile's authored 2 units, proving the height actually changed — while
+    // the huge clientX delta proves horizontal movement is ignored (span
+    // stays the full column count, no grid-column re-pin).
+    await page.evaluate(({ x, y }) => {
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y }));
+    }, { x: rect.left + 100000, y: rect.top + 390 });
+    expect(await card.evaluate((node) => node.style.gridColumn)).toBe(`span ${columns}`);
+    const expectedHeight = await page.evaluate(() => window.__gridHeightUnitsToPx(window.__snapGridHeight(390)) + 'px');
+    expect(await card.evaluate((node) => node.style.height)).toBe(expectedHeight);
+
+    await page.mouse.up();
+    await expect(card).not.toHaveClass(/dash-gg-resizing/);
+    const events = await page.evaluate(() => window.__fullResizeEvents);
+    expect(events).toHaveLength(1);
+    // The re-dispatched span is the tile's PERSISTED (authored) span, 4 —
+    // never the full-width rendered span (`columns`).
+    expect(events[0].tileId).toBe('f1');
+    expect(events[0].span).toBe(4);
+  });
 });

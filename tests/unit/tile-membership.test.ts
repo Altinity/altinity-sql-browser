@@ -14,7 +14,7 @@ const noRoleQuery = (id: string): SavedQueryV2 => ({
 
 const dashboard = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'dash', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} },
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} },
   filters: [], tiles: [], ...over,
 } as DashboardDocumentV1);
 
@@ -92,7 +92,7 @@ describe('toggleTileMembership', () => {
 
   it('normalizes the result — a removed tile drops its layout placement, a new tile gets none stored', () => {
     const d = dashboard({
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: { t1: { span: 2, height: 'large' } } },
+      layout: { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'large' } } },
       tiles: [{ id: 't1', queryId: 'p1' }],
     });
     const removed = toggleTileMembership(d, panelQuery('p1'), false, genTileId())!;
@@ -114,7 +114,7 @@ describe('toggleTileMembership — grafana-grid@1 engine awareness (#291)', () =
     // at render time, which the regenerated fallback reflects (flow span 2).
     expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
     expect((next.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width', items: { 'tile-1': { span: 2, height: 'medium' } },
+      type: 'flow', version: 1, preset: 'columns-2', items: { 'tile-1': { span: 2, height: 'medium' } },
     });
   });
 
@@ -127,7 +127,7 @@ describe('toggleTileMembership — grafana-grid@1 engine awareness (#291)', () =
     expect(next.tiles).toEqual([]);
     expect((next.layout as { items: Record<string, unknown> }).items).toEqual({});
     expect((next.layout as { fallback?: unknown }).fallback).toEqual({
-      type: 'flow', version: 1, preset: 'full-width', items: {},
+      type: 'flow', version: 1, preset: 'columns-2', items: {},
     });
   });
 });

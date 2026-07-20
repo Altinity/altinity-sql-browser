@@ -51,10 +51,10 @@ import type {
 import { defaultLayoutRegistry, resolveLayoutPluginSync } from '../dashboard/layouts/layout-registry.js';
 import type { FlowLayoutModel } from '../dashboard/layouts/flow-layout.js';
 import {
-  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, contentBoxWidth, gridHeightUnitsToPx,
-  snapGridHeight, snapGridSpan,
+  DEFAULT_GRID_HEIGHT_UNITS, GRAFANA_GRID_MAX_COLUMNS, GRID_GAP_PX, contentBoxWidth, deriveFlowFallback,
+  gridHeightUnitsToPx, snapGridHeight, snapGridSpan,
 } from '../dashboard/layouts/grafana-grid-layout.js';
-import type { GrafanaGridLayoutModel } from '../dashboard/layouts/grafana-grid-layout.js';
+import type { GrafanaGridLayoutModel, GridRenderMode } from '../dashboard/layouts/grafana-grid-layout.js';
 import { applyCommand } from '../dashboard/application/dashboard-commands.js';
 import { createQueryResolver } from '../dashboard/application/dashboard-query-resolver.js';
 import { resolveDashboardMode } from '../dashboard/application/session-bundle.js';
@@ -182,6 +182,10 @@ interface TileEl {
   panelState: { key: string;[k: string]: unknown } | null;
   destroy: (() => void) | null;
   paintedRows: unknown[][] | null;
+  /** #321: the grid resize handle, when built (grafana-grid + edit mode) — its
+   *  accessible label toggles between 'Resize' (tiles) and 'Resize tile
+   *  height' (full view, vertical-only) as the render mode changes. */
+  resizeHandle: HTMLElement | null;
 }
 
 /** Synthesize a filter definition per distinct `{name:Type}` panel-tile param
@@ -337,7 +341,11 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     ? workspace.dashboard
     : {
       documentVersion: 1, id: 'empty', title: state.libraryName.value, revision: 1,
-      layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [],
+      layout: {
+        type: 'grafana-grid', version: 1, items: {},
+        fallback: deriveFlowFallback({ type: 'grafana-grid', version: 1, items: {} }, []),
+      },
+      filters: [], tiles: [],
     };
   let committedRevision = currentDoc.revision;
 
@@ -392,49 +400,103 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   app.dom.themeBtn = themeBtn;
 
   // ── Preset switcher (change-layout command) ───────────────────────────────
+  // #321: the local mirror of the viewer session's TRANSIENT grid render-mode
+  // override ('tiles'|'full') — read by `getActive`/`onPick` below (built
+  // synchronously, before the first publish) and kept current by the render
+  // effect (Part D) whenever `sview.layout.renderMode` changes.
+  let gridRenderMode: GridRenderMode = 'tiles';
   // 2026-07-18 owner override: moved off the filter toolbar and into the top
   // header row (right after the tile-count chip) so the toolbar's whole width
   // is available for filters; a compact select needs far less room than the
   // four-button segmented control it replaces.
-  const layoutSelect = buildLayoutSelect([
-    ['full-width', 'Full width', 'One tile per row using all available width'],
+  // #321: "Full view" is a TRANSIENT runtime render-mode override over the
+  // grafana-grid engine (never persisted) — it sits alongside "Grid Tiles" in
+  // the editable selector. A read-only (detached) view gets a REDUCED
+  // selector with only those two entries — layout editing (the flow presets,
+  // and the flow<->grid engine switch) stays an edit-mode-only affordance,
+  // but the render-mode toggle is harmless to expose read-only since it never
+  // persists anything.
+  const EDITABLE_LAYOUT_OPTIONS: LayoutOption[] = [
+    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights'],
+    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved'],
     ['report', 'Report', 'One centered, taller tile per row'],
     ['columns-2', '2 columns', 'Arrange tiles in two columns'],
     ['columns-3', '3 columns', 'Arrange tiles in three columns'],
-    ['grafana-grid', 'Grafana grid', 'A dense, rowless tile grid (Grafana-style)'],
-  ], () => (currentDoc.layout.type === 'grafana-grid'
-    ? 'grafana-grid'
-    : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'full-width'),
-  (value) => {
-    // #291: picking "Grafana grid" switches ENGINE — change-layout seeds/
-    // derives grid placements from the current flow layout and snapshots it
-    // as the fallback (Wave 2's own contract; the UI never manages the
-    // fallback itself). Picking a flow preset while grid is active restores
-    // that fallback (bare `{type:'flow',version:1,preset}` — grid carries no
-    // flow `items`/`preset` shape to spread). Picking a flow preset while
-    // flow is ALREADY active keeps the existing spread of `currentDoc.layout`
-    // (preserving per-tile `items`) — only `preset` changes.
-    if (value === 'grafana-grid') {
-      runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
-    } else if (currentDoc.layout.type === 'grafana-grid') {
-      runCommand({ type: 'change-layout', layout: { type: 'flow', version: 1, preset: value as FlowPresetV1 } });
-    } else {
-      runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: value as FlowPresetV1 } });
-    }
-  },
-  'Dashboard layout');
+  ];
+  const READONLY_LAYOUT_OPTIONS: LayoutOption[] = [
+    ['grafana-grid', 'Grid Tiles', 'A responsive tile grid using authored spans and heights'],
+    ['full', 'Full view', 'Temporary full-width view — tile widths are not saved'],
+  ];
+  const getActiveLayoutOption = (): string => (currentDoc.layout.type === 'grafana-grid'
+    ? (gridRenderMode === 'full' ? 'full' : 'grafana-grid')
+    : typeof currentDoc.layout.preset === 'string' ? currentDoc.layout.preset : 'report');
+  const layoutSelect = buildLayoutSelect(
+    readOnly ? READONLY_LAYOUT_OPTIONS : EDITABLE_LAYOUT_OPTIONS,
+    getActiveLayoutOption,
+    (value) => {
+      // #321 read-only: the reduced selector offers ONLY 'grafana-grid'/'full'
+      // — either choice is ONLY ever the transient render-mode override, NEVER
+      // a command / persistence.
+      if (readOnly) {
+        session.setGridRenderMode(value === 'full' ? 'full' : 'tiles');
+        layoutSelect.sync();
+        return;
+      }
+      if (value === 'grafana-grid') {
+        // Full view -> Grid Tiles: clear the transient override in place (no
+        // command). Flow -> Grid Tiles: the existing persisted engine switch.
+        // Already grid+tiles: no-op.
+        if (gridRenderMode === 'full') session.setGridRenderMode('tiles');
+        else if (currentDoc.layout.type !== 'grafana-grid') {
+          runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
+        }
+        layoutSelect.sync();
+        return;
+      }
+      if (value === 'full') {
+        // Grid already active: only the transient override changes. Flow
+        // active: persist the ONE flow->grid conversion, THEN apply the
+        // override (still transient) — the conversion is the only persisted
+        // change; the full-view override itself never is.
+        if (currentDoc.layout.type !== 'grafana-grid') {
+          runCommand({ type: 'change-layout', layout: { type: 'grafana-grid', version: 1 } as DashboardLayoutDocumentV1 });
+        }
+        session.setGridRenderMode('full');
+        layoutSelect.sync();
+        return;
+      }
+      // A flow preset: clear any transient full-view override first (#321 —
+      // picking a flow preset always lands on 'tiles' semantics), then apply
+      // the existing persisted flow preset/engine-switch logic unchanged.
+      if (gridRenderMode === 'full') session.setGridRenderMode('tiles');
+      if (currentDoc.layout.type === 'grafana-grid') {
+        runCommand({ type: 'change-layout', layout: { type: 'flow', version: 1, preset: value as FlowPresetV1 } });
+      } else {
+        runCommand({ type: 'change-layout', layout: { ...currentDoc.layout, preset: value as FlowPresetV1 } });
+      }
+      layoutSelect.sync();
+    },
+    'Dashboard style',
+  );
   const layoutWrap = h('div', { class: 'dash-layout-wrap' }, layoutSelect.el);
+  // #321 BLOCKER fix: the reduced read-only selector (Grid Tiles / Full view)
+  // is a grafana-grid-only render-mode toggle — expose it read-only ONLY when
+  // the persisted doc is grafana-grid. A read-only FLOW doc (report/columns-2/
+  // columns-3 — any pre-#321 shared doc) must hide the selector entirely: no
+  // engine switch is possible read-only, so this is decided once at build
+  // time from the static `currentDoc.layout.type`. Editable mode is unchanged
+  // (always the full selector).
+  const showLayoutSelect = !readOnly || currentDoc.layout.type === 'grafana-grid';
 
   // #302: the Dashboard page's own resource-scoped File menu (import/export +
-  // open-for-viewing). #288: a read-only (detached view) tab hides the layout
-  // switcher — layout editing is an edit-mode-only affordance.
+  // open-for-viewing).
   const fileMenuBtn = buildDashboardFileMenu(app, readOnly);
   const header = h('div', { class: 'dash-header' },
     h('a', {
       class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
     }, Icon.arrow(), h('span', { class: 'dash-back-label' }, 'SQL Browser')),
     h('div', { class: 'dash-title' }, currentDoc.title || state.libraryName.value),
-    tileCount, readOnly ? null : layoutWrap,
+    tileCount, showLayoutSelect ? layoutWrap : null,
     h('div', { class: 'dash-spacer', style: { flex: '1' } }),
     h('span', { class: 'dash-chip dash-src', title: app.conn.host() }, h('span', { class: 'dash-dot' }), app.conn.host()),
     updated, fileMenuBtn, themeBtn, refreshBtn);
@@ -559,7 +621,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // rendered values, not a stale/default guess. `colStart` (#291 review F3)
   // is what lets the drag PIN the tile's column position for the gesture's
   // duration — see `wireGridResize` below.
-  const gridPlacementByTile = new Map<string, { span: number; heightUnits: number; colStart: number }>();
+  const gridPlacementByTile =
+    new Map<string, { span: number; heightUnits: number; colStart: number; persistedSpan: number }>();
   // The grafana-grid engine's last-rendered effective column count — read at
   // the start of a corner-drag for the column-width math; a safe desktop
   // default before the first grid publish (never read before one, same
@@ -572,6 +635,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // height is a 1..16 numeric range.
   function setGridHeightPx(card: HTMLElement, heightUnits: number): void {
     card.style.height = gridHeightUnitsToPx(heightUnits) + 'px';
+  }
+
+  // #321: the resize handle's accessible label/title reflects the CURRENT
+  // render mode ('tiles' = two-dimensional resize, 'full' = vertical-only) —
+  // the cursor affordance is pure CSS (`.dash-gg-grid.is-full .dash-gg-resize`,
+  // styles.css), so only the label needs a per-tile DOM update when the mode
+  // flips (Part D, the render effect).
+  function resizeHandleLabel(full: boolean): string {
+    return full ? 'Resize tile height' : 'Resize';
+  }
+  function applyResizeHandleMode(tileEl: TileEl, full: boolean): void {
+    if (!tileEl.resizeHandle) return;
+    const label = resizeHandleLabel(full);
+    tileEl.resizeHandle.title = label;
+    tileEl.resizeHandle.setAttribute('aria-label', label);
   }
 
   // #291 corner-drag resize (Workbench edit mode + grafana-grid engine only):
@@ -597,36 +675,49 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // preview and the persisted span are clamped to `columns - colStart` for
   // the gesture. Widening further than that needs a second drag after the
   // next repack (deterministic beats a jumpy mid-drag reflow).
+  // #321 Full view (vertical-only resize): while `gridRenderMode === 'full'`
+  // every tile renders at the full effective column count (its EFFECTIVE
+  // `span`, in `gridPlacementByTile`) — horizontal pointer movement is
+  // ignored entirely (no `grid-column` re-pin: the card IS full width, there
+  // is no sub-span to preview), and the pointerup dispatch re-sends the
+  // tile's UNCHANGED `persistedSpan` (the authored span `gridPlacementByTile`
+  // also carries — never the overridden full-width `span`) alongside the new
+  // height, so a Full-view resize can only ever change height.
   function wireGridResize(tileId: string, handle: HTMLElement, card: HTMLElement): void {
     handle.addEventListener('pointerdown', (event: Event) => {
       if (activeEngine !== 'grafana-grid') return;
       const start = event as PointerEvent;
       start.preventDefault();
       start.stopPropagation(); // never let the resize handle start a card drag
+      const full = gridRenderMode === 'full';
       const columns = Math.max(1, currentGridColumns);
       const placement = gridPlacementByTile.get(tileId);
       const colStart = placement ? placement.colStart : 0;
+      const persistedSpan = placement ? placement.persistedSpan : columns;
       // The columns actually available at this tile's pinned start — the
-      // clamp ceiling for both the live preview and the persisted span.
+      // clamp ceiling for both the live preview and the persisted span
+      // (tiles mode only — full view never touches span).
       const maxSpan = Math.max(1, columns - colStart);
       let curSpan = Math.min(placement ? placement.span : columns, maxSpan);
       let curHeight = placement ? placement.heightUnits : DEFAULT_GRID_HEIGHT_UNITS;
-      card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
+      if (!full) card.style.gridColumn = `${colStart + 1} / span ${curSpan}`;
       const rect = card.getBoundingClientRect();
       const colWidthPx = (measuredGridWidth() - GRID_GAP_PX * (columns - 1)) / columns;
       card.classList.add('dash-gg-resizing');
       const win = doc.defaultView || window;
       const move = (ev: PointerEvent): void => {
-        const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
+        if (!full) {
+          const span = snapGridSpan(ev.clientX - rect.left, colWidthPx, GRID_GAP_PX, maxSpan);
+          if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
+        }
         const height = snapGridHeight(ev.clientY - rect.top);
-        if (span !== curSpan) { curSpan = span; card.style.gridColumn = `${colStart + 1} / span ${curSpan}`; }
         if (height !== curHeight) { curHeight = height; setGridHeightPx(card, height); }
       };
       const up = (): void => {
         card.classList.remove('dash-gg-resizing');
         win.removeEventListener('pointermove', move as EventListener);
         win.removeEventListener('pointerup', up);
-        runCommand({ type: 'update-placement', tileId, placement: { span: curSpan, height: curHeight } });
+        runCommand({ type: 'update-placement', tileId, placement: { span: full ? persistedSpan : curSpan, height: curHeight } });
       };
       win.addEventListener('pointermove', move as EventListener);
       win.addEventListener('pointerup', up);
@@ -650,7 +741,9 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const head = h('div', { class: 'dash-tile-head' }, grip, h('span', { class: 'dash-tile-name', title: ts.title }, ts.title), delBtn);
     const body = h('div', { class: 'dash-tile-body' });
     const foot = h('div', { class: 'dash-tile-foot' });
-    const resizeHandle = !readOnly ? h('div', { class: 'dash-gg-resize', title: 'Resize' }) : null;
+    const resizeHandle = !readOnly
+      ? h('div', { class: 'dash-gg-resize', title: 'Resize', 'aria-label': 'Resize' })
+      : null;
     // #316: a static, per-load mode class (view mode never toggles mid-session
     // — `readOnly` is resolved once above, before any tile is built) — CSS
     // scopes the frameless-KPI-in-view-mode treatment to
@@ -674,7 +767,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       });
     }
     if (resizeHandle) wireGridResize(ts.tileId, resizeHandle, card);
-    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null };
+    const tileEl: TileEl = { card, body, foot, panelState: null, destroy: null, paintedRows: null, resizeHandle };
+    if (resizeHandle) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
     tileEls.set(ts.tileId, tileEl);
     return tileEl;
   }
@@ -702,7 +796,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     });
     tileEl.destroy = out.destroy || null;
     tileEl.body.replaceChildren(out.node);
-    tileEl.foot.replaceChildren(...tileFooter(ts.meta as NonNullable<ViewerTileState['meta']>));
+    // #329: a 'ready' tile can legitimately carry no result meta (`ts.meta`
+    // is `… | null`, only set after a query executes — a Text panel renders
+    // static content and never does), so the footer is rendered only when
+    // there IS meta. The previous `as NonNullable` cast lied and threw
+    // `Cannot read properties of null (reading 'rows')` in `tileFooter`,
+    // which — reached inside the grafana-grid reconcile loop BEFORE the host
+    // gets `dash-gg-grid` — aborted the entire Grid Tiles render (#321 made
+    // that the default engine). The flow renderer shares this path and had
+    // the same latent crash.
+    tileEl.foot.replaceChildren(...(ts.meta ? tileFooter(ts.meta) : []));
     tileEl.paintedRows = ts.rows;
   }
 
@@ -791,7 +894,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       // #291: undo any grafana-grid-only chrome a cached card picked up the
       // last time the grid engine was active (that reconciliation is gated
       // off entirely while flow renders, so it can't clean up after itself).
-      grid.classList.remove('dash-gg-grid');
+      grid.classList.remove('dash-gg-grid', 'is-full'); // #321: is-full is grid-engine-only chrome
       grid.classList.toggle('is-report', layout.preset === 'report');
       grid.style.gridTemplateColumns = '';
       grid.replaceChildren(...layout.rows.map((row) => {
@@ -881,14 +984,18 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // tile cards, so charts/KPI content are never thrashed mid-drag.
     if (sig === lastGridSig) return;
     lastGridSig = sig;
-    grid.classList.remove('is-report', 'is-wide'); // flow-only preset modifiers
+    grid.classList.remove('is-report'); // flow-only preset modifier
     grid.classList.add('dash-gg-grid');
     grid.style.gridTemplateColumns = `repeat(${gridModel.columns}, 1fr)`;
     const cards: HTMLElement[] = [];
     for (const t of gridModel.tiles) {
       const tileEl = tileEls.get(t.tileId);
       if (!tileEl) continue;
-      gridPlacementByTile.set(t.tileId, { span: t.span, heightUnits: t.heightUnits, colStart: t.colStart });
+      // #321: `persistedSpan` is the authored (never render-mode-overridden)
+      // span — the ONLY value a Full-view resize re-persists on pointerup.
+      gridPlacementByTile.set(t.tileId, {
+        span: t.span, heightUnits: t.heightUnits, colStart: t.colStart, persistedSpan: t.persistedSpan,
+      });
       tileEl.card.classList.add('dash-gg-tile');
       // (`is-kpi` + the group role/name are maintained by `reconcileGridTile`,
       // which runs on EVERY pass — this loop is signature-gated and would miss
@@ -906,8 +1013,8 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // both engines' own change-detection signature caches so the next publish
   // always rebuilds the host structure (clearing the OTHER engine's leftover
   // chrome: `dash-gg-grid`/`dash-gg-tile`/height classes on a flow switch, or
-  // `is-report`/`is-wide` on a grid switch) instead of a coincidental sig
-  // match silently skipping that cleanup.
+  // `is-report` on a grid switch) instead of a coincidental sig match
+  // silently skipping that cleanup.
   let lastEngineRendered: 'flow' | 'grafana-grid' | null = null;
   let barSig = '';
   // #303: the committed-filter bag for a published view, built exactly the way
@@ -963,6 +1070,17 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;
+    // #321: keep the local render-mode mirror current from the published
+    // grafana-grid layout view — the ONLY place this session-owned, transient
+    // state is read back into the UI. A change re-syncs the selector, flips
+    // the grid host's `is-full` class (the CSS vertical-resize-cursor hook),
+    // and updates every built resize handle's accessible label.
+    if (sview.layout.engine === 'grafana-grid' && sview.layout.renderMode !== gridRenderMode) {
+      gridRenderMode = sview.layout.renderMode;
+      layoutSelect.sync();
+      grid.classList.toggle('is-full', gridRenderMode === 'full');
+      for (const tileEl of tileEls.values()) applyResizeHandleMode(tileEl, gridRenderMode === 'full');
+    }
     if (sview.layout.engine === 'grafana-grid') reconcileGrafanaGrid(sview, sview.layout.grid);
     else reconcileGrid(sview, sview.layout);
     refreshBtn.disabled = sview.running;

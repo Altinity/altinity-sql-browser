@@ -81,7 +81,7 @@ describe('documented shapes', () => {
     const dashboard = {
       tiles: [{ queryId: 'q1', id: 't1' }],
       filters: [],
-      layout: { version: 1, type: 'flow', preset: 'full-width', items: { t1: { height: 'medium', span: 1 } } },
+      layout: { version: 1, type: 'flow', preset: 'report', items: { t1: { height: 'medium', span: 1 } } },
       revision: 1, title: 'D', id: 'd1', documentVersion: 1,
     };
     const query = { spec: { name: 'Q' }, specVersion: 1, sql: 'SELECT 1', id: 'q1' };
@@ -113,7 +113,7 @@ describe('documented shapes', () => {
     const doc = canonicalJson({
       tiles: [{ presentation: { override: { b: 1 }, variant: 'v' }, queryId: 'q', id: 't' }],
       filters: [{ defaultActive: true, id: 'f', parameter: 'p' }],
-      layout: { type: 'flow', version: 1, config: { z: 1, a: 2 }, fallback: { type: 'flow', version: 1, preset: 'full-width', items: {} } },
+      layout: { type: 'flow', version: 1, config: { z: 1, a: 2 }, fallback: { type: 'flow', version: 1, preset: 'report', items: {} } },
       revision: 2, title: 'T', id: 'd', documentVersion: 1,
     }, DASHBOARD_DOCUMENT_SHAPE);
     expect(doc.indexOf('"variant"')).toBeLessThan(doc.indexOf('"override"'));

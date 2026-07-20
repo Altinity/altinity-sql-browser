@@ -628,9 +628,9 @@ export interface LibraryV2 {
 /**
  * Flow preset
  *
- * Desktop column arrangement: full-width and report render one column (report centers a constrained-width column), columns-2 and columns-3 render equal columns.
+ * Desktop column arrangement: report renders one constrained-width centered column, columns-2 and columns-3 render equal columns.
  */
-export type FlowPresetV1 = "full-width" | "report" | "columns-2" | "columns-3";
+export type FlowPresetV1 = "report" | "columns-2" | "columns-3";
 
 /**
  * Tile height

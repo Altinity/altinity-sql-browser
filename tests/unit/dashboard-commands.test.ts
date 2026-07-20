@@ -13,7 +13,7 @@ const query = (id: string, dashboard?: Record<string, unknown>) => ({
 
 const draft = (over: Partial<DashboardDocumentV1> = {}): DashboardDocumentV1 => ({
   documentVersion: 1, id: 'd', title: 'D', revision: 1,
-  layout: { type: 'flow', version: 1, preset: 'full-width', items: {} }, filters: [], tiles: [], ...over,
+  layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [], tiles: [], ...over,
 } as DashboardDocumentV1);
 
 const makeCtx = (queries: unknown[], plugin: DashboardLayoutPlugin = flowLayoutPlugin): ApplyCommandContext => {
@@ -62,7 +62,7 @@ describe('applyCommand — add-query / add-query-instance', () => {
 describe('applyCommand — remove / move', () => {
   const seeded = () => draft({
     tiles: [{ id: 'a', queryId: 'q' }, { id: 'b', queryId: 'q' }, { id: 'c', queryId: 'q' }] as never,
-    layout: { type: 'flow', version: 1, preset: 'full-width', items: { a: {}, b: {} } } as never,
+    layout: { type: 'flow', version: 1, preset: 'report', items: { a: {}, b: {} } } as never,
   });
 
   it('removes a tile and fails for a missing one', () => {
@@ -230,7 +230,7 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
   });
 
   it('grafana-grid -> flow restores the fallback verbatim, dropping the fallback field itself', () => {
-    const fallbackLayout = { type: 'flow', version: 1, preset: 'full-width', items: { t1: { span: 2, height: 'large' } } };
+    const fallbackLayout = { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'large' } } };
     const grid = { type: 'grafana-grid', version: 1, items: { t1: { span: 6, height: 'large' } }, fallback: fallbackLayout };
     const d = draft({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: grid as never });
     const result = run(d, { type: 'change-layout', layout: { type: 'flow', version: 1 } as never }, [query('q')]);
@@ -242,7 +242,7 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
   });
 
   it('switching to a flow PRESET while grid is active restores the fallback, then applies the preset on top', () => {
-    const fallbackLayout = { type: 'flow', version: 1, preset: 'full-width', items: { t1: { span: 2, height: 'large' } } };
+    const fallbackLayout = { type: 'flow', version: 1, preset: 'report', items: { t1: { span: 2, height: 'large' } } };
     const grid = { type: 'grafana-grid', version: 1, items: { t1: { span: 6, height: 'large' } }, fallback: fallbackLayout };
     const d = draft({ tiles: [{ id: 't1', queryId: 'q' }] as never, layout: grid as never });
     const result = run(d, { type: 'change-layout', layout: { type: 'flow', version: 1, preset: 'columns-3' } as never }, [query('q')]);
@@ -277,7 +277,7 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     if (result.ok) {
       expect(result.dashboard.layout.items).toEqual({ t1: { span: 8 } });
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width', items: { t1: { span: 2, height: 'medium' } },
+        type: 'flow', version: 1, preset: 'columns-2', items: { t1: { span: 2, height: 'medium' } },
       });
     }
   });
@@ -298,7 +298,7 @@ describe('applyCommand — change-layout engine switch (#291 owner decision 3)',
     if (result.ok) {
       expect(result.dashboard.layout.items).toEqual({ t1: { span: 4 }, t2: { span: 8 } });
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width',
+        type: 'flow', version: 1, preset: 'columns-2',
         items: { t1: { span: 1, height: 'medium' }, t2: { span: 2, height: 'medium' } },
       });
     }
@@ -328,7 +328,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width',
+        type: 'flow', version: 1, preset: 'columns-2',
         items: { a: { span: 1, height: 'medium' }, b: { span: 2, height: 'medium' }, 'tile-1': { span: 2, height: 'medium' } },
       });
     }
@@ -343,7 +343,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width',
+        type: 'flow', version: 1, preset: 'columns-2',
         items: { a: { span: 3, height: 'medium' }, 'tile-1': { span: 2, height: 'medium' } },
       });
     }
@@ -354,7 +354,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width', items: { b: { span: 2, height: 'medium' } },
+        type: 'flow', version: 1, preset: 'columns-2', items: { b: { span: 2, height: 'medium' } },
       });
     }
   });
@@ -364,7 +364,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width',
+        type: 'flow', version: 1, preset: 'columns-2',
         items: { a: { span: 1, height: 'medium' }, b: { span: 2, height: 'medium' } },
       });
     }
@@ -375,7 +375,7 @@ describe('applyCommand — grid fallback regeneration on every mutating command 
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.dashboard.layout.fallback).toEqual({
-        type: 'flow', version: 1, preset: 'full-width',
+        type: 'flow', version: 1, preset: 'columns-2',
         items: { a: { span: 3, height: 'medium' }, b: { span: 2, height: 'medium' } },
       });
     }
