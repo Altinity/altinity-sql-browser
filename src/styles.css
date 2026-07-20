@@ -2414,16 +2414,34 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: flex; flex-direction: column; overflow: hidden; min-height: 300px;
   background: var(--bg-side); border: 1px solid var(--border); border-radius: 10px;
 }
-/* #332: tile reorder is Command/Ctrl-drag via pointer events (native HTML5
-   `draggable` is gone), so plain drags select text. While the modifier is held
-   the grid shows the grab affordance over its tiles (mirrors the schema graph's
-   `.modkey` cue); an active move dims the moving card, outlines the drop target,
-   and disables text selection ONLY for the gesture's duration. */
+/* #332: tile reorder is a pointer drag (native HTML5 `draggable` is gone), so
+   plain body drags select text. A drag starts from the top-left grip (no
+   modifier) or from the body with ⌘/Ctrl held; while the modifier is held the
+   grid shows the grab affordance (mirrors the schema graph's `.modkey` cue).
+   During a move text selection is suppressed for the gesture's duration. */
 .dash-grid.modkey .dash-tile { cursor: grab; }
 .dash-grid.dash-reordering { user-select: none; cursor: grabbing; }
 .dash-grid.dash-reordering .dash-tile { cursor: grabbing; }
+/* Flow-engine path: the moving tile dims in place and the hovered destination
+   tile is outlined (no float/reflow — flow's KPI band has no grid slot). */
 .dash-tile.dash-moving { opacity: .6; }
 .dash-tile.dash-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
+/* Grafana-grid live-reflow path: the dragged tile lifts and follows the cursor
+   (translated in JS per frame — no transition on `transform` here, or the
+   follow would lag), the siblings FLIP-animate as the gap opens, and a
+   same-size placeholder holds the tile's grid slot. */
+.dash-tile.dash-floating {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28); opacity: .92; pointer-events: none;
+}
+.dash-tile-placeholder {
+  border: 2px dashed var(--accent); border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); box-sizing: border-box;
+}
+/* Reduced-motion backstop: never tween a tile during a reorder even if the JS
+   FLIP gate is bypassed — the re-pack still happens, just instantly. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-grid.dash-reordering .dash-gg-tile { transition: none !important; }
+}
 .dash-tile-head {
   padding: 11px 12px 9px; border-bottom: 1px solid var(--border-faint);
 }

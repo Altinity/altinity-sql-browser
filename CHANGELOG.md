@@ -10,20 +10,25 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
-- **Dashboard tiles move with Command/Ctrl-drag, plain drags select text, and
-  table/log cells open the shared cell-detail drawer** (#332). Native
-  whole-card HTML5 `draggable` is removed: tile reorder is now a modifier-gated
-  pointer gesture (macOS ⌘, Windows/Linux Ctrl), matching the schema graph's
-  interaction model — a move starts only on primary-button + ⌘/Ctrl + a 4px
-  movement threshold, so an unmodified drag now selects and copies text inside
-  Markdown/text, table, and logs tiles instead of dragging the tile. A move
-  dispatches the existing atomic `move-tile` command exactly once and preserves
-  canonical `dashboard.tiles[]` order/packing; a cancelled gesture
-  (pointercancel / window blur / Escape) changes nothing, and the click that a
+- **Dashboard tiles move with a grip drag + live reflow, plain drags select
+  text, and table/log cells open the shared cell-detail drawer** (#332). Native
+  whole-card HTML5 `draggable` is removed. A tile move now starts from the
+  top-left **grip** with no modifier, or from anywhere on the tile body with
+  **⌘/Ctrl** held (the schema-graph modifier model) — so an unmodified body drag
+  selects and copies text inside Markdown/text, table, and logs tiles instead of
+  dragging the tile. On the Grid Tiles (grafana-grid) engine the dragged tile
+  **lifts and follows the cursor** while the other tiles reflow live to open a
+  gap at the insertion point; the move **commits only when the dragged tile
+  overlaps a destination slot by ≥2/3 of its own area** (`resolveOverlapInsertIndex`
+  in `core/tile-reorder.ts`) and otherwise **snaps back** — the snap-back restore
+  is synchronous and independent of the signature-gated grid reconcile. Sibling
+  motion uses a FLIP animation that honors `prefers-reduced-motion`. The flow
+  engine keeps the simpler point-hit-test drag (its KPI band has no grid slot to
+  reflow into). A move still dispatches the existing atomic `move-tile` command
+  exactly once and preserves canonical `dashboard.tiles[]` order; a cancelled
+  gesture (pointercancel / window blur / Escape) changes nothing, and the click a
   completed move would synthesize is suppressed so it never activates a cell.
-  While ⌘/Ctrl is held the grid shows a grab affordance (`.dash-grid.modkey`);
-  an active move dims the moving card and outlines the drop target. Hit-testing
-  is a pure `core/tile-reorder.ts` helper over rects captured at drag-start.
+  While ⌘/Ctrl is held the grid shows a grab affordance (`.dash-grid.modkey`).
   Dashboard table cells and log fields now open the **same** right-side
   cell-detail drawer used by Workbench results (shared `openCellDetail`, no
   Dashboard-specific viewer) — in both edit and read-only modes, over the

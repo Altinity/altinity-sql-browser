@@ -36,7 +36,7 @@ import type { MenuHandle, MenuRow } from './menu.js';
 import { renderResolvedPanel } from './panels.js';
 import { openCellDetail } from './results.js';
 import type { ResultsApp } from './results.js';
-import { movedPastThreshold, hitTestTile } from '../core/tile-reorder.js';
+import { movedPastThreshold, hitTestTile, resolveOverlapInsertIndex, flipDelta } from '../core/tile-reorder.js';
 import type { TileRect } from '../core/tile-reorder.js';
 import { resolvePanel } from '../core/panel-cfg.js';
 import type { Column } from '../core/panel-cfg.js';
@@ -756,14 +756,20 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     });
   }
 
-  // #332 tile reorder — Command/Ctrl-drag (pointer), NOT native HTML5 drag.
-  // A plain pointer drag selects text and never reorders; only a primary-button
-  // press with ⌘/Ctrl held that crosses the move threshold starts a move.
-  // Hit-testing during the drag is pure over rects captured at drag-start
-  // (core/tile-reorder.ts) because happy-dom's `elementFromPoint` always returns
-  // null. A completed move dispatches the same atomic `move-tile` command
-  // exactly once; a cancelled move (pointercancel / window blur / Escape) leaves
-  // the document, revision, and fallback untouched. Read-only never wires it.
+  // #332 tile reorder — pointer drag, NOT native HTML5 drag (a plain body drag
+  // must select text, never reorder). A drag STARTS from the top-left grip with
+  // no modifier, OR from anywhere on the body with ⌘/Ctrl held (the schema-graph
+  // modifier model). On the grafana-grid engine the dragged tile lifts and
+  // follows the pointer while the siblings reflow live to open a gap; the move
+  // commits only when the dragged tile overlaps a destination slot by ≥2/3 of
+  // its own area (`resolveOverlapInsertIndex`, core/tile-reorder.ts) else it
+  // snaps back. The flow engine keeps the simpler point-hit-test path (its KPI
+  // tiles render detached in a band, with no coherent grid slot to reflow into).
+  // A completed move dispatches the same atomic `move-tile` command exactly once;
+  // a cancelled move (pointercancel / window blur / Escape) leaves the document,
+  // revision, and fallback untouched. Read-only never wires it.
+  const prefersReducedMotion = (): boolean =>
+    (doc.defaultView || window).matchMedia('(prefers-reduced-motion: reduce)').matches;
   function wireTileDrag(tileId: string, card: HTMLElement): void {
     // A completed move synthesizes a `click` on the origin card only when the
     // release lands back on it (a cross-tile release fires no native click —
@@ -777,47 +783,127 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       if (pe.button !== 0) return; // primary button only
       // The resize handle (own stopPropagation) and delete button own their own
       // gestures — never start a move from them.
-      if ((pe.target as Element).closest('.dash-gg-resize, .dash-gg-del')) return;
+      const target = pe.target as Element;
+      if (target.closest('.dash-gg-resize, .dash-gg-del')) return;
       clickSuppressCard = null; // a fresh gesture never inherits a stale suppress
-      if (!(pe.metaKey || pe.ctrlKey)) return; // plain drag = text selection, never a reorder
+      // Start ONLY from the grip (no modifier), or from the body with ⌘/Ctrl.
+      // A plain body press does neither → left alone for text selection.
+      const fromGrip = !!target.closest('.dash-gg-grip');
+      if (!fromGrip && !(pe.metaKey || pe.ctrlKey)) return;
       if (gestureActive) return; // one drag at a time — ignore a second concurrent pointer
-      pe.preventDefault(); // modifier-drag: suppress the text selection this press would start
+      pe.preventDefault(); // suppress the text selection this press would otherwise start
       gestureActive = true;
+      // Live reflow (float + placeholder + FLIP) is grafana-grid only; flow uses
+      // the point-hit-test path. `activeEngine` is stable for the gesture.
+      const liveReflow = activeEngine === 'grafana-grid';
       const startX = pe.clientX;
       const startY = pe.clientY;
       let moving = false;
       let rects: TileRect[] = [];
-      let dropId: string | null = null;
+      let dropId: string | null = null;               // flow path: outlined hover target
+      let placeholder: HTMLElement | null = null;      // grid path: holds the dragged tile's slot
+      let savedHeight = '';                            // grid path: the card's grid height inline style
+      let lastReflowId: string | null = null;          // grid path: last resolved insertion slot
+      const touched = new Set<HTMLElement>();           // grid path: siblings carrying a FLIP transform
       const win = doc.defaultView || window;
+      const gridTiles = (): HTMLElement[] =>
+        [...grid.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.classList.contains('dash-gg-tile'));
       const setDrop = (id: string | null): void => {
         if (id === dropId) return;
         if (dropId) tileEls.get(dropId)!.card.classList.remove('dash-drop-target');
         dropId = id;
         if (id && id !== tileId) tileEls.get(id)!.card.classList.add('dash-drop-target');
       };
+      // Move the placeholder so the dragged tile PREVIEWS at the exact final
+      // index the commit will splice it to. `move-tile` does splice(from,1) then
+      // splice(toIndex,0,moved), so `moved` lands AT index `toIndex` (= the
+      // overlapped tile's index) — "the dragged tile takes the slot it overlaps".
+      // Among the other cards (currentDoc order minus the dragged one), that is
+      // insertion position `targetIndex`; sibs[targetIndex] is the card that
+      // follows the gap (undefined → append, i.e. dropping onto the last slot).
+      // A null / own-slot resolve returns the gap to the dragged tile's home.
+      const reflowTo = (id: string | null): void => {
+        if (id === lastReflowId) return;
+        lastReflowId = id;
+        const sibs = gridTiles().filter((c) => c !== card);
+        let ref: Element | null;
+        if (id && id !== tileId) {
+          const targetIndex = currentDoc.tiles.findIndex((t) => t.id === id);
+          ref = sibs[targetIndex] ?? null; // null → append to the grid (last slot)
+        } else {
+          ref = card; // snap-back preview: gap returns to the dragged tile's home slot
+        }
+        const first = sibs.map((c) => c.getBoundingClientRect());
+        grid.insertBefore(placeholder!, ref);
+        const animate = !prefersReducedMotion();
+        sibs.forEach((c, i) => {
+          const { dx, dy } = flipDelta(first[i], c.getBoundingClientRect());
+          c.style.transition = 'none';
+          c.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+          touched.add(c);
+        });
+        void grid.offsetWidth; // flush the inverted transforms before playing them back to 0
+        touched.forEach((c) => { c.style.transition = animate ? 'transform 160ms ease' : ''; c.style.transform = ''; });
+      };
+      const beginMove = (): void => {
+        moving = true;
+        if (!liveReflow) card.classList.add('dash-moving'); // flow: dim in place (grid path floats instead)
+        grid.classList.add('dash-reordering'); // user-select:none + grabbing, only now
+        // Capture every grid-placed tile's home rect once, in canonical order —
+        // overlap/hit-testing always measures against these home positions, so a
+        // live sibling shift never feeds back into the decision.
+        rects = currentDoc.tiles.flatMap((t) => {
+          const c = tileEls.get(t.id)!.card;
+          // A flow-engine KPI tile renders inside the band, so its card is never
+          // placed in the grid; an unplaced card's {0,0,0,0} rect could spuriously
+          // match. `grid.contains` is environment-independent (unlike isConnected).
+          if (!grid.contains(c)) return [];
+          const r = c.getBoundingClientRect();
+          return [{ tileId: t.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom }];
+        });
+        if (liveReflow) {
+          // Insert a same-size placeholder in the card's slot, then lift the card
+          // to a fixed follower. The card stays a grid child (position:fixed pulls
+          // it out of flow in place — simpler cleanup than reparenting).
+          const r0 = card.getBoundingClientRect();
+          savedHeight = card.style.height;
+          placeholder = h('div', { class: 'dash-tile-placeholder' });
+          placeholder.style.gridColumn = card.style.gridColumn;
+          placeholder.style.height = card.style.height;
+          grid.insertBefore(placeholder, card);
+          card.classList.add('dash-floating');
+          card.style.position = 'fixed';
+          card.style.left = r0.left + 'px';
+          card.style.top = r0.top + 'px';
+          card.style.width = r0.width + 'px';
+          card.style.height = r0.height + 'px';
+          card.style.zIndex = '40';
+        }
+      };
+      const restoreDrag = (): void => {
+        // Deterministic, synchronous DOM restore — never rely on the signature-
+        // gated reconcile (a snap-back leaves currentDoc unchanged, so the next
+        // publish would early-return without rebuilding the DOM the drag mutated).
+        if (placeholder) { placeholder.remove(); placeholder = null; }
+        card.classList.remove('dash-floating');
+        card.style.position = card.style.left = card.style.top = card.style.width = card.style.zIndex = card.style.transform = '';
+        card.style.height = savedHeight; // restore the grid height inline style (not clear it)
+        touched.forEach((c) => { c.style.transition = ''; c.style.transform = ''; });
+        touched.clear();
+        lastGridSig = ''; // defense-in-depth: force a full grid rebuild on the next publish
+      };
       const onMove = (ev: PointerEvent): void => {
         if (!moving) {
           if (!movedPastThreshold(ev.clientX - startX, ev.clientY - startY)) return;
-          moving = true;
-          // Capture every current tile's rect once, in canonical order. Every
-          // tile in currentDoc has an ensured card by drag time (reconcile
-          // builds them all), so a direct get is safe.
-          rects = currentDoc.tiles.flatMap((t) => {
-            const c = tileEls.get(t.id)!.card;
-            // A flow-engine KPI tile renders inside the band, so its card is
-            // never placed in the grid; an unplaced card's rect is a meaningless
-            // {0,0,0,0} that could spuriously match at viewport (0,0). Only
-            // grid-placed cards are real drop targets. (`grid.contains` is
-            // environment-independent — unlike `isConnected`, it holds whether
-            // or not the grid itself is attached to a document.)
-            if (!grid.contains(c)) return [];
-            const r = c.getBoundingClientRect();
-            return [{ tileId: t.id, left: r.left, top: r.top, right: r.right, bottom: r.bottom }];
-          });
-          card.classList.add('dash-moving');
-          grid.classList.add('dash-reordering'); // user-select:none + grabbing, only now
+          beginMove();
         }
-        setDrop(hitTestTile(rects, ev.clientX, ev.clientY));
+        if (liveReflow) {
+          card.style.transform = 'translate(' + (ev.clientX - startX) + 'px,' + (ev.clientY - startY) + 'px)';
+          const floating = card.getBoundingClientRect();
+          reflowTo(resolveOverlapInsertIndex(floating, rects));
+        } else {
+          setDrop(hitTestTile(rects, ev.clientX, ev.clientY));
+        }
       };
       const cleanup = (): void => {
         win.removeEventListener('pointermove', onMove as EventListener);
@@ -825,21 +911,21 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
         win.removeEventListener('pointercancel', onCancel as EventListener);
         win.removeEventListener('blur', onCancel);
         doc.removeEventListener('keydown', onKey, true);
-        setDrop(null);
+        if (moving) { if (liveReflow) restoreDrag(); else setDrop(null); }
         card.classList.remove('dash-moving');
         grid.classList.remove('dash-reordering');
         gestureActive = false;
       };
       const onUp = (ev: PointerEvent): void => {
         const wasMoving = moving;
-        const targetId = wasMoving ? hitTestTile(rects, ev.clientX, ev.clientY) : null;
+        const targetId = !wasMoving ? null
+          : liveReflow ? resolveOverlapInsertIndex(card.getBoundingClientRect(), rects)
+            : hitTestTile(rects, ev.clientX, ev.clientY);
         cleanup();
-        if (!wasMoving) return; // a modifier-click that never crossed the threshold: leave its click alone
+        if (!wasMoving) return; // never crossed the threshold: leave the click alone
         // A completed drag that releases back over its origin card synthesizes a
-        // real click on that card (same down/up target) — swallow it so no cell/
-        // link/preview fires. A cross-tile release fires no origin click, so the
-        // flag is simply cleared by the next pointerdown (harmless). Either way a
-        // completed drag never activates a cell.
+        // real click on it (same down/up target) — swallow it so no cell/link/
+        // preview fires. A cross-tile release fires no origin click (harmless).
         clickSuppressCard = card;
         if (targetId && targetId !== tileId) {
           runCommand({ type: 'move-tile', tileId, toIndex: currentDoc.tiles.map((t) => t.id).indexOf(targetId) });
@@ -864,7 +950,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // and gated visually (CSS, ancestor `.dash-gg-grid` scope) + at the
     // interaction level (`activeEngine` check on delete's click) so a cached
     // card carries no leftover interactive affordance while flow is active.
-    const grip = !readOnly ? h('span', { class: 'dash-gg-grip', title: 'Command/Ctrl-drag to move', 'aria-hidden': 'true' }) : null;
+    // The grip is a pointer-only drag affordance (no keyboard reorder — a #332
+    // non-goal), so it stays aria-hidden; the tile carries its own accessible
+    // name. Dragging it starts a move with no modifier; the body needs ⌘/Ctrl.
+    const grip = !readOnly ? h('span', { class: 'dash-gg-grip', title: 'Drag to move (or ⌘/Ctrl-drag the tile)', 'aria-hidden': 'true' }) : null;
     const delBtn = !readOnly ? h('button', {
       class: 'dash-gg-del', title: 'Remove tile', 'aria-label': 'Remove ' + ts.title + ' from the dashboard',
       onclick: () => { if (activeEngine === 'grafana-grid') runCommand({ type: 'remove-tile', tileId: ts.tileId }); },

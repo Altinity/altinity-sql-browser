@@ -354,9 +354,38 @@ function pointerDragTo(
   return down;
 }
 /** The common case: a full modifier-drag from card `fromIdx` to card `toIdx`
- *  (both already rect-stubbed), landing squarely inside the target's rect. */
+ *  (both already rect-stubbed), landing squarely inside the target's rect.
+ *  Used by the FLOW-engine path (point hit-test). */
 function dragTile(cards: HTMLElement[], fromIdx: number, toIdx: number, opts: { ctrlKey?: boolean } = {}): void {
   pointerDragTo(cards, fromIdx, tileCenter(toIdx), opts.ctrlKey ? { ctrlKey: true } : { metaKey: true });
+}
+
+/** Drive one grafana-grid live-reflow drag. Starts from the tile's GRIP with no
+ *  modifier (or the body with ⌘ when `viaGrip:false`), crosses the threshold to
+ *  capture home rects, then re-stubs the dragged card's `getBoundingClientRect`
+ *  to `overlapIdx`'s home rect so the pure overlap resolver commits to that slot
+ *  (happy-dom ignores the follow `transform`, so the floating rect must be
+ *  simulated). `overlapIdx: null` leaves the dragged card over its own home →
+ *  snap back. Returns the pointerdown event. `cards` must be `stubTileRects`-ed. */
+function gridDrag(
+  cards: HTMLElement[], fromIdx: number, overlapIdx: number | null, opts: { viaGrip?: boolean } = { viaGrip: true },
+): PointerEvent {
+  const from = tileCenter(fromIdx);
+  const viaGrip = opts.viaGrip !== false;
+  const startEl = viaGrip ? qs(cards[fromIdx], '.dash-gg-grip') : cards[fromIdx];
+  const down = new PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y, metaKey: !viaGrip,
+  });
+  startEl.dispatchEvent(down);
+  // Cross the threshold — beginMove captures every tile's HOME rect here.
+  window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+  // Simulate the floating tile now sitting over `overlapIdx`'s slot (or its own).
+  const landRect = cards[overlapIdx ?? fromIdx].getBoundingClientRect();
+  cards[fromIdx].getBoundingClientRect = () => ({ ...landRect, toJSON: () => ({}) }) as DOMRect;
+  const to = tileCenter(overlapIdx ?? fromIdx);
+  window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
+  window.dispatchEvent(new PointerEvent('pointerup', { clientX: to.x, clientY: to.y }));
+  return down;
 }
 
 describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
@@ -1513,6 +1542,157 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
   });
 });
 
+// #332 redesign: grafana-grid tile reorder is a LIVE-REFLOW drag — grip-drag
+// with no modifier (or ⌘/Ctrl body-drag), the dragged tile lifts and follows,
+// siblings reflow, and the move commits only on ≥2/3 overlap else snaps back.
+describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
+  const gridWs = () => wsWith({
+    queries: [q('q1', 'SELECT k FROM a'), q('q2', 'SELECT k FROM b'), q('q3', 'SELECT k FROM c')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }, { id: 't3', queryId: 'q3' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+  const order = (app: TestApp): string[] => qsa(app.root, '.dash-gg-tile .dash-tile-name').map((n) => n.textContent || '');
+
+  it('grip-drag with NO modifier lifts the tile (placeholder + .dash-floating) and commits on ≥2/3 overlap', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+    stubTileRects(cards);
+    // Manually drive so we can assert the mid-gesture float/placeholder state.
+    const grip = qs(cards[2], '.dash-gg-grip');
+    const from = tileCenter(2);
+    const down = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y });
+    grip.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true); // grip drag arms even with no modifier
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    // Mid-drag: the dragged card floats and a same-size placeholder holds its slot.
+    expect(cards[2].classList.contains('dash-floating')).toBe(true);
+    expect(cards[2].style.position).toBe('fixed');
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(1);
+    // Simulate the floating tile now overlapping tile 0's slot ≥2/3 and release.
+    const land = cards[0].getBoundingClientRect();
+    cards[2].getBoundingClientRect = () => ({ ...land, toJSON: () => ({}) }) as DOMRect;
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(0).x, clientY: tileCenter(0).y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(0).x, clientY: tileCenter(0).y }));
+    expect(order(app)).toEqual(['q3', 'q1', 'q2']); // t3 moved to index 0
+    expect(commit).toHaveBeenCalled();
+    // Restore ran: no placeholder left, floating styles cleared.
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(0);
+    expect(qsa(app.root, '.dash-tile.dash-floating').length).toBe(0);
+  });
+
+  it('forward drag: the placeholder preview lands at the SAME slot the commit does (no off-by-one)', async () => {
+    // 4 tiles; drag t1 (index 0) forward onto t3's slot (index 2). The dragged
+    // tile "takes" t3's slot, so both the live gap and the committed order must
+    // place it at final index 2 → [t2, t3, t1, t4] (regression: the placeholder
+    // used to preview one slot earlier than the commit landed).
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 2'), q('q3', 'SELECT 3'), q('q4', 'SELECT 4')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }, { id: 't3', queryId: 'q3' }, { id: 't4', queryId: 'q4' }],
+        layout: { type: 'grafana-grid', version: 1, items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grip = qs(cards[0], '.dash-gg-grip');
+    const from = tileCenter(0);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    // Float t1 over t3's home slot (index 2).
+    const land = cards[2].getBoundingClientRect();
+    cards[0].getBoundingClientRect = () => ({ ...land, toJSON: () => ({}) }) as DOMRect;
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
+    // Mid-drag: among the grid children, the placeholder sits AFTER t3 (index 2
+    // of the non-floating flow), i.e. between t3 and t4 — matching the commit.
+    const flowSeq = [...qs(app.root, '.dash-grid').children]
+      .filter((c) => c.classList.contains('dash-tile-placeholder')
+        || (c.classList.contains('dash-gg-tile') && (c as HTMLElement).style.position !== 'fixed'))
+      .map((c) => c.classList.contains('dash-tile-placeholder') ? '[gap]' : qs(c, '.dash-tile-name')?.textContent);
+    expect(flowSeq).toEqual(['q2', 'q3', '[gap]', 'q4']);
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
+    expect(order(app)).toEqual(['q2', 'q3', 'q1', 'q4']); // commit matches the previewed gap
+    expect(commit).toHaveBeenCalled();
+  });
+
+  it('⌘-drag on the tile body also arms the grafana-grid reflow drag', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    gridDrag(cards, 0, 2, { viaGrip: false }); // ⌘ + body
+    expect(order(app)).toEqual(['q2', 'q3', 'q1']);
+    expect(commit).toHaveBeenCalled();
+  });
+
+  it('a plain body drag (no grip, no modifier) never reorders a grafana-grid tile', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const from = tileCenter(2);
+    const down = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y });
+    cards[2].dispatchEvent(down); // body, no modifier
+    expect(down.defaultPrevented).toBe(false);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 30, clientY: from.y }));
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(0);
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: from.x + 30, clientY: from.y }));
+    expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('<2/3 overlap → snap back: no move dispatched AND placeholder/float styles restored', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    // overlapIdx null → the dragged card stays over its own home slot → snap back.
+    gridDrag(cards, 2, null);
+    expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(0);
+    expect(cards[2].classList.contains('dash-floating')).toBe(false);
+    expect(cards[2].style.position).toBe('');
+    expect(cards[2].style.transform).toBe('');
+  });
+
+  it('Escape mid-drag cancels: no move, placeholder + float styles restored', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    stubTileRects(cards);
+    const grip = qs(cards[2], '.dash-gg-grip');
+    const from = tileCenter(2);
+    grip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: from.x + 10, clientY: from.y }));
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(1);
+    app.document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(0);
+    expect(cards[2].classList.contains('dash-floating')).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+    expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+  });
+
+  it('honors prefers-reduced-motion (no FLIP transition on the reflow), still reorders', async () => {
+    const { app, commit } = dashApp({ workspace: gridWs() });
+    await render(app);
+    const win = app.document.defaultView as unknown as { matchMedia: (q: string) => { matches: boolean } };
+    const realMatchMedia = win.matchMedia;
+    win.matchMedia = (query: string) => ({ matches: /prefers-reduced-motion/.test(query) } as MediaQueryList);
+    try {
+      const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+      stubTileRects(cards);
+      gridDrag(cards, 2, 0);
+      expect(order(app)).toEqual(['q3', 'q1', 'q2']);
+      expect(commit).toHaveBeenCalled();
+    } finally {
+      win.matchMedia = realMatchMedia;
+    }
+  });
+});
+
 // #321 "Full view": a TRANSIENT grafana-grid render-mode override — every
 // tile renders full width, never persisted, never a commit.
 describe('renderDashboard — Full view (#321)', () => {
@@ -1573,11 +1753,10 @@ describe('renderDashboard — Full view (#321)', () => {
     const before = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
     expect(before).toEqual(['q1', 'q2']);
     const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
-    // Same Command/Ctrl pointer-drag mechanism as the flow reorder suite above
-    // (#153/#280/#332) — the grafana-grid engine reuses the identical
-    // move-tile command/DOM wiring (#291), just scoped to `.dash-gg-tile`.
+    // grafana-grid uses the live-reflow drag (#332 redesign): grip-drag with no
+    // modifier, dragged tile lifted over the target slot (≥2/3 overlap commits).
     stubTileRects(cards);
-    dragTile(cards, 1, 0);
+    gridDrag(cards, 1, 0);
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
     expect(after).toEqual(['q2', 'q1']); // move-tile applied — persisted order
     expect(commit).toHaveBeenCalled();
