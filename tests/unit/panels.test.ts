@@ -676,6 +676,18 @@ describe('renderResolvedPanel', () => {
     const out = PANEL_TYPES.logs.renderPanel({ app: app, result: r, cfg: { type: 'logs' }, cap: 10 });
     expect(out.node.textContent).toContain('No time + message columns');
   });
+  it('the logs arm forwards onCell to renderLogs — clicking a rendered field opens cell-detail (#332)', () => {
+    const app = makeApp();
+    const r = logsResult();
+    const calls: [string, string, unknown][] = [];
+    const out = PANEL_TYPES.logs.renderPanel({
+      app, result: r, cfg: { type: 'logs' }, cap: 10, onCell: (n, t, v) => calls.push([n, t, v]),
+    });
+    const msg = qs(out.node, '.log-msg');
+    expect(msg.classList.contains('log-cell')).toBe(true);
+    msg.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(calls).toEqual([['message', 'String', 'boom']]);
+  });
   it('a Dashboard chart panel discloses the category cap despite hidden controls (#111)', () => {
     const app = makeApp();
     const r = newResult('Table');

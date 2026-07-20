@@ -94,6 +94,7 @@ interface RenderLogsArgs {
   rows: unknown[][];
   shape: LogsShape;
   cap: number;
+  onCell?: (name: string, type: string, value: unknown) => void;
 }
 const renderLogs: (args: RenderLogsArgs) => HTMLElement = renderLogsUntyped;
 
@@ -373,7 +374,7 @@ const logsArm: PanelArm = {
       logsRoleSelect('Message', 'msg', args),
       logsRoleSelect('Level', 'level', args));
   },
-  renderPanel({ result, cfg, cap, shape }: NarrowRenderArgs<{
+  renderPanel({ result, cfg, cap, shape, onCell }: NarrowRenderArgs<{
     result: PanelResult; cfg: PanelCfg;
   }>): PanelRenderResult {
     // `shape` arrives pre-resolved from resolvePanel when the caller went
@@ -381,7 +382,7 @@ const logsArm: PanelArm = {
     // after a name mismatch); a direct call re-resolves from the cfg.
     const s = shape || resolveLogsShape(cfg, result.columns);
     if (!s) return { node: panelEmpty('No time + message columns in this result — pick them above or adjust the query.') };
-    return { node: renderLogs({ columns: result.columns, rows: result.rows, shape: s, cap: cap ?? GRID_VIS_CAP }) };
+    return { node: renderLogs({ columns: result.columns, rows: result.rows, shape: s, cap: cap ?? GRID_VIS_CAP, onCell }) };
   },
 };
 

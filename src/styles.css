@@ -2414,6 +2414,16 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   display: flex; flex-direction: column; overflow: hidden; min-height: 300px;
   background: var(--bg-side); border: 1px solid var(--border); border-radius: 10px;
 }
+/* #332: tile reorder is Command/Ctrl-drag via pointer events (native HTML5
+   `draggable` is gone), so plain drags select text. While the modifier is held
+   the grid shows the grab affordance over its tiles (mirrors the schema graph's
+   `.modkey` cue); an active move dims the moving card, outlines the drop target,
+   and disables text selection ONLY for the gesture's duration. */
+.dash-grid.modkey .dash-tile { cursor: grab; }
+.dash-grid.dash-reordering { user-select: none; cursor: grabbing; }
+.dash-grid.dash-reordering .dash-tile { cursor: grabbing; }
+.dash-tile.dash-moving { opacity: .6; }
+.dash-tile.dash-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
 .dash-tile-head {
   padding: 11px 12px 9px; border-bottom: 1px solid var(--border-faint);
 }
@@ -2612,6 +2622,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 .dash-gg-grid .dash-tile-name { font-size: 12px; font-weight: 600; }
 .dash-gg-grip {
   display: none; flex-shrink: 0; color: var(--fg-faint); cursor: grab; font-size: 11px; line-height: 1;
+  user-select: none; /* #332: edit chrome stays non-selectable */
 }
 .dash-gg-grid .dash-gg-grip { display: inline-flex; }
 .dash-gg-grip::before { content: '⠿'; }
@@ -2627,6 +2638,7 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
 /* Corner-drag resize handle (bottom-right, edit mode only): nwse-resize
    cursor, hover-revealed diagonal glyph, accent highlight while resizing. */
 .dash-gg-tile { position: relative; }
+.dash-gg-del, .dash-gg-resize { user-select: none; } /* #332: edit chrome stays non-selectable */
 .dash-gg-resize { display: none; }
 .dash-gg-grid .dash-gg-resize {
   display: block; position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;

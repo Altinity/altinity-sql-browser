@@ -110,37 +110,68 @@ export function formatLogTime(v: unknown): string {
   return v == null ? '' : String(v).replace(/(\.\d{3})\d+$/, '$1');
 }
 
-/** One row shaped for the logs renderer — `logRowDisplay`'s return shape. */
+/** One clickable log field: its source column name/type, the raw
+ *  (untruncated) cell value for cell-detail, and the truncated display string. */
+export interface LogField {
+  name: string;
+  type: string;
+  raw: unknown;
+  display: string;
+}
+
+/** One row shaped for the logs renderer — `logRowDisplay`'s return shape.
+ *  Each field carries its source column name/type and raw untruncated value
+ *  alongside the display string, so the dashboard cell-detail drawer (#332)
+ *  can show the full value for any clickable field. `level` is null only
+ *  when the shape has no level column at all. */
 export interface LogRowDisplay {
-  time: string;
-  level: string;
+  time: LogField;
+  level: LogField | null;
   levelClass: string;
-  msg: string;
-  extras: { name: string; value: string }[];
+  msg: LogField;
+  extras: LogField[];
 }
 
 /**
  * Shape one result row for the logs renderer:
- * `{time, level, levelClass, msg, extras:[{name, value}]}`.
- * `level` is '' when the shape has no level column (or its value is null).
+ * `{time, level, levelClass, msg, extras:[LogField]}`, each of `time`/`level`/
+ * `msg`/extras carrying `{name, type, raw, display}`.
+ * `level` is null when the shape has no level column; `levelClass` is then ''.
  * Extras skip null/'' values; object/array values (OTel map/array attributes)
- * get compact `JSON.stringify` — `String(v)` would yield `[object Object]` —
- * then everything is truncated to 80 chars.
+ * get compact `JSON.stringify` for `display` — `String(v)` would yield
+ * `[object Object]` — then `display` is truncated to 80 chars while `raw`
+ * keeps the untruncated original value.
  */
 export function logRowDisplay(columns: LogColumn[], row: unknown[], shape: LogsShape): LogRowDisplay {
   const rawLevel = shape.level == null ? null : row[shape.level];
-  const extras: { name: string; value: string }[] = [];
+  const extras: LogField[] = [];
   for (const i of shape.extras) {
     const v = row[i];
     if (v == null || v === '') continue;
     const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
-    extras.push({ name: columns[i].name, value: truncate(str, 80) });
+    extras.push({ name: columns[i].name, type: columns[i].type, raw: v, display: truncate(str, 80) });
   }
+  const level: LogField | null = shape.level == null ? null : {
+    name: columns[shape.level].name,
+    type: columns[shape.level].type,
+    raw: rawLevel,
+    display: rawLevel == null ? '' : String(rawLevel),
+  };
   return {
-    time: formatLogTime(row[shape.time]),
-    level: rawLevel == null ? '' : String(rawLevel),
+    time: {
+      name: columns[shape.time].name,
+      type: columns[shape.time].type,
+      raw: row[shape.time],
+      display: formatLogTime(row[shape.time]),
+    },
+    level,
     levelClass: logLevelClass(rawLevel),
-    msg: row[shape.msg] == null ? '' : String(row[shape.msg]),
+    msg: {
+      name: columns[shape.msg].name,
+      type: columns[shape.msg].type,
+      raw: row[shape.msg],
+      display: row[shape.msg] == null ? '' : String(row[shape.msg]),
+    },
     extras,
   };
 }

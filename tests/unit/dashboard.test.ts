@@ -312,6 +312,53 @@ const pickLayout = (root: ParentNode | null, value: string): void => {
   select.dispatchEvent(new Event('change', { bubbles: true }));
 };
 
+// #332: happy-dom's `getBoundingClientRect` always returns an all-zero rect,
+// but `wireTileDrag` (ui/dashboard.ts) captures each tile's rect at drag-start
+// and hit-tests the pointer against those captured rects (pure containment,
+// core/tile-reorder.ts) — so a pointer-drag test must stub real geometry
+// first. Card `i` occupies a distinct, non-overlapping box:
+// x:[i*200, i*200+150], y:[0,50].
+function stubTileRects(cards: HTMLElement[]): void {
+  cards.forEach((card, i) => {
+    const rect = {
+      left: i * 200, right: i * 200 + 150, top: 0, bottom: 50, width: 150, height: 50, x: i * 200, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+    card.getBoundingClientRect = () => rect;
+  });
+}
+/** The center point of `stubTileRects`'s rect for card index `i` — always
+ *  inside that card's rect and outside every other stubbed card's rect. */
+const tileCenter = (i: number): { x: number; y: number } => ({ x: i * 200 + 75, y: 25 });
+/** A point outside every `stubTileRects`-stubbed card's rect. */
+const OUTSIDE_ALL_TILES = { x: -500, y: -500 };
+
+/** Drive one Command/Ctrl-drag pointer gesture: pointerdown on `cards[fromIdx]`
+ *  (with the modifier held), one pointermove to `to` (past the move
+ *  threshold — real drags never stop mid-move in these fixtures), then
+ *  pointerup at `to`. Returns the pointerdown event so a caller can assert
+ *  `defaultPrevented`. `cards` must already be rect-stubbed via
+ *  `stubTileRects`. */
+function pointerDragTo(
+  cards: HTMLElement[], fromIdx: number, to: { x: number; y: number },
+  opts: { ctrlKey?: boolean; metaKey?: boolean } = { metaKey: true },
+): PointerEvent {
+  const from = tileCenter(fromIdx);
+  const down = new PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, clientX: from.x, clientY: from.y,
+    metaKey: !!opts.metaKey, ctrlKey: !!opts.ctrlKey,
+  });
+  cards[fromIdx].dispatchEvent(down);
+  window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
+  window.dispatchEvent(new PointerEvent('pointerup', { clientX: to.x, clientY: to.y }));
+  return down;
+}
+/** The common case: a full modifier-drag from card `fromIdx` to card `toIdx`
+ *  (both already rect-stubbed), landing squarely inside the target's rect. */
+function dragTile(cards: HTMLElement[], fromIdx: number, toIdx: number, opts: { ctrlKey?: boolean } = {}): void {
+  pointerDragTo(cards, fromIdx, tileCenter(toIdx), opts.ctrlKey ? { ctrlKey: true } : { metaKey: true });
+}
+
 describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
   it('renders one tile per dashboard.tiles entry — independent of spec.favorite', async () => {
     // Neither query is favorited; both are tiles. Membership is dashboard.tiles.
@@ -447,7 +494,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
   });
 });
 
-describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
+describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#280/#332)', () => {
   const twoTiles = () => wsWith({
     queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b')],
     tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
@@ -463,19 +510,255 @@ describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
     expect(qsa(app.root, '.dash-tile-height').length).toBe(0);
   });
 
-  it('pointer drag reorders tiles and persists the new dashboard.tiles[] order', async () => {
+  it('a plain pointerdown (no modifier) does not arm a reorder and does not preventDefault (text selection works)', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const down = pointerDragTo(cards, 0, tileCenter(1), {});
+    expect(down.defaultPrevented).toBe(false);
+    expect(order(app)).toEqual(['q1', 'q2']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+  });
+
+  it('⌘-drag (metaKey) completes a move and persists the new order', async () => {
     const { app, commit } = dashApp({ workspace: twoTiles() });
     await render(app);
     expect(order(app)).toEqual(['q1', 'q2']);
     const cards = qsa(app.root, '.dash-tile');
-    cards[1].dispatchEvent(new Event('dragstart', { bubbles: true }));
-    cards[0].dispatchEvent(new Event('dragover', { bubbles: true }));
-    cards[0].dispatchEvent(new Event('drop', { bubbles: true }));
+    stubTileRects(cards);
+    const down = pointerDragTo(cards, 1, tileCenter(0), { metaKey: true });
+    expect(down.defaultPrevented).toBe(true);
     expect(order(app)).toEqual(['q2', 'q1']); // move-tile applied
     expect(commit).toHaveBeenCalled(); // new order persisted
-    // A drop with no active drag is a harmless no-op.
-    qsa(app.root, '.dash-tile')[0].dispatchEvent(new Event('drop', { bubbles: true }));
+  });
+
+  it('Ctrl-drag (ctrlKey) completes a move and persists the new order', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    dragTile(cards, 1, 0, { ctrlKey: true });
     expect(order(app)).toEqual(['q2', 'q1']);
+    expect(commit).toHaveBeenCalled();
+  });
+
+  it('a modifier pointerdown+pointerup that never crosses the move threshold does not reorder', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    // 2px < the 4px threshold (core/tile-reorder.ts) — never arms a move.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 2, clientY: start.y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x + 2, clientY: start.y }));
+    expect(order(app)).toEqual(['q1', 'q2']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('a completed move dispatches move-tile exactly once', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    dragTile(cards, 1, 0);
+    expect(order(app)).toEqual(['q2', 'q1']);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('pointercancel mid-move cancels: no order change, grid/card classes cleaned up', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    const to = tileCenter(1);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
+    expect(cards[0].classList.contains('dash-moving')).toBe(true);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(true);
+    window.dispatchEvent(new PointerEvent('pointercancel'));
+    expect(order(app)).toEqual(['q1', 'q2']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('window blur mid-move cancels: no order change, grid/card classes cleaned up', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    const to = tileCenter(1);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
+    window.dispatchEvent(new Event('blur'));
+    expect(order(app)).toEqual(['q1', 'q2']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('Escape mid-move cancels: no order change, grid/card classes cleaned up', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    const to = tileCenter(1);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: to.x, clientY: to.y }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(order(app)).toEqual(['q1', 'q2']);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cards[0].classList.contains('dash-moving')).toBe(false);
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('a click synthesized after a completed same-tile move is suppressed — no cell-detail drawer opens', async () => {
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'String' }], rows: [['x', '1']] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a', { panel: { cfg: { type: 'table' } } }), q('q2', 'SELECT k, v FROM b')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    // openCellDetail appends the drawer to the tile's document.body, NOT inside
+    // app.root — assert against `document` (an app.root query is always empty).
+    const cell = (): Element | null => qs(cards[0], '.res-table tbody td.cell');
+    // Positive control: a plain cell click (no drag) DOES open the shared drawer.
+    cell()?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    qs(document, '.cd-backdrop').remove();
+    // A ⌘-drag that leaves and returns to the origin tile is a completed move
+    // that releases on its OWN card — the browser synthesizes a real click on
+    // that card, which the capture-phase guard must swallow.
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x, clientY: start.y }));
+    cell()?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(0);
+  });
+
+  it('a second pointerdown while a drag is already armed is ignored (#332)', async () => {
+    const { app, commit } = dashApp({
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }], rows: [['x']] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k FROM a'), q('q2', 'SELECT k FROM b')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      }),
+    });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    // Arm a drag on card 0 and cross the threshold (gesture now active).
+    const s0 = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: s0.x, clientY: s0.y, metaKey: true,
+    }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    // A concurrent modifier pointerdown on card 1 must be IGNORED — not armed,
+    // so it is not preventDefault'd and starts no second gesture.
+    const down2 = new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: tileCenter(1).x, clientY: tileCenter(1).y, metaKey: true,
+    });
+    cards[1].dispatchEvent(down2);
+    expect(down2.defaultPrevented).toBe(false);
+    // The first gesture still completes normally: exactly one move committed.
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a flow-engine KPI tile (detached card) is skipped from drop hit-testing (#332)', async () => {
+    const { app, commit } = dashApp({
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }], rows: [['x']] }),
+      workspace: wsWith({
+        queries: [
+          q('k1', 'SELECT 1 AS value', { panel: { cfg: { type: 'kpi' } } }),
+          q('q1', 'SELECT k FROM a', { panel: { cfg: { type: 'table' } } }),
+          q('q2', 'SELECT k FROM b', { panel: { cfg: { type: 'table' } } }),
+        ],
+        tiles: [{ id: 't0', queryId: 'k1' }, { id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      }),
+    });
+    await render(app);
+    // The KPI tile renders inside the band; only the two table tiles are
+    // attached `.dash-tile` cards. The KPI tile's detached card must be skipped
+    // when capturing rects (its {0,0,0,0} rect would otherwise be a phantom
+    // drop target) — the drag between the two real tiles still works.
+    const cards = qsa(app.root, '.dash-tile');
+    expect(cards.length).toBe(2);
+    stubTileRects(cards);
+    dragTile(cards, 0, 1);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('read-only dashboard: ⌘-drag does not move and no drag listeners are wired', async () => {
+    const detached = twoTiles();
+    const { app, commit } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull(); // no reorder affordance built at all
+    stubTileRects(cards);
+    dragTile(cards, 1, 0);
+    expect(order(app)).toEqual(['q1', 'q2']); // unchanged — no listener installed
+    expect(commit).not.toHaveBeenCalled();
+    expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
+  });
+
+  it('mid-move the hovered tile gets .dash-drop-target; the dragged tile itself never does; a release outside every rect does not move', async () => {
+    const { app, commit } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a'), q('q2', 'SELECT k, v FROM b'), q('q3', 'SELECT k, v FROM c')],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }, { id: 't3', queryId: 'q3' }],
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+      }),
+    });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const start = tileCenter(0);
+    cards[0].dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true, cancelable: true, button: 0, clientX: start.x, clientY: start.y, metaKey: true,
+    }));
+    // Cross the threshold hovering the dragged tile's OWN rect — no drop-target anywhere.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: start.x + 10, clientY: start.y }));
+    expect(qsa(app.root, '.dash-drop-target').length).toBe(0);
+    // Move over card index 2 — it (and only it) gets the indicator.
+    const t2 = tileCenter(2);
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: t2.x, clientY: t2.y }));
+    expect(cards[2].classList.contains('dash-drop-target')).toBe(true);
+    expect(qsa(app.root, '.dash-drop-target').length).toBe(1);
+    // Release outside every stubbed rect — hit-test null, no move.
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: OUTSIDE_ALL_TILES.x, clientY: OUTSIDE_ALL_TILES.y }));
+    expect(qsa(app.root, '.dash-drop-target').length).toBe(0);
+    window.dispatchEvent(new PointerEvent('pointerup', { clientX: OUTSIDE_ALL_TILES.x, clientY: OUTSIDE_ALL_TILES.y }));
+    expect(order(app)).toEqual(['q1', 'q2', 'q3']);
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('a table header click re-sorts locally without re-querying', async () => {
@@ -488,9 +771,6 @@ describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
     qsa(app.root, '.res-table th')[1].dispatchEvent(new Event('click', { bubbles: true }));
     expect(calls.length).toBe(before); // local re-paint (rerender → paintForce), no re-query
     expect(qs(app.root, '.res-table .h-sort')).not.toBeNull(); // sort applied locally
-    // A value-cell click is a harmless no-op (onCell).
-    qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new Event('click', { bubbles: true }));
-    expect(calls.length).toBe(before);
   });
 
   it('drives the shared rich fields: relative-time preview (wallNow) and Clear recent', async () => {
@@ -514,6 +794,187 @@ describe('renderDashboard — reorder (drag only) + sort (#153/#280)', () => {
     qs<HTMLInputElement>(sField, 'input').dispatchEvent(new Event('focus'));
     qs(sField, '.var-combo-footer button')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(app.params.clearVarRecent).toHaveBeenCalledWith('s');
+  });
+});
+
+describe('renderDashboard — modkey cursor cue (#332)', () => {
+  const oneTile = () => wsWith({
+    queries: [q('q1', 'SELECT k, v FROM a')],
+    tiles: [{ id: 't1', queryId: 'q1' }],
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  });
+
+  it('keydown with metaKey adds .dash-grid.modkey; keyup with no modifier removes it', async () => {
+    const { app } = dashApp({ workspace: oneTile() });
+    await render(app);
+    const grid = qs(app.root, '.dash-grid');
+    expect(grid.classList.contains('modkey')).toBe(false);
+    window.dispatchEvent(new KeyboardEvent('keydown', { metaKey: true }));
+    expect(grid.classList.contains('modkey')).toBe(true);
+    window.dispatchEvent(new KeyboardEvent('keyup', {}));
+    expect(grid.classList.contains('modkey')).toBe(false);
+  });
+
+  it('window blur removes the modkey cue', async () => {
+    const { app } = dashApp({ workspace: oneTile() });
+    await render(app);
+    const grid = qs(app.root, '.dash-grid');
+    window.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true }));
+    expect(grid.classList.contains('modkey')).toBe(true);
+    window.dispatchEvent(new Event('blur'));
+    expect(grid.classList.contains('modkey')).toBe(false);
+  });
+
+  it('a read-only dashboard never installs the modkey listeners', async () => {
+    const detached = oneTile();
+    const { app } = modeApp({
+      workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    const grid = qs(app.root, '.dash-grid');
+    window.dispatchEvent(new KeyboardEvent('keydown', { metaKey: true }));
+    expect(grid.classList.contains('modkey')).toBe(false);
+  });
+});
+
+describe('renderDashboard — shared cell-detail drawer (#332)', () => {
+  it('clicking a table cell opens the shared drawer with exact name/type/value (edit mode)', async () => {
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['hello', 42]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a', { panel: { cfg: { type: 'table' } } })],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const backdrop = qs(document, '.cd-backdrop');
+    expect(backdrop).not.toBeNull();
+    const panel = qs(backdrop, '.cd-panel');
+    expect(panel).not.toBeNull();
+    expect(qs(panel, '.cd-name')?.textContent).toBe('k');
+    expect(qs(panel, '.cd-type')?.textContent).toBe('String');
+    expect(panel.textContent).toContain('hello');
+    backdrop.remove();
+  });
+
+  it('clicking a table cell opens the shared drawer in read-only dashboard mode too', async () => {
+    const detached = wsWith({
+      id: 'd',
+      queries: [q('q1', 'SELECT k, v FROM a', { panel: { cfg: { type: 'table' } } })],
+      tiles: [{ id: 't1', queryId: 'q1' }],
+    });
+    const { app } = modeApp({
+      workspace: null, detached, responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['hello', 42]] }),
+      openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' },
+    });
+    await render(app);
+    qs(app.root, '.res-table tbody td.cell')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    const backdrop = qs(document, '.cd-backdrop');
+    expect(backdrop).not.toBeNull();
+    expect(qs(backdrop, '.cd-name')?.textContent).toBe('k');
+    expect(qs(backdrop, '.cd-type')?.textContent).toBe('String');
+    backdrop.remove();
+  });
+
+  it('Escape closes the drawer; a backdrop click closes it; close-then-open leaves exactly one .cd-backdrop', async () => {
+    const { app } = dashApp({
+      responder: () => ({ columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1], ['b', 2]] }),
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT k, v FROM a', { panel: { cfg: { type: 'table' } } })],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    const cells = qsa(app.root, '.res-table tbody td.cell');
+    cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(0);
+    // Re-open, then dismiss via a backdrop click.
+    cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    let backdrop = qs(document, '.cd-backdrop');
+    expect(backdrop).not.toBeNull();
+    backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(0);
+    // Open a second time — the shared backdrop-dismiss lifecycle leaves
+    // exactly one, not a stacked pair.
+    cells[0].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    backdrop = qs(document, '.cd-backdrop');
+    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    backdrop.remove();
+  });
+});
+
+describe('renderDashboard — logs tile cell-detail + drag interplay (#332)', () => {
+  const longExtra = 'x'.repeat(120);
+  const logsWs = () => wsWith({
+    queries: [q('q1', "SELECT event_time, message, level, extra_field FROM a", { panel: { cfg: { type: 'logs' } } }), q('q2', 'SELECT k, v FROM b')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  });
+  const logsResponder: ExecResponder = (sql) => (sql.includes('event_time')
+    ? {
+      columns: [
+        { name: 'event_time', type: 'DateTime' }, { name: 'message', type: 'String' },
+        { name: 'level', type: 'String' }, { name: 'extra_field', type: 'String' },
+      ],
+      rows: [['2026-01-01 00:00:00', 'boom', 'error', longExtra]],
+    }
+    : {});
+
+  it('clicking .log-time/.log-msg/.log-extra opens the drawer with the source column name/type and the RAW untruncated value', async () => {
+    const { app } = dashApp({ responder: logsResponder, workspace: logsWs() });
+    await render(app);
+    expect(qs(app.root, '.dash-logs')).not.toBeNull();
+
+    const timeCell = qs<HTMLElement>(app.root, '.log-time.log-cell');
+    timeCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    let backdrop = qs(document, '.cd-backdrop');
+    expect(qs(backdrop, '.cd-name')?.textContent).toBe('event_time');
+    expect(qs(backdrop, '.cd-type')?.textContent).toBe('DateTime');
+    backdrop.remove();
+
+    const msgCell = qs<HTMLElement>(app.root, '.log-msg.log-cell');
+    msgCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    backdrop = qs(document, '.cd-backdrop');
+    expect(qs(backdrop, '.cd-name')?.textContent).toBe('message');
+    expect(backdrop.textContent).toContain('boom');
+    backdrop.remove();
+
+    const extraCell = qs<HTMLElement>(app.root, '.log-extra.log-cell');
+    extraCell.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    backdrop = qs(document, '.cd-backdrop');
+    expect(qs(backdrop, '.cd-name')?.textContent).toBe('extra_field');
+    // The RAW (untruncated) value is shown — the field's own display is
+    // truncated to 80 chars (core/logs.ts), so raw !== display for a >80-char value.
+    expect(extraCell.textContent).not.toBe(longExtra); // display was truncated
+    expect(backdrop.textContent).toContain(longExtra); // drawer shows the raw value
+    backdrop.remove();
+  });
+
+  it('Enter and Space on a .log-cell also open the drawer', async () => {
+    const { app } = dashApp({ responder: logsResponder, workspace: logsWs() });
+    await render(app);
+    const msgCell = qs<HTMLElement>(app.root, '.log-msg.log-cell');
+    msgCell.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    qs(document, '.cd-backdrop').remove();
+    msgCell.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+    expect(qsa(document, '.cd-backdrop').length).toBe(1);
+    qs(document, '.cd-backdrop').remove();
+  });
+
+  it('a ⌘-drag starting on a logs tile moves the tile and does not open a drawer', async () => {
+    const { app, commit } = dashApp({ responder: logsResponder, workspace: logsWs() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    dragTile(cards, 0, 1); // logs tile (index 0) moves past the plain q2 tile
+    expect(qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent)).toEqual(['q2', 'q1']);
+    expect(commit).toHaveBeenCalled();
+    expect(qsa(document, '.cd-backdrop').length).toBe(0);
   });
 });
 
@@ -798,7 +1259,6 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qs(card, '.dash-gg-grip')).toBeNull();
     expect(qs(card, '.dash-gg-del')).toBeNull();
     expect(qs(card, '.dash-gg-resize')).toBeNull();
-    expect(card.getAttribute('draggable')).toBe('false');
     // The hidden query title survives as the wrapper's accessible group name.
     expect(card.getAttribute('role')).toBe('group');
     expect(card.getAttribute('aria-label')).toBe('k1');
@@ -1113,12 +1573,11 @@ describe('renderDashboard — Full view (#321)', () => {
     const before = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
     expect(before).toEqual(['q1', 'q2']);
     const cards = qsa<HTMLElement>(app.root, '.dash-gg-tile');
-    // Same drag mechanism as the flow reorder suite above (#153/#280) — the
-    // grafana-grid engine reuses the identical move-tile command/DOM wiring
-    // (#291), just scoped to `.dash-gg-tile`.
-    cards[1].dispatchEvent(new Event('dragstart', { bubbles: true }));
-    cards[0].dispatchEvent(new Event('dragover', { bubbles: true }));
-    cards[0].dispatchEvent(new Event('drop', { bubbles: true }));
+    // Same Command/Ctrl pointer-drag mechanism as the flow reorder suite above
+    // (#153/#280/#332) — the grafana-grid engine reuses the identical
+    // move-tile command/DOM wiring (#291), just scoped to `.dash-gg-tile`.
+    stubTileRects(cards);
+    dragTile(cards, 1, 0);
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
     expect(after).toEqual(['q2', 'q1']); // move-tile applied — persisted order
     expect(commit).toHaveBeenCalled();
@@ -1751,13 +2210,14 @@ const menuSections = (): string[] =>
 describe('renderDashboard — open-source modes (#288)', () => {
   afterEach(() => { qsa(document, '.dash-file-menu, .fm-overlay').forEach((n) => n.remove()); });
 
-  it('current-workspace: both ids match the primary store → editable (draggable tiles, layout switcher)', async () => {
+  it('current-workspace: both ids match the primary store → editable (reorder grip present, layout switcher)', async () => {
     const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace: ws, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
     await render(app);
     expect(qs(app.root, '.dash-notfound')).toBeNull();
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
-    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('true');
+    // Command/Ctrl-drag reorder affordance (#332) is edit-mode-only.
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).not.toBeNull();
     expect(layoutSelect(app.root)).toBeTruthy();
     // projection: the resolved workspace is on app.state for the File menu.
     expect(app.state.dashboard?.id).toBe('d');
@@ -1784,7 +2244,8 @@ describe('renderDashboard — open-source modes (#288)', () => {
     await render(app);
     expect(qs(app.root, '.dash-notfound')).toBeNull();
     expect(qsa(app.root, '.dash-tile').length).toBe(1);
-    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('false');
+    // No reorder grip in a read-only view (#332 — no drag wiring either).
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
     expect(layoutSelect(app.root)).toBeNull();
   });
 
@@ -1814,7 +2275,7 @@ describe('renderDashboard — open-source modes (#288)', () => {
     await render(app);
     expect(consume).toHaveBeenCalledOnce();
     expect(qs(app.root, '.dash-notfound')).toBeNull();
-    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('false');
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).toBeNull();
   });
 
   it('session-bundle: a missing/expired token → not-found, runs nothing', async () => {
@@ -1829,7 +2290,7 @@ describe('renderDashboard — open-source modes (#288)', () => {
     const ws = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace: ws, openSource: null });
     await render(app);
-    expect(qs<HTMLElement>(app.root, '.dash-tile').getAttribute('draggable')).toBe('true');
+    expect(qs(app.root, '.dash-tile .dash-gg-grip')).not.toBeNull();
   });
 });
 

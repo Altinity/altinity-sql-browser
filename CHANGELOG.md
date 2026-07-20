@@ -10,6 +10,27 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Changed
+- **Dashboard tiles move with Command/Ctrl-drag, plain drags select text, and
+  table/log cells open the shared cell-detail drawer** (#332). Native
+  whole-card HTML5 `draggable` is removed: tile reorder is now a modifier-gated
+  pointer gesture (macOS ⌘, Windows/Linux Ctrl), matching the schema graph's
+  interaction model — a move starts only on primary-button + ⌘/Ctrl + a 4px
+  movement threshold, so an unmodified drag now selects and copies text inside
+  Markdown/text, table, and logs tiles instead of dragging the tile. A move
+  dispatches the existing atomic `move-tile` command exactly once and preserves
+  canonical `dashboard.tiles[]` order/packing; a cancelled gesture
+  (pointercancel / window blur / Escape) changes nothing, and the click that a
+  completed move would synthesize is suppressed so it never activates a cell.
+  While ⌘/Ctrl is held the grid shows a grab affordance (`.dash-grid.modkey`);
+  an active move dims the moving card and outlines the drop target. Hit-testing
+  is a pure `core/tile-reorder.ts` helper over rects captured at drag-start.
+  Dashboard table cells and log fields now open the **same** right-side
+  cell-detail drawer used by Workbench results (shared `openCellDetail`, no
+  Dashboard-specific viewer) — in both edit and read-only modes, over the
+  Dashboard's own document — passing the source column name/type and the raw
+  (untruncated) value; each source-backed log field (time, level, message, and
+  each extra) is independently clickable and keyboard-operable (Enter/Space).
+  Read-only Dashboards never enable tile movement.
 - **Grid Tiles is the default Dashboard style; Full view replaces the old
   Full width preset** (#321). The `grafana-grid@1` engine is renamed to
   **Grid Tiles** in the UI (the persisted `{type:'grafana-grid',version:1}`
