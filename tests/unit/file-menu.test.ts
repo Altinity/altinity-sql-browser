@@ -81,8 +81,9 @@ function mount<O extends MakeAppOverrides = Record<string, never>>(over: O = {} 
   for (const node of libraryControls(app)) document.body.appendChild(node);
   return app;
 }
-// #302: the File menu now only appends `importQueriesInput, replaceWorkspaceInput`
-// (in that order) — the old `importDashboardInput` between them is gone.
+// #302: the File menu now only appends `importQueriesInput, openWorkspaceInput`
+// (in that order) — the old `importDashboardInput` between them is gone. #342
+// renamed the picker/action to "Open workspace…" without changing append order.
 const picker = (i: number): HTMLInputElement => document.querySelectorAll<HTMLInputElement>('.file-menu input[type=file]')[i];
 const pickFile = (input: HTMLInputElement, name = 'file.json'): void => {
   Object.defineProperty(input, 'files', { configurable: true, value: [{ name }] });
@@ -216,12 +217,12 @@ describe('file menu structure', () => {
     app.state.savedQueries = [panelQuery('s1', 'A'), panelQuery('s2', 'B')];
     openFileMenu(app);
     expect([...document.querySelectorAll('.fm-label')].map((l) => l.textContent)).toEqual([
-      'New workspace…', 'Remember recent variable values', 'Clear all recent values',
-      'Import queries…', 'Replace workspace…',
-      'Export workspace…', 'Download Markdown', 'Download SQL',
+      'New workspace…', 'Open workspace…', 'Export workspace…', 'Import queries…',
+      'Download Markdown', 'Download SQL',
+      'Remember recent variable values', 'Clear all recent values',
     ]);
     expect([...document.querySelectorAll('.fm-section')].map((s) => s.textContent)).toEqual(
-      ['Variable history', 'Import / replace', 'Export', 'Share / publish']);
+      ['Share / Publish', 'Variable history']);
     expect(document.querySelector('.fm-count')!.textContent).toBe('2 queries in workspace');
     openFileMenu(app);
     expect(document.querySelectorAll('.file-menu')).toHaveLength(1);
@@ -235,6 +236,23 @@ describe('file menu structure', () => {
     openFileMenu(app);
     await flush();
     expect(document.activeElement).toBe(item(/New workspace/));
+  });
+
+  it('#342: the first four rows are an unlabeled primary group (no heading before or inside it), followed by a separator', async () => {
+    const app = mount();
+    openFileMenu(app);
+    const menu = document.querySelector('.file-menu')!;
+    const rows = [...menu.children];
+    const primary = rows.slice(0, 4);
+    expect(primary.every((r) => r.classList.contains('fm-item'))).toBe(true);
+    expect(primary.map((r) => r.querySelector('.fm-label')!.textContent)).toEqual([
+      'New workspace…', 'Open workspace…', 'Export workspace…', 'Import queries…',
+    ]);
+    expect(rows[4].classList.contains('fm-sep')).toBe(true);
+    // Keyboard focus order matches the visual row order exactly.
+    await flush();
+    key(document, 'ArrowDown');
+    expect(document.activeElement).toBe(item(/Open workspace/));
   });
 
   it('footer shows the empty state when there are no queries', () => {
@@ -588,7 +606,7 @@ describe('afterLibraryChange — dashboard route (#302)', () => {
   });
 });
 
-describe('Replace workspace', () => {
+describe('Open workspace (#342 rename of "Replace workspace…")', () => {
   it('the menu item closes the menu, opens the picker, and — after confirming — replaces the catalog + Dashboard', async () => {
     const dep = panelQuery('p1', 'Panel');
     const dash = dashboardDoc({ id: 'd1', title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
@@ -597,19 +615,19 @@ describe('Replace workspace', () => {
     openFileMenu(app);
     const input = picker(1);
     input.click = vi.fn();
-    click(item(/Replace workspace/)!);
+    click(item(/Open workspace/)!);
     expect(document.querySelector('.file-menu')).toBeNull();
     expect(input.click).toHaveBeenCalled();
     pickFile(input);
     const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Replace workspace?');
+    expect(dialog.textContent).toContain('Open workspace?');
     expect(dialog.textContent).toContain('current 1 saved query');
     expect(dialog.textContent).toContain('and the selected Dashboard');
     click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(app.state.savedQueries.map((q) => q.id)).toEqual(['p1']);
-    expect(app.state.dashboard!.id).toBe('d1'); // Replace keeps the bundle Dashboard's own id/revision
-    expect(toast()).toBe('Replaced workspace');
+    expect(app.state.dashboard!.id).toBe('d1'); // Open workspace keeps the bundle Dashboard's own id/revision
+    expect(toast()).toBe('Opened workspace');
   });
 
   it('cancelling the confirm dialog leaves the workspace untouched', () => {
@@ -630,10 +648,10 @@ describe('Replace workspace', () => {
     openFileMenu(app);
     pickFile(picker(1));
     const dialog = document.querySelector('.fm-dialog-card')!;
-    expect(dialog.textContent).toContain('Replace workspace — which dashboard?');
+    expect(dialog.textContent).toContain('Open workspace — which dashboard?');
     const noneRow = [...dialog.querySelectorAll<HTMLButtonElement>('.fm-item')].find((b) => (b.textContent || '').includes('No dashboard'))!;
     click(noneRow);
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Replace workspace?');
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Open workspace?');
     click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(app.state.dashboard).toBeNull();
@@ -644,7 +662,7 @@ describe('Replace workspace', () => {
     const app = mount({ FileReader: fakeReader(bundleText({ dashboards: [dash] })) });
     openFileMenu(app);
     pickFile(picker(1));
-    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Replace workspace?');
+    expect(document.querySelector('.fm-dialog-card')!.textContent).toContain('Open workspace?');
   });
 
   it('a queries-only bundle (no Dashboard) clears an existing Dashboard', async () => {

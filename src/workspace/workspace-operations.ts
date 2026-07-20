@@ -65,7 +65,8 @@ export function importQueries(
 
 /** Replace the workspace's queries AND Dashboard atomically while preserving
  *  its identity (`id`/`name`) — the repository-level primitive behind "Replace
- *  from bundle" and "Replace workspace" (#280). The parsing/validation of an
+ *  from bundle" and the File menu's "Open workspace…" (#280; user-facing
+ *  label renamed by #342). The parsing/validation of an
  *  external bundle and the dependency-closure/ID-remapping that select the
  *  `queries`/`dashboard` passed here are the Phase-5 import planner's job; this
  *  only assembles the candidate the repository then commits in one transaction. */
