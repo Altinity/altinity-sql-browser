@@ -935,6 +935,13 @@ describe('query run', () => {
     expect(app.dom.varStrip!.style.display).toBe('none');
     expect(app.dom.runBtn!.disabled).toBe(false);
   });
+  it('query variables (#345): a field gets a compact, type-aware width — Date narrower than DateTime, Enum its own band', () => {
+    const { app } = appForRun([]);
+    app.activeTab().sqlDraft = "SELECT {n:UInt8}, {d:Date}, {dt:DateTime}, {k:Enum8('a' = 1, 'b' = 2)}";
+    app.renderVarStrip();
+    const inputs = qsa<HTMLInputElement>(app.dom.varStrip!, '.var-input');
+    expect(inputs.map((i) => i.style.getPropertyValue('--var-input-ch'))).toEqual(['9', '13', '17', '14']);
+  });
   it('query variables (#134): typing a value updates the shared store, persists, and re-enables Run', () => {
     vi.stubGlobal('localStorage', memStore());
     const { app } = appForRun([]);

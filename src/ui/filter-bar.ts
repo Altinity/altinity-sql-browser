@@ -13,7 +13,7 @@ import { fieldControlKind } from '../core/param-pipeline.js';
 import type { FieldControl, PreparedFieldState, ValidationMode } from '../core/param-pipeline.js';
 import { recentOptions } from '../core/recent-values.js';
 import type { RecentMap } from '../core/recent-values.js';
-import { applyFieldState } from './var-field.js';
+import { applyFieldState, applyFieldWidth } from './var-field.js';
 import {
   buildRelativeTimeField as _buildRelativeTimeField,
 } from './relative-time-field.js';
@@ -168,6 +168,9 @@ export function buildFilterBar(
         onCommit: () => onCommit(p.name),
       });
       field.input.title = baseTitle;
+      // #345: a curated field is always the 'enum' width band (short option
+      // labels) regardless of the declared param type behind it.
+      applyFieldWidth(field.input, p.type, true);
       if (conflictNote) field.input.classList.add('is-conflict');
       // Same shared invalid-field affordance the plain-text branch gets below
       // (#170/var-field.js) — a curated field's committed value can still be
@@ -235,6 +238,10 @@ export function buildFilterBar(
     else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow: app.wallNow });
     else combo = buildRecentField(fieldOpts);
     input = combo.input;
+    // #345: a stable, type-appropriate width — set once per field build
+    // (never on keystroke), keyed off the declared type so Date/DateTime
+    // (same combobox control, different widths) don't collapse to one band.
+    applyFieldWidth(input, p.type, ctl.kind === 'enum');
     // The shared listener block (review F8): the combobox hooks first, then
     // D3's own persist-on-type / Enter-blur hard-commit bodies.
     wireComboInput(combo, { onValueInput, onCommit: onCommitHard });

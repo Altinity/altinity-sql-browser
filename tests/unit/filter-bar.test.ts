@@ -125,6 +125,63 @@ describe('buildFilterBar (shared filter row)', () => {
     expect((input as HTMLInputElement).title).toBe('Bad value');
   });
 
+  // #345: compact, type-aware field widths — one stable ch width per field,
+  // resolved from the declared type (or 'enum' for a dropdown/curated field).
+  describe('field width (#345)', () => {
+    it('a plain text field (String) gets the generic string width', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe('16');
+    });
+    it('a tiny-integer field (UInt8) gets the bool/tiny-int width', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {flag:UInt8}'), () => {}, okField);
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe('9');
+    });
+    it('a Date field is narrower than a DateTime field, even though both render the date-like combobox', () => {
+      const app = makeApp();
+      const dateBar = buildFilterBar(app, paramsFor('SELECT {d:Date}'), () => {}, okField);
+      const dtBar = buildFilterBar(app, paramsFor('SELECT {dt:DateTime}'), () => {}, okField);
+      expect(dateBar.el.querySelector<HTMLInputElement>('.var-input')!.style.getPropertyValue('--var-input-ch')).toBe('13');
+      expect(dtBar.el.querySelector<HTMLInputElement>('.var-input')!.style.getPropertyValue('--var-input-ch')).toBe('17');
+    });
+    it("a declared Enum8 field gets the enum width", () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor("SELECT {kind:Enum8('a' = 1, 'b' = 2)}"), () => {}, okField);
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe('14');
+    });
+    it('a curated field gets the enum width regardless of its declared type', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:UInt64}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }] } },
+      });
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe('14');
+    });
+    it('a type-conflicted field still gets a width, from its first bound declaration\'s type', () => {
+      const app = makeApp();
+      const params = fieldControls(analyzeParameterizedSources([
+        { id: 'A', kind: 'tab', sql: 'SELECT {x:UInt64}', bindPolicy: 'row-returning' },
+        { id: 'B', kind: 'tab', sql: 'SELECT {x:String}', bindPolicy: 'row-returning' },
+      ]));
+      const bar = buildFilterBar(app, params, () => {}, okField);
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe('13'); // UInt64 (first declaration) → numeric
+    });
+    it('never changes while typing — set once at field build, not on every keystroke', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {name:String}'), () => {}, okField);
+      const input = bar.el.querySelector<HTMLInputElement>('.var-input')!;
+      const before = input.style.getPropertyValue('--var-input-ch');
+      input.value = 'a much longer value than the field is wide';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(input.style.getPropertyValue('--var-input-ch')).toBe(before);
+    });
+  });
+
   it('dispose() clears a pending debounce timer so a later value edit never fires the stale commit (#276)', () => {
     vi.useFakeTimers();
     try {

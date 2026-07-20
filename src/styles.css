@@ -774,8 +774,14 @@ body {
    is the same `.var-combo`/`.var-input`/`.var-combo-list` control every other
    combobox field uses — it only adds an inline clear (×) button for its "All"/
    inactive state, so the input reserves room on the right and the button sits
-   over that gap (the `.var-combo` wrapper is already position:relative). */
-.filter-select .var-input { padding-right: 26px; }
+   over that gap (the `.var-combo` wrapper is already position:relative). The
+   extra 18px of padding-right (26px here vs the plain field's 8px) would
+   otherwise eat straight into the SAME `--var-input-ch` content width every
+   other field gets (#345 review finding: measured live, an 11-character
+   curated label left under 3px of margin at the nominal 14ch enum band) — so
+   this rule widens the box by that same 18px, keeping this field's actual
+   TEXT room equal to a plain field at the same width category. */
+.filter-select .var-input { padding-right: 26px; width: calc(var(--var-input-ch, 16) * 1ch + 18px); }
 .var-combo-clear-inline {
   position: absolute; top: 0; right: 3px; height: 24px;
   width: 20px; border-radius: 4px; padding: 0;
@@ -1409,8 +1415,15 @@ body.detached-tab .graph-overlay-panel {
    glyph (the input title spells it out either way). */
 .var-field.is-optional .var-name { color: var(--fg-mute); }
 .var-field:not(.is-optional) .var-name { font-weight: 700; }
+/* Compact, type-aware width (#345): `--var-input-ch` is set once per field,
+   at build time, by whichever field-family builder created the input
+   (`applyFieldWidth`, var-field.ts — filter-width.ts resolves the ch count
+   from the declared type). Falls back to the generic string band (16ch) for
+   any input this custom property was never set on (the Filter drawer's
+   read-only preview cell, filter-preview.ts, which has no declared
+   ClickHouse type to key off). */
 .var-input {
-  height: 24px; width: 150px; padding: 0 8px;
+  height: 24px; width: calc(var(--var-input-ch, 16) * 1ch); padding: 0 8px;
   background: var(--bg-input); color: var(--fg);
   border: 1px solid var(--border); border-radius: 5px;
   font-size: 11.5px; font-family: inherit;
