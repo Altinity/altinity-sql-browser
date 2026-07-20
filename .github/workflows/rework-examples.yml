@@ -1,0 +1,44 @@
+name: Rework examples
+
+on:
+  push:
+    branches: [examples-rework-bootstrap]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[examples migrated]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: examples-rework-bootstrap
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Rewrite generators and tests
+        run: node examples/mjs/rewrite-example-generators.mjs
+      - name: Normalize checked-in examples
+        run: node examples/mjs/normalize-examples.mjs
+      - name: Verify normalization
+        run: node examples/mjs/normalize-examples.mjs --check
+      - name: Test
+        run: npm test
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Boundaries
+        run: npm run check-boundaries
+      - name: Build
+        run: npm run build
+      - name: Commit migrated examples
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add examples tests/unit/spec-examples.test.js
+          git commit -m "docs(examples): migrate to portable dashboard bundles [examples migrated]"
+          git push origin HEAD:examples-rework-bootstrap
