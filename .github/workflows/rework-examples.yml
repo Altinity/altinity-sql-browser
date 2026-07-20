@@ -23,6 +23,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Patch one-time generator rewrite
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('examples/mjs/rewrite-example-generators.mjs')
+          text = path.read_text()
+          text = text.replace(
+              "expect(result.ok, result.ok ? name : \\`${name}: \\${result.diagnostics.map((d) => d.message).join('; ')}\\`).toBe(true);",
+              "expect(result.ok, result.ok ? name : name + ': ' + result.diagnostics.map((d) => d.message).join('; ')).toBe(true);",
+          )
+          text = text.replace(
+              "expect(filterExecution(query.sql).diagnostics, \\`${name}:\\${query.id}\\`).toEqual([]);",
+              "expect(filterExecution(query.sql).diagnostics, name + ':' + query.id).toEqual([]);",
+          )
+          path.write_text(text)
+          PY
       - name: Rewrite generators and tests
         run: |
           if ! node examples/mjs/rewrite-example-generators.mjs > /tmp/rewrite.log 2>&1; then
