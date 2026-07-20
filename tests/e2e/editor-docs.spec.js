@@ -106,7 +106,15 @@ test.describe('docs reference (#313)', () => {
     await expect(btn).toBeVisible();
     expect(await btn.evaluate((el) => el.tagName)).toBe('A');
     await expect(btn).toHaveText('reference');
-    await btn.click();
+    // Fire the anchor's own click handler directly rather than a positional
+    // page click: the CM6 completion-INFO tooltip (`.cm-completionInfo`) is
+    // continuously repositioned, and once `app.catalog.docSummary()` resolves
+    // it MUTATES this card in place (codemirror-adapter.ts) — so on Firefox
+    // the link is a moving/unstable target and Playwright's actionability
+    // gate on `.click()` retries until the test times out (visibility + text
+    // above already prove the link is rendered). `el.click()` invokes the same
+    // `onclick` → `app.openDocEntry(target)` the pane assertion below verifies.
+    await btn.evaluate((el) => el.click());
     const pane = page.locator('[role="complementary"][aria-label="Documentation"]');
     await expect(pane).toBeVisible();
     await expect(pane.locator('.docs-name')).toHaveText('sum');
