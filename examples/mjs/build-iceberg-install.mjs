@@ -10,10 +10,10 @@
 // Run:  node examples/mjs/build-iceberg-install.mjs
 // Out:  examples/iceberg-install.json
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { assertValidLibraryDocument } from './validate-library.mjs';
+import { writeExampleBundle } from './example-bundle.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tmpl = (name) => readFileSync(resolve(here, 'iceberg-templates', name), 'utf8');
@@ -215,26 +215,27 @@ FORMAT TSVRaw`,
 });
 
 // ---------------------------------------------------------------------------
-const doc = {
-  format: 'altinity-sql-browser/saved-queries',
-  version: 2,
-  exportedAt: new Date().toISOString(),
-  queries: queries.map(({ id, sql, name, favorite, description, panel, view }) => ({
-    id,
-    sql,
-    specVersion: 1,
-    spec: {
-      name,
-      favorite,
-      ...(description ? { description } : {}),
-      ...(panel ? { panel } : {}),
-      ...(view ? { view } : {}),
-    },
-  })),
-};
-
-assertValidLibraryDocument(doc);
+const normalizedQueries = queries.map(({ id, sql, name, favorite, description, panel, view }) => ({
+  id,
+  sql,
+  specVersion: 1,
+  spec: {
+    name,
+    favorite,
+    ...(description ? { description } : {}),
+    ...(panel ? { panel } : {}),
+    ...(view ? { view } : {}),
+  },
+}));
 
 const out = resolve(here, 'iceberg-install.json');
-writeFileSync(out, JSON.stringify(doc, null, 2) + '\n');
+writeExampleBundle(out, {
+  exportedAt: new Date().toISOString(),
+  metadata: {
+    name: 'Iceberg Catalog Explorer installer',
+    description: 'Administrative setup and generation queries for the Iceberg examples.',
+  },
+  queries: normalizedQueries,
+  dashboards: [],
+});
 console.log(`wrote ${out} (${queries.length} entries)`);

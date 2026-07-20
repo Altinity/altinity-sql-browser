@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-13T09:08:20.678Z",
+  "metadata": {
+    "name": "Iceberg catalog explorer — DBA",
+    "description": "Maintenance and health view of Iceberg catalog metadata."
+  },
   "queries": [
     {
       "id": "iced-0",
@@ -15,7 +20,15 @@
         "panel": {
           "cfg": {
             "type": "text",
-            "content": "## Iceberg catalog explorer — DBA\n\nMaintenance signals for every installed catalog, from Iceberg metadata only:\nsnapshot-expiry backlog, manifest fragmentation, metadata.json bloat,\nmerge-on-read delete manifests, and two **log panels** — the snapshot commit\ntimeline and the metadata-version timeline (`from` accepts relative times\nlike `-30d`).\n\nThe shared `catalog` filter narrows every tile; blank = all catalogs.\nDetail tables (schema, partition spec, manifest inventory, full snapshot log)\nlive in the Library below the dashboard tiles — they are deliberately not on\nthe dashboard. Per-table small-file/skew/Parquet analysis: generate the\ndrill-down Library from `iceberg-install.json` (entry i5)."
+            "content": "## Iceberg catalog explorer — DBA\n\nMaintenance signals for every installed catalog, from Iceberg metadata only:\nsnapshot-expiry backlog, manifest fragmentation, metadata.json bloat,\nmerge-on-read delete manifests, and two **log panels** — the snapshot commit\ntimeline and the metadata-version timeline (`from` accepts relative times\nlike `-30d`).\n\nThe shared `catalog` filter narrows every tile; blank = all catalogs.\nDetail tables (schema, partition spec, manifest inventory, full snapshot log)\nlive in the Library below the dashboard tiles — they are deliberately not on\nthe dashboard. Per-table small-file/skew/Parquet analysis: generate the\ndrill-down portable bundle from `iceberg-install.json` (entry i5)."
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 2
           }
         }
       }
@@ -39,6 +52,14 @@
             "series": null
           },
           "key": "table:String|old_snapshots:Int64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -62,6 +83,14 @@
             "series": null
           },
           "key": "table:String|manifests:UInt64|avg_files_per_manifest:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -84,6 +113,14 @@
             "series": null
           },
           "key": "table:String|delete_manifests:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -107,6 +144,14 @@
             "series": null
           },
           "key": "table:String|metadata_files_on_s3:UInt64|snapshots_in_current_metadata:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -131,6 +176,14 @@
             "series": null
           },
           "key": "table:String|data_files:UInt64|manifests:UInt64|metadata_versions:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -150,6 +203,14 @@
             "msg": "msg",
             "level": "level"
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
+          }
         }
       }
     },
@@ -167,6 +228,14 @@
             "type": "logs",
             "time": "ts",
             "msg": "msg"
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
           }
         }
       }
@@ -225,6 +294,102 @@
         "description": "Every manifest referenced by every manifest-list (all snapshots, not just current).",
         "view": "table"
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "iceberg-dba-explorer",
+      "title": "Iceberg catalog explorer — DBA",
+      "description": "Maintenance and health view of Iceberg catalog metadata.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-iced-0": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-iced-1": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-2": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-3": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-4": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-5": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iced-6": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-iced-7": {
+            "span": 2,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-catalog",
+          "parameter": "catalog"
+        },
+        {
+          "id": "filter-from",
+          "parameter": "from"
+        },
+        {
+          "id": "filter-to",
+          "parameter": "to"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-iced-0",
+          "queryId": "iced-0"
+        },
+        {
+          "id": "tile-iced-1",
+          "queryId": "iced-1"
+        },
+        {
+          "id": "tile-iced-2",
+          "queryId": "iced-2"
+        },
+        {
+          "id": "tile-iced-3",
+          "queryId": "iced-3"
+        },
+        {
+          "id": "tile-iced-4",
+          "queryId": "iced-4"
+        },
+        {
+          "id": "tile-iced-5",
+          "queryId": "iced-5"
+        },
+        {
+          "id": "tile-iced-6",
+          "queryId": "iced-6"
+        },
+        {
+          "id": "tile-iced-7",
+          "queryId": "iced-7"
+        }
+      ]
     }
   ]
 }

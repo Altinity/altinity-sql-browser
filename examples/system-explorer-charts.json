@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-04T19:47:55.982Z",
+  "metadata": {
+    "name": "ClickHouse system explorer",
+    "description": "Operational views over ClickHouse system tables."
+  },
   "queries": [
     {
       "id": "sys-1",
@@ -72,6 +77,14 @@
             "series": null
           },
           "key": "table:String|disk_bytes:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -94,6 +107,14 @@
             "series": null
           },
           "key": "table:String|parts:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -116,6 +137,14 @@
             "series": null
           },
           "key": "name:String|times:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -138,6 +167,14 @@
             "series": null
           },
           "key": "t:DateTime|queries:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -160,6 +197,14 @@
             "series": null
           },
           "key": "query:String|avg_duration_ms:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -182,6 +227,14 @@
             "series": 1
           },
           "key": "t:DateTime|error:LowCardinality(String)|n:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -204,6 +257,14 @@
             "series": 1
           },
           "key": "t:DateTime|event_type:Enum8('NewPart' = 1, 'MergeParts' = 2, 'DownloadPart' = 3, 'RemovePart' = 4, 'MutatePart' = 5, 'MovePart' = 6, 'MergePartsStart' = 7, 'MutatePartStart' = 8)|n:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -226,6 +287,14 @@
             "series": null
           },
           "key": "t:DateTime|memory_bytes:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -238,6 +307,98 @@
         "favorite": false,
         "description": "The deep-dive version of \"Slowest query patterns\": executions, max/avg duration, rows and bytes read, and p99 memory per query shape over a {from:String}/{to:String} range. Table view — too many columns for one chart, but the full picture behind the bar chart above."
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "system-explorer",
+      "title": "ClickHouse system explorer",
+      "description": "Operational views over ClickHouse system tables.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-sys-6": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-7": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-8": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-9": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-10": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-11": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-12": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-sys-13": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-from",
+          "parameter": "from"
+        },
+        {
+          "id": "filter-to",
+          "parameter": "to"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-sys-6",
+          "queryId": "sys-6"
+        },
+        {
+          "id": "tile-sys-7",
+          "queryId": "sys-7"
+        },
+        {
+          "id": "tile-sys-8",
+          "queryId": "sys-8"
+        },
+        {
+          "id": "tile-sys-9",
+          "queryId": "sys-9"
+        },
+        {
+          "id": "tile-sys-10",
+          "queryId": "sys-10"
+        },
+        {
+          "id": "tile-sys-11",
+          "queryId": "sys-11"
+        },
+        {
+          "id": "tile-sys-12",
+          "queryId": "sys-12"
+        },
+        {
+          "id": "tile-sys-13",
+          "queryId": "sys-13"
+        }
+      ]
     }
   ]
 }

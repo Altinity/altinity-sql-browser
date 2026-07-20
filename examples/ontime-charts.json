@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-06-24T13:22:11.940Z",
+  "metadata": {
+    "name": "On-time chart gallery",
+    "description": "Chart gallery over the public ontime flight dataset."
+  },
   "queries": [
     {
       "id": "s1",
@@ -9,7 +14,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Busiest origin airports — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Top 15 departure airports by flight count (joined to dim_airports for readable names). Horizontal Bar — hover any bar, long or short, to read its exact value.",
         "view": "panel",
         "panel": {
@@ -22,6 +27,14 @@
             "series": null
           },
           "key": "airport:String|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -31,7 +44,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Flights by month — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Monthly US flight volume. A numeric column named \"month\" is detected as an ordinal axis → vertical Column chart, with K/M-humanised value ticks.",
         "view": "panel",
         "panel": {
@@ -44,6 +57,14 @@
             "series": null
           },
           "key": "month:UInt8|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -53,7 +74,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Daily flights — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "One point per day across 2023 (~365 rows). A Date X axis is auto-detected as a time series → Line chart.",
         "view": "panel",
         "panel": {
@@ -66,6 +87,14 @@
             "series": null
           },
           "key": "date:Date|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -75,7 +104,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Daily on-time rate — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Share of flights arriving on time (< 15 min late) per day, as a percentage. Rendered as a filled Area chart.",
         "view": "panel",
         "panel": {
@@ -88,6 +117,14 @@
             "series": null
           },
           "key": "date:Date|on_time_pct:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -97,7 +134,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Cancellation reasons — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Why flights were cancelled in 2023 (carrier / weather / national air system / security). A small categorical breakdown → Pie chart with a legend.",
         "view": "panel",
         "panel": {
@@ -110,6 +147,14 @@
             "series": null
           },
           "key": "reason:String|cancellations:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -119,7 +164,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Monthly flights by carrier — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Flights per month split across four major carriers (WN, AA, DL, UA). The \"carrier\" column is used as the Series, producing grouped bars with a per-carrier legend.",
         "view": "panel",
         "panel": {
@@ -132,6 +177,14 @@
             "series": 1
           },
           "key": "month:UInt8|carrier:LowCardinality(String)|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -141,7 +194,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Average delay breakdown by carrier — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Mean minutes of each delay cause (carrier, weather, NAS, late aircraft) for delayed flights, per carrier. Four measures plotted at once (\"All measures\") as grouped columns.",
         "view": "panel",
         "panel": {
@@ -157,6 +210,14 @@
             "series": null
           },
           "key": "carrier:LowCardinality(String)|carrier_delay:Nullable(Float64)|weather_delay:Nullable(Float64)|nas_delay:Nullable(Float64)|late_aircraft_delay:Nullable(Float64)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -166,7 +227,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Daily flights since 2022",
-        "favorite": false,
+        "favorite": true,
         "description": "Every day from 2022 onward (~1,460 points). The chart plots the first 500 and shows a \"first 500 of N rows\" note — the table view still has them all.",
         "view": "panel",
         "panel": {
@@ -179,6 +240,14 @@
             "series": null
           },
           "key": "date:Date|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -188,7 +257,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Flights by day of week — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Volume by day of week (1 = Monday … 7 = Sunday). \"dayofweek\" is recognised as an ordinal axis → Column chart.",
         "view": "panel",
         "panel": {
@@ -201,6 +270,14 @@
             "series": null
           },
           "key": "dayofweek:UInt8|flights:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -210,7 +287,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Worst average departure delay by airport — 2023",
-        "favorite": false,
+        "favorite": true,
         "description": "Airports with the highest mean departure delay (minutes) among those with ≥ 10,000 departures in 2023. Horizontal Bar of a non-count measure, joined for names.",
         "view": "panel",
         "panel": {
@@ -223,8 +300,115 @@
             "series": null
           },
           "key": "airport:String|avg_dep_delay:Nullable(Float64)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "ontime-chart-gallery",
+      "title": "On-time chart gallery",
+      "description": "Chart gallery over the public ontime flight dataset.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-s1": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s2": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s3": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s4": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s5": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s6": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s7": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s8": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s9": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-s10": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [],
+      "tiles": [
+        {
+          "id": "tile-s1",
+          "queryId": "s1"
+        },
+        {
+          "id": "tile-s2",
+          "queryId": "s2"
+        },
+        {
+          "id": "tile-s3",
+          "queryId": "s3"
+        },
+        {
+          "id": "tile-s4",
+          "queryId": "s4"
+        },
+        {
+          "id": "tile-s5",
+          "queryId": "s5"
+        },
+        {
+          "id": "tile-s6",
+          "queryId": "s6"
+        },
+        {
+          "id": "tile-s7",
+          "queryId": "s7"
+        },
+        {
+          "id": "tile-s8",
+          "queryId": "s8"
+        },
+        {
+          "id": "tile-s9",
+          "queryId": "s9"
+        },
+        {
+          "id": "tile-s10",
+          "queryId": "s10"
+        }
+      ]
     }
   ]
 }

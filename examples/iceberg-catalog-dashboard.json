@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-13T09:08:20.678Z",
+  "metadata": {
+    "name": "Iceberg catalog explorer — BI",
+    "description": "Business intelligence view of Iceberg catalog metadata."
+  },
   "queries": [
     {
       "id": "iceb-0",
@@ -15,7 +20,15 @@
         "panel": {
           "cfg": {
             "type": "text",
-            "content": "## Iceberg catalog explorer — BI\n\nDataset shape and growth of every Iceberg catalog installed as an\n`ice_meta_<catalog>` database, read through the `ice_meta_all` union layer\n(one `catalog` filter drives every tile; blank = all catalogs).\n\nAll numbers come from Iceberg *metadata* (metadata.json / manifest lists) —\nno table data is scanned. Install/extend catalogs with\n`iceberg-install.json`; per-table drill-down (data files, partition skew,\nParquet footers) comes from its \"Generate: per-catalog drill-down Library\"\nentry."
+            "content": "## Iceberg catalog explorer — BI\n\nDataset shape and growth of every Iceberg catalog installed as an\n`ice_meta_<catalog>` database, read through the `ice_meta_all` union layer\n(one `catalog` filter drives every tile; blank = all catalogs).\n\nAll numbers come from Iceberg *metadata* (metadata.json / manifest lists) —\nno table data is scanned. Install/extend catalogs with\n`iceberg-install.json`; per-table drill-down (data files, partition skew,\nParquet footers) comes from its \"Generate: per-catalog drill-down portable bundle\"\nentry."
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 2
           }
         }
       }
@@ -39,6 +52,14 @@
             "series": null
           },
           "key": "table:String|rows:Int64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -61,6 +82,14 @@
             "series": null
           },
           "key": "table:String|gib:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -83,6 +112,14 @@
             "series": null
           },
           "key": "table:String|files:Int64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -105,6 +142,14 @@
             "series": null
           },
           "key": "table:String|avg_mib:Float64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -127,6 +172,14 @@
             "series": 1
           },
           "key": "committed_at:DateTime64(3)|table:String|rows:Int64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -149,6 +202,14 @@
             "series": 1
           },
           "key": "day:Date|table:String|commits:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -171,6 +232,14 @@
             "series": null
           },
           "key": "kind:String|objects:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -193,6 +262,14 @@
             "series": null
           },
           "key": "kind:String|mib:Nullable(Float64)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -215,8 +292,120 @@
             "series": null
           },
           "key": "table:String|columns:UInt64"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "iceberg-catalog-explorer",
+      "title": "Iceberg catalog explorer — BI",
+      "description": "Business intelligence view of Iceberg catalog metadata.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-iceb-0": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-iceb-1": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-2": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-3": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-4": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-5": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-6": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-7": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-8": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-iceb-9": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-catalog",
+          "parameter": "catalog"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-iceb-0",
+          "queryId": "iceb-0"
+        },
+        {
+          "id": "tile-iceb-1",
+          "queryId": "iceb-1"
+        },
+        {
+          "id": "tile-iceb-2",
+          "queryId": "iceb-2"
+        },
+        {
+          "id": "tile-iceb-3",
+          "queryId": "iceb-3"
+        },
+        {
+          "id": "tile-iceb-4",
+          "queryId": "iceb-4"
+        },
+        {
+          "id": "tile-iceb-5",
+          "queryId": "iceb-5"
+        },
+        {
+          "id": "tile-iceb-6",
+          "queryId": "iceb-6"
+        },
+        {
+          "id": "tile-iceb-7",
+          "queryId": "iceb-7"
+        },
+        {
+          "id": "tile-iceb-8",
+          "queryId": "iceb-8"
+        },
+        {
+          "id": "tile-iceb-9",
+          "queryId": "iceb-9"
+        }
+      ]
     }
   ]
 }

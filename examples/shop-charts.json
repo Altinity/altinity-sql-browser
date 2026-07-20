@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-06-28T00:00:00.000Z",
+  "metadata": {
+    "name": "Shop analytics",
+    "description": "Chart examples over the sample shop dataset."
+  },
   "queries": [
     {
       "id": "shop-revenue-by-country",
@@ -22,6 +27,14 @@
             "series": null
           },
           "key": "country:LowCardinality(String)|revenue:Decimal(38, 2)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -66,6 +79,14 @@
             "series": null
           },
           "key": "category:LowCardinality(String)|revenue:Decimal(38, 2)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -154,6 +175,14 @@
             "series": 1
           },
           "key": "day:Date|country:LowCardinality(String)|revenue:Decimal(38, 2)"
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -178,6 +207,49 @@
           "key": "hour:UInt8|events:UInt64"
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "shop-charts",
+      "title": "Shop analytics",
+      "description": "Chart examples over the sample shop dataset.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-shop-revenue-by-country": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-shop-revenue-by-category": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-shop-revenue-trend-by-country": {
+            "span": 1,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [],
+      "tiles": [
+        {
+          "id": "tile-shop-revenue-by-country",
+          "queryId": "shop-revenue-by-country"
+        },
+        {
+          "id": "tile-shop-revenue-by-category",
+          "queryId": "shop-revenue-by-category"
+        },
+        {
+          "id": "tile-shop-revenue-trend-by-country",
+          "queryId": "shop-revenue-trend-by-country"
+        }
+      ]
     }
   ]
 }

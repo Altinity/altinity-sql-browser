@@ -41,10 +41,9 @@
 // Out:  examples/system-explorer-charts.json
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { assertValidLibraryDocument } from './validate-library.mjs';
+import { buildDashboard, writeExampleBundle } from './example-bundle.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONNECTION = process.argv[2] || 'github-admin';
@@ -239,15 +238,20 @@ const queries = SPECS.map((s, i) => {
   return { ...base, spec: { ...base.spec, panel: { cfg: s.cfg, key }, view: 'panel' } };
 });
 
-const doc = {
-  format: 'altinity-sql-browser/saved-queries',
-  version: 2,
-  exportedAt: new Date().toISOString(),
+const dashboard = buildDashboard({
+  id: 'system-explorer',
+  title: 'ClickHouse system explorer',
+  description: 'Operational views over ClickHouse system tables.',
   queries,
-};
-
-assertValidLibraryDocument(doc);
+  tileQueryIds: queries.filter((query) => query.spec.favorite).map((query) => query.id),
+  preset: 'columns-2',
+});
 
 const outPath = resolve(here, 'system-explorer-charts.json');
-writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n');
+writeExampleBundle(outPath, {
+  exportedAt: new Date().toISOString(),
+  metadata: { name: dashboard.title, description: dashboard.description },
+  queries,
+  dashboards: [dashboard],
+});
 console.log(`\nwrote ${outPath} (${queries.length} queries, ${queries.filter((q) => q.spec.favorite).length} favorited for the Dashboard)`);

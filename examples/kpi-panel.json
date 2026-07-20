@@ -1,8 +1,12 @@
 {
-  "$schema": "https://altinity.com/schemas/altinity-sql-browser/library-v2.schema.json",
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-14T00:00:00.000Z",
+  "metadata": {
+    "name": "KPI panel example",
+    "description": "Scalar and named-tuple KPI presentation example."
+  },
   "queries": [
     {
       "id": "kpi-service-health",
@@ -14,22 +18,68 @@
         "favorite": true,
         "view": "panel",
         "panel": {
-          "cfg": { "type": "kpi" },
+          "cfg": {
+            "type": "kpi"
+          },
           "fieldConfig": {
-            "defaults": { "noValue": "—" },
+            "defaults": {
+              "noValue": "—"
+            },
             "columns": {
-              "active_users": { "displayName": "Active users", "color": "#4f8cff" },
+              "active_users": {
+                "displayName": "Active users",
+                "color": "#4f8cff"
+              },
               "availability": {
                 "displayName": "Availability",
                 "description": "Current service availability.",
                 "unit": "%",
                 "decimals": 2,
-                "delta": { "unit": " pp", "decimals": 2, "positiveIsGood": true }
+                "delta": {
+                  "unit": " pp",
+                  "decimals": 2,
+                  "positiveIsGood": true
+                }
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "kpi-panel-example",
+      "title": "KPI panel example",
+      "description": "Scalar and named-tuple KPI presentation example.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "report",
+        "items": {
+          "tile-kpi-service-health": {
+            "span": 1,
+            "height": "compact"
+          }
+        }
+      },
+      "filters": [],
+      "tiles": [
+        {
+          "id": "tile-kpi-service-health",
+          "queryId": "kpi-service-health"
+        }
+      ]
     }
   ]
 }

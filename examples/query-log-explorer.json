@@ -1,7 +1,12 @@
 {
-  "format": "altinity-sql-browser/saved-queries",
-  "version": 2,
+  "$schema": "https://altinity.com/schemas/altinity-sql-browser/portable-bundle-v1.schema.json",
+  "format": "altinity-sql-browser/portable-bundle",
+  "version": 1,
   "exportedAt": "2026-07-15T00:00:00.000Z",
+  "metadata": {
+    "name": "Query log explorer",
+    "description": "ClickHouse query-log health, performance, and usage dashboard."
+  },
   "queries": [
     {
       "id": "qle-filter",
@@ -9,7 +14,7 @@
       "specVersion": 1,
       "spec": {
         "name": "Filter",
-        "favorite": true,
+        "favorite": false,
         "description": "Single Dashboard Filter source. `user` is a value/label bundle (Array(Tuple(value, label)) — #160): the value is the full user that binds to a Panel's {user:String}, the label is the name before '@' for display. `query_kind` is a plain Array(String). Upgrades any Panel's {user:String} and {query_kind:String} parameters to searchable single-select dropdowns.",
         "dashboard": {
           "role": "filter"
@@ -57,6 +62,14 @@
               }
             }
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "compact",
+            "minimum": "compact",
+            "aspectRatio": 2
+          }
         }
       }
     },
@@ -72,7 +85,15 @@
         "panel": {
           "cfg": {
             "type": "text",
-            "content": "# Dashboard Filter sources demo\n\nEvery favorite below is a Panel, except one **Filter**-role source (#160) that populates the filter bar above with `user` and `query_kind` option lists queried live from `system.query_log` on the **otel** demo cluster.\n\n**Shared filters** — plain, type-detected controls (no Filter source), declared by the data Panels:\n\n- `from` — **required** window start (`DateTime`); type an absolute time or a relative expression like `-24h`, `-7d`, `now`\n- `to` — optional window end (`DateTime`); blank means \"up to now\"\n- `search` — optional case-insensitive substring search over the query text (and, in the log panel, the exception message)\n- `minDurationMs` — optional minimum query-duration threshold, in ms (slowest-queries panel)\n\n**Curated filters** — sourced from the single favorited **Filter** query, upgrading matching Panel parameters to searchable dropdowns:\n\n- `user` — real ClickHouse users seen in the query log\n- `query_kind` — the query kinds seen in the query log (Select, Insert, …)\n\nAnalytical panels are adapted from the Altinity KB page [\"Handy queries for system.query_log\"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/)."
+            "content": "# Dashboard Filter sources demo\n\nEvery bundled Dashboard tile below is a Panel; one separate **Filter**-role source (#160) that populates the filter bar above with `user` and `query_kind` option lists queried live from `system.query_log` on the **otel** demo cluster.\n\n**Shared filters** — plain, type-detected controls (no Filter source), declared by the data Panels:\n\n- `from` — **required** window start (`DateTime`); type an absolute time or a relative expression like `-24h`, `-7d`, `now`\n- `to` — optional window end (`DateTime`); blank means \"up to now\"\n- `search` — optional case-insensitive substring search over the query text (and, in the log panel, the exception message)\n- `minDurationMs` — optional minimum query-duration threshold, in ms (slowest-queries panel)\n\n**Curated filters** — sourced from the single favorited **Filter** query, upgrading matching Panel parameters to searchable dropdowns:\n\n- `user` — real ClickHouse users seen in the query log\n- `query_kind` — the query kinds seen in the query log (Select, Insert, …)\n\nAnalytical panels are adapted from the Altinity KB page [\"Handy queries for system.query_log\"](https://kb.altinity.com/altinity-kb-useful-queries/query_log/)."
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 2
           }
         }
       }
@@ -89,6 +110,14 @@
         "panel": {
           "cfg": {
             "type": "table"
+          }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
           }
         }
       }
@@ -111,6 +140,14 @@
             ],
             "series": null
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -132,6 +169,14 @@
             ],
             "series": null
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "medium",
+            "minimum": "compact",
+            "aspectRatio": 1.5
+          }
         }
       }
     },
@@ -151,8 +196,110 @@
             "msg": "message",
             "level": "level"
           }
+        },
+        "dashboard": {
+          "role": "panel",
+          "sizeHints": {
+            "preferred": "wide",
+            "minimum": "medium",
+            "aspectRatio": 1.6
+          }
         }
       }
+    }
+  ],
+  "dashboards": [
+    {
+      "documentVersion": 1,
+      "id": "query-log-explorer",
+      "title": "Query log explorer",
+      "description": "ClickHouse query-log health, performance, and usage dashboard.",
+      "revision": 1,
+      "layout": {
+        "type": "flow",
+        "version": 1,
+        "preset": "columns-2",
+        "items": {
+          "tile-qle-kpi": {
+            "span": 1,
+            "height": "compact"
+          },
+          "tile-qle-text": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-qle-slowest": {
+            "span": 2,
+            "height": "large"
+          },
+          "tile-qle-columns": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-qle-functions": {
+            "span": 1,
+            "height": "large"
+          },
+          "tile-qle-logs": {
+            "span": 2,
+            "height": "large"
+          }
+        }
+      },
+      "filters": [
+        {
+          "id": "filter-from",
+          "parameter": "from"
+        },
+        {
+          "id": "filter-to",
+          "parameter": "to"
+        },
+        {
+          "id": "filter-search",
+          "parameter": "search"
+        },
+        {
+          "id": "filter-user",
+          "parameter": "user",
+          "sourceQueryId": "qle-filter"
+        },
+        {
+          "id": "filter-minDurationMs",
+          "parameter": "minDurationMs"
+        },
+        {
+          "id": "filter-query_kind",
+          "parameter": "query_kind",
+          "sourceQueryId": "qle-filter"
+        }
+      ],
+      "tiles": [
+        {
+          "id": "tile-qle-kpi",
+          "queryId": "qle-kpi"
+        },
+        {
+          "id": "tile-qle-text",
+          "queryId": "qle-text"
+        },
+        {
+          "id": "tile-qle-slowest",
+          "queryId": "qle-slowest"
+        },
+        {
+          "id": "tile-qle-columns",
+          "queryId": "qle-columns"
+        },
+        {
+          "id": "tile-qle-functions",
+          "queryId": "qle-functions"
+        },
+        {
+          "id": "tile-qle-logs",
+          "queryId": "qle-logs"
+        }
+      ]
     }
   ]
 }
