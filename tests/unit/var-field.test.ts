@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyFieldState } from '../../src/ui/var-field.js';
+import { applyFieldState, applyFieldWidth } from '../../src/ui/var-field.js';
 
 function makeInput() {
   return document.createElement('input');
@@ -90,5 +90,30 @@ describe('applyFieldState', () => {
       expect(el.getAttribute('aria-describedby')).toBe('desc-1');
       expect(el.getAttribute('aria-invalid')).toBe('true');
     });
+  });
+});
+
+// #345: the compact, type-aware `--var-input-ch` custom property a field's
+// CSS width reads.
+describe('applyFieldWidth', () => {
+  it('sets the resolved ch width as the --var-input-ch custom property', () => {
+    const el = makeInput();
+    applyFieldWidth(el, 'UInt8');
+    expect(el.style.getPropertyValue('--var-input-ch')).toBe('9');
+  });
+  it('a wider numeric type gets a wider ch width', () => {
+    const el = makeInput();
+    applyFieldWidth(el, 'Float64');
+    expect(el.style.getPropertyValue('--var-input-ch')).toBe('13');
+  });
+  it('isEnumLike overrides the type-derived category', () => {
+    const el = makeInput();
+    applyFieldWidth(el, 'String', true);
+    expect(el.style.getPropertyValue('--var-input-ch')).toBe('14');
+  });
+  it('defaults isEnumLike to false when omitted', () => {
+    const el = makeInput();
+    applyFieldWidth(el, 'String');
+    expect(el.style.getPropertyValue('--var-input-ch')).toBe('16');
   });
 });

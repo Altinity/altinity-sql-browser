@@ -46,7 +46,7 @@ import { openDetailPane } from './schema-detail.js';
 import type { NodeDetail, DetailNode } from './schema-detail.js';
 import { openDocEntry, openDocDisambiguation, closeDocPane, isDocPaneOpen } from './doc-pane.js';
 import { renderSavedHistory } from './saved-history.js';
-import { applyFieldState } from './var-field.js';
+import { applyFieldState, applyFieldWidth } from './var-field.js';
 import { buildRelativeTimeField } from './relative-time-field.js';
 import type { RelativeTimeField } from './relative-time-field.js';
 import { buildRecentField } from './recent-field.js';
@@ -833,6 +833,10 @@ export function createApp(env: CreateAppEnv = {}): App {
           else if (ctl.kind === 'date') combo = buildRelativeTimeField({ ...fieldOpts, wallNow });
           else combo = buildRecentField(fieldOpts);
           input = combo.input;
+          // #345: a stable, type-appropriate width — set once per field
+          // build (never on keystroke), same rule the Dashboard/detached-view
+          // filter bar uses (filter-bar.js).
+          applyFieldWidth(input, v.type, ctl.kind === 'enum');
           wireComboInput(combo, { onValueInput, onCommit: onCommitHard });
           if (conflictNote) input.classList.add('is-conflict');
           params.hardenVar(v.name, initialFields[v.name]);
