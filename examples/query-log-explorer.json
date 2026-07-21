@@ -10,7 +10,7 @@
   "queries": [
     {
       "id": "qle-filter",
-      "sql": "SELECT\n  arraySort(item -> item.label, groupUniqArray((user AS value, splitByChar('@', user)[1] AS label))) AS user,\n  arraySort(groupUniqArray(query_kind)) AS query_kind\nFROM system.query_log WHERE query_log.user != ''\nSETTINGS enable_named_columns_in_function_tuple = 1",
+      "sql": "SELECT\n  arraySort(item -> item.label, groupUniqArray((user AS value, splitByChar('@', user)[1] AS label))) AS user,\n  arraySort(groupUniqArray(query_kind)) AS query_kind\nFROM system.query_log\nWHERE query_log.user != ''\n  AND event_time >= {from:DateTime}\n  AND event_time <  {to:DateTime}\nSETTINGS enable_named_columns_in_function_tuple = 1",
       "specVersion": 1,
       "spec": {
         "name": "Filter",

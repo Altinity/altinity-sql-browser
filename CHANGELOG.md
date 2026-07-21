@@ -9,7 +9,37 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Added
+- **Parameterized Dashboard Filter sources with single-layer dependencies**
+  (#360). A Filter-role source query may now declare its own `{name:Type}`
+  query parameters and bind committed *root* Dashboard filter values through the
+  existing native `param_<name>` pipeline (no textual SQL interpolation) — so a
+  query-log option source can compute its user / query-kind / exception-code
+  lists for the selected `{from:DateTime}` / `{to:DateTime}` window instead of a
+  hard-coded range. A source **waits** (issues no ClickHouse request) until every
+  required root parameter is committed, active, valid, and serializable; relative
+  values (`-1d`, `now`) resolve against one wall clock per wave; changing a root
+  filter reruns **only** the sources that declare it, then the affected panels, in
+  one combined wave; a refreshed option set that drops a filter's active value
+  deactivates it before panels run; and a Filter source that depends on *another*
+  source-backed parameter is rejected with a visible diagnostic (cascading Filter
+  sources are unsupported — single-layer only). Dashboard execution and the
+  Workbench Filter preview share one preparation operation (`prepareFilterSource`
+  in `core/filter-execution.ts`), so structural diagnostics, relative-value
+  resolution, optional-block materialization, validation/serialization, and
+  native arguments are identical on both surfaces. Source-backed filters render a
+  waiting / stale / error affordance in the filter bar instead of silently
+  degrading to a plain control; a superseded source response can never publish
+  stale results, and a dependency change clears the affected options so a stale
+  set can't appear current while the new source loads. Filter execution injects
+  no `readonly` setting (kept from #359). `examples/query-log-explorer.json`'s
+  `qle-filter` source is migrated to the half-open `{from:DateTime}`/`{to:DateTime}`
+  window as a worked example.
+
 ### Fixed
+- Removed a stray NUL byte embedded in `dashboard-viewer-session.ts`'s
+  `optionsSignature` (introduced by #361), which silently made the file look
+  binary to plain `grep`/`rg`.
 - **Dashboard filters sharing one Filter-source query now populate** (#359).
   When several Dashboard filter definitions referenced the same Filter-role
   source query, the viewer ran that query once per definition and keyed each
