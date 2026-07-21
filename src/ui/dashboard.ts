@@ -52,7 +52,7 @@ import type { ValidationMode } from '../core/param-pipeline.js';
 import { queryDashboardRole } from '../dashboard/model/workspace-semantics.js';
 import { renderKpiCards, KPI_STREAM_ARIA } from './kpi-panel.js';
 import { buildFilterBar } from './filter-bar.js';
-import type { FilterBarApp } from './filter-bar.js';
+import type { FilterBarApp, FilterBarHandle } from './filter-bar.js';
 import { createDashboardViewerSession } from '../dashboard/application/dashboard-viewer-session.js';
 import type {
   DashboardViewerSession, DashboardViewState, ViewerTileState, ViewerFilterState,
@@ -591,18 +591,23 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     wallNow: () => app.wallNow(),
   };
   let filterBarDispose: (() => void) | null = null;
+  // #360 maintainer-review follow-up: the retained bar's `updateStatus` — a
+  // status-only publish (below, the `barSig`/status-signal split) calls this
+  // directly instead of tearing down and rebuilding the whole bar.
+  let filterBarUpdateStatus: FilterBarHandle['updateStatus'] | null = null;
 
   function rebuildFilterBar(sview: DashboardViewState): void {
     filterBarDispose?.();
     const idByParam = new Map<string, string>();
-    // #360 (plan-review BLOCKER-2): a source-backed filter used to fall OUT of
-    // the curated rendering path the moment it had no options — waiting on a
-    // root dependency, mid-flight, or errored — silently rendering as a bare,
-    // unlabelled plain field with zero indication anything was pending. A
-    // plain (non-source-backed) filter is documented to stay 'idle' forever
-    // (ViewerFilterStatus), so gating on "not idle" keeps every source-backed
-    // filter curated regardless of whether it currently has options, and
-    // leaves the plain-filter path completely untouched.
+    // #360 maintainer-review follow-up: curation is gated on TOPOLOGY
+    // (`sourceId != null`, set once at construction from the filter
+    // definition's `sourceQueryId`), never on the transient `status` — status
+    // is execution state, not topology. The old `f.status !== 'idle'` gate
+    // meant a source-backed filter rendered as a bare, enabled plain-text
+    // control on INITIAL load (status starts 'idle' before its source has
+    // even run) until the source settled — the maintainer-review finding this
+    // fixes. A plain (non-source-backed) filter has no `sourceId` and is
+    // never gated into this path.
     const curatedFields: Record<string, {
       options: NonNullable<ViewerFilterState['options']>;
       status: ViewerFilterState['status'];
@@ -613,7 +618,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       draftValues[f.parameter] = valueString(f.value);
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
-      if (f.status !== 'idle') {
+      if (f.sourceId != null) {
         curatedFields[f.parameter] = { options: f.options ?? [], status: f.status, stale: f.stale, waitingFor: f.waitingFor };
       }
     }
@@ -625,6 +630,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const bar = buildFilterBar(filterBarApp, session.controls, onCommit, getField, { curatedFields, document: doc });
     filterHost.replaceChildren(bar.el);
     filterBarDispose = bar.dispose;
+    filterBarUpdateStatus = bar.updateStatus;
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });
@@ -1549,6 +1555,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // silently skipping that cleanup.
   let lastEngineRendered: 'flow' | 'grafana-grid' | null = null;
   let barSig = '';
+  // #360 maintainer-review follow-up: a SEPARATE signature from `barSig` —
+  // status/stale/waitingFor no longer participate in `barSig` at all (see the
+  // effect below), so a status-only change is detected here instead and
+  // applied to the EXISTING bar via `filterBarUpdateStatus` (no rebuild).
+  let statusSig = '';
+  const statusSigOf = (filters: readonly ViewerFilterState[]): string =>
+    JSON.stringify(filters.map((f) => [f.parameter, f.status, !!f.stale, f.waitingFor ?? null]));
+  const statesByParam = (filters: readonly ViewerFilterState[]): Record<string, {
+    status: ViewerFilterState['status']; stale?: boolean; waitingFor?: string[];
+  }> => Object.fromEntries(filters.map((f) => [f.parameter, { status: f.status, stale: f.stale, waitingFor: f.waitingFor }]));
   // #303: the committed-filter bag for a published view, built exactly the way
   // the persist step below and the seed just under it both need it.
   const persistBagOf = (filters: readonly ViewerFilterState[]): DashboardFilterBag => {
@@ -1578,26 +1594,36 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
       return;
     }
     lastMobile = mobileNow;
-    // Rebuild the shared filter bar only when its field structure changes
-    // (activation, committed value, curated options arriving, or — #360 — a
-    // source-backed filter settling into `waiting` or an error status) — not
-    // on tile progress ticks — so in-progress typing is not disturbed
-    // mid-wave. Without a status term here, an idle→waiting transition
-    // (`options`/`optionsRev` unchanged throughout — a blocked source never
-    // ran) left the SAME signature and never rebuilt, so the waiting
-    // affordance silently never painted (plan-review BLOCKER-2). A bare
-    // `'loading'` blip is deliberately EXCLUDED from this term: it always
-    // pairs with `stale: true` but leaves `options`/`optionsRev` untouched
-    // (`runFilterWave` never clears them mid-wave), so a refresh that settles
-    // right back to the exact same curated content still must NOT rebuild —
-    // preserving #359's own invariant (verified by its own suite) that an
-    // unchanged republish never disturbs in-progress typing.
-    const sig = JSON.stringify(sview.filters.map((f) => {
-      const stickyStatus = f.status === 'waiting' || f.status === 'source-error'
-        || f.status === 'helper-error' || f.status === 'missing-helper' ? [f.status, f.waitingFor] : null;
-      return [f.id, f.active, valueString(f.value), !!(f.options && f.options.length), f.optionsRev, stickyStatus];
-    }));
-    if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
+    // Rebuild the shared filter bar only on a STRUCTURAL change (activation,
+    // committed value, curated option CONTENT arriving/changing via
+    // `optionsRev`, or a filter gaining/losing its source topology) — not on
+    // a bare status flip and not on tile progress ticks — so in-progress
+    // typing is never disturbed mid-wave. #360 maintainer-review follow-up:
+    // `status`/`stale`/`waitingFor` are deliberately EXCLUDED from this
+    // signature (they used to be, for a "sticky" subset of statuses, to force
+    // the `waiting`/error affordance to paint — but that patched over the
+    // real bug: curation itself gated on status, so an idle-or-loading
+    // source-backed filter fell out of the curated path entirely). Now that
+    // `rebuildFilterBar` gates curation on topology (`sourceId != null`)
+    // rather than status, a pure status change only needs its OWN existing
+    // curated DOM updated in place — see `statusSig` below — never a rebuild.
+    // This also preserves #359's own invariant (verified by its own suite)
+    // that an unchanged republish never disturbs in-progress typing.
+    const sig = JSON.stringify(sview.filters.map((f) =>
+      [f.id, f.active, valueString(f.value), f.optionsRev, f.sourceId != null]));
+    const newStatusSig = statusSigOf(sview.filters);
+    if (sig !== barSig) {
+      barSig = sig;
+      rebuildFilterBar(sview);
+      // A fresh rebuild already applies the CURRENT status to every curated
+      // field (buildFilterBar applies it at build time) — refresh the stored
+      // status signature too, so this same publish doesn't ALSO fire a
+      // redundant `updateStatus` immediately after.
+      statusSig = newStatusSig;
+    } else if (newStatusSig !== statusSig) {
+      statusSig = newStatusSig;
+      filterBarUpdateStatus?.(statesByParam(sview.filters));
+    }
     // #303: persist committed filter value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
     const filterBag = persistBagOf(sview.filters);

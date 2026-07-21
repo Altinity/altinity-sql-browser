@@ -53,24 +53,100 @@ export interface BuildFilterBarOptions {
   curatedFields?: Record<string, unknown>;
 }
 
-/** One curated Dashboard Filter field's config (#160) — the shape
- *  `options.curatedFields[name]` carries, structurally read from the
- *  otherwise-`unknown` bag above.
- *
- *  #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
- *  fields (dashboard-viewer-session.ts) — `dashboard.ts`'s `rebuildFilterBar`
- *  forwards them straight through for every source-backed filter (gated on
- *  `status !== 'idle'`, never just "has options"), so a filter that's
- *  `waiting`/`loading`/errored with NO options yet still renders in this
- *  curated branch instead of silently falling out to the plain-text one
- *  below (plan-review BLOCKER-2). All three are optional so a caller that
- *  never supplies them (an older/simpler fixture) renders exactly like
- *  today's plain 'ready' combobox. */
-interface CuratedFieldConfig {
-  options: FilterFieldOption[];
+/** #360 maintainer-review follow-up: `status`/`stale`/`waitingFor` mirror
+ *  `ViewerFilterState`'s own fields (dashboard-viewer-session.ts) — but
+ *  WHETHER a filter is curated at all is `dashboard.ts`'s `rebuildFilterBar`
+ *  gating on `f.sourceId != null` (topology, set once at construction),
+ *  never on this transient status. Status is execution state, not topology:
+ *  a source-backed filter starts `status: 'idle'` before its source has even
+ *  run, so gating curation on "not idle" used to render it as a bare,
+ *  enabled plain-text control on initial load until the source settled.
+ *  These three fields are only the AFFORDANCE this already-curated field
+ *  shows — all optional so a caller that never supplies them (an older/
+ *  simpler fixture) renders exactly like today's plain 'ready' combobox. */
+export interface CuratedFieldStatus {
   status?: string;
   stale?: boolean;
   waitingFor?: string[];
+}
+
+/** One curated Dashboard Filter field's config (#160) — the shape
+ *  `options.curatedFields[name]` carries, structurally read from the
+ *  otherwise-`unknown` bag above. */
+interface CuratedFieldConfig extends CuratedFieldStatus {
+  options: FilterFieldOption[];
+}
+
+/** A built curated field's retained handle (#360 follow-up) — kept in
+ *  `buildFilterBar`'s `curatedHandles` map so a LATER status-only change can
+ *  update this exact field's affordance in place (`applyFieldStatus`, via
+ *  the returned `updateStatus`) without rebuilding the whole input — the
+ *  rebuild would otherwise blow away in-progress typing on every other field
+ *  in the bar and drop this field's own combobox/focus state. `baseTitle`/
+ *  `basePlaceholder` are this field's non-status tooltip/placeholder
+ *  (`applyFieldStatus` restores them once a status stops overriding either);
+ *  `noteEl` is the "Waiting for: …" node, present in the DOM only while
+ *  `status === 'waiting'` (created/removed on demand, not just hidden, so a
+ *  caller that queries for it — same as the pre-existing per-status build
+ *  tests — sees exactly what it saw before this change). */
+interface CuratedFieldHandle {
+  input: HTMLInputElement;
+  label: HTMLElement;
+  baseTitle: string;
+  basePlaceholder: string;
+  noteEl: HTMLElement | null;
+}
+
+/**
+ * Applies a curated field's status affordance to its already-built DOM
+ * (#360 follow-up) — the SAME class/disabled/note logic `buildFilterBar`
+ * used to inline once per field build, factored out so both the initial
+ * build (a fresh rebuild must show the right affordance immediately) and a
+ * later `updateStatus` call (no rebuild) share one recipe. See
+ * `CuratedFieldStatus`'s header comment for why status, not topology, drives
+ * this; see the module header's `buildFilterBar` doc for the full
+ * ready/waiting/error/stale mapping.
+ */
+function applyFieldStatus(handle: CuratedFieldHandle, s: CuratedFieldStatus): void {
+  const status = s.status ?? 'ready';
+  const isWaiting = status === 'waiting';
+  const isError = status === 'source-error' || status === 'helper-error' || status === 'missing-helper';
+  // 'idle' (never yet run) and 'loading' (mid-flight) both read as "pending" —
+  // the same is-stale/disabled affordance as a superseded-but-not-yet-stale
+  // `stale: true` read, since none of the three is an actionable answer yet.
+  const isStale = !isWaiting && !isError && (status === 'loading' || status === 'idle' || !!s.stale);
+  const waitingNote = isWaiting ? `Waiting for: ${(s.waitingFor ?? []).join(', ')}` : '';
+  const { input, label } = handle;
+
+  input.classList.remove('is-waiting', 'is-error', 'is-stale');
+  label.classList.remove('is-waiting', 'is-error', 'is-stale');
+  const disabled = isWaiting || isError || isStale;
+  input.disabled = disabled;
+  if (disabled) input.setAttribute('aria-disabled', 'true');
+  else input.removeAttribute('aria-disabled');
+  if (isWaiting) { input.classList.add('is-waiting'); label.classList.add('is-waiting'); }
+  else if (isError) { input.classList.add('is-error'); label.classList.add('is-error'); }
+  else if (isStale) { input.classList.add('is-stale'); label.classList.add('is-stale'); }
+
+  // Title/placeholder: the waiting note takes over both while waiting;
+  // otherwise they revert to the field's own non-status text. `is-invalid`
+  // (applied once at build time from the validated batch, unrelated to this
+  // status) owns the title instead whenever it's set — a status update never
+  // steps on the invalid-reason tooltip.
+  if (!input.classList.contains('is-invalid')) input.title = isWaiting ? waitingNote : handle.baseTitle;
+  input.placeholder = isWaiting ? waitingNote : handle.basePlaceholder;
+
+  if (isWaiting) {
+    if (!handle.noteEl) {
+      handle.noteEl = h('span', { class: 'var-field-note' }, waitingNote);
+      label.appendChild(handle.noteEl);
+    } else {
+      handle.noteEl.textContent = waitingNote;
+    }
+  } else if (handle.noteEl) {
+    handle.noteEl.remove();
+    handle.noteEl = null;
+  }
 }
 
 // A combobox-based field controller's DOM wiring surface, PLUS the `el`
@@ -115,10 +191,21 @@ export const FILTER_DEBOUNCE_MS = 500;
  *  debounce timer. A caller that rebuilds the bar (a filter-value merge
  *  repaint) must dispose the previous bar first — and dispose on its own
  *  teardown — so an in-flight debounce never fires against a detached field
- *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave). */
+ *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave).
+ *
+ *  #360 follow-up: `updateStatus` applies a per-param `CuratedFieldStatus`
+ *  update to whichever curated fields this SAME bar instance already built
+ *  (`curatedHandles`, keyed by parameter) — a param this bar never curated
+ *  (absent from `curatedFields` at build time, or a plain field) is silently
+ *  ignored. The caller (`dashboard.ts`'s `rebuildFilterBar`) uses this for a
+ *  status-only change (e.g. `loading` → `ready`, no value/active/options
+ *  change) instead of tearing down and rebuilding the whole bar — preserving
+ *  in-progress typing on every OTHER field, and this field's own combobox/
+ *  focus state, neither of which a status flip should ever disturb. */
 export interface FilterBarHandle {
   el: HTMLElement;
   dispose(): void;
+  updateStatus(states: Record<string, CuratedFieldStatus>): void;
 }
 
 /**
@@ -151,8 +238,13 @@ export function buildFilterBar(
   const document = options.document || app.document;
   const attrs: Record<string, unknown> = { class: 'dash-filters' };
   if (options.ariaLabel) { attrs.role = 'group'; attrs['aria-label'] = options.ariaLabel; }
-  if (!params.length) return { el: h('div', { ...attrs, style: { display: 'none' } }), dispose: () => {} };
+  if (!params.length) {
+    return { el: h('div', { ...attrs, style: { display: 'none' } }), dispose: () => {}, updateStatus: () => {} };
+  }
   const timerClears: Array<() => void> = [];
+  // #360 follow-up: every curated field's retained handle, keyed by
+  // parameter — see `CuratedFieldHandle` and `FilterBarHandle.updateStatus`.
+  const curatedHandles = new Map<string, CuratedFieldHandle>();
   const el = h('div', attrs, ...params.map((p) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
@@ -168,21 +260,6 @@ export function buildFilterBar(
       + (conflictNote ? ' — ' + conflictNote : '');
     const curated = options.curatedFields?.[p.name] as CuratedFieldConfig | undefined;
     if (curated) {
-      // #360: a shared source's transport/curation status drives a STRUCTURAL,
-      // test-observable affordance (a class + `disabled`/`aria-disabled`, and
-      // — for `waiting` — literal text naming the missing root params) rather
-      // than relying on styling alone (happy-dom never evaluates CSS layout).
-      // Absent `status` (an older/simpler fixture) behaves exactly like
-      // 'ready' — today's normal curated combobox, untouched.
-      const status = curated.status ?? 'ready';
-      const isWaiting = status === 'waiting';
-      const isError = status === 'source-error' || status === 'helper-error' || status === 'missing-helper';
-      // 'loading' is the only other non-terminal status; `stale` mirrors it
-      // 1:1 per `ViewerFilterState`'s own contract — checking both is
-      // defensive, not redundant coverage of two different real states.
-      const isStale = !isWaiting && !isError && (status === 'loading' || !!curated.stale);
-      const waitingNote = isWaiting ? `Waiting for: ${(curated.waitingFor ?? []).join(', ')}` : '';
-      const fieldTitle = isWaiting ? waitingNote : baseTitle;
       const field = buildFilterOptionField({
         document, name: p.name, options: curated.options,
         value: app.state.varValues[p.name] ?? '', active: !!app.state.filterActive[p.name],
@@ -195,7 +272,6 @@ export function buildFilterBar(
         },
         onCommit: () => onCommit(p.name),
       });
-      field.input.title = fieldTitle;
       // #345: a curated field is always the 'enum' width band (short option
       // labels) regardless of the declared param type behind it.
       applyFieldWidth(field.input, p.type, true);
@@ -205,29 +281,22 @@ export function buildFilterBar(
       // invalid against the prepared batch (e.g. a type conflict across
       // favorites), and without this it silently showed none of the
       // is-invalid class/tooltip/aria-invalid a plain filter field would.
-      applyFieldState(field.input, getField(p.name, 'execute'), fieldTitle);
-      if (isWaiting) {
-        field.input.classList.add('is-waiting');
-        field.input.disabled = true;
-        field.input.setAttribute('aria-disabled', 'true');
-        field.input.placeholder = waitingNote;
-      } else if (isError) {
-        field.input.classList.add('is-error');
-        field.input.disabled = true;
-        field.input.setAttribute('aria-disabled', 'true');
-      } else if (isStale) {
-        // Loading/stale: keep whatever options/value were last known (never
-        // cleared — the merge itself never blanks `options` mid-wave, see
-        // dashboard-viewer-session.ts's `runFilterWave`) but mark it plainly
-        // not-current rather than presenting a stale answer as fresh.
-        field.input.classList.add('is-stale');
-        field.input.disabled = true;
-        field.input.setAttribute('aria-disabled', 'true');
-      }
-      const stateClass = isWaiting ? ' is-waiting' : isError ? ' is-error' : isStale ? ' is-stale' : '';
-      return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') + stateClass },
-        h('span', { class: 'var-name' }, p.name), field.el,
-        isWaiting ? h('span', { class: 'var-field-note' }, waitingNote) : null);
+      // Uses `baseTitle` (not a status-derived title) as the non-invalid
+      // fallback — `applyFieldStatus` below layers the status-derived title
+      // back on top when the field isn't currently `is-invalid`.
+      applyFieldState(field.input, getField(p.name, 'execute'), baseTitle);
+      const label = h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
+        h('span', { class: 'var-name' }, p.name), field.el);
+      const handle: CuratedFieldHandle = {
+        input: field.input, label, baseTitle, basePlaceholder: field.input.placeholder, noteEl: null,
+      };
+      // #360 follow-up: apply the CURRENT status immediately at build time
+      // (a fresh rebuild shows the right affordance right away) and retain
+      // the handle so a LATER status-only change updates this same field in
+      // place via `updateStatus`, never a rebuild.
+      applyFieldStatus(handle, { status: curated.status, stale: curated.stale, waitingFor: curated.waitingFor });
+      curatedHandles.set(p.name, handle);
+      return label;
     }
     const commitNow = (): void => {
       if (timer == null) return;
@@ -298,5 +367,14 @@ export function buildFilterBar(
     return h('label', { class: 'var-field' + (p.optional ? ' is-optional' : '') },
       h('span', { class: 'var-name' }, p.name), combo.el);
   }));
-  return { el, dispose: () => timerClears.forEach((clear) => clear()) };
+  return {
+    el,
+    dispose: () => timerClears.forEach((clear) => clear()),
+    updateStatus: (states) => {
+      for (const [name, handle] of curatedHandles) {
+        const s = states[name];
+        if (s) applyFieldStatus(handle, s);
+      }
+    },
+  };
 }
