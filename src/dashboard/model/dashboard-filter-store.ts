@@ -14,9 +14,12 @@
 // storage seam of its own and satisfies the `src/dashboard/model` boundary
 // rule (no `state.ts`/`core/storage.js` import here).
 
-/** One filter's persisted runtime state. */
+/** One filter's persisted runtime state. `value` is a plain string for a
+ *  single-selection filter, or a string array for a committed multiselect
+ *  (#189) — arrays round-trip through localStorage as arrays rather than
+ *  being joined/stringified. */
 export interface DashboardFilterEntry {
-  value: string;
+  value: string | string[];
   active: boolean;
 }
 
@@ -29,8 +32,17 @@ export type AllDashboardFilters = Record<string, DashboardFilterBag>;
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
-const coerceValue = (value: unknown): string =>
+const coerceScalar = (value: unknown): string =>
   (typeof value === 'string' ? value : value == null ? '' : String(value));
+
+/** Persisted JSON is untrusted: a scalar coerces via the existing string
+ *  rule; an array (a committed multiselect, #189) coerces to a NEW array
+ *  containing only its string elements — non-string/nullish elements are
+ *  dropped rather than stringified, so one junk element can't corrupt the
+ *  rest of an otherwise-valid selection. An empty-string element is a valid
+ *  string and is preserved. */
+const coerceValue = (value: unknown): string | string[] =>
+  (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : coerceScalar(value));
 
 /**
  * Defensively parse an untrusted blob (whatever `loadJSON(KEYS.dashFilters, {})`
@@ -55,7 +67,9 @@ export function readDashboardFilterBag(all: unknown, dashboardId: string): Dashb
  *  its output against later in-place mutation by either side). */
 function cloneBag(bag: DashboardFilterBag): DashboardFilterBag {
   const out: DashboardFilterBag = {};
-  for (const [filterId, entry] of Object.entries(bag)) out[filterId] = { value: entry.value, active: entry.active };
+  for (const [filterId, entry] of Object.entries(bag)) {
+    out[filterId] = { value: Array.isArray(entry.value) ? [...entry.value] : entry.value, active: entry.active };
+  }
   return out;
 }
 

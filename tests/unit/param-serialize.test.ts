@@ -143,6 +143,37 @@ describe('serializeParamValue — Array(T) literals', () => {
   it('accepts a pre-parsed type object', () => {
     expect(serializeParamValue(['a'], parseParamType('Array(String)'))).toEqual({ ok: true, value: "['a']" });
   });
+
+  it('Array(String): Unicode elements (non-ASCII and emoji) quote byte-identical, no escaping needed', () => {
+    expect(serializeParamValue(['héllo', '日本語', '🎉emoji'], 'Array(String)'))
+      .toEqual({ ok: true, value: "['héllo','日本語','🎉emoji']" });
+  });
+
+  it('Array(String): an empty-string element is preserved as its own quoted element', () => {
+    expect(serializeParamValue(['', 'a'], 'Array(String)')).toEqual({ ok: true, value: "['','a']" });
+  });
+
+  it('Array(String): a comma inside one text element stays inside that element\'s quotes, not split', () => {
+    expect(serializeParamValue(['a,b'], 'Array(String)')).toEqual({ ok: true, value: "['a,b']" });
+    expect(serializeParamValue(['a,b', 'c'], 'Array(String)')).toEqual({ ok: true, value: "['a,b','c']" });
+  });
+
+  it('Array(Decimal(10,2)): numeric tokens unquoted (Decimal shares the Float lexical family)', () => {
+    expect(serializeParamValue(['1.50', '-2.25', '0'], 'Array(Decimal(10,2))'))
+      .toEqual({ ok: true, value: '[1.50,-2.25,0]' });
+    expect(serializeParamValue(['abc'], 'Array(Decimal(10,2))').ok).toBe(false);
+  });
+
+  it("Array(Enum8('a b'=1)): member-label elements quote/escape like plain text", () => {
+    expect(serializeParamValue(['a b'], "Array(Enum8('a b'=1))")).toEqual({ ok: true, value: "['a b']" });
+    // A label containing a single quote escapes the same way any text element does.
+    expect(serializeParamValue(["d'e"], "Array(Enum8('d\\'e'=1))")).toEqual({ ok: true, value: "['d\\'e']" });
+  });
+
+  it('Array(DateTime): string elements quoted like text', () => {
+    expect(serializeParamValue(['2024-01-01 00:00:00', '2024-02-01 12:34:56'], 'Array(DateTime)'))
+      .toEqual({ ok: true, value: "['2024-01-01 00:00:00','2024-02-01 12:34:56']" });
+  });
 });
 
 describe('serializeParamValue — rejections', () => {

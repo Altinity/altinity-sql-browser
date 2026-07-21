@@ -4397,6 +4397,7 @@ function validate49(data, { instancePath = "", parentData, parentDataProperty, r
 }
 validate49.evaluated = { "props": true, "dynamicProps": false, "dynamicItems": false };
 var validateDashboardV1 = validate52;
+var schema69 = { "title": "Dashboard filter definition", "description": "One Dashboard filter: the targeted parameter name, an optional filter-role source query providing options, and optional explicit target tiles. Runtime filter values are never persisted here.", "type": "object", "required": ["id", "parameter"], "properties": { "id": { "title": "Filter identifier", "description": "Stable filter identity within this Dashboard.", "type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S" }, "parameter": { "title": "Parameter name", "description": "ClickHouse query parameter name this filter supplies. Target queries must declare the parameter with compatible types.", "type": "string", "minLength": 1, "maxLength": 256 }, "label": { "title": "Filter label", "description": "Optional user-visible filter label.", "type": "string", "maxLength": 512 }, "sourceQueryId": { "title": "Option source query", "description": "ID of a filter-role saved query whose result provides the option list. The source query never creates a tile.", "type": "string", "minLength": 1, "maxLength": 256 }, "targets": { "title": "Target tiles", "description": "Tile IDs this filter applies to. Absent means every compatible panel tile.", "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } }, "defaultValue": { "title": "Default value", "description": "Optional default parameter value; any JSON value." }, "defaultActive": { "title": "Active by default", "description": "Whether the filter starts active.", "type": "boolean" }, "selection": { "title": "Selection mode override", "description": "Optional explicit selection-mode override for searchable multiselect filters (#189). Omitted means the runtime infers the mode from the agreed consumer parameter type across target queries: a scalar T infers single selection, an Array(T) infers multiselect. Inference is runtime-only and is never persisted here.", "type": "object", "properties": { "mode": { "title": "Selection mode", "description": 'Explicit override for the inferred selection mode: "single" forces one active value, "multiple" forces a searchable multiselect.', "enum": ["single", "multiple"] } }, "additionalProperties": false } }, "additionalProperties": false, "x-altinity-order": ["id", "parameter", "label", "sourceQueryId", "targets", "defaultValue", "defaultActive", "selection"] };
 function validate55(data, { instancePath = "", parentData, parentDataProperty, rootData = data, dynamicAnchors = {} } = {}) {
   let vErrors = null;
   let errors = 0;
@@ -5401,7 +5402,7 @@ function validate52(data, { instancePath = "", parentData, parentDataProperty, r
               errors++;
             }
             for (const key1 in data7) {
-              if (!(key1 === "id" || key1 === "parameter" || key1 === "label" || key1 === "sourceQueryId" || key1 === "targets" || key1 === "defaultValue" || key1 === "defaultActive")) {
+              if (!(key1 === "id" || key1 === "parameter" || key1 === "label" || key1 === "sourceQueryId" || key1 === "targets" || key1 === "defaultValue" || key1 === "defaultActive" || key1 === "selection")) {
                 const err23 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key1 }, message: "must NOT have additional properties" };
                 if (vErrors === null) {
                   vErrors = [err23];
@@ -5623,61 +5624,97 @@ function validate52(data, { instancePath = "", parentData, parentDataProperty, r
                 errors++;
               }
             }
+            if (data7.selection !== void 0) {
+              let data15 = data7.selection;
+              if (data15 && typeof data15 == "object" && !Array.isArray(data15)) {
+                for (const key2 in data15) {
+                  if (!(key2 === "mode")) {
+                    const err43 = { instancePath: instancePath + "/filters/" + i0 + "/selection", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/selection/additionalProperties", keyword: "additionalProperties", params: { additionalProperty: key2 }, message: "must NOT have additional properties" };
+                    if (vErrors === null) {
+                      vErrors = [err43];
+                    } else {
+                      vErrors.push(err43);
+                    }
+                    errors++;
+                  }
+                }
+                if (data15.mode !== void 0) {
+                  let data16 = data15.mode;
+                  if (!(data16 === "single" || data16 === "multiple")) {
+                    const err44 = { instancePath: instancePath + "/filters/" + i0 + "/selection/mode", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/selection/properties/mode/enum", keyword: "enum", params: { allowedValues: schema69.properties.selection.properties.mode.enum }, message: "must be equal to one of the allowed values" };
+                    if (vErrors === null) {
+                      vErrors = [err44];
+                    } else {
+                      vErrors.push(err44);
+                    }
+                    errors++;
+                  }
+                }
+              } else {
+                const err45 = { instancePath: instancePath + "/filters/" + i0 + "/selection", schemaPath: "#/$defs/dashboardFilterDefinitionV1/properties/selection/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+                if (vErrors === null) {
+                  vErrors = [err45];
+                } else {
+                  vErrors.push(err45);
+                }
+                errors++;
+              }
+            }
           } else {
-            const err43 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+            const err46 = { instancePath: instancePath + "/filters/" + i0, schemaPath: "#/$defs/dashboardFilterDefinitionV1/type", keyword: "type", params: { type: "object" }, message: "must be object" };
             if (vErrors === null) {
-              vErrors = [err43];
+              vErrors = [err46];
             } else {
-              vErrors.push(err43);
+              vErrors.push(err46);
             }
             errors++;
           }
         }
       } else {
-        const err44 = { instancePath: instancePath + "/filters", schemaPath: "#/properties/filters/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        const err47 = { instancePath: instancePath + "/filters", schemaPath: "#/properties/filters/type", keyword: "type", params: { type: "array" }, message: "must be array" };
         if (vErrors === null) {
-          vErrors = [err44];
+          vErrors = [err47];
         } else {
-          vErrors.push(err44);
+          vErrors.push(err47);
         }
         errors++;
       }
     }
     if (data.tiles !== void 0) {
-      let data15 = data.tiles;
-      if (Array.isArray(data15)) {
-        if (data15.length > 100) {
-          const err45 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/maxItems", keyword: "maxItems", params: { limit: 100 }, message: "must NOT have more than 100 items" };
+      let data17 = data.tiles;
+      if (Array.isArray(data17)) {
+        if (data17.length > 100) {
+          const err48 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/maxItems", keyword: "maxItems", params: { limit: 100 }, message: "must NOT have more than 100 items" };
           if (vErrors === null) {
-            vErrors = [err45];
+            vErrors = [err48];
           } else {
-            vErrors.push(err45);
+            vErrors.push(err48);
           }
           errors++;
         }
-        const len2 = data15.length;
+        const len2 = data17.length;
         for (let i3 = 0; i3 < len2; i3++) {
-          if (!validate59(data15[i3], { instancePath: instancePath + "/tiles/" + i3, parentData: data15, parentDataProperty: i3, rootData, dynamicAnchors })) {
+          if (!validate59(data17[i3], { instancePath: instancePath + "/tiles/" + i3, parentData: data17, parentDataProperty: i3, rootData, dynamicAnchors })) {
             vErrors = vErrors === null ? validate59.errors : vErrors.concat(validate59.errors);
             errors = vErrors.length;
           }
         }
       } else {
-        const err46 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/type", keyword: "type", params: { type: "array" }, message: "must be array" };
+        const err49 = { instancePath: instancePath + "/tiles", schemaPath: "#/properties/tiles/type", keyword: "type", params: { type: "array" }, message: "must be array" };
         if (vErrors === null) {
-          vErrors = [err46];
+          vErrors = [err49];
         } else {
-          vErrors.push(err46);
+          vErrors.push(err49);
         }
         errors++;
       }
     }
   } else {
-    const err47 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
+    const err50 = { instancePath, schemaPath: "#/type", keyword: "type", params: { type: "object" }, message: "must be object" };
     if (vErrors === null) {
-      vErrors = [err47];
+      vErrors = [err50];
     } else {
-      vErrors.push(err47);
+      vErrors.push(err50);
     }
     errors++;
   }

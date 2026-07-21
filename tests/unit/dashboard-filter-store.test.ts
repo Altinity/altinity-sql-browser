@@ -54,6 +54,25 @@ describe('readDashboardFilterBag', () => {
       undefinedActive: { value: 'v', active: false },
     });
   });
+
+  it('round-trips a committed multiselect array value as a NEW array (#189)', () => {
+    const all = { d1: { f1: { value: ['a', 'b'], active: true } } };
+    const result = readDashboardFilterBag(all, 'd1');
+    expect(result).toEqual({ f1: { value: ['a', 'b'], active: true } });
+    // Genuine copy, not the same array reference — later mutation of the
+    // source blob must not affect the returned bag.
+    expect(result.f1.value).not.toBe(all.d1.f1.value);
+  });
+
+  it('preserves an empty-string element inside an array value', () => {
+    const all = { d1: { f1: { value: ['', 'a'], active: false } } };
+    expect(readDashboardFilterBag(all, 'd1')).toEqual({ f1: { value: ['', 'a'], active: false } });
+  });
+
+  it('drops non-string/nullish elements from an array value on read (untrusted JSON)', () => {
+    const all = { d1: { f1: { value: ['a', 42, null, undefined, true, ['nested'], { x: 1 }, 'b'], active: true } } };
+    expect(readDashboardFilterBag(all, 'd1')).toEqual({ f1: { value: ['a', 'b'], active: true } });
+  });
 });
 
 describe('writeDashboardFilterBag', () => {
@@ -91,6 +110,15 @@ describe('writeDashboardFilterBag', () => {
     bag.f1.value = 'mutated-after';
     expect(next.d1.f1.value).toBe('new');
   });
+
+  it('clones an array value as a NEW array, not a shared reference', () => {
+    const bag: DashboardFilterBag = { f1: { value: ['a', 'b'], active: true } };
+    const next = writeDashboardFilterBag({}, 'd1', bag);
+    expect(next.d1.f1.value).toEqual(['a', 'b']);
+    expect(next.d1.f1.value).not.toBe(bag.f1.value);
+    (bag.f1.value as string[]).push('mutated-after');
+    expect(next.d1.f1.value).toEqual(['a', 'b']);
+  });
 });
 
 describe('filterBagSignature', () => {
@@ -109,5 +137,13 @@ describe('filterBagSignature', () => {
   it('differs when the key set differs, and matches for two empty bags', () => {
     expect(filterBagSignature({})).toBe(filterBagSignature({}));
     expect(filterBagSignature({})).not.toBe(filterBagSignature({ a: { value: '', active: false } }));
+  });
+
+  it('distinguishes an array value from its comma-joined string (#189, JSON-safe encoding)', () => {
+    const arrayBag: DashboardFilterBag = { a: { value: ['a', 'b'], active: true } };
+    const joinedBag: DashboardFilterBag = { a: { value: 'a,b', active: true } };
+    expect(filterBagSignature(arrayBag)).not.toBe(filterBagSignature(joinedBag));
+    // Matches an equal array value and stays stable across separate calls.
+    expect(filterBagSignature(arrayBag)).toBe(filterBagSignature({ a: { value: ['a', 'b'], active: true } }));
   });
 });
