@@ -714,7 +714,9 @@ describe('query run', () => {
     const request = asMock(app.conn.chCtx.fetch).mock.calls.find(([, init]) => /SELECT \['ATL'\]/.test(init.body))!;
     expect(request[0]).toContain('default_format=JSONEachRowWithProgress');
     expect(request[0]).toContain('max_result_rows=2');
-    expect(request[0]).toContain('readonly=2');
+    // #359: Filter execution no longer injects `readonly` — server read-only
+    // policy belongs to ClickHouse user/profile config, not feature code.
+    expect(request[0]).not.toContain('readonly=');
     expect(request[0]).toContain('output_format_json_quote_64bit_integers=1');
     expect(tab.filterPreview!.status).toBe('success');
     expect(filterPreviewNormalizedOf(tab).helpers[0].options).toEqual([

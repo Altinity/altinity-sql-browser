@@ -48,4 +48,33 @@ test.describe('Dashboard Filter sources', () => {
     await expect(input).toHaveValue('Atlanta');
     expect(await page.evaluate(() => window.__selection)).toEqual({ value: 'ATL', active: true, commits: 1 });
   });
+
+  test('a shared Filter source renders curated values for all configured filters (#359)', async ({ page }) => {
+    const shared = page.getByRole('main', { name: 'Dashboard filters sharing one source' });
+    const userInput = shared.getByRole('combobox', { name: 'user' });
+    const kindInput = shared.getByRole('combobox', { name: 'query_kind' });
+    await expect(userInput).toHaveAttribute('placeholder', 'All');
+    await expect(kindInput).toHaveAttribute('placeholder', 'All');
+
+    // Both fields built from the ONE shared source bundle render their own
+    // curated options — not empty controls (the #359 bug).
+    await userInput.fill('ali');
+    await expect(shared.getByRole('option')).toHaveCount(1);
+    await expect(shared.getByRole('option')).toHaveText('Alice');
+    await shared.getByRole('option').click();
+    await expect(userInput).toHaveValue('Alice');
+    expect(await page.evaluate(() => window.__userSel)).toEqual({ value: 'alice', active: true, commits: 1 });
+
+    await kindInput.fill('ins');
+    await expect(shared.getByRole('option')).toHaveCount(1);
+    await expect(shared.getByRole('option')).toHaveText('Insert');
+    await shared.getByRole('option').click();
+    await expect(kindInput).toHaveValue('Insert');
+    expect(await page.evaluate(() => window.__kindSel)).toEqual({ value: 'Insert', active: true, commits: 1 });
+
+    // Committing the second filter must not disturb the first — each
+    // consumer of the one shared source operates independently.
+    await expect(userInput).toHaveValue('Alice');
+    expect(await page.evaluate(() => window.__userSel)).toEqual({ value: 'alice', active: true, commits: 1 });
+  });
 });

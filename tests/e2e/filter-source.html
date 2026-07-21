@@ -12,6 +12,7 @@
 <body data-theme="dark">
   <main id="preview" class="surface" aria-label="Workbench Filter preview"></main>
   <main id="dashboard" class="surface" aria-label="Dashboard curated filter"></main>
+  <main id="shared-source" class="surface" aria-label="Dashboard filters sharing one source"></main>
   <script type="module">
     import { renderFilterPreview } from '/src/ui/filter-preview.js';
     import { buildFilterOptionField } from '/src/ui/filter-option-field.js';
@@ -37,6 +38,42 @@
       onCommit: () => { window.__selection.commits++; },
     });
     document.querySelector('#dashboard').append(field.el);
+
+    // #359: ONE Filter source feeding TWO configured filters. A shared source
+    // query returns one merged bundle (see applyFilterProviders in
+    // dashboard-viewer-session.ts); EACH consuming filter builds its OWN
+    // buildFilterOptionField from that same bundle (rebuildFilterBar in
+    // dashboard.ts). `user`/`query_kind` below stand in for two columns of
+    // one shared source result — both fields must render curated values and
+    // commit independently of each other.
+    const sharedSource = {
+      user: [
+        { value: '', label: '(empty)' },
+        { value: 'alice', label: 'Alice' },
+        { value: 'bob', label: 'Bob' },
+      ],
+      query_kind: [
+        { value: '', label: '(empty)' },
+        { value: 'Select', label: 'Select' },
+        { value: 'Insert', label: 'Insert' },
+      ],
+    };
+
+    window.__userSel = { value: '', active: false, commits: 0 };
+    const userField = buildFilterOptionField({
+      document, name: 'user', options: sharedSource.user, inactiveLabel: 'All',
+      onValueChange: (value, active) => Object.assign(window.__userSel, { value, active }),
+      onCommit: () => { window.__userSel.commits++; },
+    });
+
+    window.__kindSel = { value: '', active: false, commits: 0 };
+    const kindField = buildFilterOptionField({
+      document, name: 'query_kind', options: sharedSource.query_kind, inactiveLabel: 'All',
+      onValueChange: (value, active) => Object.assign(window.__kindSel, { value, active }),
+      onCommit: () => { window.__kindSel.commits++; },
+    });
+
+    document.querySelector('#shared-source').append(userField.el, kindField.el);
     window.__ready = true;
   </script>
 </body>

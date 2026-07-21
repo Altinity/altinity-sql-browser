@@ -7,9 +7,10 @@ describe('Filter execution', () => {
   it('owns a lossless, read-only, bounded structured transport', () => {
     const out = filterExecution('SELECT [1] AS id', { params: { custom: 1 } });
     expect(out).toMatchObject({ owned: true, format: 'Filter', rowLimit: FILTER_TOP_LEVEL_ROW_LIMIT, error: null, diagnostics: [] });
-    expect(out.params).toMatchObject({ readonly: 2, max_result_bytes: FILTER_RESULT_BYTE_CAP, custom: 1,
+    expect(out.params).toMatchObject({ max_result_bytes: FILTER_RESULT_BYTE_CAP, custom: 1,
       output_format_json_named_tuples_as_objects: 1, output_format_json_quote_64bit_integers: 1,
       output_format_json_quote_decimals: 1, output_format_json_quote_64bit_floats: 1 });
+    expect(out.params).not.toHaveProperty('readonly');
   });
   it('reports every static SQL contract failure', () => {
     expect(filterSqlDiagnostics('')).toMatchObject([{ code: 'filter-sql-empty' }]);

@@ -9,6 +9,37 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+### Fixed
+- **Dashboard filters sharing one Filter-source query now populate** (#359).
+  When several Dashboard filter definitions referenced the same Filter-role
+  source query, the viewer ran that query once per definition and keyed each
+  provider by the filter-definition id — so `mergeDashboardFilterHelpers`
+  rejected every helper as a duplicate provider, every control rendered empty,
+  and the explanatory diagnostics were silently discarded. The filter runtime
+  is now split into per-definition state and one `FilterSourceRuntime` per
+  unique `sourceQueryId`: the source SQL executes exactly once per refresh wave
+  no matter how many filters/parameters it feeds, the provider is keyed by the
+  saved source-query id (two DISTINCT sources providing the same helper still
+  correctly collide with no arbitrary winner), and the merge's diagnostics
+  (info/warning/error, severity preserved) are now published to the Dashboard
+  instead of dropped. This is the one-source-runtime boundary #360 builds on.
+
+### Changed
+- **Dashboard Filter execution no longer injects `readonly`** (#359). Server
+  read-only policy belongs to ClickHouse user/profile configuration, not
+  Dashboard/Workbench feature code; `filterExecution` keeps only its
+  result-format/byte-cap transport settings. Panel execution is unchanged.
+- **Filter option state is honest on failure** (#359). A source failure,
+  missing helper, type conflict, or duplicate-provider collision now CLEARS a
+  filter's curated options (with a visible diagnostic) instead of silently
+  retaining stale ones, and an unresolvable `sourceQueryId` surfaces a visible
+  `source-error` rather than a silent plain field. An active value no longer
+  present in refreshed options is deactivated (its value kept) before dependent
+  panels run; a non-empty → different-non-empty option replacement now updates
+  the rendered combobox (a per-filter option revision folded into the
+  filter-bar rebuild signature); and a superseded refresh wave can no longer
+  publish options or activation over a fresher one.
+
 ## [0.6.1] - 2026-07-21
 
 ### Changed

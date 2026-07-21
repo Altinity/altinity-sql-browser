@@ -331,7 +331,7 @@ describe('filters and the #235 execution planner', () => {
       queries: [query('qt', 'SELECT {p:String} AS n'), query('src', '', { dashboard: { role: 'filter' } })],
     }));
     await session.start();
-    expect(session.state.value.filters[0].status).toBe('error');
+    expect(session.state.value.filters[0].status).toBe('source-error');
   });
 
   it('marks a filter whose source query returns a runtime error as an error', async () => {
@@ -348,7 +348,7 @@ describe('filters and the #235 execution planner', () => {
       ],
     }));
     await session.start();
-    expect(session.state.value.filters[0].status).toBe('error');
+    expect(session.state.value.filters[0].status).toBe('source-error');
   });
 
   it('blanks a curated-but-inactive parameter on the next wave', async () => {
@@ -434,6 +434,285 @@ describe('filters and the #235 execution planner', () => {
     expect(calls.length).toBe(base2);
   });
 
+});
+
+// #359: the filter-source runtime split — N filter DEFINITIONS sharing one
+// `sourceQueryId` share exactly ONE `FilterSourceRuntime`, so the source SQL
+// executes once per wave no matter how many parameters it feeds. Before this
+// fix, `runFilterWave` ran the shared source once PER DEFINITION and keyed
+// each provider by the definition id, so `mergeDashboardFilterHelpers`
+// rejected every helper as a duplicate provider and every field went empty.
+describe('shared filter-source runtime (#359)', () => {
+  const sharedDoc = (filters: DashboardFilterDefinitionV1[], tiles: DashboardTileV1[] = []) => doc({ tiles, filters });
+
+  it('runs a source shared by two definitions exactly once; both fields populate', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('shared')
+      ? { columns: [{ name: 'p1', type: 'Array(String)' }, { name: 'p2', type: 'Array(String)' }], rows: [[['V1', 'V2'], ['W1']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+      [tile('ta', 'qa'), tile('tb', 'qb')],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qa', 'SELECT {p1:String} AS n'), query('qb', 'SELECT {p2:String} AS n'),
+        query('src', "SELECT ['V1','V2'] AS p1, ['W1'] AS p2 /* shared */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(calls.filter((c) => c.sql.includes('shared')).length).toBe(1); // ONE execution, not two.
+    const f1 = session.state.value.filters.find((f) => f.id === 'f1')!;
+    const f2 = session.state.value.filters.find((f) => f.id === 'f2')!;
+    expect(f1).toMatchObject({ status: 'ready', options: [{ value: 'V1', label: 'V1' }, { value: 'V2', label: 'V2' }] });
+    expect(f2).toMatchObject({ status: 'ready', options: [{ value: 'W1', label: 'W1' }] });
+  });
+
+  it('keys the merge by the SOURCE query id, not the definition id — two distinct sources sharing a helper name still collide, no winner', async () => {
+    const { exec } = makeExec((sql) => {
+      if (sql.includes('srcA')) return { columns: [{ name: 'dup', type: 'Array(String)' }], rows: [[['A1']]] };
+      if (sql.includes('srcB')) return { columns: [{ name: 'dup', type: 'Array(String)' }], rows: [[['B1']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'dup', sourceQueryId: 'srcA' }, { id: 'f2', parameter: 'dup', sourceQueryId: 'srcB' }],
+      [tile('t', 'qt')],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dup:String} AS n'),
+        query('srcA', "SELECT ['A1'] AS dup /* srcA */", { dashboard: { role: 'filter' } }),
+        query('srcB', "SELECT ['B1'] AS dup /* srcB */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters.every((f) => f.status === 'helper-error')).toBe(true);
+    // The diagnostic message names the SOURCE ids ('srcA'/'srcB'), never the
+    // filter definition ids ('f1'/'f2') — proves provider identity is keyed
+    // by the source query id (the #359 bug), not the definition id.
+    const dupDiag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-duplicate-provider');
+    expect(dupDiag?.message).toContain('srcA');
+    expect(dupDiag?.message).toContain('srcB');
+    expect(dupDiag?.message).not.toContain('f1');
+    expect(dupDiag?.message).not.toContain('f2');
+  });
+
+  it('clears options on a subsequent source failure — no stale retention', async () => {
+    let fail = false;
+    const { exec } = makeExec((sql) => (sql.includes('source')
+      ? (fail ? { error: 'source down' } : { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['V']]] })
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc([{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }], [tile('t', 'qt')]);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT {p:String} AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    expect(session.state.value.filters[0]).toMatchObject({ status: 'ready', options: [{ value: 'V', label: 'V' }] });
+    fail = true;
+    await session.refresh();
+    expect(session.state.value.filters[0].status).toBe('source-error');
+    expect(session.state.value.filters[0].options).toBeNull();
+  });
+
+  it('marks a source that returns a row but no valid helper column as source-error (malformed result) and surfaces the diagnostic', async () => {
+    // The query succeeds (one row) but the column is a plain scalar, not an
+    // Array/Map — readFilterOptions yields zero helpers, so the SOURCE status
+    // is the terminal `error` (not a transport failure), every consumer is
+    // `source-error`, options are cleared, and the merge publishes the
+    // `filter-no-valid-helpers` diagnostic.
+    const { exec } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p', type: 'String' }], rows: [['x']] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc([{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }], [tile('t', 'qt')]);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT {p:String} AS n'), query('src', "SELECT 'x' AS p /* source */", { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    expect(session.state.value.filters[0].status).toBe('source-error');
+    expect(session.state.value.filters[0].options).toBeNull();
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-no-valid-helpers')).toBe(true);
+  });
+
+  it('bumps optionsRev only when the option-value CONTENT changes; a same-content republish leaves it untouched', async () => {
+    let values = ['V1'];
+    const { exec } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[values]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc([{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }], [tile('t', 'qt')]);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT {p:String} AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    const rev0 = session.state.value.filters[0].optionsRev;
+    expect(rev0).toBeGreaterThan(0); // null -> non-empty bumped
+    await session.refresh(); // identical content republished
+    expect(session.state.value.filters[0].optionsRev).toBe(rev0); // no bump
+    values = ['V2']; // different content
+    await session.refresh();
+    expect(session.state.value.filters[0].optionsRev).toBe(rev0 + 1);
+    expect(session.state.value.filters[0].options).toEqual([{ value: 'V2', label: 'V2' }]);
+  });
+
+  it("reconciles a removed active option (active=false, value kept) synchronously BEFORE the same refresh's affected-tile wave", async () => {
+    let values = ['V', 'W'];
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[values]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc(
+      [
+        { id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultActive: true, defaultValue: 'V' },
+        // A second, PLAIN filter (no source) — exercises the reconcile loop's
+        // non-matching branch (its own parameter is never in `merged.changed`).
+        { id: 'f2', parameter: 'other', defaultActive: false, defaultValue: '' },
+      ],
+      [tile('t', 'qt')],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT {p:String} AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    expect(session.state.value.filters[0].active).toBe(true);
+    const before = calls.length;
+    values = ['W']; // 'V' no longer offered
+    await session.refresh();
+    expect(session.state.value.filters[0].active).toBe(false);
+    expect(session.state.value.filters[0].value).toBe('V'); // value retained
+    // The reconciliation applied BEFORE this SAME refresh's affected wave ran
+    // — the tile never sees a stale param_p binding (the plan-review PRECONDITION).
+    expect(calls.slice(before).some((c) => 'param_p' in c.params)).toBe(false);
+  });
+
+  it('a superseded shared-source wave publishes NOTHING — never clobbers the fresher wave (stale-gen guard)', async () => {
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let call = 0;
+    const { exec } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      call += 1;
+      return call === 1
+        ? gate.then(() => ({ columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['STALE']]] }))
+        : { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['FRESH']]] };
+    });
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultActive: true, defaultValue: 'FRESH' }], [tile('t', 'qt')],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT {p:String} AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    // Record EVERY published options snapshot for f1 across the overlap.
+    const optionsSeen: (unknown[] | null)[] = [];
+    const unsubscribe = session.state.subscribe((s) => optionsSeen.push(s.filters[0].options));
+    const first = session.start();
+    await flush();
+    const second = session.refresh(); // supersedes the pending first source run
+    releaseFirst();
+    await Promise.all([first, second]);
+    unsubscribe();
+    const fresh = [{ value: 'FRESH', label: 'FRESH' }];
+    expect(session.state.value.filters[0].options).toEqual(fresh);
+    // The STALE run's data never reaches state (its provider was discarded),
+    // AND — the #359 guard — once the fresher wave published FRESH options no
+    // later publish from the superseded wave ever reverts them to null: without
+    // the guard the stale wave's applyFilterProviders would blank every
+    // consumer to missing-helper/null over the correct FRESH state.
+    expect(optionsSeen).not.toContainEqual([{ value: 'STALE', label: 'STALE' }]);
+    const firstFreshAt = optionsSeen.findIndex((o) => JSON.stringify(o) === JSON.stringify(fresh));
+    expect(firstFreshAt).toBeGreaterThanOrEqual(0);
+    expect(optionsSeen.slice(firstFreshAt).every((o) => JSON.stringify(o) === JSON.stringify(fresh))).toBe(true);
+  });
+
+  it('destroy cancels a shared in-flight source exactly once, even with two consumers', async () => {
+    const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
+    const { exec } = makeExec((sql) => (sql.includes('source') ? new Promise(() => {}) : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('src', "SELECT ['V'] AS p1, ['W'] AS p2 /* source */", { dashboard: { role: 'filter' } })],
+    }));
+    // Intentionally not awaited: the source responder never resolves, so
+    // `start()` never settles either — only `destroy()`'s abort matters here.
+    void session.start();
+    await flush();
+    session.destroy();
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+    abortSpy.mockRestore();
+  });
+
+  it('publishes filterDiagnostics with severity, not duplicated per shared-source consumer', async () => {
+    const { exec } = makeExec((sql) => (sql.includes('source') ? { error: 'source down' } : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    const diags = session.state.value.filterDiagnostics;
+    const failures = diags.filter((d) => d.code === 'filter-query-failed');
+    expect(failures.length).toBe(1); // ONE execution → ONE diagnostic, not one per consumer.
+    expect(failures[0].severity).toBe('error');
+  });
+
+  it('preserves warning severity for an unused-helper diagnostic', async () => {
+    const { exec } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'z', type: 'Array(String)' }], rows: [[['V']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    // No tile/filter parameter named 'z' — the source's helper column has no consumer.
+    const document = sharedDoc([{ id: 'f1', parameter: 'unrelated', sourceQueryId: 'src' }], [tile('t', 'qt')]);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT 1 AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    await session.start();
+    const warn = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-helper-unused');
+    expect(warn?.severity).toBe('warning');
+  });
+
+  it('marks a consumer missing-helper when the shared source omits its column; a sibling with a returned column stays ready', async () => {
+    const { exec } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p1', type: 'Array(String)' }], rows: [[['V']]] } // only p1, no p2
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc(
+      [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+      [tile('ta', 'qa'), tile('tb', 'qb')],
+    );
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qa', 'SELECT {p1:String} AS n'), query('qb', 'SELECT {p2:String} AS n'),
+        query('src', "SELECT ['V'] AS p1 /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const f1 = session.state.value.filters.find((f) => f.id === 'f1')!;
+    const f2 = session.state.value.filters.find((f) => f.id === 'f2')!;
+    expect(f1.status).toBe('ready');
+    expect(f2.status).toBe('missing-helper');
+    expect(f2.options).toBeNull();
+  });
+
+  it('marks a filter source-error when its sourceQueryId does not resolve to any query — visible, not silently skipped', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = sharedDoc([{ id: 'f1', parameter: 'p', sourceQueryId: 'ghost-src' }], [tile('t', 'qt')]);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('qt', 'SELECT {p:String} AS n')],
+    }));
+    await session.start();
+    expect(session.state.value.filters[0].status).toBe('source-error');
+    expect(session.state.value.filterDiagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'filter-source-missing', sourceId: 'ghost-src' })]),
+    );
+    expect(calls.some((c) => c.sql.includes('ghost'))).toBe(false); // never executes
+  });
 });
 
 describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {
