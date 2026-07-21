@@ -275,7 +275,12 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   independently pre-built full snapshots still loses updates, every File-menu
   mutation (rename, import queries/dashboard, replace, new) builds its
   candidate **inside** the transform from that dequeue-time baseline (the
-  conflict dialog's snapshot is UX-only), and every editable Dashboard command
+  conflict dialog's snapshot is UX-only, and the collected decisions are
+  **revalidated** at dequeue time: a query-id conflict minted while the import
+  waited in the queue auto-resolves when canonically identical, and aborts the
+  import with a "workspace changed" toast when the content differs — never a
+  silent skip; the "Imported N" toast now reports what the plan actually
+  imported, not the bundle size), and every editable Dashboard command
   (`move-tile`, `update-placement`, `change-layout`, `remove-tile`) is queued
   as a **command descriptor** re-applied to committed truth when its turn
   arrives — never as a document snapshot derived from a prior command's

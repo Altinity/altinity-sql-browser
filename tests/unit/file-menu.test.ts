@@ -519,6 +519,9 @@ describe('Import queries', () => {
     click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
+    // #344 review 3: the success toast reports what the plan actually did —
+    // the one incoming query was skipped, so it must not claim "Imported 1".
+    expect(toast()).toBe('Imported 0 queries');
   });
 
   it('cancelling the conflict dialog aborts the import (no commit)', () => {
@@ -927,6 +930,82 @@ describe('mixed-producer serialization (#341/#344 review fix)', () => {
     // A stale-snapshot import would have planned against [q1] only, dropping
     // q2 from the committed candidate.
     expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1', 'q2']);
+  });
+
+  // #344 review 3: the conflict DECISIONS are collected against the pre-queue
+  // snapshot; a mutation landing in the queue in between can mint a conflict
+  // the user never saw. The planner defaults an undecided conflict to 'skip' —
+  // without dequeue-time revalidation the import would silently drop the
+  // incoming query and still toast success.
+  it('a conflict minted while the import waits in the queue ABORTS the import (content differs) instead of silently skipping', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'Theirs')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      // Mints the SAME id as the bundle's incoming query, with DIFFERENT content.
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'Mine')] });
+    });
+
+    // Dialog time: existing=[q1], incoming=[new1] → no conflict, decisions=[].
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // The import aborted whole: the queued mutation's new1 ('Mine') stands,
+    // the bundle's new1 ('Theirs') was neither imported nor silently skipped
+    // under a success toast.
+    expect(finalWs!.queries.map((q) => queryName(q)).sort()).toEqual(['Mine', 'Q1']);
+    expect(toast()).toBe('✕ Workspace changed while importing — nothing imported, try again');
+  });
+
+  it('a conflict minted while the import waits in the queue auto-resolves when canonically IDENTICAL — no duplicate, honest count', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'New1')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      // Mints the same id with IDENTICAL content (the rapid double-import case).
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'New1')] });
+    });
+
+    openFileMenu(app);
+    pickFile(picker(0));
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // Auto-resolved to 'use-existing': exactly ONE new1, and the toast counts
+    // it as imported (the query IS available after the import).
+    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1']);
+    expect(toast()).toBe('Imported 1 query');
   });
 });
 

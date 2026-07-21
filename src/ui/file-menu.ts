@@ -307,7 +307,8 @@ function afterLibraryChange(app: App): void {
  *  (schema/persistence failure) toasts the first diagnostic. Never a partial
  *  write either way. */
 async function commitWorkspace(
-  app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null, successMsg?: string,
+  app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null,
+  successMsg?: string | (() => string),
 ): Promise<boolean> {
   const result = await app.mutateWorkspace(build);
   if (!result) return false; // `build` declined — its own toast (if any) already fired.
@@ -317,27 +318,65 @@ async function commitWorkspace(
   }
   app.applyCommittedWorkspace(result.workspace);
   afterLibraryChange(app);
-  if (successMsg) flashToast(successMsg, { document: app.document });
+  // A function `successMsg` is evaluated AFTER the builder ran, so it can
+  // report what the dequeue-time plan actually did (#344 review 3: the
+  // imported-count toast must reflect the plan, not the bundle size).
+  if (successMsg) flashToast(typeof successMsg === 'function' ? successMsg() : successMsg, { document: app.document });
   return true;
 }
 
-/** Wrap an import-planner call as a `commitWorkspace` builder: `run` plans
- *  against `latest` (falling back to the `state`-projected `currentWorkspace`
- *  when no aggregate is persisted yet — as fresh as it gets), and an
- *  invalidated plan (`candidateWorkspace: null` — e.g. a skipped required
- *  Dashboard dependency) toasts the first diagnostic and returns `null`,
- *  aborting the commit rather than persisting a partial/invalid candidate. */
+/** #344 review 3: re-check the pre-queue conflict DECISIONS against the
+ *  dequeue-time baseline. The conflict dialog ran against a snapshot; a write
+ *  that landed in the queue between the dialog and this commit can mint a NEW
+ *  id collision the user never saw — and the planner deliberately defaults an
+ *  undecided collision to 'skip', which would silently drop the incoming
+ *  query under a success toast. A new canonically-IDENTICAL conflict is
+ *  auto-resolved to 'use-existing' (same rule the dialog itself applies); a
+ *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
+ *  import and decide against the workspace as it now is. */
+function revalidateDecisions(
+  base: StoredWorkspaceV1, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+): QueryDecision[] | null {
+  const conflicts = detectQueryConflicts(base.queries, incoming);
+  const decided = new Set(decisions.map((decision) => decision.sourceId));
+  const fresh = conflicts.filter((conflict) => !decided.has(conflict.sourceId));
+  if (fresh.some((conflict) => !conflict.canonicalEqual)) return null;
+  return [...decisions, ...autoResolveConflicts(fresh)];
+}
+
+/** Wrap an import-planner call as a `commitWorkspace` builder: revalidate the
+ *  pre-queue `decisions` against the dequeue-time baseline (`latest`, falling
+ *  back to the `state`-projected `currentWorkspace` when no aggregate is
+ *  persisted yet — as fresh as it gets), then let `run` plan with the
+ *  revalidated set. Aborts (`null`) with a toast when a new content-differing
+ *  conflict appeared while queued (`revalidateDecisions`) or when the plan
+ *  invalidated (`candidateWorkspace: null` — e.g. a skipped required
+ *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
 function planBuild(
-  app: App, run: (base: StoredWorkspaceV1) => PortableBundleImportPlan,
+  app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  run: (base: StoredWorkspaceV1, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
 ): (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null {
   return (latest) => {
-    const plan = run(latest ?? currentWorkspace(app));
+    const base = latest ?? currentWorkspace(app);
+    const revalidated = revalidateDecisions(base, incoming, decisions);
+    if (!revalidated) {
+      flashToast('✕ Workspace changed while importing — nothing imported, try again', { document: app.document });
+      return null;
+    }
+    const plan = run(base, revalidated);
     if (!plan.candidateWorkspace) {
       flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
       return null;
     }
     return plan.candidateWorkspace;
   };
+}
+
+/** The count an import's success toast reports: incoming queries the plan
+ *  actually resolved to a target ('use-existing' counts — the query is
+ *  available after the import; 'skip' does not). */
+function importedQueryCount(plan: PortableBundleImportPlan): number {
+  return Object.values(plan.queryMappings).filter((m) => m.action !== 'skip').length;
 }
 
 // ── conflict resolution (global default + per-row override) ────────────────
@@ -494,9 +533,16 @@ function startImportQueries(app: App, bundle: PortableBundleV1): void {
   // user can be (harmlessly) stale, never the committed candidate.
   const workspace = currentWorkspace(app);
   withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
+    // `lastPlan` is written by the builder inside the queued op, so the
+    // (function) success message reports what the DEQUEUE-TIME plan actually
+    // imported — never the bundle size (#344 review 3: a dialog-time 'skip'
+    // or a dequeue-time auto-resolve must not inflate the count).
+    let lastPlan: PortableBundleImportPlan | null = null;
     void commitWorkspace(
-      app, planBuild(app, (base) => planImportQueries(base, bundle, decisions, app.genId)),
-      'Imported ' + queries(bundle.queries.length),
+      app, planBuild(app, bundle.queries, decisions,
+        (base, revalidated) => (lastPlan = planImportQueries(base, bundle, revalidated, app.genId))),
+      // `lastPlan!` — the success message only runs after the builder did.
+      () => 'Imported ' + queries(importedQueryCount(lastPlan!)),
     );
   });
 }
@@ -563,7 +609,8 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
     // (v1 single-Dashboard model, #280 "Import Dashboard replaces the current
     // Dashboard"). The confirm above gates the destructive case.
     void commitWorkspace(
-      app, planBuild(app, (base) => planImportDashboard(base, bundle, dashboardId, decisions, 'copy', app.genId)),
+      app, planBuild(app, closureQueries, decisions,
+        (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, 'copy', app.genId)),
       'Imported dashboard',
     );
   });
@@ -606,7 +653,8 @@ function confirmOpenWorkspace(app: App, bundle: PortableBundleV1, sourceDashboar
       const workspace = currentWorkspace(app);
       withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
         void commitWorkspace(
-          app, planBuild(app, (base) => planReplaceWorkspace(base, bundle, sourceDashboardId, decisions, app.genId)),
+          app, planBuild(app, bundle.queries, decisions,
+            (base, revalidated) => planReplaceWorkspace(base, bundle, sourceDashboardId, revalidated, app.genId)),
           'Opened workspace',
         );
       });
