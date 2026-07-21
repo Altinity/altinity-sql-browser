@@ -115,6 +115,56 @@
     mountField('user', '__userSel');
     mountField('query_kind', '__kindSel');
 
+    // #360: a PARAMETERIZED Filter source (`geo`) that depends on two root
+    // filters (`from`/`to`). Both start inactive, so the source WAITS (issues no
+    // request) until they are committed; activating them reruns only the source
+    // that declares them, which then executes exactly once with native
+    // param_<name> args and settles the `region` filter to ready.
+    let paramRequests = 0;
+    window.__paramRequests = 0;
+    window.__paramLastParams = null;
+    const paramExec = {
+      async executeRead(result, req) {
+        paramRequests += 1;
+        window.__paramRequests = paramRequests;
+        window.__paramLastParams = req.params;
+        result.columns = [{ name: 'region', type: 'Array(String)' }];
+        result.rows = [[['US', 'EU']]];
+        result.progress.bytes = 10;
+        result.error = null;
+        result.cancelled = false;
+      },
+    };
+    const paramSession = createDashboardViewerSession({
+      document: {
+        documentVersion: 1, id: 'dp', title: 'DP', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+        filters: [
+          { id: 'f-from', parameter: 'from', label: 'from' },
+          { id: 'f-to', parameter: 'to', label: 'to' },
+          { id: 'f-region', parameter: 'region', label: 'region', sourceQueryId: 'geo' },
+        ],
+        tiles: [{ id: 'tp', queryId: 'qp' }],
+      },
+      queries: [
+        savedQuery('qp', 'SELECT {region:String} AS n'),
+        savedQuery('geo',
+          "SELECT ['US','EU'] AS region FROM system.one WHERE event_time >= {from:DateTime} AND event_time < {to:DateTime}",
+          { dashboard: { role: 'filter' } }),
+      ],
+      exec: paramExec,
+      connection: { ensureFreshToken: async () => true },
+      now: () => (clock += 5),
+      wallNow: () => 2000,
+    });
+    await paramSession.start();
+    const paramRegion = () => paramSession.state.value.filters.find((f) => f.parameter === 'region');
+    window.__paramRegion = () => ({ status: paramRegion().status, waitingFor: paramRegion().waitingFor || [] });
+    window.__paramActivate = async () => {
+      await paramSession.setFilter('f-from', '-1d');
+      await paramSession.setFilter('f-to', 'now');
+    };
+
     window.__ready = true;
   </script>
 </body>
