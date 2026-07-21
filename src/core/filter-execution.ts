@@ -134,7 +134,7 @@ export interface FilterSourceAnalysis {
  * offending parameter. `analysis.diagnostics` (the shared pipeline's own
  * cross-declaration type-conflict findings, e.g. `{x:UInt8}` vs `{x:String}`
  * in the same source) are folded in too, each as its own
- * `filter-source-param-type-conflict` diagnostic (#360 review finding 3) —
+ * `filter-source-param-type-conflict` diagnostic (#360) —
  * without this, a type-conflicted source would classify `runnable` in
  * `prepareFilterSource` and get sent. Pure.
  */

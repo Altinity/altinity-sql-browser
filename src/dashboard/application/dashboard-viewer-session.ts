@@ -133,7 +133,7 @@ export interface ViewerFilterState {
    *  names (from `FilterSourcePreparation.missing`) the filter-bar UI/
    *  diagnostics can name. Absent otherwise. */
   waitingFor?: string[];
-  /** #360 finding 4: the shared `FilterSourceRuntime.id` this filter is a
+  /** #360: the shared `FilterSourceRuntime.id` this filter is a
    *  consumer of, set once at construction from the filter DEFINITION's
    *  `sourceQueryId` — undefined for a plain root filter (no source at all).
    *  This is TOPOLOGY, not transport state (unlike `status`/`stale`, it never
@@ -812,17 +812,14 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return provider;
   }
 
-  /** #360 findings 1+2: the terminal result of one source-wave pass — either
-   *  every source in the plan settled at ITS OWN reserved generation and the
-   *  merge ran (`'applied'`, carrying `merged.changed` as `flipped`), or the
-   *  plan was stale (superseded by a later wave that reserved a fresh
-   *  generation on one of the SAME sources) and nothing was published
-   *  (`'superseded'`). Before this type existed both cases returned `[]`,
-   *  which made "ran, nothing flipped" indistinguishable from "this whole
-   *  wave was discarded" — so a superseded selective source wave still went
-   *  on to launch its own panel wave in `commitAndRerun`. `runFilterWave`
-   *  ignores the return either way (a full refresh has no further phase to
-   *  gate). */
+  /** #360: the terminal result of one source-wave pass — either every source
+   *  in the plan settled at ITS OWN reserved generation and the merge ran
+   *  (`'applied'`, carrying `merged.changed` as `flipped`), or the plan was
+   *  stale (superseded by a later wave that reserved a fresh generation on
+   *  one of the SAME sources) and nothing was published (`'superseded'`) — a
+   *  superseded wave must not go on to launch its own panel wave in
+   *  `commitAndRerun`. `runFilterWave` ignores the return either way (a full
+   *  refresh has no further phase to gate). */
   type SourceWaveResult = { status: 'applied'; flipped: string[] } | { status: 'superseded' };
 
   /** Terminal, SYNCHRONOUS step of the filter wave (#359): merges every
@@ -864,8 +861,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // renders diagnostics, not per-filter status, so a bare `missing-helper`
     // left an unexplained empty control).
     const diagnostics: FilterDiagnostic[] = [...merged.diagnostics];
-    // #360 BLOCKER-1 (cross-source race): a source NOT in THIS plan that is
-    // still `loading` (a different, possibly-overlapping selective wave is
+    // #360: a source NOT in THIS plan (a cross-source race) that is still
+    // `loading` (a different, possibly-overlapping selective wave is
     // running it right now) or settled `waiting` on its own dependency must
     // not have its consumers re-derived here — its own wave's
     // `applyFilterProviders` call owns that. Every source that IS in this
@@ -931,10 +928,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return { status: 'applied', flipped: merged.changed };
   }
 
-  /** Finding 6 (dedup): the executor shared by `runFilterWave` (every known
-   *  source, a full refresh) and `runFilterSourceWave` (only the sources a
-   *  just-committed root parameter affects, #360) — both used to duplicate
-   *  the same five steps: supersede each source into a plan, flip loading/
+  /** The executor shared by `runFilterWave` (every known source, a full
+   *  refresh) and `runFilterSourceWave` (only the sources a just-committed
+   *  root parameter affects, #360) — avoiding duplicating the same five
+   *  steps: supersede each source into a plan, flip loading/
    *  stale on the source AND every consumer, decide whether to clear
    *  consumer options, `publish()` once, run the plan through the bounded
    *  pool, then merge terminally via `applyFilterProviders`. The two callers
@@ -1101,9 +1098,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // Re-run only the tiles some active filter parameter feeds into.
   async function runAffectedWave(parameters: string[], preflighted = false): Promise<void> {
-    // Finding 2: unconditional destroyed guard. The `preflighted: true` fast
-    // path (from `commitAndRerun`'s affected branch) skips `preflight()`
-    // entirely below — and `preflight()` was the ONLY place on this path that
+    // Unconditional destroyed guard: the `preflighted: true` fast path (from
+    // `commitAndRerun`'s affected branch) skips `preflight()` entirely below
+    // — and `preflight()` was the ONLY place on this path that
     // checked `destroyed` — so without this a `destroy()` firing between the
     // source wave settling and this wave starting could still reserve tile
     // generations and issue requests after teardown.
@@ -1125,53 +1122,22 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // #360: after committing a value (these four are commit paths only — never
   // in-progress typing), rerun any shared Filter source that depends on the
-  // just-committed root parameter(s) FIRST, then fold both the committed
-  // parameter(s) AND any names `runFilterSourceWave` itself deactivated
-  // (`result.flipped`, e.g. a now-out-of-range curated value elsewhere) into
-  // ONE combined affected-panel wave — never two separate waves. A synchronous
-  // pre-check skips `runFilterSourceWave` (and the microtask hop awaiting it
-  // costs) entirely when nothing depends on `changed` — behaviorally
-  // identical to awaiting it (an unaffected wave always resolves to
-  // `{status:'applied', flipped:[]}` with no side effect), just without the
-  // extra tick for the overwhelmingly common case of a Dashboard with no
-  // parameterized Filter sources (#360).
-  // The fast (no-affected-source) path lets `runAffectedWave` self-preflight
-  // exactly as before (one await, unchanged timing); the affected path
-  // preflights ONCE here for the whole commit and passes `preflighted: true`
-  // into both waves — otherwise a stale token would fail `ensureFreshToken()`
-  // (and fire `onAuthFailed`) twice for one commit.
+  // just-committed root parameter(s), then run ONE combined affected-panel
+  // wave over both the committed parameter(s) and any names the source wave
+  // itself deactivated (`result.flipped`). A synchronous pre-check skips
+  // `runFilterSourceWave` entirely when nothing depends on `changed` —
+  // behaviorally identical to awaiting it, since an unaffected wave always
+  // resolves to `{status:'applied', flipped:[]}` with no side effect. The
+  // fast (no-affected-source) path lets `runAffectedWave` self-preflight as
+  // usual; the affected path preflights ONCE here for the whole commit and
+  // passes `preflighted: true` into both waves so a stale token only fails
+  // `ensureFreshToken()` once.
   //
-  // Findings 1+2 (maintainer review): a superseded or destroyed source wave
-  // must not go on to launch its own panel wave. Both are already caught by
-  // checks that exist independently of any commit-to-commit bookkeeping here
-  // — no extra "commit generation" counter is needed (an earlier version of
-  // this fix added one bumped on EVERY `commitAndRerun` call, including the
-  // no-affected-source fast path; that made two commits affecting DIFFERENT,
-  // non-overlapping sources spuriously supersede one another — a legitimate
-  // concurrent commit's own, correctly-`'applied'` result would still get
-  // discarded and its panel wave skipped just because an unrelated commit
-  // happened to be in flight at the same time. Reverted: see PR review):
-  //  - Superseded (finding 1): `result.status === 'superseded'` already
-  //    covers every real case. Two commits overlapping on the SAME (or a
-  //    cascading-dependent) source: the later one's `runFilterSourceWave`
-  //    calls `supersede()` on that shared `FilterSourceRuntime`, reserving a
-  //    fresh generation; when the earlier commit's held request finally
-  //    settles, its `applyFilterProviders` plan no longer matches that
-  //    generation, so it returns `{status:'superseded'}` — see
-  //    `applyFilterProviders`'s own stale-wave guard. A concurrent
-  //    UNRELATED full `refresh()` supersedes EVERY known source (not just
-  //    the ones a param change affects), so it catches this too, the same
-  //    way. Two commits affecting genuinely DIFFERENT, non-dependent sources
-  //    never touch each other's generations, so neither is ever marked
-  //    superseded — exactly the case that must still run its own panel wave.
-  //  - Destroyed (finding 2): `destroy()` bumps every source's (and every
-  //    tile's) generation too, so an in-flight source wave racing a
-  //    `destroy()` is ALSO naturally caught by the same `'superseded'` check
-  //    above; the explicit `destroyed` check here plus the new unconditional
-  //    guard at the top of `runAffectedWave` close the remaining gap — the
-  //    `preflighted: true` fast path into `runAffectedWave` (the only caller
-  //    that skips `preflight()`, previously the only `destroyed` check on
-  //    this path) reachable right after the two checks below pass.
+  // The affected-panel wave runs only if the source wave was neither
+  // superseded nor destroyed: a superseded result changed nothing
+  // (`applyFilterProviders`'s own stale-wave guard already discarded it), and
+  // `destroy()` bumps every source generation too, so a source wave racing a
+  // `destroy()` is caught by the same check.
   async function commitAndRerun(changed: string[]): Promise<void> {
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));

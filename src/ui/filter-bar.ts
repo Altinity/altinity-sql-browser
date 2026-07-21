@@ -53,15 +53,15 @@ export interface BuildFilterBarOptions {
   curatedFields?: Record<string, unknown>;
 }
 
-/** #360 maintainer-review follow-up: `status`/`stale`/`waitingFor` mirror
- *  `ViewerFilterState`'s own fields (dashboard-viewer-session.ts) — but
- *  WHETHER a filter is curated at all is `dashboard.ts`'s `rebuildFilterBar`
- *  gating on `f.sourceId != null` (topology, set once at construction),
- *  never on this transient status. Status is execution state, not topology:
- *  a source-backed filter starts `status: 'idle'` before its source has even
- *  run, so gating curation on "not idle" used to render it as a bare,
- *  enabled plain-text control on initial load until the source settled.
- *  These three fields are only the AFFORDANCE this already-curated field
+/** #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
+ *  fields (dashboard-viewer-session.ts) — but WHETHER a filter is curated at
+ *  all is `dashboard.ts`'s `rebuildFilterBar` gating on `f.sourceId != null`
+ *  (topology, set once at construction), never on this transient status.
+ *  Status is execution state, not topology: a source-backed filter starts
+ *  `status: 'idle'` before its source has even run, so gating curation on
+ *  status instead would render it as a bare, enabled plain-text control
+ *  until the source settled. These three fields are only the AFFORDANCE this
+ *  already-curated field
  *  shows — all optional so a caller that never supplies them (an older/
  *  simpler fixture) renders exactly like today's plain 'ready' combobox. */
 export interface CuratedFieldStatus {
@@ -77,7 +77,7 @@ interface CuratedFieldConfig extends CuratedFieldStatus {
   options: FilterFieldOption[];
 }
 
-/** A built curated field's retained handle (#360 follow-up) — kept in
+/** A built curated field's retained handle (#360) — kept in
  *  `buildFilterBar`'s `curatedHandles` map so a LATER status-only change can
  *  update this exact field's affordance in place (`applyFieldStatus`, via
  *  the returned `updateStatus`) without rebuilding the whole input — the
@@ -87,8 +87,7 @@ interface CuratedFieldConfig extends CuratedFieldStatus {
  *  (`applyFieldStatus` restores them once a status stops overriding either);
  *  `noteEl` is the "Waiting for: …" node, present in the DOM only while
  *  `status === 'waiting'` (created/removed on demand, not just hidden, so a
- *  caller that queries for it — same as the pre-existing per-status build
- *  tests — sees exactly what it saw before this change). */
+ *  caller that queries for it gets exactly the DOM it expects). */
 interface CuratedFieldHandle {
   input: HTMLInputElement;
   label: HTMLElement;
@@ -99,7 +98,7 @@ interface CuratedFieldHandle {
 
 /**
  * Applies a curated field's status affordance to its already-built DOM
- * (#360 follow-up) — the SAME class/disabled/note logic `buildFilterBar`
+ * (#360) — the SAME class/disabled/note logic `buildFilterBar`
  * used to inline once per field build, factored out so both the initial
  * build (a fresh rebuild must show the right affordance immediately) and a
  * later `updateStatus` call (no rebuild) share one recipe. See
@@ -193,7 +192,7 @@ export const FILTER_DEBOUNCE_MS = 500;
  *  teardown — so an in-flight debounce never fires against a detached field
  *  (the orphan-timer gap a bare `replaceChildren` rebuild used to leave).
  *
- *  #360 follow-up: `updateStatus` applies a per-param `CuratedFieldStatus`
+ *  #360: `updateStatus` applies a per-param `CuratedFieldStatus`
  *  update to whichever curated fields this SAME bar instance already built
  *  (`curatedHandles`, keyed by parameter) — a param this bar never curated
  *  (absent from `curatedFields` at build time, or a plain field) is silently
@@ -242,7 +241,7 @@ export function buildFilterBar(
     return { el: h('div', { ...attrs, style: { display: 'none' } }), dispose: () => {}, updateStatus: () => {} };
   }
   const timerClears: Array<() => void> = [];
-  // #360 follow-up: every curated field's retained handle, keyed by
+  // #360: every curated field's retained handle, keyed by
   // parameter — see `CuratedFieldHandle` and `FilterBarHandle.updateStatus`.
   const curatedHandles = new Map<string, CuratedFieldHandle>();
   const el = h('div', attrs, ...params.map((p) => {
@@ -290,7 +289,7 @@ export function buildFilterBar(
       const handle: CuratedFieldHandle = {
         input: field.input, label, baseTitle, basePlaceholder: field.input.placeholder, noteEl: null,
       };
-      // #360 follow-up: apply the CURRENT status immediately at build time
+      // #360: apply the CURRENT status immediately at build time
       // (a fresh rebuild shows the right affordance right away) and retain
       // the handle so a LATER status-only change updates this same field in
       // place via `updateStatus`, never a rebuild.
