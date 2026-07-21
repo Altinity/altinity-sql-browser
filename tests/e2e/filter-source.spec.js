@@ -91,4 +91,22 @@ test.describe('Dashboard Filter sources', () => {
     await expect(userInput).toHaveValue('alice');
     expect(await page.evaluate(() => window.__userSel.value)).toBe('alice');
   });
+
+  test('a parameterized Filter source waits for its root deps, then runs once with native params (#360)', async ({ page }) => {
+    // Both root filters (from/to) start inactive, so the source is blocked on a
+    // missing dependency: no request, a non-error waiting state naming the
+    // missing params.
+    expect(await page.evaluate(() => window.__paramRegion())).toEqual({ status: 'waiting', waitingFor: ['from', 'to'] });
+    expect(await page.evaluate(() => window.__paramRequests)).toBe(0);
+
+    // Committing from + to makes the source runnable — it executes exactly once,
+    // with native param_from / param_to arguments (no textual interpolation),
+    // and the region filter settles to ready.
+    await page.evaluate(() => window.__paramActivate());
+    expect(await page.evaluate(() => window.__paramRegion().status)).toBe('ready');
+    expect(await page.evaluate(() => window.__paramRequests)).toBe(1);
+    const params = await page.evaluate(() => window.__paramLastParams);
+    expect(params).toHaveProperty('param_from');
+    expect(params).toHaveProperty('param_to');
+  });
 });

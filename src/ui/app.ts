@@ -635,6 +635,7 @@ export function createApp(env: CreateAppEnv = {}): App {
       recordHistory: (tab, sql) => app.recordHistory(tab, sql),
       recordBoundParams: (bp) => params.recordBoundParams([...bp]),
       prepareTabSource: params.prepareTabSource, varGateBlocked: params.varGateBlocked,
+      prepareFilterPreview: params.prepareFilterPreview,
       execStatementSql: params.execStatementSql, sessionParamsFor,
       getSelectionText: () => app.sqlEditor.getSelection().text,
       tickElapsed,

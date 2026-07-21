@@ -210,6 +210,10 @@ const paramsDefaults: WorkbenchParameterSession = {
   prepareAnalyzedBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabBatch: vi.fn(() => ({ fields: {}, sources: [], diagnostics: [] })),
   prepareTabSource: vi.fn(() => ({ id: 'tab', statements: [], missing: [], invalid: [], errors: [], runnable: true })),
+  prepareFilterPreview: vi.fn(() => ({
+    readiness: 'runnable' as const, diagnostics: [], dependsOn: [], missing: [], invalid: [], errors: [],
+    error: null, execSql: '', params: {}, format: 'Filter' as const, rowLimit: 2, boundParams: [],
+  })),
   execStatementSql: vi.fn((stmt: string) => stmt),
   varGateBlocked: vi.fn(() => false),
   hardenVar: vi.fn(),

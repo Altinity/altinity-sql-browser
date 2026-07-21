@@ -37,6 +37,7 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.el.getAttribute('aria-label')).toBe('Query filters');
     expect(bar.el.querySelectorAll('.var-field').length).toBe(0);
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
+    expect(() => bar.updateStatus({})).not.toThrow(); // no curated fields — a no-op
   });
 
   it('defaults to app.document and no group role when no options are passed', () => {
@@ -179,6 +180,191 @@ describe('buildFilterBar (shared filter row)', () => {
       input.value = 'a much longer value than the field is wide';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       expect(input.style.getPropertyValue('--var-input-ch')).toBe(before);
+    });
+  });
+
+  // #360: a source-backed curated field now stays in this rich-combobox
+  // rendering path for EVERY status (including 'idle', its FIRST-ever value
+  // before the shared source has run at all — dashboard.ts's rebuildFilterBar
+  // now gates curation on `sourceId != null`, topology, never on `status`) and
+  // shows a structural (class + disabled/aria-disabled +, for 'waiting',
+  // literal text) affordance instead of silently rendering (or falling out
+  // to) an unmarked control (plan-review BLOCKER-2).
+  describe('curated field status affordance (#360)', () => {
+    it('status: "idle" (a source-backed field that has never run yet) still renders CURATED, marked pending — not an enabled plain control', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [], status: 'idle' } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(label.classList.contains('is-curated')).toBe(true);
+      // 'idle' reads exactly like 'loading' — pending, not yet actionable.
+      expect(label.classList.contains('is-stale')).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(input.getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('an explicit status: "ready" (or an absent status) renders the normal curated combobox — no new classes, not disabled', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(label.classList.contains('is-curated')).toBe(true);
+      expect(label.classList.contains('is-waiting')).toBe(false);
+      expect(label.classList.contains('is-error')).toBe(false);
+      expect(label.classList.contains('is-stale')).toBe(false);
+      expect(input.disabled).toBe(false);
+      expect(input.hasAttribute('aria-disabled')).toBe(false);
+    });
+
+    it('status: "waiting" disables the field, adds is-waiting, and names the missing params as literal text', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [], status: 'waiting', waitingFor: ['from', 'to'] } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(label.classList.contains('is-curated')).toBe(true);
+      expect(label.classList.contains('is-waiting')).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(input.getAttribute('aria-disabled')).toBe('true');
+      expect(input.placeholder).toBe('Waiting for: from, to');
+      expect(label.textContent).toContain('Waiting for: from, to');
+    });
+
+    it('status: "waiting" with no waitingFor still renders (empty missing-list text, no throw)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [], status: 'waiting' } },
+      });
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(input.placeholder).toBe('Waiting for: ');
+    });
+
+    it.each(['source-error', 'helper-error', 'missing-helper'])(
+      'status: "%s" disables the field and adds is-error, without the waiting note', (status) => {
+        const app = makeApp();
+        const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+          curatedFields: { x: { options: [], status } },
+        });
+        const label = bar.el.querySelector('.var-field')!;
+        const input = bar.el.querySelector('input') as HTMLInputElement;
+        expect(label.classList.contains('is-error')).toBe(true);
+        expect(label.classList.contains('is-waiting')).toBe(false);
+        expect(input.disabled).toBe(true);
+        expect(input.getAttribute('aria-disabled')).toBe('true');
+        expect(label.querySelector('.var-field-note')).toBeNull();
+      },
+    );
+
+    it('status: "loading" marks the field is-stale + disabled while keeping its last-known options, not clearing them', () => {
+      const app = makeApp();
+      app.state.varValues.x = 'a';
+      app.state.filterActive.x = true;
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'loading' } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(label.classList.contains('is-stale')).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(input.getAttribute('aria-disabled')).toBe('true');
+      // The last-known selection is still shown (not blanked as "no longer
+      // current") — only marked stale, per the #360 acceptance criterion.
+      expect(input.value).toBe('Alpha');
+    });
+
+    it('stale: true (independent of status) also marks the field is-stale, e.g. a ready-but-just-superseded read', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready', stale: true } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      expect(label.classList.contains('is-stale')).toBe(true);
+      expect((bar.el.querySelector('input') as HTMLInputElement).disabled).toBe(true);
+    });
+  });
+
+  // #360 follow-up: `updateStatus` updates a curated field's affordance IN
+  // PLACE — the whole point being that the caller (dashboard.ts) never has to
+  // rebuild the bar (and disturb every other field's in-progress typing) just
+  // because ONE source-backed filter's status changed.
+  describe('updateStatus (#360 follow-up)', () => {
+    it('flips a curated field idle → loading → ready → waiting → error without ever rebuilding it (same input instance throughout)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [], status: 'idle' } },
+      });
+      const label = bar.el.querySelector('.var-field')!;
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+
+      bar.updateStatus({ x: { status: 'loading' } });
+      expect(bar.el.querySelector('input')).toBe(input); // same instance — no rebuild
+      expect(label.classList.contains('is-stale')).toBe(true);
+      expect(input.disabled).toBe(true);
+
+      bar.updateStatus({ x: { status: 'ready' } });
+      expect(bar.el.querySelector('input')).toBe(input);
+      expect(label.classList.contains('is-stale')).toBe(false);
+      expect(input.disabled).toBe(false);
+      expect(input.hasAttribute('aria-disabled')).toBe(false);
+
+      bar.updateStatus({ x: { status: 'waiting', waitingFor: ['from'] } });
+      expect(bar.el.querySelector('input')).toBe(input);
+      expect(label.classList.contains('is-waiting')).toBe(true);
+      expect(label.classList.contains('is-stale')).toBe(false);
+      expect(input.disabled).toBe(true);
+      expect(label.textContent).toContain('Waiting for: from');
+      const noteEl = label.querySelector('.var-field-note');
+
+      // A SECOND consecutive 'waiting' update (still missing a different root
+      // param) reuses the SAME note element — updates its text in place
+      // rather than removing and recreating it.
+      bar.updateStatus({ x: { status: 'waiting', waitingFor: ['to'] } });
+      expect(label.querySelector('.var-field-note')).toBe(noteEl);
+      expect(label.textContent).toContain('Waiting for: to');
+
+      bar.updateStatus({ x: { status: 'source-error' } });
+      expect(bar.el.querySelector('input')).toBe(input);
+      expect(label.classList.contains('is-error')).toBe(true);
+      expect(label.classList.contains('is-waiting')).toBe(false);
+      expect(input.disabled).toBe(true);
+      // The waiting note is removed once the field leaves 'waiting'.
+      expect(label.querySelector('.var-field-note')).toBeNull();
+    });
+
+    it('preserves an in-progress typed draft across an updateStatus call (no rebuild disturbs it)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
+      });
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      input.value = 'still typing…';
+      bar.updateStatus({ x: { status: 'loading' } });
+      expect(input.value).toBe('still typing…'); // untouched by the status update
+      expect(bar.el.querySelector('input')).toBe(input);
+    });
+
+    it('ignores a status for a param this bar never curated (a plain field), and a plain field is never disabled by it', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField);
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(() => bar.updateStatus({ x: { status: 'waiting' } })).not.toThrow();
+      expect(input.disabled).toBe(false);
+      expect(input.classList.contains('is-waiting')).toBe(false);
+    });
+
+    it('an updateStatus() call that names no curated field is a no-op (leaves its current affordance untouched)', () => {
+      const app = makeApp();
+      const bar = buildFilterBar(app, paramsFor('SELECT {x:String}'), () => {}, okField, {
+        curatedFields: { x: { options: [{ value: 'a', label: 'Alpha' }], status: 'ready' } },
+      });
+      const input = bar.el.querySelector('input') as HTMLInputElement;
+      expect(() => bar.updateStatus({})).not.toThrow();
+      expect(input.disabled).toBe(false); // still ready — never touched
     });
   });
 

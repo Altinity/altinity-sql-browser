@@ -2582,6 +2582,143 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
   });
 });
 
+// #360 plan-review BLOCKER-2 (+ maintainer-review follow-up): `rebuildFilterBar`
+// used to gate a filter into the curated (rich combobox) rendering path only
+// `if (f.options && f.options.length)`, then — a first fix — `if (f.status
+// !== 'idle')` — so a source-backed filter with NO options yet (waiting on a
+// root dependency, mid-flight, or errored, OR simply not yet run) fell OUT of
+// that path entirely and rendered as a bare, unlabelled plain field with zero
+// indication anything was pending. The gate is now `f.sourceId != null` —
+// TOPOLOGY, set once at construction, never the transient `status` — so a
+// source-backed filter is ALWAYS curated, at any status, from the very first
+// (still-'idle') render onward. A plain (non-source-backed) filter has no
+// `sourceId` and never touches this path.
+describe('renderDashboard — curated field stays curated while its shared source is waiting (#360)', () => {
+  it('a source-backed filter whose source waits on a root dependency renders the curated waiting affordance, not a bare plain field', async () => {
+    const { app, calls } = dashApp({
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
+          // 'src' depends on the ROOT filter 'from', which starts inactive/blank
+          // below — so this source is 'waiting', never executes ("depsrc" never
+          // appears in `calls`), and publishes `options: null` for 'region'.
+          q('src', "SELECT ['east','west'] AS region FROM a WHERE ts >= {from:String} -- depsrc", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
+          { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
+        ],
+      }),
+    });
+    await render(app);
+    expect(calls.some((c) => c.sql.includes('depsrc'))).toBe(false); // still waiting — never ran
+    const fields = qsa(app.root, '.dash-filter-host .var-field');
+    const regionField = fields.find((f) => qs(f, '.var-name')?.textContent === 'region');
+    expect(regionField).toBeDefined();
+    const region = regionField as HTMLElement;
+    // Stays curated (not the old silent fall-out to a bare plain field) and
+    // carries the structural waiting affordance: class + disabled input +
+    // literal text naming the missing root param.
+    expect(region.classList.contains('is-curated')).toBe(true);
+    expect(region.classList.contains('is-waiting')).toBe(true);
+    const input = qs<HTMLInputElement>(region, 'input');
+    expect(input.disabled).toBe(true);
+    expect(region.textContent).toContain('Waiting for: from');
+  });
+});
+
+// #360 maintainer-review follow-up: `rebuildFilterBar` gates curation on
+// TOPOLOGY (`sourceId != null`) and updates a settled bar's STATUS in place
+// (`filterBar.updateStatus`, never a rebuild) — the effect's `barSig` (a
+// structural signature: id/active/value/optionsRev/sourceId) is now separate
+// from its own status signature (status/stale/waitingFor). These tests pin
+// that split directly: a source-backed filter is curated from its very first
+// (still-'idle'/'loading') render, a pure status change never disturbs the
+// bar's DOM (same `<input>` instance — proof no rebuild happened), and a
+// genuinely structural change (option content) still rebuilds it.
+describe('renderDashboard — filter status vs. structural rebuild split (#360 follow-up)', () => {
+  it('a source-backed filter is curated and shows the pending affordance before its shared source has ever settled — never an enabled plain control', async () => {
+    let resolveSrc!: (v: ExecResp) => void;
+    const pendingSrc = new Promise<ExecResp>((resolve) => { resolveSrc = resolve; });
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('pendingsrc') ? pendingSrc : {}),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
+          q('src', "SELECT ['east','west'] AS region -- pendingsrc", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
+      }),
+    });
+    const rendering = render(app);
+    // Flush the microtasks up to (but not past) the in-flight source query's
+    // own await — same technique as the KPI "Loading…" card test above: the
+    // session sets status 'loading' (mirroring its still-'idle' construction-
+    // time value — both read as "pending" — see `applyFieldStatus`) and
+    // publishes synchronously before awaiting the responder.
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const fields = qsa(app.root, '.dash-filter-host .var-field');
+    const regionField = fields.find((f) => qs(f, '.var-name')?.textContent === 'region') as HTMLElement;
+    expect(regionField).toBeDefined();
+    expect(regionField.classList.contains('is-curated')).toBe(true);
+    expect(regionField.classList.contains('is-stale')).toBe(true);
+    const input = qs<HTMLInputElement>(regionField, 'input');
+    expect(input.disabled).toBe(true);
+    resolveSrc({ columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] });
+    await rendering;
+    // Settles to 'ready' — the SAME curated field, now enabled with options.
+    const settledInput = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    expect(settledInput.disabled).toBe(false);
+  });
+
+  it('a status-only refresh (unchanged options/value/active) updates the field in place — its <input> instance survives, no rebuild', async () => {
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('samesrc')
+        ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] } : {}),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
+          q('src', "SELECT ['east','west'] AS region -- samesrc", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
+      }),
+    });
+    await render(app);
+    const inputBefore = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    // A refresh republishes the exact same option content — status cycles
+    // loading → ready with optionsRev unchanged, so only `updateStatus` runs.
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    const inputAfter = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    expect(inputAfter).toBe(inputBefore);
+    expect(inputAfter.disabled).toBe(false);
+  });
+
+  it('a structural change (option content changes) still rebuilds the bar — a fresh <input> instance', async () => {
+    let call = 0;
+    const { app } = dashApp({
+      responder: (sql) => (sql.includes('changingsrc')
+        ? (() => { call++; return { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[call === 1 ? ['east', 'west'] : ['north', 'south']]] }; })()
+        : {}),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
+          q('src', "SELECT ['east','west'] AS region -- changingsrc", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
+      }),
+    });
+    await render(app);
+    const inputBefore = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    const inputAfter = qs<HTMLInputElement>(app.root, '.dash-filter-host input');
+    expect(inputAfter).not.toBe(inputBefore); // optionsRev bumped — a real rebuild
+  });
+});
+
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
 // #280 viewer session used to init every filter purely from
 // `def.defaultValue`/`defaultActive`, so a committed value lived only in

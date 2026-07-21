@@ -1082,3 +1082,743 @@ describe('flow layout (mobile normalization)', () => {
     mobile = false;
   });
 });
+
+// #360: a shared Filter source may now declare its OWN `{name:Type}` params,
+// fed by ROOT Dashboard filters (no `sourceQueryId`) rather than the source's
+// consumers. `analyzeFilterSource`/`prepareFilterSource` (src/core/
+// filter-execution.ts) classify each source `'runnable'` | `'waiting'` |
+// `'error'` against the wave's COMMITTED root values before any request is
+// sent, and committing a root filter's value selectively reruns only the
+// sources that actually depend on it — folded into the SAME affected-panel
+// wave as the committed parameter(s).
+describe('parameterized Filter sources (#360)', () => {
+  it('a source depending on an inactive/blank root param is waiting — no execution, waitingFor published, its consumer marked stale', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('depsrc')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n'),
+        query('src', "SELECT ['east','west'] AS region FROM t WHERE ts >= {from:String} /* depsrc */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('depsrc'))).toBe(false);
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-region')!;
+    expect(f.status).toBe('waiting');
+    expect(f.waitingFor).toEqual(['from']);
+    expect(f.options).toBeNull();
+    expect(f.stale).toBe(true);
+  });
+
+  it('a runnable dependent source executes bound to the committed root-param values; the curated field applies', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('depsrc')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: '2024-01-01' },
+        { id: 'to-root', parameter: 'to', defaultActive: true, defaultValue: '2024-02-01' },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {region:String} AS n'),
+        query('src', "SELECT ['east'] AS region FROM t WHERE ts >= {from:String} AND ts < {to:String} /* depsrc */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const srcCall = calls.find((c) => c.sql.includes('depsrc'));
+    expect(srcCall).toBeDefined();
+    expect(srcCall!.params.param_from).toBe('2024-01-01');
+    expect(srcCall!.params.param_to).toBe('2024-02-01');
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-region')!;
+    expect(f.status).toBe('ready');
+    expect(f.stale).toBe(false);
+  });
+
+  it('an invalid committed root value gates the dependent source to source-error, no execution', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'n-root', parameter: 'n', defaultActive: true, defaultValue: 'not-a-number' },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {region:String} AS n2'),
+        query('src', "SELECT ['east'] AS region FROM t WHERE code = {n:UInt16} /* depsrc */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('depsrc'))).toBe(false);
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-region')!;
+    expect(f.status).toBe('source-error');
+  });
+
+  it('a source declaring a dependency on ANOTHER source-backed parameter never executes and reports the cascading diagnostic', async () => {
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('srcA')) return { columns: [{ name: 'catA', type: 'Array(String)' }], rows: [[['x']]] };
+      if (sql.includes('srcB')) return { columns: [{ name: 'catB', type: 'Array(String)' }], rows: [[['y']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'fa', parameter: 'catA', sourceQueryId: 'srcA' },
+        { id: 'fb', parameter: 'catB', sourceQueryId: 'srcB' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {catB:String} AS n'),
+        query('srcA', "SELECT ['x'] AS catA /* srcA */", { dashboard: { role: 'filter' } }),
+        query('srcB', "SELECT ['y'] AS catB FROM t WHERE cat = {catA:String} /* srcB */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('srcB'))).toBe(false);
+    const fb = session.state.value.filters.find((flt) => flt.id === 'fb')!;
+    expect(fb.status).toBe('source-error');
+    const cascadeDiag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-source-cascading');
+    expect(cascadeDiag?.message).toContain('Cascading');
+  });
+
+  it('selective rerun: committing a dependency reruns ONLY the sources that depend on it', async () => {
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('srcFrom')) return { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] };
+      if (sql.includes('srcCat')) return { columns: [{ name: 'dep2', type: 'Array(String)' }], rows: [[['b']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'cat-root', parameter: 'category', defaultActive: true, defaultValue: 'X' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+        { id: 'f-dep2', parameter: 'dep2', sourceQueryId: 'srcCat' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+        query('srcCat', "SELECT ['b'] AS dep2 FROM t WHERE cat = {category:String} /* srcCat */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const base = calls.length;
+    await session.setFilter('from-root', 'v1');
+    const added = calls.slice(base);
+    expect(added.some((c) => c.sql.includes('srcFrom'))).toBe(true);
+    expect(added.some((c) => c.sql.includes('srcCat'))).toBe(false);
+  });
+
+  it("clears (not just marks stale) the affected consumer's options during a selective rerun's loading window — no stale-current options rendered before repopulating", async () => {
+    let releaseSecond!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let call = 0;
+    const { exec } = makeExec((sql) => {
+      if (!sql.includes('srcFrom')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      call += 1;
+      return call === 1
+        ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a1']]] } // construction
+        : gate.then(() => ({ columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a2']]] })); // selective rerun
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const initial = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(initial.status).toBe('ready');
+    expect(initial.options).toEqual([{ value: 'a1', label: 'a1' }]);
+
+    const wave = session.setFilter('from-root', 'v1'); // commit a dependency change -> selective rerun
+    await flush(); // let the rerun reach its (gated) executeRead
+    const midFlight = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(midFlight.status).toBe('loading');
+    expect(midFlight.stale).toBe(true);
+    // The OLD options ('a1') must NOT still render as current while a
+    // committed dependency change is loading a fresh answer — cleared, not
+    // left stale-current, per the issue's error/stale-result acceptance.
+    expect(midFlight.options).toBeNull();
+
+    releaseSecond();
+    await wave;
+    const settled = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(settled.status).toBe('ready');
+    expect(settled.stale).toBe(false);
+    expect(settled.options).toEqual([{ value: 'a2', label: 'a2' }]); // repopulated once the wave settles
+  });
+
+  it("a reconciliation deactivation from the selective source rerun runs its dependent panel in the SAME wave as the changed root param", async () => {
+    let fromValue = 'v0';
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('regsrc')) {
+        return fromValue === 'v0'
+          ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['R1', 'R2']]] }
+          : { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['R2']]] };
+      }
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t-region', 'q-region')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'regsrc', defaultActive: true, defaultValue: 'R1' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q-region', 'SELECT {region:String} AS n'),
+        query('regsrc', "SELECT ['R1','R2'] AS region FROM t WHERE ts >= {from:String} /* regsrc */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.tiles[0].status).toBe('ready'); // bound to R1 initially
+    fromValue = 'v1'; // regsrc will now only offer R2 once rerun
+    const before = calls.length;
+    await session.setFilter('from-root', 'v1');
+    // The region tile's own rerun never bound the now-stale 'R1' — the
+    // reconciliation (region deactivated) applied BEFORE this SAME wave's
+    // affected-panel run, not in some later, separate wave.
+    expect(calls.slice(before).some((c) => c.params.param_region === 'R1')).toBe(false);
+    expect(session.state.value.tiles[0].status).toBe('unfilled');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-region')!.active).toBe(false);
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-region')!.value).toBe('R1'); // value retained
+  });
+
+  it('clearAllFilters resets every dependency-bearing root param in ONE selective wave — both dependent sources transition together', async () => {
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('srcFrom')) return { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] };
+      if (sql.includes('srcCat')) return { columns: [{ name: 'dep2', type: 'Array(String)' }], rows: [[['b']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        // Defaults are BLANK/inactive — the reset target `clearAllFilters`
+        // restores. Both roots are activated below via `setFilter` first, so
+        // the clear genuinely changes them (a default already equal to the
+        // active value would make `clearAllFilters` a no-op).
+        { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
+        { id: 'cat-root', parameter: 'category', defaultActive: false, defaultValue: '' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+        { id: 'f-dep2', parameter: 'dep2', sourceQueryId: 'srcCat' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS a, {dep2:String} AS b'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+        query('srcCat', "SELECT ['b'] AS dep2 FROM t WHERE cat = {category:String} /* srcCat */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep2')!.status).toBe('waiting');
+    await session.setFilter('from-root', 'v0');
+    await session.setFilter('cat-root', 'X');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('ready');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep2')!.status).toBe('ready');
+    const base = calls.length;
+    await session.clearAllFilters();
+    // Neither source executed again — both roots reset to blank/inactive, so
+    // both correctly gate to 'waiting' rather than firing a stale request —
+    // but BOTH transitioned together, in this ONE clearAllFilters commit.
+    expect(calls.slice(base).some((c) => c.sql.includes('srcFrom') || c.sql.includes('srcCat'))).toBe(false);
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep2')!.status).toBe('waiting');
+  });
+
+  it("overlapping selective waves: a settling wave for one source does not flip a different, still-in-flight source's consumer to a settled state (BLOCKER-1)", async () => {
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    let srcFromCalls = 0;
+    const { exec } = makeExec((sql) => {
+      if (sql.includes('srcFrom')) {
+        srcFromCalls += 1;
+        return srcFromCalls === 1
+          ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a1']]] }
+          : gateA.then(() => ({ columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a2']]] }));
+      }
+      if (sql.includes('srcRegion')) return { columns: [{ name: 'dep2', type: 'Array(String)' }], rows: [[['b']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'region-root', parameter: 'region', defaultActive: true, defaultValue: 'r0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+        { id: 'f-dep2', parameter: 'dep2', sourceQueryId: 'srcRegion' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS a, {dep2:String} AS b'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+        query('srcRegion', "SELECT ['b'] AS dep2 FROM t WHERE r = {region:String} /* srcRegion */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('ready');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep2')!.status).toBe('ready');
+
+    const waveA = session.setFilter('from-root', 'v1'); // rerun srcFrom — gated (2nd call)
+    await flush();
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('loading');
+
+    const waveB = session.setFilter('region-root', 'r1'); // unrelated: rerun srcRegion only, resolves immediately
+    await waveB;
+    // BLOCKER-1: B's settling wave must NOT have flipped A's (still in-flight)
+    // consumer to a settled state from A's stale provider.
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('loading');
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep2')!.status).toBe('ready');
+
+    releaseA();
+    await waveA;
+    const f1 = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(f1.status).toBe('ready');
+    expect(f1.options).toEqual([{ value: 'a2', label: 'a2' }]);
+  });
+
+  it('a superseded SELECTIVE-wave source response never publishes (stale-gen guard holds for runFilterSourceWave too)', async () => {
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let call = 0;
+    const { exec } = makeExec((sql) => {
+      if (!sql.includes('srcFrom')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      call += 1;
+      if (call === 1) return { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['init']]] };
+      return call === 2
+        ? gate.then(() => ({ columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['STALE']]] }))
+        : { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['FRESH']]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['x'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const first = session.setFilter('from-root', 'v1'); // call #2 — gated
+    await flush();
+    const second = session.setFilter('from-root', 'v2'); // supersedes; call #3 resolves immediately
+    releaseFirst();
+    await Promise.all([first, second]);
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(f.options).toEqual([{ value: 'FRESH', label: 'FRESH' }]);
+  });
+
+  it('preflights before executing an affected Filter source — a stale token blocks the request rather than firing it', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('srcFrom')
+      ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    let tokenOk = true;
+    const onAuthFailed = vi.fn();
+    const ensureFreshToken = vi.fn(async () => tokenOk);
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, onAuthFailed,
+      connection: { ensureFreshToken },
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start(); // construction wave, token fresh — srcFrom stays 'waiting' ('from' is blank)
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
+    const base = calls.length;
+    tokenOk = false; // token now stale
+    ensureFreshToken.mockClear();
+    onAuthFailed.mockClear();
+    // Committing 'from' makes srcFrom affected (it depends on 'from'), so
+    // commitAndRerun enters its affected path (runFilterSourceWave THEN
+    // runAffectedWave) — which must preflight exactly ONCE for the whole
+    // commit (a stale token must not double-fire `ensureFreshToken`/
+    // `onAuthFailed` — one wave passing `preflighted: true` into the other),
+    // and BEFORE issuing any executeRead.
+    await expect(session.setFilter('from-root', 'v1')).resolves.toBeUndefined();
+    expect(calls.slice(base).some((c) => c.sql.includes('srcFrom'))).toBe(false);
+    expect(ensureFreshToken).toHaveBeenCalledTimes(1);
+    expect(onAuthFailed).toHaveBeenCalledTimes(1);
+    // No rerun happened at all — status is untouched.
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
+  });
+
+  it('clearFilter on a dependency root re-gates its dependent source to waiting — the retained (but now inactive) value is blanked, not stale-executed', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('srcFrom')
+      ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('ready');
+    const base = calls.length;
+    // clearFilter deactivates 'from' but RETAINS its value ('v0', non-empty) —
+    // committedRootValues() must still blank it for an inactive root, so the
+    // dependent source correctly re-gates to 'waiting' instead of executing
+    // against a stale/retained-but-no-longer-committed value.
+    await session.clearFilter('from-root');
+    expect(session.state.value.filters.find((flt) => flt.id === 'from-root')!.value).toBe('v0'); // retained
+    expect(session.state.value.filters.find((flt) => flt.id === 'from-root')!.active).toBe(false);
+    expect(calls.slice(base).some((c) => c.sql.includes('srcFrom'))).toBe(false); // no stale execution
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(f.status).toBe('waiting');
+    expect(f.options).toBeNull();
+  });
+
+  it('resolves two DIFFERENT sources\' relative-time dependency against ONE waveMs per wave (no per-source clock read)', async () => {
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('src1')) return { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] };
+      if (sql.includes('src2')) return { columns: [{ name: 'dep2', type: 'Array(String)' }], rows: [[['b']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 't-root', parameter: 't', defaultActive: true, defaultValue: '-1h' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'src1' },
+        { id: 'f-dep2', parameter: 'dep2', sourceQueryId: 'src2' },
+      ],
+    });
+    let n = 0;
+    const wallNow = vi.fn(() => { n += 1000; return n; });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, wallNow,
+      queries: [
+        query('qt', 'SELECT 1 AS n'),
+        query('src1', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {t:DateTime} /* src1 */", { dashboard: { role: 'filter' } }),
+        query('src2', "SELECT ['b'] AS dep2 FROM t WHERE ts >= {t:DateTime} /* src2 */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const call1 = calls.find((c) => c.sql.includes('src1'))!;
+    const call2 = calls.find((c) => c.sql.includes('src2'))!;
+    expect(call1.params.param_t).toBe(call2.params.param_t); // one shared clock reading for the whole wave
+  });
+
+  // The historical embedded-NUL-byte bug in `optionsSignature`'s `null` arm
+  // (fixed in this same change) is verified by direct byte inspection during
+  // implementation, not by an in-suite file read: a clean Node `fs` read from
+  // a strict `.ts` test needs its own ambient module declaration (see the
+  // `tests/types/node-crypto.d.ts` precedent -- `declare module` must live in
+  // its own import/export-free file), which is a new file outside this
+  // worker's two-file scope. The `null`-signature branch itself is already
+  // exercised end-to-end above (every `waiting`/`source-error` transition
+  // clears `options` to `null` via `setConsumerOptions`, and the `ready`
+  // transitions set it back to a real array).
+});
+
+// Maintainer review of #360 (findings 1, 2, 4, 6): a commit's affected path
+// (source wave THEN panel wave) must not launch its own panel wave once its
+// source wave turns out to have been superseded or the session was
+// destroyed — previously `runFilterSourceWave`/`applyFilterProviders`
+// returned a bare `[]` for BOTH "applied, nothing flipped" and "discarded,
+// stale plan", so a stale commit still ran `runAffectedWave` afterward. The
+// fix relies ENTIRELY on `SourceWaveResult` (`applyFilterProviders`'s own
+// per-source generation check) plus the `destroyed` flag — no separate
+// "commit generation" counter: an earlier version of this fix added one,
+// bumped on every `commitAndRerun` call including the no-affected-source
+// fast path, which made two commits affecting completely unrelated,
+// non-overlapping sources spuriously supersede one another (see the
+// "unrelated overlapping commits" test below, added after that review round).
+describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)', () => {
+  // A root filter ('from') feeds a shared Filter source ('src') that a
+  // second, source-backed filter ('f-dep') consumes; a tile binds 'from'
+  // directly so a fired panel wave for it is unambiguous and distinguishable
+  // by COUNT (both a buggy stale wave and the correct settling wave would
+  // bind the SAME, already-current 'from' value by the time either runs, so
+  // only call-count — not the bound param — can tell them apart).
+  const depDoc = () => doc({
+    tiles: [tile('t', 'qt')],
+    filters: [
+      { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+      { id: 'f-dep', parameter: 'dep', sourceQueryId: 'src', defaultActive: false, defaultValue: '' },
+    ],
+  });
+  const depQueries = () => [
+    query('qt', 'SELECT {from:String} AS n'),
+    query('src', "SELECT ['x'] AS dep FROM t WHERE ts >= {from:String} /* source */", { dashboard: { role: 'filter' } }),
+  ];
+  const tileCallCount = (calls: { sql: string }[]) => calls.filter((c) => !c.sql.includes('source')).length;
+
+  it('finding 1: a commit superseded by a newer overlapping commit issues no panel requests of its own — only the fresher commit runs panels', async () => {
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gateA.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['fresh']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const waveA = session.setFilter('from-root', 'v1'); // source wave A starts; its executeRead is call #2, gated
+    await flush();
+    const waveB = session.setFilter('from-root', 'v2'); // supersedes A's source generation before A settles
+    await waveB; // B's own source wave (call #3) resolves immediately and runs B's panel wave
+    releaseA();
+    await waveA; // A's held call finally resolves, but discovers its plan is stale
+
+    // Only ONE panel request fired for the tile — B's. A's superseded commit
+    // never launched its own `runAffectedWave` (the pre-fix bug: it would
+    // have, since a stale `[]` was indistinguishable from an applied `[]`).
+    expect(tileCallCount(calls) - before).toBe(1);
+    expect(sourceCalls).toBe(3);
+  });
+
+  it('finding 1 (isolated): a source wave superseded by a concurrent full refresh() (not another commit) still skips the panel wave', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['fresh']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const commit = session.setFilter('from-root', 'v1'); // selective source wave starts; gated (call #2)
+    await flush();
+    const refreshP = session.refresh(); // a full refresh — bumps EVERY source's generation, including this one's
+    await refreshP;
+    releaseGate();
+    await commit;
+
+    // `refresh()` legitimately fires the tile once (it is not source-targeted,
+    // so it runs unaffected/parallel); the selective commit must NOT have
+    // fired an additional, now-stale panel request of its own — its own
+    // source plan is stale the instant `refresh()`'s `runFilterWave` reserves
+    // a fresh generation on the SAME source, so `applyFilterProviders`
+    // returns `{status:'superseded'}` regardless of anything commit-specific.
+    expect(tileCallCount(calls) - before).toBe(1);
+  });
+
+  it('unrelated overlapping commits (different, non-dependent sources/params) each still run their own panel wave — neither supersedes the other', async () => {
+    // Reproduces the bug the maintainer review caught in a `commitGeneration`
+    // counter this fix does NOT use: 'region' feeds source 'src' (curating
+    // 'city', targeting tile t1); 'status' is a wholly unrelated PLAIN filter
+    // (no source at all) feeding tile t2 directly. Committing 'status' while
+    // 'region''s source wave is still in flight must not stop 'region''s own
+    // commit from running t1's panel wave once its (genuinely unraced,
+    // `'applied'`) source wave settles.
+    let releaseSrc!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSrc = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['x1']]] }))
+        : { columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['x0']]] };
+    });
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        { id: 'region-root', parameter: 'region', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-city', parameter: 'city', sourceQueryId: 'src', defaultActive: false, defaultValue: '' },
+        { id: 'status-root', parameter: 'status', defaultActive: true, defaultValue: 's0' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT {region:String} AS n'),
+        query('q2', 'SELECT {status:String} AS n'),
+        query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    // The 'src' source SQL ALSO contains the substring '{region:String}' (it
+    // depends on 'region' too), so t1's own calls must be distinguished from
+    // 'src''s by excluding anything tagged `/* source */`.
+    const t1Calls = () => calls.filter((c) => !c.sql.includes('source') && c.sql.includes('{region:String}')).length;
+    const t2Calls = () => calls.filter((c) => c.sql.includes('{status:String}')).length;
+    await session.start(); // sourceCalls -> 1 (immediate); t1 and t2 each ran once.
+    const t1Before = t1Calls();
+    const t2Before = t2Calls();
+
+    const commitRegion = session.setFilter('region-root', 'v1'); // affected path; src's exec is call #2, gated
+    await flush();
+    const commitStatus = session.setFilter('status-root', 's1'); // unrelated: no affected source, fast path
+    await commitStatus; // resolves immediately — fires t2, never touches 'src'
+
+    releaseSrc();
+    await commitRegion; // src settles normally (never superseded) — must still run t1's panel wave
+
+    expect(t2Calls() - t2Before).toBe(1);
+    // The regression: t1 must ALSO have rerun. A `commitGeneration` counter
+    // bumped by the unrelated 'status' commit would have made 'region''s
+    // commit see a generation mismatch and skip this even though its own
+    // source data was fresh and correctly `'applied'`.
+    expect(t1Calls() - t1Before).toBe(1);
+  });
+
+  it("a full refresh()'s Filter wave superseded by a concurrent selective commit skips refresh's OWN affected-panel wave; the selective commit's runAffectedWave still runs it", async () => {
+    // Tile 't' references the ROOT parameter 'region' directly (so the later
+    // selective commit's own `runAffectedWave(['region'])` can target it
+    // without depending on reconciliation), and the source-backed filter
+    // 'f-city' explicitly `targets` it (so `refresh()`'s OWN
+    // `affectedByFilterWave` classification puts 't' in its "affected"
+    // bucket — waiting for the filter wave — rather than "unaffected").
+    let releaseRefreshExec!: () => void;
+    const gateRefresh = new Promise<void>((resolve) => { releaseRefreshExec = resolve; });
+    let releaseCommitExec!: () => void;
+    const gateCommit = new Promise<void>((resolve) => { releaseCommitExec = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 1
+        ? gateRefresh.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : gateCommit.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['fresh']]] }));
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'region-root', parameter: 'region', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-city', parameter: 'city', sourceQueryId: 'src', targets: ['t'] },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {region:String} AS n'),
+        query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    const tileCalls = () => calls.filter((c) => !c.sql.includes('source')).length;
+
+    const refreshP = session.start(); // refresh()'s filter wave starts; its source exec is call #1, gated
+    await flush();
+    const commit = session.setFilter('region-root', 'v1'); // supersedes 'src'; its OWN source exec is call #2, ALSO gated
+    await flush();
+    expect(tileCalls()).toBe(0); // neither wave has reached its affected-panel phase yet
+
+    releaseRefreshExec(); // refresh's held call resolves — but 'src' has since moved on; its plan is stale
+    await refreshP;
+    // The regression: refresh's OWN affected-panel wave must NOT have fired —
+    // its Filter wave settled `{status:'superseded'}`, and (pre-fix) this
+    // discarded result was ignored, so refresh ran its affected tile with
+    // pre-commit/pre-merge values while the selective commit was still loading.
+    expect(tileCalls()).toBe(0);
+
+    releaseCommitExec(); // the selective commit's OWN call settles normally (not superseded)
+    await commit;
+    // Only the selective commit's own `runAffectedWave` (after it settled and
+    // reconciled) ran the affected tile — exactly once.
+    expect(tileCalls()).toBe(1);
+  });
+
+  it('finding 2: destroy() during an in-flight selective source wave prevents its panel wave from ever firing', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['x']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['x']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const wave = session.setFilter('from-root', 'v1'); // selective source wave starts; gated
+    await flush();
+    session.destroy();
+    releaseGate();
+    await wave;
+
+    expect(tileCallCount(calls)).toBe(before); // no panel request fired after destroy
+  });
+});
+
+describe('published sourceId on ViewerFilterState (#360 review finding 4)', () => {
+  it('a source-backed filter publishes sourceId equal to its sourceQueryId; a plain filter leaves it undefined', () => {
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'f-plain', parameter: 'plain', defaultActive: false, defaultValue: '' },
+        { id: 'f-src', parameter: 'srcp', sourceQueryId: 'src' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document,
+      queries: [
+        query('qt', 'SELECT 1 AS n'),
+        query('src', "SELECT ['x'] AS srcp /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    const plain = session.state.value.filters.find((f) => f.id === 'f-plain')!;
+    const sourced = session.state.value.filters.find((f) => f.id === 'f-src')!;
+    expect(plain.sourceId).toBeUndefined();
+    expect(sourced.sourceId).toBe('src');
+  });
+});

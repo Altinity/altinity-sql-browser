@@ -52,6 +52,8 @@ import {
 import type {
   ParameterAnalysis, PreparedSource, PreparedBatch, PreparedFieldState, ValidationMode, FieldControl,
 } from '../core/param-pipeline.js';
+import { analyzeFilterSource, prepareFilterSource } from '../core/filter-execution.js';
+import type { FilterSourcePreparation } from '../core/filter-execution.js';
 import { isRowReturning } from '../core/sql-split.js';
 import { effectiveFilterActive } from '../state.js';
 import type { QueryTab, SaveJSON } from '../state.js';
@@ -118,6 +120,16 @@ export interface WorkbenchParameterSession {
   prepareAnalyzedBatch(analysis: ParameterAnalysis, wallNowMs: number, validationMode?: ValidationMode): PreparedBatch;
   prepareTabBatch(sql: string, wallNowMs: number, validationMode?: ValidationMode): PreparedBatch;
   prepareTabSource(sql: string, wallNowMs: number, validationMode?: ValidationMode): PreparedSource;
+  /** #360 Workbench parity: a Filter tab's own preview, prepared through the
+   *  SAME shared `analyzeFilterSource`/`prepareFilterSource` pipeline the
+   *  Dashboard's `runFilterSource` calls (`core/filter-execution.js`) —
+   *  never a second, independently-maintained parameter-binding path (issue
+   *  #360's explicit rule). Driven by the same live `varValues`/
+   *  `filterActive` (#165 activation map) every other `prepare*` method here
+   *  reads; no `sourceBackedParams` — the Workbench has no Dashboard
+   *  topology (no other source could be "backing" one of these params), so
+   *  the cascading-Filter-sources rule has nothing to check here. */
+  prepareFilterPreview(sql: string, wallNowMs: number): FilterSourcePreparation;
   execStatementSql(stmt: string): string;
   varGateBlocked(wallNowMs?: number): boolean;
   hardenVar(name: string, field?: PreparedFieldState): void;
@@ -180,6 +192,24 @@ export function createWorkbenchParameterSession(deps: WorkbenchParameterSessionD
   }
   function prepareTabSource(sql: string, wallNowMs: number, validationMode: ValidationMode = 'execute'): PreparedSource {
     return prepareTabBatch(sql, wallNowMs, validationMode).sources[0];
+  }
+
+  // #360 Workbench parity: the Filter tab's OWN preview shares the EXACT same
+  // analyze/prepare pipeline the Dashboard's runFilterSource calls — never a
+  // second, independently-maintained parameter-binding path (issue #360's
+  // explicit rule: "Do not independently implement parameter binding in
+  // workbench-session.ts and dashboard-viewer-session.ts"). Unlike the
+  // Dashboard session's own once-per-construction `analyzed` (cached against
+  // a stable per-source runtime), `analyzeFilterSource` re-scans `sql` fresh
+  // on every call here — a Workbench tab's Filter SQL can change on every
+  // keystroke, so there is no stable runtime to cache the analysis against.
+  // No `sourceBackedParams`: the Workbench has no Dashboard topology (no
+  // other source could be "backing" one of these params), so the cascading-
+  // Filter-sources rule has nothing to check.
+  function prepareFilterPreview(sql: string, wallNowMs: number): FilterSourcePreparation {
+    return prepareFilterSource(analyzeFilterSource(sql), {
+      values: deps.varValues(), active: activeMap(), wallNowMs,
+    });
   }
 
   // The execution text of one statement (#165): only active optional blocks
@@ -311,6 +341,7 @@ export function createWorkbenchParameterSession(deps: WorkbenchParameterSessionD
     prepareAnalyzedBatch,
     prepareTabBatch,
     prepareTabSource,
+    prepareFilterPreview,
     execStatementSql,
     varGateBlocked,
     hardenVar,
