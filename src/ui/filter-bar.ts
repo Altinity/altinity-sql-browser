@@ -23,6 +23,8 @@ import { wireComboInput } from './combobox.js';
 import type { ComboField } from './combobox.js';
 import { buildFilterOptionField } from './filter-option-field.js';
 import type { FilterFieldOption } from './filter-option-field.js';
+import { buildMultiSelectField } from './multi-select-field.js';
+import type { MultiSelectFieldHandle } from './multi-select-field.js';
 import type { WorkbenchParameterSession } from '../application/workbench-parameter-session.js';
 
 /** The narrow slice of the real `app` controller this module reads — not the
@@ -51,6 +53,19 @@ export interface BuildFilterBarOptions {
   document?: Document;
   ariaLabel?: string;
   curatedFields?: Record<string, unknown>;
+  /** #189: fires when a curated field commits an ARRAY value — a MULTIPLE-mode
+   *  field's Apply, or a single-select-on-`Array(...)`-contract field's pick/
+   *  clear (wrapped to `[value]`/`[]` at the commit seam, never inside
+   *  `filter-option-field.ts`). The plain `onCommit(name)` seam reads the
+   *  scalar draft bag (`app.state.varValues`, `Record<string,string>`), which
+   *  cannot hold an array — this is the parallel seam for the two curated
+   *  shapes whose committed value is one. The caller (`dashboard.ts`) wires
+   *  this straight to `session.applyFilter(id, next, active)`. Left
+   *  undefined by a caller that never builds an array-committing curated
+   *  field (an older/simpler fixture, or a bar with no curated fields at
+   *  all) — `curated.selection` is never present then either, so the seam is
+   *  simply never reached. */
+  onApplyCurated?(name: string, next: string[], active: boolean): void;
 }
 
 /** #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
@@ -75,6 +90,20 @@ export interface CuratedFieldStatus {
  *  otherwise-`unknown` bag above. */
 interface CuratedFieldConfig extends CuratedFieldStatus {
   options: FilterFieldOption[];
+  /** #189: the published selection contract (`ViewerFilterState.selection`)
+   *  — absent for the pre-#189 plain scalar single-select curated field.
+   *  `mode: 'multiple'` builds `buildMultiSelectField` instead of the
+   *  combobox-based `buildFilterOptionField`; `mode: 'single'` with
+   *  `array: true` keeps `buildFilterOptionField` but wraps its scalar
+   *  commit into `[value]`/`[]` (see `wrapsArray` below). */
+  selection?: { mode: 'single' | 'multiple'; array: boolean };
+  /** #189: the committed value/active this filter published — read instead
+   *  of `app.state.varValues`/`filterActive` for the two ARRAY-valued
+   *  curated shapes (that scalar draft bag cannot hold an array); unused for
+   *  the plain scalar single-select shape, which keeps reading the draft bag
+   *  exactly as before. */
+  value?: unknown;
+  active?: boolean;
 }
 
 /** A built curated field's retained handle (#360) — kept in
@@ -119,7 +148,16 @@ function applyFieldStatus(handle: CuratedFieldHandle, s: CuratedFieldStatus): vo
 
   input.classList.remove('is-waiting', 'is-error', 'is-stale');
   label.classList.remove('is-waiting', 'is-error', 'is-stale');
-  const disabled = isWaiting || isError || isStale;
+  // #189: an ERROR status no longer disables the input (only waiting/stale
+  // do) — a helper-query failure degrades the curated field to an ordinary,
+  // USABLE free-text-equivalent control (still carrying `.is-error` + its
+  // tooltip as the affordance) instead of bricking it, matching the policy
+  // `buildMultiSelectField`'s own error-mode plain-input fallback already
+  // established (#360/#189 — see that module's header comment): the
+  // serializer's scalar passthrough makes a typed raw value work even for an
+  // Array param, so there is no reason to lock the field while its source is
+  // broken.
+  const disabled = isWaiting || isStale;
   input.disabled = disabled;
   if (disabled) input.setAttribute('aria-disabled', 'true');
   else input.removeAttribute('aria-disabled');
@@ -205,6 +243,15 @@ export interface FilterBarHandle {
   el: HTMLElement;
   dispose(): void;
   updateStatus(states: Record<string, CuratedFieldStatus>): void;
+  /** #189: true iff any curated MULTISELECT field built by THIS bar instance
+   *  currently has its popover open. The caller (`dashboard.ts`) reads this
+   *  BEFORE disposing an outgoing bar (a rebuild always disposes the old bar
+   *  outright) to decide whether a refresh announcement is owed — disposing
+   *  a multiselect field while its popover is open silently Cancels it (no
+   *  `onApply`, see multi-select-field.ts), so without an announcement the
+   *  user's open popover would simply vanish. Always `false` for a bar that
+   *  built no multiselect field at all (including the empty-`params` bar). */
+  hasOpenMultiSelect(): boolean;
 }
 
 /**
@@ -238,12 +285,21 @@ export function buildFilterBar(
   const attrs: Record<string, unknown> = { class: 'dash-filters' };
   if (options.ariaLabel) { attrs.role = 'group'; attrs['aria-label'] = options.ariaLabel; }
   if (!params.length) {
-    return { el: h('div', { ...attrs, style: { display: 'none' } }), dispose: () => {}, updateStatus: () => {} };
+    return {
+      el: h('div', { ...attrs, style: { display: 'none' } }),
+      dispose: () => {}, updateStatus: () => {}, hasOpenMultiSelect: () => false,
+    };
   }
   const timerClears: Array<() => void> = [];
-  // #360: every curated field's retained handle, keyed by
-  // parameter — see `CuratedFieldHandle` and `FilterBarHandle.updateStatus`.
+  // #360: every curated (scalar single-select) field's retained handle,
+  // keyed by parameter — see `CuratedFieldHandle` and
+  // `FilterBarHandle.updateStatus`.
   const curatedHandles = new Map<string, CuratedFieldHandle>();
+  // #189: every curated MULTISELECT field's own handle, keyed by parameter —
+  // a separate map (its `updateStatus`/`isOpen`/`dispose` are its own, not
+  // `CuratedFieldHandle`'s DOM-patching recipe) that `updateStatus`/`dispose`/
+  // `hasOpenMultiSelect` below all fold in alongside `curatedHandles`.
+  const multiSelectFields = new Map<string, MultiSelectFieldHandle>();
   const el = h('div', attrs, ...params.map((p) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     timerClears.push(() => { if (timer != null) clearTimeout(timer); timer = null; });
@@ -259,6 +315,42 @@ export function buildFilterBar(
       + (conflictNote ? ' — ' + conflictNote : '');
     const curated = options.curatedFields?.[p.name] as CuratedFieldConfig | undefined;
     if (curated) {
+      // #189: a MULTIPLE-mode curated field is an entirely different control
+      // (`buildMultiSelectField`, not the combobox-based
+      // `buildFilterOptionField`) — built and returned here directly. Every
+      // OTHER curated shape (no `selection` contract at all — the pre-#189
+      // default — or `mode: 'single'`) falls through to the existing
+      // single-select field below unchanged.
+      if (curated.selection?.mode === 'multiple') {
+        const committed = Array.isArray(curated.value) ? curated.value as string[] : [];
+        const msField = buildMultiSelectField({
+          document, name: p.name, label: p.name, required: !p.optional,
+          value: committed, active: !!curated.active, options: curated.options,
+          status: { status: curated.status, stale: curated.stale, waitingFor: curated.waitingFor },
+          onApply: (next, active) => options.onApplyCurated?.(p.name, next, active),
+          // Error-mode plain-input fallback (#189, same posture #360 already
+          // established for the single-select curated field): writes straight
+          // through the SAME plain-commit seam a non-curated field uses, so a
+          // helper-query failure degrades to an ordinary, usable free-text
+          // input rather than losing the field.
+          onFallbackCommit: (raw, active) => {
+            app.state.varValues[p.name] = raw;
+            app.state.filterActive[p.name] = active;
+            app.params.saveVarValues();
+            app.params.saveFilterActive();
+            onCommit(p.name);
+          },
+        });
+        multiSelectFields.set(p.name, msField);
+        return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
+          h('span', { class: 'var-name' }, p.name), msField.el);
+      }
+      // #189: a single-select curated field over an Array(...) consumer
+      // contract (`selection.array === true`, effective `mode: 'single'`)
+      // stays this SAME combobox control — it just commits a WRAPPED
+      // `[value]`/`[]` instead of a bare scalar (the wrap lives at this
+      // commit seam, never inside filter-option-field.ts itself).
+      const wrapsArray = curated.selection?.mode === 'single' && curated.selection.array === true;
       const field = buildFilterOptionField({
         document, name: p.name, options: curated.options,
         value: app.state.varValues[p.name] ?? '', active: !!app.state.filterActive[p.name],
@@ -269,7 +361,10 @@ export function buildFilterBar(
           app.params.saveVarValues();
           app.params.saveFilterActive();
         },
-        onCommit: () => onCommit(p.name),
+        onCommit: (value, active) => {
+          if (wrapsArray) options.onApplyCurated?.(p.name, active ? [value] : [], active);
+          else onCommit(p.name);
+        },
       });
       // #345: a curated field is always the 'enum' width band (short option
       // labels) regardless of the declared param type behind it.
@@ -368,12 +463,29 @@ export function buildFilterBar(
   }));
   return {
     el,
-    dispose: () => timerClears.forEach((clear) => clear()),
+    dispose: () => {
+      timerClears.forEach((clear) => clear());
+      // Disposing a multiselect field WHILE its popover is open is that
+      // field's own Cancel (no `onApply` call, see multi-select-field.ts) —
+      // a bar rebuild/teardown always tears every open popover down this way.
+      for (const msField of multiSelectFields.values()) msField.dispose();
+    },
     updateStatus: (states) => {
       for (const [name, handle] of curatedHandles) {
         const s = states[name];
         if (s) applyFieldStatus(handle, s);
       }
+      for (const [name, msField] of multiSelectFields) {
+        const s = states[name];
+        if (s) msField.updateStatus(s);
+      }
+    },
+    // #189: read by the caller BEFORE disposing this bar (a rebuild), to
+    // decide whether an outgoing popover's forced Cancel deserves a refresh
+    // announcement — see `dashboard.ts`'s `rebuildFilterBar`.
+    hasOpenMultiSelect: () => {
+      for (const msField of multiSelectFields.values()) if (msField.isOpen()) return true;
+      return false;
     },
   };
 }

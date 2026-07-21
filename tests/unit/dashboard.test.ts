@@ -2503,6 +2503,70 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
   });
 });
 
+// #189: the searchable multiselect (an Array(...) consumer contract, default
+// `selection.mode`) and the single-select-on-Array wrap (`selection.mode:
+// 'single'` against the same Array contract) — both new curated shapes,
+// wired end to end through the REAL session's `applyFilter` (never a bare
+// callback spy), so a committed value is a genuine array all the way through
+// `param-serialize.ts`'s wire format.
+describe('renderDashboard — searchable multiselect + array-wrapped curated filters (#189)', () => {
+  it('an Array(...) consumer contract renders a multiselect field; Apply commits an array through the real session', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('opts')
+        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(field).not.toBeNull();
+    expect(qs(field, '.ms-field')).not.toBeNull(); // the multiselect control, not the scalar combobox
+    const before = calls.length;
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const cb = qs<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]');
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+    qs(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(added.length).toBe(1); // one affected-panel wave
+    expect(added[0].params.param_p).toBe("['x']"); // a real ClickHouse array literal, not a joined string
+  });
+
+  it('a single-select curated field over an Array(...) contract commits a WRAPPED [value] (never a bare scalar), through the real session', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => (sql.includes('opts')
+        ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] }
+        : { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] }),
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', selection: { mode: 'single' } }],
+      }),
+    });
+    await render(app);
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    expect(qs(field, '.var-combo')).not.toBeNull(); // stays the scalar combobox, not a multiselect
+    const before = calls.length;
+    qs<HTMLInputElement>(field, 'input').dispatchEvent(new Event('focus'));
+    qs(field, '[role="option"]')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const added = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(added.length).toBe(1);
+    expect(added[0].params.param_p).toBe("['x']"); // wrapped, never the bare scalar "'x'"
+  });
+});
+
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY
 // when a curated source's option VALUE CONTENT changes — including a clear to
 // null — never on an unchanged republish) and `filterDiagnostics` (its own
