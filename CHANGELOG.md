@@ -325,8 +325,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   builders. The Dashboard File trigger now uses the same downward-chevron
   treatment as Workbench (no more right-arrow that misread as navigation) and
   its menu gains EXPORT/IMPORT/OPEN section headings, icons, and `.json`
-  metadata; read-only Dashboards still expose Export only. Actions and
-  permission rules are unchanged.
+  metadata; read-only Dashboards expose Export only at this point (superseded
+  by #347, below). Actions and permission rules are unchanged.
+- **Read-only Dashboard views (detached current-workspace and one-time
+  session-bundle) no longer render a File menu at all** (#347). The prior
+  read-only behavior above (#331) still showed an Export button, but
+  `exportDashboardAction` resolves the latest **committed primary** workspace
+  via `app.workspace.loadCurrent()` — in a read-only route that primary
+  workspace can be unrelated to the Dashboard actually on screen, so clicking
+  Export could silently download the wrong (and potentially private) Dashboard
+  and its queries. `buildDashboardFileMenu` no longer takes a `readOnly` flag;
+  the caller now omits the button/menu from the DOM entirely — never disabled
+  or visually hidden — when the resolved route is read-only, keeping keyboard
+  tab order and the accessibility tree free of an inoperable control. Editable
+  current-workspace Dashboards are unaffected and keep the full
+  Export/Import/Open-for-viewing menu.
 - **Dashboard tile content stays inside the tile body, above the footer**
   (#331). `.dash-tile-body` gained `overflow:hidden`, and the tall-panel
   containment contract (`flex:1 1 auto; min-width/min-height:0; max-height:100%;

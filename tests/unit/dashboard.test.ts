@@ -3044,13 +3044,42 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     expect(document.querySelector('.dash-file-menu')).toBeNull();
   });
 
-  it('view mode: the File menu offers Export only (import + re-preview are edit-context)', async () => {
+  it('editable current-workspace mode includes the File button (#347)', async () => {
+    const { app } = editApp();
+    await render(app);
+    expect(qs(app.root, '.dash-file-btn')).not.toBeNull();
+  });
+
+  it('detached view mode omits the File button entirely, not just its Import/Open rows (#347)', async () => {
     const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
     const { app } = modeApp({ workspace: null, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
     await render(app);
-    openFileMenuBtn(app.root);
-    expect(menuSections()).toEqual(['Export']);
-    expect(menuItems()).toEqual(['Export Dashboard…']);
+    expect(qs(app.root, '.dash-file-btn')).toBeNull();
+    expect(document.querySelector('.dash-file-menu')).toBeNull();
+  });
+
+  it('session-bundle read-only mode omits the File button entirely (#347)', async () => {
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const consume = vi.fn(async () => detached as never);
+    const { app } = modeApp({ openSource: { kind: 'session-bundle', token: 'tok', dashboardId: 'd' }, consume });
+    await render(app);
+    expect(qs(app.root, '.dash-file-btn')).toBeNull();
+  });
+
+  it('a different primary workspace existing cannot export it from the read-only page (#347)', async () => {
+    // The primary store holds an UNRELATED dashboard ('other') — resolveDashboardMode
+    // won't match it against this route's `dashboardId: 'd'`, so it falls through to
+    // the detached store, same as production when a primary workspace exists but this
+    // tab is showing someone else's shared/detached Dashboard.
+    const primary = wsWith({ id: 'other', queries: [q('secret', 'SELECT 2')], tiles: [{ id: 'ts', queryId: 'secret' }] });
+    const detached = wsWith({ id: 'd', queries: [q('q1', 'SELECT 1')], tiles: [{ id: 't1', queryId: 'q1' }] });
+    const { app } = modeApp({ workspace: primary, detached, openSource: { kind: 'current-workspace', workspaceId: 'w', dashboardId: 'd' } });
+    await render(app);
+    expect(qs(app.root, '.dash-notfound')).toBeNull();
+    // No File control at all — no way to reach exportDashboard() (which reads
+    // the PRIMARY workspace via app.workspace.loadCurrent(), i.e. `primary` here)
+    // from this read-only page.
+    expect(qs(app.root, '.dash-file-btn')).toBeNull();
   });
 
   it('an unrelated keydown while the menu is open is ignored', async () => {
