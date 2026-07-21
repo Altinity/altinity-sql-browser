@@ -9,9 +9,8 @@
 # (antalya + github.demo, each in demo:demo and Google-SSO modes).
 
 image:
-  # Rolling latest-main tag. Pin to a released version or sha-<commit> for
-  # reproducibility once a v* release cuts the image.
-  tag: edge
+  # Pinned to the v0.6.1 release image for reproducibility.
+  tag: "0.6.1"
 
 service:
   type: ClusterIP
