@@ -35,7 +35,8 @@ import { detectSqlFormat } from '../../core/format.js';
 import { DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP } from '../../core/dashboard.js';
 import { queryName } from '../../core/saved-query.js';
 import { panelExecution } from '../../core/panel-execution.js';
-import { filterExecution } from '../../core/filter-execution.js';
+import { analyzeFilterSource, prepareFilterSource } from '../../core/filter-execution.js';
+import type { FilterSourceAnalysis } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
 import type {
@@ -100,8 +101,12 @@ export interface ViewerTileState {
  *    invalid option, unused, …).
  *  - `source-error` — the shared source query itself failed (missing query,
  *    invalid SQL, transport/exec error).
+ *  - `waiting` (#360) — the shared source has a runnable query but one of its
+ *    OWN `{name:Type}` parameters (fed by another, root Dashboard filter) has
+ *    no value yet. Not an error — a normal mid-fill state.
  *  A plain filter (no `sourceQueryId`) never leaves `idle`. */
-export type ViewerFilterStatus = 'idle' | 'loading' | 'ready' | 'missing-helper' | 'helper-error' | 'source-error';
+export type ViewerFilterStatus =
+  'idle' | 'loading' | 'waiting' | 'ready' | 'missing-helper' | 'helper-error' | 'source-error';
 
 /** One Dashboard filter's runtime state. */
 export interface ViewerFilterState {
@@ -118,6 +123,16 @@ export interface ViewerFilterState {
    *  filter-bar rebuild signature so a same-length-but-different option set
    *  (or a null->non-null->null cycle) still triggers a rebuild (#359). */
   optionsRev: number;
+  /** #360: true while this filter's shared source is mid-flight (`loading`)
+   *  or genuinely blocked pending a dependency (`waiting`) — the currently
+   *  published `options` should not be trusted as a fresh, actionable answer.
+   *  False for every settled terminal status (`ready`, and every error
+   *  status). Optional so no other consumer of this shape breaks. */
+  stale?: boolean;
+  /** #360: when `status` is `'waiting'`, the missing dependency parameter
+   *  names (from `FilterSourcePreparation.missing`) the filter-bar UI/
+   *  diagnostics can name. Absent otherwise. */
+  waitingFor?: string[];
 }
 
 /** The Dashboard's per-render layout view (#291) — a discriminated union over
@@ -304,8 +319,18 @@ interface FilterSourceRuntime {
   consumers: FilterRuntime[];
   gen: number;
   abortController: AbortController | null;
-  status: 'idle' | 'loading' | 'ready' | 'error';
+  status: 'idle' | 'waiting' | 'loading' | 'ready' | 'error';
   provider: FilterProvider | null;
+  /** #360: this source's own static analysis (structural + cascading
+   *  diagnostics, and the root parameter names — `dependsOn` — its OWN
+   *  `{name:Type}` declarations depend on). Computed once at construction
+   *  from the source's SQL; `prepareFilterSource` re-prepares it against
+   *  concrete committed values every wave without re-scanning the SQL. */
+  analyzed: FilterSourceAnalysis;
+  /** #360: the last-known missing dependency parameter names (from
+   *  `FilterSourcePreparation.missing`) while `status === 'waiting'` — read
+   *  by `applyFilterProviders` to publish each consumer's `waitingFor`. */
+  missing: string[];
 }
 
 const cfgType = (panel: unknown): string | undefined =>
@@ -422,6 +447,16 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   });
   const filterById = new Map<string, FilterRuntime>(filters.map((filter) => [filter.def.id, filter]));
 
+  // #360: parameters BACKED BY a Filter source (every filter definition that
+  // has a `sourceQueryId`) — a shared source's OWN `{name:Type}` declarations
+  // may never depend on one of these (a Filter depending on a Filter would
+  // need a strict dependency order this app has no scheduler for); passed to
+  // `analyzeFilterSource` below so that cascading dependency becomes its own
+  // `filter-source-cascading` diagnostic per source, at construction time.
+  const sourceBackedParams = new Set(
+    filters.filter((filter) => filter.sourceId).map((filter) => filter.def.parameter),
+  );
+
   // One `FilterSourceRuntime` per UNIQUE `sourceQueryId` (#359 — the bug this
   // refactor fixes: N definitions sharing a source used to run it N times,
   // each provider keyed by the wrong id, so the merge rejected every helper
@@ -433,9 +468,14 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     if (!filter.sourceId) continue;
     let source = filterSources.get(filter.sourceId);
     if (!source) {
+      const sourceQuery = queryById.get(filter.sourceId);
       source = {
-        id: filter.sourceId, query: queryById.get(filter.sourceId),
+        id: filter.sourceId, query: sourceQuery,
         consumers: [], gen: 0, abortController: null, status: 'idle', provider: null,
+        analyzed: analyzeFilterSource(sourceQuery?.sql, {
+          sourceBackedParams, label: sourceQuery ? queryName(sourceQuery) : filter.sourceId,
+        }),
+        missing: [],
       };
       filterSources.set(filter.sourceId, source);
     }
@@ -480,6 +520,22 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     Object.fromEntries(filters.map((filter) => [filter.def.parameter, toValueString(filter.state.value)]));
   const activeMap = (): Record<string, boolean> =>
     Object.fromEntries(filters.map((filter) => [filter.def.parameter, filter.state.active]));
+
+  // #360: the committed values of every ROOT filter (no `sourceQueryId`) — the
+  // only filters whose values a shared Filter source's own `{name:Type}`
+  // declarations can depend on. An INACTIVE root's value is deliberately
+  // blanked (never its retained-but-inactive raw value): `clearFilter` keeps
+  // the typed value and only flips `active` to false, so without blanking
+  // here the pipeline's own missing-check would see a non-empty stale value
+  // and never gate the dependent source to `waiting`.
+  const committedRootValues = (): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const filter of filters) {
+      if (filter.sourceId) continue;
+      out[filter.def.parameter] = filter.state.active ? toValueString(filter.state.value) : '';
+    }
+    return out;
+  };
 
   // Prepare a batch, optionally against a caller's DRAFT values/active (the
   // filter bar's in-progress typing) rather than the committed filter state —
@@ -637,7 +693,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  are DISTINCT signatures (a clear must still bump `optionsRev` when the
    *  prior state had real options), so this is not just `JSON.stringify`. */
   function optionsSignature(options: FilterHelperOption[] | null): string {
-    return options === null ? ' null' : JSON.stringify(options.map((option) => [option.value, option.label]));
+    return options === null ? 'null' : JSON.stringify(options.map((option) => [option.value, option.label]));
   }
 
   /** Replace one consumer's curated options, bumping `optionsRev` ONLY when
@@ -651,15 +707,24 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   /** Runs ONE shared source's query (was per-filter — #359's fix: N filter
    *  definitions sharing a `sourceQueryId` now execute it exactly once per
-   *  wave). Sets the TRANSPORT terminal (`ready`/`error`) and STORES the
-   *  normalized `FilterProvider` on `source.provider` — but ONLY for the
-   *  current generation: every stale-gen guard bails BEFORE the status/provider
-   *  write, so a superseded run leaves the last-known provider intact (returns
-   *  `null`). Per-consumer curation status is derived afterward in
-   *  `applyFilterProviders`, which merges the COMPLETE provider set from all
-   *  source runtimes (the #360 boundary — retained providers survive a
-   *  selective wave). */
-  async function runFilterSource(source: FilterSourceRuntime, generation: number): Promise<FilterProvider | null> {
+   *  wave). #360: the source may now declare its OWN `{name:Type}` params
+   *  (fed by root Dashboard filters) — `prepareFilterSource` (over the
+   *  source's construction-time `analyzed` analysis) classifies it
+   *  `'runnable'` | `'waiting'` | `'error'` against the wave's committed root
+   *  values BEFORE any request is sent. Sets the TRANSPORT terminal
+   *  (`ready`/`waiting`/`error`) and STORES the normalized `FilterProvider` on
+   *  `source.provider` — but ONLY for the current generation: every stale-gen
+   *  guard bails BEFORE the status/provider write, so a superseded run leaves
+   *  the last-known provider intact (returns `null`). Per-consumer curation
+   *  status is derived afterward in `applyFilterProviders`, which merges the
+   *  COMPLETE provider set from all source runtimes (the #360 boundary —
+   *  retained providers survive a selective wave). `waveMs` is the ONE wall
+   *  clock reading the whole wave shares (`runFilterWave`/
+   *  `runFilterSourceWave` each capture it exactly once, before building their
+   *  plan) — never read again per-source here. */
+  async function runFilterSource(
+    source: FilterSourceRuntime, generation: number, waveMs: number,
+  ): Promise<FilterProvider | null> {
     if (!source.query) {
       // REUSE the static-validation code `filter-source-missing`
       // (workspace-semantics.ts) — this is the RUNTIME analog: the source
@@ -675,23 +740,45 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       return provider;
     }
     const query = source.query;
-    const execution = filterExecution(query.sql);
-    if (execution.error) {
+    const prep = prepareFilterSource(source.analyzed, {
+      values: committedRootValues(),
+      active: effectiveActive(committedRootValues(), activeMap()),
+      wallNowMs: waveMs,
+    });
+    if (prep.readiness === 'error') {
+      // A structural/cascading diagnostic (`analyzed.diagnostics`) always
+      // wins as the reported reason when present; otherwise this is purely an
+      // invalid-committed-value verdict from `prepareParameterizedBatch` with
+      // no diagnostic of its own — synthesize one from `prep.error` so the
+      // provider's `diagnostics` is never empty for an `'error'` readiness.
       const provider: FilterProvider = {
-        sourceId: source.id, sourceName: queryName(query), helpers: [], diagnostics: execution.diagnostics,
+        sourceId: source.id, sourceName: queryName(query), helpers: [],
+        diagnostics: prep.diagnostics.length
+          ? prep.diagnostics
+          : [coreDiagnostic('error', 'filter-source-invalid', prep.error || 'Filter source is invalid.', { sourceId: source.id })],
       };
       if (source.gen !== generation) return null;
       source.status = 'error';
       source.provider = provider;
       return provider;
     }
+    if (prep.readiness === 'waiting') {
+      // Blocked on a missing dependency — a normal mid-fill state, not an
+      // error: no request, no error diagnostic. `applyFilterProviders` reads
+      // `source.missing` to publish each consumer's `waitingFor`.
+      if (source.gen !== generation) return null;
+      source.status = 'waiting';
+      source.missing = prep.missing.slice();
+      source.provider = null;
+      return null;
+    }
     if (source.gen !== generation) return null;
-    const result = newResult(execution.format, execution.rowLimit);
+    const result = newResult(prep.format, prep.rowLimit);
     const controller = new AbortController();
     source.abortController = controller;
     await deps.exec.executeRead(result, {
-      sql: query.sql, format: execution.format, rowLimit: execution.rowLimit,
-      params: execution.params, signal: controller.signal,
+      sql: prep.execSql, format: prep.format, rowLimit: prep.rowLimit,
+      params: prep.params, signal: controller.signal,
     });
     if (source.gen !== generation) return null;
     source.abortController = null;
@@ -709,6 +796,9 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       });
       provider = { sourceId: source.id, sourceName: queryName(query), ...normalized };
       source.status = normalized.helpers.length ? 'ready' : 'error';
+      // #171 bound-param recording, for parity with `runTile` (~:614) — the
+      // shared source may itself now bind real params (#360).
+      deps.recordBoundParams?.(prep.boundParams);
     }
     source.provider = provider;
     return provider;
@@ -721,8 +811,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  reconciles `merged.changed` — all before this function returns, so the
    *  affected-tile wave `refresh()` runs next sees the reconciled `active`
    *  (the PRECONDITION from plan review: this must NOT be deferred to a
-   *  microtask). */
-  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[]): void {
+   *  microtask). Returns the deactivated (flipped) parameter names —
+   *  `merged.changed` — so a selective (#360) caller can fold them into the
+   *  SAME affected-panel wave as the parameter that triggered the rerun. */
+  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[]): string[] {
     // Stale-wave guard (#359 "a stale generation cannot publish options or
     // activation changes"): a superseded (or destroyed) wave's own source
     // results were already discarded in `runFilterSource` (returned `null`),
@@ -732,7 +824,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // already-correct state. Source generations move all-at-once (every
     // `runFilterWave`/`destroy` bumps them together), so any mismatch means
     // this whole wave is stale and must publish nothing.
-    if (plan.some(({ source, generation }) => source.gen !== generation)) return;
+    if (plan.some(({ source, generation }) => source.gen !== generation)) return [];
     // Merge the COMPLETE set of source providers — not just the ones a wave
     // re-ran — so retained (last-known) providers survive a future selective
     // wave (#360). A source that has never produced one contributes nothing.
@@ -749,17 +841,39 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // renders diagnostics, not per-filter status, so a bare `missing-helper`
     // left an unexplained empty control).
     const diagnostics: FilterDiagnostic[] = [...merged.diagnostics];
+    // #360 BLOCKER-1 (cross-source race): a source NOT in THIS plan that is
+    // still `loading` (a different, possibly-overlapping selective wave is
+    // running it right now) or settled `waiting` on its own dependency must
+    // not have its consumers re-derived here — its own wave's
+    // `applyFilterProviders` call owns that. Every source that IS in this
+    // plan, or a settled non-plan source (`ready`/`error`/`idle`), derives
+    // normally — only the per-consumer status/options assignment is skipped
+    // for a mid-flight non-plan source; the merge above still ran over the
+    // complete provider set.
+    const planIds = new Set(plan.map(({ source }) => source.id));
     for (const source of filterSources.values()) {
+      if (!planIds.has(source.id) && (source.status === 'loading' || source.status === 'waiting')) continue;
       for (const consumer of source.consumers) {
         if (source.status === 'error') {
           setConsumerOptions(consumer, null);
           consumer.state.status = 'source-error';
+          consumer.state.stale = false;
+          consumer.state.waitingFor = undefined;
+          continue;
+        }
+        if (source.status === 'waiting') {
+          setConsumerOptions(consumer, null);
+          consumer.state.status = 'waiting';
+          consumer.state.stale = true;
+          consumer.state.waitingFor = source.missing.slice();
           continue;
         }
         const field = merged.fields[consumer.def.parameter];
         if (field) {
           setConsumerOptions(consumer, field.options);
           consumer.state.status = 'ready';
+          consumer.state.stale = false;
+          consumer.state.waitingFor = undefined;
           continue;
         }
         // The source succeeded but this consumer's parameter never got a
@@ -769,6 +883,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
         // Simple helperName match only — no code enumeration, no sourceId key.
         const namedByDiagnostic = merged.diagnostics.some((diag) => diag.helperName === consumer.def.parameter);
         setConsumerOptions(consumer, null);
+        consumer.state.stale = false;
+        consumer.state.waitingFor = undefined;
         if (namedByDiagnostic) {
           consumer.state.status = 'helper-error';
         } else {
@@ -783,14 +899,22 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // Reconcile: a value no longer among its curated options is deactivated
     // (value KEPT — matches clearFilter's reactivation semantics). `changed`
     // only ever names source-backed parameters, whose tiles are already in
-    // `affectedByFilterWave` — no separate union step is needed.
+    // `affectedByFilterWave` — no separate union step is needed for the FULL
+    // wave; a selective (#360) caller still folds `changed` into its own
+    // affected-panel wave via the returned array below.
     for (const parameter of merged.changed) {
       for (const filter of filters) if (filter.def.parameter === parameter) filter.state.active = false;
     }
+    return merged.changed;
   }
 
   async function runFilterWave(): Promise<void> {
     filterDiagnostics = [];
+    // One wall-clock reading for the WHOLE wave (mirrors the tile wave's own
+    // `deps.wallNow()` capture in `refresh()`) — every source in this wave's
+    // plan resolves any relative `{name:DateTime}` dependency against the
+    // exact same instant, never a per-source read.
+    const waveMs = deps.wallNow();
     const sources = [...filterSources.values()];
     const plan = sources.map((source) => ({ source, generation: supersede(source) }));
     for (const { source } of plan) {
@@ -799,15 +923,45 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       // and WITHOUT touching `options`/`optionsRev`: clearing options mid-wave
       // would flip a non-empty filter bar to empty on every refresh, churn
       // the UI's rebuild signature, and destroy in-progress typing.
-      for (const consumer of source.consumers) consumer.state.status = 'loading';
+      for (const consumer of source.consumers) { consumer.state.status = 'loading'; consumer.state.stale = true; }
     }
     publish();
     // Each source stores its own provider on `source.provider`; the terminal
     // merge reads the complete set, so the pool's returns are awaited only for
     // sequencing, not collected.
     await runPool(plan, VIEWER_TILE_CONCURRENCY,
-      ({ source, generation }) => runFilterSource(source, generation));
+      ({ source, generation }) => runFilterSource(source, generation, waveMs));
     applyFilterProviders(plan);
+  }
+
+  /** #360: rerun only the shared Filter sources whose OWN `{name:Type}`
+   *  declarations depend on one of `changedParams` (a root filter's just-
+   *  committed parameter names) — a source with no such dependency is never
+   *  superseded/rerun. One wall-clock reading for this whole selective wave,
+   *  same discipline as `runFilterWave`. Returns the deactivated (flipped)
+   *  parameter names from `applyFilterProviders` (`[]` when no source was
+   *  affected) so the caller can fold them into ONE combined affected-panel
+   *  wave alongside `changedParams`. */
+  async function runFilterSourceWave(changedParams: string[]): Promise<string[]> {
+    // A commit-triggered rerun issues a REAL `executeRead` for the affected
+    // source(s) — unlike `runFilterWave` (always reached via `refresh()`,
+    // which already preflighted once for the whole cycle) this selective wave
+    // is entered directly from `commitAndRerun`, with no preflight upstream.
+    // Same guard `runAffectedWave` uses before its own executeReads.
+    if (!(await preflight())) return [];
+    const waveMs = deps.wallNow();
+    const affected = [...filterSources.values()].filter((source) =>
+      source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
+    if (affected.length === 0) return [];
+    const plan = affected.map((source) => ({ source, generation: supersede(source) }));
+    for (const source of affected) {
+      source.status = 'loading';
+      for (const consumer of source.consumers) { consumer.state.status = 'loading'; consumer.state.stale = true; }
+    }
+    publish();
+    await runPool(plan, VIEWER_TILE_CONCURRENCY,
+      ({ source, generation }) => runFilterSource(source, generation, waveMs));
+    return applyFilterProviders(plan);
   }
 
 
@@ -879,6 +1033,25 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       (runtime) => runTile(runtime, prepared.get(runtime.tile.id), generations.get(runtime.tile.id)!));
   }
 
+  // #360: after committing a value (these four are commit paths only — never
+  // in-progress typing), rerun any shared Filter source that depends on the
+  // just-committed root parameter(s) FIRST, then fold both the committed
+  // parameter(s) AND any names `runFilterSourceWave` itself deactivated
+  // (`merged.changed`, e.g. a now-out-of-range curated value elsewhere) into
+  // ONE combined affected-panel wave — never two separate waves. A synchronous
+  // pre-check skips `runFilterSourceWave` (and the microtask hop awaiting it
+  // costs) entirely when nothing depends on `changed` — behaviorally
+  // identical to awaiting it (an unaffected wave always resolves to `[]` with
+  // no side effect), just without the extra tick for the overwhelmingly
+  // common case of a Dashboard with no parameterized Filter sources (#360).
+  async function commitAndRerun(changed: string[]): Promise<void> {
+    const hasAffectedSource = [...filterSources.values()]
+      .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
+    if (!hasAffectedSource) { await runAffectedWave(changed); return; }
+    const flipped = await runFilterSourceWave(changed);
+    await runAffectedWave([...new Set([...changed, ...flipped])]);
+  }
+
   async function setFilter(filterId: string, value: unknown): Promise<void> {
     if (destroyed) return;
     const filter = filterById.get(filterId);
@@ -886,7 +1059,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     filter.state.value = value;
     filter.state.active = value != null && value !== '';
     publish();
-    await runAffectedWave([filter.def.parameter]);
+    await commitAndRerun([filter.def.parameter]);
   }
 
   async function applyFilter(filterId: string, value: unknown, active: boolean): Promise<void> {
@@ -898,7 +1071,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     filter.state.value = value;
     filter.state.active = active;
     publish();
-    await runAffectedWave([filter.def.parameter]);
+    await commitAndRerun([filter.def.parameter]);
   }
 
   async function clearFilter(filterId: string): Promise<void> {
@@ -908,7 +1081,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // Deactivate but keep the value so reactivation restores it.
     filter.state.active = false;
     publish();
-    await runAffectedWave([filter.def.parameter]);
+    await commitAndRerun([filter.def.parameter]);
   }
 
   async function clearAllFilters(): Promise<void> {
@@ -923,7 +1096,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     }
     publish();
     // Coalesce every reset into ONE affected-panel wave (#188 clear-all).
-    if (changed.length) await runAffectedWave(changed);
+    if (changed.length) await commitAndRerun(changed);
   }
 
   function cancelTile(tileId: string): void {
