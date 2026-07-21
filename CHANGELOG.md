@@ -9,6 +9,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-21
+
 ### Changed
 - **Workbench File menu reorganized around primary workspace actions, with
   `Replace workspace…` renamed to `Open workspace…`** (#342). The first four
@@ -2368,7 +2370,8 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   ClickHouse — SQL editor, sortable results table + chart view, EXPLAIN pipeline
   graph, and the schema data-flow graph. Built by esbuild into one `dist/sql.html`.
 
-[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Altinity/altinity-sql-browser/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/Altinity/altinity-sql-browser/compare/v0.4.0...v0.4.5
