@@ -986,16 +986,23 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return applyFilterProviders(plan);
   }
 
-  async function runFilterWave(): Promise<void> {
+  async function runFilterWave(): Promise<SourceWaveResult> {
     // One wall-clock reading for the WHOLE wave (mirrors the tile wave's own
     // `deps.wallNow()` capture in `refresh()`).
     const waveMs = deps.wallNow();
     // Full refresh: every known source, keep options through loading (#359
     // no-flicker invariant), reset diagnostics immediately (see
-    // `executeFilterSourcePlan`'s doc comment for the "why"). The returned
-    // `SourceWaveResult` is ignored — a full refresh has no further phase to
-    // gate on it.
-    await executeFilterSourcePlan([...filterSources.values()],
+    // `executeFilterSourcePlan`'s doc comment for the "why"). Unlike a
+    // stand-alone call, THIS caller (`refresh()`) has a later phase that
+    // depends on the result: its own affected-panel wave runs AFTER this
+    // settles, using the merged/reconciled values. A `{status:'superseded'}`
+    // here means a concurrent SELECTIVE commit reserved a fresher generation
+    // on one of these sources and is now the source-of-truth for them —
+    // `refresh()` must skip its own affected-panel wave in that case (see its
+    // caller, just below) rather than run it against source data that
+    // predates that commit's own update, and defer to that commit's own
+    // `runAffectedWave` instead.
+    return executeFilterSourcePlan([...filterSources.values()],
       { clearOptions: false, resetDiagnostics: true, waveMs });
   }
 
@@ -1054,9 +1061,25 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const firstBatch = sourcesById(prepareBatch('execute').sources);
     const unaffectedWave = runPool(unaffected, VIEWER_TILE_CONCURRENCY,
       (runtime) => runTile(runtime, firstBatch.get(runtime.tile.id), generations.get(runtime.tile.id)!));
-    const filterWave = runFilterWave();
-    await filterWave;
+    const filterResult = await runFilterWave();
     if (destroyed) { await unaffectedWave; return; }
+    if (filterResult.status === 'superseded') {
+      // A concurrent selective commit superseded this refresh's Filter wave
+      // and is now the source-of-truth; IT will run the affected panels
+      // after it settles + reconciles (`commitAndRerun` -> `runAffectedWave`).
+      // Running them here would execute panels before the current source
+      // updates/reconciliation are applied — the exact ordering this session
+      // must never allow — and would NOT be preempted by tile generations:
+      // the selective commit reserves its OWN tile generations only after
+      // its source wave settles (inside its own `runAffectedWave`), so during
+      // this window these tiles' generations are still whatever `refresh()`
+      // reserved up front and would run un-preempted. `refresh()`'s own work
+      // is done either way — the unaffected tiles already ran/are running,
+      // and the affected side is delegated to the superseding commit.
+      await unaffectedWave;
+      publish(false, destroyed ? null : deps.now());
+      return;
+    }
     // Affected tiles run AFTER the filter wave, with the merged/blanked values.
     const secondBatch = sourcesById(prepareBatch('execute').sources);
     const affectedWave = runPool(affected, VIEWER_TILE_CONCURRENCY,

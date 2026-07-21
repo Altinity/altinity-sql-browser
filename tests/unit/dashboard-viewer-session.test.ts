@@ -1719,6 +1719,62 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
     expect(t1Calls() - t1Before).toBe(1);
   });
 
+  it("a full refresh()'s Filter wave superseded by a concurrent selective commit skips refresh's OWN affected-panel wave; the selective commit's runAffectedWave still runs it", async () => {
+    // Tile 't' references the ROOT parameter 'region' directly (so the later
+    // selective commit's own `runAffectedWave(['region'])` can target it
+    // without depending on reconciliation), and the source-backed filter
+    // 'f-city' explicitly `targets` it (so `refresh()`'s OWN
+    // `affectedByFilterWave` classification puts 't' in its "affected"
+    // bucket — waiting for the filter wave — rather than "unaffected").
+    let releaseRefreshExec!: () => void;
+    const gateRefresh = new Promise<void>((resolve) => { releaseRefreshExec = resolve; });
+    let releaseCommitExec!: () => void;
+    const gateCommit = new Promise<void>((resolve) => { releaseCommitExec = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 1
+        ? gateRefresh.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : gateCommit.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['fresh']]] }));
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'region-root', parameter: 'region', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-city', parameter: 'city', sourceQueryId: 'src', targets: ['t'] },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {region:String} AS n'),
+        query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    const tileCalls = () => calls.filter((c) => !c.sql.includes('source')).length;
+
+    const refreshP = session.start(); // refresh()'s filter wave starts; its source exec is call #1, gated
+    await flush();
+    const commit = session.setFilter('region-root', 'v1'); // supersedes 'src'; its OWN source exec is call #2, ALSO gated
+    await flush();
+    expect(tileCalls()).toBe(0); // neither wave has reached its affected-panel phase yet
+
+    releaseRefreshExec(); // refresh's held call resolves — but 'src' has since moved on; its plan is stale
+    await refreshP;
+    // The regression: refresh's OWN affected-panel wave must NOT have fired —
+    // its Filter wave settled `{status:'superseded'}`, and (pre-fix) this
+    // discarded result was ignored, so refresh ran its affected tile with
+    // pre-commit/pre-merge values while the selective commit was still loading.
+    expect(tileCalls()).toBe(0);
+
+    releaseCommitExec(); // the selective commit's OWN call settles normally (not superseded)
+    await commit;
+    // Only the selective commit's own `runAffectedWave` (after it settled and
+    // reconciled) ran the affected tile — exactly once.
+    expect(tileCalls()).toBe(1);
+  });
+
   it('finding 2: destroy() during an in-flight selective source wave prevents its panel wave from ever firing', async () => {
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
