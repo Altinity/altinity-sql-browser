@@ -1572,8 +1572,15 @@ describe('parameterized Filter sources (#360)', () => {
 // source wave turns out to have been superseded or the session was
 // destroyed — previously `runFilterSourceWave`/`applyFilterProviders`
 // returned a bare `[]` for BOTH "applied, nothing flipped" and "discarded,
-// stale plan", so a stale commit still ran `runAffectedWave` afterward.
-describe('commit-level generation guard for a superseded/destroyed selective wave (#360 review findings 1/2)', () => {
+// stale plan", so a stale commit still ran `runAffectedWave` afterward. The
+// fix relies ENTIRELY on `SourceWaveResult` (`applyFilterProviders`'s own
+// per-source generation check) plus the `destroyed` flag — no separate
+// "commit generation" counter: an earlier version of this fix added one,
+// bumped on every `commitAndRerun` call including the no-affected-source
+// fast path, which made two commits affecting completely unrelated,
+// non-overlapping sources spuriously supersede one another (see the
+// "unrelated overlapping commits" test below, added after that review round).
+describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)', () => {
   // A root filter ('from') feeds a shared Filter source ('src') that a
   // second, source-backed filter ('f-dep') consumes; a tile binds 'from'
   // directly so a fired panel wave for it is unambiguous and distinguishable
@@ -1622,7 +1629,7 @@ describe('commit-level generation guard for a superseded/destroyed selective wav
     expect(sourceCalls).toBe(3);
   });
 
-  it('finding 1 (isolated): a source wave superseded by an UNRELATED concurrent full refresh (not another commit) still skips the panel wave, even though commitGeneration itself never changed', async () => {
+  it('finding 1 (isolated): a source wave superseded by a concurrent full refresh() (not another commit) still skips the panel wave', async () => {
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
     let sourceCalls = 0;
@@ -1639,17 +1646,77 @@ describe('commit-level generation guard for a superseded/destroyed selective wav
 
     const commit = session.setFilter('from-root', 'v1'); // selective source wave starts; gated (call #2)
     await flush();
-    const refreshP = session.refresh(); // a full refresh — bumps EVERY source's generation, never commitGeneration
+    const refreshP = session.refresh(); // a full refresh — bumps EVERY source's generation, including this one's
     await refreshP;
     releaseGate();
     await commit;
 
     // `refresh()` legitimately fires the tile once (it is not source-targeted,
     // so it runs unaffected/parallel); the selective commit must NOT have
-    // fired an additional, now-stale panel request of its own even though
-    // `commitGeneration` was never touched by `refresh()` — only the
-    // `SourceWaveResult` status caught this one.
+    // fired an additional, now-stale panel request of its own — its own
+    // source plan is stale the instant `refresh()`'s `runFilterWave` reserves
+    // a fresh generation on the SAME source, so `applyFilterProviders`
+    // returns `{status:'superseded'}` regardless of anything commit-specific.
     expect(tileCallCount(calls) - before).toBe(1);
+  });
+
+  it('unrelated overlapping commits (different, non-dependent sources/params) each still run their own panel wave — neither supersedes the other', async () => {
+    // Reproduces the bug the maintainer review caught in a `commitGeneration`
+    // counter this fix does NOT use: 'region' feeds source 'src' (curating
+    // 'city', targeting tile t1); 'status' is a wholly unrelated PLAIN filter
+    // (no source at all) feeding tile t2 directly. Committing 'status' while
+    // 'region''s source wave is still in flight must not stop 'region''s own
+    // commit from running t1's panel wave once its (genuinely unraced,
+    // `'applied'`) source wave settles.
+    let releaseSrc!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSrc = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['x1']]] }))
+        : { columns: [{ name: 'city', type: 'Array(String)' }], rows: [[['x0']]] };
+    });
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        { id: 'region-root', parameter: 'region', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-city', parameter: 'city', sourceQueryId: 'src', defaultActive: false, defaultValue: '' },
+        { id: 'status-root', parameter: 'status', defaultActive: true, defaultValue: 's0' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT {region:String} AS n'),
+        query('q2', 'SELECT {status:String} AS n'),
+        query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    // The 'src' source SQL ALSO contains the substring '{region:String}' (it
+    // depends on 'region' too), so t1's own calls must be distinguished from
+    // 'src''s by excluding anything tagged `/* source */`.
+    const t1Calls = () => calls.filter((c) => !c.sql.includes('source') && c.sql.includes('{region:String}')).length;
+    const t2Calls = () => calls.filter((c) => c.sql.includes('{status:String}')).length;
+    await session.start(); // sourceCalls -> 1 (immediate); t1 and t2 each ran once.
+    const t1Before = t1Calls();
+    const t2Before = t2Calls();
+
+    const commitRegion = session.setFilter('region-root', 'v1'); // affected path; src's exec is call #2, gated
+    await flush();
+    const commitStatus = session.setFilter('status-root', 's1'); // unrelated: no affected source, fast path
+    await commitStatus; // resolves immediately — fires t2, never touches 'src'
+
+    releaseSrc();
+    await commitRegion; // src settles normally (never superseded) — must still run t1's panel wave
+
+    expect(t2Calls() - t2Before).toBe(1);
+    // The regression: t1 must ALSO have rerun. A `commitGeneration` counter
+    // bumped by the unrelated 'status' commit would have made 'region''s
+    // commit see a generation mismatch and skip this even though its own
+    // source data was fresh and correctly `'applied'`.
+    expect(t1Calls() - t1Before).toBe(1);
   });
 
   it('finding 2: destroy() during an in-flight selective source wave prevents its panel wave from ever firing', async () => {

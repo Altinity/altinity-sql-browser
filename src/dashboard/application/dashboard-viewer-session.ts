@@ -394,11 +394,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // outside `documentRef` — never read/written by any command, never
   // persisted. A fresh session always starts at 'tiles'.
   let gridRenderMode: GridRenderMode = 'tiles';
-  // #360 findings 1+2: bumped once per `commitAndRerun` call, covering BOTH
-  // phases of its affected path (the source wave, then the panel wave) — see
-  // the rationale on `commitAndRerun` itself for why a per-phase generation
-  // guard alone (each phase already has one) is not enough.
-  let commitGeneration = 0;
 
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) {
@@ -1123,57 +1118,49 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // into both waves — otherwise a stale token would fail `ensureFreshToken()`
   // (and fire `onAuthFailed`) twice for one commit.
   //
-  // Findings 1+2 (maintainer review): a commit-level `commitGeneration`
-  // guards BOTH phases of the affected path together — not just each phase's
-  // own internal generation checks — because two failure modes were
-  // otherwise indistinguishable from "ran, nothing to do":
-  //  - Superseded (finding 1): an overlapping LATER commit (B, a different
-  //    `commitAndRerun` call) can supersede THIS commit's (A) source wave
-  //    mid-flight by reserving a fresh generation on one of the same sources.
-  //    `runFilterSourceWave`/`applyFilterProviders` correctly discard A's
-  //    stale results (`{status:'superseded'}`), but without a check here A
-  //    would still go on to launch its OWN panel wave — issuing avoidable
-  //    requests and binding source-backed filter values that have already
-  //    moved past while B is still in flight. Comparing `generation` (this
-  //    call's own snapshot) against `commitGeneration` (bumped by every NEW
-  //    `commitAndRerun` call) after the source wave catches a commit-level
-  //    supersession even in cases the plan-level `SourceWaveResult` alone
-  //    would not (e.g. a concurrent full `refresh()`, which bumps every
-  //    source's generation but never touches `commitGeneration`) — so both
-  //    checks are kept, each catching a case the other does not.
-  //  - Destroyed (finding 2): `runAffectedWave(parameters, true)` passes
-  //    `preflighted: true`, which skips its own `preflight()` call — and
-  //    `preflight()` was the ONLY place that checked `destroyed` on this
-  //    path. A `destroy()` firing while the source wave is in flight would
-  //    otherwise let the panel wave still reserve tile generations and issue
-  //    requests after teardown. The explicit `destroyed` check here, plus the
-  //    new unconditional guard at the top of `runAffectedWave` itself
-  //    (belt-and-braces — `runAffectedWave` is also reachable directly from
-  //    the fast path), closes both entry points.
+  // Findings 1+2 (maintainer review): a superseded or destroyed source wave
+  // must not go on to launch its own panel wave. Both are already caught by
+  // checks that exist independently of any commit-to-commit bookkeeping here
+  // — no extra "commit generation" counter is needed (an earlier version of
+  // this fix added one bumped on EVERY `commitAndRerun` call, including the
+  // no-affected-source fast path; that made two commits affecting DIFFERENT,
+  // non-overlapping sources spuriously supersede one another — a legitimate
+  // concurrent commit's own, correctly-`'applied'` result would still get
+  // discarded and its panel wave skipped just because an unrelated commit
+  // happened to be in flight at the same time. Reverted: see PR review):
+  //  - Superseded (finding 1): `result.status === 'superseded'` already
+  //    covers every real case. Two commits overlapping on the SAME (or a
+  //    cascading-dependent) source: the later one's `runFilterSourceWave`
+  //    calls `supersede()` on that shared `FilterSourceRuntime`, reserving a
+  //    fresh generation; when the earlier commit's held request finally
+  //    settles, its `applyFilterProviders` plan no longer matches that
+  //    generation, so it returns `{status:'superseded'}` — see
+  //    `applyFilterProviders`'s own stale-wave guard. A concurrent
+  //    UNRELATED full `refresh()` supersedes EVERY known source (not just
+  //    the ones a param change affects), so it catches this too, the same
+  //    way. Two commits affecting genuinely DIFFERENT, non-dependent sources
+  //    never touch each other's generations, so neither is ever marked
+  //    superseded — exactly the case that must still run its own panel wave.
+  //  - Destroyed (finding 2): `destroy()` bumps every source's (and every
+  //    tile's) generation too, so an in-flight source wave racing a
+  //    `destroy()` is ALSO naturally caught by the same `'superseded'` check
+  //    above; the explicit `destroyed` check here plus the new unconditional
+  //    guard at the top of `runAffectedWave` close the remaining gap — the
+  //    `preflighted: true` fast path into `runAffectedWave` (the only caller
+  //    that skips `preflight()`, previously the only `destroyed` check on
+  //    this path) reachable right after the two checks below pass.
   async function commitAndRerun(changed: string[]): Promise<void> {
-    const generation = ++commitGeneration;
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
     if (!hasAffectedSource) { await runAffectedWave(changed); return; }
     if (!(await preflight())) return;
     const result = await runFilterSourceWave(changed);
-    if (destroyed || generation !== commitGeneration || result.status === 'superseded') {
-      // The source wave's own `applyFilterProviders` merge (options/status
-      // updates on `consumer.state`) already happened synchronously inside
-      // `runFilterSourceWave` — but unlike the normal path below, we are
-      // skipping `runAffectedWave` entirely, and `runAffectedWave` is the
-      // step that normally `publish()`es afterward. Without this publish, a
-      // commit that lost the commit-level race (`generation !==
-      // commitGeneration`, e.g. an UNRELATED overlapping commit) would still
-      // have applied a real, non-superseded merge that never reaches
-      // `state.value` — the mutation sits in the runtime record until some
-      // LATER, unrelated publish happens to flush it. A genuinely
-      // `'superseded'` result changed nothing, so this is a harmless replay
-      // of the current state in that case. Skipped entirely once `destroyed`
-      // — no further publish is attributable to a torn-down session.
-      if (!destroyed) publish();
-      return;
-    }
+    // A `'superseded'` result means `applyFilterProviders` returned BEFORE
+    // merging anything (its own stale-wave guard, `applyFilterProviders`'s
+    // doc comment) — no consumer state changed, so there is nothing new to
+    // `publish()`; the wave that superseded this one owns publishing the
+    // eventual settled state.
+    if (destroyed || result.status === 'superseded') return;
     await runAffectedWave([...new Set([...changed, ...result.flipped])], true);
   }
 
