@@ -2550,25 +2550,42 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
     const { app } = dashApp({
       responder: (sql) => {
         if (sql.includes('optsinfo')) return { columns: [{ name: 'pinfo', type: 'Array(String)' }], rows: [[['x', 'x']]] };
-        if (sql.includes('optswarn')) return { columns: [{ name: 'pwarn', type: 'Array(String)' }], rows: [[['a', 'b']]] };
+        if (sql.includes('optswarn')) {
+          return {
+            columns: [{ name: 'pwarn2', type: 'Array(String)' }, { name: 'pwarn', type: 'Array(String)' }],
+            rows: [[['a', 'b'], ['c', 'd']]],
+          };
+        }
         return {};
       },
       workspace: wsWith({
         queries: [
-          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String}'),
+          // #189: every source-backed filter below needs a real EXECUTABLE
+          // consumer declaring its own parameter (a scalar type) — otherwise
+          // `resolveFilterSelection` sees zero consumers and the strict
+          // fallback strips it from its source's `consumers` before the
+          // source ever runs, at construction (never a benign carve-out
+          // anymore — see `dashboard-viewer-session.ts`'s
+          // `resolveFilterSelection` wiring). `t1` declares all three so
+          // every one of `ferr`/`fwarn`/`finfo`'s sources still executes.
+          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String} AND w = {pwarn2:String} AND z = {perr:String}'),
           // A duplicate option value ('x' twice) → an 'info' diagnostic
           // (`filter-duplicate-option`) from readFilterOptions.
           q('srcInfo', "SELECT ['x','x'] AS pinfo -- optsinfo", { dashboard: { role: 'filter' } }),
-          // 'pwarn' has no Panel consumer → a 'warning' diagnostic
+          // 'pwarn2' is the REAL, consumed filter parameter (keeps this
+          // shared source alive); 'pwarn' is an extra returned column no
+          // filter definition even names — a genuinely-unmatched helper
+          // column (not a no-consumer filter — #189 would have stripped
+          // that before the source ever ran) → a 'warning' diagnostic
           // (`filter-helper-unused`) from the merge.
-          q('srcWarn', "SELECT ['a','b'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
+          q('srcWarn', "SELECT ['a','b'] AS pwarn2, ['c','d'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
         ],
         tiles: [{ id: 't1', queryId: 'q1' }],
         filters: [
           // An unresolvable source query id → an 'error' diagnostic
           // (`filter-source-missing`).
           { id: 'ferr', parameter: 'perr', sourceQueryId: 'nope' },
-          { id: 'fwarn', parameter: 'pwarn', sourceQueryId: 'srcWarn' },
+          { id: 'fwarn', parameter: 'pwarn2', sourceQueryId: 'srcWarn' },
           { id: 'finfo', parameter: 'pinfo', sourceQueryId: 'srcInfo' },
         ],
       }),

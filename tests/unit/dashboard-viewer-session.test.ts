@@ -632,10 +632,18 @@ describe('shared filter-source runtime (#359)', () => {
     const { exec } = makeExec((sql) => (sql.includes('source') ? new Promise(() => {}) : { columns: [{ name: 'n' }], rows: [[1]] }));
     const document = sharedDoc(
       [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+      // #189: a real consumer per parameter — otherwise both definitions
+      // have zero executable consumers and the strict fallback strips them
+      // from `src`'s consumers before it ever runs (this test's whole
+      // subject).
+      [tile('ta', 'qa'), tile('tb', 'qb')],
     );
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
-      queries: [query('src', "SELECT ['V'] AS p1, ['W'] AS p2 /* source */", { dashboard: { role: 'filter' } })],
+      queries: [
+        query('qa', 'SELECT {p1:String} AS n'), query('qb', 'SELECT {p2:String} AS n'),
+        query('src', "SELECT ['V'] AS p1, ['W'] AS p2 /* source */", { dashboard: { role: 'filter' } }),
+      ],
     }));
     // Intentionally not awaited: the source responder never resolves, so
     // `start()` never settles either — only `destroy()`'s abort matters here.
@@ -650,10 +658,16 @@ describe('shared filter-source runtime (#359)', () => {
     const { exec } = makeExec((sql) => (sql.includes('source') ? { error: 'source down' } : { columns: [{ name: 'n' }], rows: [[1]] }));
     const document = sharedDoc(
       [{ id: 'f1', parameter: 'p1', sourceQueryId: 'src' }, { id: 'f2', parameter: 'p2', sourceQueryId: 'src' }],
+      // #189: a real consumer per parameter keeps `src` alive (see the
+      // "destroy cancels..." test above for why).
+      [tile('ta', 'qa'), tile('tb', 'qb')],
     );
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
-      queries: [query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+      queries: [
+        query('qa', 'SELECT {p1:String} AS n'), query('qb', 'SELECT {p2:String} AS n'),
+        query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } }),
+      ],
     }));
     await session.start();
     const diags = session.state.value.filterDiagnostics;
@@ -666,11 +680,24 @@ describe('shared filter-source runtime (#359)', () => {
     const { exec } = makeExec((sql) => (sql.includes('source')
       ? { columns: [{ name: 'z', type: 'Array(String)' }], rows: [[['V']]] }
       : { columns: [{ name: 'n' }], rows: [[1]] }));
-    // No tile/filter parameter named 'z' — the source's helper column has no consumer.
-    const document = sharedDoc([{ id: 'f1', parameter: 'unrelated', sourceQueryId: 'src' }], [tile('t', 'qt')]);
+    // No tile/filter parameter named 'z' — the source's helper column has no
+    // consumer. #189: 'f1' (parameter 'unrelated') has no consumer either
+    // and falls back on its own (stripped from `src`'s consumers) — a
+    // SEPARATE filter 'f2' sharing the same source with a real consumer
+    // ('p1') keeps `src` running so 'z' still surfaces as unused.
+    const document = sharedDoc(
+      [
+        { id: 'f1', parameter: 'unrelated', sourceQueryId: 'src' },
+        { id: 'f2', parameter: 'p1', sourceQueryId: 'src' },
+      ],
+      [tile('t', 'qt'), tile('t2', 'q2')],
+    );
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
-      queries: [query('qt', 'SELECT 1 AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+      queries: [
+        query('qt', 'SELECT 1 AS n'), query('q2', 'SELECT {p1:String} AS n'),
+        query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } }),
+      ],
     }));
     await session.start();
     const warn = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-helper-unused');
@@ -1097,7 +1124,11 @@ describe('parameterized Filter sources (#360)', () => {
       ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] }
       : { columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
-      tiles: [tile('t', 'qt')],
+      // #189: 'tr'/'qr' is a real executable consumer of 'region' (a scalar
+      // declaration) — otherwise `resolveFilterSelection` sees zero
+      // consumers and the strict fallback strips 'f-region' from `src`'s
+      // consumers before the wave below ever runs it.
+      tiles: [tile('t', 'qt'), tile('tr', 'qr')],
       filters: [
         { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
         { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
@@ -1106,7 +1137,7 @@ describe('parameterized Filter sources (#360)', () => {
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
       queries: [
-        query('qt', 'SELECT 1 AS n'),
+        query('qt', 'SELECT 1 AS n'), query('qr', 'SELECT {region:String} AS n'),
         query('src', "SELECT ['east','west'] AS region FROM t WHERE ts >= {from:String} /* depsrc */", { dashboard: { role: 'filter' } }),
       ],
     }));
@@ -1206,7 +1237,11 @@ describe('parameterized Filter sources (#360)', () => {
       return { columns: [{ name: 'n' }], rows: [[1]] };
     });
     const document = doc({
-      tiles: [tile('t', 'qt')],
+      // #189: real consumers for 'dep1'/'dep2' — otherwise both source-backed
+      // filters have zero executable consumers and the strict fallback
+      // strips them from their sources' consumers before this test's wave
+      // ever runs either source.
+      tiles: [tile('t', 'qt'), tile('t1', 'qd1'), tile('t2', 'qd2')],
       filters: [
         { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
         { id: 'cat-root', parameter: 'category', defaultActive: true, defaultValue: 'X' },
@@ -1218,6 +1253,7 @@ describe('parameterized Filter sources (#360)', () => {
       document, exec,
       queries: [
         query('qt', 'SELECT 1 AS n'),
+        query('qd1', 'SELECT {dep1:String} AS n'), query('qd2', 'SELECT {dep2:String} AS n'),
         query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
         query('srcCat', "SELECT ['b'] AS dep2 FROM t WHERE cat = {category:String} /* srcCat */", { dashboard: { role: 'filter' } }),
       ],
@@ -1532,7 +1568,9 @@ describe('parameterized Filter sources (#360)', () => {
       return { columns: [{ name: 'n' }], rows: [[1]] };
     });
     const document = doc({
-      tiles: [tile('t', 'qt')],
+      // #189: real consumers for 'dep1'/'dep2' — see the "selective rerun"
+      // test above for why this is required now.
+      tiles: [tile('t', 'qt'), tile('t1', 'qd1'), tile('t2', 'qd2')],
       filters: [
         { id: 't-root', parameter: 't', defaultActive: true, defaultValue: '-1h' },
         { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'src1' },
@@ -1545,6 +1583,7 @@ describe('parameterized Filter sources (#360)', () => {
       document, exec, wallNow,
       queries: [
         query('qt', 'SELECT 1 AS n'),
+        query('qd1', 'SELECT {dep1:String} AS n'), query('qd2', 'SELECT {dep2:String} AS n'),
         query('src1', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {t:DateTime} /* src1 */", { dashboard: { role: 'filter' } }),
         query('src2', "SELECT ['b'] AS dep2 FROM t WHERE ts >= {t:DateTime} /* src2 */", { dashboard: { role: 'filter' } }),
       ],
@@ -1594,8 +1633,15 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
       { id: 'f-dep', parameter: 'dep', sourceQueryId: 'src', defaultActive: false, defaultValue: '' },
     ],
   });
+  // #189: 't'/'qt' also declares 'dep' (inside an optional block, so it stays
+  // inactive/unfilled without ever forcing a value) — otherwise 'f-dep' has
+  // zero executable consumers and the strict fallback strips it from `src`'s
+  // consumers before any of this describe block's waves ever run it. The
+  // block never activates in these tests, so the tile's EXECUTED sql (and
+  // every call-count assertion below) is unaffected — only the STRUCTURAL
+  // analysis `resolveFilterSelection` reads sees the declaration.
   const depQueries = () => [
-    query('qt', 'SELECT {from:String} AS n'),
+    query('qt', 'SELECT {from:String} AS n /*[ AND {dep:String} = {dep:String} ]*/'),
     query('src', "SELECT ['x'] AS dep FROM t WHERE ts >= {from:String} /* source */", { dashboard: { role: 'filter' } }),
   ];
   const tileCallCount = (calls: { sql: string }[]) => calls.filter((c) => !c.sql.includes('source')).length;
@@ -1689,7 +1735,14 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
       queries: [
-        query('q1', 'SELECT {region:String} AS n'),
+        // #189: 'city' is declared inside an optional block (never activated
+        // in this test, so t1's EXECUTED sql/call-count is unaffected) —
+        // otherwise 'f-city' has zero executable consumers and the strict
+        // fallback strips it from `src`'s consumers before it ever runs,
+        // which would hollow out this test's whole "unrelated overlapping
+        // commits" scenario (the source never running at all would still
+        // pass the assertions below, but for the wrong reason).
+        query('q1', 'SELECT {region:String} AS n /*[ AND {city:String} = {city:String} ]*/'),
         query('q2', 'SELECT {status:String} AS n'),
         query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
       ],
@@ -1748,7 +1801,13 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
       queries: [
-        query('qt', 'SELECT {region:String} AS n'),
+        // #189: 'f-city' explicitly `targets: ['t']`, so 't' must actually
+        // declare {city:...} for the target to resolve — declared inside an
+        // optional block (never activated, so 't''s executed sql/call-count
+        // stays unaffected) — otherwise `resolveFilterSelection` reports
+        // `filter-selection-target-missing-declaration` and the strict
+        // fallback strips 'f-city' from `src`'s consumers before it ever runs.
+        query('qt', 'SELECT {region:String} AS n /*[ AND {city:String} = {city:String} ]*/'),
         query('src', "SELECT ['x'] AS city FROM t WHERE ts >= {region:String} /* source */", { dashboard: { role: 'filter' } }),
       ],
     }));
@@ -1803,7 +1862,12 @@ describe('superseded/destroyed selective-wave guard (#360 review findings 1/2)',
 describe('published sourceId on ViewerFilterState (#360 review finding 4)', () => {
   it('a source-backed filter publishes sourceId equal to its sourceQueryId; a plain filter leaves it undefined', () => {
     const document = doc({
-      tiles: [tile('t', 'qt')],
+      // #189: 'ts'/'qs' is a real executable consumer of 'srcp' — otherwise
+      // `resolveFilterSelection` sees zero consumers and the strict
+      // fallback strips 'f-src' from `src`'s consumers (and clears
+      // `state.sourceId`) at construction, which is exactly the topology
+      // this test asserts.
+      tiles: [tile('t', 'qt'), tile('ts', 'qs')],
       filters: [
         { id: 'f-plain', parameter: 'plain', defaultActive: false, defaultValue: '' },
         { id: 'f-src', parameter: 'srcp', sourceQueryId: 'src' },
@@ -1812,7 +1876,7 @@ describe('published sourceId on ViewerFilterState (#360 review finding 4)', () =
     const session = createDashboardViewerSession(makeDeps({
       document,
       queries: [
-        query('qt', 'SELECT 1 AS n'),
+        query('qt', 'SELECT 1 AS n'), query('qs', 'SELECT {srcp:String} AS n'),
         query('src', "SELECT ['x'] AS srcp /* source */", { dashboard: { role: 'filter' } }),
       ],
     }));
@@ -1820,5 +1884,361 @@ describe('published sourceId on ViewerFilterState (#360 review finding 4)', () =
     const sourced = session.state.value.filters.find((f) => f.id === 'f-src')!;
     expect(plain.sourceId).toBeUndefined();
     expect(sourced.sourceId).toBe('src');
+  });
+});
+
+// #189: searchable multiselect filters — the runtime wiring atop the already-
+// landed pure `resolveFilterSelection`/`sameSelection`/`reconcileSelection`
+// (core/filter-selection.ts). `resolveFilterSelection`'s own contract is
+// strict (its return type's doc comment): the curated helper is exposed IFF
+// `diagnostics` is empty. There is no benign carve-out — issue #189's
+// fallback list is explicit that "targets that do not declare the
+// parameter" and "target-less or non-executable configurations where no
+// consumer contract can be resolved" (`filter-selection-no-consumers`,
+// `filter-selection-target-not-executable`,
+// `filter-selection-target-missing-declaration`) must fall back exactly like
+// a genuine type conflict: no `selection` contract, no `sourceId`, the
+// filter dropped from its source's `consumers` (so the helper never
+// executes), a persistent diagnostic, and every unrelated filter/panel
+// unaffected.
+describe('searchable multiselect filter contract (#189)', () => {
+  const byId = (session: ReturnType<typeof createDashboardViewerSession>, id: string) =>
+    session.state.value.filters.find((f) => f.id === id)!;
+
+  it('infers single from a scalar consumer and multiple from an Array(T) consumer', () => {
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        { id: 'fScalar', parameter: 'ps', sourceQueryId: 'srcS' },
+        { id: 'fArray', parameter: 'pa', sourceQueryId: 'srcA' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document,
+      queries: [
+        query('q1', 'SELECT {ps:String} AS n'),
+        query('q2', 'SELECT 1 AS n WHERE x IN {pa:Array(String)}'),
+        query('srcS', "SELECT ['x'] AS ps /* srcS */", { dashboard: { role: 'filter' } }),
+        query('srcA', "SELECT ['y'] AS pa /* srcA */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'fScalar').selection).toEqual({ mode: 'single', array: false });
+    expect(byId(session, 'fScalar').sourceId).toBe('srcS');
+    expect(byId(session, 'fArray').selection).toEqual({ mode: 'multiple', array: true });
+    expect(byId(session, 'fArray').sourceId).toBe('srcA');
+  });
+
+  it('an explicit selection.mode "single" against an Array(T) consumer stays single (array:true)', () => {
+    const document = doc({
+      tiles: [tile('t1', 'q1')],
+      filters: [{ id: 'f1', parameter: 'pa', sourceQueryId: 'src', selection: { mode: 'single' } }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document,
+      queries: [
+        query('q1', 'SELECT 1 AS n WHERE x IN {pa:Array(String)}'),
+        query('src', "SELECT ['y'] AS pa /* src */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').selection).toEqual({ mode: 'single', array: true });
+    expect(byId(session, 'f1').sourceId).toBe('src');
+  });
+
+  it('an unknown selection.mode string is a HARD conflict: falls back to the string input, source never executes (zero consumers)', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1')],
+      // `mode: 'bogus'` is deliberately outside the generated literal union —
+      // `resolveFilterSelection` narrows defensively at runtime (its own doc
+      // comment), so this exercises that defensive path, cast past the
+      // schema-derived compile-time type the same way filter-selection.test.ts
+      // does via its own wider `FilterSelectionFilterDef.selection.mode: string`.
+      filters: [{ id: 'f1', parameter: 'ps', sourceQueryId: 'src', selection: { mode: 'bogus' as 'single' } }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT {ps:String} AS n'),
+        query('src', "SELECT ['x'] AS ps /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined();
+    expect(byId(session, 'f1').selection).toBeUndefined();
+    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-unknown-mode');
+    expect(diag).toMatchObject({ severity: 'error' });
+    await session.start();
+    // The source has ZERO consumers left (its only filter fell back) — it
+    // must never execute at all.
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
+    // The diagnostic survives the wave's own reset (it is a construction-time
+    // constant, never touched by `executeFilterSourcePlan`'s per-wave reset).
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-unknown-mode')).toBe(true);
+    await session.refresh();
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-unknown-mode')).toBe(true);
+  });
+
+  it('selection.mode "multiple" against a scalar consumer is a HARD conflict for BOTH filters sharing a source — the source never runs (zero-consumer-source)', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p1', type: 'Array(String)' }, { name: 'p2', type: 'Array(String)' }], rows: [[['a'], ['b']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        { id: 'f1', parameter: 'p1', sourceQueryId: 'src', selection: { mode: 'multiple' } },
+        { id: 'f2', parameter: 'p2', sourceQueryId: 'src', selection: { mode: 'multiple' } },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT {p1:String} AS n'), // scalar consumer
+        query('q2', 'SELECT {p2:String} AS n'), // scalar consumer
+        query('src', "SELECT ['a'] AS p1, ['b'] AS p2 /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined();
+    expect(byId(session, 'f2').sourceId).toBeUndefined();
+    const diags = session.state.value.filterDiagnostics.filter((d) => d.code === 'filter-selection-mode-requires-array');
+    expect(diags.length).toBe(2);
+    expect(diags.some((d) => d.message.includes('f1'))).toBe(true);
+    expect(diags.some((d) => d.message.includes('f2'))).toBe(true);
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
+  });
+
+  it('a filter with no wired consumer falls back to the plain string input (#189): no sourceId/selection, source never executes, diagnostic persists across a refresh', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'unused', type: 'Array(String)' }], rows: [[['x']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [{ id: 'f1', parameter: 'unused', sourceQueryId: 'src' }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [query('qt', 'SELECT 1 AS n'), query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } })],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined();
+    expect(byId(session, 'f1').selection).toBeUndefined();
+    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-no-consumers');
+    expect(diag).toMatchObject({ severity: 'error' });
+    await session.start();
+    // Zero consumers left on `src` — it must never execute at all.
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
+    // The diagnostic survives the wave's own reset (a construction-time
+    // constant, never touched by `executeFilterSourcePlan`'s per-wave reset).
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-no-consumers')).toBe(true);
+    await session.refresh();
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-no-consumers')).toBe(true);
+  });
+
+  it('an explicit target that does not declare the parameter falls back to the plain string input (#189): no sourceId/selection, source never executes', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1')],
+      filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', targets: ['t1'] }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT 1 AS n'), // 't1' does NOT declare {p:...}
+        query('src', "SELECT ['x'] AS p /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined();
+    expect(byId(session, 'f1').selection).toBeUndefined();
+    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-target-missing-declaration');
+    expect(diag).toMatchObject({ severity: 'error' });
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false); // zero-consumer source never executes
+  });
+
+  it('a fallback filter (no wired consumer) leaves unrelated filters and panels fully functional', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'unused', type: 'Array(String)' }], rows: [[['x']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        { id: 'f-bad', parameter: 'unused', sourceQueryId: 'src' }, // no wired consumer — falls back
+        { id: 'f-ok', parameter: 'ok', defaultActive: true, defaultValue: 'v0' }, // plain, unrelated
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT 1 AS n'),
+        query('q2', 'SELECT {ok:String} AS n'),
+        query('src', 'SELECT 1 /* source */', { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false); // f-bad's source never ran
+    // The unrelated, healthy filter's own tile ran normally and can still be
+    // committed to rerun its own affected panel.
+    expect(session.state.value.tiles.find((t) => t.tileId === 't2')!.status).toBe('ready');
+    const before = calls.length;
+    await session.setFilter('f-ok', 'v1');
+    expect(calls.slice(before).some((c) => c.sql.includes('{ok:String}'))).toBe(true);
+  });
+
+  it('committing an array value reaches the pipeline as a real array; an empty array behaves like a missing value; a defensive copy is stored', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['east', 'west']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('src', "SELECT ['east','west'] AS region /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const arr = ['east', 'west'];
+    const base = calls.length;
+    await session.setFilter('f-region', arr);
+    arr.push('MUTATED'); // the session must never alias the caller's own array
+    expect(byId(session, 'f-region').value).toEqual(['east', 'west']);
+    expect(byId(session, 'f-region').active).toBe(true);
+    const boundCall = calls.slice(base).find((c) => 'param_region' in c.params);
+    expect(boundCall).toBeDefined();
+    expect(boundCall!.params.param_region).toBe("['east','west']"); // a REAL array serialized, never a stringified value
+    // An active EMPTY array behaves like '' (missing) for execution purposes.
+    await session.setFilter('f-region', []);
+    expect(byId(session, 'f-region').active).toBe(false);
+    expect(byId(session, 'f-region').value).toEqual([]);
+    const afterEmpty = calls.slice(base);
+    expect(afterEmpty.some((c) => 'param_region' in c.params && Array.isArray(undefined))).toBe(false);
+  });
+
+  it('targeted wave: explicit targets rerun only their target tiles; two filters sharing one parameter union their targets', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('a', 'qa'), tile('b', 'qb'), tile('c', 'qc')],
+      filters: [
+        { id: 'f1', parameter: 'shared', targets: ['a'], defaultActive: false, defaultValue: '' },
+        { id: 'f2', parameter: 'shared', targets: ['b'], defaultActive: false, defaultValue: '' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qa', 'SELECT {shared:String} AS n'),
+        query('qb', 'SELECT {shared:String} AS n'),
+        query('qc', 'SELECT {shared:String} AS n'),
+      ],
+    }));
+    await session.start();
+    const base = calls.length;
+    // `rawValues()`/`activeMap()` key by PARAMETER (pre-existing, #189-
+    // unrelated behavior): with two filter definitions sharing one parameter,
+    // the LAST one in filter order supplies the actually-bound value — commit
+    // through 'f2' (the later definition) so the tile sees a real, active
+    // value rather than the other definition's still-inactive default.
+    await session.setFilter('f2', 'X');
+    const added = calls.slice(base);
+    // Both 'a' (f1's own target) and 'b' (f2's target — SAME parameter, union)
+    // rerun; 'c' declares {shared} too but is targeted by NEITHER filter.
+    expect(added.length).toBe(2);
+  });
+
+  it('option-refresh reconciliation via a selective (#360) rerun: intersection narrows + joins the SAME wave, a pure reorder fires none, an empty intersection deactivates and keeps the dormant array', async () => {
+    // A ROOT dependency ('from') the shared source depends on (#360) drives a
+    // SELECTIVE rerun (`runFilterSourceWave` → `runAffectedWave`), which gates
+    // its affected-panel wave on `merged.changed`/`flipped` — unlike a full
+    // `session.refresh()`, which unconditionally reruns every #235 "affected"
+    // tile regardless of whether reconciliation actually changed anything.
+    // This is the same harness shape as the existing #360
+    // "reconciliation deactivation ... runs in the SAME wave" test above.
+    let options = ['east', 'west', 'south'];
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[options]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'src', defaultActive: true, defaultValue: ['east', 'west'] },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('src', "SELECT ['e'] AS region FROM t WHERE ts >= {from:String} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(byId(session, 'f-region').value).toEqual(['east', 'west']);
+
+    // Pure reorder/label refresh (same SET, new order) — value canonicalizes
+    // to the fresh order but is NOT a change (no additional tile request).
+    options = ['west', 'east', 'south'];
+    let base = calls.length;
+    await session.setFilter('from-root', 'v1');
+    expect(byId(session, 'f-region').value).toEqual(['west', 'east']);
+    expect(byId(session, 'f-region').active).toBe(true);
+    expect(calls.slice(base).some((c) => 'param_region' in c.params)).toBe(false);
+
+    // 'east' is dropped from the fresh options — narrows to survivors, stays
+    // active, and DOES join the affected-panel wave.
+    options = ['west', 'south'];
+    base = calls.length;
+    await session.setFilter('from-root', 'v2');
+    expect(byId(session, 'f-region').value).toEqual(['west']);
+    expect(byId(session, 'f-region').active).toBe(true);
+    expect(calls.slice(base).some((c) => c.params.param_region === "['west']")).toBe(true);
+
+    // Every surviving value is now gone too — deactivates but KEEPS the
+    // dormant committed array untouched (reactivation restores it).
+    options = ['north'];
+    await session.setFilter('from-root', 'v3');
+    expect(byId(session, 'f-region').active).toBe(false);
+    expect(byId(session, 'f-region').value).toEqual(['west']);
+  });
+
+  it('clearAllFilters compares an array value/default STRUCTURALLY (sameSelection) — a no-op reset issues no wave, a real change issues exactly one', async () => {
+    const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [{ id: 'f1', parameter: 'p', defaultActive: true, defaultValue: ['a', 'b'] }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec, queries: [query('qt', 'SELECT 1 AS n WHERE x IN {p:Array(String)}')],
+    }));
+    await session.start();
+    // A fresh session's state.value is ALREADY a (copied) equal-content array
+    // to the default — a reference-based `!==` check would spuriously see
+    // this as "changed" on every call; `sameSelection` must not.
+    const base = calls.length;
+    await session.clearAllFilters();
+    expect(calls.length).toBe(base); // no-op: nothing actually changed
+    expect(byId(session, 'f1').value).toEqual(['a', 'b']);
+
+    await session.setFilter('f1', ['a']);
+    const base2 = calls.length;
+    await session.clearAllFilters();
+    expect(calls.length).toBeGreaterThan(base2); // a genuine change fires exactly one wave
+    expect(byId(session, 'f1').value).toEqual(['a', 'b']);
+    expect(byId(session, 'f1').active).toBe(true);
+  });
+
+  it('initialFilters seeds an array value from the widened per-dashboard store, defensively copied', () => {
+    const document = doc({
+      filters: [{ id: 'f1', parameter: 'p', defaultValue: '', defaultActive: false }],
+    });
+    const seedArray = ['x', 'y'];
+    const session = createDashboardViewerSession(makeDeps({
+      document, initialFilters: { f1: { value: seedArray, active: true } },
+    }));
+    seedArray.push('MUTATED');
+    expect(byId(session, 'f1').value).toEqual(['x', 'y']);
+    expect(byId(session, 'f1').active).toBe(true);
   });
 });
