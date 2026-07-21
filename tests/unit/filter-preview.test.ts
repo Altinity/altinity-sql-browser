@@ -3,11 +3,15 @@ import { renderFilterPreview } from '../../src/ui/filter-preview.js';
 import { makeApp } from '../helpers/fake-app.js';
 
 describe('Filter preview', () => {
-  it('renders no-result, running, and error states', () => {
+  it('renders no-result, running, waiting, and error states', () => {
     const app = makeApp();
     expect(renderFilterPreview(app).textContent).toContain('Run the query');
     app.activeTab().filterPreview = { status: 'running' };
     expect(renderFilterPreview(app).textContent).toContain('when the query completes');
+    app.activeTab().filterPreview = { status: 'waiting', missing: ['from', 'to'] };
+    const waiting = renderFilterPreview(app);
+    expect(waiting.textContent).toBe('Waiting for: from, to');
+    expect(waiting.classList.contains('is-waiting')).toBe(true);
     app.activeTab().filterPreview = { status: 'error', error: 'boom' };
     expect(renderFilterPreview(app).textContent).toBe('boom');
   });

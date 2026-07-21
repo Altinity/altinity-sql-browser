@@ -30,7 +30,7 @@ import type { PreparedSource, BoundParamSnapshot } from '../../core/param-pipeli
 import { supportsExplainPretty, detectSqlFormat, isSchemaMutatingSql } from '../../core/format.js';
 import { EXPLAIN_VIEWS, parseExplain, detectExplainView, buildExplainQuery } from '../../core/explain.js';
 import { effectiveDashboardRole } from '../../core/result-choice.js';
-import { filterExecution } from '../../core/filter-execution.js';
+import type { FilterSourcePreparation } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { isKpiPanel, panelExecution } from '../../core/panel-execution.js';
 import { newResult } from '../../core/stream.js';
@@ -100,6 +100,14 @@ export interface WorkbenchHooks {
    *  only mode run()/runScript() ever use) — Phase 4 moves this into a
    *  WorkbenchParameterSession; injected until then. */
   prepareTabSource(sql: string, waveMs: number): PreparedSource;
+  /** #360 Workbench parity: a Filter tab's own preview, prepared through the
+   *  SAME shared analyze/prepare pipeline the Dashboard's runFilterSource
+   *  calls (`WorkbenchParameterSession.prepareFilterPreview` — issue #360's
+   *  explicit "do not independently implement parameter binding" rule).
+   *  run()'s Filter branch is gated ENTIRELY by this preparation's own
+   *  readiness ('runnable' | 'waiting' | 'error') — the generic
+   *  `varGateBlocked` below stays bypassed for Filter tabs. */
+  prepareFilterPreview(sql: string, waveMs: number): FilterSourcePreparation;
   /** True (and already toasted, shell-owned) when the active tab's
    *  {name:Type} variables block execution. */
   varGateBlocked(waveMs: number): boolean;
@@ -234,17 +242,29 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     const srcSql = opts && opts.sql != null ? opts.sql : tab.sqlDraft;
     if (!srcSql.trim()) return;
     const isFilter = effectiveDashboardRole(tab.specParsed) === 'filter';
-    const filterRun = isFilter ? filterExecution(srcSql) : null;
-    if (filterRun?.error) {
-      const filterErrorResult: QueryResult = newResult('Filter', filterRun.rowLimit);
-      filterErrorResult.error = filterRun.error;
-      Object.assign(tab, { result: filterErrorResult });
-      tab.filterPreview = { status: 'error', error: filterRun.error };
+    const waveMs = deps.wallNow(); // one wall clock for this run wave: gate + args see the same instant
+    // #360 Workbench parity: a Filter tab's own preview runs through the SAME
+    // shared analyze/prepare pipeline the Dashboard's runFilterSource calls —
+    // never a second, independently-maintained parameter-binding path (issue
+    // #360's explicit rule). `prep`'s own readiness is the ONLY gate Filter
+    // execution respects below; the generic varGateBlocked stays bypassed for
+    // Filter tabs (next line) — removing that bypass would toast-and-block a
+    // missing-param Filter tab before the 'waiting' preview state below is
+    // ever reached.
+    const filterPrep = isFilter ? hooks.prepareFilterPreview(srcSql, waveMs) : null;
+    if (filterPrep && filterPrep.readiness !== 'runnable') {
+      tab.filterPreview = filterPrep.readiness === 'waiting'
+        ? { status: 'waiting', missing: filterPrep.missing }
+        : { status: 'error', error: filterPrep.error ?? undefined };
+      if (filterPrep.readiness === 'error') {
+        const filterErrorResult: QueryResult = newResult(filterPrep.format, filterPrep.rowLimit);
+        filterErrorResult.error = filterPrep.error;
+        Object.assign(tab, { result: filterErrorResult });
+      }
       state.resultView.value = 'filter';
       hooks.renderResults();
-      return;
+      return; // NO network for either non-runnable state
     }
-    const waveMs = deps.wallNow(); // one wall clock for this run wave: gate + args see the same instant
     if (!isFilter && hooks.varGateBlocked(waveMs)) return; // Filter parameters fail statically above
     // One prepared source for the whole run wave (#173), captured NOW —
     // synchronously with the gate check above, BEFORE the auth awaits below
@@ -270,7 +290,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // execution view (#165): inactive optional blocks removed, markers
     // stripped — byte-identical to srcSql for SQL without blocks. History still
     // records the template (srcSql / tab.sqlDraft).
-    const execSql = isFilter ? srcSql : hooks.execStatementSql(srcSql);
+    const execSql = isFilter ? filterPrep!.execSql : hooks.execStatementSql(srcSql);
 
     const kpiExecution: KpiExecutionTransport = isFilter
       ? { format: 'Table', rowLimit: state.resultRowLimit, params: {}, error: null }
@@ -297,7 +317,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     let fmt: string;
     let explainView: string | null = null;
     if (isFilter) {
-      fmt = filterRun!.format;
+      fmt = filterPrep!.format;
     } else if (explainMode) {
       // View precedence: an explicit tab click wins; otherwise a *typed* EXPLAIN
       // is honored exactly (canonical match → its rich view, else the verbatim
@@ -321,7 +341,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // row limit; EXPLAIN/PIPELINE/ESTIMATE are exempt (small output, and a cap
     // would truncate a plan oddly). The streaming guard reads it off the result;
     // runQuery adds the server-side max_result_rows for the Table path.
-    const rowLimit = isFilter ? filterRun!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
+    const rowLimit = isFilter ? filterPrep!.rowLimit : explainMode ? 0 : panelIsKpi ? kpiExecution.rowLimit! : state.resultRowLimit;
     const t0 = deps.now();
     const result: QueryResult = newResult(fmt, rowLimit);
     Object.assign(tab, { result });
@@ -357,7 +377,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         // as param_<name> so the server substitutes them (only row-returning
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: isFilter
-          ? filterRun!.params
+          ? filterPrep!.params
           : { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
         onChunk: () => hooks.renderResults(),
       });
@@ -414,8 +434,13 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         hooks.recordHistory(tab, opts && opts.sql);
         // #171: this statement succeeded — record its bound params (exactly
         // what was actually sent; an omitted-optional-block param never
-        // reached `src.statements[*].boundParams` in the first place).
-        hooks.recordBoundParams(src.statements.flatMap((s) => s.boundParams) as BoundParamSnapshot[]);
+        // reached `src.statements[*].boundParams` in the first place). A
+        // Filter tab records `filterPrep.boundParams` instead — #360 parity
+        // with the Dashboard's own runFilterSource, which records the SAME
+        // shared preparation's boundParams.
+        hooks.recordBoundParams(
+          (isFilter ? filterPrep!.boundParams : src.statements.flatMap((s) => s.boundParams)) as BoundParamSnapshot[],
+        );
         if (isSchemaMutatingSql(runSql)) hooks.loadSchema(); // not awaited — fire and forget
       }
     }

@@ -130,6 +130,61 @@ describe('tabAnalysis / prepare*', () => {
   });
 });
 
+// ── prepareFilterPreview (#360 Workbench parity) ────────────────────────────
+// Same shared analyze/prepare pipeline (core/filter-execution.js) the
+// Dashboard's runFilterSource calls — driven by the SAME live varValues/
+// activeMap every other prepare* method above reads.
+
+describe('prepareFilterPreview', () => {
+  it('is runnable once every required {name:Type} param has a value, binding it as param_<name>', () => {
+    const { deps, state } = makeDeps();
+    const session = createWorkbenchParameterSession(deps);
+    state.varValues.year = '2024';
+    const prep = session.prepareFilterPreview('SELECT {year:UInt16} AS y', 1700000000000);
+    expect(prep.readiness).toBe('runnable');
+    expect(prep.params.param_year).toBe('2024');
+    expect(prep.execSql).toBe('SELECT {year:UInt16} AS y');
+    expect(prep.format).toBe('Filter');
+  });
+
+  it('is waiting (not an error) when a required {name:Type} param has no value yet', () => {
+    const { deps } = makeDeps();
+    const session = createWorkbenchParameterSession(deps);
+    const prep = session.prepareFilterPreview('SELECT {year:UInt16} AS y', 1700000000000);
+    expect(prep.readiness).toBe('waiting');
+    expect(prep.missing).toEqual(['year']);
+    expect(prep.error).toBeNull();
+  });
+
+  it('is an error for a structurally invalid Filter source (more than one statement)', () => {
+    const { deps } = makeDeps();
+    const session = createWorkbenchParameterSession(deps);
+    const prep = session.prepareFilterPreview('SELECT 1; SELECT 2;', 1700000000000);
+    expect(prep.readiness).toBe('error');
+    expect(prep.error).toMatch(/exactly one statement/);
+  });
+
+  it('is an error for an invalid committed value', () => {
+    const { deps, state } = makeDeps();
+    const session = createWorkbenchParameterSession(deps);
+    state.varValues.year = '999999'; // out of UInt16 range — invalid, not missing
+    const prep = session.prepareFilterPreview('SELECT {year:UInt16} AS y', 1700000000000);
+    expect(prep.readiness).toBe('error');
+    expect(prep.invalid).toEqual(['year']);
+  });
+
+  it('reads the SAME live varValues/filterActive (#165 activation map) every other prepare* method reads', () => {
+    const { deps, state } = makeDeps();
+    const session = createWorkbenchParameterSession(deps);
+    const sql = 'SELECT 1 /*[ AND a = {a:String} ]*/';
+    state.varValues.a = 'x';
+    state.filterActive.a = false; // explicit inactive wins over "has a value" (#165)
+    const prep = session.prepareFilterPreview(sql, 1700000000000);
+    expect(prep.execSql).toBe('SELECT 1 '); // the inactive block is dropped
+    expect(prep.readiness).toBe('runnable'); // the block-confined param was never required
+  });
+});
+
 // ── execStatementSql ─────────────────────────────────────────────────────────
 
 describe('execStatementSql', () => {

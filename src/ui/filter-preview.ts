@@ -29,11 +29,16 @@ export interface FilterPreviewApp {
 }
 
 /** `tab.filterPreview`'s real shape (state.ts declares it opaque —
- *  `Record<string, unknown> | null`, owned by ui/app.js's run path, which
- *  writes exactly this discriminated shape once a Filter-role query
- *  finishes: `normalized` is `readFilterOptions`'s own return contract). */
+ *  `Record<string, unknown> | null`, owned by ui/workbench/workbench-
+ *  session.ts's run() path, which writes exactly this discriminated shape
+ *  once a Filter-role query finishes: `normalized` is `readFilterOptions`'s
+ *  own return contract). `waiting` (#360) is a normal mid-fill state — a
+ *  required `{name:Type}` param the Filter SQL depends on has no value yet —
+ *  set from `FilterSourcePreparation.missing` (core/filter-execution.js)
+ *  BEFORE any request is sent; it is deliberately distinct from `error`. */
 type FilterPreviewState =
   | { status: 'running' }
+  | { status: 'waiting'; missing: string[] }
   | { status: 'error'; error?: string }
   | { status: 'success'; normalized: { helpers: FilterOptionHelper[]; diagnostics: Diagnostic[] } };
 
@@ -44,6 +49,7 @@ export function renderFilterPreview(app: FilterPreviewApp): HTMLElement {
   const preview = app.activeTab().filterPreview as FilterPreviewState | null;
   if (!preview) return message('Run the query to preview Filter options.');
   if (preview.status === 'running') return message('Filter preview appears when the query completes.');
+  if (preview.status === 'waiting') return message(`Waiting for: ${preview.missing.join(', ')}`, 'is-waiting');
   if (preview.status === 'error') return message(preview.error || 'Filter options failed.', 'is-error');
   const { helpers, diagnostics } = preview.normalized;
   const out = h('div', { class: 'filter-preview' });
