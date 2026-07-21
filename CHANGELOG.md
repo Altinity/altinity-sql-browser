@@ -28,13 +28,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   in `core/filter-execution.ts`), so structural diagnostics, relative-value
   resolution, optional-block materialization, validation/serialization, and
   native arguments are identical on both surfaces. Source-backed filters render a
-  waiting / stale / error affordance in the filter bar instead of silently
-  degrading to a plain control; a superseded source response can never publish
-  stale results, and a dependency change clears the affected options so a stale
-  set can't appear current while the new source loads. Filter execution injects
-  no `readonly` setting (kept from #359). `examples/query-log-explorer.json`'s
-  `qle-filter` source is migrated to the half-open `{from:DateTime}`/`{to:DateTime}`
-  window as a worked example.
+  waiting / stale / error affordance in the filter bar (chosen by source
+  topology, not transient status) instead of silently degrading to a plain
+  control; a superseded or session-destroyed commit can never publish stale
+  results or run its panels, and a dependency change clears the affected options
+  so a stale set can't appear current while the new source loads. Filter
+  execution injects no `readonly` setting (kept from #359).
+  `examples/query-log-explorer.json`'s `qle-filter` source is migrated to a
+  `{from:DateTime}` / optional `{to:DateTime}` window (matching its panels, where
+  `to` is optional and means "up to now") as a worked example.
 
 ### Fixed
 - Removed a stray NUL byte embedded in `dashboard-viewer-session.ts`'s
