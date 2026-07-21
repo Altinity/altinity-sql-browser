@@ -943,12 +943,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  affected) so the caller can fold them into ONE combined affected-panel
    *  wave alongside `changedParams`. */
   async function runFilterSourceWave(changedParams: string[]): Promise<string[]> {
-    // A commit-triggered rerun issues a REAL `executeRead` for the affected
-    // source(s) — unlike `runFilterWave` (always reached via `refresh()`,
-    // which already preflighted once for the whole cycle) this selective wave
-    // is entered directly from `commitAndRerun`, with no preflight upstream.
-    // Same guard `runAffectedWave` uses before its own executeReads.
-    if (!(await preflight())) return [];
+    // Entered only from `commitAndRerun`'s affected path, which preflights ONCE
+    // for the whole commit (source wave + affected-panel wave) — avoiding a
+    // double `ensureFreshToken()`/`onAuthFailed` on a stale token — so this wave
+    // never preflights itself. (`runAffectedWave` keeps its own `preflighted`
+    // flag because it is ALSO reached directly on the no-affected-source fast
+    // path, where nothing has preflighted yet.)
     const waveMs = deps.wallNow();
     const affected = [...filterSources.values()].filter((source) =>
       source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
@@ -1030,8 +1030,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   }
 
   // Re-run only the tiles some active filter parameter feeds into.
-  async function runAffectedWave(parameters: string[]): Promise<void> {
-    if (!(await preflight())) return;
+  async function runAffectedWave(parameters: string[], preflighted = false): Promise<void> {
+    if (!preflighted && !(await preflight())) return;
     const affectedIds = new Set<string>();
     for (const parameter of parameters) {
       const field = analysis.fields[parameter];
@@ -1057,12 +1057,18 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // identical to awaiting it (an unaffected wave always resolves to `[]` with
   // no side effect), just without the extra tick for the overwhelmingly
   // common case of a Dashboard with no parameterized Filter sources (#360).
+  // The fast (no-affected-source) path lets `runAffectedWave` self-preflight
+  // exactly as before (one await, unchanged timing); the affected path
+  // preflights ONCE here for the whole commit and passes `preflighted: true`
+  // into both waves — otherwise a stale token would fail `ensureFreshToken()`
+  // (and fire `onAuthFailed`) twice for one commit.
   async function commitAndRerun(changed: string[]): Promise<void> {
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
     if (!hasAffectedSource) { await runAffectedWave(changed); return; }
+    if (!(await preflight())) return;
     const flipped = await runFilterSourceWave(changed);
-    await runAffectedWave([...new Set([...changed, ...flipped])]);
+    await runAffectedWave([...new Set([...changed, ...flipped])], true);
   }
 
   async function setFilter(filterId: string, value: unknown): Promise<void> {

@@ -1462,9 +1462,10 @@ describe('parameterized Filter sources (#360)', () => {
     });
     let tokenOk = true;
     const onAuthFailed = vi.fn();
+    const ensureFreshToken = vi.fn(async () => tokenOk);
     const session = createDashboardViewerSession(makeDeps({
       document, exec, onAuthFailed,
-      connection: { ensureFreshToken: async () => tokenOk },
+      connection: { ensureFreshToken },
       queries: [
         query('qt', 'SELECT {dep1:String} AS n'),
         query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
@@ -1474,14 +1475,54 @@ describe('parameterized Filter sources (#360)', () => {
     expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
     const base = calls.length;
     tokenOk = false; // token now stale
+    ensureFreshToken.mockClear();
+    onAuthFailed.mockClear();
     // Committing 'from' makes srcFrom affected (it depends on 'from'), so
-    // commitAndRerun enters runFilterSourceWave — which must preflight BEFORE
-    // issuing any executeRead, exactly like runAffectedWave/refresh already do.
+    // commitAndRerun enters its affected path (runFilterSourceWave THEN
+    // runAffectedWave) — which must preflight exactly ONCE for the whole
+    // commit (a stale token must not double-fire `ensureFreshToken`/
+    // `onAuthFailed` — one wave passing `preflighted: true` into the other),
+    // and BEFORE issuing any executeRead.
     await expect(session.setFilter('from-root', 'v1')).resolves.toBeUndefined();
     expect(calls.slice(base).some((c) => c.sql.includes('srcFrom'))).toBe(false);
-    expect(onAuthFailed).toHaveBeenCalled();
+    expect(ensureFreshToken).toHaveBeenCalledTimes(1);
+    expect(onAuthFailed).toHaveBeenCalledTimes(1);
     // No rerun happened at all — status is untouched.
     expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('waiting');
+  });
+
+  it('clearFilter on a dependency root re-gates its dependent source to waiting — the retained (but now inactive) value is blanked, not stale-executed', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('srcFrom')
+      ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.filters.find((flt) => flt.id === 'f-dep1')!.status).toBe('ready');
+    const base = calls.length;
+    // clearFilter deactivates 'from' but RETAINS its value ('v0', non-empty) —
+    // committedRootValues() must still blank it for an inactive root, so the
+    // dependent source correctly re-gates to 'waiting' instead of executing
+    // against a stale/retained-but-no-longer-committed value.
+    await session.clearFilter('from-root');
+    expect(session.state.value.filters.find((flt) => flt.id === 'from-root')!.value).toBe('v0'); // retained
+    expect(session.state.value.filters.find((flt) => flt.id === 'from-root')!.active).toBe(false);
+    expect(calls.slice(base).some((c) => c.sql.includes('srcFrom'))).toBe(false); // no stale execution
+    const f = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(f.status).toBe('waiting');
+    expect(f.options).toBeNull();
   });
 
   it('resolves two DIFFERENT sources\' relative-time dependency against ONE waveMs per wave (no per-source clock read)', async () => {
