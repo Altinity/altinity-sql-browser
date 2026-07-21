@@ -2503,6 +2503,85 @@ describe('renderDashboard — shared rich filter bar over the viewer (#188)', ()
   });
 });
 
+// #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY
+// when a curated source's option VALUE CONTENT changes — including a clear to
+// null — never on an unchanged republish) and `filterDiagnostics` (its own
+// merge diagnostics, separate from the presentation `diagnostics` above). The
+// UI folds `optionsRev` into the filter-bar rebuild signature and renders
+// each diagnostic's severity as its own `is-*` class.
+describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)', () => {
+  it('rebuilds the filter bar when curated option CONTENT changes (same length), not on an unchanged republish', async () => {
+    let call = 0;
+    const { app } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('opts')) {
+          call++;
+          // Same content on the first two runs (initial start + one refresh);
+          // different content (same length) on the third run.
+          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[call === 3 ? ['a', 'b'] : ['x', 'y']]] };
+        }
+        return {};
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE x = {p:String}'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src' }],
+      }),
+    });
+    await render(app);
+    const barBefore = qs(app.root, '.dash-filter-host').firstElementChild;
+    expect(barBefore).not.toBeNull();
+    // Refresh #1: the source republishes the SAME option content — no rebuild
+    // (the pre-#359 boolean-only signature would have missed this distinction
+    // too, since it only ever asked "empty vs non-empty").
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    expect(qs(app.root, '.dash-filter-host').firstElementChild).toBe(barBefore);
+    // Refresh #2: the source returns DIFFERENT content, same length — this is
+    // exactly the case the old boolean-only signature missed; `optionsRev`
+    // fixes it.
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    expect(qs(app.root, '.dash-filter-host').firstElementChild).not.toBe(barBefore);
+  });
+
+  it('renders filterDiagnostics with severity-mapped classes, alongside presentation diagnostics', async () => {
+    const { app } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('optsinfo')) return { columns: [{ name: 'pinfo', type: 'Array(String)' }], rows: [[['x', 'x']]] };
+        if (sql.includes('optswarn')) return { columns: [{ name: 'pwarn', type: 'Array(String)' }], rows: [[['a', 'b']]] };
+        return {};
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE x = {pinfo:String}'),
+          // A duplicate option value ('x' twice) → an 'info' diagnostic
+          // (`filter-duplicate-option`) from readFilterOptions.
+          q('srcInfo', "SELECT ['x','x'] AS pinfo -- optsinfo", { dashboard: { role: 'filter' } }),
+          // 'pwarn' has no Panel consumer → a 'warning' diagnostic
+          // (`filter-helper-unused`) from the merge.
+          q('srcWarn', "SELECT ['a','b'] AS pwarn -- optswarn", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          // An unresolvable source query id → an 'error' diagnostic
+          // (`filter-source-missing`).
+          { id: 'ferr', parameter: 'perr', sourceQueryId: 'nope' },
+          { id: 'fwarn', parameter: 'pwarn', sourceQueryId: 'srcWarn' },
+          { id: 'finfo', parameter: 'pinfo', sourceQueryId: 'srcInfo' },
+        ],
+      }),
+    });
+    await render(app);
+    const rows = qsa(app.root, '.dash-filter-diagnostics .dash-config-diagnostic');
+    const bySeverity = (cls: string) => rows.find((r) => r.classList.contains(cls));
+    expect(bySeverity('is-error')?.textContent).toBe('Filter references unknown source query "nope"');
+    expect(bySeverity('is-warning')?.textContent).toBe('Filter helper "pwarn" has no current Panel consumer.');
+    expect(bySeverity('is-info')?.textContent).toBe('Filter helper "pinfo" contains a duplicate value.');
+  });
+});
+
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
 // #280 viewer session used to init every filter purely from
 // `def.defaultValue`/`defaultActive`, so a committed value lived only in

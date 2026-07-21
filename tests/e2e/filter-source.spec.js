@@ -48,4 +48,47 @@ test.describe('Dashboard Filter sources', () => {
     await expect(input).toHaveValue('Atlanta');
     expect(await page.evaluate(() => window.__selection)).toEqual({ value: 'ATL', active: true, commits: 1 });
   });
+
+  test('a shared Filter source renders curated values for all configured filters (#359)', async ({ page }) => {
+    // The real DashboardViewerSession ran the ONE shared source query exactly
+    // once for the two filters that reference it (the #359 bug ran it per
+    // definition and dropped every helper as a duplicate provider).
+    expect(await page.evaluate(() => window.__sharedRequests)).toBe(1);
+    expect(await page.evaluate(() => window.__filterStatus)).toEqual({ user: 'ready', query_kind: 'ready' });
+
+    const shared = page.getByRole('main', { name: 'Dashboard filters sharing one source' });
+    const userInput = shared.getByRole('combobox', { name: 'user' });
+    const kindInput = shared.getByRole('combobox', { name: 'query_kind' });
+    await expect(userInput).toHaveAttribute('placeholder', 'All');
+    await expect(kindInput).toHaveAttribute('placeholder', 'All');
+
+    // Each filter's own curated column from that single result populates its
+    // control — the merge published `user` -> [alice, bob] and
+    // `query_kind` -> [Select, Insert] from one bundle.
+    // Commit an exact returned value in each field. We assert value + active
+    // (the selection that flows to the panel params); the commit-fires-once
+    // contract of the combobox itself is covered by the single-field test
+    // above — re-asserting a raw commit COUNT here is off-topic for #359 and
+    // brittle (a blur strictCommit can re-fire a same-value commit).
+    await userInput.fill('ali');
+    await expect(shared.getByRole('option')).toHaveCount(1);
+    await expect(shared.getByRole('option')).toHaveText('alice');
+    await shared.getByRole('option').click();
+    await expect(userInput).toHaveValue('alice');
+    expect(await page.evaluate(() => ({ value: window.__userSel.value, active: window.__userSel.active })))
+      .toEqual({ value: 'alice', active: true });
+
+    await kindInput.fill('ins');
+    await expect(shared.getByRole('option')).toHaveCount(1);
+    await expect(shared.getByRole('option')).toHaveText('Insert');
+    await shared.getByRole('option').click();
+    await expect(kindInput).toHaveValue('Insert');
+    expect(await page.evaluate(() => ({ value: window.__kindSel.value, active: window.__kindSel.active })))
+      .toEqual({ value: 'Insert', active: true });
+
+    // Committing the second filter must not disturb the first — each
+    // consumer of the one shared source operates independently.
+    await expect(userInput).toHaveValue('alice');
+    expect(await page.evaluate(() => window.__userSel.value)).toBe('alice');
+  });
 });

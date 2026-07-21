@@ -1566,7 +1566,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // Rebuild the shared filter bar only when its field structure changes
     // (activation, committed value, or curated options arriving) — not on tile
     // progress ticks — so in-progress typing is not disturbed mid-wave.
-    const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length)]));
+    const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length), f.optionsRev]));
     if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
     // #303: persist committed filter value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
@@ -1584,6 +1584,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // leaves its target tiles in their normal unfilled state.
     filterDiagnosticsHost.replaceChildren(
       ...sview.diagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-error' }, d.message)),
+      // #359: the shared-source filter wave's own merge diagnostics
+      // (info/warning/error), separate from the presentation diagnostics
+      // above — each severity maps directly to its `is-*` class.
+      ...sview.filterDiagnostics.map((d) => h('div', { class: 'dash-config-diagnostic is-' + d.severity }, d.message)),
     );
     if (sview.layout.engine !== lastEngineRendered) { lastLayoutSig = ''; lastGridSig = ''; lastEngineRendered = sview.layout.engine; }
     activeEngine = sview.layout.engine;

@@ -79,7 +79,6 @@ export function filterExecution(sql?: string | null, defaults: FilterExecutionDe
     format: 'Filter',
     rowLimit: FILTER_TOP_LEVEL_ROW_LIMIT,
     params: {
-      readonly: 2,
       max_result_bytes: FILTER_RESULT_BYTE_CAP,
       output_format_json_named_tuples_as_objects: 1,
       output_format_json_quote_64bit_integers: 1,
