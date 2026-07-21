@@ -956,7 +956,20 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const plan = affected.map((source) => ({ source, generation: supersede(source) }));
     for (const source of affected) {
       source.status = 'loading';
-      for (const consumer of source.consumers) { consumer.state.status = 'loading'; consumer.state.stale = true; }
+      for (const consumer of source.consumers) {
+        consumer.state.status = 'loading';
+        consumer.state.stale = true;
+        // Selective-path ONLY (never `runFilterWave`'s full-refresh loop,
+        // which deliberately keeps options to preserve #359's no-flicker-
+        // on-same-content invariant): a committed dependency change means the
+        // OLD options are no longer known-current for the new inputs, so they
+        // must not keep rendering as if they were — clear them (via the
+        // shared helper, so `optionsRev` bumps) rather than leave a stale
+        // "current" value on screen through the loading window.
+        // `applyFilterProviders` repopulates from the fresh merge once this
+        // wave settles, so the clear is transient.
+        setConsumerOptions(consumer, null);
+      }
     }
     publish();
     await runPool(plan, VIEWER_TILE_CONCURRENCY,

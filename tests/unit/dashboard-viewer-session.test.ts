@@ -1230,6 +1230,54 @@ describe('parameterized Filter sources (#360)', () => {
     expect(added.some((c) => c.sql.includes('srcCat'))).toBe(false);
   });
 
+  it("clears (not just marks stale) the affected consumer's options during a selective rerun's loading window — no stale-current options rendered before repopulating", async () => {
+    let releaseSecond!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let call = 0;
+    const { exec } = makeExec((sql) => {
+      if (!sql.includes('srcFrom')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      call += 1;
+      return call === 1
+        ? { columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a1']]] } // construction
+        : gate.then(() => ({ columns: [{ name: 'dep1', type: 'Array(String)' }], rows: [[['a2']]] })); // selective rerun
+    });
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+        { id: 'f-dep1', parameter: 'dep1', sourceQueryId: 'srcFrom' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT {dep1:String} AS n'),
+        query('srcFrom', "SELECT ['a'] AS dep1 FROM t WHERE ts >= {from:String} /* srcFrom */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const initial = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(initial.status).toBe('ready');
+    expect(initial.options).toEqual([{ value: 'a1', label: 'a1' }]);
+
+    const wave = session.setFilter('from-root', 'v1'); // commit a dependency change -> selective rerun
+    await flush(); // let the rerun reach its (gated) executeRead
+    const midFlight = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(midFlight.status).toBe('loading');
+    expect(midFlight.stale).toBe(true);
+    // The OLD options ('a1') must NOT still render as current while a
+    // committed dependency change is loading a fresh answer — cleared, not
+    // left stale-current, per the issue's error/stale-result acceptance.
+    expect(midFlight.options).toBeNull();
+
+    releaseSecond();
+    await wave;
+    const settled = session.state.value.filters.find((flt) => flt.id === 'f-dep1')!;
+    expect(settled.status).toBe('ready');
+    expect(settled.stale).toBe(false);
+    expect(settled.options).toEqual([{ value: 'a2', label: 'a2' }]); // repopulated once the wave settles
+  });
+
   it("a reconciliation deactivation from the selective source rerun runs its dependent panel in the SAME wave as the changed root param", async () => {
     let fromValue = 'v0';
     const { exec, calls } = makeExec((sql) => {
