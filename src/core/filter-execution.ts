@@ -71,20 +71,30 @@ export interface FilterExecutionPlan {
   error: string | null;
 }
 
+/** The owned, lossless, bounded transport params every Filter-role query runs
+ *  under — `max_result_bytes` plus the four JSON `output_format` flags that
+ *  make the numeric/decimal round-trip lossless over JSON. Shared by
+ *  `filterExecution` and `prepareFilterSource` so the caps are defined once;
+ *  `overrides` layers on top (a caller-supplied extra/overriding param, same
+ *  as `FilterExecutionDefaults.params`). Pure. */
+function filterOwnedParams(overrides: Record<string, string | number> = {}): Record<string, string | number> {
+  return {
+    max_result_bytes: FILTER_RESULT_BYTE_CAP,
+    output_format_json_named_tuples_as_objects: 1,
+    output_format_json_quote_64bit_integers: 1,
+    output_format_json_quote_decimals: 1,
+    output_format_json_quote_64bit_floats: 1,
+    ...overrides,
+  };
+}
+
 export function filterExecution(sql?: string | null, defaults: FilterExecutionDefaults = {}): FilterExecutionPlan {
   const diagnostics = filterSqlDiagnostics(sql);
   return {
     owned: true,
     format: 'Filter',
     rowLimit: FILTER_TOP_LEVEL_ROW_LIMIT,
-    params: {
-      max_result_bytes: FILTER_RESULT_BYTE_CAP,
-      output_format_json_named_tuples_as_objects: 1,
-      output_format_json_quote_64bit_integers: 1,
-      output_format_json_quote_decimals: 1,
-      output_format_json_quote_64bit_floats: 1,
-      ...(defaults.params || {}),
-    },
+    params: filterOwnedParams(defaults.params),
     diagnostics,
     error: diagnostics.length ? diagnostics[0].message : null,
   };
@@ -121,7 +131,12 @@ export interface FilterSourceAnalysis {
  * source in the same dashboard; depending on any of them is the one
  * cascading violation this dashboard model disallows, and each becomes its
  * own `filter-source-cascading` diagnostic naming `opts.label` and the
- * offending parameter. Pure.
+ * offending parameter. `analysis.diagnostics` (the shared pipeline's own
+ * cross-declaration type-conflict findings, e.g. `{x:UInt8}` vs `{x:String}`
+ * in the same source) are folded in too, each as its own
+ * `filter-source-param-type-conflict` diagnostic (#360 review finding 3) —
+ * without this, a type-conflicted source would classify `runnable` in
+ * `prepareFilterSource` and get sent. Pure.
  */
 export function analyzeFilterSource(
   sql: string | null | undefined,
@@ -146,7 +161,9 @@ export function analyzeFilterSource(
       ));
     }
   }
-  return { sql: text, analysis, dependsOn, diagnostics: [...structural, ...cascading] };
+  const typeConflicts = analysis.diagnostics.map((d) =>
+    diagnostic('filter-source-param-type-conflict', d.message));
+  return { sql: text, analysis, dependsOn, diagnostics: [...structural, ...cascading, ...typeConflicts] };
 }
 
 /** The three states `prepareFilterSource` classifies a Filter source into:
@@ -178,7 +195,10 @@ export interface FilterSourcePreparation {
  * 'execute'` — a Filter source runs as soon as it's ready; there's no
  * separate blur/Enter commit step) and folds the result together with
  * `analyzed.diagnostics` into one readiness verdict, the owned transport
- * `params` (`filterExecution`'s caps ∪ the bound `param_<name>` args), and
+ * `params` (`filterOwnedParams()`'s caps ∪ the bound `param_<name>` args —
+ * the same helper `filterExecution` builds its own `params` from, called
+ * directly here rather than through `filterExecution` so this doesn't re-run
+ * `filterSqlDiagnostics`, already computed by `analyzeFilterSource`), and
  * the materialized `execSql` to send. Takes the pre-analyzed source so a
  * caller re-running this every value edit derives `dependsOn` (and re-scans
  * the SQL) exactly once per SQL edit, not once per value edit. Pure.
@@ -203,8 +223,7 @@ export function prepareFilterSource(
     : src.missing.length
       ? 'waiting'
       : 'runnable';
-  const owned = filterExecution(analyzed.sql).params;
-  const params = { ...owned, ...mergedSourceArgs(src) };
+  const params = { ...filterOwnedParams(), ...mergedSourceArgs(src) };
   const error = diagnostics.length
     ? diagnostics[0].message
     : src.invalid.length

@@ -65,6 +65,17 @@ describe('analyzeFilterSource (#360)', () => {
     const a = analyzeFilterSource('CREATE TABLE t (x Int8) COMMENT {z:String}');
     expect(a.dependsOn).toEqual([]);
   });
+  it('#360 review finding 3: folds a same-name conflicting-type declaration into a diagnostic', () => {
+    const a = analyzeFilterSource('SELECT {x:UInt8} AS a, {x:String} AS b');
+    expect(a.analysis.diagnostics).toHaveLength(1);
+    expect(a.analysis.diagnostics[0]).toMatchObject({ kind: 'type-conflict', name: 'x' });
+    expect(a.diagnostics.map((d) => d.code)).toContain('filter-source-param-type-conflict');
+    const conflict = a.diagnostics.find((d) => d.code === 'filter-source-param-type-conflict');
+    expect(conflict?.message).toBe(a.analysis.diagnostics[0].message);
+    expect(conflict?.message).toContain('x');
+    expect(conflict?.message).toContain('UInt8');
+    expect(conflict?.message).toContain('String');
+  });
 });
 
 describe('prepareFilterSource (#360)', () => {
@@ -126,6 +137,37 @@ describe('prepareFilterSource (#360)', () => {
     const p = prepareFilterSource(a);
     expect(p.readiness).toBe('runnable');
     expect(p.error).toBeNull();
+  });
+  it('#360 review finding 3: a type-conflicted source classifies error, not runnable — no request would be sent', () => {
+    const a = analyzeFilterSource('SELECT {x:UInt8} AS a, {x:String} AS b');
+    const p = prepareFilterSource(a, { values: { x: '1' } });
+    expect(p.readiness).toBe('error');
+    expect(p.error).toBe(a.diagnostics[0].message);
+    expect(p.error).toContain('x');
+  });
+  it('a non-conflicting parameterized source still classifies runnable/waiting as before', () => {
+    const runnable = analyzeFilterSource('SELECT {x:UInt8} AS a, {y:String} AS b');
+    expect(runnable.diagnostics).toEqual([]);
+    const pr = prepareFilterSource(runnable, { values: { x: '1', y: 'ok' } });
+    expect(pr.readiness).toBe('runnable');
+    const waiting = analyzeFilterSource('SELECT {x:UInt8} AS a');
+    expect(waiting.diagnostics).toEqual([]);
+    const pw = prepareFilterSource(waiting, { values: {} });
+    expect(pw.readiness).toBe('waiting');
+  });
+  it('owned-params helper: params still carries the caps ∪ param_<name> args, no readonly, even bypassing filterExecution', () => {
+    const a = analyzeFilterSource('SELECT 1 WHERE n = {n:UInt8}');
+    const p = prepareFilterSource(a, { values: { n: '42' } });
+    expect(p.params).toMatchObject({
+      param_n: '42',
+      max_result_bytes: FILTER_RESULT_BYTE_CAP,
+      output_format_json_named_tuples_as_objects: 1,
+      output_format_json_quote_64bit_integers: 1,
+      output_format_json_quote_decimals: 1,
+      output_format_json_quote_64bit_floats: 1,
+    });
+    expect(p.params).not.toHaveProperty('readonly');
+    expect(p.params).not.toHaveProperty('read_only');
   });
   it('resolves two relative params in one statement against a single pinned wallNowMs', () => {
     const a = analyzeFilterSource('SELECT 1 WHERE a >= {from:DateTime} AND a < {to:DateTime}');
