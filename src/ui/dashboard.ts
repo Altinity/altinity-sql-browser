@@ -268,17 +268,21 @@ function renderDashboardNotFound(app: DashboardApp): void {
  *    EXPORT   ⭳ Export Dashboard…   .json
  *    IMPORT   ⭱ Import Dashboard…
  *    OPEN     ◇ Open for viewing…
- *  Edit mode offers all three sections; a read-only (detached) view offers
- *  EXPORT only (import + re-preview are edit-context operations). Every item
- *  delegates to an `app.actions.*` seam (dashboard.ts never reaches into
- *  app.ts). The trigger uses the shared downward-chevron treatment
- *  (`Icon.chevDown()`, matching the Workbench File button) rather than a
- *  right-pointing arrow, which would misread as navigation. The trigger owns
- *  its own open/close TOGGLE (unlike the Workbench menu, which only ever
- *  opens) — clicking it again while open closes the menu and restores focus,
- *  tracked here via the returned `MenuHandle` rather than a second
- *  `openMenu` call. */
-function buildDashboardFileMenu(app: DashboardApp, readOnly: boolean): HTMLElement {
+ *  #347: only ever built for an EDITABLE (non-read-only) Dashboard — the
+ *  caller omits the control entirely for a read-only route. (Previously a
+ *  read-only view got an Export-only menu, but `exportDashboardAction`
+ *  resolves the latest COMMITTED PRIMARY workspace via `workspace.loadCurrent()`,
+ *  which may be unrelated to the read-only Dashboard on screen; hiding rows
+ *  wasn't enough, since the surviving Export button still exported the wrong
+ *  workspace.) Every item delegates to an `app.actions.*` seam (dashboard.ts
+ *  never reaches into app.ts). The trigger uses the shared downward-chevron
+ *  treatment (`Icon.chevDown()`, matching the Workbench File button) rather
+ *  than a right-pointing arrow, which would misread as navigation. The
+ *  trigger owns its own open/close TOGGLE (unlike the Workbench menu, which
+ *  only ever opens) — clicking it again while open closes the menu and
+ *  restores focus, tracked here via the returned `MenuHandle` rather than a
+ *  second `openMenu` call. */
+function buildDashboardFileMenu(app: DashboardApp): HTMLElement {
   const doc = app.document;
   const btn = h('button', {
     class: 'dash-btn dash-file-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
@@ -294,21 +298,17 @@ function buildDashboardFileMenu(app: DashboardApp, readOnly: boolean): HTMLEleme
         kind: 'item', icon: Icon.download(), label: 'Export Dashboard…', meta: '.json', extraClass: 'dash-fm-item',
         onClick: () => app.actions.exportDashboard(),
       },
+      { kind: 'section', label: 'Import' },
+      {
+        kind: 'item', icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
+        onClick: () => app.actions.importDashboard(),
+      },
+      { kind: 'section', label: 'Open' },
+      {
+        kind: 'item', icon: Icon.eye(), label: 'Open for viewing…', extraClass: 'dash-fm-item',
+        onClick: () => app.actions.openDashboardForViewing(),
+      },
     ];
-    if (!readOnly) {
-      rows.push(
-        { kind: 'section', label: 'Import' },
-        {
-          kind: 'item', icon: Icon.upload(), label: 'Import Dashboard…', extraClass: 'dash-fm-item',
-          onClick: () => app.actions.importDashboard(),
-        },
-        { kind: 'section', label: 'Open' },
-        {
-          kind: 'item', icon: Icon.eye(), label: 'Open for viewing…', extraClass: 'dash-fm-item',
-          onClick: () => app.actions.openDashboardForViewing(),
-        },
-      );
-    }
     handle = openMenu({
       document: doc, trigger: btn, rows, menuClass: 'dash-file-menu',
       onClose: () => { handle = null; },
@@ -553,8 +553,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   const showLayoutSelect = !readOnly || currentDoc.layout.type === 'grafana-grid';
 
   // #302: the Dashboard page's own resource-scoped File menu (import/export +
-  // open-for-viewing).
-  const fileMenuBtn = buildDashboardFileMenu(app, readOnly);
+  // open-for-viewing). #347: omitted from the DOM entirely in a read-only
+  // view — not merely disabled/hidden — so keyboard tab order and the
+  // accessibility tree carry no File control where no operation is valid.
+  const fileMenuBtn = readOnly ? null : buildDashboardFileMenu(app);
   const header = h('div', { class: 'dash-header' },
     h('a', {
       class: 'dash-back', href: app.conn.basePath || '/sql', title: 'Back to SQL Browser', 'aria-label': 'Back to SQL Browser',
