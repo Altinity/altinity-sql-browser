@@ -50,19 +50,26 @@ test.describe('Dashboard Filter sources', () => {
   });
 
   test('a shared Filter source renders curated values for all configured filters (#359)', async ({ page }) => {
+    // The real DashboardViewerSession ran the ONE shared source query exactly
+    // once for the two filters that reference it (the #359 bug ran it per
+    // definition and dropped every helper as a duplicate provider).
+    expect(await page.evaluate(() => window.__sharedRequests)).toBe(1);
+    expect(await page.evaluate(() => window.__filterStatus)).toEqual({ user: 'ready', query_kind: 'ready' });
+
     const shared = page.getByRole('main', { name: 'Dashboard filters sharing one source' });
     const userInput = shared.getByRole('combobox', { name: 'user' });
     const kindInput = shared.getByRole('combobox', { name: 'query_kind' });
     await expect(userInput).toHaveAttribute('placeholder', 'All');
     await expect(kindInput).toHaveAttribute('placeholder', 'All');
 
-    // Both fields built from the ONE shared source bundle render their own
-    // curated options — not empty controls (the #359 bug).
+    // Each filter's own curated column from that single result populates its
+    // control — the merge published `user` -> [alice, bob] and
+    // `query_kind` -> [Select, Insert] from one bundle.
     await userInput.fill('ali');
     await expect(shared.getByRole('option')).toHaveCount(1);
-    await expect(shared.getByRole('option')).toHaveText('Alice');
+    await expect(shared.getByRole('option')).toHaveText('alice');
     await shared.getByRole('option').click();
-    await expect(userInput).toHaveValue('Alice');
+    await expect(userInput).toHaveValue('alice');
     expect(await page.evaluate(() => window.__userSel)).toEqual({ value: 'alice', active: true, commits: 1 });
 
     await kindInput.fill('ins');
@@ -74,7 +81,7 @@ test.describe('Dashboard Filter sources', () => {
 
     // Committing the second filter must not disturb the first — each
     // consumer of the one shared source operates independently.
-    await expect(userInput).toHaveValue('Alice');
+    await expect(userInput).toHaveValue('alice');
     expect(await page.evaluate(() => window.__userSel)).toEqual({ value: 'alice', active: true, commits: 1 });
   });
 });

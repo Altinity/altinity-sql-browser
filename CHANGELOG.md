@@ -22,7 +22,13 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   saved source-query id (two DISTINCT sources providing the same helper still
   correctly collide with no arbitrary winner), and the merge's diagnostics
   (info/warning/error, severity preserved) are now published to the Dashboard
-  instead of dropped. This is the one-source-runtime boundary #360 builds on.
+  instead of dropped — including a `filter-helper-missing` warning (naming the
+  source and column) when a source succeeds but omits a consumer's helper, so
+  that filter no longer renders as an unexplained empty control. Each source
+  also retains its last-known provider on its runtime and the merge reads the
+  complete set, so a future selective wave (#360) can re-merge unaffected
+  sources without clearing or rerunning them. This is the one-source-runtime
+  boundary #360 builds on.
 
 ### Changed
 - **Dashboard Filter execution no longer injects `readonly`** (#359). Server

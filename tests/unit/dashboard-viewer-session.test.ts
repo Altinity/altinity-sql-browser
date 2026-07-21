@@ -698,6 +698,14 @@ describe('shared filter-source runtime (#359)', () => {
     expect(f1.status).toBe('ready');
     expect(f2.status).toBe('missing-helper');
     expect(f2.options).toBeNull();
+    // The missing helper is no longer SILENT: a warning diagnostic naming the
+    // source and the absent column is published so the UI (which renders
+    // filterDiagnostics, not per-filter status) can explain the empty control.
+    const missing = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-helper-missing');
+    expect(missing).toMatchObject({ severity: 'warning', sourceId: 'src', helperName: 'p2' });
+    expect(missing!.message).toContain('p2');
+    // The healthy sibling (p1) does NOT get a missing-helper diagnostic.
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-helper-missing' && d.helperName === 'p1')).toBe(false);
   });
 
   it('marks a filter source-error when its sourceQueryId does not resolve to any query — visible, not silently skipped', async () => {

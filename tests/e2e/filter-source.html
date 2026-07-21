@@ -4,6 +4,16 @@
   <meta charset="utf-8" />
   <title>Filter source harness</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <!-- The Dashboard viewer session imports the signals runtime as a bare
+       specifier; the e2e server serves raw /src with no bundler, so map it to
+       the shipped ESM build (same as editor.html). -->
+  <script type="importmap">
+    {
+      "imports": {
+        "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs"
+      }
+    }
+  </script>
   <style>
     body { overflow: auto; padding: 24px; background: var(--bg); color: var(--fg); font-family: var(--ui); }
     .surface { width: min(640px, 100%); margin-bottom: 32px; }
@@ -16,6 +26,7 @@
   <script type="module">
     import { renderFilterPreview } from '/src/ui/filter-preview.js';
     import { buildFilterOptionField } from '/src/ui/filter-option-field.js';
+    import { createDashboardViewerSession } from '/src/dashboard/application/dashboard-viewer-session.js';
 
     const options = [
       { value: '', label: '(empty)' },
@@ -39,41 +50,71 @@
     });
     document.querySelector('#dashboard').append(field.el);
 
-    // #359: ONE Filter source feeding TWO configured filters. A shared source
-    // query returns one merged bundle (see applyFilterProviders in
-    // dashboard-viewer-session.ts); EACH consuming filter builds its OWN
-    // buildFilterOptionField from that same bundle (rebuildFilterBar in
-    // dashboard.ts). `user`/`query_kind` below stand in for two columns of
-    // one shared source result — both fields must render curated values and
-    // commit independently of each other.
-    const sharedSource = {
-      user: [
-        { value: '', label: '(empty)' },
-        { value: 'alice', label: 'Alice' },
-        { value: 'bob', label: 'Bob' },
-      ],
-      query_kind: [
-        { value: '', label: '(empty)' },
-        { value: 'Select', label: 'Select' },
-        { value: 'Insert', label: 'Insert' },
-      ],
+    // #359: a REAL Dashboard viewer session where TWO filter definitions share
+    // ONE Filter-source query (`qle-filter`). This drives the actual
+    // FilterSourceRuntime split, one-request dedup, provider merge, and
+    // per-consumer option publication — not two hand-built widgets. The source
+    // returns a single two-column bundle; both filters must populate from that
+    // ONE execution, and each curated option set is rendered through the same
+    // buildFilterOptionField the Dashboard filter bar uses.
+    let sourceRequests = 0;
+    const exec = {
+      async executeRead(result, req) {
+        const shared = req.sql.includes('/* shared */');
+        if (shared) sourceRequests += 1;
+        if (req.onChunk) { result.progress.rows = 1; req.onChunk(); }
+        result.columns = shared
+          ? [{ name: 'user', type: 'Array(String)' }, { name: 'query_kind', type: 'Array(String)' }]
+          : [{ name: 'n' }];
+        result.rows = shared ? [[['alice', 'bob'], ['Select', 'Insert']]] : [[1]];
+        result.progress.bytes = 10;
+        result.error = null;
+        result.cancelled = false;
+      },
     };
-
-    window.__userSel = { value: '', active: false, commits: 0 };
-    const userField = buildFilterOptionField({
-      document, name: 'user', options: sharedSource.user, inactiveLabel: 'All',
-      onValueChange: (value, active) => Object.assign(window.__userSel, { value, active }),
-      onCommit: () => { window.__userSel.commits++; },
+    const savedQuery = (id, sql, spec = {}) => ({ id, sql, specVersion: 1, spec: { name: id, ...spec } });
+    const document_ = {
+      documentVersion: 1, id: 'd', title: 'D', revision: 1,
+      layout: { type: 'flow', version: 1, preset: 'columns-2', items: {} },
+      filters: [
+        { id: 'f-user', parameter: 'user', label: 'user', sourceQueryId: 'qle-filter' },
+        { id: 'f-kind', parameter: 'query_kind', label: 'query_kind', sourceQueryId: 'qle-filter' },
+      ],
+      tiles: [{ id: 'ta', queryId: 'qa' }, { id: 'tb', queryId: 'qb' }],
+    };
+    let clock = 1000;
+    const session = createDashboardViewerSession({
+      document: document_,
+      queries: [
+        savedQuery('qa', 'SELECT {user:String} AS n'),
+        savedQuery('qb', 'SELECT {query_kind:String} AS n'),
+        savedQuery('qle-filter', "SELECT ['alice','bob'] AS user, ['Select','Insert'] AS query_kind /* shared */", { dashboard: { role: 'filter' } }),
+      ],
+      exec,
+      connection: { ensureFreshToken: async () => true },
+      now: () => (clock += 5),
+      wallNow: () => 2000,
     });
+    await session.start();
 
-    window.__kindSel = { value: '', active: false, commits: 0 };
-    const kindField = buildFilterOptionField({
-      document, name: 'query_kind', options: sharedSource.query_kind, inactiveLabel: 'All',
-      onValueChange: (value, active) => Object.assign(window.__kindSel, { value, active }),
-      onCommit: () => { window.__kindSel.commits++; },
-    });
+    const filters = session.state.value.filters;
+    const byParam = (p) => filters.find((f) => f.parameter === p);
+    window.__sharedRequests = sourceRequests;
+    window.__filterStatus = { user: byParam('user').status, query_kind: byParam('query_kind').status };
 
-    document.querySelector('#shared-source').append(userField.el, kindField.el);
+    const host = document.querySelector('#shared-source');
+    const mountField = (param, sink) => {
+      window[sink] = { value: '', active: false, commits: 0 };
+      const built = buildFilterOptionField({
+        document, name: param, options: byParam(param).options || [], inactiveLabel: 'All',
+        onValueChange: (value, active) => Object.assign(window[sink], { value, active }),
+        onCommit: () => { window[sink].commits++; },
+      });
+      host.append(built.el);
+    };
+    mountField('user', '__userSel');
+    mountField('query_kind', '__kindSel');
+
     window.__ready = true;
   </script>
 </body>

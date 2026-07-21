@@ -291,8 +291,13 @@ interface FilterRuntime {
  *  plus the merge result in `applyFilterProviders`. `query` is `undefined`
  *  when `sourceQueryId` does not resolve against `queryById` — that still
  *  gets a runtime (so every consumer sees a visible `source-error`), it just
- *  never executes. No stored `provider` — `runFilterSource` RETURNS it;
- *  `runFilterWave` collects the returns and merges once. */
+ *  never executes. `provider` is the source's LAST-KNOWN normalized
+ *  contribution — `runFilterSource` updates it only for the current
+ *  generation, and `applyFilterProviders` merges the COMPLETE set from every
+ *  source runtime (not just the sources a wave re-ran). That is the
+ *  source-runtime boundary #360 needs: a selective wave that reruns only the
+ *  Filter sources a changed root parameter feeds can retain and re-merge every
+ *  unaffected source's helpers instead of clearing them or rerunning all. */
 interface FilterSourceRuntime {
   id: string;
   query: SavedQueryV2 | undefined;
@@ -300,6 +305,7 @@ interface FilterSourceRuntime {
   gen: number;
   abortController: AbortController | null;
   status: 'idle' | 'loading' | 'ready' | 'error';
+  provider: FilterProvider | null;
 }
 
 const cfgType = (panel: unknown): string | undefined =>
@@ -429,7 +435,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     if (!source) {
       source = {
         id: filter.sourceId, query: queryById.get(filter.sourceId),
-        consumers: [], gen: 0, abortController: null, status: 'idle',
+        consumers: [], gen: 0, abortController: null, status: 'idle', provider: null,
       };
       filterSources.set(filter.sourceId, source);
     }
@@ -645,12 +651,14 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   /** Runs ONE shared source's query (was per-filter — #359's fix: N filter
    *  definitions sharing a `sourceQueryId` now execute it exactly once per
-   *  wave). Returns the `FilterProvider` the caller collects into ONE merge;
-   *  `source.status` is set to the TRANSPORT terminal (`ready`/`error`) —
-   *  per-consumer curation status is derived afterward in
-   *  `applyFilterProviders`. Every stale-gen guard mirrors the tile runner:
-   *  a superseded source's provider is discarded (returns `null`) rather than
-   *  publishing a stale result. */
+   *  wave). Sets the TRANSPORT terminal (`ready`/`error`) and STORES the
+   *  normalized `FilterProvider` on `source.provider` — but ONLY for the
+   *  current generation: every stale-gen guard bails BEFORE the status/provider
+   *  write, so a superseded run leaves the last-known provider intact (returns
+   *  `null`). Per-consumer curation status is derived afterward in
+   *  `applyFilterProviders`, which merges the COMPLETE provider set from all
+   *  source runtimes (the #360 boundary — retained providers survive a
+   *  selective wave). */
   async function runFilterSource(source: FilterSourceRuntime, generation: number): Promise<FilterProvider | null> {
     if (!source.query) {
       // REUSE the static-validation code `filter-source-missing`
@@ -663,6 +671,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       };
       if (source.gen !== generation) return null;
       source.status = 'error';
+      source.provider = provider;
       return provider;
     }
     const query = source.query;
@@ -673,6 +682,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       };
       if (source.gen !== generation) return null;
       source.status = 'error';
+      source.provider = provider;
       return provider;
     }
     if (source.gen !== generation) return null;
@@ -700,6 +710,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       provider = { sourceId: source.id, sourceName: queryName(query), ...normalized };
       source.status = normalized.helpers.length ? 'ready' : 'error';
     }
+    source.provider = provider;
     return provider;
   }
 
@@ -711,7 +722,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  affected-tile wave `refresh()` runs next sees the reconciled `active`
    *  (the PRECONDITION from plan review: this must NOT be deferred to a
    *  microtask). */
-  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[], providers: (FilterProvider | null)[]): void {
+  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[]): void {
     // Stale-wave guard (#359 "a stale generation cannot publish options or
     // activation changes"): a superseded (or destroyed) wave's own source
     // results were already discarded in `runFilterSource` (returned `null`),
@@ -722,12 +733,22 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // `runFilterWave`/`destroy` bumps them together), so any mismatch means
     // this whole wave is stale and must publish nothing.
     if (plan.some(({ source, generation }) => source.gen !== generation)) return;
+    // Merge the COMPLETE set of source providers — not just the ones a wave
+    // re-ran — so retained (last-known) providers survive a future selective
+    // wave (#360). A source that has never produced one contributes nothing.
     const merged = mergeDashboardFilterHelpers({
-      providers: providers.filter((provider): provider is FilterProvider => provider !== null),
+      providers: [...filterSources.values()]
+        .map((source) => source.provider)
+        .filter((provider): provider is FilterProvider => provider !== null),
       controls, values: rawValues(), active: effectiveActive(rawValues(), activeMap()),
     });
     curated = merged.fields;
-    filterDiagnostics = merged.diagnostics; // published as-is — never deduped.
+    // Published as-is (never deduped — a shared source runs once per wave), plus
+    // one per-consumer `filter-helper-missing` for the otherwise-silent case
+    // where a source succeeds but omits a consumer's column (finding: the UI
+    // renders diagnostics, not per-filter status, so a bare `missing-helper`
+    // left an unexplained empty control).
+    const diagnostics: FilterDiagnostic[] = [...merged.diagnostics];
     for (const source of filterSources.values()) {
       for (const consumer of source.consumers) {
         if (source.status === 'error') {
@@ -748,9 +769,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
         // Simple helperName match only — no code enumeration, no sourceId key.
         const namedByDiagnostic = merged.diagnostics.some((diag) => diag.helperName === consumer.def.parameter);
         setConsumerOptions(consumer, null);
-        consumer.state.status = namedByDiagnostic ? 'helper-error' : 'missing-helper';
+        if (namedByDiagnostic) {
+          consumer.state.status = 'helper-error';
+        } else {
+          consumer.state.status = 'missing-helper';
+          diagnostics.push(coreDiagnostic('warning', 'filter-helper-missing',
+            `Filter source ${JSON.stringify(source.query ? queryName(source.query) : source.id)} returned no "${consumer.def.parameter}" option column.`,
+            { sourceId: source.id, helperName: consumer.def.parameter }));
+        }
       }
     }
+    filterDiagnostics = diagnostics;
     // Reconcile: a value no longer among its curated options is deactivated
     // (value KEPT — matches clearFilter's reactivation semantics). `changed`
     // only ever names source-backed parameters, whose tiles are already in
@@ -773,9 +802,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       for (const consumer of source.consumers) consumer.state.status = 'loading';
     }
     publish();
-    const providers = await runPool(plan, VIEWER_TILE_CONCURRENCY,
+    // Each source stores its own provider on `source.provider`; the terminal
+    // merge reads the complete set, so the pool's returns are awaited only for
+    // sequencing, not collected.
+    await runPool(plan, VIEWER_TILE_CONCURRENCY,
       ({ source, generation }) => runFilterSource(source, generation));
-    applyFilterProviders(plan, providers);
+    applyFilterProviders(plan);
   }
 
 
