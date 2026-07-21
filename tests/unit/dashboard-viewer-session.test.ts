@@ -1566,3 +1566,136 @@ describe('parameterized Filter sources (#360)', () => {
   // clears `options` to `null` via `setConsumerOptions`, and the `ready`
   // transitions set it back to a real array).
 });
+
+// Maintainer review of #360 (findings 1, 2, 4, 6): a commit's affected path
+// (source wave THEN panel wave) must not launch its own panel wave once its
+// source wave turns out to have been superseded or the session was
+// destroyed — previously `runFilterSourceWave`/`applyFilterProviders`
+// returned a bare `[]` for BOTH "applied, nothing flipped" and "discarded,
+// stale plan", so a stale commit still ran `runAffectedWave` afterward.
+describe('commit-level generation guard for a superseded/destroyed selective wave (#360 review findings 1/2)', () => {
+  // A root filter ('from') feeds a shared Filter source ('src') that a
+  // second, source-backed filter ('f-dep') consumes; a tile binds 'from'
+  // directly so a fired panel wave for it is unambiguous and distinguishable
+  // by COUNT (both a buggy stale wave and the correct settling wave would
+  // bind the SAME, already-current 'from' value by the time either runs, so
+  // only call-count — not the bound param — can tell them apart).
+  const depDoc = () => doc({
+    tiles: [tile('t', 'qt')],
+    filters: [
+      { id: 'from-root', parameter: 'from', defaultActive: true, defaultValue: 'v0' },
+      { id: 'f-dep', parameter: 'dep', sourceQueryId: 'src', defaultActive: false, defaultValue: '' },
+    ],
+  });
+  const depQueries = () => [
+    query('qt', 'SELECT {from:String} AS n'),
+    query('src', "SELECT ['x'] AS dep FROM t WHERE ts >= {from:String} /* source */", { dashboard: { role: 'filter' } }),
+  ];
+  const tileCallCount = (calls: { sql: string }[]) => calls.filter((c) => !c.sql.includes('source')).length;
+
+  it('finding 1: a commit superseded by a newer overlapping commit issues no panel requests of its own — only the fresher commit runs panels', async () => {
+    let releaseA!: () => void;
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gateA.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['fresh']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const waveA = session.setFilter('from-root', 'v1'); // source wave A starts; its executeRead is call #2, gated
+    await flush();
+    const waveB = session.setFilter('from-root', 'v2'); // supersedes A's source generation before A settles
+    await waveB; // B's own source wave (call #3) resolves immediately and runs B's panel wave
+    releaseA();
+    await waveA; // A's held call finally resolves, but discovers its plan is stale
+
+    // Only ONE panel request fired for the tile — B's. A's superseded commit
+    // never launched its own `runAffectedWave` (the pre-fix bug: it would
+    // have, since a stale `[]` was indistinguishable from an applied `[]`).
+    expect(tileCallCount(calls) - before).toBe(1);
+    expect(sourceCalls).toBe(3);
+  });
+
+  it('finding 1 (isolated): a source wave superseded by an UNRELATED concurrent full refresh (not another commit) still skips the panel wave, even though commitGeneration itself never changed', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['stale']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['fresh']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const commit = session.setFilter('from-root', 'v1'); // selective source wave starts; gated (call #2)
+    await flush();
+    const refreshP = session.refresh(); // a full refresh — bumps EVERY source's generation, never commitGeneration
+    await refreshP;
+    releaseGate();
+    await commit;
+
+    // `refresh()` legitimately fires the tile once (it is not source-targeted,
+    // so it runs unaffected/parallel); the selective commit must NOT have
+    // fired an additional, now-stale panel request of its own even though
+    // `commitGeneration` was never touched by `refresh()` — only the
+    // `SourceWaveResult` status caught this one.
+    expect(tileCallCount(calls) - before).toBe(1);
+  });
+
+  it('finding 2: destroy() during an in-flight selective source wave prevents its panel wave from ever firing', async () => {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let sourceCalls = 0;
+    const { exec, calls } = makeExec((sql) => {
+      if (!sql.includes('source')) return { columns: [{ name: 'n' }], rows: [[1]] };
+      sourceCalls += 1;
+      return sourceCalls === 2
+        ? gate.then(() => ({ columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['x']]] }))
+        : { columns: [{ name: 'dep', type: 'Array(String)' }], rows: [[['x']]] };
+    });
+    const session = createDashboardViewerSession(makeDeps({ document: depDoc(), exec, queries: depQueries() }));
+    await session.start();
+    const before = tileCallCount(calls);
+
+    const wave = session.setFilter('from-root', 'v1'); // selective source wave starts; gated
+    await flush();
+    session.destroy();
+    releaseGate();
+    await wave;
+
+    expect(tileCallCount(calls)).toBe(before); // no panel request fired after destroy
+  });
+});
+
+describe('published sourceId on ViewerFilterState (#360 review finding 4)', () => {
+  it('a source-backed filter publishes sourceId equal to its sourceQueryId; a plain filter leaves it undefined', () => {
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        { id: 'f-plain', parameter: 'plain', defaultActive: false, defaultValue: '' },
+        { id: 'f-src', parameter: 'srcp', sourceQueryId: 'src' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document,
+      queries: [
+        query('qt', 'SELECT 1 AS n'),
+        query('src', "SELECT ['x'] AS srcp /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    const plain = session.state.value.filters.find((f) => f.id === 'f-plain')!;
+    const sourced = session.state.value.filters.find((f) => f.id === 'f-src')!;
+    expect(plain.sourceId).toBeUndefined();
+    expect(sourced.sourceId).toBe('src');
+  });
+});

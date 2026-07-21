@@ -133,6 +133,14 @@ export interface ViewerFilterState {
    *  names (from `FilterSourcePreparation.missing`) the filter-bar UI/
    *  diagnostics can name. Absent otherwise. */
   waitingFor?: string[];
+  /** #360 finding 4: the shared `FilterSourceRuntime.id` this filter is a
+   *  consumer of, set once at construction from the filter DEFINITION's
+   *  `sourceQueryId` — undefined for a plain root filter (no source at all).
+   *  This is TOPOLOGY, not transport state (unlike `status`/`stale`, it never
+   *  changes across a session), so a later UI wave can pick the curated
+   *  renderer for a source-backed filter by construction rather than by
+   *  inferring it from a transient status value. */
+  sourceId?: string;
 }
 
 /** The Dashboard's per-render layout view (#291) — a discriminated union over
@@ -386,6 +394,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // outside `documentRef` — never read/written by any command, never
   // persisted. A fresh session always starts at 'tiles'.
   let gridRenderMode: GridRenderMode = 'tiles';
+  // #360 findings 1+2: bumped once per `commitAndRerun` call, covering BOTH
+  // phases of its affected path (the source wave, then the panel wave) — see
+  // the rationale on `commitAndRerun` itself for why a per-phase generation
+  // guard alone (each phase already has one) is not enough.
+  let commitGeneration = 0;
 
   const queryById = new Map<string, SavedQueryV2>();
   for (const query of queries) {
@@ -438,11 +451,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const seed = deps.initialFilters ? deps.initialFilters[def.id] : undefined;
     const value = seed !== undefined ? (seed.value ?? defaultValue) : defaultValue;
     const active = seed !== undefined ? !!seed.active : defaultActive;
+    const sourceId = typeof def.sourceQueryId === 'string' ? def.sourceQueryId : undefined;
     const state: ViewerFilterState = {
       id: def.id, parameter: def.parameter, label: def.label || def.parameter,
-      active, value, status: 'idle', options: null, optionsRev: 0,
+      active, value, status: 'idle', options: null, optionsRev: 0, sourceId,
     };
-    const sourceId = typeof def.sourceQueryId === 'string' ? def.sourceQueryId : undefined;
     return { def, sourceId, state };
   });
   const filterById = new Map<string, FilterRuntime>(filters.map((filter) => [filter.def.id, filter]));
@@ -804,6 +817,19 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return provider;
   }
 
+  /** #360 findings 1+2: the terminal result of one source-wave pass — either
+   *  every source in the plan settled at ITS OWN reserved generation and the
+   *  merge ran (`'applied'`, carrying `merged.changed` as `flipped`), or the
+   *  plan was stale (superseded by a later wave that reserved a fresh
+   *  generation on one of the SAME sources) and nothing was published
+   *  (`'superseded'`). Before this type existed both cases returned `[]`,
+   *  which made "ran, nothing flipped" indistinguishable from "this whole
+   *  wave was discarded" — so a superseded selective source wave still went
+   *  on to launch its own panel wave in `commitAndRerun`. `runFilterWave`
+   *  ignores the return either way (a full refresh has no further phase to
+   *  gate). */
+  type SourceWaveResult = { status: 'applied'; flipped: string[] } | { status: 'superseded' };
+
   /** Terminal, SYNCHRONOUS step of the filter wave (#359): merges every
    *  collected provider exactly ONCE, then for every consumer of every
    *  source derives its `ViewerFilterStatus`, replaces its curated options
@@ -811,10 +837,12 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
    *  reconciles `merged.changed` — all before this function returns, so the
    *  affected-tile wave `refresh()` runs next sees the reconciled `active`
    *  (the PRECONDITION from plan review: this must NOT be deferred to a
-   *  microtask). Returns the deactivated (flipped) parameter names —
-   *  `merged.changed` — so a selective (#360) caller can fold them into the
-   *  SAME affected-panel wave as the parameter that triggered the rerun. */
-  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[]): string[] {
+   *  microtask). Returns a `SourceWaveResult`: `{status:'applied', flipped}`
+   *  with the deactivated (flipped) parameter names — `merged.changed` — so a
+   *  selective (#360) caller can fold them into the SAME affected-panel wave
+   *  as the parameter that triggered the rerun; or `{status:'superseded'}`
+   *  when this plan was stale (see the stale-wave guard immediately below). */
+  function applyFilterProviders(plan: { source: FilterSourceRuntime; generation: number }[]): SourceWaveResult {
     // Stale-wave guard (#359 "a stale generation cannot publish options or
     // activation changes"): a superseded (or destroyed) wave's own source
     // results were already discarded in `runFilterSource` (returned `null`),
@@ -824,7 +852,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // already-correct state. Source generations move all-at-once (every
     // `runFilterWave`/`destroy` bumps them together), so any mismatch means
     // this whole wave is stale and must publish nothing.
-    if (plan.some(({ source, generation }) => source.gen !== generation)) return [];
+    if (plan.some(({ source, generation }) => source.gen !== generation)) return { status: 'superseded' };
     // Merge the COMPLETE set of source providers — not just the ones a wave
     // re-ran — so retained (last-known) providers survive a future selective
     // wave (#360). A source that has never produced one contributes nothing.
@@ -905,44 +933,87 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     for (const parameter of merged.changed) {
       for (const filter of filters) if (filter.def.parameter === parameter) filter.state.active = false;
     }
-    return merged.changed;
+    return { status: 'applied', flipped: merged.changed };
   }
 
-  async function runFilterWave(): Promise<void> {
-    filterDiagnostics = [];
-    // One wall-clock reading for the WHOLE wave (mirrors the tile wave's own
-    // `deps.wallNow()` capture in `refresh()`) — every source in this wave's
-    // plan resolves any relative `{name:DateTime}` dependency against the
-    // exact same instant, never a per-source read.
-    const waveMs = deps.wallNow();
-    const sources = [...filterSources.values()];
+  /** Finding 6 (dedup): the executor shared by `runFilterWave` (every known
+   *  source, a full refresh) and `runFilterSourceWave` (only the sources a
+   *  just-committed root parameter affects, #360) — both used to duplicate
+   *  the same five steps: supersede each source into a plan, flip loading/
+   *  stale on the source AND every consumer, decide whether to clear
+   *  consumer options, `publish()` once, run the plan through the bounded
+   *  pool, then merge terminally via `applyFilterProviders`. The two callers
+   *  differ only in `opts`:
+   *  - `clearOptions` — a FULL refresh deliberately KEEPS the current options
+   *    through the loading window: clearing them would flip a non-empty
+   *    filter bar to empty on every refresh, churn the UI's rebuild
+   *    signature, and destroy in-progress typing (the #359 no-flicker
+   *    invariant). A SELECTIVE rerun clears them via `setConsumerOptions`
+   *    (so `optionsRev` bumps too) because a committed dependency change
+   *    means the OLD options are no longer known-current for the new inputs
+   *    and must not keep rendering as if they were — `applyFilterProviders`
+   *    repopulates them from the fresh merge once this wave settles, so the
+   *    clear is transient.
+   *  - `resetDiagnostics` — a FULL refresh blanks `filterDiagnostics`
+   *    immediately: every source is being re-run, so any previously-published
+   *    diagnostic could be stale for the whole loading window. A SELECTIVE
+   *    rerun leaves the prior wave's diagnostics in place through its own
+   *    loading window (only a few sources are affected; the untouched
+   *    sources' diagnostics are still valid) — either way,
+   *    `applyFilterProviders` unconditionally overwrites `filterDiagnostics`
+   *    from the COMPLETE merge once THIS plan settles.
+   *  `waveMs` is the one wall-clock reading the whole wave shares (captured
+   *  once by the caller before building this plan, mirroring the tile wave's
+   *  own `deps.wallNow()` capture in `refresh()`) — every source in the plan
+   *  resolves any relative `{name:DateTime}` dependency against the exact
+   *  same instant, never a per-source read. */
+  async function executeFilterSourcePlan(
+    sources: FilterSourceRuntime[],
+    opts: { clearOptions: boolean; resetDiagnostics: boolean; waveMs: number },
+  ): Promise<SourceWaveResult> {
+    if (opts.resetDiagnostics) filterDiagnostics = [];
     const plan = sources.map((source) => ({ source, generation: supersede(source) }));
     for (const { source } of plan) {
+      // Loading is set here (and only here) — NEVER in the terminal step.
       source.status = 'loading';
-      // Loading is set here (and only here) — NEVER in the terminal step —
-      // and WITHOUT touching `options`/`optionsRev`: clearing options mid-wave
-      // would flip a non-empty filter bar to empty on every refresh, churn
-      // the UI's rebuild signature, and destroy in-progress typing.
-      for (const consumer of source.consumers) { consumer.state.status = 'loading'; consumer.state.stale = true; }
+      for (const consumer of source.consumers) {
+        consumer.state.status = 'loading';
+        consumer.state.stale = true;
+        if (opts.clearOptions) setConsumerOptions(consumer, null);
+      }
     }
     publish();
     // Each source stores its own provider on `source.provider`; the terminal
     // merge reads the complete set, so the pool's returns are awaited only for
     // sequencing, not collected.
     await runPool(plan, VIEWER_TILE_CONCURRENCY,
-      ({ source, generation }) => runFilterSource(source, generation, waveMs));
-    applyFilterProviders(plan);
+      ({ source, generation }) => runFilterSource(source, generation, opts.waveMs));
+    return applyFilterProviders(plan);
+  }
+
+  async function runFilterWave(): Promise<void> {
+    // One wall-clock reading for the WHOLE wave (mirrors the tile wave's own
+    // `deps.wallNow()` capture in `refresh()`).
+    const waveMs = deps.wallNow();
+    // Full refresh: every known source, keep options through loading (#359
+    // no-flicker invariant), reset diagnostics immediately (see
+    // `executeFilterSourcePlan`'s doc comment for the "why"). The returned
+    // `SourceWaveResult` is ignored — a full refresh has no further phase to
+    // gate on it.
+    await executeFilterSourcePlan([...filterSources.values()],
+      { clearOptions: false, resetDiagnostics: true, waveMs });
   }
 
   /** #360: rerun only the shared Filter sources whose OWN `{name:Type}`
    *  declarations depend on one of `changedParams` (a root filter's just-
    *  committed parameter names) — a source with no such dependency is never
-   *  superseded/rerun. One wall-clock reading for this whole selective wave,
-   *  same discipline as `runFilterWave`. Returns the deactivated (flipped)
-   *  parameter names from `applyFilterProviders` (`[]` when no source was
-   *  affected) so the caller can fold them into ONE combined affected-panel
-   *  wave alongside `changedParams`. */
-  async function runFilterSourceWave(changedParams: string[]): Promise<string[]> {
+   *  superseded/rerun. Returns `{status:'applied', flipped:[]}` when no
+   *  source is affected (nothing ran, so nothing can be stale); otherwise
+   *  delegates to `executeFilterSourcePlan`, whose `SourceWaveResult` the
+   *  caller (`commitAndRerun`) uses to fold the flipped parameter names into
+   *  ONE combined affected-panel wave alongside `changedParams`, or to skip
+   *  that wave entirely when this plan was superseded. */
+  async function runFilterSourceWave(changedParams: string[]): Promise<SourceWaveResult> {
     // Entered only from `commitAndRerun`'s affected path, which preflights ONCE
     // for the whole commit (source wave + affected-panel wave) — avoiding a
     // double `ensureFreshToken()`/`onAuthFailed` on a stale token — so this wave
@@ -952,29 +1023,10 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const waveMs = deps.wallNow();
     const affected = [...filterSources.values()].filter((source) =>
       source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
-    if (affected.length === 0) return [];
-    const plan = affected.map((source) => ({ source, generation: supersede(source) }));
-    for (const source of affected) {
-      source.status = 'loading';
-      for (const consumer of source.consumers) {
-        consumer.state.status = 'loading';
-        consumer.state.stale = true;
-        // Selective-path ONLY (never `runFilterWave`'s full-refresh loop,
-        // which deliberately keeps options to preserve #359's no-flicker-
-        // on-same-content invariant): a committed dependency change means the
-        // OLD options are no longer known-current for the new inputs, so they
-        // must not keep rendering as if they were — clear them (via the
-        // shared helper, so `optionsRev` bumps) rather than leave a stale
-        // "current" value on screen through the loading window.
-        // `applyFilterProviders` repopulates from the fresh merge once this
-        // wave settles, so the clear is transient.
-        setConsumerOptions(consumer, null);
-      }
-    }
-    publish();
-    await runPool(plan, VIEWER_TILE_CONCURRENCY,
-      ({ source, generation }) => runFilterSource(source, generation, waveMs));
-    return applyFilterProviders(plan);
+    if (affected.length === 0) return { status: 'applied', flipped: [] };
+    // Selective rerun: clear stale-for-new-inputs options, but keep the prior
+    // wave's diagnostics until THIS wave's own merge settles.
+    return executeFilterSourcePlan(affected, { clearOptions: true, resetDiagnostics: false, waveMs });
   }
 
 
@@ -1031,6 +1083,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
 
   // Re-run only the tiles some active filter parameter feeds into.
   async function runAffectedWave(parameters: string[], preflighted = false): Promise<void> {
+    // Finding 2: unconditional destroyed guard. The `preflighted: true` fast
+    // path (from `commitAndRerun`'s affected branch) skips `preflight()`
+    // entirely below — and `preflight()` was the ONLY place on this path that
+    // checked `destroyed` — so without this a `destroy()` firing between the
+    // source wave settling and this wave starting could still reserve tile
+    // generations and issue requests after teardown.
+    if (destroyed) return;
     if (!preflighted && !(await preflight())) return;
     const affectedIds = new Set<string>();
     for (const parameter of parameters) {
@@ -1050,25 +1109,72 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // in-progress typing), rerun any shared Filter source that depends on the
   // just-committed root parameter(s) FIRST, then fold both the committed
   // parameter(s) AND any names `runFilterSourceWave` itself deactivated
-  // (`merged.changed`, e.g. a now-out-of-range curated value elsewhere) into
+  // (`result.flipped`, e.g. a now-out-of-range curated value elsewhere) into
   // ONE combined affected-panel wave — never two separate waves. A synchronous
   // pre-check skips `runFilterSourceWave` (and the microtask hop awaiting it
   // costs) entirely when nothing depends on `changed` — behaviorally
-  // identical to awaiting it (an unaffected wave always resolves to `[]` with
-  // no side effect), just without the extra tick for the overwhelmingly
-  // common case of a Dashboard with no parameterized Filter sources (#360).
+  // identical to awaiting it (an unaffected wave always resolves to
+  // `{status:'applied', flipped:[]}` with no side effect), just without the
+  // extra tick for the overwhelmingly common case of a Dashboard with no
+  // parameterized Filter sources (#360).
   // The fast (no-affected-source) path lets `runAffectedWave` self-preflight
   // exactly as before (one await, unchanged timing); the affected path
   // preflights ONCE here for the whole commit and passes `preflighted: true`
   // into both waves — otherwise a stale token would fail `ensureFreshToken()`
   // (and fire `onAuthFailed`) twice for one commit.
+  //
+  // Findings 1+2 (maintainer review): a commit-level `commitGeneration`
+  // guards BOTH phases of the affected path together — not just each phase's
+  // own internal generation checks — because two failure modes were
+  // otherwise indistinguishable from "ran, nothing to do":
+  //  - Superseded (finding 1): an overlapping LATER commit (B, a different
+  //    `commitAndRerun` call) can supersede THIS commit's (A) source wave
+  //    mid-flight by reserving a fresh generation on one of the same sources.
+  //    `runFilterSourceWave`/`applyFilterProviders` correctly discard A's
+  //    stale results (`{status:'superseded'}`), but without a check here A
+  //    would still go on to launch its OWN panel wave — issuing avoidable
+  //    requests and binding source-backed filter values that have already
+  //    moved past while B is still in flight. Comparing `generation` (this
+  //    call's own snapshot) against `commitGeneration` (bumped by every NEW
+  //    `commitAndRerun` call) after the source wave catches a commit-level
+  //    supersession even in cases the plan-level `SourceWaveResult` alone
+  //    would not (e.g. a concurrent full `refresh()`, which bumps every
+  //    source's generation but never touches `commitGeneration`) — so both
+  //    checks are kept, each catching a case the other does not.
+  //  - Destroyed (finding 2): `runAffectedWave(parameters, true)` passes
+  //    `preflighted: true`, which skips its own `preflight()` call — and
+  //    `preflight()` was the ONLY place that checked `destroyed` on this
+  //    path. A `destroy()` firing while the source wave is in flight would
+  //    otherwise let the panel wave still reserve tile generations and issue
+  //    requests after teardown. The explicit `destroyed` check here, plus the
+  //    new unconditional guard at the top of `runAffectedWave` itself
+  //    (belt-and-braces — `runAffectedWave` is also reachable directly from
+  //    the fast path), closes both entry points.
   async function commitAndRerun(changed: string[]): Promise<void> {
+    const generation = ++commitGeneration;
     const hasAffectedSource = [...filterSources.values()]
       .some((source) => source.analyzed.dependsOn.some((name) => changed.includes(name)));
     if (!hasAffectedSource) { await runAffectedWave(changed); return; }
     if (!(await preflight())) return;
-    const flipped = await runFilterSourceWave(changed);
-    await runAffectedWave([...new Set([...changed, ...flipped])], true);
+    const result = await runFilterSourceWave(changed);
+    if (destroyed || generation !== commitGeneration || result.status === 'superseded') {
+      // The source wave's own `applyFilterProviders` merge (options/status
+      // updates on `consumer.state`) already happened synchronously inside
+      // `runFilterSourceWave` — but unlike the normal path below, we are
+      // skipping `runAffectedWave` entirely, and `runAffectedWave` is the
+      // step that normally `publish()`es afterward. Without this publish, a
+      // commit that lost the commit-level race (`generation !==
+      // commitGeneration`, e.g. an UNRELATED overlapping commit) would still
+      // have applied a real, non-superseded merge that never reaches
+      // `state.value` — the mutation sits in the runtime record until some
+      // LATER, unrelated publish happens to flush it. A genuinely
+      // `'superseded'` result changed nothing, so this is a harmless replay
+      // of the current state in that case. Skipped entirely once `destroyed`
+      // — no further publish is attributable to a torn-down session.
+      if (!destroyed) publish();
+      return;
+    }
+    await runAffectedWave([...new Set([...changed, ...result.flipped])], true);
   }
 
   async function setFilter(filterId: string, value: unknown): Promise<void> {
