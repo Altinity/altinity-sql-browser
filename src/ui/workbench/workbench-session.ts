@@ -274,7 +274,9 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
     // the server as a never-gate-checked binding. Reused on success for the
     // recent-value recording (#171), so it reads exactly the boundParams that
     // were sent.
-    const src = hooks.prepareTabSource(srcSql, waveMs);
+    // A Filter tab prepares via `filterPrep` (the shared #360 pipeline) above, so
+    // it never reads `src` — skip the redundant generic tab analysis for it.
+    const src = isFilter ? null : hooks.prepareTabSource(srcSql, waveMs);
     await deps.ensureConfig();
     if (!(await deps.getToken())) { hooks.onAuthFailed(); return; }
 
@@ -378,7 +380,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         // statements bind — a CREATE VIEW / DDL source stays verbatim).
         params: isFilter
           ? filterPrep!.params
-          : { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src), ...kpiExecution.params },
+          : { ...hooks.sessionParamsFor(tab, [srcSql]), ...mergedSourceArgs(src!), ...kpiExecution.params },
         onChunk: () => hooks.renderResults(),
       });
     } finally {
@@ -439,7 +441,7 @@ export function createWorkbenchSession(deps: WorkbenchSessionDeps): WorkbenchSes
         // with the Dashboard's own runFilterSource, which records the SAME
         // shared preparation's boundParams.
         hooks.recordBoundParams(
-          (isFilter ? filterPrep!.boundParams : src.statements.flatMap((s) => s.boundParams)) as BoundParamSnapshot[],
+          (isFilter ? filterPrep!.boundParams : src!.statements.flatMap((s) => s.boundParams)) as BoundParamSnapshot[],
         );
         if (isSchemaMutatingSql(runSql)) hooks.loadSchema(); // not awaited — fire and forget
       }

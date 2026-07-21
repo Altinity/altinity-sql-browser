@@ -770,6 +770,7 @@ body {
 .filter-preview-diagnostic.is-warning { color: var(--warn-fg); }
 .filter-preview-diagnostic.is-error, .filter-preview-message.is-error { color: var(--error-fg); }
 .filter-preview-message { padding: 24px; color: var(--fg-mute); }
+.filter-preview-message.is-waiting { color: var(--warn-fg); }
 /* Curated Filter field (#160, filter-option-field.js): the strict single-select
    is the same `.var-combo`/`.var-input`/`.var-combo-list` control every other
    combobox field uses — it only adds an inline clear (×) button for its "All"/
@@ -1464,6 +1465,15 @@ body.detached-tab .graph-overlay-panel {
   border-color: var(--error-bd);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--error-fg) 22%, transparent);
 }
+
+/* #360 source-backed Dashboard filter transport states. The field is also
+   `disabled`; these mark WHY, so a benign 'waiting' (dashed, with a
+   "Waiting for: …" note) or a 'stale'/refreshing field (dimmed) reads
+   differently from a real 'error' (red) at a glance. */
+.var-input.is-error { border-color: var(--error-bd); background: var(--error-bg); }
+.var-input.is-waiting { border-style: dashed; }
+.var-input.is-stale { opacity: 0.55; font-style: italic; }
+.var-field-note { grid-column: 2; font-size: 11px; color: var(--fg-mute); white-space: nowrap; }
 /* Relative-time preset combobox (#169): the accessible dropdown-on-focus +
    type-to-filter control for date-like {name:Type} variables (#174 §1) —
    shared by the workbench var-strip and the Dashboard filter bar
