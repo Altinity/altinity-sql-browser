@@ -2241,4 +2241,121 @@ describe('searchable multiselect filter contract (#189)', () => {
     expect(byId(session, 'f1').value).toEqual(['x', 'y']);
     expect(byId(session, 'f1').active).toBe(true);
   });
+
+  // Review finding (major): `resolveFilterSelection` only agrees over a
+  // filter's own resolved TARGETS + dependent sources — but the per-wave
+  // merge (`mergeDashboardFilterHelpers`) rejects a curated field on the
+  // DASHBOARD-WIDE `control.conflict` (`fieldControls(analysis)`, every
+  // tile, unscoped). Without the construction-time dashboard-wide gate, a
+  // filter whose OWN targets agree could still publish a `selection`
+  // contract and keep its source consumer, only for every wave's merge to
+  // permanently reject it as `filter-target-type-conflict` — a stuck
+  // hybrid (published contract + dead curated field), never falling back.
+  it('a dashboard-wide type conflict OUTSIDE the filter\'s own targets still forces a full fallback (#189 review finding, major): no sourceId/selection published, a persistent dashboard-wide diagnostic, the source never executes, and no helper-error hybrid ever appears', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['a', 'b']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      // Explicit `targets: ['t1']` — 't1' alone agrees with the source on
+      // Array(String), so `resolveFilterSelection`'s OWN (target-scoped)
+      // agreement check would succeed on its own.
+      filters: [{ id: 'f1', parameter: 'region', sourceQueryId: 'src', targets: ['t1'] }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'), // f1's own target — agrees
+        // NOT one of f1's targets, but its scalar declaration of the SAME
+        // parameter still counts for the dashboard-wide `fieldControls`
+        // conflict the shared merge layer gates on.
+        query('q2', 'SELECT 1 AS n WHERE y = {region:String}'),
+        query('src', "SELECT ['a','b'] AS region /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined();
+    expect(byId(session, 'f1').selection).toBeUndefined();
+    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-dashboard-type-conflict');
+    expect(diag).toMatchObject({ severity: 'error', filterId: 'f1', parameter: 'region' });
+    expect(diag!.message).toContain('region');
+    expect(diag!.message.toLowerCase()).toContain('dashboard-wide');
+    expect(diag!.types).toEqual(expect.arrayContaining([expect.any(String), expect.any(String)]));
+    await session.start();
+    // 'src' is left with zero consumers (its only filter fell back) — it
+    // must never execute at all.
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
+    // No stuck hybrid: 'f1' is no longer a consumer of any source, so its
+    // status never enters the filter-wave consumer-derivation loop — it
+    // stays 'idle', never 'helper-error'.
+    expect(byId(session, 'f1').status).toBe('idle');
+    // The diagnostic is a construction-time constant — it survives a refresh.
+    await session.refresh();
+    expect(byId(session, 'f1').status).toBe('idle');
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-dashboard-type-conflict')).toBe(true);
+  });
+
+  // Review finding (minor): `affectedByFilterWave` was built from the
+  // structural `filter.def.sourceQueryId` BEFORE the #189 resolution loop
+  // that can strip `filter.state.sourceId` — so a fallen-back filter's
+  // (would-be) target tile was needlessly classified "affected" and deferred
+  // behind the filter wave, even though the fallback filter no longer feeds
+  // any source at all.
+  it('#235 wave-deferral gate reflects the POST-resolution state (#189 review finding, minor): a fallen-back filter defers nothing — its own (would-be) target tile runs in the FIRST (unaffected) batch, not after the whole filter wave', async () => {
+    let releaseSource2: (() => void) | undefined;
+    const source2Gate = new Promise<void>((resolve) => { releaseSource2 = resolve; });
+    const { exec, calls } = makeExec(async (sql) => {
+      if (sql.includes('source2')) {
+        await source2Gate; // a real, observable delay for the filter wave
+        return { columns: [{ name: 'other', type: 'String' }], rows: [['y']] };
+      }
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      filters: [
+        // Falls back at construction (unrecognized `selection.mode` — a HARD
+        // conflict, #189): `state.sourceId` is stripped, and 'src1' — left
+        // with zero consumers — is deleted entirely.
+        {
+          id: 'f1', parameter: 'ps', sourceQueryId: 'src1', selection: { mode: 'bogus' as 'single' },
+          defaultActive: true, defaultValue: 'X',
+        },
+        // A genuinely healthy, source-backed filter, unrelated to 't1' — its
+        // source is deliberately slow (gated) so the filter wave takes real
+        // time, giving the two classifications ("affected" or not) a real
+        // window in which to differ.
+        { id: 'f2', parameter: 'other', sourceQueryId: 'src2' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT {ps:String} AS n'), // 't1' — f1's own (would-be) target
+        query('q2', 'SELECT {other:String} AS n'), // 't2' — f2's real target
+        query('src1', "SELECT ['x'] AS ps /* source1 */", { dashboard: { role: 'filter' } }),
+        query('src2', "SELECT ['y'] AS other /* source2 */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(byId(session, 'f1').sourceId).toBeUndefined(); // fell back
+    expect(byId(session, 'f2').sourceId).toBe('src2'); // healthy, real consumer
+
+    const done = session.start();
+    await flush();
+    // 't1' already ran — it was never affected by any filter wave (f1 fell
+    // back and dropped its consumer-ship entirely), so it fired in the FIRST
+    // (unaffected) batch, well before 'src2' — the only remaining source —
+    // ever settles.
+    expect(calls.some((c) => c.sql.includes('{ps:String}'))).toBe(true);
+    expect(session.state.value.tiles.find((t) => t.tileId === 't1')!.status).toBe('ready');
+    // 't2' — f2's real target — correctly still waits on the (gated) filter
+    // wave: it has not been touched yet (still its initial idle state).
+    expect(session.state.value.tiles.find((t) => t.tileId === 't2')!.status).toBe('idle');
+    releaseSource2!();
+    await done;
+    // 't2' has now run (the affected-panel wave, once the filter wave
+    // settled) — 'other' never got a committed value from the curated
+    // options (nothing selected one), so it lands on 'unfilled' rather than
+    // 'ready'; either way it is no longer 'idle'.
+    expect(session.state.value.tiles.find((t) => t.tileId === 't2')!.status).toBe('unfilled');
+  });
 });

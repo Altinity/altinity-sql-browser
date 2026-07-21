@@ -148,16 +148,18 @@ function applyFieldStatus(handle: CuratedFieldHandle, s: CuratedFieldStatus): vo
 
   input.classList.remove('is-waiting', 'is-error', 'is-stale');
   label.classList.remove('is-waiting', 'is-error', 'is-stale');
-  // #189: an ERROR status no longer disables the input (only waiting/stale
-  // do) — a helper-query failure degrades the curated field to an ordinary,
-  // USABLE free-text-equivalent control (still carrying `.is-error` + its
-  // tooltip as the affordance) instead of bricking it, matching the policy
-  // `buildMultiSelectField`'s own error-mode plain-input fallback already
-  // established (#360/#189 — see that module's header comment): the
-  // serializer's scalar passthrough makes a typed raw value work even for an
-  // Array param, so there is no reason to lock the field while its source is
-  // broken.
-  const disabled = isWaiting || isStale;
+  // #189 review (F4, coordinator ruling — REVERTED from an earlier #189
+  // attempt that left an error status enabled): this is `buildFilterOptionField`'s
+  // STRICT single-select curated combobox (#160) — blur/Enter reverts any
+  // text that isn't a real option (its own #160 contract), so leaving it
+  // enabled while erroring was a dishonest affordance: it LOOKS editable but
+  // silently discards everything typed. `buildMultiSelectField`'s own
+  // error-mode fallback has a real free-text commit path and stays enabled
+  // (see that module's header comment) — but generalizing that policy to
+  // THIS strict single-select control is a separate product decision (#160's
+  // contract), not a side effect of #189. Disabled again on every error
+  // status, same as `isWaiting`/`isStale`.
+  const disabled = isWaiting || isError || isStale;
   input.disabled = disabled;
   if (disabled) input.setAttribute('aria-disabled', 'true');
   else input.removeAttribute('aria-disabled');
@@ -243,15 +245,26 @@ export interface FilterBarHandle {
   el: HTMLElement;
   dispose(): void;
   updateStatus(states: Record<string, CuratedFieldStatus>): void;
-  /** #189: true iff any curated MULTISELECT field built by THIS bar instance
-   *  currently has its popover open. The caller (`dashboard.ts`) reads this
-   *  BEFORE disposing an outgoing bar (a rebuild always disposes the old bar
+  /** #189, #189-F2b: the PARAMETER of a curated MULTISELECT field built by
+   *  THIS bar instance that currently has its popover open, or `null` when
+   *  none does (including a bar that built no multiselect field at all — the
+   *  empty-`params` bar too). The caller (`dashboard.ts`) reads this BEFORE
+   *  disposing an outgoing bar (a rebuild always disposes the old bar
    *  outright) to decide whether a refresh announcement is owed — disposing
    *  a multiselect field while its popover is open silently Cancels it (no
    *  `onApply`, see multi-select-field.ts), so without an announcement the
-   *  user's open popover would simply vanish. Always `false` for a bar that
-   *  built no multiselect field at all (including the empty-`params` bar). */
-  hasOpenMultiSelect(): boolean;
+   *  user's open popover would simply vanish. Replaces the pre-F2b boolean
+   *  `hasOpenMultiSelect()` — the caller needs to know WHICH field, so it can
+   *  move focus to that same parameter's trigger on the freshly-built bar
+   *  (`focusMultiSelectTrigger` below) rather than leaving focus stranded at
+   *  `<body>`. */
+  openMultiSelectParam(): string | null;
+  /** #189-F2b: focuses the named parameter's multiselect trigger (or its
+   *  error-mode fallback input, if erroring) — a no-op when this bar built no
+   *  multiselect field for that parameter. Used by `dashboard.ts` right after
+   *  building a FRESH bar, for whichever parameter `openMultiSelectParam()`
+   *  reported on the OUTGOING bar just before disposing it. */
+  focusMultiSelectTrigger(name: string): void;
 }
 
 /**
@@ -287,7 +300,8 @@ export function buildFilterBar(
   if (!params.length) {
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }),
-      dispose: () => {}, updateStatus: () => {}, hasOpenMultiSelect: () => false,
+      dispose: () => {}, updateStatus: () => {},
+      openMultiSelectParam: () => null, focusMultiSelectTrigger: () => {},
     };
   }
   const timerClears: Array<() => void> = [];
@@ -298,7 +312,8 @@ export function buildFilterBar(
   // #189: every curated MULTISELECT field's own handle, keyed by parameter —
   // a separate map (its `updateStatus`/`isOpen`/`dispose` are its own, not
   // `CuratedFieldHandle`'s DOM-patching recipe) that `updateStatus`/`dispose`/
-  // `hasOpenMultiSelect` below all fold in alongside `curatedHandles`.
+  // `openMultiSelectParam`/`focusMultiSelectTrigger` below all fold in
+  // alongside `curatedHandles`.
   const multiSelectFields = new Map<string, MultiSelectFieldHandle>();
   const el = h('div', attrs, ...params.map((p) => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -322,7 +337,17 @@ export function buildFilterBar(
       // default — or `mode: 'single'`) falls through to the existing
       // single-select field below unchanged.
       if (curated.selection?.mode === 'multiple') {
-        const committed = Array.isArray(curated.value) ? curated.value as string[] : [];
+        // #189 F1: a raw STRING is the error-mode fallback commit
+        // (`onFallbackCommit` below, round-tripped back through
+        // `ViewerFilterState.value`/`curated.value`) awaiting reconciliation
+        // — passed through AS a string rather than dropped to `[]`, so
+        // `buildMultiSelectField`'s own trigger/error-input text can still
+        // show the just-committed text instead of it silently vanishing.
+        // Every other shape (a real array, or absent/null) keeps the
+        // pre-#189-F1 array-or-empty normalization.
+        const committed: readonly string[] | string = Array.isArray(curated.value)
+          ? curated.value as string[]
+          : typeof curated.value === 'string' ? curated.value : [];
         const msField = buildMultiSelectField({
           document, name: p.name, label: p.name, required: !p.optional,
           value: committed, active: !!curated.active, options: curated.options,
@@ -480,12 +505,14 @@ export function buildFilterBar(
         if (s) msField.updateStatus(s);
       }
     },
-    // #189: read by the caller BEFORE disposing this bar (a rebuild), to
+    // #189-F2b: read by the caller BEFORE disposing this bar (a rebuild), to
     // decide whether an outgoing popover's forced Cancel deserves a refresh
-    // announcement — see `dashboard.ts`'s `rebuildFilterBar`.
-    hasOpenMultiSelect: () => {
-      for (const msField of multiSelectFields.values()) if (msField.isOpen()) return true;
-      return false;
+    // announcement AND which parameter's fresh trigger should receive focus
+    // — see `dashboard.ts`'s `rebuildFilterBar`.
+    openMultiSelectParam: () => {
+      for (const [name, msField] of multiSelectFields) if (msField.isOpen()) return name;
+      return null;
     },
+    focusMultiSelectTrigger: (name) => { multiSelectFields.get(name)?.focusTrigger(); },
   };
 }

@@ -2565,6 +2565,66 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     expect(added.length).toBe(1);
     expect(added[0].params.param_p).toBe("['x']"); // wrapped, never the bare scalar "'x'"
   });
+
+  // #189 review (F2): a NEW option generation while the popover is open must
+  // force-close it as a silent Cancel (never a committed value from the open
+  // draft), announce the closure, and move focus to the FRESH bar's trigger
+  // for the same parameter — driven end to end through the real session (a
+  // refresh that reruns the shared source with DIFFERENT option content).
+  it('a NEW option generation while the multiselect popover is open force-closes it with no applyFilter call, announces the refresh, and focuses the new trigger', async () => {
+    let srcCalls = 0;
+    const { app, calls } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('opts')) {
+          srcCalls++;
+          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[srcCalls === 2 ? ['a', 'b', 'c'] : ['x', 'y']]] };
+        }
+        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
+      }),
+    });
+    await render(app);
+    // `app.root` (fake-app.ts) is a detached div by default — connect it so a
+    // real `.focus()` inside it actually becomes `document.activeElement`
+    // (the popover itself is already appended straight to the real
+    // `document.body` by `multi-select-field.ts`, unaffected either way).
+    document.body.appendChild(rootEl(app));
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(qs(document.body, '.ms-popover')).not.toBeNull();
+    // Mutate the OPEN DRAFT only — check the second option ('y') too, so the
+    // draft becomes ['x','y'] — never Apply.
+    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
+    draftCb.checked = true;
+    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
+    const before = calls.length;
+    // Refresh reruns the shared source, which returns a DIFFERENT option set
+    // (same length as the #359 rebuild trigger) — a new option generation.
+    await (runOnclick(qs(app.root, '.dash-refresh')) as Promise<void>);
+    // The popover was force-closed as a silent Cancel — no call anywhere
+    // reflects the open draft's ['x','y'] pick (the real seam that would
+    // carry it, `applyFilter`, is never reached).
+    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(false);
+    expect(document.body.querySelector('.ms-popover')).toBeNull();
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe('Filter options were refreshed');
+    // The committed value ['x'] (never touched by the draft) is now dormant
+    // against the NEW option set — the merge deactivates it (existing
+    // dormant-value self-heal behavior, unrelated to this fix) — the fresh
+    // bar's trigger reads "Not set", never "2 selected" (which only a
+    // committed ['x','y'] — i.e. the discarded draft — would have produced).
+    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(newTrigger.textContent).toBe('Not set');
+    expect(document.activeElement).toBe(newTrigger);
+    rootEl(app).remove();
+  });
 });
 
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY

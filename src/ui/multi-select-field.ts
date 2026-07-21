@@ -61,8 +61,19 @@ export interface MultiSelectFieldOpts {
   /** Inactive trigger text: 'Not set' when required, 'All' when optional. */
   required?: boolean;
   /** Committed selection — may contain values absent from `options` (a
-   *  DORMANT value an options refresh dropped); never mutated by this module. */
-  value: readonly string[];
+   *  DORMANT value an options refresh dropped); never mutated by this module.
+   *  A plain `string` is #189's error-mode RAW FALLBACK COMMIT awaiting
+   *  reconciliation (`onFallbackCommit`'s own value, round-tripped back in by
+   *  a caller that has nowhere else to put it — the scalar draft bag this
+   *  filter's committed value otherwise lives in cannot hold an array either
+   *  way) — every array-shaped operation below (`Array.isArray(value) ?
+   *  value : []`) treats it as "no selection", while the trigger/error-input
+   *  text paths show it verbatim so the just-typed text never appears to
+   *  vanish. The next successful options merge that resolves this filter's
+   *  contract republishes a real array (or the same raw string, unchanged,
+   *  if the merge still can't resolve it) — this module never reconciles it
+   *  itself. */
+  value: readonly string[] | string;
   active: boolean;
   options: MultiSelectOption[];
   status?: MultiSelectFieldStatus;
@@ -83,6 +94,14 @@ export interface MultiSelectFieldHandle {
   /** Whether the popover is currently open — an integration caller uses this
    *  to decide whether a status change needs to announce a refresh-cancel. */
   isOpen(): boolean;
+  /** Focuses this control's own current interactive element (the trigger, or
+   *  the error-mode fallback input when erroring) — #189 F2b: a caller
+   *  (`filter-bar.ts`'s `focusMultiSelectTrigger`) that just rebuilt the bar
+   *  a still-open popover was force-closed out from under uses this to move
+   *  focus onto the corresponding field of the FRESH bar (never left at
+   *  `<body>`). A no-op-safe call before `applyStatus()` has ever run is not
+   *  a case this module produces (the constructor calls it before returning). */
+  focusTrigger(): void;
   /** Removes this control's own listeners and closes the popover if open (a
    *  dispose-while-open is a Cancel: no `onApply`/`onFallbackCommit` call). */
   dispose(): void;
@@ -113,7 +132,17 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   let wasError = false;
   // The currently-open popover's own close() — non-null iff the popover is
   // open (isOpen() reads this directly rather than tracking a second flag).
-  let closeCurrent: (() => void) | null = null;
+  // #189 F2a: takes an options bag so `applyStatus`'s forced error-close can
+  // ask it to SKIP focusing the doomed trigger (about to be replaced by the
+  // fallback input) — every other dismissal path (Cancel/Escape/outside-
+  // click/dispose) still gets the default trigger-refocus.
+  let closeCurrent: ((closeOpts?: { skipFocus?: boolean }) => void) | null = null;
+  // #189 F6: the OPEN popover's own noninteractive-while-loading surface —
+  // non-null iff the popover is open (set/cleared in lockstep with
+  // `closeCurrent`), read by `applyStatus` below so a STATUS-ONLY publish
+  // (no rebuild — the draft can't change without one) can disable/re-enable
+  // the checklist body in place without disturbing the open draft.
+  let openPopoverBusy: ((busy: boolean) => void) | null = null;
 
   const inactiveText = (): string => (required ? 'Not set' : 'All');
 
@@ -122,6 +151,10 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     if (isWaiting) return `Waiting for: ${(status.waitingFor ?? []).join(', ')}`;
     if (isStale) return 'Loading options…';
     if (!active || value.length === 0) return inactiveText();
+    // #189 F1: a raw string is the error-mode fallback commit — shown
+    // verbatim (never joined/counted) rather than collapsed to "1 selected"
+    // or an option-label lookup that would never match it.
+    if (typeof value === 'string') return value;
     if (value.length === 1) {
       const opt = options.find((o) => o.value === value[0]);
       return opt ? opt.label : value[0];
@@ -142,6 +175,19 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   const errorInput = h('input', {
     type: 'text', id: 'ms-error-' + suffix, class: 'var-input is-error', 'aria-label': label,
   });
+  // #189 F5: `errorEdited` tracks an IN-PROGRESS, uncommitted edit of THIS
+  // error-mode session only — reset to false (never carried over) every time
+  // the control (re)enters error mode (see `applyStatus`'s `!wasError`
+  // branch), and the listeners below are only ATTACHED while erroring
+  // (`attachErrorListeners`/`detachErrorListeners`, also driven by
+  // `applyStatus`) rather than for the control's whole lifetime. Detaching on
+  // the way OUT of error mode — before `applyStatus` swaps `errorInput` back
+  // out of the DOM — means the browser-native `blur` a real browser fires
+  // when a FOCUSED element is removed from the document can never reach
+  // `onErrorBlur` and force a commit of an edit the user never actually
+  // committed (happy-dom does not reproduce that native blur-on-removal
+  // behavior, so this specific ordering is only actually exercised by a real
+  // browser — the unit suite instead verifies the listener is gone).
   let errorEdited = false;
 
   const commitFallback = (): void => {
@@ -155,9 +201,16 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     commitFallback();
   };
   const onErrorBlur = (): void => { if (errorEdited) commitFallback(); };
-  errorInput.addEventListener('input', onErrorInput);
-  errorInput.addEventListener('keydown', onErrorKeyDown);
-  errorInput.addEventListener('blur', onErrorBlur);
+  const attachErrorListeners = (): void => {
+    errorInput.addEventListener('input', onErrorInput);
+    errorInput.addEventListener('keydown', onErrorKeyDown);
+    errorInput.addEventListener('blur', onErrorBlur);
+  };
+  const detachErrorListeners = (): void => {
+    errorInput.removeEventListener('input', onErrorInput);
+    errorInput.removeEventListener('keydown', onErrorKeyDown);
+    errorInput.removeEventListener('blur', onErrorBlur);
+  };
 
   // Applies the CURRENT `status` to the already-built DOM (constructor AND
   // `updateStatus` share this — never a rebuild, see the module header).
@@ -165,8 +218,22 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     const { isWaiting, isError, isStale } = classifyStatus(status);
     // A status change into error mid-open cancels the popover outright (its
     // anchor, the trigger, is about to be replaced by the fallback input) —
-    // a Cancel: no onApply call.
-    if (isError && closeCurrent) closeCurrent();
+    // a Cancel: no onApply call. #189 F2a: `skipFocus` — the trigger is
+    // about to be DETACHED by the `replaceChildren` swap below, so focusing
+    // it here would just be immediately lost to `<body>`; focus moves to the
+    // freshly-swapped-in `errorInput` after the swap instead (below).
+    const forcedClosePopover = isError && !!closeCurrent;
+    if (forcedClosePopover) closeCurrent!({ skipFocus: true });
+
+    // #189 F6: a STATUS-ONLY publish while the popover is open (no rebuild —
+    // the open draft's own options can't change without one) still needs to
+    // communicate a waiting/loading/idle/stale transition: make the
+    // checklist body noninteractive (Cancel + Escape stay usable) rather
+    // than silently doing nothing while stale data sits underneath an
+    // unchanged, seemingly-live control. Never reached for the forced-close
+    // error case above (`openPopoverBusy` is already null by the time this
+    // runs, closed via `closeCurrent` a few lines up).
+    openPopoverBusy?.(isWaiting || isStale);
 
     control.classList.remove('is-waiting', 'is-error', 'is-stale');
     if (isWaiting) control.classList.add('is-waiting');
@@ -178,9 +245,25 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       // — a later `updateStatus` call that's still an error status (e.g.
       // 'source-error' → 'helper-error') must never stomp an in-progress
       // edit (#360's "don't discard a committed value" policy applies just
-      // as much to the user's own not-yet-committed typing).
-      if (!wasError) errorInput.value = value.join(', ');
+      // as much to the user's own not-yet-committed typing). #189 F1: seeds
+      // from the raw string verbatim when `value` is already one (a prior
+      // fallback commit awaiting reconciliation); otherwise the array joined
+      // for display, unchanged. #189 F5: a FRESH entry into error mode is
+      // always a fresh seed — never edited yet — and only NOW does the
+      // fallback input's own listeners attach (see the module header on
+      // `errorEdited` above for why this must not just linger for the
+      // control's whole lifetime).
+      if (!wasError) {
+        errorEdited = false;
+        errorInput.value = typeof value === 'string' ? value : value.join(', ');
+        attachErrorListeners();
+      }
     } else {
+      // #189 F5: leaving error mode (recovery) — detach BEFORE the
+      // `replaceChildren` swap below removes `errorInput` from the DOM, so a
+      // real browser's native blur-on-removal can never reach `onErrorBlur`
+      // and force-commit whatever was left uncommitted.
+      if (wasError) detachErrorListeners();
       trigger.classList.remove('is-waiting', 'is-stale');
       if (isWaiting) trigger.classList.add('is-waiting');
       else if (isStale) trigger.classList.add('is-stale');
@@ -189,11 +272,19 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       trigger.textContent = text;
       trigger.title = text;
     }
-    trigger.setAttribute('aria-label', `${label} filter, ${value.length} selected`);
+    // #189 F1: a raw-string committed value has no real "selected count" —
+    // reported as 1 when non-empty (matches its own single-item trigger
+    // text), 0 when blank/inactive; the trigger itself is hidden while
+    // erroring, so this is cosmetic even then.
+    const selectedCount = Array.isArray(value) ? value.length : (value !== '' ? 1 : 0);
+    trigger.setAttribute('aria-label', `${label} filter, ${selectedCount} selected`);
     wasError = isError;
 
     const wanted = isError ? errorInput : trigger;
     if (control.firstChild !== wanted) control.replaceChildren(wanted);
+    // #189 F2a: focus lands on the control now standing in for the popover
+    // this call just force-closed — never left to fall through to `<body>`.
+    if (forcedClosePopover) errorInput.focus();
   };
 
   const onTriggerClick = (): void => { if (!trigger.disabled) openPopover(); };
@@ -203,7 +294,11 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   // open, tear down completely on close — never a hidden-but-resident node).
   function openPopover(): void {
     if (closeCurrent) return; // already open — never stack a second popover
-    const draft = new Set(value);
+    // #189 F1: a raw-string committed value (the error-mode fallback commit,
+    // never actually reachable here since the trigger — the only way to
+    // reach `openPopover` — is swapped out for `errorInput` while erroring)
+    // seeds an EMPTY draft rather than throwing on `new Set('a string')`.
+    const draft = new Set(Array.isArray(value) ? value : []);
     let searchText = '';
 
     const liveEl = h('div', { class: 'sr-only ms-live', 'aria-live': 'polite' });
@@ -278,7 +373,11 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     cancelBtn.addEventListener('click', () => close());
     applyBtn.addEventListener('click', () => {
       const canonical = canonicalizeSelection([...draft], options);
-      const prevCanonical = canonicalizeSelection(value, options);
+      // #189 F1: a raw-string committed value (the error-mode fallback commit)
+      // has no prior ARRAY selection to compare against — treated as empty,
+      // same as `draft`'s own seed above, so Apply from that state is never
+      // spuriously treated as a no-op against text that was never a selection.
+      const prevCanonical = canonicalizeSelection(Array.isArray(value) ? value : [], options);
       const activeNext = canonical.length > 0;
       // A no-op Apply (same canonical selection AND same active flag) closes
       // silently — `onApply` fires exactly once otherwise.
@@ -294,8 +393,62 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     }, searchInput, liveEl, selectAllRow, listEl, footer);
     const overlay = h('div', { class: 'ms-overlay' });
 
+    // #189 F6: while OPEN, a status-only publish that goes
+    // waiting/loading/idle/stale makes the checklist body noninteractive
+    // (Cancel + Escape stay usable — dismissing is always safe) and
+    // announces it through the SAME live region `applyFilter` otherwise
+    // reports the visible/total count through; `ready` restores both the
+    // controls and the normal count text. The draft itself is never
+    // touched — its values can't change without a rebuild, which only
+    // happens closed.
+    let busy = false;
+    function setBusy(next: boolean): void {
+      if (busy === next) return;
+      busy = next;
+      dialog.setAttribute('aria-busy', String(busy));
+      searchInput.disabled = busy;
+      selectAllCb.disabled = busy;
+      for (const row of rows) row.cb.disabled = busy;
+      clearBtn.disabled = busy;
+      applyBtn.disabled = busy;
+      if (busy) liveEl.textContent = 'Loading options…';
+      else applyFilter(); // restores the normal "N of M options" live text
+    }
+    openPopoverBusy = setBusy;
+
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') { e.preventDefault(); close(); }
+    };
+
+    // #189 F3: a minimal focus trap — `aria-modal="true"` promises assistive
+    // tech (and sighted keyboard users) that Tab never leaves the dialog. The
+    // overlay only ever blocked POINTER events; without this, Tab/Shift-Tab
+    // walked straight out to whatever the document's next/previous tabbable
+    // happened to be. Recomputed on every Tab press (never cached) since the
+    // option checklist's visible subset changes with `searchText`. Registered
+    // on `dialog` itself (not `d`/document, unlike `onKeyDown`'s broad Escape
+    // catch above) — a stale, already-closed popover's own trap must never
+    // intercept a Tab dispatched at a DIFFERENT, currently-open dialog; a
+    // listener scoped to this specific (detached-on-close) node can't reach
+    // any OTHER dialog's subtree regardless of how many prior popovers a
+    // caller left open without disposing.
+    function focusableEls(): HTMLElement[] {
+      return [...dialog.querySelectorAll<HTMLElement>('input, button')]
+        .filter((el) => !el.closest('[hidden]') && !(el as HTMLInputElement | HTMLButtonElement).disabled);
+    }
+    const onTabTrap = (e: KeyboardEvent): void => {
+      if (e.key !== 'Tab') return;
+      // Cancel is never disabled (F6 keeps it usable even while `busy`), so
+      // `items` always has at least one entry — no empty-list guard needed.
+      const items = focusableEls();
+      const first = items[0];
+      const last = items[items.length - 1];
+      const activeEl = d.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (!activeEl || activeEl === first || !dialog.contains(activeEl)) { e.preventDefault(); last.focus(); }
+      } else if (!activeEl || activeEl === last || !dialog.contains(activeEl)) {
+        e.preventDefault(); first.focus();
+      }
     };
 
     // EVERY dismissal path (Apply, Cancel, Escape, outside-click, dispose)
@@ -303,15 +456,20 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     // returns focus to the trigger. Idempotent by construction (every step
     // is a harmless no-op on an already-detached/already-null target), so no
     // separate re-entrancy guard is needed even if a caller somehow reached
-    // it twice for the same open session.
-    function close(): void {
+    // it twice for the same open session. #189 F2a: `skipFocus` lets
+    // `applyStatus`'s forced error-close skip refocusing a trigger that's
+    // about to be detached from the DOM anyway (focus moves to the fallback
+    // input instead, over there).
+    function close(closeOpts: { skipFocus?: boolean } = {}): void {
       d.removeEventListener('keydown', onKeyDown, true);
+      dialog.removeEventListener('keydown', onTabTrap, true);
       detachBackdrop();
       overlay.remove();
       dialog.remove();
       trigger.setAttribute('aria-expanded', 'false');
       closeCurrent = null;
-      trigger.focus();
+      openPopoverBusy = null;
+      if (!closeOpts.skipFocus) trigger.focus();
     }
     closeCurrent = close;
 
@@ -320,6 +478,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     d.body.appendChild(dialog);
     const detachBackdrop = attachBackdropClose(overlay, close);
     d.addEventListener('keydown', onKeyDown, true);
+    dialog.addEventListener('keydown', onTabTrap, true);
 
     const rect = trigger.getBoundingClientRect();
     const pos = fixedAnchor(rect) as { top: number; left: number };
@@ -340,12 +499,16 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     el: control,
     isOpen: () => closeCurrent !== null,
     updateStatus: (s) => { status = s; applyStatus(); },
+    // #189 F2b: focuses whichever of trigger/errorInput is the control's
+    // CURRENT interactive element (mirrors `applyStatus`'s own `wanted`
+    // choice) — used by a caller that just rebuilt the bar this field's
+    // popover had open on the OLD instance, to land focus on the
+    // corresponding field of the fresh one instead of `<body>`.
+    focusTrigger: () => { (wasError ? errorInput : trigger).focus(); },
     dispose: () => {
       closeCurrent?.(); // dispose-while-open is a Cancel: no writes
       trigger.removeEventListener('click', onTriggerClick);
-      errorInput.removeEventListener('input', onErrorInput);
-      errorInput.removeEventListener('keydown', onErrorKeyDown);
-      errorInput.removeEventListener('blur', onErrorBlur);
+      detachErrorListeners(); // idempotent — a no-op if never attached / already detached
     },
   };
 }

@@ -613,12 +613,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   let filterBarUpdateStatus: FilterBarHandle['updateStatus'] | null = null;
 
   function rebuildFilterBar(sview: DashboardViewState): void {
-    // #189: ask the OUTGOING bar whether a multiselect popover is open BEFORE
-    // disposing it — disposing while open is that field's own silent Cancel
-    // (multi-select-field.ts), so this is the only chance to notice it and
-    // tell an assistive-tech user their popover just closed out from under
-    // them (the shared `filterRefreshLiveEl`, never torn down by the rebuild).
-    const hadOpenMultiSelect = currentFilterBar?.hasOpenMultiSelect() ?? false;
+    // #189-F2b: ask the OUTGOING bar WHICH parameter's multiselect popover is
+    // open (if any) BEFORE disposing it — disposing while open is that
+    // field's own silent Cancel (multi-select-field.ts), so this is the only
+    // chance to notice it, tell an assistive-tech user their popover just
+    // closed out from under them (the shared `filterRefreshLiveEl`, never
+    // torn down by the rebuild), and move focus to that SAME parameter's
+    // trigger on the freshly-built bar below (never left stranded at
+    // `<body>` — F2 review finding).
+    const openMultiSelectParam = currentFilterBar?.openMultiSelectParam() ?? null;
     currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
     // #360: curation is gated on TOPOLOGY (`sourceId != null`, set once at
@@ -681,7 +684,14 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     filterHost.replaceChildren(bar.el);
     currentFilterBar = bar;
     filterBarUpdateStatus = bar.updateStatus;
-    if (hadOpenMultiSelect) filterRefreshLiveEl.textContent = 'Filter options were refreshed';
+    if (openMultiSelectParam) {
+      filterRefreshLiveEl.textContent = 'Filter options were refreshed';
+      // #189-F2b: land focus on the NEW bar's corresponding trigger — a
+      // no-op if that parameter is no longer a multiselect field on the
+      // fresh bar (e.g. its curation topology itself changed), which simply
+      // leaves focus wherever it already was rather than throwing.
+      bar.focusMultiSelectTrigger(openMultiSelectParam);
+    }
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });

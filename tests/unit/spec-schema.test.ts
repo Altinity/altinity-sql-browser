@@ -434,3 +434,29 @@ describe('feature validation service', () => {
     expect(() => createSpecValidationService({ schemaService: null })).toThrow('Spec schema service is required');
   });
 });
+
+describe('dashboard-v1 schema service (#189 authoring-completion conformance)', () => {
+  // #189's Authoring section: completion should suggest `selection`,
+  // `selection.mode`, `single`, `multiple`. No dashboard-JSON editor surface
+  // exists yet (dashboards are authored as exported/imported JSON), but the
+  // schema-driven completion engine derives its items generically from
+  // whatever schema service a surface binds — this test pins that the
+  // generated dashboard schema delivers exactly those suggestions the day a
+  // surface binds it, the same way `querySpecSchemaService` powers the
+  // saved-query Spec editor today.
+  it('offers selection / selection.mode / single / multiple at a filter-definition path', async () => {
+    const { dashboardV1Schema } = await import('../../src/generated/json-schemas.js');
+    const { validateDashboardV1 } = await import('../../src/generated/json-schema-validators.js');
+    const service = createSpecSchemaService({ schema: dashboardV1Schema, validateCompiled: validateDashboardV1 });
+    const root = { id: 'd1', tiles: [], filters: [{ id: 'f1', parameter: 'p', selection: {} }] };
+
+    const filterProps = service.propertiesAtPath({ root, path: ['filters', 0] });
+    expect(filterProps.map((p) => p.name)).toContain('selection');
+
+    const selectionProps = service.propertiesAtPath({ root, path: ['filters', 0, 'selection'] });
+    expect(selectionProps.map((p) => p.name)).toEqual(['mode']);
+
+    const mode = service.schemaAtPath({ root, path: ['filters', 0, 'selection', 'mode'] });
+    expect(mode.candidates.flatMap((c) => c.enum ?? [])).toEqual(['single', 'multiple']);
+  });
+});

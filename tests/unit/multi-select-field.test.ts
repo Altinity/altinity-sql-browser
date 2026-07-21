@@ -482,7 +482,7 @@ describe('buildMultiSelectField — error-mode fallback (#360 policy)', () => {
     expect(triggerEl(handle.el)).not.toBeNull();
   });
 
-  it('an error status arriving while the popover is open cancels it, with no onApply', () => {
+  it('an error status arriving while the popover is open cancels it, with no onApply, and focuses the fallback input not <body> (#189 F2a)', () => {
     const onApply = vi.fn();
     const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true, onApply }));
     document.body.appendChild(handle.el);
@@ -492,6 +492,183 @@ describe('buildMultiSelectField — error-mode fallback (#360 policy)', () => {
     expect(handle.isOpen()).toBe(false);
     expect(onApply).not.toHaveBeenCalled();
     expect(popover()).toBeNull();
+    // F2a: the doomed trigger (about to be detached by the swap) is never
+    // focused — focus lands on the freshly-swapped-in error input instead.
+    expect(document.activeElement).toBe(errorInputEl(handle.el));
+  });
+});
+
+describe('buildMultiSelectField — raw-string committed value (#189 F1)', () => {
+  it('triggerText shows the raw string verbatim when active, never joined/counted', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: 'typed raw text', active: true }));
+    expect(triggerEl(handle.el).textContent).toBe('typed raw text');
+  });
+
+  it('an inactive raw string reads as the inactive text', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: '', active: false }));
+    expect(triggerEl(handle.el).textContent).toBe('All');
+  });
+
+  it('opening the popover from a raw-string committed value seeds an empty draft (Array.isArray guard)', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: 'typed raw', active: true }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    expect(optionCbs().every((cb) => !cb.checked)).toBe(true);
+  });
+
+  it('Apply from a raw-string committed value treats the prior selection as empty for the no-op check', () => {
+    const onApply = vi.fn();
+    const handle = buildMultiSelectField(baseOpts({ value: 'typed raw', active: true, onApply }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    setChecked(optionCbs()[0], true); // check Alpha
+    click(applyBtn());
+    expect(onApply).toHaveBeenCalledWith(['a'], true);
+  });
+
+  it('a raw string entering error mode seeds the error input verbatim (not joined)', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: 'typed raw', active: true, status: { status: 'source-error' } }));
+    document.body.appendChild(handle.el);
+    expect(errorInputEl(handle.el)!.value).toBe('typed raw');
+  });
+});
+
+describe('buildMultiSelectField — errorEdited reset + listener detach on recovery (#189 F5)', () => {
+  it('re-entering error mode reseeds fresh (errorEdited reset), discarding a prior uncommitted edit', () => {
+    const onFallbackCommit = vi.fn();
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true, status: { status: 'source-error' }, onFallbackCommit }));
+    document.body.appendChild(handle.el);
+    type(errorInputEl(handle.el)!, 'stale edit');
+    handle.updateStatus({ status: 'ready' }); // leaves error mode, never committing
+    handle.updateStatus({ status: 'helper-error' }); // re-enters error mode
+    const input = errorInputEl(handle.el)!;
+    expect(input.value).toBe('a'); // reseeded from the committed value, not the stale edit
+    input.dispatchEvent(new Event('blur')); // no edit since re-entry — must not commit
+    expect(onFallbackCommit).not.toHaveBeenCalled();
+  });
+
+  it('leaving error mode detaches the fallback listeners so a native blur-on-removal can never force a commit', () => {
+    const onFallbackCommit = vi.fn();
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true, status: { status: 'source-error' }, onFallbackCommit }));
+    document.body.appendChild(handle.el);
+    const input = errorInputEl(handle.el)!;
+    type(input, 'typed but never committed');
+    handle.updateStatus({ status: 'ready' }); // recovery swaps the trigger back in
+    // Simulates the native blur-on-removal a real browser fires when a
+    // FOCUSED element is removed from the document (happy-dom does not
+    // reproduce this on its own) — must be inert now the listener is gone.
+    input.dispatchEvent(new Event('blur'));
+    expect(onFallbackCommit).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildMultiSelectField — Tab focus trap inside the dialog (#189 F3)', () => {
+  const tab = (target: EventTarget, shiftKey = false): boolean =>
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true }));
+
+  it('Tab from the LAST focusable element wraps to the first (the search input)', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    applyBtn().focus(); // the last focusable row in the dialog
+    tab(popover()!);
+    expect(document.activeElement).toBe(searchInput());
+  });
+
+  it('Shift+Tab from the FIRST focusable element (search) wraps to the last (Apply)', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    searchInput().focus();
+    tab(popover()!, true);
+    expect(document.activeElement).toBe(applyBtn());
+  });
+
+  it('Tab/Shift-Tab from an element in the middle of the dialog does not trap (default behavior)', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    selectAllCb().focus();
+    const forward = tab(popover()!);
+    const backward = tab(popover()!, true);
+    expect(forward).toBe(true); // not preventDefault-ed — the browser's own Tab order applies
+    expect(backward).toBe(true);
+  });
+});
+
+describe('buildMultiSelectField — loading affordance while the popover is open (#189 F6)', () => {
+  it('a status-only waiting/loading/idle/stale update while open disables the checklist body, sets aria-busy, and announces Loading options…, keeping Cancel usable', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    handle.updateStatus({ status: 'loading' });
+    expect(popover()!.getAttribute('aria-busy')).toBe('true');
+    expect(searchInput().disabled).toBe(true);
+    expect(selectAllCb().disabled).toBe(true);
+    expect(optionCbs().every((cb) => cb.disabled)).toBe(true);
+    expect(clearBtn().hasAttribute('disabled')).toBe(true);
+    expect(applyBtn().hasAttribute('disabled')).toBe(true);
+    expect(cancelBtn().hasAttribute('disabled')).toBe(false); // Cancel stays usable
+    expect(liveText()).toBe('Loading options…');
+    // The popover itself is still open — a status-only publish is never a
+    // rebuild, so the draft can't have changed.
+    expect(handle.isOpen()).toBe(true);
+  });
+
+  it('restores the checklist body and the normal live-region count once status returns to ready', () => {
+    const handle = buildMultiSelectField(baseOpts({ value: ['a'], active: true }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    handle.updateStatus({ status: 'loading' });
+    handle.updateStatus({ status: 'ready' });
+    expect(popover()!.getAttribute('aria-busy')).toBe('false');
+    expect(searchInput().disabled).toBe(false);
+    expect(selectAllCb().disabled).toBe(false);
+    expect(optionCbs().every((cb) => !cb.disabled)).toBe(true);
+    expect(applyBtn().hasAttribute('disabled')).toBe(false);
+    expect(liveText()).toBe('3 of 3 options');
+  });
+
+  it('a stale:true status update (independent of a named status) also disables the checklist while open', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    handle.updateStatus({ status: 'ready', stale: true });
+    expect(popover()!.getAttribute('aria-busy')).toBe('true');
+    expect(applyBtn().hasAttribute('disabled')).toBe(true);
+  });
+
+  it('a waiting status update while CLOSED never throws and has no visible popover effect', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    expect(() => handle.updateStatus({ status: 'waiting', waitingFor: ['x'] })).not.toThrow();
+    expect(popover()).toBeNull();
+  });
+
+  it('a second consecutive update that resolves to the SAME busy state is a no-op (idempotent)', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    handle.updateStatus({ status: 'loading' }); // busy: true
+    handle.updateStatus({ status: 'idle' }); // still busy: true — no-op branch
+    expect(popover()!.getAttribute('aria-busy')).toBe('true');
+    expect(applyBtn().hasAttribute('disabled')).toBe(true);
+  });
+});
+
+describe('buildMultiSelectField — focusTrigger() (#189 F2b)', () => {
+  it('focuses the trigger when not erroring', () => {
+    const handle = buildMultiSelectField(baseOpts());
+    document.body.appendChild(handle.el);
+    handle.focusTrigger();
+    expect(document.activeElement).toBe(triggerEl(handle.el));
+  });
+
+  it('focuses the error-mode fallback input when erroring', () => {
+    const handle = buildMultiSelectField(baseOpts({ status: { status: 'source-error' } }));
+    document.body.appendChild(handle.el);
+    handle.focusTrigger();
+    expect(document.activeElement).toBe(errorInputEl(handle.el));
   });
 });
 

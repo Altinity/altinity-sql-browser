@@ -10,6 +10,41 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **Searchable multiselect for query-backed Dashboard filters** (#189). A
+  source-backed filter whose executable consumers agree on one `Array(T)`
+  parameter type now renders a dedicated searchable-checklist control: the
+  closed trigger shows `All` / `Not set` / the selected label / `N selected`,
+  and the popover offers a labeled search, a tri-state **Select visible**
+  scoped to the filtered subset, per-option checkboxes, and **Clear / Cancel /
+  Apply** — edits stay in a local draft until Apply, which canonicalizes by
+  option order, commits at most once, and triggers at most one targeted
+  panel wave (a no-op Apply issues nothing; Cancel/Escape/outside-click
+  discard the draft and return focus to the trigger). The effective mode is
+  inferred at runtime from the agreed consumer type (scalar `T` → single,
+  `Array(T)` → multiselect) and can be overridden per filter with the new
+  optional `DashboardFilterDefinitionV1.selection.mode` (`"single"` on an
+  array contract commits `[value]`); inference is runtime-only and never
+  written back into the dashboard document. A helper is exposed only when
+  every executable consumer (the filter's resolved targets plus any dependent
+  Filter sources) agrees on one compatible type — conflicting scalar/Array or
+  element types, nested arrays, undeclared targets, target-less
+  configurations, an explicit `multiple` on a scalar contract, or an unknown
+  mode all fall back to the ordinary string input with persistent
+  path-precise `filter-selection-*` diagnostics (never a silent downgrade).
+  Committed multiselect values stay real `string[]` arrays end to end —
+  through viewer state, localStorage persistence, structural equality, and
+  the existing typed `Array(T)` serializer (duplicates removed, empty-string
+  elements valid, never comma-joined). Option refreshes reconcile by bound
+  value: surviving selections stay active in canonical order (label/order-only
+  changes rerun nothing), removals join one reconciled panel wave, an empty
+  intersection deactivates the filter keeping its dormant value, and new
+  options are never auto-selected; a refresh that lands while the popover is
+  open cancels it (announced via a live region) so a stale draft can never be
+  applied. Filter commits now plan their panel wave from the filter's
+  **resolved targets** (explicit `targets` else declaring tiles) instead of
+  rerunning every tile that merely declares the parameter name, and a failed
+  source degrades the curated control to a usable free-text input (raw values
+  still flow through the typed pipeline) instead of a disabled one.
 - **Parameterized Dashboard Filter sources with single-layer dependencies**
   (#360). A Filter-role source query may now declare its own `{name:Type}`
   query parameters and bind committed *root* Dashboard filter values through the

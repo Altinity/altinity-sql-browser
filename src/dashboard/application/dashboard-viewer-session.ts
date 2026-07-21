@@ -567,15 +567,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     return field ? new Set(field.requiredIn.concat(field.optionalIn)) : new Set();
   }
 
-  // #235 overlap: the set of tile IDs a SOURCE-backed filter targets. Only
-  // source-backed filters gate — a plain value filter's value is already
-  // known, so tiles it feeds never need to wait for the filter/source wave.
-  const affectedByFilterWave = new Set<string>();
-  for (const filter of filters) {
-    if (!filter.def.sourceQueryId) continue;
-    for (const id of resolveFilterTargets(filter.def)) affectedByFilterWave.add(id);
-  }
-
   // #189: the general affected-panel planner `runAffectedWave` consults for
   // EVERY committed parameter (root or source-backed) — every filter
   // definition's own resolved targets, unioned per PARAMETER (two filter
@@ -613,6 +604,27 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // — its helper must never execute. `staticFilterDiagnostics` is emitted
   // ALONGSIDE (never instead of) the per-wave `filterDiagnostics` — see
   // `buildState`'s doc comment for why these need to be two separate arrays.
+  //
+  // Review finding (major): `resolveFilterSelection` above only agrees over
+  // this filter's own resolved TARGETS (explicit `def.targets`, else the
+  // tiles declaring the parameter) plus dependent sources — it never looks at
+  // a tile OUTSIDE that scope. But the per-wave merge
+  // (`mergeDashboardFilterHelpers`, `core/dashboard-filters.ts`) rejects a
+  // curated field on `control.conflict` from `fieldControls(analysis)` —
+  // computed DASHBOARD-WIDE, over every tile's declaration of the parameter,
+  // not just this filter's targets. So a filter whose resolution agreed
+  // (e.g. every explicit target declares `Array(String)`) can still publish
+  // a `selection` contract and keep its source consumer, only for EVERY
+  // wave's merge to permanently reject the curated field as
+  // `filter-target-type-conflict` (a non-targeted or presentation-error tile
+  // declares a conflicting `String`) — a stuck hybrid: a published
+  // multiselect contract with a permanently-dead curated field, never
+  // reverting to the plain string input. `resolveFilterSelection`'s own
+  // target-scoped agreement is deliberately narrowed FURTHER here by this
+  // dashboard-wide gate, for consistency with `mergeDashboardFilterHelpers`'
+  // field-level conflict rejection: one behavior (fall back, all the way),
+  // never a hybrid state depending on which layer looks first.
+  const controlsByName = new Map(controls.map((control): [string, FieldControl] => [control.name, control]));
   const staticFilterDiagnostics: FilterDiagnostic[] = [];
   for (const filter of filters) {
     if (!filter.sourceId) continue; // plain root filter — no contract, untouched
@@ -644,8 +656,23 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       selection: filter.def.selection,
     };
     const resolution = resolveFilterSelection(filterSelectionDef, analysis, executableTileIds, dependentSources);
-    if (resolution.diagnostics.length) {
+    // The same signal `mergeDashboardFilterHelpers` gates `control.conflict`
+    // on (`fieldControls(analysis)`, dashboard-wide) — checked here too, even
+    // when `resolution` itself agreed, so this filter can never publish a
+    // contract the merge layer would reject on every wave forever (see the
+    // doc comment above this loop).
+    const dashboardControl = controlsByName.get(filter.def.parameter);
+    const dashboardConflict = dashboardControl?.conflict?.length ? dashboardControl.conflict : null;
+    if (resolution.diagnostics.length || dashboardConflict) {
       for (const d of resolution.diagnostics) staticFilterDiagnostics.push(d as FilterDiagnostic);
+      if (dashboardConflict) {
+        staticFilterDiagnostics.push(coreDiagnostic('error', 'filter-selection-dashboard-type-conflict',
+          `Filter "${filter.def.id}" parameter {${filter.def.parameter}} has a dashboard-wide type conflict across ` +
+          `Panel declarations: ${dashboardConflict.join(' vs ')}. Declarations OUTSIDE this filter's own targets ` +
+          `still count for the shared curated-field layer (mergeDashboardFilterHelpers), which rejects a ` +
+          `dashboard-wide conflict regardless of which tiles this filter targets.`,
+          { filterId: filter.def.id, parameter: filter.def.parameter, types: dashboardConflict }));
+      }
       filter.state.sourceId = undefined;
       source.consumers = source.consumers.filter((consumer) => consumer !== filter);
     } else {
@@ -660,6 +687,30 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // than re-deriving a "has consumers" gate at every call site.
   for (const [id, source] of filterSources) {
     if (source.consumers.length === 0) filterSources.delete(id);
+  }
+
+  // #235 overlap: the set of tile IDs a SOURCE-backed filter targets. Only
+  // source-backed filters gate — a plain value filter's value is already
+  // known, so tiles it feeds never need to wait for the filter/source wave.
+  //
+  // Review finding (minor): this MUST be computed AFTER the #189
+  // resolution/fallback loop above, gated on the POST-resolution
+  // `filter.state.sourceId` — not the structural `filter.def.sourceQueryId`.
+  // A filter whose resolution fell back (dropped from `state.sourceId` and
+  // from its source's `consumers`, possibly deleting the source runtime
+  // entirely just above) has nothing left to defer against: its target tiles
+  // must not be needlessly classified "affected" and deferred behind a
+  // filter/source wave that either never runs the source at all, or runs it
+  // for other, still-healthy consumers only. Gating on the stale
+  // `def.sourceQueryId` instead would defer those tiles forever for no
+  // reason. `targetsByParameter` (above) stays keyed on every filter
+  // definition regardless of resolution outcome — it feeds the general
+  // affected-panel planner (`runAffectedWave`), which is orthogonal to this
+  // pre-wave overlap classification.
+  const affectedByFilterWave = new Set<string>();
+  for (const filter of filters) {
+    if (!filter.state.sourceId) continue;
+    for (const id of resolveFilterTargets(filter.def)) affectedByFilterWave.add(id);
   }
 
   // Curated option bundles from the last filter wave (param name → field).
