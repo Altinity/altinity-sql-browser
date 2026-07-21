@@ -2582,6 +2582,49 @@ describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)
   });
 });
 
+// #360 plan-review BLOCKER-2: `rebuildFilterBar` used to gate a filter into
+// the curated (rich combobox) rendering path only `if (f.options &&
+// f.options.length)` — so a source-backed filter with NO options yet
+// (waiting on a root dependency, mid-flight, or errored) fell OUT of that
+// path entirely and rendered as a bare, unlabelled plain field with zero
+// indication anything was pending. The gate is now "every non-idle filter" —
+// a plain (non-source-backed) filter is documented to stay 'idle' forever,
+// so this never touches the plain-filter path.
+describe('renderDashboard — curated field stays curated while its shared source is waiting (#360)', () => {
+  it('a source-backed filter whose source waits on a root dependency renders the curated waiting affordance, not a bare plain field', async () => {
+    const { app, calls } = dashApp({
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE region = {region:String}'),
+          // 'src' depends on the ROOT filter 'from', which starts inactive/blank
+          // below — so this source is 'waiting', never executes ("depsrc" never
+          // appears in `calls`), and publishes `options: null` for 'region'.
+          q('src', "SELECT ['east','west'] AS region FROM a WHERE ts >= {from:String} -- depsrc", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [
+          { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: '' },
+          { id: 'f-region', parameter: 'region', sourceQueryId: 'src' },
+        ],
+      }),
+    });
+    await render(app);
+    expect(calls.some((c) => c.sql.includes('depsrc'))).toBe(false); // still waiting — never ran
+    const fields = qsa(app.root, '.dash-filter-host .var-field');
+    const regionField = fields.find((f) => qs(f, '.var-name')?.textContent === 'region');
+    expect(regionField).toBeDefined();
+    const region = regionField as HTMLElement;
+    // Stays curated (not the old silent fall-out to a bare plain field) and
+    // carries the structural waiting affordance: class + disabled input +
+    // literal text naming the missing root param.
+    expect(region.classList.contains('is-curated')).toBe(true);
+    expect(region.classList.contains('is-waiting')).toBe(true);
+    const input = qs<HTMLInputElement>(region, 'input');
+    expect(input.disabled).toBe(true);
+    expect(region.textContent).toContain('Waiting for: from');
+  });
+});
+
 // #303: the isolated per-dashboard filter store (`asb:dashFilters`) — the
 // #280 viewer session used to init every filter purely from
 // `def.defaultValue`/`defaultActive`, so a committed value lived only in

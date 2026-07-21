@@ -55,9 +55,22 @@ export interface BuildFilterBarOptions {
 
 /** One curated Dashboard Filter field's config (#160) — the shape
  *  `options.curatedFields[name]` carries, structurally read from the
- *  otherwise-`unknown` bag above. */
+ *  otherwise-`unknown` bag above.
+ *
+ *  #360: `status`/`stale`/`waitingFor` mirror `ViewerFilterState`'s own
+ *  fields (dashboard-viewer-session.ts) — `dashboard.ts`'s `rebuildFilterBar`
+ *  forwards them straight through for every source-backed filter (gated on
+ *  `status !== 'idle'`, never just "has options"), so a filter that's
+ *  `waiting`/`loading`/errored with NO options yet still renders in this
+ *  curated branch instead of silently falling out to the plain-text one
+ *  below (plan-review BLOCKER-2). All three are optional so a caller that
+ *  never supplies them (an older/simpler fixture) renders exactly like
+ *  today's plain 'ready' combobox. */
 interface CuratedFieldConfig {
   options: FilterFieldOption[];
+  status?: string;
+  stale?: boolean;
+  waitingFor?: string[];
 }
 
 // A combobox-based field controller's DOM wiring surface, PLUS the `el`
@@ -155,6 +168,21 @@ export function buildFilterBar(
       + (conflictNote ? ' — ' + conflictNote : '');
     const curated = options.curatedFields?.[p.name] as CuratedFieldConfig | undefined;
     if (curated) {
+      // #360: a shared source's transport/curation status drives a STRUCTURAL,
+      // test-observable affordance (a class + `disabled`/`aria-disabled`, and
+      // — for `waiting` — literal text naming the missing root params) rather
+      // than relying on styling alone (happy-dom never evaluates CSS layout).
+      // Absent `status` (an older/simpler fixture) behaves exactly like
+      // 'ready' — today's normal curated combobox, untouched.
+      const status = curated.status ?? 'ready';
+      const isWaiting = status === 'waiting';
+      const isError = status === 'source-error' || status === 'helper-error' || status === 'missing-helper';
+      // 'loading' is the only other non-terminal status; `stale` mirrors it
+      // 1:1 per `ViewerFilterState`'s own contract — checking both is
+      // defensive, not redundant coverage of two different real states.
+      const isStale = !isWaiting && !isError && (status === 'loading' || !!curated.stale);
+      const waitingNote = isWaiting ? `Waiting for: ${(curated.waitingFor ?? []).join(', ')}` : '';
+      const fieldTitle = isWaiting ? waitingNote : baseTitle;
       const field = buildFilterOptionField({
         document, name: p.name, options: curated.options,
         value: app.state.varValues[p.name] ?? '', active: !!app.state.filterActive[p.name],
@@ -167,7 +195,7 @@ export function buildFilterBar(
         },
         onCommit: () => onCommit(p.name),
       });
-      field.input.title = baseTitle;
+      field.input.title = fieldTitle;
       // #345: a curated field is always the 'enum' width band (short option
       // labels) regardless of the declared param type behind it.
       applyFieldWidth(field.input, p.type, true);
@@ -177,9 +205,29 @@ export function buildFilterBar(
       // invalid against the prepared batch (e.g. a type conflict across
       // favorites), and without this it silently showed none of the
       // is-invalid class/tooltip/aria-invalid a plain filter field would.
-      applyFieldState(field.input, getField(p.name, 'execute'), baseTitle);
-      return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') },
-        h('span', { class: 'var-name' }, p.name), field.el);
+      applyFieldState(field.input, getField(p.name, 'execute'), fieldTitle);
+      if (isWaiting) {
+        field.input.classList.add('is-waiting');
+        field.input.disabled = true;
+        field.input.setAttribute('aria-disabled', 'true');
+        field.input.placeholder = waitingNote;
+      } else if (isError) {
+        field.input.classList.add('is-error');
+        field.input.disabled = true;
+        field.input.setAttribute('aria-disabled', 'true');
+      } else if (isStale) {
+        // Loading/stale: keep whatever options/value were last known (never
+        // cleared — the merge itself never blanks `options` mid-wave, see
+        // dashboard-viewer-session.ts's `runFilterWave`) but mark it plainly
+        // not-current rather than presenting a stale answer as fresh.
+        field.input.classList.add('is-stale');
+        field.input.disabled = true;
+        field.input.setAttribute('aria-disabled', 'true');
+      }
+      const stateClass = isWaiting ? ' is-waiting' : isError ? ' is-error' : isStale ? ' is-stale' : '';
+      return h('label', { class: 'var-field is-curated' + (p.optional ? ' is-optional' : '') + stateClass },
+        h('span', { class: 'var-name' }, p.name), field.el,
+        isWaiting ? h('span', { class: 'var-field-note' }, waitingNote) : null);
     }
     const commitNow = (): void => {
       if (timer == null) return;

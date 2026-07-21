@@ -595,12 +595,27 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   function rebuildFilterBar(sview: DashboardViewState): void {
     filterBarDispose?.();
     const idByParam = new Map<string, string>();
-    const curatedFields: Record<string, { options: ViewerFilterState['options'] }> = {};
+    // #360 (plan-review BLOCKER-2): a source-backed filter used to fall OUT of
+    // the curated rendering path the moment it had no options — waiting on a
+    // root dependency, mid-flight, or errored — silently rendering as a bare,
+    // unlabelled plain field with zero indication anything was pending. A
+    // plain (non-source-backed) filter is documented to stay 'idle' forever
+    // (ViewerFilterStatus), so gating on "not idle" keeps every source-backed
+    // filter curated regardless of whether it currently has options, and
+    // leaves the plain-filter path completely untouched.
+    const curatedFields: Record<string, {
+      options: NonNullable<ViewerFilterState['options']>;
+      status: ViewerFilterState['status'];
+      stale?: boolean;
+      waitingFor?: string[];
+    }> = {};
     for (const f of sview.filters) {
       draftValues[f.parameter] = valueString(f.value);
       draftActive[f.parameter] = f.active;
       idByParam.set(f.parameter, f.id);
-      if (f.options && f.options.length) curatedFields[f.parameter] = { options: f.options };
+      if (f.status !== 'idle') {
+        curatedFields[f.parameter] = { options: f.options ?? [], status: f.status, stale: f.stale, waitingFor: f.waitingFor };
+      }
     }
     const onCommit = (name: string): void => {
       const id = idByParam.get(name);
@@ -1564,9 +1579,24 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     }
     lastMobile = mobileNow;
     // Rebuild the shared filter bar only when its field structure changes
-    // (activation, committed value, or curated options arriving) — not on tile
-    // progress ticks — so in-progress typing is not disturbed mid-wave.
-    const sig = JSON.stringify(sview.filters.map((f) => [f.id, f.active, valueString(f.value), !!(f.options && f.options.length), f.optionsRev]));
+    // (activation, committed value, curated options arriving, or — #360 — a
+    // source-backed filter settling into `waiting` or an error status) — not
+    // on tile progress ticks — so in-progress typing is not disturbed
+    // mid-wave. Without a status term here, an idle→waiting transition
+    // (`options`/`optionsRev` unchanged throughout — a blocked source never
+    // ran) left the SAME signature and never rebuilt, so the waiting
+    // affordance silently never painted (plan-review BLOCKER-2). A bare
+    // `'loading'` blip is deliberately EXCLUDED from this term: it always
+    // pairs with `stale: true` but leaves `options`/`optionsRev` untouched
+    // (`runFilterWave` never clears them mid-wave), so a refresh that settles
+    // right back to the exact same curated content still must NOT rebuild —
+    // preserving #359's own invariant (verified by its own suite) that an
+    // unchanged republish never disturbs in-progress typing.
+    const sig = JSON.stringify(sview.filters.map((f) => {
+      const stickyStatus = f.status === 'waiting' || f.status === 'source-error'
+        || f.status === 'helper-error' || f.status === 'missing-helper' ? [f.status, f.waitingFor] : null;
+      return [f.id, f.active, valueString(f.value), !!(f.options && f.options.length), f.optionsRev, stickyStatus];
+    }));
     if (sig !== barSig) { barSig = sig; rebuildFilterBar(sview); }
     // #303: persist committed filter value/active into the isolated per-dashboard
     // store — isolated from the Workbench's asb:varValues/asb:filterActive keys.
