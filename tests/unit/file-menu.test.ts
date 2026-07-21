@@ -5,12 +5,12 @@ import {
 } from '../../src/ui/file-menu.js';
 import { queryName } from '../../src/core/saved-query.js';
 import { decodePortableBundleJson } from '../../src/dashboard/model/portable-bundle-codec.js';
-import { makeApp } from '../helpers/fake-app.js';
+import { makeApp, statefulWorkspaceRepo } from '../helpers/fake-app.js';
 import type { MakeAppOverrides } from '../helpers/fake-app.js';
 import { savedQuery } from '../helpers/saved-query.js';
 import type { SavedQueryFixture } from '../helpers/saved-query.js';
 import type { App } from '../../src/ui/app.types.js';
-import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { DashboardDocumentV1, PortableBundleV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 
 const click = (el: Element): boolean => el.dispatchEvent(new Event('click', { bubbles: true }));
 const key = (target: EventTarget, k: string, mods: KeyboardEventInit = {}): boolean =>
@@ -278,18 +278,18 @@ describe('Export', () => {
   // #302: Export Dashboard is invoked from the Dashboard page's own File menu
   // (`app.actions.exportDashboard` → `exportDashboardAction`), not the
   // Workbench menu — drive it directly.
-  it('exportDashboardAction toasts "No dashboard to export" and does not download when there is no Dashboard', () => {
+  it('exportDashboardAction toasts "No dashboard to export" and does not download when there is no Dashboard', async () => {
     const app = mount();
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toBe('No dashboard to export');
   });
 
-  it('exportDashboardAction downloads a valid bundle containing only its query dependencies', () => {
+  it('exportDashboardAction downloads a valid bundle containing only its query dependencies', async () => {
     const app = mount();
     app.state.dashboard = dashboardDoc({ title: 'Ops', tiles: [{ id: 't1', queryId: 'p1' }] });
     app.state.savedQueries = [panelQuery('p1', 'Panel'), panelQuery('unrelated', 'Unrelated')];
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     const [fname, mime, content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('Ops.json');
     expect(mime).toBe('application/json');
@@ -302,7 +302,7 @@ describe('Export', () => {
     expect(toast()).toBe('Exported → .json');
   });
 
-  it('exportDashboardAction toasts the encode diagnostic instead of downloading for a role-incompatible Dashboard', () => {
+  it('exportDashboardAction toasts the encode diagnostic instead of downloading for a role-incompatible Dashboard', async () => {
     const filterQuery: SavedQueryV2 = {
       id: 'f1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'F', dashboard: { role: 'filter' } },
     };
@@ -312,17 +312,74 @@ describe('Export', () => {
     // re-validation catches the role mismatch.
     app.state.dashboard = dashboardDoc({ tiles: [{ id: 't1', queryId: 'f1' }] });
     app.state.savedQueries = [filterQuery];
-    exportDashboardAction(app);
+    await exportDashboardAction(app);
     expect(app.downloadFile).not.toHaveBeenCalled();
     expect(toast()).toMatch(/^✕ /);
   });
 
-  it('Export workspace downloads a valid bundle containing the whole catalog', () => {
+  // #341: the export must build from the latest COMMITTED workspace
+  // (`loadCurrent`), not stale `app.state` — the whole reason the actions
+  // became async (flush pending writes → read back the aggregate).
+  it('exportWorkspaceAction builds the bundle from the committed workspace (loadCurrent), not stale app.state (#341)', async () => {
+    const committed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Committed Lib',
+      queries: [panelQuery('c1', 'Committed')], dashboard: null,
+    };
+    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    // app.state is deliberately DIFFERENT — a regression reading state instead
+    // of the committed aggregate would export THIS, failing the id assertion.
+    app.state.savedQueries = [panelQuery('stale', 'Stale')];
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    const [, , content] = app.downloadFile.mock.calls[0];
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['c1']);
+  });
+
+  it('exportDashboardAction builds from the committed dashboard (loadCurrent), not stale app.state (#341)', async () => {
+    const committed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib',
+      queries: [panelQuery('c1', 'Committed')],
+      dashboard: dashboardDoc({ title: 'Committed', tiles: [{ id: 't1', queryId: 'c1' }] }),
+    };
+    const app = mount({ workspace: { loadCurrent: async () => committed } });
+    app.state.dashboard = dashboardDoc({ title: 'Stale', tiles: [{ id: 't9', queryId: 'stale' }] });
+    app.state.savedQueries = [panelQuery('stale', 'Stale')];
+    await exportDashboardAction(app);
+    const [fname, , content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('Committed.json'); // committed title, not the stale one
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['c1']);
+  });
+
+  // #341: `loadCurrent()` (IndexedDB) can REJECT (blocked/quota/private-mode) —
+  // the export must fall back to `app.state`, never become a silent no-op on an
+  // unhandled rejection (a regression from the pre-#341 synchronous export).
+  it('exportWorkspaceAction falls back to app.state when loadCurrent rejects — never a silent no-op (#341)', async () => {
+    const app = mount({ workspace: { loadCurrent: async () => { throw new Error('idb blocked'); } } });
+    app.state.libraryName.value = 'My Lib';
+    app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
+    openFileMenu(app);
+    click(item(/Export workspace/)!);
+    await flush();
+    expect(app.downloadFile).toHaveBeenCalled();
+    const [fname, , content] = app.downloadFile.mock.calls[0];
+    expect(fname).toBe('My Lib.json');
+    const decoded = decodePortableBundleJson(content as string);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) expect(decoded.value.queries.map((q) => q.id)).toEqual(['p1', 'p2']);
+  });
+
+  it('Export workspace downloads a valid bundle containing the whole catalog', async () => {
     const app = mount();
     app.state.libraryName.value = 'My Lib';
     app.state.savedQueries = [panelQuery('p1'), panelQuery('p2')];
     openFileMenu(app);
     click(item(/Export workspace/)!);
+    await flush();
     const [fname, , content] = app.downloadFile.mock.calls[0];
     expect(fname).toBe('My Lib.json');
     const decoded = decodePortableBundleJson(content as string);
@@ -462,6 +519,9 @@ describe('Import queries', () => {
     click(document.querySelector('.fm-dialog-confirm')!);
     await flush();
     expect(app.state.savedQueries.map((q) => queryName(q))).toEqual(['OldName']);
+    // #344 review 3: the success toast reports what the plan actually did —
+    // the one incoming query was skipped, so it must not claim "Imported 1".
+    expect(toast()).toBe('Imported 0 queries');
   });
 
   it('cancelling the conflict dialog aborts the import (no commit)', () => {
@@ -790,6 +850,162 @@ describe('decode failures', () => {
     pickFile(picker(0));
     expect(toast()).toMatch(/^✕ /);
     expect(toast()).not.toContain('Unrecognized file format');
+  });
+});
+
+// #341/#344 review fix: `commitWorkspace`/`app.mutateWorkspace` must build the
+// candidate from the LATEST committed aggregate at dequeue time, never from a
+// snapshot taken before a producer entered the write queue. Both regression
+// cases mirror saved-history.test.ts's own "concurrent saved-query writes"
+// test — a first write is gated open manually so it stays pending in the
+// queue while a SECOND op (here, a rename / an import) is fired behind it.
+describe('mixed-producer serialization (#341/#344 review fix)', () => {
+  it('a pending saved-query-style mutation commits before a queued rename builds its candidate — the rename lands on top, nothing reverts', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Orig', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({ workspace: statefulWorkspaceRepo(seed) });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+    renderLibraryTitle(app);
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate; // stays pending in the queue until released below
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
+    });
+
+    // Fire the rename UI flow (inline title edit, Enter commits) while the
+    // mutation above is still queued ahead of it — `renameWorkspaceAction`
+    // isn't exported, so drive it the same way `workspace title` above does.
+    click(app.dom.libraryTitle!.querySelector('.lib-name')!);
+    const input = app.dom.libraryTitle!.querySelector<HTMLInputElement>('.lib-name-input')!;
+    input.value = 'Renamed';
+    key(input, 'Enter');
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // A `renameWorkspaceAction` that built its candidate from a pre-queue
+    // snapshot would have re-committed the ORIGINAL [q1] catalog, silently
+    // reverting the q2 mutation that landed while it waited.
+    expect(finalWs!.queries.map((q) => q.id)).toEqual(['q1', 'q2']);
+    expect(finalWs!.name).toBe('Renamed');
+  });
+
+  it('a pending saved-query-style mutation commits before a queued Import queries builds its candidate — the import lands on top of the post-mutation catalog', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'New1')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('q2', 'Q2')] });
+    });
+
+    // No incoming/existing id overlap (`new1` vs `q1`/eventual `q2`) → the
+    // import commits directly, no conflict dialog — queued behind the pending
+    // mutation above the moment the file is picked.
+    openFileMenu(app);
+    pickFile(picker(0));
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // A stale-snapshot import would have planned against [q1] only, dropping
+    // q2 from the committed candidate.
+    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1', 'q2']);
+  });
+
+  // #344 review 3: the conflict DECISIONS are collected against the pre-queue
+  // snapshot; a mutation landing in the queue in between can mint a conflict
+  // the user never saw. The planner defaults an undecided conflict to 'skip' —
+  // without dequeue-time revalidation the import would silently drop the
+  // incoming query and still toast success.
+  it('a conflict minted while the import waits in the queue ABORTS the import (content differs) instead of silently skipping', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'Theirs')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      // Mints the SAME id as the bundle's incoming query, with DIFFERENT content.
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'Mine')] });
+    });
+
+    // Dialog time: existing=[q1], incoming=[new1] → no conflict, decisions=[].
+    openFileMenu(app);
+    pickFile(picker(0));
+    expect(document.querySelector('.fm-dialog-card')).toBeNull();
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // The import aborted whole: the queued mutation's new1 ('Mine') stands,
+    // the bundle's new1 ('Theirs') was neither imported nor silently skipped
+    // under a success toast.
+    expect(finalWs!.queries.map((q) => queryName(q)).sort()).toEqual(['Mine', 'Q1']);
+    expect(toast()).toBe('✕ Workspace changed while importing — nothing imported, try again');
+  });
+
+  it('a conflict minted while the import waits in the queue auto-resolves when canonically IDENTICAL — no duplicate, honest count', async () => {
+    const seed: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Lib', queries: [panelQuery('q1', 'Q1')], dashboard: null,
+    };
+    const app = mount({
+      workspace: statefulWorkspaceRepo(seed),
+      FileReader: fakeReader(bundleText({ queries: [panelQuery('new1', 'New1')] })),
+    });
+    app.state.savedQueries = seed.queries;
+    app.state.workspaceId = seed.id;
+    app.state.libraryName.value = seed.name;
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const pendingMutation = app.serializeWrite(async () => {
+      await gate;
+      // Mints the same id with IDENTICAL content (the rapid double-import case).
+      return app.workspace.commit({ ...seed, queries: [...seed.queries, panelQuery('new1', 'New1')] });
+    });
+
+    openFileMenu(app);
+    pickFile(picker(0));
+
+    release();
+    await pendingMutation;
+    await app.flushWorkspaceWrites();
+
+    const finalWs = await app.workspace.loadCurrent();
+    // Auto-resolved to 'use-existing': exactly ONE new1, and the toast counts
+    // it as imported (the query IS available after the import).
+    expect(finalWs!.queries.map((q) => q.id).sort()).toEqual(['new1', 'q1']);
+    expect(toast()).toBe('Imported 1 query');
   });
 });
 

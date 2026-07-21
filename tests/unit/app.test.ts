@@ -476,6 +476,62 @@ describe('createApp basics', () => {
   });
 });
 
+// #341/#344 review fix: `app.mutateWorkspace` is the only correct way to
+// build a workspace-mutation candidate — `serializeWrite` alone only
+// serializes EXECUTION, not the read the candidate is built from. These
+// exercise the seam directly (real `createApp`/IndexedDB-backed
+// `app.workspace`, mirroring `createApp basics` above) so a regression in the
+// "read latest at dequeue time" discipline shows up here, not only in
+// file-menu.ts's own higher-level tests.
+describe('app.mutateWorkspace (#341/#344)', () => {
+  const seedWorkspace = (over: Partial<import('../../src/generated/json-schema.types.js').StoredWorkspaceV1> = {}) => (
+    { storageVersion: 1 as const, id: 'w1', name: 'Seed', queries: [], dashboard: null, ...over }
+  );
+
+  it('the transform receives the latest COMMITTED aggregate at DEQUEUE time, not whatever was current when mutateWorkspace was called', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => seedWorkspace());
+    // A first write is pending in the queue (gated open manually, like
+    // saved-history.test.ts's own concurrent-writes regression) — a SECOND
+    // `mutateWorkspace` call fires while it's still pending.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const first = app.serializeWrite(async () => {
+      await gate;
+      return app.workspace.commit(seedWorkspace({ queries: [savedQuery({ id: 'q1', name: 'Q1' })] }));
+    });
+    const second = app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'Renamed' } : null));
+    release();
+    await Promise.all([first, second]);
+    const finalWs = await app.workspace.loadCurrent();
+    // Both mutations landed: the queued commit's query AND the rename that ran
+    // after it — a `mutateWorkspace` that captured `latest` at enqueue time
+    // (before the first commit) would have reverted the query back to [].
+    expect(finalWs?.queries.map((q) => q.id)).toEqual(['q1']);
+    expect(finalWs?.name).toBe('Renamed');
+  });
+
+  it('a null/undefined-returning transform aborts the commit — nothing is persisted, and the result resolves null', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    const result = await app.mutateWorkspace(() => null);
+    expect(result).toBeNull();
+    const ws = await app.workspace.loadCurrent();
+    expect(ws?.name).toBe('Before'); // untouched
+  });
+
+  it('a transform rejection propagates to the caller without wedging the queue for the next op', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => seedWorkspace({ name: 'Before' }));
+    await expect(app.mutateWorkspace(() => { throw new Error('boom'); })).rejects.toThrow('boom');
+    // The queue still advances — a later op is not stuck behind the rejection.
+    const result = await app.mutateWorkspace((latest) => (latest ? { ...latest, name: 'After' } : null));
+    expect(result?.ok).toBe(true);
+    const ws = await app.workspace.loadCurrent();
+    expect(ws?.name).toBe('After');
+  });
+});
+
 describe('renderApp shell', () => {
   function rendered(over: Partial<CreateAppEnv> = {}): { app: App; e: CreateAppEnv } {
     const e = env({

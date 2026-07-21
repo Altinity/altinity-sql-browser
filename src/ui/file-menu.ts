@@ -9,15 +9,17 @@
 // see `startOpenWorkspace`/`confirmOpenWorkspace` below), and moved Share/
 // Publish above Variable history.
 // The legacy Library New/Save-JSON/Open-replace/Append ops are gone; every
-// write here resolves a `PortableBundleImportPlan` (workspace/import-planner.js)
-// or a repository-level primitive (workspace/workspace-operations.js), then
-// commits the WHOLE candidate through `app.workspace.commit` and projects the
-// result onto `state` via `app.applyCommittedWorkspace` before repainting
-// (`afterLibraryChange`). External read-only "Open for viewing" + a trust
-// preflight are DEFERRED to #288 — every operation here only COMMITS to the
-// workspace, never executes a query. Render module over the `app`
+// write here builds a `PortableBundleImportPlan` (workspace/import-planner.js)
+// or a repository-level primitive (workspace/workspace-operations.js) INSIDE
+// the transform passed to `app.mutateWorkspace` (#341/#344 review fix — never
+// from a pre-queue snapshot: `commitWorkspace`/`planBuild` below are the only
+// path every mutation here goes through), commits the WHOLE candidate, and
+// projects the result onto `state` via `app.applyCommittedWorkspace` before
+// repainting (`afterLibraryChange`). External read-only "Open for viewing" +
+// a trust preflight are DEFERRED to #288 — every operation here only COMMITS
+// to the workspace, never executes a query. Render module over the `app`
 // controller; every side effect goes through an injected seam
-// (app.workspace.commit / app.downloadFile / app.FileReader / app.document /
+// (app.mutateWorkspace / app.downloadFile / app.FileReader / app.document /
 // app.genId / app.wallNow), so it is fully testable.
 
 import { h, attachBackdropClose } from './dom.js';
@@ -294,30 +296,87 @@ function afterLibraryChange(app: App): void {
   renderDashboardNav(app);
 }
 
-/** Commit one whole candidate `StoredWorkspaceV1`, then project + repaint on
- *  success. A rejected commit toasts the first diagnostic and leaves `state`
- *  untouched — never a partial write. */
-async function commitWorkspace(app: App, candidate: StoredWorkspaceV1, successMsg?: string): Promise<boolean> {
-  const result = await app.workspace.commit(candidate);
+/** Commit ONE workspace mutation through `app.mutateWorkspace`, then project +
+ *  repaint on success. `build` receives the latest COMMITTED aggregate at
+ *  DEQUEUE time (never a pre-queue snapshot — #341/#344 review fix: a queue
+ *  around an independently pre-built candidate does not prevent lost
+ *  updates); every file-menu commit goes through this one function so none of
+ *  them can fork from that discipline. `build` returning `null` aborts the
+ *  commit — the caller is expected to have already toasted its own reason (a
+ *  plan invalidation), so this stays silent for that case. A rejected commit
+ *  (schema/persistence failure) toasts the first diagnostic. Never a partial
+ *  write either way. */
+async function commitWorkspace(
+  app: App, build: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null,
+  successMsg?: string | (() => string),
+): Promise<boolean> {
+  const result = await app.mutateWorkspace(build);
+  if (!result) return false; // `build` declined — its own toast (if any) already fired.
   if (!result.ok) {
     flashToast('✕ ' + first(result.diagnostics, 'Could not save workspace'), { document: app.document });
     return false;
   }
   app.applyCommittedWorkspace(result.workspace);
   afterLibraryChange(app);
-  if (successMsg) flashToast(successMsg, { document: app.document });
+  // A function `successMsg` is evaluated AFTER the builder ran, so it can
+  // report what the dequeue-time plan actually did (#344 review 3: the
+  // imported-count toast must reflect the plan, not the bundle size).
+  if (successMsg) flashToast(typeof successMsg === 'function' ? successMsg() : successMsg, { document: app.document });
   return true;
 }
 
-/** Commit an import-planner plan, or toast + abort when it invalidated
- *  (`candidateWorkspace: null` — e.g. a skipped required Dashboard
- *  dependency). Never commits a partial/invalid candidate. */
-async function commitPlan(app: App, plan: PortableBundleImportPlan, successMsg: string): Promise<void> {
-  if (!plan.candidateWorkspace) {
-    flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
-    return;
-  }
-  await commitWorkspace(app, plan.candidateWorkspace, successMsg);
+/** #344 review 3: re-check the pre-queue conflict DECISIONS against the
+ *  dequeue-time baseline. The conflict dialog ran against a snapshot; a write
+ *  that landed in the queue between the dialog and this commit can mint a NEW
+ *  id collision the user never saw — and the planner deliberately defaults an
+ *  undecided collision to 'skip', which would silently drop the incoming
+ *  query under a success toast. A new canonically-IDENTICAL conflict is
+ *  auto-resolved to 'use-existing' (same rule the dialog itself applies); a
+ *  new content-DIFFERING conflict aborts (`null`) — the user must re-run the
+ *  import and decide against the workspace as it now is. */
+function revalidateDecisions(
+  base: StoredWorkspaceV1, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+): QueryDecision[] | null {
+  const conflicts = detectQueryConflicts(base.queries, incoming);
+  const decided = new Set(decisions.map((decision) => decision.sourceId));
+  const fresh = conflicts.filter((conflict) => !decided.has(conflict.sourceId));
+  if (fresh.some((conflict) => !conflict.canonicalEqual)) return null;
+  return [...decisions, ...autoResolveConflicts(fresh)];
+}
+
+/** Wrap an import-planner call as a `commitWorkspace` builder: revalidate the
+ *  pre-queue `decisions` against the dequeue-time baseline (`latest`, falling
+ *  back to the `state`-projected `currentWorkspace` when no aggregate is
+ *  persisted yet — as fresh as it gets), then let `run` plan with the
+ *  revalidated set. Aborts (`null`) with a toast when a new content-differing
+ *  conflict appeared while queued (`revalidateDecisions`) or when the plan
+ *  invalidated (`candidateWorkspace: null` — e.g. a skipped required
+ *  Dashboard dependency) — never a partial/invalid/silently-lossy commit. */
+function planBuild(
+  app: App, incoming: readonly SavedQueryV2[], decisions: readonly QueryDecision[],
+  run: (base: StoredWorkspaceV1, decisions: readonly QueryDecision[]) => PortableBundleImportPlan,
+): (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null {
+  return (latest) => {
+    const base = latest ?? currentWorkspace(app);
+    const revalidated = revalidateDecisions(base, incoming, decisions);
+    if (!revalidated) {
+      flashToast('✕ Workspace changed while importing — nothing imported, try again', { document: app.document });
+      return null;
+    }
+    const plan = run(base, revalidated);
+    if (!plan.candidateWorkspace) {
+      flashToast('✕ ' + first(plan.diagnostics, 'Import failed'), { document: app.document });
+      return null;
+    }
+    return plan.candidateWorkspace;
+  };
+}
+
+/** The count an import's success toast reports: incoming queries the plan
+ *  actually resolved to a target ('use-existing' counts — the query is
+ *  available after the import; 'skip' does not). */
+function importedQueryCount(plan: PortableBundleImportPlan): number {
+  return Object.values(plan.queryMappings).filter((m) => m.action !== 'skip').length;
 }
 
 // ── conflict resolution (global default + per-row override) ────────────────
@@ -433,8 +492,10 @@ function newWorkspaceAction(app: App): void {
 }
 
 async function doNewWorkspace(app: App): Promise<void> {
-  const candidate = createNewWorkspace(app.genId);
-  await commitWorkspace(app, candidate, 'Started a new workspace');
+  // Independent of `latest` (a brand-new workspace never derives from the
+  // current one) — still routed through `commitWorkspace`/`mutateWorkspace`
+  // for the same one write-path discipline every other mutation here uses.
+  await commitWorkspace(app, () => createNewWorkspace(app.genId), 'Started a new workspace');
 }
 
 function confirmNewWorkspace(app: App, cur: StoredWorkspaceV1): void {
@@ -451,8 +512,10 @@ function confirmNewWorkspace(app: App, cur: StoredWorkspaceV1): void {
 // ── actions: rename ──────────────────────────────────────────────────────────
 
 async function renameWorkspaceAction(app: App, name: string): Promise<void> {
-  const candidate = renameWorkspace(currentWorkspace(app), name);
-  await commitWorkspace(app, candidate);
+  // `latest ?? currentWorkspace(app)` covers the no-persisted-aggregate
+  // (legacy/first-run) case — reading `app.state` inside the queued build is
+  // at-DEQUEUE-time, as fresh as it gets when there's no aggregate to read.
+  await commitWorkspace(app, (latest) => renameWorkspace(latest ?? currentWorkspace(app), name));
 }
 
 // ── actions: Import queries ─────────────────────────────────────────────────
@@ -462,10 +525,25 @@ function onImportQueriesFile(app: App, file: File): void {
 }
 
 function startImportQueries(app: App, bundle: PortableBundleV1): void {
+  // The conflict dialog is shown against this snapshot — unavoidable, since it
+  // needs SOMETHING to detect conflicts against before the user decides. The
+  // commit below re-plans against the LATEST committed baseline right before
+  // writing, so a mutation that lands while the dialog is open is folded in
+  // rather than clobbered (#341/#344) — only the CONFLICT SET shown to the
+  // user can be (harmlessly) stale, never the committed candidate.
   const workspace = currentWorkspace(app);
   withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
-    const plan = planImportQueries(workspace, bundle, decisions, app.genId);
-    void commitPlan(app, plan, 'Imported ' + queries(bundle.queries.length));
+    // `lastPlan` is written by the builder inside the queued op, so the
+    // (function) success message reports what the DEQUEUE-TIME plan actually
+    // imported — never the bundle size (#344 review 3: a dialog-time 'skip'
+    // or a dequeue-time auto-resolve must not inflate the count).
+    let lastPlan: PortableBundleImportPlan | null = null;
+    void commitWorkspace(
+      app, planBuild(app, bundle.queries, decisions,
+        (base, revalidated) => (lastPlan = planImportQueries(base, bundle, revalidated, app.genId))),
+      // `lastPlan!` — the success message only runs after the builder did.
+      () => 'Imported ' + queries(importedQueryCount(lastPlan!)),
+    );
   });
 }
 
@@ -478,7 +556,7 @@ function onImportDashboardFile(app: App, file: File): void {
 /** #302 — programmatically trigger the "Import Dashboard…" flow (used by the
  *  Dashboard page's own File menu via `app.actions.importDashboard`): open a
  *  file picker, then run the same transactional import as the Workbench used to.
- *  On success `commitPlan` → `afterLibraryChange` repaints the active surface
+ *  On success `commitWorkspace` → `afterLibraryChange` repaints the active surface
  *  (the Dashboard route re-renders itself). */
 export function triggerImportDashboard(app: App): void {
   const input = pickerInput(app, (f) => onImportDashboardFile(app, f));
@@ -519,6 +597,8 @@ function runImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: str
 }
 
 function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: string): void {
+  // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit split
+  // as `startImportQueries` above (#341/#344).
   const workspace = currentWorkspace(app);
   const source = bundle.dashboards.find((d) => d.id === dashboardId);
   const closureIds = new Set(dashboardDependencyQueryIds(source));
@@ -528,8 +608,11 @@ function doImportDashboard(app: App, bundle: PortableBundleV1, dashboardId: stri
     // which then REPLACES the workspace's zero-or-one current Dashboard
     // (v1 single-Dashboard model, #280 "Import Dashboard replaces the current
     // Dashboard"). The confirm above gates the destructive case.
-    const plan = planImportDashboard(workspace, bundle, dashboardId, decisions, 'copy', app.genId);
-    void commitPlan(app, plan, 'Imported dashboard');
+    void commitWorkspace(
+      app, planBuild(app, closureQueries, decisions,
+        (base, revalidated) => planImportDashboard(base, bundle, dashboardId, revalidated, 'copy', app.genId)),
+      'Imported dashboard',
+    );
   });
 }
 
@@ -564,10 +647,16 @@ function confirmOpenWorkspace(app: App, bundle: PortableBundleV1, sourceDashboar
       sourceDashboardId ? ' and the selected Dashboard' : '', ' from the file. Open editor tabs are unaffected.'],
     confirmLabel: 'Open workspace',
     onConfirm: () => {
+      // Same snapshot-for-the-dialog / re-plan-against-latest-for-the-commit
+      // split as `startImportQueries`/`doImportDashboard` above (#341/#344) —
+      // `cur` above (the confirm body's own snapshot) has the same property.
       const workspace = currentWorkspace(app);
       withQueryDecisions(app, workspace.queries, bundle.queries, (decisions) => {
-        const plan = planReplaceWorkspace(workspace, bundle, sourceDashboardId, decisions, app.genId);
-        void commitPlan(app, plan, 'Opened workspace');
+        void commitWorkspace(
+          app, planBuild(app, bundle.queries, decisions,
+            (base, revalidated) => planReplaceWorkspace(base, bundle, sourceDashboardId, revalidated, app.genId)),
+          'Opened workspace',
+        );
       });
     },
   });
@@ -582,18 +671,37 @@ function downloadEncodedBundle(app: App, bundle: PortableBundleV1, baseName: str
   flashToast('Exported → .json', { document: app.document });
 }
 
-export function exportDashboardAction(app: App): void {
+/** #341: flush every write already queued through `serializeWrite` (a Dashboard
+ *  command, a saved-query mutation, an import) then read the latest COMMITTED
+ *  aggregate — the truth an export must build from, never mid-flight `state`.
+ *  Returns `null` when no aggregate is persisted (legacy/degraded install) OR
+ *  when the flush/read REJECTS (blocked/quota/private-mode IndexedDB); the
+ *  callers then fall back to the pre-#341 `app.state`-derived reads, so an
+ *  export never becomes a silent no-op on an unhandled rejection. */
+async function flushAndLoadCommitted(app: App): Promise<StoredWorkspaceV1 | null> {
+  try {
+    await app.flushWorkspaceWrites();
+    return await app.workspace.loadCurrent();
+  } catch {
+    return null;
+  }
+}
+
+export async function exportDashboardAction(app: App): Promise<void> {
+  const ws = await flushAndLoadCommitted(app);
   // #302: invoked from the Dashboard page's File menu (via
   // `app.actions.exportDashboard`). Guard a null Dashboard here — unlike the
   // old Workbench menu item, the caller no longer pre-checks `hasDashboard`.
-  const dashboard = app.state.dashboard;
+  const dashboard = ws ? ws.dashboard : app.state.dashboard;
   if (!dashboard) { flashToast('No dashboard to export', { document: app.document }); return; }
-  const bundle = buildDashboardExportBundle(dashboard, app.state.savedQueries, new Date(app.wallNow()).toISOString());
+  const queryList = ws ? ws.queries : app.state.savedQueries;
+  const bundle = buildDashboardExportBundle(dashboard, queryList, new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, dashboard.title || app.state.libraryName.value);
 }
 
-function exportWorkspaceAction(app: App): void {
-  const bundle = buildWorkspaceExportBundle(currentWorkspace(app), new Date(app.wallNow()).toISOString());
+async function exportWorkspaceAction(app: App): Promise<void> {
+  const ws = await flushAndLoadCommitted(app);
+  const bundle = buildWorkspaceExportBundle(ws ?? currentWorkspace(app), new Date(app.wallNow()).toISOString());
   downloadEncodedBundle(app, bundle, app.state.libraryName.value);
 }
 

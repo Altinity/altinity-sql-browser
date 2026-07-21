@@ -19,7 +19,7 @@ import type { ConnectionSession, SessionChCtx } from '../application/connection-
 import type { SchemaCatalogService } from '../application/schema-catalog-service.js';
 import type { SchemaGraphSession } from '../application/schema-graph-session.js';
 import type { AppPreferences } from '../application/app-preferences.js';
-import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
+import type { WorkspaceRepository, WorkspaceCommitResult } from '../workspace/workspace-repository.js';
 import type { HandoffStore } from '../workspace/handoff-store.types.js';
 import type { DetachedViewsStore } from '../workspace/detached-views-store.types.js';
 import type { DashboardOpenSource } from '../dashboard/application/dashboard-open-source.js';
@@ -458,6 +458,29 @@ export interface App {
    *  (or clobber a concurrent edit). Rejections propagate to the caller; the
    *  queue itself never rejects. */
   serializeWrite<T>(op: () => Promise<T>): Promise<T>;
+  /** #341: resolve once every write already queued through `serializeWrite`
+   *  has settled — the flush point exports use so a bundle is built from the
+   *  latest COMMITTED workspace, never mid-flight state. A write queued AFTER
+   *  this call is intentionally not awaited by it. */
+  flushWorkspaceWrites(): Promise<void>;
+  /** #341/#344 review fix: the ONLY way a workspace mutation should build its
+   *  candidate. A queue around independently pre-built full-workspace
+   *  snapshots does not prevent lost updates — several `file-menu.ts`
+   *  producers used to build a whole candidate from `state` BEFORE entering
+   *  `serializeWrite`, so a mutation that committed while they awaited a user
+   *  dialog (or just lost the race) got silently clobbered by the later,
+   *  stale write. `mutateWorkspace` closes that window: the queued op reads
+   *  the latest COMMITTED aggregate via `app.workspace.loadCurrent()` at
+   *  DEQUEUE time (never cached in a variable outside the op — every other
+   *  producer commits through the same repository, so only a read taken
+   *  inside the queue slot is guaranteed fresh), hands it to `transform`, and
+   *  commits whatever `transform` returns. `transform` returning `null`/
+   *  `undefined` aborts the op — nothing is committed and this resolves
+   *  `null`. Rejections propagate to the caller like `serializeWrite`'s own;
+   *  the queue itself never wedges. */
+  mutateWorkspace(
+    transform: (latest: StoredWorkspaceV1 | null) => StoredWorkspaceV1 | null | Promise<StoredWorkspaceV1 | null>,
+  ): Promise<WorkspaceCommitResult | null>;
 
   actions: ActionsRegistry;
 }

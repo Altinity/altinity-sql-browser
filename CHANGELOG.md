@@ -259,6 +259,53 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   no new network requests).
 
 ### Fixed
+- **Editable Dashboard and Workbench are now two editors over one committed
+  workspace, with consistent exports** (#341). Previously the standalone
+  Dashboard persisted layout/order/resize/delete edits with a fire-and-forget
+  `workspace.commit()` that only bumped a route-local revision counter — it
+  never projected the committed aggregate back through
+  `app.applyCommittedWorkspace`, so `app.state.dashboard` (which both exports
+  read) went stale, rapid edits could start overlapping commits outside the
+  saved-query write queue, and an older commit resolving after a newer one
+  could clobber tile order/placement/style. All workspace writes now go through
+  one app-level primitive, **`app.mutateWorkspace(transform)`**: a queued op
+  (the same `serializeWrite` chain saved-query mutations use) that reads the
+  latest **committed** aggregate via `workspace.loadCurrent()` at dequeue time,
+  applies the caller's transform to it, and commits — because a queue around
+  independently pre-built full snapshots still loses updates, every File-menu
+  mutation (rename, import queries/dashboard, replace, new) builds its
+  candidate **inside** the transform from that dequeue-time baseline (the
+  conflict dialog's snapshot is UX-only, and the collected decisions are
+  **revalidated** at dequeue time: a query-id conflict minted while the import
+  waited in the queue auto-resolves when canonically identical, and aborts the
+  import with a "workspace changed" toast when the content differs — never a
+  silent skip; the "Imported N" toast now reports what the plan actually
+  imported, not the bundle size), and every editable Dashboard command
+  (`move-tile`, `update-placement`, `change-layout`, `remove-tile`) is queued
+  as a **command descriptor** re-applied to committed truth when its turn
+  arrives — never as a document snapshot derived from a prior command's
+  still-uncommitted optimistic doc, so a rejected command can't be smuggled
+  into a later command's successful commit. An optimistic preview stays
+  instant; after every resolution (success, `ok:false`, no-longer-applies
+  abort, or a storage rejection) the still-pending descriptors are **rebased**
+  onto committed truth and re-published, so a failed command's effect
+  disappears everywhere, revisions stay strictly monotonic, the diagnostic is
+  toasted, and the shared queue is never wedged. A failed or no-longer-applies
+  command rolls back to the **dequeue-time** committed truth its queued op
+  observed (never a stale route-local cache — so a tile a concurrent producer
+  removed disappears from the render, too), and a rollback that must *restore*
+  a removed tile rebuilds the Dashboard route from committed truth (#350),
+  since the viewer session's `syncDocument` can reorder and drop tiles but
+  never reinstate one. Dashboard export and
+  Workbench workspace export both now `flushWorkspaceWrites()` (await pending
+  writes) then build from the latest committed `StoredWorkspaceV1`
+  (`workspace.loadCurrent()`), falling back to `app.state` only when no
+  aggregate is persisted or the read rejects — so the Dashboard document and
+  every shared saved-query resource are **canonically identical** across both
+  bundles, and export/import preserves exact tile order, shape, style, filters,
+  and membership. Same-tab writes are strictly serialized here; cross-tab
+  optimistic-concurrency (revision CAS) is a scoped follow-up (#343), consistent
+  with #341's cross-tab minimum contract (reload consistency).
 - **Dashboard KPI bands now render as one horizontal wrapping row in flow
   layouts** (#331). The flow renderer emitted each consecutive-KPI band member
   as `.dash-kpi-member`, but the `display:contents` flattening rule targeted a

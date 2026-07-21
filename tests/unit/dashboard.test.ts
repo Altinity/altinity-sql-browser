@@ -26,6 +26,7 @@ import type { AppState } from '../../src/state.js';
 import type { Column } from '../../src/core/panel-cfg.js';
 import type { CreateAppEnv } from '../../src/env.types.js';
 import type { ResolvedIdpConfig, ConfigDoc } from '../../src/net/oauth-config.js';
+import type { StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 
 type FakeApp = ReturnType<typeof makeApp>;
 
@@ -292,17 +293,50 @@ function dashApp(opts: {
   savedQueries?: ReturnType<typeof savedQuery>[];
 } = {}) {
   const { executeRead, calls } = makeExec(opts.responder);
-  const commit = opts.commit ?? vi.fn(async () => ({ ok: true, workspace: {} as never, dashboardRevision: 2 }));
+  // #344 review fix: `runCommand` now builds its commit candidate through
+  // `app.mutateWorkspace`, which reads `app.workspace.loadCurrent()` at
+  // DEQUEUE time — the module-default `appDefaults.workspace.loadCurrent`
+  // always answers `null`, so a bare `{ commit }` override (pre-#344's only
+  // requirement) would make every `runCommand` dispatch null-abort. `current`
+  // is this fixture's own tiny stateful mirror (statefulWorkspaceRepo's same
+  // shape, inlined so a caller's custom `opts.commit` — simulating a failure
+  // then a success, or a slow-to-resolve first call — still keeps
+  // `loadCurrent` in sync: only a genuinely OK result advances `current`,
+  // exactly like the real `WorkspaceRepository`).
+  let current: StoredWorkspaceV1 | null = (opts.workspace === undefined ? null : opts.workspace) as StoredWorkspaceV1 | null;
+  // #341: default commit ECHOES the candidate it was given (mirrors
+  // `appDefaults.workspace.commit` in fake-app.ts) — `runCommand`'s post-commit
+  // projection (`applyCommittedWorkspace(result.workspace)`, `currentDoc =
+  // result.workspace.dashboard`) needs a REAL committed dashboard back, not an
+  // opaque `{}`, for projection assertions to be meaningful.
+  const commitImpl = opts.commit ?? vi.fn(async (candidate: Parameters<App['workspace']['commit']>[0]) => ({
+    ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null,
+  }));
+  const commit = vi.fn(async (candidate: Parameters<App['workspace']['commit']>[0]) => {
+    const result = await commitImpl(candidate);
+    if (result.ok) current = result.workspace;
+    return result;
+  });
   const app = makeApp({
     exec: { executeRead },
-    workspace: { commit },
-    loadDashboardWorkspace: async () => (opts.workspace === undefined ? null : opts.workspace) as never,
+    workspace: { commit, loadCurrent: async () => current },
+    // Mirrors production (`app.loadDashboardWorkspace` = migrate + `loadCurrent()`):
+    // reads the fixture's stateful `current`, so a route REBUILD (#350 —
+    // membership-restoring rollback) re-renders from committed truth, not the
+    // initially-loaded snapshot.
+    loadDashboardWorkspace: async () => current as never,
   }) as TestApp;
   if (opts.savedQueries) app.state.savedQueries = opts.savedQueries as AppState['savedQueries'];
   return { app, calls, commit };
 }
 
 const render = (app: TestApp): Promise<void> => renderDashboard(app as unknown as Parameters<typeof renderDashboard>[0]);
+// #341: `runCommand` now commits through `app.serializeWrite` (a real
+// microtask-chained queue, same as saved-history.test.ts's own convention) —
+// a synchronous assertion right after triggering a command can no longer
+// observe `commit` having been called; a macrotask flush lets every pending
+// microtask (the queue + the commit promise + its projection callback) run.
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 /** The flow preset switcher (2026-07-18: a `<select class="dash-layout-select">`
  *  in the header, replacing the old `.dash-seg-layout` button group). */
 const layoutSelect = (root: ParentNode | null): HTMLSelectElement => qs<HTMLSelectElement>(root, '.dash-layout-select');
@@ -486,6 +520,7 @@ describe('renderDashboard — flow layout + preset switcher (#280)', () => {
     pickLayout(app.root, 'report');
     expect(layoutSelect(app.root).value).toBe('report');
     expect((qsa(app.root, '.dash-row')[0].style as CSSStyleDeclaration).gridTemplateColumns).toContain('repeat(1');
+    await flush();
     expect(commit).toHaveBeenCalled();
   });
 
@@ -561,6 +596,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     const down = pointerDragTo(cards, 1, tileCenter(0), { metaKey: true });
     expect(down.defaultPrevented).toBe(true);
     expect(order(app)).toEqual(['q2', 'q1']); // move-tile applied
+    await flush();
     expect(commit).toHaveBeenCalled(); // new order persisted
   });
 
@@ -571,6 +607,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     stubTileRects(cards);
     dragTile(cards, 1, 0, { ctrlKey: true });
     expect(order(app)).toEqual(['q2', 'q1']);
+    await flush();
     expect(commit).toHaveBeenCalled();
   });
 
@@ -599,6 +636,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     stubTileRects(cards);
     dragTile(cards, 1, 0);
     expect(order(app)).toEqual(['q2', 'q1']);
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
@@ -742,6 +780,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(down2.defaultPrevented).toBe(false);
     // The first gesture still completes normally: exactly one move committed.
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
@@ -767,6 +806,7 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(cards.length).toBe(2);
     stubTileRects(cards);
     dragTile(cards, 0, 1);
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
@@ -1028,6 +1068,7 @@ describe('renderDashboard — logs tile cell-detail + drag interplay (#332)', ()
     stubTileRects(cards);
     dragTile(cards, 0, 1); // logs tile (index 0) moves past the plain q2 tile
     expect(qsa(app.root, '.dash-tile .dash-tile-name').map((n) => n.textContent)).toEqual(['q2', 'q1']);
+    await flush();
     expect(commit).toHaveBeenCalled();
     expect(qsa(document, '.cd-backdrop').length).toBe(0);
   });
@@ -1376,6 +1417,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     pickLayout(app.root, 'grafana-grid');
     expect(layoutSelect(app.root).value).toBe('grafana-grid');
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
+    await flush();
     expect(commit).toHaveBeenCalled();
     // Picking a flow preset while grid is active restores the regenerated
     // flow@1 fallback (bare {type:'flow',version:1,preset} — grid carries no
@@ -1428,6 +1470,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(qsa(app.root, '.dash-gg-tile').length).toBe(2);
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
     expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    await flush();
     expect(commit).toHaveBeenCalled();
   });
 
@@ -1468,6 +1511,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     expect(commit).not.toHaveBeenCalled(); // no command dispatched until pointerup
     window.dispatchEvent(new PointerEvent('pointerup'));
     expect(card.classList.contains('dash-gg-resizing')).toBe(false);
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1); // exactly one update-placement dispatch
     // The committed placement survives reconciliation (re-derived from state,
     // reverting to the ordinary un-pinned `span N` the normal reconciler writes).
@@ -1493,6 +1537,7 @@ describe('renderDashboard — grafana-grid engine (#291)', () => {
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100000, clientY: 0 }));
     expect((card.style as CSSStyleDeclaration).gridColumn).toBe('5 / span 8');
     window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1);
     // The persisted span survives reconciliation clamped too (not 12) —
     // reverting to the ordinary un-pinned `span N` the ready reconciler writes.
@@ -1667,6 +1712,7 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(0).x, clientY: tileCenter(0).y }));
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(0).x, clientY: tileCenter(0).y }));
     expect(order(app)).toEqual(['q3', 'q1', 'q2']); // t3 moved to index 0
+    await flush();
     expect(commit).toHaveBeenCalled();
     // Restore ran: no placeholder left, floating styles cleared.
     expect(qsa(app.root, '.dash-tile-placeholder').length).toBe(0);
@@ -1731,6 +1777,7 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
     expect(flowSeq).toEqual(['q2', 'q3', '[gap]', 'q4']);
     window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
     expect(order(app)).toEqual(['q2', 'q3', 'q1', 'q4']); // commit matches the previewed gap
+    await flush();
     expect(commit).toHaveBeenCalled();
   });
 
@@ -1741,6 +1788,7 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
     stubTileRects(cards);
     gridDrag(cards, 0, 2, { viaGrip: false }); // ⌘ + body
     expect(order(app)).toEqual(['q2', 'q3', 'q1']);
+    await flush();
     expect(commit).toHaveBeenCalled();
   });
 
@@ -1803,6 +1851,7 @@ describe('renderDashboard — grafana-grid live-reflow drag (#332)', () => {
       stubTileRects(cards);
       gridDrag(cards, 2, 0);
       expect(order(app)).toEqual(['q3', 'q1', 'q2']);
+      await flush();
       expect(commit).toHaveBeenCalled();
     } finally {
       win.matchMedia = realMatchMedia;
@@ -1983,6 +2032,7 @@ describe('renderDashboard — drag auto-scroll (#338)', () => {
       raf.flush(); // one auto-scroll frame — no new pointermove
       expect(cards[1].classList.contains('dash-drop-target')).toBe(true); // scroll alone revealed tile B under the stationary pointer
       window.dispatchEvent(new PointerEvent('pointerup', { clientX: start.x, clientY: 345 }));
+      await flush();
       expect(commit).toHaveBeenCalledTimes(1); // released over tile B → one move-tile commit
     } finally {
       raf.restore();
@@ -2015,6 +2065,7 @@ describe('renderDashboard — drag auto-scroll (#338)', () => {
       cards[0].getBoundingClientRect = () => ({ ...land, toJSON: () => ({}) }) as DOMRect;
       window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
       window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(2).x, clientY: tileCenter(2).y }));
+      await flush();
       expect(commit).toHaveBeenCalledTimes(1);
     } finally {
       raf.restore();
@@ -2103,6 +2154,7 @@ describe('renderDashboard — drag auto-scroll (#338)', () => {
       window.dispatchEvent(new PointerEvent('pointermove', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
       window.dispatchEvent(new PointerEvent('pointerup', { clientX: tileCenter(1).x, clientY: tileCenter(1).y }));
       expect(flowOrder(app)).toEqual(['q2', 'q1']);
+      await flush();
       expect(commit).toHaveBeenCalledTimes(1);
     } finally {
       raf.restore();
@@ -2189,6 +2241,7 @@ describe('renderDashboard — Full view (#321)', () => {
     // Delete still dispatches remove-tile and persists.
     qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
     expect(qsa(app.root, '.dash-gg-tile').length).toBe(1);
+    await flush();
     expect(commit).toHaveBeenCalled();
     // Full view survives the commit-driven republish.
     expect(layoutSelect(app.root).value).toBe('full');
@@ -2210,6 +2263,7 @@ describe('renderDashboard — Full view (#321)', () => {
     gridDrag(cards, 1, 0);
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile').map(nameOf);
     expect(after).toEqual(['q2', 'q1']); // move-tile applied — persisted order
+    await flush();
     expect(commit).toHaveBeenCalled();
     // Full view survives the commit-driven republish; every tile still full width.
     expect(layoutSelect(app.root).value).toBe('full');
@@ -2276,6 +2330,7 @@ describe('renderDashboard — Full view (#321)', () => {
     expect((card.style as CSSStyleDeclaration).gridColumn).toBe('span 12');
     expect((card.style as CSSStyleDeclaration).height).toBe('296px'); // height still snaps (3 row units)
     window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1);
     // The persisted (authored) span — 4, NOT the full-width 12 — survives.
     const after = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
@@ -2323,6 +2378,7 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(commit).not.toHaveBeenCalled();
     pickLayout(app.root, 'full');
     expect(layoutSelect(app.root).value).toBe('full');
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1); // the ONE flow->grid conversion
     expect(qs(app.root, '.dash-gg-grid')).not.toBeNull();
     expect((qs<HTMLElement>(app.root, '.dash-gg-tile').style as CSSStyleDeclaration).gridColumn).toBe('span 12');
@@ -2335,6 +2391,7 @@ describe('renderDashboard — Full view (#321)', () => {
     expect(commit).not.toHaveBeenCalled();
     pickLayout(app.root, 'columns-2');
     expect(layoutSelect(app.root).value).toBe('columns-2');
+    await flush();
     expect(commit).toHaveBeenCalledTimes(1); // the grid->flow conversion
     expect(qs(app.root, '.dash-gg-grid')).toBeNull();
     expect(qsa(app.root, '.dash-row').length).toBeGreaterThan(0);
@@ -3002,5 +3059,330 @@ describe('renderDashboard — Dashboard header File menu (#302)', () => {
     openFileMenuBtn(app.root);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
     expect(document.querySelector('.dash-file-menu')).toBeTruthy(); // still open
+  });
+});
+
+// ── runCommand — the #341 serialized write pipeline ─────────────────────────
+// Every editable Dashboard command now commits through `app.serializeWrite`
+// (the SAME queue saved-query mutations and file-menu commits use), projects
+// the returned committed workspace onto `app.state` via
+// `app.applyCommittedWorkspace`, and rolls back deterministically on failure.
+describe('renderDashboard — the serialized write pipeline (#341)', () => {
+  const twoTiles = () => wsWith({
+    queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 1')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'flow', version: 1, preset: 'report', items: {} },
+  });
+  const twoTilesGrid = () => wsWith({
+    queries: [q('q1', 'SELECT 1'), q('q2', 'SELECT 1')],
+    tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+    layout: { type: 'grafana-grid', version: 1, items: {} },
+  });
+
+  it('a successful move-tile projects the committed workspace onto app.state via applyCommittedWorkspace', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa(app.root, '.dash-tile');
+    stubTileRects(cards);
+    dragTile(cards, 1, 0);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(app.state.dashboard?.tiles.map((t) => t.queryId)).toEqual(['q2', 'q1']);
+    expect(app.state.dashboard?.revision).toBe(2); // one successful commit past the loaded revision 1
+    expect(app.state.workspaceId).toBe('w'); // the whole projection ran, not just the dashboard field
+  });
+
+  it('a successful change-layout (flow preset) projects the committed workspace, including the new revision', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    pickLayout(app.root, 'columns-2');
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(app.state.dashboard?.layout).toEqual({ type: 'flow', version: 1, preset: 'columns-2', items: {} });
+    expect(app.state.dashboard?.revision).toBe(2);
+  });
+
+  it('a successful grid corner-resize (update-placement) projects the committed workspace', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const card = qsa<HTMLElement>(app.root, '.dash-gg-tile')[0];
+    const handle = qs<HTMLElement>(card, '.dash-gg-resize');
+    handle.dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    const layout = app.state.dashboard?.layout as { items: Record<string, { span?: number }> };
+    expect(layout.items.t1?.span).toBe(6);
+    expect(app.state.dashboard?.revision).toBe(2);
+  });
+
+  it('a successful remove-tile (grafana-grid delete) projects the committed workspace with the tile gone', async () => {
+    const { app, commit } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click();
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(app.state.dashboard?.tiles).toHaveLength(1);
+    expect(app.state.dashboard?.tiles[0].id).toBe('t2');
+    expect(app.state.dashboard?.revision).toBe(2);
+  });
+
+  it('no persisted aggregate (legacy/empty Dashboard): a command stays optimistic-only — never calls commit', async () => {
+    const { app, commit } = dashApp({
+      workspace: null, savedQueries: [q('q1', 'SELECT 1', { favorite: true })],
+    });
+    await render(app);
+    pickLayout(app.root, 'columns-2');
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+    // the optimistic doc still applied (drives the layout select's own state)
+    expect(layoutSelect(app.root).value).toBe('columns-2');
+  });
+
+  it('rapid commands commit in STRICT invocation order — a slow-to-resolve first commit is never skipped or reordered by a second', async () => {
+    const seen: string[] = [];
+    let resolveFirst!: (v: unknown) => void;
+    const commit = vi.fn((candidate: StoredWorkspaceV1) => {
+      const layout = candidate.dashboard!.layout;
+      seen.push(layout.type === 'flow' ? String(layout.preset) : layout.type);
+      const result = { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard!.revision };
+      if (seen.length === 1) return new Promise((resolve) => { resolveFirst = resolve; }).then(() => result);
+      return Promise.resolve(result);
+    });
+    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as ReturnType<typeof vi.fn> });
+    await render(app);
+    pickLayout(app.root, 'columns-2'); // first — deliberately slow to resolve
+    pickLayout(app.root, 'columns-3'); // second — fired while the first is still pending
+    // Neither op has reached `commit()` yet — `serializeWrite` + `mutateWorkspace`
+    // defer even the FIRST call by a few microtask hops (`loadCurrent()`'s own
+    // await, the `transform` await, the async return of `commit(...)` — all
+    // plain microtask ticks, never a macrotask), so draining several here still
+    // never gives the still-pending first commit a chance to resolve.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(seen).toEqual(['columns-2']); // only the first has reached commit() — the second is queued behind it
+    resolveFirst(undefined);
+    await flush();
+    expect(seen).toEqual(['columns-2', 'columns-3']); // commit order == invocation order, never reordered
+    // The LATER command's projection is what's left standing — the queue never
+    // let the (slower-to-resolve, but earlier-invoked) first commit's
+    // projection run after the second's.
+    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    // #341 (review): each candidate is built INSIDE its queued op from the
+    // freshest committed baseline, so revisions stay strictly monotonic across
+    // rapid commits — two successful commits advance the loaded revision 1 → 3,
+    // never a duplicated 2 baked from a stale synchronous closure.
+    expect(app.state.dashboard?.revision).toBe(3);
+  });
+
+  it('a failed commit rolls back to the last committed dashboard, toasts, and does not wedge the queue for a later command', async () => {
+    const commit = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
+      })
+      .mockImplementation(async (candidate: StoredWorkspaceV1) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      ));
+    const { app } = dashApp({ workspace: twoTiles(), commit });
+    await render(app);
+    pickLayout(app.root, 'columns-2'); // will fail
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    // Rolled back to the last COMMITTED truth (the originally-loaded 'report'
+    // preset) — never left standing on the failed candidate.
+    expect(layoutSelect(app.root).value).toBe('report');
+    expect(app.state.dashboard?.layout).toEqual({ type: 'flow', version: 1, preset: 'report', items: {} });
+    expect(app.state.dashboard?.revision).toBe(1); // never advanced past the loaded revision
+    const toastEl = document.querySelector('.share-toast');
+    expect(toastEl?.textContent).toBe('✕ boom');
+    // The queue is NOT wedged — a later command still commits successfully.
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    expect(app.state.dashboard?.revision).toBe(2);
+  });
+
+  // #344 review fix: the exact case the pre-#344 `latestOptimistic` scheme got
+  // wrong — command B's optimistic doc was built ON TOP OF command A's, so
+  // when A's commit failed AFTER B had already become "latest", A's rollback
+  // was skipped and B's later successful commit persisted a document that
+  // structurally CONTAINED A's rejected edit. The descriptor queue + rebase
+  // must make A's effect vanish from the committed workspace once A fails,
+  // regardless of what B does afterward.
+  it('overlapping fail-then-success: an older command that fails never survives inside a newer command\'s commit', async () => {
+    let resolveA!: (v: unknown) => void;
+    const commit = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
+      .mockImplementation(async (candidate: StoredWorkspaceV1) => (
+        { ok: true as const, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      ));
+    const { app } = dashApp({ workspace: twoTilesGrid(), commit });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const [card0, card1] = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    // A: resize t1's placement (update-placement) — its commit is deliberately
+    // deferred. Neither this nor B ever changes tiles[] MEMBERSHIP (only a
+    // per-tile placement), so the viewer session's own runtime tracking is
+    // untouched by either — a resize/reorder never risks the "unknown IDs are
+    // dropped" constraint a remove-then-reinstate would (`syncDocument`,
+    // dashboard-viewer-session.ts).
+    qs<HTMLElement>(card0, '.dash-gg-resize').dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    // B: resize t2's placement — a DIFFERENT tile, dispatched BEFORE A's
+    // commit resolves.
+    qs<HTMLElement>(card1, '.dash-gg-resize').dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 300, clientY: 140 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    for (let i = 0; i < 6; i++) await Promise.resolve(); // let both ops reach the queue; A's commit is still pending
+    resolveA({
+      ok: false,
+      diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
+    });
+    await flush();
+    const layout = app.state.dashboard?.layout as { items: Record<string, { span?: number }> };
+    // A's placement change never persisted — t1 keeps no explicit placement
+    // entry, exactly its pre-command state (`twoTilesGrid`'s `items: {}`).
+    expect(layout.items.t1).toBeUndefined();
+    // B's placement change DID persist — t2 has a real entry.
+    expect(layout.items.t2?.span).toBeGreaterThan(0);
+    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ boom');
+  });
+
+  // #344 review fix: a mixed producer (a saved-query-style mutation, not a
+  // Dashboard command) committing through the SAME shared queue while a
+  // Dashboard command's own commit is pending must not be reverted by that
+  // Dashboard command — its candidate is built from `app.workspace.loadCurrent()`
+  // at dequeue time, never a route-local snapshot taken when the route opened.
+  it('a producer other than Dashboard commands (a saved-query mutation) commits through the same queue without being clobbered', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    // Simulate another producer (e.g. the saved-query drawer) mutating
+    // `queries` through the shared `app.mutateWorkspace` queue.
+    const extraQueryMutation = app.mutateWorkspace((latest) => {
+      if (!latest) return null;
+      return { ...latest, queries: [...latest.queries, q('q3', 'SELECT 3')] };
+    });
+    // Dispatch a Dashboard command while that mutation is still in flight
+    // (both share the one `serializeWrite` chain, so this queues behind it).
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // removes q1's tile
+    await Promise.all([extraQueryMutation, flush()]);
+    await flush();
+    // Both edits are present: the extra query AND the tile removal.
+    expect(app.state.savedQueries.map((sq) => sq.id)).toEqual(['q1', 'q2', 'q3']);
+    expect(app.state.dashboard?.tiles.map((t) => t.queryId)).toEqual(['q2']);
+  });
+
+  // #344 review fix: a command that applies cleanly against its OPTIMISTIC
+  // doc but no longer applies against COMMITTED truth by the time it's
+  // dequeued (e.g. a concurrent commit already removed the tile it targets)
+  // must null-abort — roll back its own optimistic edit, toast, and leave the
+  // queue usable for the next command.
+  it('a command invalidated against committed truth by the time it is dequeued rolls back and does not wedge the queue', async () => {
+    const { app } = dashApp({ workspace: twoTilesGrid() });
+    await render(app);
+    const gridEl = qs(app.root, '.dash-gg-grid');
+    Object.defineProperty(gridEl, 'clientWidth', { value: 1200, configurable: true });
+    const [card0] = qsa<HTMLElement>(app.root, '.dash-gg-tile');
+    // Directly commit a workspace with t1 already removed — simulates another
+    // producer (not routed through THIS route's `runCommand`) having removed
+    // it moments before the command below dequeues. This never touches
+    // `currentDoc`/the rendered session directly (only a later `runCommand`
+    // resolution does) — the sanity check confirms it landed in the store.
+    await app.mutateWorkspace((latest) => (latest ? { ...latest, dashboard: { ...latest.dashboard!, tiles: [latest.dashboard!.tiles[1]], revision: latest.dashboard!.revision + 1 } } : null));
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
+    // Resize t1's placement through the UI — t1 is still present in this
+    // route's OWN optimistic `currentDoc` (it hasn't seen the concurrent
+    // removal yet), so it applies optimistically (a plain placement change,
+    // never a tiles[] membership change — no risk of the viewer session
+    // dropping a runtime record), but must null-abort at dequeue time once
+    // `applyCommand` re-runs it against committed truth, where t1 no longer
+    // exists.
+    qs<HTMLElement>(card0, '.dash-gg-resize').dispatchEvent(new PointerEvent('pointerdown', { clientX: 0, clientY: 0 }));
+    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600, clientY: 280 }));
+    window.dispatchEvent(new PointerEvent('pointerup'));
+    await flush();
+    expect(document.querySelector('.share-toast')?.textContent).toBe('Change no longer applies — undone');
+    // #344 review 2: the abort rebased from the DEQUEUE-TIME committed truth
+    // (the transform's observed `latest`), not the stale route cache — t1
+    // (which the concurrent commit removed) is GONE from the rendered
+    // Dashboard, not restored by a stale two-tile rollback.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
+    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t2']);
+    // The queue is not wedged — a later, valid command (removing t2, which IS
+    // still present in committed truth) still commits successfully. Committed
+    // truth only ever had t2 (the external mutation above already dropped t1),
+    // so removing it empties the persisted tiles list.
+    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[0].click();
+    await flush();
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles).toEqual([]);
+  });
+
+  // #350 (pulled into scope by review 2): a rebase that RESTORES membership —
+  // a remove-tile whose commit failed and rolled back — cannot be applied by
+  // `syncDocument` (the session already dropped the tile's runtime record and
+  // never reinstates unknown ids), so the route must REBUILD from committed
+  // truth: the restored tile's DOM comes back, not just `app.state`.
+  it('a failed remove-tile rolls back by rebuilding the route — the removed tile is rendered again', async () => {
+    const commit = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        diagnostics: [{ path: [], severity: 'error', code: 'workspace-persist-failed', message: 'boom' }],
+      })
+      .mockImplementation(async (candidate: StoredWorkspaceV1) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      ));
+    const { app } = dashApp({ workspace: twoTilesGrid(), commit });
+    await render(app);
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
+    qs<HTMLButtonElement>(app.root, '.dash-gg-del').click(); // remove t1 — its commit fails
+    // Optimistic removal is instant.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(1);
+    await flush();
+    await flush(); // the rebuild is itself an async render pass
+    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ boom');
+    // Rolled back: BOTH tiles are rendered again (route rebuilt from committed
+    // truth), and nothing was persisted.
+    expect(qsa(app.root, '.dash-gg-tile')).toHaveLength(2);
+    expect(app.state.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t1', 't2']);
+    // The rebuilt route is fully functional — a later command still commits.
+    qsa<HTMLButtonElement>(app.root, '.dash-gg-del')[1].click();
+    await flush();
+    expect((await app.workspace.loadCurrent())?.dashboard?.tiles.map((t) => t.id)).toEqual(['t1']);
+  });
+
+  // #344 review fix (coordinator hardening): a commit that REJECTS (the store
+  // threw — blocked/quota/private-mode IndexedDB — distinct from a resolved
+  // `ok:false`) must behave like a failure, not vanish into an unhandled
+  // rejection: without the rejection handler the command would stay in
+  // `pendingCommands` forever and corrupt every future rebase.
+  it('a REJECTED commit (storage threw) rolls back, toasts, and does not wedge the queue or the pending-command bookkeeping', async () => {
+    const commit = vi.fn()
+      .mockRejectedValueOnce(new Error('storage blocked'))
+      .mockImplementation(async (candidate: StoredWorkspaceV1) => (
+        { ok: true, workspace: candidate, dashboardRevision: candidate.dashboard ? candidate.dashboard.revision : null }
+      ));
+    const { app } = dashApp({ workspace: twoTiles(), commit });
+    await render(app);
+    pickLayout(app.root, 'columns-2'); // its commit REJECTS (never resolves ok:false)
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(1);
+    // Rolled back to the last committed truth, exactly like an ok:false.
+    expect(layoutSelect(app.root).value).toBe('report');
+    expect(app.state.dashboard?.revision).toBe(1);
+    expect(document.querySelector('.share-toast')?.textContent).toBe('✕ Could not save dashboard');
+    // The descriptor was dropped from `pendingCommands` — a later command
+    // rebases from clean bookkeeping and commits successfully.
+    pickLayout(app.root, 'columns-3');
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(app.state.dashboard?.layout.preset).toBe('columns-3');
+    expect(app.state.dashboard?.revision).toBe(2);
   });
 });
