@@ -366,14 +366,21 @@ const toValueString = (value: unknown): string =>
  *  `prepareParameterizedBatch`/`prepareFilterSource` (`rawValues`,
  *  `committedRootValues`) — a committed multiselect value is a REAL string
  *  array, and the pipeline/serializer already understand `Array(...)`-typed
- *  params, so it must reach them un-stringified. A non-empty array passes
- *  through as a DEFENSIVE COPY (never the live array a caller might still
- *  hold); an EMPTY array reads as "no value" — same as `''` — for every
- *  missing/inactive/readiness purpose downstream, exactly like a blank text
- *  filter. Every other shape keeps `toValueString`'s existing coercion,
- *  unchanged. */
+ *  params, so it must reach them un-stringified.
+ *
+ *  Merge-gate review (Finding B): value and activation are INDEPENDENT — an
+ *  array, EMPTY OR NOT, passes through as a DEFENSIVE COPY (never the live
+ *  array a caller might still hold), never coerced to `''`. `emptyValue`
+ *  (`param-pipeline.ts`) already treats a present `[]` as neither `null` nor
+ *  `''`, so the missing/required gate and the serializer (`'[]'` for an
+ *  empty array) both already do the right thing once a real array — never a
+ *  blanked string — reaches them; activation is decided exclusively by the
+ *  active flag/map (`setFilter`'s own value-implies-active by length,
+ *  `effectiveActive`, or an explicit `applyFilter` active flag), never by
+ *  this function collapsing the value first. Every other shape keeps
+ *  `toValueString`'s existing coercion, unchanged. */
 const toParamValue = (value: unknown): unknown =>
-  (Array.isArray(value) ? (value.length ? value.slice() : '') : toValueString(value));
+  (Array.isArray(value) ? value.slice() : toValueString(value));
 
 /** #189: defensive array copy for every seat that STORES a filter's raw
  *  committed value (`filter.state.value`, an `initialFilters` seed, a
@@ -484,7 +491,13 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // Filter runtime records, in filter order.
   const filters: FilterRuntime[] = (Array.isArray(documentRef.filters) ? documentRef.filters : []).map((def) => {
     const defaultValue = copyValue(def.defaultValue ?? '');
-    const defaultActive = def.defaultActive ?? (def.defaultValue != null && def.defaultValue !== '');
+    // Merge-gate review (Finding B): array-aware — an omitted `defaultActive`
+    // infers INACTIVE from an empty array default (`[]`, matching `''`), and
+    // ACTIVE from a non-empty one, the same length-based rule `setFilter`'s
+    // own value-implies-active already applies to a committed array.
+    const defaultActive = def.defaultActive ?? (Array.isArray(def.defaultValue)
+      ? def.defaultValue.length > 0
+      : (def.defaultValue != null && def.defaultValue !== ''));
     // #303: a persisted seed for this filter's id overrides the pure-default
     // init above (untouched when `initialFilters` is absent/empty, or has no
     // entry for `def.id`). #189: `copyValue` defends against aliasing the
@@ -605,30 +618,30 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   // ALONGSIDE (never instead of) the per-wave `filterDiagnostics` — see
   // `buildState`'s doc comment for why these need to be two separate arrays.
   //
-  // Review finding (major): `resolveFilterSelection` above only agrees over
-  // this filter's own resolved TARGETS (explicit `def.targets`, else the
-  // tiles declaring the parameter) — it never looks at a tile OUTSIDE that
-  // scope (a Filter source is never a consumer at all — see
-  // `gatherExecutableConsumers`'s doc comment in `core/filter-selection.ts`
-  // for the single shared "executable consumer" definition and the #360
-  // cascading rule behind it). But the per-wave merge
-  // (`mergeDashboardFilterHelpers`, `core/dashboard-filters.ts`) rejects a
-  // curated field on `control.conflict` from `fieldControls(analysis)` —
-  // computed DASHBOARD-WIDE, over every tile's declaration of the parameter,
-  // not just this filter's targets. So a filter whose resolution agreed
-  // (e.g. every explicit target declares `Array(String)`) can still publish
-  // a `selection` contract and keep its source consumer, only for EVERY
-  // wave's merge to permanently reject the curated field as
-  // `filter-target-type-conflict` (a non-targeted or presentation-error tile
-  // declares a conflicting `String`) — a stuck hybrid: a published
-  // multiselect contract with a permanently-dead curated field, never
-  // reverting to the plain string input. `resolveFilterSelection`'s own
-  // target-scoped agreement is deliberately narrowed FURTHER here by this
-  // dashboard-wide gate, for consistency with `mergeDashboardFilterHelpers`'
-  // field-level conflict rejection: one behavior (fall back, all the way),
-  // never a hybrid state depending on which layer looks first.
+  // Merge-gate review: the per-wave merge (`mergeDashboardFilterHelpers`,
+  // `core/dashboard-filters.ts`) makes its own conflict/type decision from
+  // whatever `FieldControl` it is fed for a curated parameter's name
+  // (`control.conflict` → reject, `control.type` → validate/serialize each
+  // option). Feeding it the dashboard-wide `fieldControls(analysis)` entry —
+  // every TILE's declaration, unscoped — let a declaration OUTSIDE this
+  // filter's own resolved executable-consumer set (a presentation-error
+  // tile, a non-targeted tile: anything `gatherExecutableConsumers` itself
+  // already excludes) permanently reject a helper `resolveFilterSelection`
+  // legitimately agreed on. A prior review round "fixed" this by re-gating
+  // CONSTRUCTION on that same dashboard-wide `control.conflict`
+  // (`filter-selection-dashboard-type-conflict`) — the maintainer rejected
+  // that: it fell a filter back to the plain string input for a conflict
+  // that was never actually reachable from its own resolved consumers. The
+  // real fix is `curatedControls` below: for every filter that keeps a
+  // resolved contract, it holds a `FieldControl` whose `type` is that
+  // contract's own agreed VALUE type (the array's element type for an
+  // `Array(...)` contract) and no `conflict` — built from the SAME
+  // resolution `gatherExecutableConsumers` produced, so the merge can never
+  // see a wider (or narrower) consumer set than construction did. One
+  // consumer definition, fed to both layers — never a second, broader gate.
   const controlsByName = new Map(controls.map((control): [string, FieldControl] => [control.name, control]));
   const staticFilterDiagnostics: FilterDiagnostic[] = [];
+  const curatedControls = new Map<string, FieldControl>();
   for (const filter of filters) {
     if (!filter.sourceId) continue; // plain root filter — no contract, untouched
     const source = filterSources.get(filter.sourceId)!; // built above for every sourceId-bearing filter
@@ -647,29 +660,35 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       selection: filter.def.selection,
     };
     const resolution = resolveFilterSelection(filterSelectionDef, analysis, executableTileIds);
-    // The same signal `mergeDashboardFilterHelpers` gates `control.conflict`
-    // on (`fieldControls(analysis)`, dashboard-wide) — checked here too, even
-    // when `resolution` itself agreed, so this filter can never publish a
-    // contract the merge layer would reject on every wave forever (see the
-    // doc comment above this loop).
-    const dashboardControl = controlsByName.get(filter.def.parameter);
-    const dashboardConflict = dashboardControl?.conflict?.length ? dashboardControl.conflict : null;
-    if (resolution.diagnostics.length || dashboardConflict) {
+    if (resolution.diagnostics.length) {
       for (const d of resolution.diagnostics) staticFilterDiagnostics.push(d as FilterDiagnostic);
-      if (dashboardConflict) {
-        staticFilterDiagnostics.push(coreDiagnostic('error', 'filter-selection-dashboard-type-conflict',
-          `Filter "${filter.def.id}" parameter {${filter.def.parameter}} has a dashboard-wide type conflict across ` +
-          `Panel declarations: ${dashboardConflict.join(' vs ')}. Declarations OUTSIDE this filter's own targets ` +
-          `still count for the shared curated-field layer (mergeDashboardFilterHelpers), which rejects a ` +
-          `dashboard-wide conflict regardless of which tiles this filter targets.`,
-          { filterId: filter.def.id, parameter: filter.def.parameter, types: dashboardConflict }));
-      }
       filter.state.sourceId = undefined;
       source.consumers = source.consumers.filter((consumer) => consumer !== filter);
     } else {
       filter.state.selection = { mode: resolution.mode!, array: resolution.contract!.array };
+      // Feed the MERGE layer this filter's own resolved contract's value
+      // type — never the dashboard-wide declaration (see the doc comment
+      // above this loop) — so a declaration outside
+      // `gatherExecutableConsumers`'s resolved set can never suppress this
+      // valid helper. `optional` is untouched — it is not part of the
+      // type/conflict decision this moves; the dashboard-wide value (always
+      // present here — any bound executable-consumer declaration already
+      // guarantees a `fieldControls` entry for this name) carries over as-is.
+      curatedControls.set(filter.def.parameter, {
+        name: filter.def.parameter,
+        type: resolution.contract!.type.raw,
+        optional: controlsByName.get(filter.def.parameter)?.optional ?? true,
+      });
     }
   }
+  // Merge-gate review: only CURATED (source-backed, contract-resolved)
+  // parameter names are overridden with their resolved-consumer control
+  // above — every other name (a plain root filter's field, or a Filter
+  // helper column with no surviving contract at all) keeps its
+  // dashboard-wide `FieldControl` untouched, exactly as before.
+  // `mergeDashboardFilterHelpers` itself stays pure; only what the session
+  // FEEDS it (`applyFilterProviders`, below) changes.
+  const mergeControls: FieldControl[] = controls.map((control) => curatedControls.get(control.name) || control);
   // A `FilterSourceRuntime` left with zero consumers (every filter that
   // named it fell back to the string-input path above) must never execute —
   // both `runFilterWave` (every KNOWN source) and `runFilterSourceWave` (the
@@ -1050,7 +1069,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       providers: [...filterSources.values()]
         .map((source) => source.provider)
         .filter((provider): provider is FilterProvider => provider !== null),
-      controls, values: rawValues(), active: effectiveActive(rawValues(), activeMap()),
+      controls: mergeControls, values: rawValues(), active: effectiveActive(rawValues(), activeMap()),
     });
     curated = merged.fields;
     // Published as-is (never deduped — a shared source runs once per wave), plus

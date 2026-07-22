@@ -2117,6 +2117,77 @@ describe('searchable multiselect filter contract (#189)', () => {
     expect(afterEmpty.some((c) => 'param_region' in c.params && Array.isArray(undefined))).toBe(false);
   });
 
+  // Merge-gate review (Finding B): value and activation are INDEPENDENT.
+  // `toParamValue` used to collapse EVERY empty array to `''` — including an
+  // explicitly ACTIVE one (only reachable via `applyFilter`, which sets
+  // value/active independently; `setFilter`'s own value-implies-active
+  // deactivates an empty array before this could ever matter, see the test
+  // above) — so an active `[]` never reached execution as a real array.
+  it('applyFilter(value: [], active: true) reaches execution as a REAL empty array, serialized "[]" (Finding B)', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['a', 'b']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [{ id: 'f-region', parameter: 'region', sourceQueryId: 'src' }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('src', "SELECT ['a','b'] AS region /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    const base = calls.length;
+    await session.applyFilter('f-region', [], true);
+    expect(byId(session, 'f-region').active).toBe(true);
+    expect(byId(session, 'f-region').value).toEqual([]);
+    const boundCall = calls.slice(base).find((c) => 'param_region' in c.params);
+    expect(boundCall).toBeDefined();
+    expect(boundCall!.params.param_region).toBe('[]'); // a REAL empty array, never blanked to ''
+  });
+
+  it('an omitted defaultActive infers INACTIVE from an empty array defaultValue, and ACTIVE from a non-empty one (Finding B, array-aware)', () => {
+    const inactiveDoc = doc({ filters: [{ id: 'f1', parameter: 'p', defaultValue: [] }] });
+    const inactiveSession = createDashboardViewerSession(makeDeps({ document: inactiveDoc }));
+    expect(byId(inactiveSession, 'f1').active).toBe(false);
+    expect(byId(inactiveSession, 'f1').value).toEqual([]);
+
+    const activeDoc = doc({ filters: [{ id: 'f1', parameter: 'p', defaultValue: ['a'] }] });
+    const activeSession = createDashboardViewerSession(makeDeps({ document: activeDoc }));
+    expect(byId(activeSession, 'f1').active).toBe(true);
+    expect(byId(activeSession, 'f1').value).toEqual(['a']);
+  });
+
+  it('an inactive root filter keeps a dormant (non-empty) array value blanked to \'\' for a dependent Filter source — the inactive-blanking policy stands (Finding B)', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['a']]] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t', 'qt')],
+      filters: [
+        // Inactive, but the RETAINED value is a non-empty array — must not
+        // reach the dependent source as a real array; it blanks like any
+        // other dormant value.
+        { id: 'from-root', parameter: 'from', defaultActive: false, defaultValue: ['x'] },
+        { id: 'f-region', parameter: 'region', sourceQueryId: 'src', defaultActive: true, defaultValue: ['a'] },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('qt', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('src', "SELECT ['a'] AS region FROM t WHERE ts IN {from:Array(String)} /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    await session.start();
+    // 'from' is required in 'src' and blanks to '' (inactive) — the source
+    // waits on it rather than running with the dormant array.
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
+    expect(byId(session, 'f-region').status).toBe('waiting');
+  });
+
   it('targeted wave: explicit targets rerun only their target tiles; two filters sharing one parameter union their targets', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
@@ -2242,56 +2313,131 @@ describe('searchable multiselect filter contract (#189)', () => {
     expect(byId(session, 'f1').active).toBe(true);
   });
 
-  // Review finding (major): `resolveFilterSelection` only agrees over a
-  // filter's own resolved TARGETS + dependent sources — but the per-wave
-  // merge (`mergeDashboardFilterHelpers`) rejects a curated field on the
-  // DASHBOARD-WIDE `control.conflict` (`fieldControls(analysis)`, every
-  // tile, unscoped). Without the construction-time dashboard-wide gate, a
-  // filter whose OWN targets agree could still publish a `selection`
-  // contract and keep its source consumer, only for every wave's merge to
-  // permanently reject it as `filter-target-type-conflict` — a stuck
-  // hybrid (published contract + dead curated field), never falling back.
-  it('a dashboard-wide type conflict OUTSIDE the filter\'s own targets still forces a full fallback (#189 review finding, major): no sourceId/selection published, a persistent dashboard-wide diagnostic, the source never executes, and no helper-error hybrid ever appears', async () => {
+  // Merge-gate review (Finding A): the construction-time dashboard-wide
+  // conflict gate (a prior review round's `filter-selection-dashboard-type-
+  // conflict`) has been REMOVED — the maintainer rejected it as over-broad. A
+  // declaration OUTSIDE this filter's own resolved executable-consumer set
+  // (`gatherExecutableConsumers`) must never suppress a valid helper: the
+  // merge layer (`mergeDashboardFilterHelpers`) is now fed a control built
+  // from the SAME resolved-consumer contract `resolveFilterSelection` itself
+  // agreed on, never the dashboard-wide `fieldControls(analysis)` entry.
+  it('a conflicting declaration in a non-targeted executable tile no longer suppresses a helper whose OWN explicit targets agree (#189/merge-gate Finding A): sourceId/selection published, options merge cleanly, no filter-target-type-conflict', async () => {
     const { exec, calls } = makeExec((sql) => (sql.includes('source')
       ? { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['a', 'b']]] }
       : { columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({
       tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
       // Explicit `targets: ['t1']` — 't1' alone agrees with the source on
-      // Array(String), so `resolveFilterSelection`'s OWN (target-scoped)
-      // agreement check would succeed on its own.
+      // Array(String); `resolveFilterSelection` only ever looks at this.
       filters: [{ id: 'f1', parameter: 'region', sourceQueryId: 'src', targets: ['t1'] }],
     });
     const session = createDashboardViewerSession(makeDeps({
       document, exec,
       queries: [
         query('q1', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'), // f1's own target — agrees
-        // NOT one of f1's targets, but its scalar declaration of the SAME
-        // parameter still counts for the dashboard-wide `fieldControls`
-        // conflict the shared merge layer gates on.
+        // NOT one of f1's targets — a conflicting scalar declaration of the
+        // SAME parameter, entirely outside f1's resolved consumer set.
         query('q2', 'SELECT 1 AS n WHERE y = {region:String}'),
         query('src', "SELECT ['a','b'] AS region /* source */", { dashboard: { role: 'filter' } }),
       ],
     }));
+    expect(byId(session, 'f1').sourceId).toBe('src');
+    expect(byId(session, 'f1').selection).toEqual({ mode: 'multiple', array: true });
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-dashboard-type-conflict')).toBe(false);
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('source'))).toBe(true);
+    expect(byId(session, 'f1').status).toBe('ready');
+    expect(byId(session, 'f1').options).toEqual([{ value: 'a', label: 'a' }, { value: 'b', label: 'b' }]);
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-target-type-conflict')).toBe(false);
+  });
+
+  it('a presentation-error tile\'s conflicting declaration, plus an unrelated cascading-invalid Filter source, neither one suppresses a valid helper (#189/merge-gate Finding A)', async () => {
+    const { exec, calls } = makeExec((sql) => {
+      if (sql.includes('srcGood')) return { columns: [{ name: 'region', type: 'Array(String)' }], rows: [[['a', 'b']]] };
+      return { columns: [{ name: 'n' }], rows: [[1]] };
+    });
+    const document = doc({
+      tiles: [
+        tile('t1', 'q1'),
+        // A presentation-error tile (an unresolvable `presentation.variant`):
+        // still executable-analyzed (its SQL feeds the dashboard-wide
+        // `fieldControls`), but NOT an executable consumer
+        // (`isRunnableTileRuntime` excludes a `presentationError` tile) — so
+        // its conflicting `String` declaration of `region` is outside f1's
+        // resolved consumer set.
+        tile('t-bad', 'q-bad', { presentation: { variant: 'no-such-variant' } }),
+        // A genuine, executable consumer of 'catC' — so `fc` below resolves
+        // its OWN contract successfully at construction (this is the only
+        // way its source stays wired long enough to reach the cascading
+        // readiness check at wave time; a filter with no consumer at all
+        // falls back at construction for an unrelated reason first).
+        tile('t3', 'q3'),
+      ],
+      filters: [
+        { id: 'f1', parameter: 'region', sourceQueryId: 'srcGood', targets: ['t1'] },
+        // An unrelated filter whose OWN Filter source is cascading-invalid
+        // (it depends on 'region', itself source-backed by f1) — present in
+        // the same document purely to confirm it doesn't interfere either.
+        { id: 'fc', parameter: 'catC', sourceQueryId: 'srcCascade' },
+      ],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT 1 AS n WHERE x IN {region:Array(String)}'),
+        query('q-bad', 'SELECT 1 AS n WHERE y = {region:String}'),
+        query('q3', 'SELECT {catC:String} AS n'),
+        query('srcGood', "SELECT ['a','b'] AS region /* srcGood */", { dashboard: { role: 'filter' } }),
+        query('srcCascade', "SELECT ['z'] AS catC FROM t WHERE r = {region:String} /* srcCascade */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
+    expect(session.state.value.tiles.find((t) => t.tileId === 't-bad')!.status).toBe('error');
+    expect(byId(session, 'f1').sourceId).toBe('srcGood');
+    expect(byId(session, 'f1').selection).toEqual({ mode: 'multiple', array: true });
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-dashboard-type-conflict')).toBe(false);
+    await session.start();
+    expect(calls.some((c) => c.sql.includes('srcGood'))).toBe(true);
+    expect(byId(session, 'f1').status).toBe('ready');
+    expect(byId(session, 'f1').options).toEqual([{ value: 'a', label: 'a' }, { value: 'b', label: 'b' }]);
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-target-type-conflict')).toBe(false);
+    // 'fc' resolved a valid contract of its own at construction, but its
+    // source is cascading-invalid (depends on 'region', source-backed by
+    // f1) — it never executes, and reports the pre-existing #360 diagnostic;
+    // none of this affected f1's own, unrelated resolution above.
+    expect(calls.some((c) => c.sql.includes('srcCascade'))).toBe(false);
+    expect(byId(session, 'fc').status).toBe('source-error');
+    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-source-cascading')).toBe(true);
+  });
+
+  it('a genuine type conflict INSIDE the filter\'s own resolved consumer set still falls back at construction (#189, unchanged by Finding A)', async () => {
+    const { exec, calls } = makeExec((sql) => (sql.includes('source')
+      ? { columns: [{ name: 'region', type: 'String' }], rows: [['a']] }
+      : { columns: [{ name: 'n' }], rows: [[1]] }));
+    const document = doc({
+      tiles: [tile('t1', 'q1'), tile('t2', 'q2')],
+      // BOTH t1 and t2 are explicit targets — the conflicting scalar
+      // declaration is now INSIDE the resolved consumer set, so this must
+      // still fall back (a mixed-arity/array-element conflict falls back
+      // the same way — the pure `resolveFilterSelection` unit tests already
+      // cover those codes directly; this is the session-level regression
+      // that construction itself still honors ANY conflict inside the set).
+      filters: [{ id: 'f1', parameter: 'region', sourceQueryId: 'src', targets: ['t1', 't2'] }],
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('q1', 'SELECT 1 AS n WHERE x = {region:UInt64}'),
+        query('q2', 'SELECT 1 AS n WHERE y = {region:String}'),
+        query('src', "SELECT 'a' AS region /* source */", { dashboard: { role: 'filter' } }),
+      ],
+    }));
     expect(byId(session, 'f1').sourceId).toBeUndefined();
     expect(byId(session, 'f1').selection).toBeUndefined();
-    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-dashboard-type-conflict');
+    const diag = session.state.value.filterDiagnostics.find((d) => d.code === 'filter-selection-type-conflict');
     expect(diag).toMatchObject({ severity: 'error', filterId: 'f1', parameter: 'region' });
-    expect(diag!.message).toContain('region');
-    expect(diag!.message.toLowerCase()).toContain('dashboard-wide');
-    expect(diag!.types).toEqual(expect.arrayContaining([expect.any(String), expect.any(String)]));
     await session.start();
-    // 'src' is left with zero consumers (its only filter fell back) — it
-    // must never execute at all.
     expect(calls.some((c) => c.sql.includes('source'))).toBe(false);
-    // No stuck hybrid: 'f1' is no longer a consumer of any source, so its
-    // status never enters the filter-wave consumer-derivation loop — it
-    // stays 'idle', never 'helper-error'.
     expect(byId(session, 'f1').status).toBe('idle');
-    // The diagnostic is a construction-time constant — it survives a refresh.
-    await session.refresh();
-    expect(byId(session, 'f1').status).toBe('idle');
-    expect(session.state.value.filterDiagnostics.some((d) => d.code === 'filter-selection-dashboard-type-conflict')).toBe(true);
   });
 
   // Review finding (minor): `affectedByFilterWave` was built from the
