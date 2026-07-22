@@ -352,6 +352,20 @@ describe('buildTimeRangeField — Apply / Cancel semantics', () => {
     expect(handle.isOpen()).toBe(false);
   });
 
+  it('Apply with unchanged valid values on an INACTIVE pair still commits — activation is the change', () => {
+    // clearFilter keeps the typed value and only flips `active` off, so a
+    // committed-but-inactive pair seeds the popover with valid text; Apply is
+    // the only activation path for a grouped pair and must not no-op here.
+    const onApply = vi.fn();
+    const handle = buildTimeRangeField(baseOpts({ fromValue: '-1d', toValue: 'now', active: false, onApply }));
+    document.body.appendChild(handle.el);
+    open(handle);
+    expect(applyBtn().disabled).toBe(false);
+    click(applyBtn());
+    expect(onApply).toHaveBeenCalledWith('-1d', 'now');
+    expect(handle.isOpen()).toBe(false);
+  });
+
   it('Apply commits the TRIMMED drafts, closing BEFORE onApply', () => {
     let openWhenCalled: boolean | null = null;
     const onApply = vi.fn(() => { openWhenCalled = handle.isOpen(); });

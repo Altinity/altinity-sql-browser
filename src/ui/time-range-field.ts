@@ -311,8 +311,12 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
     applyBtn.addEventListener('click', () => {
       const fromT = fromInput.value.trim();
       const toT = toInput.value.trim();
-      // An identical (trimmed) draft is a no-op: close, commit NOTHING.
-      const identical = fromT === fromValue.trim() && toT === toValue.trim();
+      // An identical (trimmed) draft is a no-op ONLY while the pair is already
+      // active: with committed-but-inactive bounds (clearFilter keeps the typed
+      // value and just flips `active` off) an unchanged draft still activates
+      // the range, so it must commit — the session counts the active flip as a
+      // real change and runs the wave.
+      const identical = opts.active && fromT === fromValue.trim() && toT === toValue.trim();
       handle.close();
       if (!identical) opts.onApply(fromT, toT);
     });
