@@ -85,6 +85,14 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   `to` is optional and means "up to now") as a worked example.
 
 ### Fixed
+- **Saved-query, workspace, and Dashboard persistence stay consistent** (#365).
+  Starring a panel query now creates the workspace's Dashboard and first tile
+  atomically even when the committed aggregate previously held
+  `dashboard:null`; applying New/Open/Replace workspace clears dangling saved
+  query links from still-open editor tabs so Save can create the query instead
+  of silently rejecting it; and Table/JSON result-view changes now dirty and
+  update a linked query's Spec, with linked Save persisting the active
+  Table/JSON/Panel view while preserving a Filter role's dormant view.
 - Removed a stray NUL byte embedded in `dashboard-viewer-session.ts`'s
   `optionsSignature` (introduced by #361), which silently made the file look
   binary to plain `grep`/`rg`.

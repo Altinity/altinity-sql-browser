@@ -4,6 +4,7 @@ import {
   createSavedQuery, commitSavedQuery, savedForTab, renameSaved, toggleFavorite,
   sortedSaved, filterSaved, filterHistory, deleteSaved, recordHistory,
   recordScriptHistory, clearHistory, deleteHistory, tabPanel, setTabSpecDraft, patchSpecDraft, tabDirty,
+  reconcileTabsWithSavedQueries,
 } from '../../src/state.js';
 import type {
   StateReader, HistoryResultSnapshot, HistoryEntry, QueryTab, SpecValidationService, AppState, SavedEntryResult,
@@ -271,6 +272,22 @@ describe('saved queries', () => {
     expect(savedForTab(s, s.tabs.value[0])).toBeNull();
     expect(savedForTab(s, { savedId: null })).toBeNull();
   });
+  it('reconciles only tab links missing from a committed saved-query collection', () => {
+    const s = savedTestState();
+    s.savedQueries = [savedQuery({ id: 'keep' })];
+    const kept = s.tabs.value[0];
+    kept.savedId = 'keep';
+    kept.editorMode = 'spec';
+    const dangling = newTabObj('t2');
+    dangling.savedId = 'gone';
+    dangling.editorMode = 'spec';
+    const unsaved = newTabObj('t3');
+    s.tabs.value = [kept, dangling, unsaved];
+    reconcileTabsWithSavedQueries(s);
+    expect(kept).toMatchObject({ savedId: 'keep', editorMode: 'spec' });
+    expect(dangling).toMatchObject({ savedId: null, editorMode: 'sql' });
+    expect(unsaved).toMatchObject({ savedId: null, editorMode: 'sql' });
+  });
   it('renameSaved updates the entry + any linked tab name', async () => {
     const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'old' })];
@@ -428,7 +445,7 @@ describe('saved queries', () => {
       expect(commit).toHaveBeenCalledTimes(1);
     });
 
-    it('a null state.dashboard means favorite flip only — no tile change, no crash', async () => {
+    it('a null state.dashboard mints the Dashboard and first tile atomically', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
       expect(s.dashboard).toBeNull();
@@ -436,7 +453,11 @@ describe('saved queries', () => {
       const result = await toggleFavorite(s, 'p1', commit, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
-      expect(s.dashboard).toBeNull();
+      expect(s.dashboard).toMatchObject({
+        id: 'tile-1', tiles: [{ id: 'tile-2', queryId: 'p1' }],
+        layout: { type: 'grafana-grid' },
+      });
+      expect(commit).toHaveBeenCalledTimes(1);
     });
   });
   it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', async () => {
@@ -640,7 +661,7 @@ describe('saved queries', () => {
     // not an index-signature bag), hence the local intersection cast.
     expect((e as SavedQueryV2 & { chart?: unknown }).chart).toBeUndefined();
   });
-  it('creation captures the result view; linked Spec becomes authoritative afterward', async () => {
+  it('creation and linked commits capture the current persistable result view', async () => {
     const s = savedTestState();
     const commit = fakeWorkspaceCommit();
     const tab = s.tabs.value[0];
@@ -648,13 +669,13 @@ describe('saved queries', () => {
     s.resultView.value = 'panel';
     const e = okEntry(await createSavedQuery(s, tab, 'V', '', commit, 100));
     expect(queryView(e)).toBe('panel');
-    tab.specParsed!.view = 'json';
+    s.resultView.value = 'json';
     await commitSavedQuery(s, tab, tab.specParsed, commit);
     expect(queryView(s.savedQueries[0])).toBe('json');
-    // raw view (TSV/JSON output) is not a saved view → dropped
-    delete tab.specParsed!.view;
+    // Filter is a transient role-owned preview: it preserves a dormant view.
+    s.resultView.value = 'filter';
     await commitSavedQuery(s, tab, tab.specParsed, commit);
-    expect(queryView(s.savedQueries[0])).toBeUndefined();
+    expect(queryView(s.savedQueries[0])).toBe('json');
   });
   it('deleteSaved removes + clears tab pointers', async () => {
     const s = savedTestState();

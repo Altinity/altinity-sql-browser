@@ -30,9 +30,9 @@ import type { WorkspaceDiagnostic } from '../model/workspace-diagnostics.js';
 import { resolveDashboardPresentations } from '../model/presentation-resolver.js';
 import { buildDashboardExportBundle } from '../model/dashboard-export.js';
 import { defaultLayoutRegistry } from '../layouts/layout-registry.js';
-import { deriveFlowFallback } from '../layouts/grafana-grid-layout.js';
 import { applyCommand } from './dashboard-commands.js';
 import type { DashboardCommand, DashboardCommandResult } from './dashboard-commands.js';
+import { createEmptyDashboard } from './empty-dashboard.js';
 import { createQueryResolver } from './dashboard-query-resolver.js';
 import { validateStoredWorkspaceDocument } from '../../workspace/stored-workspace.js';
 import type { WorkspaceRepository, WorkspaceCommitResult } from '../../workspace/workspace-repository.js';
@@ -82,19 +82,6 @@ export interface DashboardAuthoringSessionDeps {
   schemaService?: SpecSchemaService;
   /** Export timestamp source (defaults to `new Date().toISOString()`). */
   nowISO?: () => string;
-}
-
-function createEmptyDashboard(id: string): DashboardDocumentV1 {
-  return {
-    documentVersion: 1, id, title: 'Dashboard', revision: 1,
-    layout: {
-      type: 'grafana-grid',
-      version: 1,
-      items: {},
-      fallback: deriveFlowFallback({ type: 'grafana-grid', version: 1, items: {} }, []),
-    },
-    filters: [], tiles: [],
-  };
 }
 
 /** Build a `DashboardAuthoringSession` bound to `deps`. */

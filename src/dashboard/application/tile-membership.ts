@@ -18,6 +18,7 @@
 import { queryDashboardRole } from '../model/workspace-semantics.js';
 import { resolveLayoutPluginSync } from '../layouts/layout-registry.js';
 import { regenerateGridFallback } from '../layouts/grafana-grid-layout.js';
+import { createEmptyDashboard } from './empty-dashboard.js';
 import type { DashboardDocumentV1, SavedQueryV2 } from '../../generated/json-schema.types.js';
 
 /** Remove every tile referencing `queryId`, and scrub those tile ids out of
@@ -40,13 +41,15 @@ function removeTilesForQuery(dashboard: DashboardDocumentV1, queryId: string): D
  * Reflect a Workbench favorite flip onto Dashboard tile membership (#299).
  *
  * - Star ON + panel-role query + no existing tile referencing it → append one
- *   tile `{ id: genTileId(), queryId: query.id }`.
+ *   tile `{ id: genId(), queryId: query.id }`.
  * - Star ON + a tile already references it → unchanged (idempotent).
  * - Star ON + filter/setup-role query → unchanged (favorite flip only; never
  *   becomes a tile, matching `buildLegacyMigrationCandidate`).
  * - Star OFF → remove EVERY tile referencing the query and scrub those tile
  *   ids from every filter's `targets`.
- * - `dashboard` null in → `null` out (no Dashboard yet; favorite flip only).
+ * - Star ON + panel-role query + `dashboard:null` → mint the canonical empty
+ *   Dashboard and append the first tile in the same transform.
+ * - Star OFF or a non-panel role + `dashboard:null` → `null` (nothing to add).
  *
  * The result is always run through the ACTIVE layout engine's own
  * `normalize` (#291: flow@1 or grafana-grid@1, resolved from the document's
@@ -63,14 +66,17 @@ export function toggleTileMembership(
   dashboard: DashboardDocumentV1 | null,
   query: SavedQueryV2,
   favorite: boolean,
-  genTileId: () => string,
+  genId: () => string,
 ): DashboardDocumentV1 | null {
-  if (!dashboard) return null;
+  if (!dashboard) {
+    if (!favorite || queryDashboardRole(query) !== 'panel') return null;
+    dashboard = createEmptyDashboard(genId());
+  }
   const hasTile = dashboard.tiles.some((tile) => tile.queryId === query.id);
   let next = dashboard;
   if (favorite) {
     if (!hasTile && queryDashboardRole(query) === 'panel') {
-      next = { ...dashboard, tiles: [...dashboard.tiles, { id: genTileId(), queryId: query.id }] };
+      next = { ...dashboard, tiles: [...dashboard.tiles, { id: genId(), queryId: query.id }] };
     }
   } else if (hasTile) {
     next = removeTilesForQuery(dashboard, query.id);

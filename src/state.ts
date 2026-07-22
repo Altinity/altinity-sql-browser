@@ -675,9 +675,25 @@ export function savedForTab(
   return (tab && tab.savedId && state.savedQueries.find((q) => q.id === tab.savedId)) || null;
 }
 
+/** Clear links from open tabs to saved queries that are absent from a newly
+ * committed workspace. The SQL draft stays open; only the invalid association
+ * and its Spec-only editor mode are reset, matching deleteSaved(). */
+export function reconcileTabsWithSavedQueries(
+  state: Pick<AppState, 'tabs' | 'savedQueries'>,
+): void {
+  const savedIds = new Set(state.savedQueries.map((query) => query.id));
+  for (const tab of state.tabs.value) {
+    if (tab.savedId && !savedIds.has(tab.savedId)) {
+      tab.savedId = null;
+      tab.editorMode = 'sql';
+    }
+  }
+}
+
 /**
- * Create a saved query from an unsaved tab. Linked tabs use commitSavedQuery()
- * instead, so popover metadata can never compete with the textual Spec draft.
+ * Create a saved query from an unsaved or dangling-linked tab. Tabs whose link
+ * still resolves use commitSavedQuery() instead, so popover metadata can never
+ * compete with the textual Spec draft.
  * Narrowed to `Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty'>`
  * (#276 Phase 4C — the exact fields read/written) instead of full `AppState`,
  * same convention as `savedForTab`/`recordScriptHistory` — every real caller
@@ -690,7 +706,7 @@ export async function createSavedQuery(
   commit: CommitWorkspace, now: number = Date.now(),
   validationService: SpecValidationService = defaultSpecValidationService,
 ): Promise<SavedEntryResult> {
-  if (!tab || tab.savedId) return { ok: false, entry: null };
+  if (!tab || savedForTab(state, tab)) return { ok: false, entry: null };
   const sql = String(tab.sqlDraft || '');
   const nm = String(name || '').trim();
   const panel = tabPanel(tab);
@@ -740,14 +756,19 @@ export async function createSavedQuery(
  *  commit. Narrowed to the exact fields `buildWorkspaceCandidate` also needs
  *  (#287 W4), same convention as `createSavedQuery` above. */
 export async function commitSavedQuery(
-  state: Pick<AppState, 'savedQueries' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
+  state: Pick<AppState, 'savedQueries' | 'resultView' | 'libraryDirty' | 'libraryName' | 'workspaceId' | 'dashboard'>,
   tab: QueryTab, spec: QuerySpecDraft | null | undefined,
   commit: CommitWorkspace,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): Promise<SavedEntryResult> {
   const index = tab && tab.savedId ? state.savedQueries.findIndex((query) => query.id === tab.savedId) : -1;
   if (index < 0 || !spec) return { ok: false, entry: null };
-  const normalized = normalizeSpec(spec);
+  // The result-view signal is the live UI source. Table/JSON/Panel are
+  // persistable; Filter is a role-owned transient preview and must retain any
+  // dormant saved view already present in the Spec (#244).
+  const view = state.resultView.value;
+  const persistedView = SAVED_VIEWS.has(view) ? view as 'table' | 'json' | 'panel' : null;
+  const normalized = normalizeSpec(persistedView ? { ...spec, view: persistedView } : spec);
   const sql = String(tab.sqlDraft || '');
   const diagnostics = validationService.validate(normalized, { sql, tab });
   if (hasBlockingSpecErrors(diagnostics)) return { ok: false, entry: null };
@@ -866,13 +887,13 @@ export async function renameSaved(
  * favorited panel-role query gets a tile (unless one already references it),
  * an unfavorited query loses every tile that references it. `spec.favorite`
  * stays the star's own visual state either way — this only ADDS the tile
- * side effect, it does not retire the favorite dual-write. `genTileId` mints
- * a fresh tile id (only called when a tile is actually appended).
+ * side effect, it does not retire the favorite dual-write. `genId` mints a
+ * Dashboard id when needed and the fresh tile id.
  */
 export async function toggleFavorite(
   state: AppState, id: string,
   commit: CommitWorkspace,
-  genTileId: () => string,
+  genId: () => string,
   validationService: SpecValidationService = defaultSpecValidationService,
 ): Promise<PatchSavedResult | undefined> {
   const index = state.savedQueries.findIndex((q) => q.id === id);
@@ -880,7 +901,7 @@ export async function toggleFavorite(
   if (!entry) return;
   const favorite = !queryFavorite(entry);
   return patchSavedSpec(state, id, { favorite }, commit, validationService,
-    (dashboard, patchedEntry) => toggleTileMembership(dashboard, patchedEntry, favorite, genTileId));
+    (dashboard, patchedEntry) => toggleTileMembership(dashboard, patchedEntry, favorite, genId));
 }
 
 /** Saved queries with favorites first (stable within each group). */

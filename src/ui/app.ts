@@ -9,7 +9,7 @@ import { Icon } from './icons.js';
 import {
   createState, activeTab,
   savedForTab, tabPanel,
-  normalizeRowLimit,
+  normalizeRowLimit, reconcileTabsWithSavedQueries,
 } from '../state.js';
 import type { QueryTab, AppState, SpecValidationService } from '../state.js';
 import type { SavedQueryV2, StoredWorkspaceV1 } from '../generated/json-schema.types.js';
@@ -1477,6 +1477,7 @@ export function createApp(env: CreateAppEnv = {}): App {
   // directly.
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
     app.state.savedQueries = workspace.queries;
+    reconcileTabsWithSavedQueries(app.state);
     app.state.dashboard = workspace.dashboard;
     app.state.workspaceId = workspace.id;
     app.state.libraryName.value = workspace.name;

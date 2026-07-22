@@ -24,9 +24,21 @@ const genTileId = (): (() => string) => {
 };
 
 describe('toggleTileMembership', () => {
-  it('null dashboard in → null out (no Dashboard yet, favorite flip only)', () => {
-    expect(toggleTileMembership(null, panelQuery('p1'), true, genTileId())).toBeNull();
+  it('star ON from a null Dashboard mints the canonical Dashboard and first tile', () => {
+    const next = toggleTileMembership(null, panelQuery('p1'), true, genTileId())!;
+    expect(next).toMatchObject({
+      id: 'tile-1', title: 'Dashboard', revision: 1,
+      tiles: [{ id: 'tile-2', queryId: 'p1' }],
+      layout: { type: 'grafana-grid', version: 1, items: {} },
+    });
+    expect((next.layout as { fallback?: unknown }).fallback).toEqual({
+      type: 'flow', version: 1, preset: 'columns-2', items: { 'tile-2': { span: 2, height: 'medium' } },
+    });
+  });
+
+  it('star OFF or a non-panel role against a null Dashboard leaves it null', () => {
     expect(toggleTileMembership(null, panelQuery('p1'), false, genTileId())).toBeNull();
+    expect(toggleTileMembership(null, filterQuery('f1'), true, genTileId())).toBeNull();
   });
 
   it('star ON on a panel-role query with no existing tile appends one', () => {
