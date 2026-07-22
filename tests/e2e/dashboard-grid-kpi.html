@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Dashboard grafana-grid KPI harness (#316)</title>
+  <title>Dashboard grafana-grid KPI harness (#340)</title>
   <link rel="stylesheet" href="/src/styles.css" />
   <style>
     body { overflow: auto; background: var(--bg); color: var(--fg); font-family: var(--ui); }
@@ -13,8 +13,8 @@
   </style>
 </head>
 <body data-theme="dark">
-  <!-- #316: this fixture is a sibling of dashboard-grid.html, extended for the
-       Grafana-grid KPI polish (#316) DOM/CSS contract that harness doesn't
+  <!-- #340: this fixture is a sibling of dashboard-grid.html, extended for the
+       Grafana-grid KPI DOM/CSS contract that harness doesn't
        cover: `.is-kpi` footer suppression, the `.is-kpi.is-view` frameless
        treatment, `role=group`/aria-label on the tile card itself, the
        equal-width `.dash-tile-body` KPI card grid, container-aware value
@@ -94,7 +94,7 @@
     //    tile in BOTH modes (reconcileGrafanaGrid comment: "set in edit mode
     //    too — harmless");
     //  - `.is-view` is the static per-load readOnly class (ensureTileEl);
-    //  - grip/delete/resize are built ONLY in edit mode (never merely CSS-hidden).
+    //  - delete/resize are built ONLY in edit mode; KPI tiles never build a grip.
     function buildTile({ id, title, heightUnits, isKpi }, mode) {
       const readOnly = mode === 'view';
       const card = document.createElement('div');
@@ -106,10 +106,10 @@
       const head = document.createElement('div');
       head.className = 'dash-tile-head';
       let grip = null;
-      if (!readOnly) {
+      if (!readOnly && !isKpi) {
         grip = document.createElement('span');
         grip.className = 'dash-gg-grip';
-        grip.title = 'Drag to reorder';
+        grip.title = 'Drag to move (or Command/Ctrl-drag the tile)';
         grip.setAttribute('aria-hidden', 'true');
         head.appendChild(grip);
       }
@@ -139,9 +139,11 @@
 
       let resizeHandle = null;
       if (!readOnly) {
-        resizeHandle = document.createElement('div');
+        resizeHandle = document.createElement('button');
+        resizeHandle.type = 'button';
         resizeHandle.className = 'dash-gg-resize';
         resizeHandle.title = 'Resize';
+        resizeHandle.setAttribute('aria-label', 'Resize');
         card.appendChild(resizeHandle);
       }
       return { card, head, body, foot, grip, delBtn, resizeHandle };

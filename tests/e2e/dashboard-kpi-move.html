@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard KPI movement (#340)</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <style>#surface { width: 380px; }</style>
+</head>
+<body data-theme="dark">
+  <main id="surface"></main>
+  <script type="importmap">
+    { "imports": {
+      "@preact/signals-core": "/node_modules/@preact/signals-core/dist/signals-core.mjs",
+      "marked": "/node_modules/marked/lib/marked.esm.js",
+      "@codemirror/state": "/node_modules/@codemirror/state/dist/index.js",
+      "@codemirror/view": "/node_modules/@codemirror/view/dist/index.js",
+      "@codemirror/commands": "/node_modules/@codemirror/commands/dist/index.js",
+      "@codemirror/lang-json": "/node_modules/@codemirror/lang-json/dist/index.js",
+      "@codemirror/language": "/node_modules/@codemirror/language/dist/index.js",
+      "@codemirror/lang-sql": "/node_modules/@codemirror/lang-sql/dist/index.js",
+      "@codemirror/lang-xml": "/node_modules/@codemirror/lang-xml/dist/index.js",
+      "@codemirror/autocomplete": "/node_modules/@codemirror/autocomplete/dist/index.js",
+      "@codemirror/search": "/node_modules/@codemirror/search/dist/index.js",
+      "@lezer/common": "/node_modules/@lezer/common/dist/index.js",
+      "@lezer/highlight": "/node_modules/@lezer/highlight/dist/index.js",
+      "@lezer/lr": "/node_modules/@lezer/lr/dist/index.js",
+      "@lezer/json": "/node_modules/@lezer/json/dist/index.js",
+      "@lezer/xml": "/node_modules/@lezer/xml/dist/index.js",
+      "style-mod": "/node_modules/style-mod/src/style-mod.js",
+      "w3c-keyname": "/node_modules/w3c-keyname/index.js",
+      "crelt": "/node_modules/crelt/index.js",
+      "@marijn/find-cluster-break": "/node_modules/@marijn/find-cluster-break/src/index.js"
+    } }
+  </script>
+  <script type="module">
+    import { createApp } from '/src/ui/app.js';
+    import { renderDashboard } from '/src/ui/dashboard.js';
+
+    const seed = {
+      storageVersion: 1, id: 'workspace', name: 'Workspace',
+      queries: [
+        { id: 'q1', sql: 'SELECT 111111', specVersion: 1, spec: { name: 'First metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
+        { id: 'q2', sql: 'SELECT 222222', specVersion: 1, spec: { name: 'Second metric', favorite: true, panel: { cfg: { type: 'kpi' } } } },
+      ],
+      dashboard: {
+        documentVersion: 1, id: 'dashboard', title: 'KPI movement', revision: 1,
+        layout: { type: 'flow', version: 1, preset: 'report', items: {} }, filters: [],
+        tiles: [{ id: 't1', queryId: 'q1' }, { id: 't2', queryId: 'q2' }],
+      },
+    };
+    const root = document.querySelector('#surface');
+    const app = createApp({ root, broadcastChannel: () => null });
+    app.conn.ensureFreshToken = async () => true;
+    app.conn.chCtx.onSignedOut = () => {};
+    app.exec.executeRead = async (result, opts) => {
+      const second = String(opts.sql).includes('222222');
+      result.columns = second
+        ? [{ name: 'second_metric', type: 'UInt64' }]
+        : [{ name: 'first_a', type: 'UInt64' }, { name: 'first_b', type: 'UInt64' }, { name: 'first_c', type: 'UInt64' }];
+      result.rows = [second ? [222222] : [111111, 111112, 111113]];
+      result.progress = { rows: 1, bytes: 1 };
+      result.error = null;
+      return result;
+    };
+    await app.workspace.clearCurrent();
+    const seeded = await app.workspace.commit(seed);
+    if (!seeded.ok) throw new Error(seeded.diagnostics[0]?.message || 'seed failed');
+    app.applyCommittedWorkspace(seeded.workspace);
+    const realCommit = app.workspace.commit.bind(app.workspace);
+    window.__commitCount = 0;
+    app.workspace.commit = async (...args) => { window.__commitCount += 1; return realCommit(...args); };
+    window.__workspace = () => app.workspace.loadCurrent();
+    await renderDashboard(app);
+    window.__ready = true;
+  </script>
+</body>
+</html>
