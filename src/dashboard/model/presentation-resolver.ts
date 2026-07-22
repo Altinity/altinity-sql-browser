@@ -64,7 +64,21 @@ export function resolvePresentation(input: ResolvePresentationInput): ResolvePre
     ({ ok: false, diagnostics: sortDiagnostics(diagnostics) });
 
   const spec = isObject(query) ? query.spec : undefined;
-  const basePanel = isObject(spec) && isObject(spec.panel) ? cloneJson(spec.panel) : {};
+  // `view: 'table'` predates the first-class panel form but is still an
+  // explicit saved presentation choice. Preserve it as a Table base before
+  // deriving any runtime panel: otherwise resolvePanel() sees no renderer and
+  // correctly auto-detects a chart, KPI, or Logs panel instead. A panel object
+  // without its own `cfg` is metadata, not an explicit renderer, so retain
+  // that metadata while supplying the compatibility Table cfg. An existing
+  // cfg (including a malformed/null one) remains authoritative and is left to
+  // normal validation rather than silently repaired.
+  const persistedPanel = isObject(spec) && isObject(spec.panel)
+    ? cloneJson(spec.panel)
+    : {};
+  const hasExplicitCfg = isObject(spec) && isObject(spec.panel) && Object.hasOwn(spec.panel, 'cfg');
+  const basePanel = isObject(spec) && spec.view === 'table' && !hasExplicitCfg
+    ? { ...persistedPanel, cfg: { type: 'table' } }
+    : persistedPanel;
   const baseType = cfgType(basePanel);
   const dashboard = isObject(spec) && isObject(spec.dashboard) ? spec.dashboard : undefined;
   const variants = dashboard && isObject(dashboard.variants) ? dashboard.variants : undefined;

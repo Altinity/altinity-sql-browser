@@ -22,6 +22,58 @@ describe('resolvePresentation', () => {
     if (result.ok) expect(result.panel).toEqual(basePanel());
   });
 
+  it('treats the legacy explicit Table view as a Table base presentation', () => {
+    const query = { id: 'q', sql: 'SELECT a,b', specVersion: 1, spec: { name: 'q', view: 'table' } };
+    const result = resolvePresentation({ query, tile: tileFor() });
+    expect(result).toEqual({ ok: true, panel: { cfg: { type: 'table' } } });
+  });
+
+  it('adds a Table cfg while preserving panel metadata when cfg is absent', () => {
+    const emptyPanel = {
+      id: 'q', sql: 'SELECT a', specVersion: 1,
+      spec: { name: 'q', view: 'table', panel: {} },
+    };
+    const fieldConfigPanel = {
+      id: 'q', sql: 'SELECT a', specVersion: 1,
+      spec: { name: 'q', view: 'table', panel: { fieldConfig: { defaults: { decimals: 2 } } } },
+    };
+    expect(resolvePresentation({ query: emptyPanel, tile: tileFor() })).toEqual({
+      ok: true, panel: { cfg: { type: 'table' } },
+    });
+    expect(resolvePresentation({ query: fieldConfigPanel, tile: tileFor() })).toEqual({
+      ok: true, panel: { cfg: { type: 'table' }, fieldConfig: { defaults: { decimals: 2 } } },
+    });
+  });
+
+  it('leaves a query without an explicit presentation unconfigured for runtime auto-detection', () => {
+    const query = { id: 'q', sql: 'SELECT a,b', specVersion: 1, spec: { name: 'q' } };
+    const result = resolvePresentation({ query, tile: tileFor() });
+    expect(result).toEqual({ ok: true, panel: {} });
+  });
+
+  it('keeps an explicit panel authoritative over the legacy Table view', () => {
+    const query = {
+      id: 'q', sql: 'SELECT a', specVersion: 1,
+      spec: { name: 'q', view: 'table', panel: { cfg: { type: 'kpi' } } },
+    };
+    const result = resolvePresentation({ query, tile: tileFor() });
+    expect(result).toEqual({ ok: true, panel: { cfg: { type: 'kpi' } } });
+  });
+
+  it('applies named variants and tile overrides over the legacy Table base', () => {
+    const query = {
+      id: 'q', sql: 'SELECT a', specVersion: 1,
+      spec: { name: 'q', view: 'table', dashboard: { variants: { compact: { fieldConfig: { defaults: { decimals: 1 } } } } } },
+    };
+    const result = resolvePresentation({
+      query, tile: tileFor({ variant: 'compact', override: { fieldConfig: { columns: { a: { unit: 'ms' } } } } }),
+    });
+    expect(result).toEqual({ ok: true, panel: {
+      cfg: { type: 'table' },
+      fieldConfig: { defaults: { decimals: 1 }, columns: { a: { unit: 'ms' } } },
+    } });
+  });
+
   it('applies a valid named variant patch', () => {
     const query = makeQuery({ variants: { alt: { fieldConfig: { defaults: { unit: 'ms' } } } } });
     const result = resolvePresentation({ query, tile: tileFor({ variant: 'alt' }) });

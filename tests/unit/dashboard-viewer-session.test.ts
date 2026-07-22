@@ -123,6 +123,28 @@ describe('createDashboardViewerSession', () => {
     expect(session.state.value.tiles[0].isKpi).toBe(false);
   });
 
+  it('keeps an explicit legacy Table view on a chartable, log-shaped, and scalar Dashboard tile', async () => {
+    const { exec } = makeExec((sql) => {
+      if (sql.includes('chart')) return { columns: [{ name: 'time', type: 'DateTime' }, { name: 'value', type: 'UInt64' }], rows: [['2026-01-01', 1], ['2026-01-02', 2]] };
+      if (sql.includes('logs')) return { columns: [{ name: 'event_time', type: 'DateTime' }, { name: 'message', type: 'String' }], rows: [['2026-01-01', 'hello']] };
+      return { columns: [{ name: 'value', type: 'UInt64' }], rows: [[1]] };
+    });
+    const document = doc({ tiles: [tile('chart', 'chart'), tile('logs', 'logs'), tile('scalar', 'scalar')] });
+    const session = createDashboardViewerSession(makeDeps({
+      document, exec,
+      queries: [
+        query('chart', 'SELECT chart', { view: 'table' }),
+        query('logs', 'SELECT logs', { view: 'table' }),
+        query('scalar', 'SELECT scalar', { view: 'table' }),
+      ],
+    }));
+    await session.start();
+    expect(session.state.value.tiles.map((entry) => entry.panel)).toEqual([
+      { cfg: { type: 'table' } }, { cfg: { type: 'table' } }, { cfg: { type: 'table' } },
+    ]);
+    expect(session.state.value.tiles.every((entry) => !entry.isKpi)).toBe(true);
+  });
+
   it('shows an unfilled tile when a required param has no value, issuing no request', async () => {
     const { exec, calls } = makeExec();
     const document = doc({ tiles: [tile('t1', 'q1')] });
