@@ -144,6 +144,16 @@ function renderSaved(app: App, list: HTMLElement): void {
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();
           app.specEditor.syncFromState();
+          // #343: the patch may have just flagged a lagging dirty tab as
+          // conflict — reflect it on the Save button / tab badge immediately.
+          app.updateSaveBtn();
+          app.actions.rerenderTabs();
+        } else if (result && !result.ok && result.deletedExternally) {
+          // #343 review: the query vanished from the latest workspace — refresh
+          // now so this dead Library row (and any linked tab) reconciles instead
+          // of lingering until the next activation.
+          flashToast('This query was deleted in another tab', { document: app.document });
+          void app.refreshWorkspaceFromStore();
         } else if (result && !result.ok && result.diagnostics?.length) {
           flashToast('Couldn’t update favorite: ' + result.diagnostics[0].message, { document: app.document });
         }
@@ -229,11 +239,16 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
       // #343: rename/description over the LATEST workspace via `app.mutateWorkspace`.
       const result = await renameSaved(state, q.id, nameInput.value, descInput.value, app.mutateWorkspace, app.specValidators);
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
-      else if (result && !result.ok && result.diagnostics?.length) {
+      else if (result && !result.ok && result.deletedExternally) {
+        // #343 review: target vanished — refresh so the dead row reconciles.
+        flashToast('This query was deleted in another tab', { document: app.document });
+        void app.refreshWorkspaceFromStore();
+      } else if (result && !result.ok && result.diagnostics?.length) {
         flashToast('Couldn’t rename: ' + result.diagnostics[0].message, { document: app.document });
       } else {
         app.queryDoc.revalidateSpecDrafts();
         app.specEditor.syncFromState();
+        app.updateSaveBtn(); // #343: a lagging dirty tab may have just been flagged
         app.actions.rerenderTabs();
       }
     }

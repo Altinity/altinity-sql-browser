@@ -232,6 +232,60 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     expect(bTab.externalState ?? null).toBeNull();
   });
 
+  it('a flagged conflict survives a Library star/rename plus an unrelated external change (#343 review blocker)', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    const twoQueries: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'w1', name: 'Team',
+      queries: [
+        { id: 'q1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'q1', favorite: false } } as SavedQueryV2,
+        { id: 'q2', sql: 'SELECT 2', specVersion: 1, spec: { name: 'q2', favorite: false } } as SavedQueryV2,
+      ],
+      dashboard: null,
+    };
+    await seed(a, b, twoQueries);
+    // B opens q1 and edits it (dirty draft).
+    openQ1(b);
+    const bTab = linkedTab(b);
+    bTab.sqlDraft = 'SELECT my stale draft';
+    bTab.dirtySql = true;
+    // A changes q1; B refreshes → conflict (correctly flagged).
+    await renameSaved(a.state, 'q1', 'Changed in A', undefined, a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(bTab.externalState).toBe('conflict');
+    // B renames q1 from its own Library (metadata patch over LATEST — the same
+    // path the star button uses). This must not resolve the conflict.
+    const patched = await renameSaved(b.state, 'q1', 'Renamed in B too', undefined, b.mutateWorkspace);
+    expect(patched?.ok).toBe(true);
+    expect(bTab.externalState).toBe('conflict');
+    // A then changes something UNRELATED (q2); B refreshes again.
+    await renameSaved(a.state, 'q2', 'Unrelated change in A', undefined, a.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    // The stale dirty draft is still behind the resolver — never silently
+    // saveable without Reload-saved-version / Keep-my-draft.
+    expect(bTab.externalState).toBe('conflict');
+    expect(bTab.sqlDraft).toBe('SELECT my stale draft');
+    expect(bTab.dirtySql).toBe(true);
+  });
+
+  it('a star/rename BEFORE any refresh cannot mask an unflagged external change (#343 review blocker)', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    openQ1(b);
+    const bTab = linkedTab(b);
+    bTab.sqlDraft = 'SELECT my stale draft';
+    bTab.dirtySql = true;
+    // A changes q1 — B misses the poke and does NOT refresh (no flag yet).
+    await renameSaved(a.state, 'q1', 'Changed in A', undefined, a.mutateWorkspace);
+    // B renames q1 immediately (folds into LATEST, including A's change) — the
+    // stale tab's baseline token must NOT advance past A's unseen change.
+    await renameSaved(b.state, 'q1', 'Renamed in B', undefined, b.mutateWorkspace);
+    await b.refreshWorkspaceFromStore();
+    expect(bTab.externalState).toBe('conflict'); // flagged, not silently in sync
+    expect(bTab.sqlDraft).toBe('SELECT my stale draft');
+  });
+
   it('a dirty linked tab preserves its draft and enters a conflict state', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);

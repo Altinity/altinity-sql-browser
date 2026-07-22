@@ -355,10 +355,14 @@ export type PatchDraftResult =
   | { ok: true; invalidTab: null; spec: QuerySpecDraft }
   | { ok: false; invalidTab: QueryTab | null; diagnostics?: SpecDiagnostic[] };
 
-/** Result of `patchSavedSpec` (and the pencil/star ops built on it). */
+/** Result of `patchSavedSpec` (and the pencil/star ops built on it).
+ *  `deletedExternally: true` marks the abort where the target query was missing
+ *  from the latest committed workspace (#343 — deleted in another tab): the
+ *  caller should surface it and refresh the tab association rather than leave a
+ *  dead Library row until the next activation refresh. */
 export type PatchSavedResult =
   | { ok: true; invalidTab: null; entry: SavedQueryV2 }
-  | { ok: false; invalidTab: QueryTab | null; entry: null; diagnostics?: SpecDiagnostic[] };
+  | { ok: false; invalidTab: QueryTab | null; entry: null; diagnostics?: SpecDiagnostic[]; deletedExternally?: true };
 
 /**
  * A tab's complete `spec.panel` payload, cloned for safe use/persistence. The
@@ -808,13 +812,13 @@ export function reconcileLinkedTabsToLatest(
       tab.externalState = 'deleted';
       changed = true;
     } else if (tab.savedId && tab.externalState === 'conflict') {
-      // `noop` on a still-linked tab: the divergence disappeared (the other tab
-      // reverted, or this draft matches the baseline again) — a stale conflict
-      // flag would leave "Resolve conflict" with nothing to resolve. The
-      // `'deleted'` flag is NOT cleared here: an orphaned tab has savedId null
-      // and keeps its badge until the user acts on the draft.
-      tab.externalState = null;
-      changed = true;
+      // `noop` NEVER auto-clears an existing conflict (#343 review blocker): a
+      // flagged dirty draft must stay behind the resolution chooser until the
+      // user explicitly picks "Reload saved version" or "Keep my draft" —
+      // token equality alone cannot prove the divergence disappeared (a
+      // metadata patch can advance the persisted token while the stale draft
+      // is unchanged). Count it so refresh summaries still report it.
+      conflicts += 1;
     }
   }
   return { changed, conflicts };
@@ -993,10 +997,14 @@ export async function patchSavedSpec(
   let entryDiagnostics: SpecDiagnostic[] | null = null;
   let blockedDraft: { tab: QueryTab; diagnostics: SpecDiagnostic[] } | null = null;
   let draftUpdates: { tab: QueryTab; spec: QuerySpecDraft; dirty: boolean }[] = [];
+  // The token of the latest entry BEFORE this patch — the baseline a linked tab
+  // must already match for its `lastCommittedQueryToken` to advance (see below).
+  let prePatchToken: string | null = null;
   const outcome = await mutate((latest) => {
     const base = baselineWorkspace(state, latest);
     const index = base.queries.findIndex((query) => query.id === id);
     if (index < 0) return null;
+    prePatchToken = queryToken(base.queries[index]);
     const entry = asSavedEntry(withQuerySpec(base.queries[index], patchedSpec(base.queries[index].spec, patch)));
     const entryDiag = validationService.validate(entry.spec, { sql: entry.sql, query: entry });
     if (hasBlockingSpecErrors(entryDiag)) { entryDiagnostics = entryDiag; return null; }
@@ -1020,8 +1028,8 @@ export async function patchSavedSpec(
     }
     // ABORTED plan guard: a blocking patched entry Spec surfaces its diagnostics
     // (invalidTab null); a blocking linked draft identifies its tab; an entry no
-    // longer present in `latest` (deleted externally) aborts quietly (nothing to
-    // patch), leaving the tab association to be refreshed.
+    // longer present in `latest` (deleted externally) aborts flagged so the
+    // caller can refresh the tab association (#343 review).
     if (entryDiagnostics) return { ok: false, invalidTab: null, entry: null, diagnostics: entryDiagnostics };
     // `blockedDraft` is assigned inside a `for` loop nested in the `mutate`
     // closure above; TS's control-flow narrowing loses the loop-nested closure
@@ -1029,7 +1037,7 @@ export async function patchSavedSpec(
     // the object-or-null the closure set, so re-assert its declared union.
     const blocked = blockedDraft as { tab: QueryTab; diagnostics: SpecDiagnostic[] } | null;
     if (blocked) return { ok: false, invalidTab: blocked.tab, entry: null, diagnostics: blocked.diagnostics };
-    return { ok: false, invalidTab: null, entry: null };
+    return { ok: false, invalidTab: null, entry: null, deletedExternally: true };
   }
   // `mutateWorkspace` already projected the committed queries + Dashboard onto
   // `state` (single source of truth for whether/how tile membership landed).
@@ -1039,8 +1047,25 @@ export async function patchSavedSpec(
   for (const update of draftUpdates) {
     setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
     update.tab.name = queryName({ spec: update.spec });
-    // #343: each linked tab is now measured against the freshly committed entry.
-    update.tab.lastCommittedQueryToken = savedToken;
+    // #343 review (conflict-token lifecycle): advance a tab's in-sync baseline
+    // ONLY when it actually matched the latest entry this patch was applied to.
+    // A tab whose baseline lagged `latest` (an external change it hasn't
+    // refreshed/flagged yet, or an already-flagged conflict) keeps its OLD
+    // token — otherwise a star/rename would stamp the newest token onto a tab
+    // whose draft is based on older content, the next refresh would classify
+    // it `noop`, and a stale dirty draft could silently Save over the external
+    // change without ever entering (or while quietly leaving) conflict.
+    if (update.tab.lastCommittedQueryToken === prePatchToken) {
+      update.tab.lastCommittedQueryToken = savedToken;
+    } else if ((update.tab.dirtySql || update.tab.dirtySpec) && !update.tab.externalState) {
+      // Lagging baseline discovered AT PATCH TIME on a dirty tab: flag the
+      // conflict now. This tab's own commit just made the workspace token
+      // current, so the next refresh will no-op at the workspace level and the
+      // classifier would never run — waiting for a *further* external change
+      // would leave a silent-overwrite window. A clean lagging tab adopts on
+      // the next refresh instead.
+      update.tab.externalState = 'conflict';
+    }
   }
   state.libraryDirty.value = true;
   return { ok: true, invalidTab: null, entry: saved };

@@ -516,8 +516,8 @@ describe('saved queries', () => {
     // resolves the target against THAT latest, not the stale local projection.
     const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [], dashboard: null };
     const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
-    expect(await renameSaved(s, 's1', 'New', undefined, mutate)).toEqual({ ok: false, invalidTab: null, entry: null });
-    expect(await toggleFavorite(s, 's1', mutate, genTileId())).toEqual({ ok: false, invalidTab: null, entry: null });
+    expect(await renameSaved(s, 's1', 'New', undefined, mutate)).toEqual({ ok: false, invalidTab: null, entry: null, deletedExternally: true });
+    expect(await toggleFavorite(s, 's1', mutate, genTileId())).toEqual({ ok: false, invalidTab: null, entry: null, deletedExternally: true });
     expect(mutate.commit).not.toHaveBeenCalled(); // never recreated
     expect(s.savedQueries.map((q) => q.id)).toEqual(['s1']); // local projection untouched (refresh is #343 step 4/5)
   });
@@ -534,6 +534,32 @@ describe('saved queries', () => {
     expect(result).toEqual({ ok: false, entry: null, deletedExternally: true });
     expect(mutate.commit).not.toHaveBeenCalled(); // aborted — never recreated
     expect(tab.savedId).toBe('s1'); // the CALLER refreshes the association (app.ts)
+  });
+  it('a metadata patch does NOT advance the baseline token of a tab lagging latest (#343 review blocker)', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    const oldQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 1' });
+    s.savedQueries = [oldQ];
+    tab.savedId = 's1';
+    tab.sqlDraft = 'SELECT my stale draft';
+    tab.dirtySql = true;
+    setTabSpecDraft(tab, { name: 'Local', favorite: false });
+    tab.lastCommittedQueryToken = queryToken(oldQ); // in sync with the OLD version
+    // Another tab already committed a changed s1; this tab has NOT refreshed yet
+    // (missed poke) — no conflict flagged so far.
+    const externalQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 999 /* external */' });
+    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [externalQ], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    // The user renames from the Library — the patch folds into LATEST (keeps the
+    // external SQL) but must not stamp the newest token onto this stale tab.
+    const result = await renameSaved(s, 's1', 'Renamed here', undefined, mutate);
+    expect(result?.ok).toBe(true);
+    expect(s.savedQueries[0].sql).toBe('SELECT 999 /* external */'); // external change preserved
+    expect(tab.lastCommittedQueryToken).toBe(queryToken(oldQ)); // baseline unchanged
+    // …so the next refresh still classifies this dirty tab as CONFLICT.
+    const summary = reconcileLinkedTabsToLatest(s, { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: s.savedQueries, dashboard: null });
+    expect(summary.conflicts).toBe(1);
+    expect(tab.externalState).toBe('conflict');
   });
   it('a rejected aggregate commit mutates nothing and surfaces diagnostics (#287 W4 strict commit)', async () => {
     const s = savedTestState();
@@ -857,15 +883,21 @@ describe('linked-tab reconcile (#343)', () => {
     expect(inSync.externalState).toBeUndefined();
   });
 
-  it('a noop on a still-linked tab clears a stale conflict flag (divergence disappeared) — #343 review', () => {
+  it('a noop NEVER auto-clears an existing conflict — explicit resolution only (#343 review blocker)', () => {
     const s = savedTestState();
     const query = q('q1', 'SELECT 1');
     const t = linkedTab('t1', query);
-    t.externalState = 'conflict'; // flagged earlier; the other tab has since reverted
+    // Flagged earlier; the persisted token now matches this tab's baseline
+    // again (e.g. a metadata patch advanced both). Token equality cannot prove
+    // the divergence disappeared, so the flag must survive until the user
+    // picks Reload-saved-version or Keep-my-draft.
+    t.sqlDraft = 'SELECT stale draft';
+    t.dirtySql = true;
+    t.externalState = 'conflict';
     s.tabs.value = [t];
     const summary = reconcileLinkedTabsToLatest(s, ws([query]));
-    expect(summary).toEqual({ changed: true, conflicts: 0 });
-    expect(t.externalState).toBeNull();
+    expect(summary).toEqual({ changed: false, conflicts: 1 });
+    expect(t.externalState).toBe('conflict');
     expect(t.savedId).toBe('q1');
   });
 
