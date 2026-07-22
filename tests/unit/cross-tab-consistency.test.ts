@@ -268,6 +268,38 @@ describe('cross-tab refresh + linked-tab reconcile (#343)', () => {
     expect(bTab.dirtySql).toBe(true);
   });
 
+  it('a star/rename on a CLEAN lagging tab adopts the external change immediately (#343 review blocker 2)', async () => {
+    const store = fakeIndexedDbFactory();
+    const a = tab(store); const b = tab(store);
+    await seed(a, b, oneQuery());
+    // B opens q1 clean.
+    openQ1(b);
+    const bTab = linkedTab(b);
+    expect(bTab.dirtySql).toBe(false);
+    // A changes q1's SQL; B does NOT refresh (missed poke).
+    const aTab = a.state.tabs.value[0];
+    aTab.savedId = 'q1';
+    aTab.sqlDraft = 'SELECT 42 /* from A */';
+    await commitSavedQuery(a.state, aTab, a.state.savedQueries[0].spec, a.mutateWorkspace);
+    // B renames q1 from its Library. B's tab must contain A's latest SQL plus
+    // B's metadata change immediately — NOT wait for a refresh that will no-op
+    // (B's own commit just made its workspace token current).
+    await renameSaved(b.state, 'q1', 'Renamed in B', undefined, b.mutateWorkspace);
+    expect(bTab.sqlDraft).toBe('SELECT 42 /* from A */');
+    expect(bTab.name).toBe('Renamed in B');
+    expect(bTab.dirtySql).toBe(false);
+    expect(bTab.externalState ?? null).toBeNull();
+    // …and a refresh afterwards changes nothing (already consistent).
+    await b.refreshWorkspaceFromStore();
+    expect(bTab.sqlDraft).toBe('SELECT 42 /* from A */');
+    expect(bTab.externalState ?? null).toBeNull();
+    // The persisted workspace holds BOTH changes.
+    const final = await committed(b);
+    const q1 = final.queries.find((q) => q.id === 'q1')!;
+    expect(q1.sql).toBe('SELECT 42 /* from A */');
+    expect(q1.spec.name).toBe('Renamed in B');
+  });
+
   it('a star/rename BEFORE any refresh cannot mask an unflagged external change (#343 review blocker)', async () => {
     const store = fakeIndexedDbFactory();
     const a = tab(store); const b = tab(store);

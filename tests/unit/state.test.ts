@@ -561,6 +561,32 @@ describe('saved queries', () => {
     expect(summary.conflicts).toBe(1);
     expect(tab.externalState).toBe('conflict');
   });
+  it('a metadata patch immediately adopts committed truth into a CLEAN lagging tab (#343 review blocker 2)', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    const oldQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 1' });
+    s.savedQueries = [oldQ];
+    tab.savedId = 's1';
+    tab.sqlDraft = 'SELECT 1'; // clean: draft mirrors the OLD committed version
+    tab.dirtySql = false;
+    setTabSpecDraft(tab, { name: 'Local', favorite: false });
+    tab.lastCommittedQueryToken = queryToken(oldQ);
+    // Another tab changed s1's SQL; this tab missed the poke and did NOT refresh.
+    const externalQ = savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 999 /* external */' });
+    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [externalQ], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const result = await renameSaved(s, 's1', 'Renamed here', undefined, mutate);
+    expect(result?.ok).toBe(true);
+    // The tab adopted the COMPLETE committed entry NOW (external SQL + this
+    // rename) — it cannot wait for a refresh, because this very commit made the
+    // workspace token current and the next refresh will no-op.
+    expect(tab.sqlDraft).toBe('SELECT 999 /* external */');
+    expect(tab.name).toBe('Renamed here');
+    expect(tab.dirtySql).toBe(false);
+    expect(tab.dirtySpec).toBe(false);
+    expect(tab.externalState ?? null).toBeNull();
+    expect(tab.lastCommittedQueryToken).toBe(queryToken(s.savedQueries[0])); // == committed token
+  });
   it('a rejected aggregate commit mutates nothing and surfaces diagnostics (#287 W4 strict commit)', async () => {
     const s = savedTestState();
     const tab = s.tabs.value[0];

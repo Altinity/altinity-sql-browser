@@ -1043,27 +1043,35 @@ export async function patchSavedSpec(
   // `state` (single source of truth for whether/how tile membership landed).
   const built = outcome.data!;
   const saved = committedEntry(outcome.workspace.queries, built.id, built);
+  // #343 review (conflict-token lifecycle): this tab's own commit just made the
+  // workspace token current, so the next refresh will no-op at the WORKSPACE
+  // level and the linked-tab classifier will not run — whatever each tab needs
+  // must happen HERE, by comparing its baseline against the pre-patch latest:
+  //  • baseline matched  → the tab was in sync; apply the local metadata patch
+  //    and advance its baseline to the committed entry;
+  //  • baseline lagged, tab DIRTY → preserve the draft exactly and flag/keep
+  //    'conflict' (a stale dirty draft must never become ordinarily saveable);
+  //  • baseline lagged, tab CLEAN → adopt the complete committed entry NOW
+  //    (latest content + this patch) — deferring to "the next refresh" would
+  //    leave a clean tab silently stale, and an ordinary edit+Save from it
+  //    would overwrite the external change without any conflict.
   const savedToken = queryToken(saved);
   for (const update of draftUpdates) {
+    // An ABSENT baseline is unknown, not provably lagged: every production
+    // link path stamps one (open/create/save/adopt + the projection gap-fill),
+    // so `undefined` here is a fixture/startup transient — keep the legacy
+    // draft-patch behavior and stamp the committed token below.
+    const lagged = update.tab.lastCommittedQueryToken !== undefined
+      && update.tab.lastCommittedQueryToken !== prePatchToken;
+    if (lagged && !update.tab.dirtySql && !update.tab.dirtySpec) {
+      adoptSavedIntoTab(update.tab, saved, validationService);
+      continue;
+    }
     setTabSpecDraft(update.tab, update.spec, { dirty: update.dirty, validationService });
     update.tab.name = queryName({ spec: update.spec });
-    // #343 review (conflict-token lifecycle): advance a tab's in-sync baseline
-    // ONLY when it actually matched the latest entry this patch was applied to.
-    // A tab whose baseline lagged `latest` (an external change it hasn't
-    // refreshed/flagged yet, or an already-flagged conflict) keeps its OLD
-    // token — otherwise a star/rename would stamp the newest token onto a tab
-    // whose draft is based on older content, the next refresh would classify
-    // it `noop`, and a stale dirty draft could silently Save over the external
-    // change without ever entering (or while quietly leaving) conflict.
-    if (update.tab.lastCommittedQueryToken === prePatchToken) {
+    if (!lagged) {
       update.tab.lastCommittedQueryToken = savedToken;
-    } else if ((update.tab.dirtySql || update.tab.dirtySpec) && !update.tab.externalState) {
-      // Lagging baseline discovered AT PATCH TIME on a dirty tab: flag the
-      // conflict now. This tab's own commit just made the workspace token
-      // current, so the next refresh will no-op at the workspace level and the
-      // classifier would never run — waiting for a *further* external change
-      // would leave a silent-overwrite window. A clean lagging tab adopts on
-      // the next refresh instead.
+    } else if (!update.tab.externalState) {
       update.tab.externalState = 'conflict';
     }
   }

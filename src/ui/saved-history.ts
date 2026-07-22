@@ -145,7 +145,10 @@ function renderSaved(app: App, list: HTMLElement): void {
           app.queryDoc.revalidateSpecDrafts();
           app.specEditor.syncFromState();
           // #343: the patch may have just flagged a lagging dirty tab as
-          // conflict — reflect it on the Save button / tab badge immediately.
+          // conflict OR adopted committed truth into a lagging clean tab —
+          // re-fire the tab effect (editor doc resync for the active tab) and
+          // reflect it on the Save button / tab badge immediately.
+          app.state.tabs.value = [...app.state.tabs.value];
           app.updateSaveBtn();
           app.actions.rerenderTabs();
         } else if (result && !result.ok && result.deletedExternally) {
@@ -248,7 +251,10 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
       } else {
         app.queryDoc.revalidateSpecDrafts();
         app.specEditor.syncFromState();
-        app.updateSaveBtn(); // #343: a lagging dirty tab may have just been flagged
+        // #343: a lagging tab may have just been conflict-flagged (dirty) or
+        // adopted committed truth (clean) — resync editor + button + badges.
+        app.state.tabs.value = [...app.state.tabs.value];
+        app.updateSaveBtn();
         app.actions.rerenderTabs();
       }
     }

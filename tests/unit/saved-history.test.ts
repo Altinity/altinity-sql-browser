@@ -253,6 +253,48 @@ describe('renderSavedHistory', () => {
     expect(qs(document, '.share-toast').textContent).toBe('Couldn’t update favorite: boom');
   });
 
+  it('#343: star on a query deleted in another tab toasts and refreshes the workspace', async () => {
+    const app = makeApp();
+    // The latest committed workspace no longer contains s1 — the patch aborts.
+    app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
+      const input = await transform({ storageVersion: 1, id: 'w1', name: 'L', queries: [], dashboard: null });
+      expect(input).toBeNull(); // the planner found no target and aborted
+      return { ok: false as const, aborted: true as const, data: undefined };
+    }) as App['mutateWorkspace'];
+    const refresh = vi.fn(async () => {});
+    app.refreshWorkspaceFromStore = refresh;
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'A', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.sv-star'));
+    await flush();
+    expect(queryFavorite(app.state.savedQueries[0])).toBe(false); // never recreated/toggled
+    expect(qs(document, '.share-toast').textContent).toBe('This query was deleted in another tab');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('#343: rename on a query deleted in another tab toasts and refreshes the workspace', async () => {
+    const app = makeApp();
+    app.mutateWorkspace = (async (transform: Parameters<App['mutateWorkspace']>[0]) => {
+      const input = await transform({ storageVersion: 1, id: 'w1', name: 'L', queries: [], dashboard: null });
+      expect(input).toBeNull();
+      return { ok: false as const, aborted: true as const, data: undefined };
+    }) as App['mutateWorkspace'];
+    const refresh = vi.fn(async () => {});
+    app.refreshWorkspaceFromStore = refresh;
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1', favorite: false }]);
+    renderSavedHistory(app);
+    byTitle(savedList(app), 'Edit name & description').dispatchEvent(new Event('click', { bubbles: true }));
+    const nameInput = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    nameInput.value = 'New';
+    nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+    expect(queryName(app.state.savedQueries[0])).toBe('Old'); // untouched
+    expect(qs(document, '.share-toast').textContent).toBe('This query was deleted in another tab');
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it('#287 W4: delete surfaces a toast (and mutates nothing) when the aggregate commit is rejected', async () => {
     const commit = failingCommit();
     const app = makeApp({ workspace: { commit } });
