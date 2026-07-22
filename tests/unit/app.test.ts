@@ -19,7 +19,7 @@ import type { CreateAppEnv } from '../../src/env.types.js';
 import type { App } from '../../src/ui/app.types.js';
 import type { AppState, QueryTab } from '../../src/state.js';
 import type { SchemaDb } from '../../src/core/from-scope.js';
-import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
+import type { SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
 import type { CompletionItem, AssembledReference } from '../../src/core/completions.js';
 import type {
   QueryResult, ScriptResult, ScriptExportResult, ScriptEntry, ScriptExportEntry, ResultSchemaGraph,
@@ -3040,6 +3040,20 @@ describe('share + star + columns', () => {
     expect(app2.state.workspaceId).toBe(beforeId2);
     expect(app2.state.dashboard).toBeNull();
   });
+  it('#365: applying a committed workspace scrubs dangling tab links but keeps the SQL draft open', () => {
+    const app = createApp(env());
+    const tab = app.activeTab();
+    tab.sqlDraft = 'SELECT still_here';
+    tab.savedId = 'removed';
+    tab.editorMode = 'spec';
+    const workspace: StoredWorkspaceV1 = {
+      storageVersion: 1, id: 'new-workspace', name: 'New workspace', queries: [], dashboard: null,
+    };
+    app.applyCommittedWorkspace(workspace);
+    expect(tab).toMatchObject({ sqlDraft: 'SELECT still_here', savedId: null, editorMode: 'sql' });
+    expect(app.state.savedQueries).toEqual([]);
+    expect(app.state.workspaceId).toBe('new-workspace');
+  });
   it('#300: a corrupt-but-present aggregate surfaces a toast instead of silently continuing, and its Reset action rebuilds a fresh one', async () => {
     const app = createApp(env());
     const beforeId = app.state.workspaceId;
@@ -3314,7 +3328,7 @@ describe('share + star + columns', () => {
     expect(qs(document, '.save-popover')).toBeNull();
     expect(app.state.savedQueries[0].sql).toBe('SELECT 10');
     expect(app.state.savedQueries[0].spec).toEqual({
-      name: 'Renamed', description: 'updated reason', favorite: false, future: { kept: true },
+      name: 'Renamed', description: 'updated reason', favorite: false, future: { kept: true }, view: 'table',
     });
     expect(queryDescription(app.state.savedQueries[0])).toBe('updated reason');
     expect(app.activeTab().dirtySql).toBe(false);

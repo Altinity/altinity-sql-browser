@@ -16,7 +16,7 @@ import { EXPLAIN_VIEWS } from '../core/explain.js';
 import { SELECT_ROW_CAP } from '../core/script-result.js';
 import type { ScriptEntry } from '../core/script-result.js';
 import { resolvePanel } from '../core/panel-cfg.js';
-import { RESULT_ROW_LIMIT_OPTIONS, tabPanel, effectiveFilterActive } from '../state.js';
+import { RESULT_ROW_LIMIT_OPTIONS, tabPanel, effectiveFilterActive, patchSpecDraft, savedForTab } from '../state.js';
 import type { AppState, QueryTab as Tab, ResultSort } from '../state.js';
 import {
   analyzeParameterizedSources, prepareParameterizedBatch, mergedSourceArgs, mergedSourceSql, fieldControls,
@@ -173,6 +173,10 @@ export interface ResultsApp {
   /** #276 Phase 5: no flat `App.savePref` delegate — `app.prefs.save(name,
    *  value)` directly (the cell-detail drawer's own resize persist). */
   prefs: Pick<AppPreferences, 'save'>;
+  specValidators: App['specValidators'];
+  queryDoc: Pick<App['queryDoc'], 'revalidateSpecDrafts'>;
+  specEditor: Pick<App['specEditor'], 'syncFromState'>;
+  activateInvalidSpecDraft(tab: Tab): void;
   updateSaveBtn(): void;
   updateEditorModeUi?(): void;
   openWindow?(url: string, target: string): DetachedWindowLike | null;
@@ -635,7 +639,21 @@ function buildToolbar(app: ResultsApp, r: Result | null): HTMLDivElement {
       h('button', { class: 'result-view-tab active' },
         r.rawFormat === 'JSON' ? Icon.json() : Icon.table2(), h('span', null, r.rawFormat)));
   } else {
-    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => { app.state.resultView.value = id as 'table' | 'json' | 'panel' | 'filter'; }, false);
+    tabs = viewSwitcherTabs(app.state.resultView.value, (id) => {
+      const view = id as 'table' | 'json';
+      const tab = app.activeTab();
+      if (savedForTab(app.state, tab)) {
+        const result = patchSpecDraft(tab, { view }, { dirty: true, validationService: app.specValidators });
+        if (!result.ok) {
+          app.activateInvalidSpecDraft(result.invalidTab!);
+          return;
+        }
+        app.queryDoc.revalidateSpecDrafts();
+        app.specEditor.syncFromState();
+        panelHooks(app, r).markDirty();
+      }
+      app.state.resultView.value = view;
+    }, false);
     tabs.appendChild(renderPanelTypePicker(app as App, r, panelHooks(app, r)));
   }
   toolbar.appendChild(tabs);

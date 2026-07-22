@@ -79,7 +79,7 @@ export interface SavedQueryServiceDeps {
 export type CreateSavedResult =
   | { ok: true; entry: SavedQueryV2 }
   /** `createSavedQuery` itself rejected the entry — either a pre-commit
-   *  compute guard (already-linked tab, blank SQL on a non-text panel, blank
+   *  compute guard (still-linked tab, blank SQL on a non-text panel, blank
    *  name, or a blocking validation diagnostic — the pre-#287 inline code
    *  never distinguished a reason here either, so neither does this result;
    *  `diagnostics` absent), or the aggregate strictly rejected the whole-
@@ -127,9 +127,9 @@ export interface ShareUrlInput {
 
 export interface SavedQueryService {
   /** Creation-only path (app.ts's Save-popover commit): mint a brand-new
-   *  saved query from an unsaved tab's current `sqlDraft`/`specParsed` plus
-   *  `name`/`description`. Rejects (silently — see `CreateSavedResult`) an
-   *  already-linked tab, per `createSavedQuery`'s own guard. */
+   *  saved query from an unsaved or dangling-linked tab's current
+   *  `sqlDraft`/`specParsed` plus `name`/`description`. Rejects (silently —
+   *  see `CreateSavedResult`) a tab whose saved link still resolves. */
   create(tab: QueryTab, name: unknown, description: unknown): Promise<CreateSavedResult>;
   /** Update-in-place path (app.ts's `commitLinkedQuery`, the "Save" button on
    *  an already-linked tab): persist `evaluated` as the linked saved query's
