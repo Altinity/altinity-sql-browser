@@ -14,6 +14,11 @@ import type { WorkspaceDiagnostic } from './workspace-diagnostics.js';
 import { jsonSchemaValidationService, SPEC_CODECS } from '../../core/library-codec.js';
 import type { JsonSchemaValidationService } from '../../core/json-schema-validation.js';
 import { scanParamDeclarations } from '../../core/param-scan.js';
+import { analyzeParameterizedSources } from '../../core/param-pipeline.js';
+import type { ParameterAnalysis, ParameterizedSourceInput } from '../../core/param-pipeline.js';
+import { resolveFilterSelection } from '../../core/filter-selection.js';
+import type { FilterSelectionFilterDef, FilterSelectionDiagnostic } from '../../core/filter-selection.js';
+import { resolvePresentation } from './presentation-resolver.js';
 
 export const FLOW_LAYOUT_V1_SCHEMA_ID =
   'https://altinity.com/schemas/altinity-sql-browser/dashboard-layout-flow-v1.schema.json';
@@ -85,6 +90,35 @@ const patchRendererType = (patch: unknown): string | undefined => {
 };
 
 const normalizeParamType = (type: string): string => type.replace(/\s+/g, ' ').trim();
+
+// Every `resolveFilterSelection` diagnostic code, mapped to its exact
+// dashboard JSON path per the maintainer's #189/#360 merge-gate contract:
+// mode-table codes point at the `selection.mode` the caller asked for;
+// per-target codes point at the OFFENDING `targets[j]` entry (found by
+// matching the diagnostic's own `sourceId` extra field — the target tile id
+// — against the filter's raw `targets` array; `filters[i].targets` itself
+// when no exact index match is found, which should not happen in practice
+// since every per-target diagnostic's `sourceId` IS one of `targets`); every
+// other code (no-consumers, mixed-arity, type/array-element conflict, nested
+// array — the contract/agreement diagnostics, which are never about one
+// single target) points at `filters[i].parameter`. Codes/messages are kept
+// verbatim from the resolver — this only ever chooses WHERE to report them.
+const SELECTION_MODE_TABLE_CODES = new Set([
+  'filter-selection-mode-requires-array', 'filter-selection-unknown-mode',
+]);
+const SELECTION_TARGET_CODES = new Set([
+  'filter-selection-target-not-executable', 'filter-selection-target-missing-declaration',
+]);
+
+function selectionDiagnosticPath(filterPath: Path, rawTargets: unknown, diag: FilterSelectionDiagnostic): Path {
+  if (SELECTION_MODE_TABLE_CODES.has(diag.code)) return [...filterPath, 'selection', 'mode'];
+  if (SELECTION_TARGET_CODES.has(diag.code)) {
+    const targetId = typeof diag.sourceId === 'string' ? diag.sourceId : undefined;
+    const index = targetId !== undefined && Array.isArray(rawTargets) ? rawTargets.indexOf(targetId) : -1;
+    return index >= 0 ? [...filterPath, 'targets', index] : [...filterPath, 'targets'];
+  }
+  return [...filterPath, 'parameter'];
+}
 
 // --- fail-closed version pre-scans ------------------------------------------
 // Unknown future resource versions fail closed with ONE precise diagnostic.
@@ -247,6 +281,29 @@ export function validateDashboardSemantics(dashboard: unknown, {
   }
   const tilesById = new Map<string, TileEntry>();
   const tileQueryIds = new Set<string>();
+  // #189/#360 selection-contract validation (the `filters` block below) needs
+  // the SAME executable-tile-id set and tile-side `ParameterAnalysis` the
+  // Dashboard viewer session builds (`dashboard-viewer-session.ts`, the
+  // `isRunnableTileRuntime` predicate and its `analysis` construction) so a
+  // filter's curated-helper contract is diagnosed identically here (at
+  // authoring/import time) and there (at open time). A tile is "executable"
+  // statically when its `queryId` resolves to a real query and
+  // `resolvePresentation` — the SAME RFC 7396 presentation resolver the
+  // session, authoring, and import flows all share — resolves it to a
+  // non-text panel. `resolvePresentation` is called here WITHOUT
+  // `resultColumns`, exactly as the session's own construction-time call
+  // does (result-column role validation needs a live result, unavailable at
+  // authoring/import time) — so this is not an approximation of the
+  // session's check, it is the identical structural check, at the identical
+  // (query-only) information level. `tileParamInputs` mirrors every tile
+  // (empty SQL for a non-executable one) so `analyzeParameterizedSources`
+  // records the same per-field declaration bookkeeping the session's own
+  // `analysis` does — a filter's `{name:Type}` field `analysis.fields[name]`
+  // needs every tile's declaration, not just the executable ones, to gather
+  // consumers correctly (`gatherExecutableConsumers` itself filters by
+  // `executableTileIds`).
+  const executableTileIds = new Set<string>();
+  const tileParamInputs: ParameterizedSourceInput[] = [];
   for (const [index, tile] of tiles.entries()) {
     if (!isObject(tile)) continue;
     const tileId = stringId(tile.id);
@@ -263,6 +320,7 @@ export function validateDashboardSemantics(dashboard: unknown, {
       emit([...path, 'tiles', index, 'queryId'], 'dashboard-tile-query-missing',
         `Tile references unknown saved query ${JSON.stringify(queryId)}`);
     }
+    let tileSql = '';
     if (query !== undefined) {
       const role = queryDashboardRole(query);
       if (role === 'setup') {
@@ -272,7 +330,19 @@ export function validateDashboardSemantics(dashboard: unknown, {
         emit([...path, 'tiles', index, 'queryId'], 'dashboard-tile-role-incompatible',
           `Tile references ${JSON.stringify(role)}-role query ${JSON.stringify(queryId)}; tiles require role panel`);
       }
+      // Executability does not itself gate on `role` — neither does the
+      // session's own `isRunnableTileRuntime` (it only checks query/isText/
+      // presentationError) — a role-incompatible tile already gets its own
+      // diagnostic above regardless of whether it also resolves a panel.
+      const resolved = resolvePresentation({ query, tile, path: [...path, 'tiles', index] });
+      const resolvedType = resolved.ok && isObject(resolved.panel.cfg) && typeof resolved.panel.cfg.type === 'string'
+        ? resolved.panel.cfg.type : undefined;
+      if (resolved.ok && resolvedType !== 'text') {
+        tileSql = isObject(query) && typeof query.sql === 'string' ? query.sql : '';
+        if (tileId !== undefined) executableTileIds.add(tileId);
+      }
     }
+    if (tileId !== undefined) tileParamInputs.push({ id: tileId, kind: 'tile', sql: tileSql, bindPolicy: 'row-returning' });
     const presentation = isObject(tile.presentation) ? tile.presentation : undefined;
     if (!presentation) continue;
     if (typeof presentation.variant === 'string' && query !== undefined) {
@@ -292,6 +362,7 @@ export function validateDashboardSemantics(dashboard: unknown, {
       }
     }
   }
+  const tileAnalysis: ParameterAnalysis = analyzeParameterizedSources(tileParamInputs);
 
   // --- layout --------------------------------------------------------------
   const layout = isObject(dashboard.layout) ? dashboard.layout : undefined;
@@ -421,7 +492,20 @@ export function validateDashboardSemantics(dashboard: unknown, {
     const parameter = typeof filter.parameter === 'string' ? filter.parameter : undefined;
     if (Array.isArray(filter.targets)) {
       // Absent targets resolve to every compatible panel tile; explicit
-      // targets must each exist and declare the parameter compatibly.
+      // targets must each exist. A PLAIN filter (no `sourceQueryId`) also
+      // requires each target to declare the parameter compatibly, checked
+      // right here (unbound `declarationsFor`, structural only — plain
+      // filters never get a `resolveFilterSelection` contract, per #189: only
+      // a source-backed filter's curated helper needs a resolved contract).
+      // A SOURCE-BACKED filter's target/parameter compatibility is instead
+      // fully covered below by `resolveFilterSelection` — the bound-aware
+      // (`analysis`'s `bindPolicy`-derived declarations), SAME shared
+      // "executable consumer" definition the viewer session itself uses — so
+      // running this cruder check too would duplicate `filter-target-missing`'s
+      // siblings under different codes for the same targets; it is skipped
+      // for a source-backed filter (existence itself, `filter-target-missing`,
+      // still applies to every filter — target existence is not part of the
+      // parameter-contract question `resolveFilterSelection` answers).
       const declaredTypes = new Map<string, string>();
       for (const [targetIndex, target] of filter.targets.entries()) {
         const targetId = stringId(target);
@@ -431,6 +515,7 @@ export function validateDashboardSemantics(dashboard: unknown, {
             `Filter target ${JSON.stringify(target)} references no tile`);
           continue;
         }
+        if (sourceQueryId !== undefined) continue;
         if (parameter === undefined || tileEntry.queryId === undefined) continue;
         const targetQuery = queriesById.get(tileEntry.queryId);
         if (targetQuery === undefined) continue; // already reported at the tile
@@ -440,9 +525,36 @@ export function validateDashboardSemantics(dashboard: unknown, {
             `Target tile ${JSON.stringify(targetId)}'s query does not declare parameter ${JSON.stringify(parameter)}`);
         } else declaredTypes.set(tileEntry.queryId, normalizeParamType(declared.type));
       }
-      if (new Set(declaredTypes.values()).size > 1) {
+      if (sourceQueryId === undefined && new Set(declaredTypes.values()).size > 1) {
         emit([...filterPath, 'parameter'], 'filter-parameter-type-conflict',
           `Parameter ${JSON.stringify(parameter)} is declared with conflicting types across filter targets: ${[...new Set(declaredTypes.values())].sort().join(', ')}`);
+      }
+    }
+    // #189/#360: a SOURCE-BACKED filter's selection contract — run the SAME
+    // resolver the viewer session uses (`resolveFilterSelection`, over the
+    // SAME shared "executable consumer" definition, `core/filter-selection.ts`)
+    // so an invalid contract is diagnosed at whole-workspace authoring/import
+    // time, not only after opening the viewer. Plain filters (no
+    // `sourceQueryId`) stay out of contract validation entirely, exactly as
+    // the session does (it never resolves a selection for them either).
+    if (sourceQueryId !== undefined && parameter !== undefined) {
+      const rawTargets: unknown = filter.targets;
+      const targets = Array.isArray(rawTargets)
+        ? rawTargets.map(stringId).filter((id): id is string => id !== undefined)
+        : undefined;
+      const filterSelectionDef: FilterSelectionFilterDef = { id: filterId ?? '', parameter, targets };
+      if (isObject(filter.selection)) {
+        filterSelectionDef.selection = {
+          mode: typeof filter.selection.mode === 'string' ? filter.selection.mode : undefined,
+        };
+      }
+      const resolution = resolveFilterSelection(filterSelectionDef, tileAnalysis, executableTileIds);
+      for (const diag of resolution.diagnostics) {
+        out.push({
+          path: selectionDiagnosticPath(filterPath, rawTargets, diag),
+          severity: 'error', code: diag.code, message: diag.message,
+          ...(dashboardId === undefined ? {} : { resource: dashboardId }),
+        });
       }
     }
     if (Object.hasOwn(filter, 'defaultValue')) {

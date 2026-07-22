@@ -7,14 +7,30 @@
 //
 // This module is pure: no DOM, no globals, no fetch. `resolveFilterSelection`
 // takes a structural snapshot of a filter definition, the dashboard's
-// `ParameterAnalysis` (#173), the caller's own notion of which tiles are
-// currently executable, and any dependent Filter sources' own declarations of
-// the same parameter (#360: a Filter source may declare `{name:Type}` params
-// backed by another source's control) — and returns the agreed contract, the
-// effective single/multiple mode, and every diagnostic that blocks the
-// helper. `sameSelection`/`canonicalizeSelection`/`reconcileSelection` are the
-// pure value-side helpers the multiselect control and its option-refresh
+// `ParameterAnalysis` (#173), and the caller's own notion of which tiles are
+// currently executable — and returns the agreed contract, the effective
+// single/multiple mode, and every diagnostic that blocks the helper.
+// `sameSelection`/`canonicalizeSelection`/`reconcileSelection` are the pure
+// value-side helpers the multiselect control and its option-refresh
 // reconciliation need once a helper IS exposed.
+//
+// "Executable consumer" — defined ONCE, here (merge-gate review round for
+// #189/#360): EXACTLY a filter's resolved executable target TILES — explicit
+// `targets` when present (each must be an executable tile with a bound
+// declaration, fail-closed per target), else every executable tile with a
+// bound declaration. A Filter SOURCE is NEVER a consumer: under #360's
+// single-layer cascading rule, a source that itself depends on a
+// SOURCE-BACKED parameter is cascading-invalid and never executes
+// (`filter-source-cascading`, `filter-execution.ts`), and only source-backed
+// filters get a selection contract at all — so a non-tile executable
+// consumer of a contract-bearing parameter cannot exist. `gatherExecutableConsumers`
+// is the one place this gathering happens; the session, the merge-feeding
+// logic, and the whole-workspace semantic validator all call it (or
+// `resolveFilterSelection`, which calls it internally) so this definition can
+// never drift across callers. Revisit ONLY if multi-layer source dependencies
+// (a Filter source depending on another Filter source's control) ever land —
+// today that's structurally impossible, so there is nothing to gather from a
+// source.
 
 import { parseParamType, conflictingTypes } from './param-type.js';
 import type { ParsedParamType } from './param-type.js';
@@ -38,24 +54,6 @@ export interface FilterSelectionFilterDef {
   parameter: string;
   targets?: string[];
   selection?: { mode?: string };
-}
-
-/**
- * One dependent Filter source's own declarations of the parameter being
- * resolved (#360: a Filter source may declare `{name:Type}` params backed by
- * ANOTHER source's control) — always an ADDITIONAL executable consumer,
- * regardless of the filter's `targets`, since a Filter source has no `targets`
- * concept of its own. `declarations` carries every occurrence's raw declared
- * type text, one entry per occurrence (mirrors `AnalyzedDeclaration.type` /
- * `conflictingTypes`'s own input shape — see `FilterSourceAnalysis` in
- * `filter-execution.ts`, whose `dependsOn` names the parameters a caller
- * would filter this down to) so a dependent source that declares the same
- * parameter twice with disagreeing types still surfaces as a conflict here.
- */
-export interface FilterSelectionDependentSource {
-  sourceId: string;
-  label?: string;
-  declarations: { type: string }[];
 }
 
 /**
@@ -106,20 +104,70 @@ const err = (code: string, message: string, extra: Record<string, unknown> = {})
   diagnostic('error', code, message, extra) as FilterSelectionDiagnostic;
 
 /**
+ * Gather the raw `{name:Type}` declarations of every EXECUTABLE consumer of
+ * `filter.parameter` — the one shared "executable consumer" definition (see
+ * this module's own top-of-file doc comment): explicit `filter.targets`,
+ * when present and non-empty, each of which must be an `executableTileIds`
+ * member AND have at least one BOUND declaration of `filter.parameter` in
+ * `analysis` — a target missing either fails closed with its own diagnostic
+ * (and contributes no consumer entries), per target, so multiple bad targets
+ * each get their own diagnostic; else (no `targets`, or an empty array) every
+ * executable tile with a bound declaration of the parameter. A Filter source
+ * is never a consumer (see the module doc comment for why).
+ *
+ * `resolveFilterSelection` calls this internally; the session, the
+ * merge-feeding logic, and `validateDashboardSemantics` (whole-workspace
+ * authoring/import-time validation) call it directly so all three share
+ * EXACTLY this gathering step and can never drift apart on what counts as a
+ * consumer. Pure.
+ */
+export function gatherExecutableConsumers(
+  filter: FilterSelectionFilterDef,
+  analysis: ParameterAnalysis,
+  executableTileIds: ReadonlySet<string>,
+): { entries: { sourceId: string; type: string }[]; diagnostics: FilterSelectionDiagnostic[]; targetProblem: boolean } {
+  const name = filter.parameter;
+  const field = analysis.fields[name];
+  const diagnostics: FilterSelectionDiagnostic[] = [];
+  const entries: { sourceId: string; type: string }[] = [];
+  let targetProblem = false;
+  if (filter.targets && filter.targets.length) {
+    for (const targetId of filter.targets) {
+      if (!executableTileIds.has(targetId)) {
+        targetProblem = true;
+        diagnostics.push(err(
+          'filter-selection-target-not-executable',
+          `Filter "${filter.id}" target "${targetId}" is not an executable tile.`,
+          { filterId: filter.id, parameter: name, sourceId: targetId },
+        ));
+        continue;
+      }
+      const bound = (field?.declarations || []).filter((d) => d.bound && d.source === targetId);
+      if (!bound.length) {
+        targetProblem = true;
+        diagnostics.push(err(
+          'filter-selection-target-missing-declaration',
+          `Filter "${filter.id}" target "${targetId}" does not declare {${name}}.`,
+          { filterId: filter.id, parameter: name, sourceId: targetId },
+        ));
+        continue;
+      }
+      for (const d of bound) entries.push({ sourceId: targetId, type: d.type });
+    }
+  } else {
+    for (const d of field?.declarations || []) {
+      if (d.bound && executableTileIds.has(d.source)) entries.push({ sourceId: d.source, type: d.type });
+    }
+  }
+  return { entries, diagnostics, targetProblem };
+}
+
+/**
  * Resolve one Dashboard filter's curated-helper contract and effective
  * selection mode (#189).
  *
- * Consumer gathering:
- *  - explicit `filter.targets`, when present and non-empty: each target id
- *    must be an `executableTileIds` member AND have at least one BOUND
- *    declaration of `filter.parameter` in `analysis` — a target missing
- *    either fails closed with its own diagnostic (and contributes no
- *    consumer entries), per target, so multiple bad targets each get their
- *    own diagnostic;
- *  - no `targets` (or an empty array): every executable tile with a bound
- *    declaration of the parameter;
- *  - `dependentSources`' own declarations of the parameter are ALWAYS
- *    additional consumers, on top of either of the above.
+ * Consumer gathering: see `gatherExecutableConsumers` — the one shared
+ * "executable consumer" definition this function calls internally.
  *
  * Contract compatibility, over the gathered consumer declarations:
  *  - zero consumer declarations at all → `filter-selection-no-consumers`
@@ -159,46 +207,11 @@ export function resolveFilterSelection(
   filter: FilterSelectionFilterDef,
   analysis: ParameterAnalysis,
   executableTileIds: ReadonlySet<string>,
-  dependentSources: readonly FilterSelectionDependentSource[] = [],
 ): FilterSelectionResolution {
-  const diagnostics: FilterSelectionDiagnostic[] = [];
   const name = filter.parameter;
-  const field = analysis.fields[name];
-
-  // ── Gather every executable consumer's raw declaration of {name} ─────────
-  const entries: { sourceId: string; type: string }[] = [];
-  let targetProblem = false;
-  if (filter.targets && filter.targets.length) {
-    for (const targetId of filter.targets) {
-      if (!executableTileIds.has(targetId)) {
-        targetProblem = true;
-        diagnostics.push(err(
-          'filter-selection-target-not-executable',
-          `Filter "${filter.id}" target "${targetId}" is not an executable tile.`,
-          { filterId: filter.id, parameter: name, sourceId: targetId },
-        ));
-        continue;
-      }
-      const bound = (field?.declarations || []).filter((d) => d.bound && d.source === targetId);
-      if (!bound.length) {
-        targetProblem = true;
-        diagnostics.push(err(
-          'filter-selection-target-missing-declaration',
-          `Filter "${filter.id}" target "${targetId}" does not declare {${name}}.`,
-          { filterId: filter.id, parameter: name, sourceId: targetId },
-        ));
-        continue;
-      }
-      for (const d of bound) entries.push({ sourceId: targetId, type: d.type });
-    }
-  } else {
-    for (const d of field?.declarations || []) {
-      if (d.bound && executableTileIds.has(d.source)) entries.push({ sourceId: d.source, type: d.type });
-    }
-  }
-  for (const ds of dependentSources) {
-    for (const decl of ds.declarations) entries.push({ sourceId: ds.sourceId, type: decl.type });
-  }
+  const gathered = gatherExecutableConsumers(filter, analysis, executableTileIds);
+  const { entries, targetProblem } = gathered;
+  const diagnostics: FilterSelectionDiagnostic[] = [...gathered.diagnostics];
 
   // ── Resolve the agreed contract from `entries` ────────────────────────────
   let contract: FilterSelectionContract | null = null;

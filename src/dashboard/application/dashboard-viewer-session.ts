@@ -39,7 +39,7 @@ import { analyzeFilterSource, prepareFilterSource } from '../../core/filter-exec
 import type { FilterSourceAnalysis } from '../../core/filter-execution.js';
 import { readFilterOptions } from '../../core/filter-options.js';
 import { resolveFilterSelection, sameSelection } from '../../core/filter-selection.js';
-import type { FilterSelectionFilterDef, FilterSelectionDependentSource } from '../../core/filter-selection.js';
+import type { FilterSelectionFilterDef } from '../../core/filter-selection.js';
 import { mergeDashboardFilterHelpers } from '../../core/dashboard-filters.js';
 import type {
   FilterProvider, FilterHelperOption, FilterDiagnostic, MergeDashboardFilterHelpersResult,
@@ -607,8 +607,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   //
   // Review finding (major): `resolveFilterSelection` above only agrees over
   // this filter's own resolved TARGETS (explicit `def.targets`, else the
-  // tiles declaring the parameter) plus dependent sources — it never looks at
-  // a tile OUTSIDE that scope. But the per-wave merge
+  // tiles declaring the parameter) — it never looks at a tile OUTSIDE that
+  // scope (a Filter source is never a consumer at all — see
+  // `gatherExecutableConsumers`'s doc comment in `core/filter-selection.ts`
+  // for the single shared "executable consumer" definition and the #360
+  // cascading rule behind it). But the per-wave merge
   // (`mergeDashboardFilterHelpers`, `core/dashboard-filters.ts`) rejects a
   // curated field on `control.conflict` from `fieldControls(analysis)` —
   // computed DASHBOARD-WIDE, over every tile's declaration of the parameter,
@@ -629,33 +632,21 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
   for (const filter of filters) {
     if (!filter.sourceId) continue; // plain root filter — no contract, untouched
     const source = filterSources.get(filter.sourceId)!; // built above for every sourceId-bearing filter
-    // Every OTHER Filter source's own declarations of this parameter (#360:
-    // a Filter source may declare `{name:Type}` params fed by ANOTHER
-    // source's control). NOTE: #360's cascading rule already forbids any
-    // Filter source from depending on a SOURCE-BACKED parameter (this
-    // filter's own parameter always qualifies, since it has a `sourceId`) —
-    // any source that structurally declares it here would already carry its
-    // own `filter-source-cascading` diagnostic and never run. So in
-    // practice this is always empty for a source-backed filter; it is still
-    // wired through generically (cheap, and future-proof against this
-    // resolution ever being asked for a plain root filter too).
-    const dependentSources: FilterSelectionDependentSource[] = [];
-    for (const other of filterSources.values()) {
-      if (other.id === filter.sourceId) continue;
-      const field = other.analyzed.analysis.fields[filter.def.parameter];
-      if (!field || !field.declarations.length) continue;
-      dependentSources.push({
-        sourceId: other.id,
-        label: other.query ? queryName(other.query) : other.id,
-        declarations: field.declarations.map((d) => ({ type: d.type })),
-      });
-    }
+    // A Filter source is NEVER an executable consumer of its own filter's
+    // parameter (#360's single-layer cascading rule already forbids any
+    // Filter source from depending on a SOURCE-BACKED parameter — this
+    // filter's own parameter always qualifies, since it has a `sourceId` —
+    // so a source that structurally declared it would already carry its own
+    // `filter-source-cascading` diagnostic and never run). See
+    // `gatherExecutableConsumers`'s doc comment in `core/filter-selection.ts`
+    // for the one shared "executable consumer" definition this resolution
+    // (and the semantic validator's own construction-time re-check) both use.
     const filterSelectionDef: FilterSelectionFilterDef = {
       id: filter.def.id, parameter: filter.def.parameter,
       targets: Array.isArray(filter.def.targets) ? filter.def.targets : undefined,
       selection: filter.def.selection,
     };
-    const resolution = resolveFilterSelection(filterSelectionDef, analysis, executableTileIds, dependentSources);
+    const resolution = resolveFilterSelection(filterSelectionDef, analysis, executableTileIds);
     // The same signal `mergeDashboardFilterHelpers` gates `control.conflict`
     // on (`fieldControls(analysis)`, dashboard-wide) — checked here too, even
     // when `resolution` itself agreed, so this filter can never publish a

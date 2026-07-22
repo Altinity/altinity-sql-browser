@@ -286,8 +286,13 @@ describe('planImportQueries', () => {
 // --- planImportDashboard --------------------------------------------------------
 
 describe('planImportDashboard', () => {
+  // t1's query (p1) declares `{p:String}` so the source-backed filter `flt1`
+  // (`sourceQueryId: 'f1'`) has a valid selection-contract consumer — #189/
+  // #360's `resolveFilterSelection`, now run by `validateDashboardSemantics`
+  // for every source-backed filter, would otherwise flag zero consumers.
+  // This suite is about ID-rewriting through import, not filter contracts.
   const buildBundle = () => bundle({
-    queries: [panelQuery('p1', 'incoming p1'), filterQuery('f1', 'incoming f1')],
+    queries: [{ ...panelQuery('p1', 'incoming p1'), sql: 'SELECT {p:String}' }, filterQuery('f1', 'incoming f1')],
     dashboards: [dashboardDoc({
       id: 'd1', revision: 5,
       tiles: [{ id: 't1', queryId: 'p1' }],
@@ -386,8 +391,12 @@ describe('planReplaceWorkspace', () => {
 
   it('replaces queries AND Dashboard atomically when a source Dashboard is selected, including standalone queries', () => {
     const ws = workspace();
+    // t1's query (p1) declares `{p:String}` — see `buildBundle`'s own comment
+    // above for why a source-backed filter needs a valid consumer here.
     const bundleWithDashboard = bundle({
-      queries: [panelQuery('p1'), filterQuery('f1'), panelQuery('standalone')],
+      queries: [
+        { ...panelQuery('p1'), sql: 'SELECT {p:String}' }, filterQuery('f1'), panelQuery('standalone'),
+      ],
       dashboards: [dashboardDoc({
         id: 'd1', revision: 2,
         tiles: [{ id: 't1', queryId: 'p1' }],

@@ -3,11 +3,12 @@ import { analyzeParameterizedSources } from '../../src/core/param-pipeline.js';
 import type { ParameterAnalysis } from '../../src/core/param-pipeline.js';
 import {
   resolveFilterSelection,
+  gatherExecutableConsumers,
   sameSelection,
   canonicalizeSelection,
   reconcileSelection,
 } from '../../src/core/filter-selection.js';
-import type { FilterSelectionFilterDef, FilterSelectionDependentSource } from '../../src/core/filter-selection.js';
+import type { FilterSelectionFilterDef } from '../../src/core/filter-selection.js';
 
 // Fixtures are round-tripped through the real `analyzeParameterizedSources`
 // (the repo's convention — see `tests/unit/filter-bar.test.ts`'s `paramsFor`
@@ -174,37 +175,54 @@ describe('resolveFilterSelection — consumer resolution', () => {
     expect(codesOf(r.diagnostics)).toEqual(['filter-selection-no-consumers']);
   });
 
-  it('dependent Filter source declarations are ALWAYS additional consumers, agreeing case', () => {
-    const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE x = {x:UInt8}' }]);
-    const dependents: FilterSelectionDependentSource[] = [
-      { sourceId: 'dep1', label: 'Dependent filter', declarations: [{ type: 'UInt8' }] },
-    ];
-    const r = resolveFilterSelection(filterDef(), analysis, new Set(['a']), dependents);
+  // #360's single-layer cascading rule: a Filter source that itself depends on
+  // a SOURCE-BACKED parameter is cascading-invalid and never executes, and
+  // only source-backed filters get a selection contract — so a non-tile
+  // executable consumer of a contract-bearing parameter cannot exist. A
+  // Filter source's own declaration of the parameter therefore NEVER
+  // influences the contract, even when it conflicts: it simply isn't in
+  // `executableTileIds` (a Filter source is not a tile), so
+  // `gatherExecutableConsumers` never picks it up, agreeing or not.
+  it('a Filter source\'s own declaration of the parameter — even a conflicting one — never influences the contract', () => {
+    const analysis = analysisFor([
+      { id: 'a', sql: 'SELECT * FROM t WHERE x = {x:UInt8}' },
+      { id: 'dep1', sql: 'SELECT * FROM u WHERE x = {x:String}' }, // a Filter source's own analyzed declaration
+    ]);
+    const r = resolveFilterSelection(filterDef(), analysis, new Set(['a']));
     expect(r.diagnostics).toEqual([]);
     expect(r.contract).toEqual({ array: false, type: expect.objectContaining({ base: 'UInt8' }) });
-  });
-
-  it('dependent Filter source declarations conflicting with tile declarations → type-conflict naming the dependent source', () => {
-    const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE x = {x:UInt8}' }]);
-    const dependents: FilterSelectionDependentSource[] = [
-      { sourceId: 'dep1', declarations: [{ type: 'String' }] },
-    ];
-    const r = resolveFilterSelection(filterDef(), analysis, new Set(['a']), dependents);
-    expect(r.mode).toBeNull();
-    expect(codesOf(r.diagnostics)).toEqual(['filter-selection-type-conflict']);
-    expect(r.diagnostics[0].message).toContain('dep1');
-    expect(r.diagnostics[0].message).toContain('UInt8');
-    expect(r.diagnostics[0].message).toContain('String');
-  });
-
-  it('dependent-source-only consumers (no targets, no tile declares the parameter) still resolve a contract', () => {
-    const analysis = analysisFor([{ id: 'a', sql: 'SELECT 1' }]);
-    const dependents: FilterSelectionDependentSource[] = [
-      { sourceId: 'dep1', declarations: [{ type: 'String' }] },
-    ];
-    const r = resolveFilterSelection(filterDef(), analysis, new Set(['a']), dependents);
-    expect(r.diagnostics).toEqual([]);
     expect(r.mode).toBe('single');
+  });
+
+  it('a Filter-source-only declaration (no executable tile declares the parameter) resolves no consumers', () => {
+    const analysis = analysisFor([
+      { id: 'a', sql: 'SELECT 1' },
+      { id: 'dep1', sql: 'SELECT * FROM u WHERE x = {x:String}' },
+    ]);
+    const r = resolveFilterSelection(filterDef(), analysis, new Set(['a']));
+    expect(r.mode).toBeNull();
+    expect(codesOf(r.diagnostics)).toEqual(['filter-selection-no-consumers']);
+  });
+});
+
+describe('gatherExecutableConsumers', () => {
+  it('is the shared gathering step resolveFilterSelection calls internally — same entries/diagnostics either way', () => {
+    const analysis = analysisFor([
+      { id: 'a', sql: 'SELECT * FROM t WHERE x = {x:UInt8}' },
+      { id: 'b', sql: 'SELECT 1' },
+    ]);
+    const r = gatherExecutableConsumers(filterDef({ targets: ['a', 'b'] }), analysis, new Set(['a', 'b']));
+    expect(r.entries).toEqual([{ sourceId: 'a', type: 'UInt8' }]);
+    expect(codesOf(r.diagnostics)).toEqual(['filter-selection-target-missing-declaration']);
+    expect(r.targetProblem).toBe(true);
+  });
+
+  it('no-targets form gathers every executable tile with a bound declaration, no diagnostics', () => {
+    const analysis = analysisFor([{ id: 'a', sql: 'SELECT * FROM t WHERE x = {x:UInt8}' }]);
+    const r = gatherExecutableConsumers(filterDef(), analysis, new Set(['a']));
+    expect(r.entries).toEqual([{ sourceId: 'a', type: 'UInt8' }]);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.targetProblem).toBe(false);
   });
 });
 
