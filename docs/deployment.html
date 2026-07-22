@@ -46,7 +46,7 @@
         <tbody>
           <tr><td class="feat">Who it's for</td><td>A whole team, shared URL</td><td>One developer, your laptop</td><td>Local/shared testing</td><td>Contributors</td></tr>
           <tr><td class="feat">Served from</td><td>ClickHouse <code class="k">/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td><td><code class="k">localhost:8900/sql</code></td></tr>
-          <tr><td class="feat">Prerequisites</td><td>Cluster admin + an IdP</td><td><code class="k">python3</code> + curl</td><td>Docker</td><td>Node.js + npm</td></tr>
+          <tr><td class="feat">Prerequisites</td><td>Cluster admin + an IdP</td><td><code class="k">python3</code> + curl</td><td>Docker</td><td>Node.js 22+ + npm</td></tr>
           <tr><td class="feat">Auth</td><td class="yes">SSO (OIDC) or Basic</td><td>Your saved connections</td><td>Your saved connections</td><td>Your saved connections</td></tr>
           <tr><td class="feat">Connects to</td><td>That cluster</td><td>Any cluster in your config</td><td>Any cluster in your config</td><td>Any cluster in your config</td></tr>
           <tr><td class="feat">Install</td><td><code class="k">deploy/install.sh</code></td><td>one <code class="k">curl | sh</code></td><td><code class="k">docker compose up --build</code></td><td><code class="k">npm run local</code></td></tr>
@@ -137,6 +137,8 @@ SQL_BROWSER_PROBE=0 docker compose up --build   <span class="c"># skip startup /
   <div class="wrap narrow">
     <div class="eyebrow">Mode 4 · From source</div>
     <h2>Build and develop</h2>
+    <p>Source builds require Node.js 22 or newer. With <code class="k">nvm</code>, run
+      <code class="k">nvm use</code> in the checkout to select the committed version.</p>
     <pre class="code">git clone https://github.com/Altinity/altinity-sql-browser
 cd altinity-sql-browser
 npm ci

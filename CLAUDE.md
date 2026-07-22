@@ -33,9 +33,11 @@ all bundled — see hard rule 4). Quality is held by tests.
    (see README "Configuring OAuth").
 4. **The build is esbuild only; runtime deps are rare and deliberate.** Source
    files are the tested files; esbuild bundles `src/main.ts` → `dist/sql.html`.
-   `package-lock.json` is committed; use `npm ci` for a reproducible dependency
-   graph in local, CI, and release builds, and update the lock only with an
-   intentional dependency change.
+   Source development requires Node.js 22 or newer; `.nvmrc` selects Node 22,
+   `package.json` declares the minimum, and `.npmrc` makes unsupported installs
+   fail clearly. `package-lock.json` is committed; use `npm ci` for a
+   reproducible dependency graph in local, CI, and release builds, and update
+   the lock only with an intentional dependency change.
    There are **six** bundled runtime dependencies — **CodeMirror 6** (the SQL
    editor, saved-query Spec JSON editor, and read-only source viewer, behind
    injected seams — #21/#212/#213),

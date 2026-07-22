@@ -5,6 +5,9 @@
   "description": "A self-contained, OAuth-gated SQL browser for any ClickHouse cluster. Vanilla ES modules, served from ClickHouse itself as one HTML file with zero third-party requests.",
   "type": "module",
   "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "prebuild": "npm run check:schemas",
     "build": "node build/build.mjs",

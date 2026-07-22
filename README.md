@@ -511,7 +511,12 @@ FROM ontime
 
 ## Quick start (development)
 
+Source development requires **Node.js 22 or newer**. The committed `.nvmrc`
+selects Node 22 for version managers such as `nvm`; `npm ci` exits with an
+unsupported-engine error on older Node releases.
+
 ```bash
+nvm use                # optional; reads Node 22 from .nvmrc
 npm ci                 # exact dependency tree from the committed lockfile
 npm test               # vitest + 100% coverage gate
 npm run build          # → dist/sql.html (single file)
@@ -634,7 +639,7 @@ different interface. The probe **prints a reachability table** and skips any hos
 with no HTTP interface on any port (e.g. a native-only endpoint) so it isn't a dead
 pick. Set `SQL_BROWSER_PROBE=0` to skip probing and keep all hosts (`8443`/`8123`).
 
-**From a checkout** (also builds the SPA, needs Node):
+**From a checkout** (also builds the SPA, requires Node.js 22 or newer):
 
 ```bash
 npm run local          # build + serve → open http://localhost:8900/sql
