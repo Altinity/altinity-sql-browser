@@ -801,6 +801,42 @@ describe('filter-bar bridge (controls / getFilterField / applyFilter)', () => {
 });
 
 describe('per-tile control and lifecycle', () => {
+  it('destroy aborts a tile request that is still in flight', async () => {
+    let signal: AbortSignal | undefined;
+    const { exec } = makeExec((_sql, req) => {
+      signal = req.signal;
+      return new Promise(() => {});
+    });
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({ tiles: [tile('t1', 'q1')] }), exec,
+      queries: [query('q1', 'SELECT 1')],
+    }));
+    void session.start();
+    await flush();
+    expect(signal?.aborted).toBe(false);
+    session.destroy();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('a plain-filter commit stops before its affected tile wave when authentication fails', async () => {
+    let tokenOk = true;
+    const ensureFreshToken = vi.fn(async () => tokenOk);
+    const { exec, calls } = makeExec();
+    const session = createDashboardViewerSession(makeDeps({
+      document: doc({
+        tiles: [tile('t1', 'q1')],
+        filters: [{ id: 'f1', parameter: 'p', defaultActive: false, defaultValue: '' }],
+      }),
+      exec, connection: { ensureFreshToken },
+      queries: [query('q1', 'SELECT {p:String}')],
+    }));
+    await session.start();
+    const before = calls.length;
+    tokenOk = false;
+    await session.applyFilter('f1', 'x', true);
+    expect(calls).toHaveLength(before);
+  });
+
   it('refreshTile re-runs one tile; refreshTile is a no-op for text/missing/invalid tiles', async () => {
     const { exec, calls } = makeExec(() => ({ columns: [{ name: 'n' }], rows: [[1]] }));
     const document = doc({ tiles: [tile('t1', 'q1'), tile('txt', 'q2'), tile('ghost', 'gone')] });

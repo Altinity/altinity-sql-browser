@@ -5,6 +5,7 @@ import { createApp } from '../../src/ui/app.js';
 import { createCodeMirrorEditor } from '../../src/editor/codemirror-adapter.js';
 import { createSpecEditor } from '../../src/editor/spec-editor.js';
 import type { SpecEditorApp } from '../../src/editor/spec-editor.js';
+import type { EditorPort } from '../../src/editor/editor-port.types.js';
 import type { CodeViewerOptions } from '../../src/editor/code-viewer.types.js';
 import { AST_PROGRESSIVE_THRESHOLD } from '../../src/net/ch-client.js';
 import { libraryControls, openFileMenu } from '../../src/ui/file-menu.js';
@@ -35,6 +36,19 @@ function jwt(payload: Record<string, unknown>): string {
   return `${b({ alg: 'RS256' })}.${b(payload)}.sig`;
 }
 const validToken = jwt({ email: 'me@example.com', exp: Math.floor(Date.now() / 1000) + 3600 });
+const liveEditors = new Set<EditorPort>();
+
+function trackedEditor(app: Parameters<typeof createCodeMirrorEditor>[0]): EditorPort {
+  const editor = createCodeMirrorEditor(app);
+  liveEditors.add(editor);
+  return editor;
+}
+
+function trackedSpecEditor(app: SpecEditorApp): ReturnType<typeof createSpecEditor> {
+  const editor = createSpecEditor(app);
+  liveEditors.add(editor);
+  return editor;
+}
 
 /** A minimal sessionStorage-like stub — a real `Storage` structurally
  * (length/key/clear included), so it plugs straight into `env.sessionStorage`
@@ -339,8 +353,8 @@ function env(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
     sessionStorage: memSession({ oauth_id_token: validToken }),
     crypto: globalThis.crypto,
     Dagre: dagre,
-    Editor: createCodeMirrorEditor, // the real adapter — app tests exercise editor-backed flows (#143/#21)
-    SpecEditor: (app) => createSpecEditor(asSpecEditorApp(app)),
+    Editor: trackedEditor, // the real adapter — app tests exercise editor-backed flows (#143/#21)
+    SpecEditor: (app) => trackedSpecEditor(asSpecEditorApp(app)),
     CodeViewer: vi.fn(() => ({ setText: vi.fn(), setLanguage: vi.fn(), setWrap: vi.fn(), focus: vi.fn(), destroy: vi.fn() })),
     fetch: asFetch(makeFetch([])),
     now: () => 0,
@@ -360,7 +374,11 @@ function env(over: Partial<CreateAppEnv> = {}): CreateAppEnv {
 }
 
 beforeEach(() => { document.body.innerHTML = ''; });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  for (const editor of liveEditors) editor.destroy();
+  liveEditors.clear();
+  vi.unstubAllGlobals();
+});
 
 describe('createApp basics', () => {
   it('env.specValidators accepts an already-built validator service as-is (not re-wrapped)', () => {
@@ -475,6 +493,38 @@ describe('createApp basics', () => {
     expect(fallback.setWrap(true)).toBeUndefined();
     expect(fallback.focus()).toBeUndefined();
     expect(fallback.destroy()).toBeUndefined();
+  });
+
+  it('exercises headless controller wrappers and guards before the DOM mounts', async () => {
+    const app = createApp(env());
+    expect(app.setRunBtn(false)).toBeUndefined();
+    expect(app.setExportBtn(false)).toBeUndefined();
+    expect(app.cssVar('--missing')).toBe('');
+    expect(app.genId()).toBeTruthy();
+    expect(app.openDocDisambiguation('missing')).toBeUndefined();
+    expect(app.showLogin('Sign in again')).toBeUndefined();
+    expect(app.root!.textContent).toContain('Sign in again');
+    await expect(app.serializeWrite(async () => { throw new Error('expected'); })).rejects.toThrow('expected');
+    await expect(app.flushWorkspaceWrites()).resolves.toBeUndefined();
+
+    const dashboardApp = createApp(env());
+    await dashboardApp.loadDashboardWorkspace();
+    await expect(dashboardApp.renderDashboard()).resolves.toBeUndefined();
+    dashboardApp.dashboardReadOnly = true;
+    await expect(dashboardApp.refreshWorkspaceFromStore()).resolves.toBeUndefined();
+    dashboardApp.dashboardReadOnly = false;
+    const change = { type: 'workspace-changed' as const, sourceTabId: 'other', workspaceId: 'w1' };
+    dashboardApp.onExternalWorkspaceChange(change);
+    dashboardApp.onExternalWorkspaceChange(change); // coalesced while the first refresh is queued
+    await dashboardApp.flushWorkspaceWrites();
+  });
+
+  it('returns an unlinked tab forced into Spec mode to SQL mode', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.activeTab().editorMode = 'spec';
+    app.updateEditorModeUi!();
+    expect(app.activeTab().editorMode).toBe('sql');
   });
 });
 
@@ -611,6 +661,21 @@ describe('app cross-tab invalidation (#343)', () => {
     await a.mutateWorkspace(() => ({ candidate: seed() }));
     expect(aSeen).toHaveLength(0); // guard drops A's own poke
     expect(bSeen).toEqual([{ type: 'workspace-changed', sourceTabId: a.sourceTabId, workspaceId: 'w1' }]);
+  });
+
+  it('the construction-time invalidation hook safely absorbs a synchronous channel delivery', () => {
+    const broadcastChannel = (): BroadcastChannelPort => {
+      let handler: ((event: { data: unknown }) => void) | null = null;
+      return {
+        get onmessage() { return handler; },
+        set onmessage(next) {
+          handler = next;
+          next?.({ data: { type: 'workspace-changed', sourceTabId: 'other-tab', workspaceId: 'w1' } });
+        },
+        postMessage() {}, close() {},
+      };
+    };
+    expect(() => createApp(env({ broadcastChannel }))).not.toThrow();
   });
 
   it('ignores malformed or mistyped channel messages', async () => {
@@ -2477,6 +2542,7 @@ describe('query run', () => {
       app.state.schema.value = [{ db: 'd', tables: [{ name: 'events', columns: null }] }];
       app.activeTab().sqlDraft = 'SELECT * FROM events WHERE status = {s:String} AND r = {region:String}';
       app.renderVarStrip();
+      const oldStrip = app.dom.varStrip!;
       const region = qsa<HTMLInputElement>(app.dom.varStrip!, '.var-input')[1];
       region.focus(); // real focus: sets document.activeElement AND fires the field's focus listener (dropdown opens)
       region.value = 'us-';
@@ -2495,6 +2561,7 @@ describe('query run', () => {
       region.blur();
       const rebuilt = qsa<HTMLInputElement>(app.dom.varStrip!, '.var-input');
       expect(rebuilt[1]).not.toBe(region); // strip was rebuilt after blur
+      oldStrip.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); // stale handler sees no pending rebuild
       expect(rebuilt[1].value).toBe('us-'); // the typed value carried through varValues
       rebuilt[0].dispatchEvent(new Event('focus', { bubbles: true }));
       const opts = [...qsa(app.dom.varStrip!, '[role="option"]')].map((o) => o.textContent);
@@ -3243,6 +3310,24 @@ describe('share + star + columns', () => {
     expect(app.dom.saveBtn!.textContent).toContain('Saved');
     expect(qs(document, '.save-popover')).toBeNull(); // closed
   });
+  it('save popover keyboard handlers reject a blank name and commit from name or description', async () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.activeTab().sqlDraft = 'SELECT 42';
+    app.actions.save();
+    const input = qs<HTMLInputElement>(document, '.save-popover .sp-input');
+    const description = qs<HTMLTextAreaElement>(document, '.save-popover .sp-desc');
+    input.value = '   ';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.state.savedQueries).toEqual([]);
+    description.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(app.state.savedQueries).toEqual([]);
+    input.value = 'Keyboard save';
+    description.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.state.savedQueries[0].spec.name).toBe('Keyboard save');
+  });
   it('save popover: re-opening is idempotent, Esc closes, dirty edit flips "Saved"→"Save"', async () => {
     const app = createApp(env());
     app.renderApp();
@@ -3421,6 +3506,15 @@ describe('share + star + columns', () => {
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(qs(document, '.save-popover')).toBeNull();
   });
+  it('save popover Cancel closes without saving', () => {
+    const app = createApp(env());
+    app.renderApp();
+    app.activeTab().sqlDraft = 'SELECT 1';
+    app.actions.save();
+    qs(document, '.save-popover .sp-cancel').dispatchEvent(new Event('click'));
+    expect(qs(document, '.save-popover')).toBeNull();
+    expect(app.state.savedQueries).toEqual([]);
+  });
   it('restoring a saved query links the tab → Save button reads "Saved"', () => {
     const app = createApp(env());
     app.renderApp();
@@ -3535,6 +3629,7 @@ describe('share + star + columns', () => {
     app.renderApp();
     app.state.savedQueries = [savedQueryFixture({ id: 's9', name: 'Fav', sql: 'SELECT 9' })];
     app.actions.loadIntoNewTab(asQueryOrName(app.state.savedQueries[0]));
+    expect(app.actions.formatSpec()).toBeUndefined(); // SQL mode guard
     app.actions.setEditorMode('spec');
     app.specEditor.replaceDocument('{"name":');
     app.actions.formatSpec();
@@ -3944,6 +4039,13 @@ describe('exhaustive controller coverage', () => {
     app.activeTab().result = null;
     app.actions.copyResult();
     expect(qs(document, '.share-toast').textContent).toBe('Nothing to copy');
+  });
+  it('copySnapshot action copies the supplied snapshot', async () => {
+    const writeText = vi.fn(async () => {});
+    const app = createApp(env({ window: fakeWin(), navigator: { clipboard: asClipboard({ writeText }) } }));
+    app.actions.copySnapshot({ columns: [{ name: 'a' }], rows: [['1']], rawText: null }, document);
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('a\n1');
   });
   it('copyResult: no clipboard → not-supported; rejection → failed', async () => {
     const app = createApp(env({ window: fakeWin(), navigator: {} }));

@@ -167,7 +167,6 @@ function stripTrailingTrivia(text: string): string {
   let end = text.length;
   for (let si = spans.length - 1; si >= 0;) {
     const sp = spans[si];
-    if (sp.start >= end) { si -= 1; continue; }
     if (sp.kind === 'comment') {
       if (!sp.closed) break;      // never strip an unterminated comment
       end = sp.start; si -= 1; continue;

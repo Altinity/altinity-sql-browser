@@ -111,12 +111,13 @@ describe('renderDocMarkdown — admonitions', () => {
 
 describe('renderDocMarkdown — inline rendering', () => {
   it('renders strong, em, inline code, and text as their own leaf elements', () => {
-    const el = renderDocMarkdown(document, result('a **b** *c* `d` e'));
+    const el = renderDocMarkdown(document, result('a **b** *c* `d` ~~e~~ f'));
     const p = el.querySelector('p')!;
     expect(p.querySelector('strong')!.textContent).toBe('b');
     expect(p.querySelector('em')!.textContent).toBe('c');
     expect(p.querySelector('code')!.textContent).toBe('d');
-    expect(p.textContent).toBe('a b c d e');
+    expect(p.querySelector('del')!.textContent).toBe('e');
+    expect(p.textContent).toBe('a b c d e f');
   });
 
   it('renders an approved link with href verbatim, target=_blank, rel=noopener noreferrer', () => {

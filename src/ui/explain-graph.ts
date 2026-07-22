@@ -590,7 +590,7 @@ interface InteractionController {
 // lives in core/graph-layout.js; this only mutates the DOM + records positions.
 function attachSchemaInteractions(
   canvas: HTMLElement, svg: SVGElement, built: DrawnRichGraph, targetDoc: Document,
-  positions: PositionMap | null | undefined, onChange: () => void = () => {},
+  positions: PositionMap | null | undefined, onChange: () => void,
 ): InteractionController {
   const nodes = built.nodes;
   const edges = built.edges;

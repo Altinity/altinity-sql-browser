@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, type Mock } from 'vitest';
 import {
   isDashboardRoute, configBase,
   normalizeDashLayout, normalizeDashCols, DASH_TILE_ROW_CAP, DASH_TILE_BYTE_CAP, DASH_TABLE_DISPLAY_CAP,
@@ -271,7 +271,7 @@ const q = (id: string, sql: string, extra: Partial<SavedQueryFixture> = {}): Sav
 
 interface WsOver {
   id?: string;
-  tiles?: { id: string; queryId: string }[];
+  tiles?: NonNullable<StoredWorkspaceV1['dashboard']>['tiles'];
   filters?: Record<string, unknown>[];
   layout?: Record<string, unknown>;
   queries?: ReturnType<typeof savedQuery>[];
@@ -290,7 +290,7 @@ const wsWith = (over: WsOver = {}) => ({
 function dashApp(opts: {
   workspace?: ReturnType<typeof wsWith> | null;
   responder?: ExecResponder;
-  commit?: ReturnType<typeof vi.fn>;
+  commit?: Mock<App['workspace']['commit']>;
   savedQueries?: ReturnType<typeof savedQuery>[];
 } = {}) {
   const { executeRead, calls } = makeExec(opts.responder);
@@ -449,6 +449,12 @@ describe('renderDashboard — read-flip to dashboard.tiles (#286)', () => {
     expect(qs(app.root, '.dash-fav span:last-child')?.textContent).toBe('0 tiles');
   });
 
+  it('uses the library name when the dashboard title is empty', async () => {
+    const { app } = dashApp({ workspace: wsWith({ title: '', tiles: [] }) });
+    await render(app);
+    expect(qs(app.root, '.dash-title')?.textContent).toBe('W');
+  });
+
   it('falls back to an empty dashboard when no workspace resolves', async () => {
     const { app } = dashApp({ workspace: null, savedQueries: [q('q1', 'SELECT 1', { favorite: true })] });
     await render(app);
@@ -586,6 +592,37 @@ describe('renderDashboard — reorder (Command/Ctrl pointer-drag) + sort (#153/#
     expect(commit).not.toHaveBeenCalled();
     expect(qs(app.root, '.dash-grid')?.classList.contains('dash-reordering')).toBe(false);
     expect(cards[0].classList.contains('dash-floating')).toBe(false);
+  });
+
+  it('ignores non-primary presses and presses originating on tile action chrome', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const card = qs<HTMLElement>(app.root, '.dash-tile');
+    const right = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, metaKey: true });
+    card.dispatchEvent(right);
+    expect(right.defaultPrevented).toBe(false);
+    const action = document.createElement('button');
+    action.className = 'dash-gg-del';
+    card.appendChild(action);
+    const actionDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, metaKey: true });
+    action.dispatchEvent(actionDown);
+    expect(actionDown.defaultPrevented).toBe(false);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('forces a real box while dragging a card whose computed display is contents', async () => {
+    const { app } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    const original = window.getComputedStyle.bind(window);
+    const styleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((el) => {
+      const style = original(el);
+      return el === cards[0] ? new Proxy(style, { get: (target, key) => key === 'display' ? 'contents' : Reflect.get(target, key) }) : style;
+    });
+    pointerDragTo(cards, 0, tileCenter(1), { metaKey: true });
+    expect(cards[0].style.display).toBe(''); // cleanup restores the pre-drag style
+    styleSpy.mockRestore();
   });
 
   it('⌘-drag (metaKey) completes a move and persists the new order', async () => {
@@ -2910,6 +2947,17 @@ describe('renderDashboard — compound time-range control (#335)', () => {
 // UI folds `optionsRev` into the filter-bar rebuild signature and renders
 // each diagnostic's severity as its own `is-*` class.
 describe('renderDashboard — filter-source runtime rebuild + diagnostics (#359)', () => {
+  it('renders presentation diagnostics from the viewer state', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', 'SELECT 1', { panel: { cfg: { type: 'kpi' } } })],
+        tiles: [{ id: 'bad', queryId: 'q1', presentation: { variant: 'missing' } }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.dash-config-diagnostic.is-error').textContent).toContain('missing');
+  });
+
   it('rebuilds the filter bar when curated option CONTENT changes (same length), not on an unchanged republish', async () => {
     let call = 0;
     const { app } = dashApp({
@@ -3506,7 +3554,7 @@ function modeApp(opts: {
   workspace?: ReturnType<typeof wsWith> | null;
   openSource?: TestApp['dashboardOpenSource'];
   detached?: ReturnType<typeof wsWith> | null;
-  consume?: ReturnType<typeof vi.fn>;
+  consume?: Mock<TestApp['consumeDashboardHandoff']>;
   responder?: ExecResponder;
 } = {}) {
   const built = dashApp({ workspace: opts.workspace, responder: opts.responder });
@@ -3754,6 +3802,20 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
     expect(app.state.workspaceId).toBe('w'); // the whole projection ran, not just the dashboard field
   });
 
+  it('drops an optimistic command when the dashboard disappeared before dequeue', async () => {
+    const { app, commit } = dashApp({ workspace: twoTiles() });
+    await render(app);
+    app.workspace.loadCurrent = vi.fn(async () => ({
+      storageVersion: 1 as const, id: 'w', name: 'W', queries: [], dashboard: null,
+    }));
+    const cards = qsa<HTMLElement>(app.root, '.dash-tile');
+    stubTileRects(cards);
+    dragTile(cards, 1, 0);
+    await flush();
+    expect(commit).not.toHaveBeenCalled();
+    expect(qs(document, '.share-toast').textContent).toContain('no longer applies');
+  });
+
   it('a successful change-layout (flow preset) projects the committed workspace, including the new revision', async () => {
     const { app, commit } = dashApp({ workspace: twoTiles() });
     await render(app);
@@ -3814,7 +3876,7 @@ describe('renderDashboard — the serialized write pipeline (#341)', () => {
       if (seen.length === 1) return new Promise((resolve) => { resolveFirst = resolve; }).then(() => result);
       return Promise.resolve(result);
     });
-    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as ReturnType<typeof vi.fn> });
+    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);
     pickLayout(app.root, 'columns-2'); // first — deliberately slow to resolve
     pickLayout(app.root, 'columns-3'); // second — fired while the first is still pending
@@ -4123,7 +4185,7 @@ describe('renderDashboard — external-workspace rebuild (#343 step 6)', () => {
     const commit = vi.fn((candidate: StoredWorkspaceV1) => new Promise((resolve) => {
       resolveCommit = () => resolve({ ok: true, workspace: candidate, dashboardRevision: candidate.dashboard!.revision });
     }));
-    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as ReturnType<typeof vi.fn> });
+    const { app } = dashApp({ workspace: twoTiles(), commit: commit as unknown as Mock<App['workspace']['commit']> });
     await render(app);
     const loadSpy = vi.spyOn(app, 'loadDashboardWorkspace');
     pickLayout(app.root, 'columns-2'); // dispatch a command whose commit stays pending

@@ -428,6 +428,17 @@ describe('schema lineage graph', () => {
     expect(document.body.contains(overlay)).toBe(false); // second Esc closes overlay
   });
 
+  it('closing the overlay tears down an open detail pane', () => {
+    openSchemaView(overlayApp({ openNodeDetail: vi.fn() })).render(GRAPH);
+    const overlay = overlayOf();
+    const pane = document.createElement('div');
+    pane.className = 'schema-detail';
+    qs(overlay, '.graph-overlay-panel').appendChild(pane);
+    qs<HTMLElement>(overlay, '.graph-overlay-close').click();
+    expect(document.querySelector('.schema-detail')).toBeNull();
+    expect(document.body.contains(overlay)).toBe(false);
+  });
+
   it('falls back to the overlay using the global document when app has none', () => {
     const view = openSchemaView({ Dagre: dagre, openWindow: () => null, actions: { openNodeDetail: vi.fn() }, state: detachedState() } as DetachedGraphApp);
     view.render(GRAPH);
@@ -562,6 +573,18 @@ describe('openSchemaView — real browser tab', () => {
     actions: { openNodeDetail: vi.fn(), insertCreate: vi.fn() }, state: detachedState(), ...over,
   } as DetachedGraphApp);
   const stub = (canvas: HTMLElement): void => { canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 } as DOMRect); };
+
+  it('pagehide tears down an open detail pane before the child document is discarded', () => {
+    const win = makeWin();
+    const view = openSchemaView(tabApp(win));
+    stub(qs<HTMLElement>(win.document, '.graph-overlay-canvas'));
+    view.render(GRAPH);
+    const pane = win.document.createElement('div');
+    pane.className = 'schema-detail';
+    win.document.body.appendChild(pane);
+    win.fire('pagehide');
+    expect(win.document.querySelector('.schema-detail')).toBeNull();
+  });
 
   it('builds the graph in the child document: copies CSS, mirrors theme, fills the tab', () => {
     document.documentElement.setAttribute('data-theme', 'dark'); // data-density left unset → skipped

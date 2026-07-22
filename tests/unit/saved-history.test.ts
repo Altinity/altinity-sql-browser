@@ -88,6 +88,17 @@ describe('renderSavedHistory', () => {
     expect(app.actions.run).not.toHaveBeenCalled();
   });
 
+  it('saved: a queryless panel with no remembered view still opens the Panel drawer', () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    app.state.resultView.value = 'table';
+    setSaved(app, [{ id: 's1', name: 'Text', sql: '', panel: { cfg: { type: 'text', content: 'Hello' } } }]);
+    renderSavedHistory(app);
+    click(qs(savedList(app), '.saved-row'));
+    expect(app.actions.run).not.toHaveBeenCalled();
+    expect(app.state.resultView.value).toBe('panel');
+  });
+
   it('saved: opens a Filter badge directly in Spec at the role', () => {
     const app = makeApp();
     app.state.sidePanel.value = 'saved';
@@ -356,6 +367,26 @@ describe('renderSavedHistory', () => {
     reName.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(app.state.editingSavedId.value).toBeNull();
     expect(queryName(app.state.savedQueries[0])).toBe('New');
+  });
+
+  it('saved: rename focuses a linked Spec draft that became invalid after the form opened', async () => {
+    const app = makeApp();
+    app.state.sidePanel.value = 'saved';
+    setSaved(app, [{ id: 's1', name: 'Old', sql: '1' }]);
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    renderSavedHistory(app);
+    click(byTitle(savedList(app), 'Edit name & description'));
+    const name = qs<HTMLInputElement>(savedList(app), '.sv-edit-name');
+    tab.specParsed = null;
+    tab.specText = '{';
+    tab.specDiagnostics = [{ code: 'invalid-json', message: 'invalid JSON' }];
+    tab.dirtySpec = true;
+    name.value = 'New';
+    name.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+    expect(queryName(app.state.savedQueries[0])).toBe('Old');
   });
   it('saved: edit form — description prefilled; ⌘/Ctrl+Enter + Save commit, Escape/Cancel + empty name revert', async () => {
     const app = makeApp();

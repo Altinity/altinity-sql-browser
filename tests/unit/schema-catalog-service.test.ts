@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mocked } from 'vitest';
 import { signal } from '@preact/signals-core';
 import { createSchemaCatalogService } from '../../src/application/schema-catalog-service.js';
 import type {
@@ -43,15 +43,11 @@ function makeState(initial: unknown[] | null = null): SchemaCatalogStateSlice {
   };
 }
 
-function makeHooks(): {
-  onConnStatusChanged: ReturnType<typeof vi.fn>;
-  renderVarStrip: ReturnType<typeof vi.fn>;
-  refreshEditorReference: ReturnType<typeof vi.fn>;
-} & SchemaCatalogHooks {
+function makeHooks(): Mocked<Required<SchemaCatalogHooks>> {
   return {
-    onConnStatusChanged: vi.fn(),
-    renderVarStrip: vi.fn(),
-    refreshEditorReference: vi.fn(),
+    onConnStatusChanged: vi.fn<NonNullable<SchemaCatalogHooks['onConnStatusChanged']>>(),
+    renderVarStrip: vi.fn<SchemaCatalogHooks['renderVarStrip']>(),
+    refreshEditorReference: vi.fn<SchemaCatalogHooks['refreshEditorReference']>(),
   };
 }
 
@@ -864,6 +860,47 @@ describe('#315 system.documentation capability + version policy', () => {
   const docColumns3 = ['name', 'type', 'description'];
   const docColumns4 = ['name', 'type', 'description', 'source'];
 
+  it('dedupes a documentation capability probe across different lookup keys', async () => {
+    let resolveCols!: (value: string[]) => void;
+    const columns = new Promise<string[]>((resolve) => { resolveCols = resolve; });
+    const loadDocTableColumns = vi.fn(() => columns);
+    const loadDocRow = vi.fn(async () => []);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'], loadDocRow,
+    }));
+    const first = svc.docEntry({ kind: 'setting', name: 'a' });
+    const second = svc.docEntry({ kind: 'setting', name: 'b' });
+    resolveCols(docColumns4);
+    await Promise.all([first, second]);
+    expect(loadDocTableColumns).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns and caches missing documentation rows', async () => {
+    const loadDocRow = vi.fn(async () => []);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => docColumns4), loadDocRow,
+    }));
+    expect(await svc.docEntry({ kind: 'setting', name: 'absent' })).toEqual({ status: 'missing' });
+    expect(await svc.docEntry({ kind: 'setting', name: 'absent' })).toEqual({ status: 'missing' });
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a documentation row invalidated after its fetch starts', async () => {
+    let resolveRow!: (value: Record<string, unknown>[]) => void;
+    const row = new Promise<Record<string, unknown>[]>((resolve) => { resolveRow = resolve; });
+    const loadDocRow = vi.fn(() => row);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => docColumns4),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+    const pending = svc.docEntry({ kind: 'setting', name: 'late' });
+    for (let i = 0; i < 10 && loadDocRow.mock.calls.length === 0; i++) await Promise.resolve();
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+    svc.invalidate();
+    resolveRow([{ name: 'late', type: 'Setting', description: 'late' }]);
+    expect(await pending).toEqual({ status: 'unavailable' });
+  });
+
   it('a parsed pre-26.6 version makes ZERO system.documentation requests (no probe, no lookup)', async () => {
     const state = makeState();
     state.serverVersion = '26.5.9';
@@ -1189,6 +1226,20 @@ describe('#315 source preference — structured vs. system.documentation', () =>
     expect(svc.docKindAvailable('format')).toBeNull();
   });
 
+  it('stops before fallback when invalidated after a cached structured-unavailable result', async () => {
+    const loadDocTableColumns = vi.fn(async (_ctx: ChCtx, table: string) => (
+      table === 'formats' ? [] : null
+    ));
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: loadDocTableColumns as unknown as SchemaCatalogDeps['loadDocTableColumns'],
+    }));
+    await svc.docEntry({ kind: 'format', name: 'CSV' }); // cache structured=false; docs remains transient
+    const pending = svc.docEntry({ kind: 'format', name: 'TSV' });
+    await Promise.resolve(); // structured resolver has returned its cached durable-unavailable result
+    svc.invalidate();
+    expect(await pending).toEqual({ status: 'unavailable' });
+  });
+
   it('docKindAvailable stays false when both the structured loader AND the documentation fallback are durably unavailable', async () => {
     const state = makeState();
     state.serverVersion = '26.6.1';
@@ -1245,6 +1296,16 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
     expect(loadDocRow).toHaveBeenCalledTimes(1);
   });
 
+  it('also caches a found Markdown entry under its canonical server name', async () => {
+    const loadDocRow = vi.fn(async () => [{ name: 'max_threads', type: 'Setting', description: 'd' }]);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']), loadDocRow,
+    }));
+    const lower = await svc.docMarkdown({ kind: 'setting', name: 'MAX_THREADS' });
+    expect(await svc.docMarkdown({ kind: 'setting', name: 'max_threads' })).toEqual(lower);
+    expect(loadDocRow).toHaveBeenCalledTimes(1);
+  });
+
   it('does not cache a transient row-fetch failure — retries on the next call', async () => {
     const state = makeState();
     state.serverVersion = '26.6.1';
@@ -1283,6 +1344,29 @@ describe('#315 docMarkdown — explicit full-Markdown-depth lookup', () => {
 });
 
 describe('#315 docDisambiguate — name-only, all kinds', () => {
+  it('returns unavailable for a durably absent documentation capability', async () => {
+    const loadDocRow = vi.fn(async () => []);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => []), loadDocRow,
+    }));
+    expect(await svc.docDisambiguate('Anything')).toEqual({ status: 'unavailable' });
+    expect(loadDocRow).not.toHaveBeenCalled();
+  });
+
+  it('drops a disambiguation row invalidated after its fetch starts', async () => {
+    let resolveRow!: (value: Record<string, unknown>[]) => void;
+    const row = new Promise<Record<string, unknown>[]>((resolve) => { resolveRow = resolve; });
+    const loadDocRow = vi.fn(() => row);
+    const svc = createSchemaCatalogService(makeDeps({
+      loadDocTableColumns: vi.fn(async () => ['name', 'type', 'description']),
+      loadDocRow: loadDocRow as unknown as SchemaCatalogDeps['loadDocRow'],
+    }));
+    const pending = svc.docDisambiguate('Log');
+    for (let i = 0; i < 10 && loadDocRow.mock.calls.length === 0; i++) await Promise.resolve();
+    svc.invalidate();
+    resolveRow([{ name: 'Log', type: 'Setting', description: 'late' }]);
+    expect(await pending).toEqual({ status: 'unavailable' });
+  });
   it('returns every kind sharing the same name', async () => {
     const state = makeState();
     state.serverVersion = '26.6.1';

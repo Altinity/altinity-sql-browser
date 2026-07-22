@@ -63,6 +63,15 @@ describe('Dashboard Filter helper merge', () => {
     expect(out.active).toEqual({ x: false, empty: true });
     expect(out.changed).toEqual(['x']);
   });
+  it('treats a missing committed scalar as the empty string during option reconciliation', () => {
+    const out = mergeDashboardFilterHelpers({
+      providers: [provider('p', 'P', [helper('empty', [{ value: '', label: '(empty)' }])])],
+      controls: [{ name: 'empty', type: 'String', optional: true }],
+      active: { empty: true },
+    });
+    expect(out.active.empty).toBe(true);
+    expect(out.changed).toEqual([]);
+  });
   it('preserves provider diagnostics and is case-sensitive', () => {
     const out = mergeDashboardFilterHelpers({
       providers: [{ ...provider('p', 'P', [helper('Origin', [])]), diagnostics: [{ severity: 'info', code: 'source-info', message: 'i' }] }],

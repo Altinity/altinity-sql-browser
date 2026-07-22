@@ -167,6 +167,25 @@ describe('renderResults states', () => {
     expect(qsa(app.dom.resultsRegion, '.res-table tbody tr')).toHaveLength(2);
     expect(qs(app.dom.resultsRegion, '.stream-strip')).not.toBeNull();
   });
+  it('clicking a live result cell opens its detail drawer through the result-view callback', () => {
+    const app = appWithResult(tableResult(), { resultView: 'table' });
+    renderResults(app);
+    click(qs(app.dom.resultsRegion, '.res-table tbody td.cell'));
+    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+  });
+  it('clicking a Logs panel message opens detail through the panel callback', () => {
+    const r = tableResult();
+    r.columns = [
+      { name: 'event_time', type: 'DateTime' },
+      { name: 'message', type: 'String' },
+    ];
+    r.rows = [['2026-01-01 00:00:00', 'boom']];
+    const app = appWithResult(r, { resultView: 'panel' });
+    app.activeTab().specParsed!.panel = { cfg: { type: 'logs' } };
+    renderResults(app);
+    click(qs(app.dom.resultsRegion, '.log-msg'));
+    expect(qs(document, '.cd-backdrop')).not.toBeNull();
+  });
   it('a cancelled result shows the "Cancelled · partial" badge with Copy/Export', () => {
     const r = tableResult();
     r.cancelled = true;
@@ -853,6 +872,13 @@ describe('expandDataPane', () => {
     expect(qs(overlay, 'h2.detached-title').textContent).toBe('My data');
   });
 
+  it('shows the captured capped state in the initial detached row count', () => {
+    const r = tableResult();
+    r.capped = true;
+    expandDataPane(makeApp(), r);
+    expect(qs(document, '.graph-overlay .stat').textContent).toContain('2 rows (capped)');
+  });
+
   it('renders the shared filter row for a parameterized source and issues NO query on open', () => {
     const app = makeApp();
     expandDataPane(app, paramResult());
@@ -862,6 +888,31 @@ describe('expandDataPane', () => {
     expect(qs(row, '.dash-filters[aria-label="Query filters"]')).not.toBeNull();
     expect(qsa(row, '.var-field')).toHaveLength(1);
     expect(app.exec.executeRead).not.toHaveBeenCalled(); // open = snapshot, no request
+  });
+
+  it('a retained Refresh button is inert after its detached view closes', async () => {
+    const app = makeApp();
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, paramResult());
+    const overlay = qs(document, '.graph-overlay');
+    const button = refreshBtn(overlay)!;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    click(button);
+    await tick();
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
+  });
+
+  it('reports a source template error without starting a detached request', async () => {
+    const r = paramResult();
+    r.source = { ...r.source!, sql: 'SELECT {level:String} /*[ broken' };
+    const app = makeApp();
+    app.state.varValues.level = 'Warning';
+    expandDataPane(app, r);
+    const overlay = qs(document, '.graph-overlay');
+    click(refreshBtn(overlay));
+    await tick();
+    expect(qs(overlay, '.detached-status').textContent).toContain('unbalanced');
+    expect(app.exec.executeRead).not.toHaveBeenCalled();
   });
 
   it('Refresh re-runs via the shared read seam (params + no session), replaces the result, records recents', async () => {

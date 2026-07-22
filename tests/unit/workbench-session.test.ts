@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mocked } from 'vitest';
 import { signal } from '@preact/signals-core';
 import {
   createWorkbenchSession,
@@ -755,8 +755,12 @@ describe('createWorkbenchSession: elapsedMs()', () => {
 // ── attachShell() ────────────────────────────────────────────────────────────
 
 describe('createWorkbenchSession: attachShell()', () => {
-  function makeEffects(): WorkbenchShellEffects & { renderResults: ReturnType<typeof vi.fn>; setRunBtn: ReturnType<typeof vi.fn>; setMobileBadge: ReturnType<typeof vi.fn> } {
-    return { renderResults: vi.fn(), setRunBtn: vi.fn(), setMobileBadge: vi.fn() };
+  function makeEffects(): Mocked<WorkbenchShellEffects> {
+    return {
+      renderResults: vi.fn<WorkbenchShellEffects['renderResults']>(),
+      setRunBtn: vi.fn<WorkbenchShellEffects['setRunBtn']>(),
+      setMobileBadge: vi.fn<WorkbenchShellEffects['setMobileBadge']>(),
+    };
   }
 
   it('fires all 3 effects once on attach', () => {

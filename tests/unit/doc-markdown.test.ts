@@ -640,6 +640,12 @@ describe('parseDocMarkdown — link policy', () => {
 });
 
 describe('parseDocMarkdown — limits', () => {
+  it('does not strip an explicit-anchor-looking suffix hidden inside formatting', () => {
+    expect(parseDocMarkdown('# title **bold {#kept}**').blocks[0]).toEqual({
+      kind: 'heading', level: 1, inline: [text('title '), strong(text('bold {#kept}'))],
+    });
+  });
+
   it('MAX_DOC_MARKDOWN_BYTES: an oversized input is truncated and flagged', () => {
     const big = 'a'.repeat(MAX_DOC_MARKDOWN_BYTES + 10);
     const r = parseDocMarkdown(big);
@@ -702,6 +708,22 @@ describe('parseDocMarkdown — limits', () => {
     expect(table.kind).toBe('table');
     expect(table.rows.length).toBeLessThan(25_000);
     expect(table.rows.length).toBeLessThanOrEqual(MAX_DOC_AST_NODES);
+  });
+
+  it('MAX_DOC_AST_NODES: very wide tables stop enumerating header and row cells', () => {
+    const wideHeader = `|${Array.from({ length: 11_000 }, () => 'h').join('|')}|`;
+    const separator = `|${Array.from({ length: 11_000 }, () => '---').join('|')}|`;
+    expect(parseDocMarkdown(`${wideHeader}\n${separator}`).truncated).toBe(true);
+
+    const mediumHeader = `|${Array.from({ length: 8_000 }, () => '').join('|')}|`;
+    const mediumSeparator = `|${Array.from({ length: 8_000 }, () => '---').join('|')}|`;
+    const mediumRow = `|${Array.from({ length: 8_000 }, () => 'x').join('|')}|`;
+    expect(parseDocMarkdown(`${mediumHeader}\n${mediumSeparator}\n${mediumRow}`).truncated).toBe(true);
+  });
+
+  it('MAX_DOC_AST_NODES: many admonition segments stop before parsing later segments', () => {
+    const md = Array.from({ length: 8_000 }, () => ':::tip\nx\n:::').join('\n');
+    expect(parseDocMarkdown(md).truncated).toBe(true);
   });
 
   it('a normal-sized list and table stay fully intact (unaffected by the budget-bypass fix)', () => {

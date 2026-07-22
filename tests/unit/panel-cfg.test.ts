@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CHART_FAMILY, PANEL_TYPE_IDS, isChartFamily, isKnownPanelType,
-  clonePanelCfg, resolveLogsShape, panelCfgValid, normalizePanelCfg,
+  CHART_FAMILY, PANEL_TYPE_IDS, isChartFamily, isKnownPanelType, isQuerylessPanel,
+  clonePanelCfg, resolveLogsShape, panelCfgStaticValid, panelCfgValid, normalizePanelCfg,
   autoPanel, resolvePanel, switchPanelType,
 } from '../../src/core/panel-cfg.js';
 import { schemaKey } from '../../src/core/chart-data.js';
@@ -102,6 +102,9 @@ describe('resolveLogsShape', () => {
 });
 
 describe('panelCfgValid', () => {
+  it('rejects non-object configuration at the static schema boundary', () => {
+    expect(panelCfgStaticValid(null)).toBe(false);
+  });
   it('chart family delegates to chart-data index validation', () => {
     expect(panelCfgValid({ type: 'bar', x: 0, y: [1], series: null }, chartCols)).toBe(true);
     expect(panelCfgValid({ type: 'bar', x: 99, y: [1], series: null }, chartCols)).toBe(false);
@@ -119,6 +122,14 @@ describe('panelCfgValid', () => {
   });
   it('unknown extra fields are ignored, never a failure', () => {
     expect(panelCfgValid({ type: 'table', futureField: 1 }, strCols)).toBe(true);
+  });
+});
+
+describe('isQuerylessPanel', () => {
+  it('recognizes only text panels and tolerates absent payloads', () => {
+    expect(isQuerylessPanel({ cfg: { type: 'text', content: '' } })).toBe(true);
+    expect(isQuerylessPanel({ cfg: { type: 'table' } })).toBe(false);
+    expect(isQuerylessPanel()).toBe(false);
   });
 });
 
@@ -211,6 +222,11 @@ describe('switchPanelType', () => {
     const away = switchPanelType({ cfg: { type: 'logs', msg: 'body' } }, 'table', logCols);
     const back = switchPanelType({ cfg: away.cfg, key: away.key }, 'logs', logCols);
     expect(back.cfg).toMatchObject({ type: 'logs', msg: 'body' });
+  });
+  it('keeps an existing chart stash while switching between non-chart panels', () => {
+    const stash = { type: 'bar', x: 0, y: [1], series: null };
+    expect(switchPanelType({ cfg: { type: 'table', chart: stash } }, 'text', chartCols).cfg)
+      .toMatchObject({ type: 'text', chart: stash });
   });
   it('a null/empty payload starts from scratch', () => {
     expect(switchPanelType(null, 'text', []).cfg).toEqual({ type: 'text', content: '' });

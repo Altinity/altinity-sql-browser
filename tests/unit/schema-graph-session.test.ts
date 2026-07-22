@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mocked } from 'vitest';
 import {
   createSchemaGraphSession, SchemaGraphAuthRequiredError,
 } from '../../src/application/schema-graph-session.js';
@@ -43,8 +43,11 @@ function makeTab(initial: Record<string, unknown> | null = null): SchemaGraphTab
   return { result: initial };
 }
 
-function makeHooks(): SchemaGraphHooks & { renderResults: ReturnType<typeof vi.fn>; onAuthFailed: ReturnType<typeof vi.fn> } {
-  return { renderResults: vi.fn(), onAuthFailed: vi.fn() };
+function makeHooks(): Mocked<SchemaGraphHooks> {
+  return {
+    renderResults: vi.fn<SchemaGraphHooks['renderResults']>(),
+    onAuthFailed: vi.fn<SchemaGraphHooks['onAuthFailed']>(),
+  };
 }
 
 /** One minimal `system.tables` row — every field `buildSchemaGraph` actually

@@ -157,6 +157,15 @@ describe('mount / re-mount / destroy', () => {
 });
 
 describe('document edits through the port', () => {
+  it('unsubscribe removes a document-change subscriber', () => {
+    const { port } = mounted();
+    const callback = vi.fn();
+    const unsubscribe = port.onDocChange(callback);
+    unsubscribe();
+    port.replaceDocument('SELECT 2');
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it('insertAtCursor replaces the selection, moves the caret after the text, and emits', () => {
     const { port, view, app, changes } = mounted();
     port.replaceDocument('SELECT  FROM t');
@@ -323,6 +332,22 @@ describe('per-tab EditorState (syncFromState)', () => {
     app.state.activeTabId.value = 't2';
     port.syncFromState();
     expect(port.getValue()).toBe('fresh');
+  });
+
+  it('prunes a closed tab that was parked in the background', () => {
+    const { port, app } = mounted();
+    addTab(app, 't2', 'two');
+    app.state.activeTabId.value = 't2';
+    port.syncFromState();
+    port.replaceDocument('two edited');
+    app.state.activeTabId.value = 't1';
+    port.syncFromState(); // t2 is now parked
+    app.state.tabs.value = app.state.tabs.value.filter((tab) => tab.id !== 't2');
+    port.syncFromState(); // prune the parked state
+    addTab(app, 't2', 'fresh two');
+    app.state.activeTabId.value = 't2';
+    port.syncFromState();
+    expect(port.getValue()).toBe('fresh two');
   });
 
   it("a restored tab's parked selection is collapsed (no invisible run/export target)", () => {
@@ -558,6 +583,19 @@ describe('infoFor', () => {
     expect(node.textContent).toContain('Alias of other');
     node.remove();
   });
+  it('keeps a connected function fallback when docSummary is unavailable', async () => {
+    const ref2 = assembleReferenceData({
+      keywords: [], functions: { sum: { kind: 'agg', sig: 'sum(x)', ret: '', desc: 'local' } }, formats: [],
+    });
+    const node = infoFor(makeApp({ catalog: {
+      refData: ref2, docSummary: vi.fn(async () => ({ status: 'unavailable' as const })),
+    } }), { kind: 'agg', label: 'sum' })!() as HTMLElement;
+    document.body.appendChild(node);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(node.textContent).toContain('local');
+    node.remove();
+  });
   it('unknown identifier / other kinds → no info (the functions-table existence gate)', () => {
     expect(infoFor(makeApp(), { kind: 'fn', label: 'totallyUnknownName' })).toBeUndefined();
     expect(infoFor(makeApp({ catalog: { refData: null } }), { kind: 'fn', label: 'sum' })).toBeUndefined();
@@ -617,10 +655,12 @@ describe('infoFor', () => {
     it('degrades quietly (keeps the name-only card) when docSummary resolves missing/unavailable, or is absent', async () => {
       const docSummary = vi.fn(async () => ({ status: 'unavailable' as const }));
       const node = infoFor(makeApp({ catalog: { docSummary } }), { kind: 'format', label: 'CSV' })!() as HTMLElement;
+      document.body.appendChild(node);
       await Promise.resolve();
       await Promise.resolve();
       expect(node.querySelector('.hover-sig')!.textContent).toBe('CSV');
       expect(node.querySelector('.hover-doc')!.textContent).toBe('');
+      node.remove();
 
       const noFetch = infoFor(makeApp(), { kind: 'format', label: 'JSONEachRow' })!() as HTMLElement;
       expect(noFetch.querySelector('.hover-sig')!.textContent).toBe('JSONEachRow');

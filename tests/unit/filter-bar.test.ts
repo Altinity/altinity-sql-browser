@@ -41,7 +41,9 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(() => bar.dispose()).not.toThrow(); // no fields, no timers — a no-op
     expect(() => bar.updateStatus({})).not.toThrow(); // no curated fields — a no-op
     expect(bar.openPopoverKey()).toBeNull(); // no multiselect fields at all — always null
+    expect(bar.focusedFieldKey()).toBeNull();
     expect(() => bar.focusFieldTrigger('x')).not.toThrow(); // unknown param — a no-op
+    expect(() => bar.refreshTimeRangeLabels(Date.now())).not.toThrow();
   });
 
   it('defaults to app.document and no group role when no options are passed', () => {
@@ -50,6 +52,20 @@ describe('buildFilterBar (shared filter row)', () => {
     expect(bar.el.getAttribute('role')).toBeNull();
     expect(bar.el.getAttribute('aria-label')).toBeNull();
     expect(bar.el.querySelectorAll('.var-field').length).toBe(1);
+  });
+
+  it('marks a plain optional parameter as optional', () => {
+    const bar = buildFilterBar(
+      makeApp(), paramsFor('SELECT 1 /*[ WHERE x = {x:String} ]*/'), () => {}, okField,
+    );
+    expect(bar.el.querySelector('.var-field')!.classList.contains('is-optional')).toBe(true);
+  });
+
+  it('a blur before any edit is a no-op commit', () => {
+    const onCommit = vi.fn();
+    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), onCommit, okField);
+    bar.el.querySelector('input')!.dispatchEvent(new Event('blur'));
+    expect(onCommit).not.toHaveBeenCalled();
   });
 
   it('exposes the shared debounce constant', () => {
@@ -64,6 +80,8 @@ describe('buildFilterBar (shared filter row)', () => {
     document.body.appendChild(bar.el);
     const input = bar.el.querySelector('input')!;
     input.dispatchEvent(new Event('focus'));
+    input.value = 'f';
+    input.dispatchEvent(new Event('input', { bubbles: true })); // arm debounce; pick clears it
     const opt = bar.el.querySelector('[role="option"]');
     expect(opt).not.toBeNull();
     opt!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
@@ -72,6 +90,18 @@ describe('buildFilterBar (shared filter row)', () => {
     bar.el.querySelector('.var-combo-footer button')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     expect(app.params.clearVarRecent).toHaveBeenCalledWith('x'); // onClearRecent
     bar.el.remove();
+  });
+
+  it('reports no focused field when the document has no active element', () => {
+    const bar = buildFilterBar(makeApp(), paramsFor('SELECT {x:String}'), () => {}, okField, { document });
+    const descriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
+    Object.defineProperty(document, 'activeElement', { configurable: true, value: null });
+    try {
+      expect(bar.focusedFieldKey()).toBeNull();
+    } finally {
+      if (descriptor) Object.defineProperty(document, 'activeElement', descriptor);
+      else Reflect.deleteProperty(document, 'activeElement');
+    }
   });
 
   it('persists and commits curated selections', () => {

@@ -254,6 +254,29 @@ describe('buildSchemaGraph', () => {
     expect(() => buildSchemaGraph(rows, { kind: 'db', db: 'lin' })).not.toThrow();
   });
 
+  it('ignores self dependencies and links dictionary sources parsed from CREATE text', () => {
+    const rows = { tables: [
+      T('lin', 'src', 'MergeTree'),
+      T('lin', 'self', 'View', { dependencies_database: ['lin'], dependencies_table: ['self'] }),
+      T('lin', 'dict', 'Dictionary', {
+        create_table_query: "CREATE DICTIONARY lin.dict (id UInt64) SOURCE(CLICKHOUSE(DB 'lin' TABLE 'src'))",
+      }),
+    ], dictionaries: [] };
+    const graph = buildSchemaGraph(rows, { kind: 'db', db: 'lin' });
+    expect(eset(graph).has('lin.self>lin.self:feeds')).toBe(false);
+    expect(eset(graph).has('lin.src>lin.dict:dict')).toBe(true);
+  });
+
+  it('deduplicates repeated dependency edges', () => {
+    const graph = buildSchemaGraph({ tables: [
+      T('lin', 'src', 'MergeTree', {
+        dependencies_database: ['lin', 'lin'], dependencies_table: ['view', 'view'],
+      }),
+      T('lin', 'view', 'View'),
+    ], dictionaries: [] }, { kind: 'db', db: 'lin' });
+    expect(graph.edges.filter((edge) => edge.from === 'lin.src' && edge.to === 'lin.view')).toHaveLength(1);
+  });
+
   it('links an MV to a backticked/dotted TO target and a dotted AST source (CH 26.5 fixtures)', () => {
     // Captured from Docker CH 26.5.1: create_table_query backtick-quotes the TO
     // target; EXPLAIN AST prints the source unquoted (here UNqualified + dotted).

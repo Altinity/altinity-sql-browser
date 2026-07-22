@@ -296,6 +296,12 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(h.state.exporting.value).toBe(false);
   });
 
+  it('reports a non-Error save-picker rejection', async () => {
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => { throw 'picker offline'; }) } });
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(h.hooks.toast).toHaveBeenCalledWith('Save dialog failed: picker offline');
+  });
+
   it('picker opens BEFORE ensureConfig/getToken (transient-activation ordering, review F6)', async () => {
     const order: string[] = [];
     const { handle } = fakeFileHandle();
@@ -382,6 +388,14 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(h.state.exporting.value).toBe(false);
   });
 
+  it('reports a non-Error export rejection', async () => {
+    const { handle } = fakeFileHandle();
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
+    h.ch.exportQuery.mockRejectedValue('transport unavailable');
+    await createExportService(h.deps).exportDirect('SELECT 1', 0);
+    expect(h.hooks.toast).toHaveBeenCalledWith('Export failed: transport unavailable');
+  });
+
   it('suppresses the "Export failed" toast when the underlying error is "signed out"', async () => {
     const { handle } = fakeFileHandle();
     const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
@@ -438,6 +452,28 @@ describe('createExportService: exportDirect (issue #87)', () => {
     expect(handle.move).toHaveBeenCalledWith('My_Query.tsv.partial');
     expect(h.hooks.toast).toHaveBeenCalledWith('Export failed: network drop');
     expect(h.state.exporting.value).toBe(false);
+  });
+
+  it('handles cancellation observed between stream reads and a failing cleanup close', async () => {
+    const { handle, writable } = fakeFileHandle('cancel.tsv');
+    (writable.close as Mock).mockRejectedValue(new Error('close failed'));
+    let service: ReturnType<typeof createExportService>;
+    const body: FakeBody = {
+      getReader: () => ({
+        read: async () => {
+          service.cancelExport();
+          return { done: false, value: new TextEncoder().encode('late') };
+        },
+        releaseLock: vi.fn(),
+      }),
+    };
+    const h = makeHarness({ sink: { pickFile: vi.fn(async () => asFileHandleLike(handle)) } });
+    h.ch.exportQuery.mockResolvedValue(asResponse(fakeExportResponse({ body })));
+    service = createExportService(h.deps);
+    await service.exportDirect('SELECT 1', 0);
+    expect(writable.close).toHaveBeenCalled();
+    expect(handle.move).toHaveBeenCalledWith('cancel.tsv.partial');
+    expect(h.hooks.toast).not.toHaveBeenCalled();
   });
 
   it('falls back to leaving the plain (non-renamed) file when the handle has no move()', async () => {
@@ -542,6 +578,15 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
     expect(h.hooks.toast).toHaveBeenCalledWith('Folder dialog failed: denied');
   });
 
+  it('reports a non-Error directory-picker rejection', async () => {
+    const h = makeHarness({
+      sink: { pickDirectory: vi.fn(async () => { throw 'folder offline'; }) },
+      tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+    });
+    await createExportService(h.deps).exportEntry();
+    expect(h.hooks.toast).toHaveBeenCalledWith('Folder dialog failed: folder offline');
+  });
+
   it('the directory picker opens BEFORE ensureConfig/getToken; a signed-out tab never runs the script', async () => {
     const { dir } = fakeDirHandle();
     const order: string[] = [];
@@ -570,6 +615,26 @@ describe('createExportService: exportScriptEntry / exportScript (issue #99)', ()
     pending.reject(abortError());
     await first;
     expect(h.state.exporting.value).toBe(false);
+  });
+
+  it('repaints script progress on the elapsed-time interval', async () => {
+    vi.useFakeTimers();
+    try {
+      const { dir } = fakeDirHandle();
+      const pending = deferred<Response>();
+      const h = makeHarness({
+        sink: { pickDirectory: vi.fn(async () => dir) },
+        tab: { sqlDraft: 'SELECT 1; SELECT 2' },
+      });
+      h.ch.exportQuery.mockImplementationOnce(async () => pending.promise);
+      const run = createExportService(h.deps).exportEntry();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(h.hooks.renderResults).toHaveBeenCalled();
+      pending.reject(new Error('stop'));
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('runs statements sequentially in one shared session; effect statements log ok with no file, rows stream to their own file', async () => {

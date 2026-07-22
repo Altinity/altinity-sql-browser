@@ -101,6 +101,12 @@ const pickDashboardImport = (app: App, name = 'file.json'): void => {
 afterEach(() => document.body.replaceChildren());
 
 describe('header Dashboard nav (#302)', () => {
+  it('the File header button opens the menu through its click handler', () => {
+    const app = mount();
+    click(app.dom.fileBtn!);
+    expect(document.querySelector('.file-menu')).not.toBeNull();
+  });
+
   it('libraryControls builds a "Dashboard →" nav (hidden when there is no Dashboard) that opens the Dashboard on click', () => {
     const app = mount();
     const nav = app.dom.dashboardNav!;

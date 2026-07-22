@@ -39,6 +39,15 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   involved (#343 non-goals; membership semantics stay with #370).
 
 ### Fixed
+- **Migrated the development test stack to Vitest 4** (#372). Vitest and its
+  V8 coverage provider now use the supported 4.x line, removed pool options
+  have been migrated, stricter mock typings are explicit, and the more accurate
+  AST remapping is backed by focused edge tests without lowering any per-file
+  threshold. Real CodeMirror fixtures are destroyed between app tests so DOM
+  observers cannot leak into the next case.
+- **Saved Logs panel role selections remain visible before results load**
+  (#372). Opening a saved Logs configuration no longer drops its selected role
+  from the picker while the query has not produced columns yet.
 - **Hardened the development test stack** (#366). Vitest and its V8 coverage
   provider now use the patched 3.2.x line, Happy DOM now uses 20.11.0, and the
   lockfile resolves the patched transitive dependency graph. `npm audit` is

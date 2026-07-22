@@ -45,6 +45,15 @@ describe('buildDashboardExportBundle', () => {
     expect(bundle.queries.map((q) => q.id)).toEqual(['q1']);
   });
 
+  it('uses the first catalog entry when duplicate query ids are supplied', () => {
+    const first = query('q1');
+    const duplicate = { ...query('q1'), sql: 'SELECT duplicate' };
+    const bundle = buildDashboardExportBundle(
+      dashboard('d1', ['q1']), [first, duplicate], '2020-01-01T00:00:00Z',
+    );
+    expect(bundle.queries).toEqual([first]);
+  });
+
   it('deep-clones the dashboard and queries — mutating the result never touches the inputs', () => {
     const dash = dashboard('d1', ['q1']);
     const queries = [query('q1')];

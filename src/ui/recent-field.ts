@@ -74,7 +74,7 @@ export function buildRecentField({
   // syncFooter/onFocus/etc — this field (unlike enum-field's optional
   // recents) always has a footer.
   let footer!: ComboFooter;
-  const syncFooter = (): void => { if (footer) footer.sync(); };
+  const syncFooter = (): void => footer.sync();
 
   const combo = createCombobox({
     input, listEl, liveEl, document: d,

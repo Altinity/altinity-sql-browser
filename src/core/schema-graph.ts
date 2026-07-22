@@ -258,8 +258,9 @@ export function buildSchemaGraph(
   const edges: SchemaGraphEdge[] = [];
   const seen = new Set<string>();
   const addEdge = (from: string | null | undefined, to: string | null | undefined, kind: string): void => {
-    if (!from || !to || from === to) return;
-    if (!nodes.has(from) || !nodes.has(to)) return; // both endpoints must be real nodes
+    // Every edge requires two distinct, registered endpoints. Keep the guard
+    // atomic so every rejected shape follows the same no-op path.
+    if (!from || !to || from === to || !nodes.has(from) || !nodes.has(to)) return;
     const k = JSON.stringify([from, to, kind]);
     if (seen.has(k)) return;
     seen.add(k);

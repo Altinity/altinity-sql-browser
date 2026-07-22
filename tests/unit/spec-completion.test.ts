@@ -252,4 +252,26 @@ describe('pure Spec completion', () => {
     }).map((item) => item.label)).toEqual(['p', 'panel', 'pie']);
     expect(complete({ partial: 'panel' }).map((item) => item.label)).toEqual(['panel']);
   });
+
+  it('drops dynamic keys without a safe child skeleton and deduplicates schema variants', () => {
+    const base = asSchemaService(createSpecSchemaService({
+      schema: { type: 'object', properties: { dynamic: { type: 'object', 'x-altinity-key-completion': { source: 'edge' } } } },
+      validateCompiled: () => true,
+    }));
+    const schemaService: SchemaService = {
+      ...base,
+      schemaAtPath: (args) => args.path.at(-1) === 'unsafe'
+        ? { common: { type: 'number' }, candidates: [{ type: 'number' }] }
+        : base.schemaAtPath(args),
+      variantsAtPath: () => [
+        { value: 'same', schema: {}, deprecated: false, order: 0 },
+        { value: 'same', schema: {}, deprecated: false, order: 1 },
+      ],
+    };
+    expect(complete({
+      schemaService, path: ['dynamic'], dynamicSources: { edge: () => [{ value: 'unsafe' }] },
+    })).toEqual([]);
+    expect(complete({ schemaService, path: ['dynamic'], positionKind: 'property-value' })
+      .filter((item) => item.kind === 'variant')).toHaveLength(1);
+  });
 });

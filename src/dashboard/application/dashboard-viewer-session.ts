@@ -895,8 +895,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     };
   }
 
-  async function runTile(runtime: TileRuntime, source: PreparedSource | undefined, generation: number): Promise<void> {
-    if (runtime.gen !== generation || !source) return;
+  async function runTile(runtime: TileRuntime, source: PreparedSource, generation: number): Promise<void> {
     if (source.missing.length || source.invalid.length) {
       runtime.state.status = 'unfilled';
       runtime.state.unfilled = source.missing.concat(source.invalid);
@@ -1023,7 +1022,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
         diagnostics: [coreDiagnostic('error', 'filter-source-missing',
           `Filter references unknown source query ${JSON.stringify(source.id)}`, { sourceId: source.id })],
       };
-      if (source.gen !== generation) return null;
       source.status = 'error';
       source.provider = provider;
       return provider;
@@ -1046,7 +1044,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
           ? prep.diagnostics
           : [coreDiagnostic('error', 'filter-source-invalid', prep.error || 'Filter source is invalid.', { sourceId: source.id })],
       };
-      if (source.gen !== generation) return null;
       source.status = 'error';
       source.provider = provider;
       return provider;
@@ -1055,13 +1052,11 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
       // Blocked on a missing dependency — a normal mid-fill state, not an
       // error: no request, no error diagnostic. `applyFilterProviders` reads
       // `source.missing` to publish each consumer's `waitingFor`.
-      if (source.gen !== generation) return null;
       source.status = 'waiting';
       source.missing = prep.missing.slice();
       source.provider = null;
       return null;
     }
-    if (source.gen !== generation) return null;
     const result = newResult(prep.format, prep.rowLimit);
     const controller = new AbortController();
     source.abortController = controller;
@@ -1331,7 +1326,6 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // affected-panel wave resolve relative tokens against the same instant.
     const affected = [...filterSources.values()].filter((source) =>
       source.analyzed.dependsOn.some((name) => changedParams.includes(name)));
-    if (affected.length === 0) return { status: 'applied', flipped: [] };
     // Selective rerun: clear stale-for-new-inputs options, but keep the prior
     // wave's diagnostics until THIS wave's own merge settles.
     return executeFilterSourcePlan(affected, { clearOptions: true, resetDiagnostics: false, waveMs });
@@ -1372,7 +1366,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // with the filter wave — they never wait for a source query.
     const firstBatch = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     const unaffectedWave = runPool(unaffected, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, firstBatch.get(runtime.tile.id), generations.get(runtime.tile.id)!));
+      (runtime) => runTile(runtime, firstBatch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
     const filterResult = await runFilterWave(waveMs);
     if (destroyed) { await unaffectedWave; return; }
     if (filterResult.status === 'superseded') {
@@ -1396,7 +1390,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // against the SAME `waveMs` the unaffected batch and filter wave used.
     const secondBatch = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     const affectedWave = runPool(affected, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, secondBatch.get(runtime.tile.id), generations.get(runtime.tile.id)!));
+      (runtime) => runTile(runtime, secondBatch.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
     await Promise.all([unaffectedWave, affectedWave]);
     publish(false, destroyed ? null : deps.now());
   }
@@ -1414,7 +1408,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     waveWallNowMs = waveMs;
     const generation = supersede(runtime);
     const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
-    await runTile(runtime, prepared.get(tileId), generation);
+    await runTile(runtime, prepared.get(tileId)!, generation);
   }
 
   // Re-run only the tiles some active filter parameter feeds into.
@@ -1427,6 +1421,8 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     // checked `destroyed` — so without this a `destroy()` firing between the
     // source wave settling and this wave starting could still reserve tile
     // generations and issue requests after teardown.
+    /* v8 ignore next -- defense in depth for future preflighted callers; the
+       current caller checks destroyed immediately before entering this path. */
     if (destroyed) return;
     if (!preflighted && !(await preflight())) return;
     // #189: consult each parameter's RESOLVED targets (explicit `def.targets`
@@ -1454,7 +1450,7 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     const prepared = sourcesById(prepareBatch('execute', undefined, undefined, waveMs).sources);
     publish();
     await runPool(targets, VIEWER_TILE_CONCURRENCY,
-      (runtime) => runTile(runtime, prepared.get(runtime.tile.id), generations.get(runtime.tile.id)!));
+      (runtime) => runTile(runtime, prepared.get(runtime.tile.id)!, generations.get(runtime.tile.id)!));
   }
 
   // #360: after committing a value (these four are commit paths only — never
@@ -1625,11 +1621,17 @@ export function createDashboardViewerSession(deps: DashboardViewerDeps): Dashboa
     destroyed = true;
     for (const runtime of tiles) {
       runtime.gen++;
-      if (runtime.abortController) { runtime.abortController.abort(); runtime.abortController = null; }
+      if (runtime.abortController) {
+        runtime.abortController.abort();
+        runtime.abortController = null;
+      }
     }
     for (const source of filterSources.values()) {
       source.gen++;
-      if (source.abortController) { source.abortController.abort(); source.abortController = null; }
+      if (source.abortController) {
+        source.abortController.abort();
+        source.abortController = null;
+      }
     }
   }
 

@@ -48,6 +48,14 @@ function applyCompletion(view: EditorView, completion: Completion, from: number,
 }
 
 describe('Spec path source ranges', () => {
+  it('returns no ranges for an empty document and skips malformed properties', () => {
+    expect(jsonPathRanges(EditorState.create({ doc: '' })).size).toBe(0);
+    const malformed = EditorState.create({ doc: '{"ok":1, "missing":}', extensions: [json()] });
+    expect(jsonPathRanges(malformed).has('["ok"]')).toBe(true);
+    expect(jsonPathRanges(malformed).has('["missing"]')).toBe(false);
+    expect(() => jsonPathRanges(EditorState.create({ doc: '{"bad\n":1}', extensions: [json()] }))).not.toThrow();
+  });
+
   it('maps object keys with dots and array indexes to value nodes', () => {
     const state = EditorState.create({
       doc: '{"a.b":[{"kind":"x"}],"plain":true}', extensions: [json()],
@@ -131,6 +139,14 @@ describe('Spec editor adapter', () => {
     expect(seen).toEqual(['{"name":"New"}']);
   });
 
+  it('supports mounted focus, measurement, and reference refresh hooks', () => {
+    const { port, view } = mounted();
+    port.focus();
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(port.requestMeasure()).toBeUndefined();
+    expect(port.refreshReference()).toBeUndefined();
+  });
+
   it('supports selection insertion, focus, replacement, and clamped reveal', async () => {
     const { port, view, changes } = mounted();
     port.replaceDocument('{"name":"Q"}');
@@ -165,9 +181,10 @@ describe('Spec editor adapter', () => {
     port.syncFromState();
     expect(port.getValue()).toContain('One');
     expect(undo(view)).toBe(true);
+    second.specText = '{"name":"Two external"}';
     app.state.activeTabId.value = 't2';
     port.syncFromState();
-    expect(port.getValue()).toContain('Two edited');
+    expect(port.getValue()).toContain('Two external');
     expect(undo(view)).toBe(true);
     expect(port.getValue()).toContain('Two');
   });
@@ -218,6 +235,27 @@ describe('Spec editor adapter', () => {
     port.revealDiagnostic(99);
     port.setDiagnostics([{ path: [], severity: 'error', code: 'empty', message: 'Empty', offset: 99 }]);
     expect(host.querySelectorAll('.spec-diagnostic')).toHaveLength(1);
+    port.setDiagnostics([{ path: ['missing'], severity: 'error', code: 'fallback', message: 'Fallback' }]);
+    port.revealDiagnostic();
+    expect(view.state.selection.main.head).toBe(0);
+    port.setDiagnostics([{ path: ['panel', 'missing'], severity: 'error', code: 'ancestor', message: 'Ancestor' }]);
+    expect(host.querySelector('[data-code="ancestor"]')!.textContent).toBe('{"cfg":7}');
+  });
+
+  it('does not create a zero-width diagnostic mark for an empty document', () => {
+    const { port, host } = mounted();
+    port.replaceDocument('');
+    port.setDiagnostics([{ path: ['missing'], severity: 'error', code: 'empty-doc', message: 'Empty' }]);
+    expect(host.querySelector('.spec-diagnostic')).toBeNull();
+  });
+
+  it('unsubscribe removes a document-change subscriber', () => {
+    const { port } = mounted();
+    const callback = vi.fn();
+    const unsubscribe = port.onDocChange(callback);
+    unsubscribe();
+    port.replaceDocument('{"name":"quiet"}');
+    expect(callback).not.toHaveBeenCalled();
   });
 
   it('exposes local search and JSON folding', () => {
@@ -320,6 +358,18 @@ describe('Spec editor adapter', () => {
     })).toBeNull();
     const noMatch = EditorState.create({ doc: '{"view":"zzz"}', extensions: [json()] });
     expect(specCompletionSourceFor(app)({ state: noMatch, pos: 12, explicit: true })).toBeNull();
+  });
+
+  it('omits the info pane for a schema completion with no documentation', () => {
+    const app = makeApp();
+    app.specValidators = {
+      schemaAtPath: () => ({ common: { type: 'object' }, candidates: [] }),
+      propertiesAtPath: () => [{ name: 'plain', required: false, schemas: [{ type: 'string' }] }],
+      variantsAtPath: () => [],
+    };
+    const state = EditorState.create({ doc: '{}', extensions: [json()] });
+    const result = specCompletionSourceFor(app)({ state, pos: 1, explicit: true })!;
+    expect(result.options.find((option) => option.label === 'plain')!.info).toBeUndefined();
   });
 
   it('reads result columns/indexes and query parameters only from cached active-tab data', () => {

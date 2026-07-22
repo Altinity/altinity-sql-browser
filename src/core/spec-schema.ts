@@ -268,7 +268,7 @@ function expand(schemaRoot: JsonSchemaNode, rawSchema: JsonSchemaNode, value: un
 }
 
 function commonValue<T>(values: T[]): T | undefined {
-  if (!values.length) return undefined;
+  // Callers derive this list from at least one active schema candidate.
   if (values.every((value) => JSON.stringify(value) === JSON.stringify(values[0]))) return values[0];
   if (values.every(isObject)) {
     const common: Record<string, unknown> = {};
@@ -436,8 +436,8 @@ export function createSpecSchemaService(input: CreateSpecSchemaServiceInput): Sp
       const copy: unknown = Array.isArray(value) ? [...value] : { ...(value as Record<string, unknown>) };
       const segment = segments[index];
       if (index === segments.length - 1) {
-        if (Array.isArray(copy)) copy[segment as number] = undefined;
-        else delete (copy as Record<string, unknown>)[segment as string];
+        // variantsAtPath requires the final segment to be a property name.
+        delete (copy as Record<string, unknown>)[segment as string];
       } else if (Object.hasOwn(copy as object, segment)) {
         (copy as Record<string | number, unknown>)[segment] =
           withoutActiveValue((copy as Record<string | number, unknown>)[segment], segments, index + 1);

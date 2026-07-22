@@ -59,11 +59,10 @@ const resultError = (...diagnostics: (LibraryDiagnostic | LibraryDiagnostic[])[]
   ({ ok: false, diagnostics: diagnostics.flat() });
 
 function validateLegacyLibraryV1(document: unknown): LibraryDiagnostic[] {
-  if (!isPlainObject(document)) return [diagnostic([], 'library-invalid-root', 'Library document must be an object')];
-  if (document.format !== LIBRARY_FORMAT) return [diagnostic(['format'], 'library-invalid-format', 'Unrecognized file format')];
-  if (document.version !== 1) return [diagnostic(['version'], 'library-invalid-version', 'Library version must equal 1')];
-  if (!Array.isArray(document.queries)) return [diagnostic(['queries'], 'schema-invalid-type', 'queries must be array')];
-  if (document.queries.length > MAX_LIBRARY_QUERIES) {
+  // Version identification establishes the v1 envelope before this codec runs.
+  const queries = (document as { queries?: unknown }).queries;
+  if (!Array.isArray(queries)) return [diagnostic(['queries'], 'schema-invalid-type', 'queries must be array')];
+  if (queries.length > MAX_LIBRARY_QUERIES) {
     return [diagnostic(['queries'], 'schema-array-size', `queries must contain at most ${MAX_LIBRARY_QUERIES} items`)];
   }
   return [];

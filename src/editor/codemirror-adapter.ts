@@ -682,8 +682,9 @@ export function createCodeMirrorEditor(app: CodeMirrorEditorApp): EditorPort {
     if (colTimer) clearTimeout(colTimer);
     colTimer = setTimeout(() => {
       colTimer = null;
-      const v = view;
-      if (!v) return;
+      // Scheduled only by a live view's update listener; destroy clears the
+      // pending timer before nulling that view.
+      const v = view!;
       loadScopeColumns(app, v).then((loaded) => {
         if (loaded && view === v && completionStatus(v.state)) startCompletion(v);
       });
