@@ -89,11 +89,27 @@ describe('create', () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
     tab.savedId = 'already-linked';
-    const { deps, state, commit } = makeDeps();
+    const linked: SavedQueryV2 = {
+      id: 'already-linked', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Existing' },
+    };
+    const { deps, state, commit } = makeDeps({ state: makeState({ savedQueries: [linked] }) });
     const result = await createSavedQueryService(deps).create(tab, 'My query', '');
     expect(result).toEqual({ ok: false, diagnostics: undefined });
-    expect(state.savedQueries).toEqual([]);
+    expect(state.savedQueries).toEqual([linked]);
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('recovers a dangling tab link by creating a new saved query', async () => {
+    const tab = newTabObj('t1');
+    tab.sqlDraft = 'SELECT 1';
+    tab.savedId = 'removed';
+    const { deps, state, commit } = makeDeps();
+    const result = await createSavedQueryService(deps).create(tab, 'Recovered', '');
+    expect(result.ok).toBe(true);
+    expect(state.savedQueries).toHaveLength(1);
+    expect(tab.savedId).toBe(state.savedQueries[0].id);
+    expect(tab.savedId).not.toBe('removed');
+    expect(commit).toHaveBeenCalledTimes(1);
   });
 
   it('rejects (no persistence) blank SQL on a non-text-panel tab', async () => {

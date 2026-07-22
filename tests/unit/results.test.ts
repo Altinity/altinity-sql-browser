@@ -203,6 +203,34 @@ describe('renderResults states', () => {
     click(jsonTab);
     expect(app.state.resultView.value).toBe('json');
   });
+  it('clicking Table/JSON on a linked tab persists the view draft and marks it dirty', () => {
+    const app = appWithResult(tableResult(), { resultView: 'panel' });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    app.state.savedQueries = [{ id: 's1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Q' } }];
+    renderResults(app);
+    const jsonTab = [...qsa(app.dom.resultsRegion, '.result-view-tab')].find((b) => b.textContent!.includes('JSON'));
+    click(jsonTab);
+    expect(app.state.resultView.value).toBe('json');
+    expect(tab.specParsed!.view).toBe('json');
+    expect(tab.dirtySpec).toBe(true);
+    expect(app.queryDoc.revalidateSpecDrafts).toHaveBeenCalled();
+    expect(app.actions.rerenderTabs).toHaveBeenCalled();
+    expect(app.updateSaveBtn).toHaveBeenCalled();
+  });
+  it('a linked tab with invalid Spec cannot switch or persist the view', () => {
+    const app = appWithResult(tableResult(), { resultView: 'panel' });
+    const tab = app.activeTab();
+    tab.savedId = 's1';
+    app.state.savedQueries = [{ id: 's1', sql: 'SELECT 1', specVersion: 1, spec: { name: 'Q' } }];
+    tab.specParsed = null;
+    tab.specDiagnostics = [{ severity: 'error', code: 'invalid-json', message: 'invalid JSON' }];
+    renderResults(app);
+    const tableTab = [...qsa(app.dom.resultsRegion, '.result-view-tab')].find((b) => b.textContent!.includes('Table'));
+    click(tableTab);
+    expect(app.state.resultView.value).toBe('panel');
+    expect(app.activateInvalidSpecDraft).toHaveBeenCalledWith(tab);
+  });
   it('renders the Filter preview in the results area when the view is filter', () => {
     const app = appWithResult(tableResult(), { resultView: 'filter' });
     app.activeTab().filterPreview = {
