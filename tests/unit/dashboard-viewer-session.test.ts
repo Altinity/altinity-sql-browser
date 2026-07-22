@@ -3086,7 +3086,7 @@ describe('timeRangeGroups resolution (#335)', () => {
     });
   });
 
-  it('does not form a runtime group when timeRanges is absent or explicitly empty', () => {
+  it('keeps load-time inference for legacy queries while explicit timeRanges: [] opts out', () => {
     const document = doc({
       tiles: [tile('absent', 'q-absent'), tile('opted-out', 'q-empty')],
       filters: [{ id: 'ff', parameter: 'from' }, { id: 'ft', parameter: 'to' }],
@@ -3098,7 +3098,9 @@ describe('timeRangeGroups resolution (#335)', () => {
         query('q-empty', 'SELECT {from:DateTime}, {to:DateTime}', { timeRanges: [] }),
       ],
     }));
-    expect(session.timeRangeGroups).toEqual([]);
+    expect(session.timeRangeGroups).toEqual([
+      expect.objectContaining({ fromFilterId: 'ff', toFilterId: 'ft', tileIds: ['absent'] }),
+    ]);
     expect(session.state.value.timeRangeDiagnostics).toEqual([]);
   });
 

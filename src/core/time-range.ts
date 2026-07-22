@@ -196,8 +196,11 @@ export function resolveTimeRangeGroups(input: {
 
 /** Resolve saved-query time-range metadata to Dashboard filter identities,
  * then aggregate every participating tile by that ordered identity pair.
- * Filter targeting is supplied by the viewer session's single authoritative
- * resolver; this core function never reimplements target semantics. */
+ * Queries created before `timeRanges` existed retain #335's conservative
+ * load-time name inference; an authored empty array is the explicit opt-out,
+ * while a non-empty authored value remains authoritative. Filter targeting is
+ * supplied by the viewer session's single authoritative resolver; this core
+ * function never reimplements target semantics. */
 export function resolveAuthoredTimeRangeGroups(input: {
   filters: ReadonlyArray<FilterSelectionFilterDef & { sourceQueryId?: string | null }>;
   analysis: ParameterAnalysis;
@@ -210,10 +213,34 @@ export function resolveAuthoredTimeRangeGroups(input: {
   const groupsByKey = new Map<string, DashboardTimeRangeGroup>();
   const diagnostics: TimeRangeGroupDiagnostic[] = [];
 
+  const addGroup = (candidate: DashboardTimeRangeGroup, tileId: string): void => {
+    const existing = groupsByKey.get(candidate.key);
+    if (existing) existing.tileIds.push(tileId);
+    else groupsByKey.set(candidate.key, { ...candidate, tileIds: [tileId] });
+  };
+
   for (const tile of input.tiles) {
     const query = queryById.get(tile.queryId);
     const ranges = query?.spec?.timeRanges;
-    if (ranges === undefined || (Array.isArray(ranges) && ranges.length === 0)) continue;
+    const hasAuthoredRanges = query?.spec != null
+      && Object.prototype.hasOwnProperty.call(query.spec, 'timeRanges');
+    if (!hasAuthoredRanges) {
+      // Compatibility for saved queries authored before #334 metadata: infer
+      // only among filters that actually target this tile, then reuse the
+      // exact same contract gate as authored metadata. Inference is silent and
+      // fail-closed, matching #335; saving/committing the query will persist an
+      // explicit pair or [] and make the choice authoritative thereafter.
+      const tileFilters = input.filters.filter((filter) => input.filterTargetTileIds.get(filter.id)?.has(tile.id));
+      const inferred = resolveTimeRangeGroups({
+        filters: input.filters,
+        analysis: input.analysis,
+        executableTileIds: input.executableTileIds,
+        pairs: inferTimeRangePairs(tileFilters),
+      });
+      for (const candidate of inferred) addGroup(candidate, tile.id);
+      continue;
+    }
+    if (Array.isArray(ranges) && ranges.length === 0) continue;
     const malformed = (): void => {
       diagnostics.push({
         tileId: tile.id, queryId: tile.queryId, code: 'time-range-contract-invalid',
@@ -247,10 +274,7 @@ export function resolveAuthoredTimeRangeGroups(input: {
       });
       continue;
     }
-    const candidate = resolved[0];
-    const existing = groupsByKey.get(candidate.key);
-    if (existing) existing.tileIds.push(tile.id);
-    else groupsByKey.set(candidate.key, { ...candidate, tileIds: [tile.id] });
+    addGroup(resolved[0], tile.id);
   }
   return { groups: [...groupsByKey.values()], diagnostics };
 }

@@ -3155,6 +3155,18 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(names).toEqual(['region']);
   });
 
+  it('keeps the compound control for a legacy saved query with omitted timeRanges metadata', async () => {
+    const { app } = dashApp({
+      workspace: wsWith({
+        queries: [q('q1', PAIR)],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+      }),
+    });
+    await render(app);
+    expect(qs(app.root, '.trf-trigger')).not.toBeNull();
+    expect(qsa(app.root, '.dash-filter-host .var-field:not(.is-time-range) .var-name')).toEqual([]);
+  });
+
   it('Apply commits BOTH bounds through session.applyFilters in one wave and announces the range', async () => {
     const { app, calls } = dashApp({
       workspace: wsWith({ queries: [paired()], tiles: [{ id: 't1', queryId: 'q1' }] }),

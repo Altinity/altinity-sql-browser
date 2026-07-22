@@ -67,6 +67,42 @@ describe('chart time-range formatting', () => {
 });
 
 describe('authored time-range metadata defensive shapes', () => {
+  it('infers legacy metadata-absent tiles on load but honors an explicit empty opt-out', () => {
+    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([
+        { id: 'legacy', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
+        { id: 'opted-out', sql: 'SELECT {from:DateTime}, {to:DateTime}' },
+      ]),
+      executableTileIds: new Set(['legacy', 'opted-out']),
+      filterTargetTileIds: new Map([
+        ['from', new Set(['legacy', 'opted-out'])],
+        ['to', new Set(['legacy', 'opted-out'])],
+      ]),
+      tiles: [{ id: 'legacy', queryId: 'legacy-query' }, { id: 'opted-out', queryId: 'opted-query' }],
+      queries: [{ id: 'legacy-query', spec: {} }, { id: 'opted-query', spec: { timeRanges: [] } }],
+    });
+    expect(result.groups).toEqual([
+      expect.objectContaining({ fromFilterId: 'from', toFilterId: 'to', tileIds: ['legacy'] }),
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('treats an own undefined timeRanges value as malformed authored metadata, never as legacy omission', () => {
+    const filters: TRFilterDef[] = [{ id: 'from', parameter: 'from' }, { id: 'to', parameter: 'to' }];
+    const result = resolveAuthoredTimeRangeGroups({
+      filters,
+      analysis: analysisFor([{ id: 'tile', sql: 'SELECT {from:DateTime}, {to:DateTime}' }]),
+      executableTileIds: new Set(['tile']),
+      filterTargetTileIds: new Map([['from', new Set(['tile'])], ['to', new Set(['tile'])]]),
+      tiles: [{ id: 'tile', queryId: 'query' }],
+      queries: [{ id: 'query', spec: { timeRanges: undefined } }],
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.diagnostics).toEqual([expect.objectContaining({ code: 'time-range-contract-invalid' })]);
+  });
+
   it('ignores malformed extension values before filter resolution', () => {
     const base = {
       filters: [] as TRFilterDef[], analysis: analysisFor([]), executableTileIds: new Set<string>(),
