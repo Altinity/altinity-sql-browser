@@ -4,10 +4,13 @@
 // combobox primitive (combobox.ts) into multiselect semantics it was never
 // built for. This module borrows conventions from TWO existing primitives
 // rather than inventing new ones:
-//  - `menu.ts`'s `openMenu` is the model for the popover lifecycle: mount a
-//    fresh overlay + panel on open, tear both down completely on close
-//    (never a hidden-but-resident node), Escape closes and refocuses the
-//    trigger, and `fixedAnchor` places the panel under the trigger.
+//  - `popover.ts`'s `openAnchoredDialog` (#335) owns the generic dialog
+//    chrome — mount a fresh overlay + panel on open, tear both down completely
+//    on close (never a hidden-but-resident node), Escape/backdrop close and
+//    refocus the trigger, the ARIA `dialog`/`aria-modal`/`aria-expanded`
+//    lifecycle, the Tab focus trap, and `fixedAnchor` placement under the
+//    trigger. This module keeps only the multiselect-specific content, draft,
+//    busy affordance, and Apply/close ordering.
 //  - `filter-bar.ts`'s `applyFieldStatus` is the model for the status
 //    vocabulary (idle/loading/ready/waiting/source-error/helper-error/
 //    missing-helper, `stale`/`waitingFor`) and its is-waiting/is-error/
@@ -32,7 +35,8 @@
 // listeners, all local to `openPopover()` — none of it survives past the
 // matching `close()`, so there is nothing to leak across repeated opens.
 
-import { h, fixedAnchor, attachBackdropClose } from './dom.js';
+import { h } from './dom.js';
+import { openAnchoredDialog } from './popover.js';
 import { idSafe } from './combobox.js';
 import { canonicalizeSelection, sameSelection } from '../core/filter-selection.js';
 
@@ -290,8 +294,11 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
   const onTriggerClick = (): void => { if (!trigger.disabled) openPopover(); };
   trigger.addEventListener('click', onTriggerClick);
 
-  // Mount a fresh popover (menu.ts's own lifecycle convention: build on
-  // open, tear down completely on close — never a hidden-but-resident node).
+  // Mount a fresh popover. The generic dialog chrome (overlay/backdrop,
+  // ARIA dialog + aria-expanded lifecycle, Escape, Tab trap, placement, focus
+  // return) lives in `openAnchoredDialog` (#335); this function builds only
+  // the multiselect content + draft and wires the busy affordance and the
+  // Apply/close ordering on top of it.
   function openPopover(): void {
     if (closeCurrent) return; // already open — never stack a second popover
     // #189 F1: a raw-string committed value (the error-mode fallback commit,
@@ -370,7 +377,7 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       for (const row of rows) row.cb.checked = false;
       syncSelectAll();
     });
-    cancelBtn.addEventListener('click', () => close());
+    cancelBtn.addEventListener('click', () => handle.close());
     applyBtn.addEventListener('click', () => {
       const canonical = canonicalizeSelection([...draft], options);
       // #189 F1: a raw-string committed value (the error-mode fallback commit)
@@ -382,30 +389,34 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       // A no-op Apply (same canonical selection AND same active flag) closes
       // silently — `onApply` fires exactly once otherwise.
       const changed = !(sameSelection(canonical, prevCanonical) && activeNext === active);
-      // Close BEFORE calling `onApply` (maintainer merge-gate finding, #189):
-      // `onApply` typically routes straight into `session.applyFilter`, which
-      // mutates state and `publish()`es SYNCHRONOUSLY before its first
-      // `await` — a caller subscribed to that publish (`dashboard.ts`'s
-      // `rebuildFilterBar`) can run inside this very call stack, before
-      // `applyBtn`'s own click handler ever returns. Closing first means that
-      // synchronous rebuild always observes this popover as already-closed
-      // (`isOpen()` false, `closeCurrent` cleared) — never mistakes an
-      // ordinary Apply's own commit for an outgoing bar's popover getting
-      // force-cancelled out from under the user, which is what used to
-      // trigger a false "Filter options were refreshed" announcement. `close()`
-      // (default, non-`skipFocus`) refocuses the trigger; the rebuild that
-      // `onApply` may synchronously trigger replaces the whole bar out from
-      // under that focus — restoring it onto the FRESH trigger is
-      // `rebuildFilterBar`'s own job (`dashboard.ts`), not this module's.
-      close();
+      // Close BEFORE calling `onApply` (maintainer merge-gate finding, #189;
+      // now the shared `openAnchoredDialog` contract, #335): `onApply`
+      // typically routes straight into `session.applyFilter`, which mutates
+      // state and `publish()`es SYNCHRONOUSLY before its first `await` — a
+      // caller subscribed to that publish (`dashboard.ts`'s `rebuildFilterBar`)
+      // can run inside this very call stack, before `applyBtn`'s own click
+      // handler ever returns. Closing first means that synchronous rebuild
+      // always observes this popover as already-closed (`isOpen()` false,
+      // `closeCurrent` cleared) — never mistakes an ordinary Apply's own commit
+      // for an outgoing bar's popover getting force-cancelled out from under
+      // the user, which is what used to trigger a false "Filter options were
+      // refreshed" announcement. `handle.close()` (default, non-`skipFocus`)
+      // refocuses the trigger; the rebuild that `onApply` may synchronously
+      // trigger replaces the whole bar out from under that focus — restoring it
+      // onto the FRESH trigger is `rebuildFilterBar`'s own job (`dashboard.ts`),
+      // not this module's.
+      handle.close();
       if (changed) opts.onApply(canonical, activeNext);
     });
     const footer = h('div', { class: 'ms-footer' }, clearBtn, cancelBtn, applyBtn);
 
-    const dialog = h('div', {
-      class: 'ms-popover', role: 'dialog', 'aria-modal': 'true', 'aria-label': `${label} options`,
-    }, searchInput, liveEl, selectAllRow, listEl, footer);
-    const overlay = h('div', { class: 'ms-overlay' });
+    // A `display:contents` wrapper: `openAnchoredDialog` appends ONE content
+    // element into the dialog, but `.ms-popover` is a flex column whose direct
+    // children (search/live/select-all/options/footer) carry the layout — the
+    // contents wrapper generates no box, so those children participate in the
+    // dialog's flex context exactly as they did when they were direct children.
+    const content = h('div', { style: { display: 'contents' } },
+      searchInput, liveEl, selectAllRow, listEl, footer);
 
     // #189 F6: while OPEN, a status-only publish that goes
     // waiting/loading/idle/stale makes the checklist body noninteractive
@@ -414,12 +425,13 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
     // reports the visible/total count through; `ready` restores both the
     // controls and the normal count text. The draft itself is never
     // touched — its values can't change without a rebuild, which only
-    // happens closed.
+    // happens closed. This affordance stays in the multiselect (it operates
+    // on this module's own content) rather than in the shared primitive.
     let busy = false;
     function setBusy(next: boolean): void {
       if (busy === next) return;
       busy = next;
-      dialog.setAttribute('aria-busy', String(busy));
+      handle.dialog.setAttribute('aria-busy', String(busy));
       searchInput.disabled = busy;
       selectAllCb.disabled = busy;
       for (const row of rows) row.cb.disabled = busy;
@@ -428,83 +440,33 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       if (busy) liveEl.textContent = 'Loading options…';
       else applyFilter(); // restores the normal "N of M options" live text
     }
+
+    // The generic dialog chrome (#335): overlay + backdrop-close, the ARIA
+    // dialog/aria-modal/aria-expanded lifecycle, document-capture Escape, the
+    // Tab focus trap (recomputed per press, dialog-scoped), placement under the
+    // trigger, and teardown + focus return. `minWidthFromTrigger: true` floors
+    // the popover width at the trigger's width; `clampToViewport` is left off
+    // to preserve the pre-#335 left-align-under-trigger behavior. `onClose`
+    // clears this module's open-state refs on every dismissal path — the same
+    // bookkeeping the old inline `close()` did (`isOpen()` reads `closeCurrent`).
+    const handle = openAnchoredDialog({
+      document: d,
+      trigger,
+      ariaLabel: `${label} options`,
+      content,
+      dialogClassName: 'ms-popover',
+      overlayClassName: 'ms-overlay',
+      minWidthFromTrigger: true,
+      initialFocus: () => searchInput, // focus moves into the dialog on open
+      onClose: () => { closeCurrent = null; openPopoverBusy = null; },
+    });
+    // #189 F2a: `skipFocus` flows through to the primitive so `applyStatus`'s
+    // forced error-close can skip refocusing a trigger that's about to be
+    // detached (focus moves to the fallback input over there instead).
+    closeCurrent = (closeOpts) => handle.close(closeOpts);
     openPopoverBusy = setBusy;
 
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') { e.preventDefault(); close(); }
-    };
-
-    // #189 F3: a minimal focus trap — `aria-modal="true"` promises assistive
-    // tech (and sighted keyboard users) that Tab never leaves the dialog. The
-    // overlay only ever blocked POINTER events; without this, Tab/Shift-Tab
-    // walked straight out to whatever the document's next/previous tabbable
-    // happened to be. Recomputed on every Tab press (never cached) since the
-    // option checklist's visible subset changes with `searchText`. Registered
-    // on `dialog` itself (not `d`/document, unlike `onKeyDown`'s broad Escape
-    // catch above) — a stale, already-closed popover's own trap must never
-    // intercept a Tab dispatched at a DIFFERENT, currently-open dialog; a
-    // listener scoped to this specific (detached-on-close) node can't reach
-    // any OTHER dialog's subtree regardless of how many prior popovers a
-    // caller left open without disposing.
-    function focusableEls(): HTMLElement[] {
-      return [...dialog.querySelectorAll<HTMLElement>('input, button')]
-        .filter((el) => !el.closest('[hidden]') && !(el as HTMLInputElement | HTMLButtonElement).disabled);
-    }
-    const onTabTrap = (e: KeyboardEvent): void => {
-      if (e.key !== 'Tab') return;
-      // Cancel is never disabled (F6 keeps it usable even while `busy`), so
-      // `items` always has at least one entry — no empty-list guard needed.
-      const items = focusableEls();
-      const first = items[0];
-      const last = items[items.length - 1];
-      const activeEl = d.activeElement as HTMLElement | null;
-      if (e.shiftKey) {
-        if (!activeEl || activeEl === first || !dialog.contains(activeEl)) { e.preventDefault(); last.focus(); }
-      } else if (!activeEl || activeEl === last || !dialog.contains(activeEl)) {
-        e.preventDefault(); first.focus();
-      }
-    };
-
-    // EVERY dismissal path (Apply, Cancel, Escape, outside-click, dispose)
-    // funnels through here — the one place that tears the popover down and
-    // returns focus to the trigger. Idempotent by construction (every step
-    // is a harmless no-op on an already-detached/already-null target), so no
-    // separate re-entrancy guard is needed even if a caller somehow reached
-    // it twice for the same open session. #189 F2a: `skipFocus` lets
-    // `applyStatus`'s forced error-close skip refocusing a trigger that's
-    // about to be detached from the DOM anyway (focus moves to the fallback
-    // input instead, over there).
-    function close(closeOpts: { skipFocus?: boolean } = {}): void {
-      d.removeEventListener('keydown', onKeyDown, true);
-      dialog.removeEventListener('keydown', onTabTrap, true);
-      detachBackdrop();
-      overlay.remove();
-      dialog.remove();
-      trigger.setAttribute('aria-expanded', 'false');
-      closeCurrent = null;
-      openPopoverBusy = null;
-      if (!closeOpts.skipFocus) trigger.focus();
-    }
-    closeCurrent = close;
-
-    trigger.setAttribute('aria-expanded', 'true');
-    d.body.appendChild(overlay);
-    d.body.appendChild(dialog);
-    const detachBackdrop = attachBackdropClose(overlay, close);
-    d.addEventListener('keydown', onKeyDown, true);
-    dialog.addEventListener('keydown', onTabTrap, true);
-
-    const rect = trigger.getBoundingClientRect();
-    const pos = fixedAnchor(rect) as { top: number; left: number };
-    overlay.style.position = 'fixed';
-    overlay.style.inset = '0';
-    dialog.style.position = 'fixed';
-    dialog.style.top = pos.top + 'px';
-    dialog.style.left = pos.left + 'px';
-    dialog.style.minWidth = rect.width + 'px';
-
     applyFilter(); // seeds the live-region count and the select-visible tri-state
-    searchInput.focus(); // focus moves into the dialog on open
   }
 
   applyStatus();

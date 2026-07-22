@@ -84,22 +84,37 @@ export interface FixedAnchorOptions {
   gap?: number;
   min?: number;
   viewportW?: number;
+  /** Panel width for the left-align right-edge CLAMP (#335). Only consulted
+   *  alongside `viewportW`; when both are given the anchor stays left-aligned
+   *  under the trigger but its left inset is lowered so `left + panelW` never
+   *  crosses `viewportW - min`. `panelW` alone (no `viewportW`) is ignored. */
+  panelW?: number;
 }
 
 // Place a fixed-position popover anchored under a button. Returns
-// `{ top, left }`, or `{ top, right }` when `viewportW` is given (right-align to
-// the anchor's right edge). `gap` is the px below the anchor; `min` floors the
-// side inset. Pure arithmetic on a DOMRect-like — the single recipe for the File
-// menu, the Save popover and the user menu.
+// `{ top, left }`, or `{ top, right }` when `viewportW` is given WITHOUT
+// `panelW` (right-align to the anchor's right edge). With BOTH `viewportW` and
+// `panelW` it left-aligns but clamps the left inset so a `panelW`-wide panel
+// stays inside the viewport's right edge (#335). `gap` is the px below the
+// anchor; `min` floors the side inset. Pure arithmetic on a DOMRect-like — the
+// single recipe for the File menu, the Save popover, the user menu, and the
+// dashboard filter popovers.
 export function fixedAnchor(
   rect: AnchorRect, opts: FixedAnchorOptions = {},
 ): { top: number; left: number } | { top: number; right: number } {
   const gap = opts.gap != null ? opts.gap : 6;
   const min = opts.min != null ? opts.min : 8;
   const top = rect.bottom + gap;
-  return opts.viewportW != null
-    ? { top, right: Math.max(min, opts.viewportW - rect.right!) }
-    : { top, left: Math.max(min, rect.left!) };
+  if (opts.viewportW != null && opts.panelW == null) {
+    return { top, right: Math.max(min, opts.viewportW - rect.right!) };
+  }
+  let left = Math.max(min, rect.left!);
+  if (opts.viewportW != null && opts.panelW != null) {
+    // Furthest-right inset that still fits the panel with a `min` gutter.
+    const maxLeft = Math.max(min, opts.viewportW - opts.panelW - min);
+    left = Math.min(left, maxLeft);
+  }
+  return { top, left };
 }
 
 // Wire a modal backdrop's close-on-click without the false positive from a
