@@ -118,7 +118,7 @@
       document,
       formatLabel: formatChartTimeLabel,
       colors: () => ({
-        crosshair: '#00a8e8', selectionFill: 'rgba(0,168,232,.2)', selectionStroke: '#00a8e8',
+        crosshair: '#fbbf24', selectionFill: 'rgba(0,168,232,.2)', selectionStroke: '#00a8e8',
         labelBackground: '#1a1a20', labelText: '#fff',
       }),
     });
@@ -144,7 +144,10 @@
         responsive: true, maintainAspectRatio: false, parsing: false,
         interaction: { mode: 'nearest', intersect: false }, scales: { x: { type: 'time' } },
       },
-      plugins: [chartInteraction.pluginFor({ group: rangeGroup, tileId, xType: 'DateTime', onSelect: selected })],
+      plugins: [chartInteraction.pluginFor({
+        group: rangeGroup, tileId, crosshairHost: canvas.closest('.chart-box'),
+        xType: 'DateTime', onSelect: selected,
+      })],
     });
     const chartA = series(document.querySelector('#chart-a'), 't-a', 3);
     const chartB = series(document.querySelector('#chart-b'), 't-b', 2, 'bar');

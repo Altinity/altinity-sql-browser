@@ -56,6 +56,15 @@ function chart(over: Partial<FakeChart> = {}): FakeChart {
   };
 }
 
+function host(left = 0): HTMLElement {
+  const el = document.createElement('div');
+  vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+    x: left, y: 0, left, top: 0, right: left + 420, bottom: 240,
+    width: 420, height: 240, toJSON: () => ({}),
+  });
+  return el;
+}
+
 function pointer(type: string, over: Record<string, unknown> = {}): Event {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 100, clientY: 50 });
   for (const [key, value] of Object.entries({
@@ -83,9 +92,10 @@ describe('Dashboard chart interaction controller', () => {
     const controller = setup();
     const g = group();
     const a = chart(); const b = chart(); const other = chart();
-    const pa = controller.pluginFor({ group: g, tileId: 'a', xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
-    const pb = controller.pluginFor({ group: g, tileId: 'b', xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
-    const po = controller.pluginFor({ group: group('other'), tileId: 'o', xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
+    const hostA = host(-10); const hostB = host(-10); const hostOther = host(-10);
+    const pa = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: hostA, xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
+    const pb = controller.pluginFor({ group: g, tileId: 'b', crosshairHost: hostB, xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
+    const po = controller.pluginFor({ group: group('other'), tileId: 'o', crosshairHost: hostOther, xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
     pa.afterInit(a); pb.afterInit(b); po.afterInit(other);
     expect(g.interactiveChartTileIds).toEqual(['a', 'b']);
 
@@ -94,8 +104,10 @@ describe('Dashboard chart interaction controller', () => {
     expect(b.draw).toHaveBeenCalledTimes(1);
     expect(other.draw).not.toHaveBeenCalled();
     pb.afterDatasetsDraw(b);
-    expect(b.ctx.moveTo).toHaveBeenCalledWith(100, 10);
-    expect(b.ctx.stroke).toHaveBeenCalledTimes(1);
+    expect(hostB.classList.contains('is-time-crosshair')).toBe(true);
+    expect(hostB.style.getPropertyValue('--dash-time-crosshair-x')).toBe('110px');
+    expect(hostB.style.getPropertyValue('--dash-time-crosshair-color')).toBe('blue');
+    expect(b.ctx.stroke).not.toHaveBeenCalled();
 
     // Same value/active chart is deduped; a peer mouseout cannot clear the
     // active chart's hover.
@@ -103,15 +115,15 @@ describe('Dashboard chart interaction controller', () => {
     pb.afterEvent(b, { event: { type: 'mouseout' }, inChartArea: false });
     pb.afterDatasetsDraw(b);
     expect(a.draw).toHaveBeenCalledTimes(1);
-    expect(b.ctx.stroke).toHaveBeenCalledTimes(2);
+    expect(hostB.classList.contains('is-time-crosshair')).toBe(true);
 
     b.scales!.x!.max = 200;
     pb.afterDatasetsDraw(b);
-    expect(b.ctx.stroke).toHaveBeenCalledTimes(2);
+    expect(hostB.classList.contains('is-time-crosshair')).toBe(false);
     b.scales!.x!.max = 1000;
     b.scales!.x!.getPixelForValue = () => NaN;
     pb.afterDatasetsDraw(b);
-    expect(b.ctx.stroke).toHaveBeenCalledTimes(2);
+    expect(hostB.classList.contains('is-time-crosshair')).toBe(false);
     pa.afterEvent(a, { event: { type: 'mouseout' }, inChartArea: false });
     expect(a.draw).toHaveBeenCalledTimes(2);
     expect(b.draw).toHaveBeenCalledTimes(2);
@@ -119,6 +131,7 @@ describe('Dashboard chart interaction controller', () => {
     pa.beforeDestroy(a);
     expect(g.interactiveChartTileIds).toEqual(['b']);
     expect(a.canvas.classList.contains('dash-time-chart')).toBe(false);
+    expect(hostA.classList.contains('dash-time-crosshair-host')).toBe(false);
     pb.beforeDestroy(b); po.beforeDestroy(other); controller.destroy();
   });
 
@@ -126,7 +139,7 @@ describe('Dashboard chart interaction controller', () => {
     const controller = setup();
     const g = group();
     const incompatible = chart({ options: { indexAxis: 'y' } });
-    const p = controller.pluginFor({ group: g, tileId: 'a', xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
+    const p = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
     p.afterInit(incompatible); p.afterInit(incompatible);
     expect(g.interactiveChartTileIds).toEqual([]);
     incompatible.options = {};
@@ -139,7 +152,7 @@ describe('Dashboard chart interaction controller', () => {
     expect(incompatible.draw).not.toHaveBeenCalled();
 
     const valid = chart();
-    const pv = controller.pluginFor({ group: g, tileId: 'b', xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
+    const pv = controller.pluginFor({ group: g, tileId: 'b', crosshairHost: host(), xType: 'DateTime', onSelect: vi.fn() }) as Plugin;
     pv.afterInit(valid);
     pv.afterEvent(valid, {});
     pv.afterEvent(valid, { event: { type: 'mousemove', x: 100, y: 50 }, inChartArea: false });
@@ -161,7 +174,7 @@ describe('Dashboard chart interaction controller', () => {
   it('fails closed when a chart column declares an invalid timezone', () => {
     const controller = setup(); const g = group(); const c = chart(); const onSelect = vi.fn();
     const p = controller.pluginFor({
-      group: g, tileId: 'a', xType: "DateTime('Not/A_Zone')", onSelect,
+      group: g, tileId: 'a', crosshairHost: host(), xType: "DateTime('Not/A_Zone')", onSelect,
     }) as Plugin;
     p.afterInit(c);
     expect(g.interactiveChartTileIds).toEqual([]);
@@ -177,7 +190,7 @@ describe('Dashboard chart interaction controller', () => {
 
   it('commits a normalized reverse mouse drag only after the movement threshold and paints its band/labels', () => {
     const controller = setup(); const g = group(); const c = chart(); const onSelect = vi.fn();
-    const p = controller.pluginFor({ group: g, tileId: 'a', xType: 'DateTime', onSelect }) as Plugin;
+    const p = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p.afterInit(c);
     c.canvas.dispatchEvent(pointer('pointerdown', { clientX: 300 }));
     window.dispatchEvent(pointer('pointermove', { clientX: 250 }));
@@ -199,7 +212,7 @@ describe('Dashboard chart interaction controller', () => {
 
   it('delegates modified/touch/non-primary/outside starts and cancels active gestures on every lifecycle signal', () => {
     const controller = setup(); const g = group(); const c = chart(); const onSelect = vi.fn();
-    const p = controller.pluginFor({ group: g, tileId: 'a', xType: 'DateTime', onSelect }) as Plugin;
+    const p = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p.afterInit(c);
     for (const over of [
       { ctrlKey: true }, { metaKey: true }, { pointerType: 'touch' }, { button: 1 }, { isPrimary: false },
@@ -222,7 +235,7 @@ describe('Dashboard chart interaction controller', () => {
     begin(); p.beforeDestroy(c);
     expect(onSelect).not.toHaveBeenCalled();
 
-    const c2 = chart(); const p2 = controller.pluginFor({ group: g, tileId: 'b', xType: 'DateTime', onSelect }) as Plugin;
+    const c2 = chart(); const p2 = controller.pluginFor({ group: g, tileId: 'b', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p2.afterInit(c2);
     c2.canvas.dispatchEvent(pointer('pointerdown'));
     window.dispatchEvent(pointer('pointermove', { clientX: 150 }));
@@ -234,14 +247,14 @@ describe('Dashboard chart interaction controller', () => {
   it('handles zero-width canvas geometry and absent optional chart fields defensively', () => {
     const controller = setup(); const g = group(); const onSelect = vi.fn();
     const c = chart({ chartArea: undefined, scales: undefined, options: undefined });
-    const p = controller.pluginFor({ group: g, tileId: 'a', xType: 'DateTime', onSelect }) as Plugin;
+    const p = controller.pluginFor({ group: g, tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p.afterInit(c); p.afterEvent(c, { event: { x: 1, y: 1 } }); p.afterDatasetsDraw(c); p.beforeDestroy(c);
 
     const z = chart();
     vi.spyOn(z.canvas, 'getBoundingClientRect').mockReturnValue({
       x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}),
     });
-    const pz = controller.pluginFor({ group: g, tileId: 'b', xType: 'DateTime', onSelect }) as Plugin;
+    const pz = controller.pluginFor({ group: g, tileId: 'b', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     pz.afterInit(z);
     z.canvas.dispatchEvent(pointer('pointerdown', { clientX: 100, clientY: 50 }));
     window.dispatchEvent(pointer('pointermove', { clientX: 200, pointerId: 2 }));
@@ -256,7 +269,7 @@ describe('Dashboard chart interaction controller', () => {
       colors: () => ({ crosshair: '', selectionFill: '', selectionStroke: '', labelBackground: '', labelText: '' }),
     });
     const c = chart(); const onSelect = vi.fn();
-    const p = controller.pluginFor({ group: group(), tileId: 'a', xType: 'DateTime', onSelect }) as Plugin;
+    const p = controller.pluginFor({ group: group(), tileId: 'a', crosshairHost: host(), xType: 'DateTime', onSelect }) as Plugin;
     p.afterInit(c); c.canvas.dispatchEvent(pointer('pointerdown'));
     window.dispatchEvent(pointer('pointermove', { clientX: 200 }));
     window.dispatchEvent(pointer('pointerup', { clientX: 200 }));

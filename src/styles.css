@@ -2639,6 +2639,12 @@ table.res-table tbody tr:hover td.idx { background: var(--bg-hover); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dash-tile-body { flex: 1; min-height: 0; padding: 6px 8px; display: flex; overflow: hidden; }
+.dash-time-crosshair-host { position: relative; }
+.dash-time-crosshair-host.is-time-crosshair::after {
+  content: ''; position: absolute; z-index: 5; pointer-events: none;
+  top: 0; bottom: 0; left: var(--dash-time-crosshair-x); width: 1px;
+  background: var(--dash-time-crosshair-color, var(--warn-fg));
+}
 .dash-tile-body > .chart-view,
 .dash-tile-body > .kpi-panel { flex: 1; min-width: 0; }
 /* Table/logs/markdown-text tiles (#149 D9, #331): explicit flex + overflow

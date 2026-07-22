@@ -28,6 +28,9 @@ interface InteractiveChart {
 export interface DashboardChartRegistration {
   group: DashboardTimeRangeGroup;
   tileId: string;
+  /** Tile body host: the synchronized cursor spans this element, leaving the
+   * tile header and footer outside the line. */
+  crosshairHost: HTMLElement;
   /** Declared type of the chart's horizontal time column. */
   xType: ParsedParamType | string;
   onSelect(fromMs: number, toMs: number): void;
@@ -78,6 +81,12 @@ export function createDashboardChartInteractionController(opts: {
 
   const redrawGroup = (key: string): void => {
     for (const entry of records.values()) if (entry.registration.group.key === key) entry.chart.draw();
+  };
+
+  const hideCrosshair = (registration: DashboardChartRegistration): void => {
+    registration.crosshairHost.classList.remove('is-time-crosshair');
+    registration.crosshairHost.style.removeProperty('--dash-time-crosshair-x');
+    registration.crosshairHost.style.removeProperty('--dash-time-crosshair-color');
   };
 
   const clearHover = (key: string, chart?: InteractiveChart): void => {
@@ -152,6 +161,7 @@ export function createDashboardChartInteractionController(opts: {
   };
 
   const draw = (chart: InteractiveChart, registration: DashboardChartRegistration): void => {
+    hideCrosshair(registration);
     if (!eligible(chart, registration)) return;
     const { ctx, chartArea } = chart;
     const colors = opts.colors();
@@ -165,9 +175,14 @@ export function createDashboardChartInteractionController(opts: {
         && (!finite(scale.max) || scaleTimestamp <= scale.max)) {
         const x = scale.getPixelForValue(scaleTimestamp);
         if (finite(x) && x >= chartArea.left && x <= chartArea.right) {
-          ctx.strokeStyle = colors.crosshair;
-          ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+          const canvasRect = chart.canvas.getBoundingClientRect();
+          const hostRect = registration.crosshairHost.getBoundingClientRect();
+          if (chart.width > 0 && canvasRect.width > 0) {
+            const hostX = canvasRect.left - hostRect.left + x * canvasRect.width / chart.width;
+            registration.crosshairHost.style.setProperty('--dash-time-crosshair-x', `${hostX}px`);
+            registration.crosshairHost.style.setProperty('--dash-time-crosshair-color', colors.crosshair);
+            registration.crosshairHost.classList.add('is-time-crosshair');
+          }
         }
       }
     }
@@ -217,6 +232,7 @@ export function createDashboardChartInteractionController(opts: {
       const onPointerDown = ((event: PointerEvent) => beginSelection(chart, registration, event)) as EventListener;
       chart.canvas.addEventListener('pointerdown', onPointerDown);
       records.set(chart, { chart, registration, onPointerDown });
+      registration.crosshairHost.classList.add('dash-time-crosshair-host');
       syncCompatibility(chart, registration);
     },
     afterLayout(chart: InteractiveChart) {
@@ -253,6 +269,8 @@ export function createDashboardChartInteractionController(opts: {
       const interactiveIndex = registration.group.interactiveChartTileIds.indexOf(registration.tileId);
       if (interactiveIndex >= 0) registration.group.interactiveChartTileIds.splice(interactiveIndex, 1);
       records.delete(chart);
+      hideCrosshair(registration);
+      registration.crosshairHost.classList.remove('dash-time-crosshair-host');
       clearHover(registration.group.key, chart);
     },
   });
@@ -261,7 +279,11 @@ export function createDashboardChartInteractionController(opts: {
     pluginFor,
     destroy(): void {
       selection?.cleanup();
-      for (const entry of records.values()) entry.chart.canvas.removeEventListener('pointerdown', entry.onPointerDown);
+      for (const entry of records.values()) {
+        entry.chart.canvas.removeEventListener('pointerdown', entry.onPointerDown);
+        hideCrosshair(entry.registration);
+        entry.registration.crosshairHost.classList.remove('dash-time-crosshair-host');
+      }
       records.clear(); hoverByGroup.clear();
     },
   };

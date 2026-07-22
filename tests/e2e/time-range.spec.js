@@ -235,6 +235,19 @@ test.describe('Dashboard compound time-range control', () => {
     expect(await page.evaluate(() => window.__charts.a.getActiveElements().length)).toBeGreaterThan(0);
     expect(await page.evaluate(() => window.__charts.b.getActiveElements().length)).toBe(0);
     expect(await page.evaluate(() => window.__charts.c.getActiveElements().length)).toBe(0);
+    const peerCursor = await page.locator('#chart-b').evaluate((canvas) => {
+      const host = canvas.closest('.chart-box');
+      const pseudo = getComputedStyle(host, '::after');
+      return {
+        visible: host.classList.contains('is-time-crosshair'),
+        top: pseudo.top, bottom: pseudo.bottom,
+        color: pseudo.backgroundColor,
+        height: host.getBoundingClientRect().height,
+      };
+    });
+    expect(peerCursor).toMatchObject({ visible: true, top: '0px', bottom: '0px' });
+    expect(peerCursor.height).toBeGreaterThan(0);
+    expect(peerCursor.color).toBe('rgb(251, 191, 36)');
 
     await page.evaluate(() => { window.__selected = null; window.__resetExec(); });
     await page.mouse.move(geometry.startX, geometry.y);

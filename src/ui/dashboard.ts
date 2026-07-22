@@ -729,7 +729,10 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     colors: () => {
       const colors = chartColors(app.cssVar);
       return {
-        crosshair: colors.accent, selectionFill: 'rgba(0, 121, 173, 0.18)', selectionStroke: colors.accent,
+        // Amber deliberately stays distinct from the blue chart palette and
+        // selection band in both themes.
+        crosshair: app.cssVar('--warn-fg').trim() || '#D97706',
+        selectionFill: 'rgba(0, 121, 173, 0.18)', selectionStroke: colors.accent,
         labelBackground: colors.bgModal, labelText: colors.fg,
       };
     },
@@ -1710,6 +1713,7 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     const chartPlugins = timeRangeGroup ? [chartInteraction.pluginFor({
       group: timeRangeGroup,
       tileId: ts.tileId,
+      crosshairHost: tileEl.body,
       xType,
       onSelect: (fromMs, toMs) => {
         const formatted = formatChartTimeRange({
