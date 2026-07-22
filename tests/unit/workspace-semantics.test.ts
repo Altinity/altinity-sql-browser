@@ -193,6 +193,8 @@ describe('validateDashboardSemantics', () => {
     expect(validateDashboardSemantics(good, { queries: [q] })).toEqual([]);
     const bad = dashboardDoc({ tiles: [tile('t1', 'p1', { presentation: { variant: 'nope' } })], layout: flowLayout({ t1: {} }) });
     expect(has(validateDashboardSemantics(bad, { queries: [q] }), 'dashboard-variant-missing')).toBe(true);
+    const noVariants = dashboardDoc({ tiles: [tile('t1', 'p1', { presentation: { variant: 'nope' } })], layout: flowLayout({ t1: {} }) });
+    expect(has(validateDashboardSemantics(noVariants, { queries: [panelQuery('p1')] }), 'dashboard-variant-missing')).toBe(true);
     const override = dashboardDoc({ tiles: [tile('t1', 'p1', { presentation: { override: { cfg: { type: 'pie' } } } })], layout: flowLayout({ t1: {} }) });
     expect(has(validateDashboardSemantics(override, { queries: [panelQuery('p1')] }), 'presentation-renderer-type-change')).toBe(true);
     // An empty presentation object and an override without a cfg.type are fine.

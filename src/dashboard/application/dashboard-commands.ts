@@ -3,16 +3,16 @@
 // it clones the current draft, applies one command to that isolated candidate,
 // and returns either the candidate dashboard (plus an optional command value)
 // or the command-level diagnostics that make it impossible — WITHOUT mutating
-// the input draft. The session (dashboard-authoring-session.ts) then normalizes
-// through the layout plugin, runs whole-workspace + presentation validation,
-// and only replaces its draft when the candidate is fully valid.
+// the input draft. Callers remain responsible for normalizing through the
+// layout plugin, running whole-workspace + presentation validation, and only
+// adopting a candidate when it is fully valid.
 //
 // Command-level failures caught here are the ones no downstream validation
 // could see because they concern the command itself, not the resulting shape:
 // a missing query, a duplicate default instance, a missing tile, an
 // out-of-range move index (never silently clamped, per #280), an unsafe tile
 // patch, or an invalid placement. Role/limit/reference/presentation failures
-// are left to the session's validation stage.
+// are left to the caller's validation stage.
 
 import { cloneJson } from '../../core/saved-query.js';
 import { diagnostic } from '../model/workspace-diagnostics.js';
@@ -41,11 +41,6 @@ export type DashboardCommand =
   | { type: 'update-tile'; tileId: string; patch: DashboardTilePatch }
   | { type: 'update-placement'; tileId: string; placement: Record<string, unknown> }
   | { type: 'change-layout'; layout: DashboardLayoutDocumentV1 };
-
-/** The #280 command-result union, `draftVersion` included on both arms. */
-export type DashboardCommandResult<T = void> =
-  | { ok: true; value: T; document: DashboardDocumentV1; draftVersion: number }
-  | { ok: false; diagnostics: WorkspaceDiagnostic[]; draftVersion: number };
 
 export interface ApplyCommandContext {
   resolver: QueryResolver;
@@ -169,8 +164,8 @@ function applyCommandToClone(
       const index = tileIndex(tiles, command.tileId);
       if (index < 0) return failWith(missingTile(command.tileId));
       tiles.splice(index, 1);
-      // The removed tile's placement becomes an orphan; layout normalization
-      // (the session's next step) prunes it.
+      // The removed tile's placement becomes an orphan; the caller's layout
+      // normalization step prunes it.
       return { ok: true, dashboard, value: undefined };
     }
 
@@ -222,7 +217,7 @@ function applyCommandToClone(
       const index = tileIndex(tiles, command.tileId);
       if (index < 0) return failWith(missingTile(command.tileId));
       // Validated through the ACTIVE engine's own plugin (`ctx.plugin`,
-      // resolved by the session from the current document — grid: span
+      // resolved by the caller from the current document — grid: span
       // 1..12; flow: span 1..3) rather than a hardcoded flow plugin (#291).
       const placementDiags = ctx.plugin.validatePlacement(command.placement,
         ['layout', 'items', command.tileId]);
@@ -231,9 +226,9 @@ function applyCommandToClone(
       return { ok: true, dashboard, value: undefined };
     }
 
-    // change-layout: the load/version/fallback failures are the session's
+    // change-layout: load/version/fallback failures belong to the caller's
     // registry-resolution step; a normalization that produces an invalid
-    // document is the session's validation step. Here we install the new
+    // document belongs to the caller's validation step. Here we install the new
     // layout AND, when it is an engine switch (#291 owner decision 3),
     // convert placements between engines:
     //  - flow -> grafana-grid: seed every tile's grid placement from its
