@@ -521,6 +521,20 @@ describe('saved queries', () => {
     expect(mutate.commit).not.toHaveBeenCalled(); // never recreated
     expect(s.savedQueries.map((q) => q.id)).toEqual(['s1']); // local projection untouched (refresh is #343 step 4/5)
   });
+  it('commitSavedQuery flags an externally-deleted target with deletedExternally (#343 review)', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 1' })];
+    tab.savedId = 's1';
+    tab.sqlDraft = 'SELECT my draft';
+    setTabSpecDraft(tab, { name: 'Local', favorite: false });
+    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    const result = await commitSavedQuery(s, tab, tab.specParsed, mutate);
+    expect(result).toEqual({ ok: false, entry: null, deletedExternally: true });
+    expect(mutate.commit).not.toHaveBeenCalled(); // aborted — never recreated
+    expect(tab.savedId).toBe('s1'); // the CALLER refreshes the association (app.ts)
+  });
   it('a rejected aggregate commit mutates nothing and surfaces diagnostics (#287 W4 strict commit)', async () => {
     const s = savedTestState();
     const tab = s.tabs.value[0];
@@ -841,6 +855,30 @@ describe('linked-tab reconcile (#343)', () => {
     expect(unsaved.savedId).toBeNull();
     expect(inSync.savedId).toBe('q1');
     expect(inSync.externalState).toBeUndefined();
+  });
+
+  it('a noop on a still-linked tab clears a stale conflict flag (divergence disappeared) — #343 review', () => {
+    const s = savedTestState();
+    const query = q('q1', 'SELECT 1');
+    const t = linkedTab('t1', query);
+    t.externalState = 'conflict'; // flagged earlier; the other tab has since reverted
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([query]));
+    expect(summary).toEqual({ changed: true, conflicts: 0 });
+    expect(t.externalState).toBeNull();
+    expect(t.savedId).toBe('q1');
+  });
+
+  it('a noop does NOT clear the deleted-elsewhere flag on an orphaned (unlinked) tab', () => {
+    const s = savedTestState();
+    const t = newTabObj('t1'); // orphaned earlier: savedId already null
+    t.sqlDraft = 'SELECT still editing';
+    t.dirtySql = true;
+    t.externalState = 'deleted';
+    s.tabs.value = [t];
+    const summary = reconcileLinkedTabsToLatest(s, ws([]));
+    expect(summary).toEqual({ changed: false, conflicts: 0 });
+    expect(t.externalState).toBe('deleted'); // badge stays until the user acts
   });
 });
 

@@ -94,7 +94,11 @@ export type MutateWorkspace = <T = unknown>(
  *  until the mutation resolves `ok: true`. */
 export type SavedEntryResult =
   | { ok: true; entry: SavedQueryV2 }
-  | { ok: false; entry: null; diagnostics?: WorkspaceDiagnostic[] };
+  /** `deletedExternally: true` marks the one abort where the transform found
+   *  the target query missing from `latest.queries` (#343 — deleted in another
+   *  tab). Callers must surface it and refresh the tab association; every other
+   *  failure keeps the pre-#343 semantics. */
+  | { ok: false; entry: null; diagnostics?: WorkspaceDiagnostic[]; deletedExternally?: true };
 
 /** Bridge a workspace-commit rejection's diagnostics onto the narrower
  *  `SpecDiagnostic` shape `PatchSavedResult`/the Spec editor already expect
@@ -803,6 +807,14 @@ export function reconcileLinkedTabsToLatest(
       tab.lastCommittedQueryToken = undefined;
       tab.externalState = 'deleted';
       changed = true;
+    } else if (tab.savedId && tab.externalState === 'conflict') {
+      // `noop` on a still-linked tab: the divergence disappeared (the other tab
+      // reverted, or this draft matches the baseline again) — a stale conflict
+      // flag would leave "Resolve conflict" with nothing to resolve. The
+      // `'deleted'` flag is NOT cleared here: an orphaned tab has savedId null
+      // and keeps its badge until the user acts on the draft.
+      tab.externalState = null;
+      changed = true;
     }
   }
   return { changed, conflicts };
@@ -861,7 +873,7 @@ export async function createSavedQuery(
   // create never ABORTS (its transform always yields a valid candidate); the
   // only failure is a rejected commit carrying diagnostics.
   if (!outcome.ok) {
-    return { ok: false, entry: null, diagnostics: (outcome as { diagnostics: WorkspaceDiagnostic[] }).diagnostics };
+    return { ok: false, entry: null, diagnostics: outcome.aborted ? undefined : outcome.diagnostics };
   }
   // APPLY only after `ok: true` — `mutateWorkspace` already projected the
   // canonical committed queries onto `state`; link the tab to the committed
@@ -919,7 +931,14 @@ export async function commitSavedQuery(
     nextQueries[index] = entry;
     return { candidate: candidateFrom(base, nextQueries), data: entry };
   });
-  if (!outcome.ok) return { ok: false, entry: null, diagnostics: outcome.aborted ? undefined : outcome.diagnostics };
+  if (!outcome.ok) {
+    // The transform's only abort is the target missing from `latest.queries`
+    // (#343: deleted in another tab) — flag it so the caller can refresh the
+    // tab association instead of treating it as an anonymous rejection.
+    return outcome.aborted
+      ? { ok: false, entry: null, deletedExternally: true }
+      : { ok: false, entry: null, diagnostics: outcome.diagnostics };
+  }
   const built = outcome.data!;
   const saved = committedEntry(outcome.workspace.queries, built.id, built);
   tab.specVersion = SPEC_VERSION;
@@ -1125,8 +1144,9 @@ export async function deleteSaved(
   if (!outcome.ok) {
     // A delete never ABORTS (a filtered-out absent id yields the same query
     // set, always a valid candidate), so the only failure is a rejected commit
-    // carrying diagnostics — `outcome` here is the non-aborted variant.
-    return { ok: false, diagnostics: (outcome as { diagnostics: WorkspaceDiagnostic[] }).diagnostics };
+    // carrying diagnostics — the aborted arm is unreachable but stays honest
+    // to the union instead of casting it away.
+    return { ok: false, diagnostics: outcome.aborted ? [] : outcome.diagnostics };
   }
   // `mutateWorkspace`'s projection (`applyCommittedWorkspace`) already reconciled
   // tab links — any tab pointing at the now-absent query is detached to `sql`

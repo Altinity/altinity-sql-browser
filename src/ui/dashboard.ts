@@ -393,7 +393,12 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // #343 step 6: default to suppressing the cross-tab refresh until the mode is
   // resolved — an early not-found return then leaves this route inert w.r.t.
   // primary-workspace invalidation (it has no session to rebuild). The editable
-  // branch flips it back to false once resolved.
+  // branch flips it back to false once resolved. Known conservative-skip window
+  // (#343 review): a refresh op dequeuing during THIS render's own async load
+  // (e.g. a second external change landing mid-rebuild) sees `true`, skips, and
+  // schedules no follow-up — that change is only picked up by the next
+  // poke/focus/visibility refresh. A skip is always safe (never a misprojection)
+  // and within the issue's human-paced-editing scope.
   app.dashboardReadOnly = true;
   if (source && source.kind === 'session-bundle') {
     workspace = await app.consumeDashboardHandoff();

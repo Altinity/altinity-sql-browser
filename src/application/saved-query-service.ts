@@ -102,7 +102,12 @@ export type CommitLinkedResult =
      *  the pre-#287 inline code never toasted this either, `diagnostics`
      *  absent), or the aggregate strictly rejected the whole-workspace commit
      *  (#287 W4 — `diagnostics` present; nothing was mutated). */
-    | 'rejected';
+    | 'rejected'
+    /** The linked query was deleted in another tab (#343): the transform found
+     *  no entry with the tab's `savedId` in the latest committed workspace and
+     *  aborted without recreating it. The caller must refresh the tab
+     *  association (the tab becomes an unsaved draft / detaches). */
+    | 'deleted';
     diagnostics?: WorkspaceDiagnostic[];
   };
 
@@ -171,8 +176,9 @@ export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQuery
     const result = await commitSavedQuery(
       deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.mutateWorkspace, deps.specValidators,
     );
-    return result.ok
-      ? { ok: true, entry: result.entry }
+    if (result.ok) return { ok: true, entry: result.entry };
+    return result.deletedExternally
+      ? { ok: false, reason: 'deleted' }
       : { ok: false, reason: 'rejected', diagnostics: result.diagnostics };
   }
 

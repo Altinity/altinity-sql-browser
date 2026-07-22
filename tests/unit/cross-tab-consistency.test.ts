@@ -176,9 +176,10 @@ describe('cross-tab read-before-write (#343)', () => {
     expect(deleted.ok).toBe(true);
 
     // B now saves its linked tab — the target is gone from `latest`, so the
-    // save aborts rather than recreating q1.
+    // save aborts rather than recreating q1, and flags WHY so the caller can
+    // refresh the tab association (#343 review).
     const result = await commitSavedQuery(b.state, bTab, { name: 'q1', favorite: false }, b.mutateWorkspace);
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, entry: null, deletedExternally: true });
 
     const final = await committed(a);
     expect(final.queries.find((q) => q.id === 'q1')).toBeUndefined(); // never recreated

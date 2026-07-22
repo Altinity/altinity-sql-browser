@@ -673,6 +673,29 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     return app.state.tabs.value.find((t) => t.savedId === 'q1')!;
   };
 
+  it('Save on a linked tab whose query was deleted in another tab refreshes the association (#343 review)', async () => {
+    const app = createApp(env());
+    await app.mutateWorkspace(() => ({ candidate: q1ws() }));
+    await app.loadWorkspaceOnBoot();
+    app.renderApp();
+    const t = openQ1(app);
+    t.sqlDraft = 'SELECT my draft';
+    t.dirtySql = true;
+    // Another tab deletes q1: straight through the repository — this tab gets
+    // no poke (missed broadcast) and is already focused (no activation event).
+    await app.workspace.commit({ ...q1ws(), queries: [] });
+    const saved = await app.actions.save();
+    expect(saved).toBeNull(); // aborted — never recreated
+    await app.flushWorkspaceWrites(); // the triggered refresh settles
+    // The reconcile turned the ghost link into the orphan treatment: unsaved
+    // draft, deleted-elsewhere flag, draft preserved exactly.
+    expect(t.savedId).toBeNull();
+    expect(t.externalState).toBe('deleted');
+    expect(t.sqlDraft).toBe('SELECT my draft');
+    const persisted = await app.workspace.loadCurrent();
+    expect(persisted!.queries).toHaveLength(0); // still deleted
+  });
+
   it('window focus schedules a refresh; a visible visibilitychange schedules another', async () => {
     const app = createApp(env());
     await app.mutateWorkspace(() => ({ candidate: q1ws() }));
@@ -788,17 +811,26 @@ describe('app workspace refresh + conflict UI (#343)', () => {
     expect(persisted!.queries.find((q) => q.id === 'q1')!.sql).toBe('SELECT my kept draft');
   });
 
-  it('the reload resolution is a no-op if the query vanished before it runs', async () => {
+  it('the reload resolution on a vanished query refreshes the tab association instead of leaving the stale conflict (#343 review)', async () => {
     const app = createApp(env());
     await app.mutateWorkspace(() => ({ candidate: q1ws() }));
     await app.loadWorkspaceOnBoot();
     app.renderApp();
     const t = openQ1(app);
     t.externalState = 'conflict';
-    t.savedId = 'no-longer-present'; // savedForTab → null inside reloadSavedVersion
     await app.actions.save();
-    expect(() => (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement)
-      .dispatchEvent(new Event('click', { bubbles: true }))).not.toThrow();
+    // Another tab deletes q1 AFTER the chooser opened: straight through the
+    // repository (no local projection), then drop it from the in-memory list so
+    // savedForTab misses inside reloadSavedVersion (the vanished-query guard).
+    await app.workspace.commit({ ...q1ws(), queries: [] });
+    app.state.savedQueries = [];
+    (document.querySelector('.conflict-chooser .cf-reload') as HTMLElement)
+      .dispatchEvent(new Event('click', { bubbles: true }));
+    await app.flushWorkspaceWrites(); // the queued refreshWorkspaceFromStore settles
+    // The refresh projected the external delete and the reconcile gave this
+    // clean ghost-linked tab its detach treatment: no link, no stale badge.
+    expect(t.savedId).toBeNull();
+    expect(t.externalState ?? null).toBeNull();
   });
 });
 

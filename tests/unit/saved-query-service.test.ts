@@ -214,13 +214,13 @@ describe('commit', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects with rejected when commitSavedQuery itself declines (tab no longer linked)', async () => {
+  it('maps an externally-deleted target to reason "deleted" (never recreated, nothing committed) — #343', async () => {
     const tab = newTabObj('t1');
     tab.sqlDraft = 'SELECT 1';
-    tab.savedId = 'does-not-exist'; // linked id absent from savedQueries → index < 0
+    tab.savedId = 'does-not-exist'; // linked id absent from the latest workspace → transform aborts
     const { deps, commit } = makeDeps();
     const result = await createSavedQueryService(deps).commit(tab, validEvaluated());
-    expect(result).toEqual({ ok: false, reason: 'rejected', diagnostics: undefined });
+    expect(result).toEqual({ ok: false, reason: 'deleted' });
     expect(commit).not.toHaveBeenCalled();
   });
 

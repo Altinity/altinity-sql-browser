@@ -1309,6 +1309,14 @@ export function createApp(env: CreateAppEnv = {}): App {
         flashToast('Fix Spec errors before saving', { document: doc });
       } else if (result.reason === 'empty') {
         flashToast('Nothing to save', { document: doc });
+      } else if (result.reason === 'deleted') {
+        // #343: the linked query vanished from the latest workspace (deleted in
+        // another tab) and the save aborted without recreating it. Refresh the
+        // tab association now — the reconcile turns this tab into an unsaved
+        // draft (dirty) or detaches it (clean) — instead of leaving a ghost
+        // link waiting for the next focus/visibility event.
+        flashToast('This query was deleted in another tab — your draft is kept as an unsaved query', { document: doc });
+        void app.refreshWorkspaceFromStore();
       } else if (result.diagnostics?.length) {
         flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
       }
@@ -1344,7 +1352,13 @@ export function createApp(env: CreateAppEnv = {}): App {
   function reloadSavedVersion(): void {
     const tab = app.activeTab();
     const entry = savedForTab(app.state, tab);
-    if (!entry) return; // deleted between opening the chooser and resolving — nothing to reload
+    if (!entry) {
+      // Deleted between opening the chooser and resolving — nothing to reload;
+      // refresh so the reconcile gives this tab its deleted-elsewhere treatment
+      // instead of leaving the stale conflict state in place (#343 review).
+      void app.refreshWorkspaceFromStore();
+      return;
+    }
     adoptSavedIntoTab(tab, entry);
     batch(() => { app.state.tabs.value = [...app.state.tabs.value]; }); // re-run the tab effect → editor + strip resync
     app.updateSaveBtn();
