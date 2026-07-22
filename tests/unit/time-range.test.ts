@@ -11,6 +11,7 @@ import {
   chartScaleTimeToInstant,
   formatChartTimeLabel,
   formatChartTimeRange,
+  formatTimeRangeDisplayValue,
   instantToChartScaleTime,
   pushRecentRange,
 } from '../../src/core/time-range.js';
@@ -48,6 +49,14 @@ describe('chart time-range formatting', () => {
     const ms = Date.UTC(2026, 0, 2, 3, 4, 5);
     expect(formatChartTimeRange({ fromMs: ms, toMs: ms, fromType: parsed, toType: parsed })).toMatchObject({ ok: true });
     expect(formatChartTimeLabel(ms, parsed)).toBe('2026-01-02 03:04:05');
+  });
+
+  it('projects epoch wire values to readable editor text without changing other tokens', () => {
+    expect(formatTimeRangeDisplayValue('1784750189', 'DateTime')).toBe('2026-07-22 19:56:29');
+    expect(formatTimeRangeDisplayValue('1784750189.123456', 'DateTime64(6)')).toBe('2026-07-22 19:56:29.123000');
+    expect(formatTimeRangeDisplayValue('-1d', 'DateTime')).toBe('-1d');
+    expect(formatTimeRangeDisplayValue('2026-07-22 19:56:29', 'DateTime')).toBe('2026-07-22 19:56:29');
+    expect(formatTimeRangeDisplayValue('1784750189', 'Date')).toBe('1784750189');
   });
 
   it('round-trips Chart.js wall-clock coordinates through an explicit column timezone', () => {
@@ -399,6 +408,15 @@ describe('validateTimeRangeDraft', () => {
     const r = validateTimeRangeDraft({ fromText: '1783772625', toText: '1783772625123', fromType: 'DateTime', toType: 'DateTime64(3)', nowMs: NOW });
     expect(r.from).toEqual({ ok: true, display: expect.any(String), instantMs: 1783772625000, error: null, matchedRelative: false });
     expect(r.to.instantMs).toBe(1783772625123);
+  });
+
+  it('accepts fractional epoch seconds emitted for DateTime64', () => {
+    const r = validateTimeRangeDraft({
+      fromText: '1784750189.123456', toText: '1784750190.987654321',
+      fromType: 'DateTime64(6)', toType: 'DateTime64(9)', nowMs: NOW,
+    });
+    expect(r.from).toMatchObject({ ok: true, instantMs: 1784750189123, display: '2026-07-22 19:56:29.123000' });
+    expect(r.to).toMatchObject({ ok: true, instantMs: 1784750190987, display: '2026-07-22 19:56:30.987000000' });
   });
 
   it('invalid calendar dates are rejected', () => {

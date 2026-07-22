@@ -3379,7 +3379,8 @@ describe('renderDashboard — compound time-range control (#335)', () => {
     expect(calls.slice(before).some((call) => 'param_from' in call.params && 'param_to' in call.params)).toBe(true);
     expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toContain('Time range applied:');
     qs<HTMLButtonElement>(app.root, '.trf-trigger').dispatchEvent(clickEv());
-    expect(qs(document.body, '.trf-recent').textContent).toBe('1700000000 → 1800000000');
+    expect(qs(document.body, '.trf-recent').textContent)
+      .toBe('2023-11-14 22:13:20 → 2027-01-15 08:00:00');
   });
 });
 

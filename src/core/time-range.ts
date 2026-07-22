@@ -363,6 +363,22 @@ export function validateTimeRangeDraft(input: {
   return { from, to, rangeOk, rangeError, applyEnabled: from.ok && to.ok && rangeOk };
 }
 
+/** Human-readable editor/list text for an absolute epoch token. Relative
+ * expressions and already-readable absolute values stay verbatim; only the
+ * numeric wire forms produced for DateTime/DateTime64 are projected to their
+ * calendar preview. The caller retains the original token for commits. */
+export function formatTimeRangeDisplayValue(
+  text: string,
+  type: ParsedParamType | string,
+): string {
+  const trimmed = text.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) return text;
+  const parsed = parseAbsoluteInstant(type, trimmed);
+  if (!parsed.ok) return text;
+  const t = typeof type === 'string' ? parseParamType(type) : type;
+  return formatPreviewInstant(parsed.instantMs, t);
+}
+
 /** Convert Chart.js's local-wall-clock epoch convention back to the UTC
  * server-wall-clock convention used by the existing date/time parameter
  * pipeline, then format each bound for its own declared type. Date/Date32

@@ -46,7 +46,7 @@
 import { h } from './dom.js';
 import { idSafe } from './combobox.js';
 import { openAnchoredDialog } from './popover.js';
-import { validateTimeRangeDraft } from '../core/time-range.js';
+import { formatTimeRangeDisplayValue, validateTimeRangeDraft } from '../core/time-range.js';
 import type { DashboardTimeRangeGroup, TimeRangeRecent, TimeRangeBoundDraft } from '../core/time-range.js';
 import { TIME_RANGE_CONSTANTS, filterTokenList } from './relative-time-field.js';
 
@@ -157,13 +157,19 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
     // does. Flipped false right after the dialog mounts.
     let openingFocus = true;
 
+    // Epoch wire tokens stay retained in `fromValue`/`toValue`; the editor
+    // projects only their visible seed to a calendar value. If that projected
+    // text remains untouched, Apply maps it back to the exact original token.
+    const fromSeed = formatTimeRangeDisplayValue(fromValue, fromType);
+    const toSeed = formatTimeRangeDisplayValue(toValue, toType);
+
     const mkInput = (role: 'from' | 'to', seed: string): HTMLInputElement => h('input', {
       type: 'text', class: 'trf-input var-input', value: seed,
       id: `trf-${role}-${suffix}`, 'aria-label': role === 'from' ? 'From' : 'To',
       'aria-describedby': `trf-${role}-preview-${suffix}`,
     });
-    const fromInput = mkInput('from', fromValue);
-    const toInput = mkInput('to', toValue);
+    const fromInput = mkInput('from', fromSeed);
+    const toInput = mkInput('to', toSeed);
     const fromPreview = h('div', { class: 'trf-preview', id: `trf-from-preview-${suffix}` });
     const toPreview = h('div', { class: 'trf-preview', id: `trf-to-preview-${suffix}` });
     const fromCaret = h('button', {
@@ -244,7 +250,9 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
           return;
         }
         rightBody.replaceChildren(...recents.map((r) => {
-          const b = h('button', { type: 'button', class: 'trf-recent' }, `${r.from} → ${r.to}`);
+          const fromText = formatTimeRangeDisplayValue(r.from, fromType);
+          const toText = formatTimeRangeDisplayValue(r.to, toType);
+          const b = h('button', { type: 'button', class: 'trf-recent' }, `${fromText} → ${toText}`);
           // A recents pick is an immediate apply: close FIRST (commit ordering),
           // then route through the same onApply the Apply button uses.
           b.addEventListener('click', () => { handle.close(); opts.onApply(r.from, r.to); });
@@ -309,8 +317,8 @@ export function buildTimeRangeField(opts: TimeRangeFieldOpts): TimeRangeFieldHan
     // disabled button; the disabled attr is the gate — see the multiselect
     // precedent, whose Apply handler is likewise unguarded).
     applyBtn.addEventListener('click', () => {
-      const fromT = fromInput.value.trim();
-      const toT = toInput.value.trim();
+      const fromT = fromInput.value.trim() === fromSeed.trim() ? fromValue.trim() : fromInput.value.trim();
+      const toT = toInput.value.trim() === toSeed.trim() ? toValue.trim() : toInput.value.trim();
       // An identical (trimmed) draft is a no-op ONLY while the pair is already
       // active: with committed-but-inactive bounds (clearFilter keeps the typed
       // value and just flips `active` off) an unchanged draft still activates

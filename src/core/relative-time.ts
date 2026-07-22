@@ -383,6 +383,8 @@ export function formatPreview(expr: string, type: string | ParsedParamType, nowM
 //   - Bare digits, DateTime/DateTime64 only: 1-10 digits = epoch SECONDS,
 //     exactly 13 digits = epoch MILLISECONDS (any other digit-only length is
 //     rejected rather than guessed at).
+//   - DateTime64 only: 1-10 epoch-second digits plus 1-9 fractional digits;
+//     precision beyond the browser's milliseconds is truncated, never rounded.
 //   - Real calendar/time-of-day validation (`2026-02-30`, `24:00`, … all
 //     error) — never silently clamped.
 // Surrounding whitespace is trimmed. Anything else is a short, human
@@ -404,6 +406,7 @@ export interface AbsoluteInstantErr {
 const RE_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const RE_DATETIME = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?$/;
 const RE_DIGITS = /^\d+$/;
+const RE_FRACTIONAL_EPOCH = /^(\d{1,10})\.(\d{1,9})$/;
 
 // Real calendar validation: month in [1,12] and day within that month's
 // actual length (UTC — `Date.UTC(y, m, 0)` is the last day of month `m`
@@ -470,6 +473,12 @@ export function parseAbsoluteInstant(
     if (s.length === 13) return { ok: true, instantMs: Number(s) };
     if (s.length >= 1 && s.length <= 10) return { ok: true, instantMs: Number(s) * 1000 };
     return { ok: false, error: `"${s}" is not a recognized epoch value (expected 1-10 digits for seconds, or 13 for milliseconds).` };
+  }
+
+  const fractionalEpoch = RE_FRACTIONAL_EPOCH.exec(s);
+  if (fractionalEpoch && t.base === 'DateTime64') {
+    const milliseconds = Number((fractionalEpoch[2] + '000').slice(0, 3));
+    return { ok: true, instantMs: Number(fractionalEpoch[1]) * 1000 + milliseconds };
   }
 
   return { ok: false, error: `"${s}" is not a valid absolute value for ${t.base}.` };

@@ -293,6 +293,13 @@ test.describe('Dashboard compound time-range control', () => {
     expect(log.filter((s) => s.includes('tile-b'))).toHaveLength(1);
     expect(await page.evaluate(() => window.__live())).toMatch(/^Time range applied:/);
 
+    // The exact epoch wire values remain committed, but they never leak into
+    // the control's editable presentation after a chart brush.
+    await open(page);
+    await expect(fromBox(page)).toHaveValue(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    await expect(toBox(page)).toHaveValue(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    await page.locator('.trf-btn:not(.trf-btn-primary)').click();
+
     // Modified drag is reserved for Dashboard tile movement and never starts
     // a chart selection.
     await expect(page.locator('#chart-a')).toHaveCSS('cursor', 'crosshair');
