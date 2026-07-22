@@ -611,6 +611,15 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
   // the `barSig`/status-signal split) calls this directly instead of tearing
   // down and rebuilding the whole bar.
   let filterBarUpdateStatus: FilterBarHandle['updateStatus'] | null = null;
+  // Maintainer merge-gate fix (#189): each parameter's `optionsRev` as of the
+  // CURRENTLY-RETAINED bar's own build — compared, below, against the
+  // incoming view's `optionsRev` for whichever parameter had an open (or
+  // just-closed) multiselect popover, so the refresh announcement fires only
+  // when that parameter's options actually changed content, never merely
+  // because a rebuild happened to run while (or right after) its popover was
+  // up. Replaced wholesale after every rebuild (never merged) — a filter that
+  // disappears from `sview.filters` simply drops out.
+  let lastBuiltOptionsRev = new Map<string, number>();
 
   function rebuildFilterBar(sview: DashboardViewState): void {
     // #189-F2b: ask the OUTGOING bar WHICH parameter's multiselect popover is
@@ -622,6 +631,16 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     // trigger on the freshly-built bar below (never left stranded at
     // `<body>` — F2 review finding).
     const openMultiSelectParam = currentFilterBar?.openMultiSelectParam() ?? null;
+    // Maintainer merge-gate fix (#189): an ordinary Apply already closed its
+    // OWN popover before its `onApply` reached `session.applyFilter` — by the
+    // time that commit's synchronous `publish()` gets here, `openMultiSelectParam`
+    // above already reads `null` for it. `focusedMultiSelectParam` still finds
+    // it (focus sits on that field's about-to-be-detached trigger), so focus
+    // restoration below has a signal to work with even when there was no open
+    // popover to speak of — never used for the ANNOUNCE decision (only a
+    // genuinely open popover's cancellation is ever worth announcing).
+    const focusedMultiSelectParam = currentFilterBar?.focusedMultiSelectParam() ?? null;
+    const restoreFocusParam = openMultiSelectParam ?? focusedMultiSelectParam;
     currentFilterBar?.dispose();
     const idByParam = new Map<string, string>();
     // #360: curation is gated on TOPOLOGY (`sourceId != null`, set once at
@@ -684,14 +703,31 @@ export async function renderDashboard(app: DashboardApp): Promise<void> {
     filterHost.replaceChildren(bar.el);
     currentFilterBar = bar;
     filterBarUpdateStatus = bar.updateStatus;
+    // Maintainer merge-gate fix (#189): announce the refresh ONLY when the
+    // open param's options actually changed content between the OUTGOING
+    // bar's own last build (`lastBuiltOptionsRev`) and this incoming view —
+    // a rebuild triggered by a plain value/active commit (this field's own
+    // Apply, already closed by the time it gets here, or any OTHER field's
+    // commit) never bumps `optionsRev`, so it never announces, even on the
+    // rare chance this param's popover was still genuinely open when some
+    // unrelated commit forced the whole bar to rebuild.
     if (openMultiSelectParam) {
-      filterRefreshLiveEl.textContent = 'Filter options were refreshed';
-      // #189-F2b: land focus on the NEW bar's corresponding trigger — a
-      // no-op if that parameter is no longer a multiselect field on the
-      // fresh bar (e.g. its curation topology itself changed), which simply
-      // leaves focus wherever it already was rather than throwing.
-      bar.focusMultiSelectTrigger(openMultiSelectParam);
+      const prevRev = lastBuiltOptionsRev.get(openMultiSelectParam);
+      const nextRev = sview.filters.find((f) => f.parameter === openMultiSelectParam)?.optionsRev;
+      if (nextRev !== undefined && nextRev !== prevRev) {
+        filterRefreshLiveEl.textContent = 'Filter options were refreshed';
+      }
     }
+    lastBuiltOptionsRev = new Map(sview.filters.map((f) => [f.parameter, f.optionsRev]));
+    // #189-F2b: land focus on the NEW bar's corresponding trigger for
+    // whichever parameter the OUTGOING bar had open, or (absent that) had
+    // focus on its trigger (an Apply that already closed its own popover
+    // before reaching here) — a no-op if that parameter is no longer a
+    // multiselect field on the fresh bar (e.g. its curation topology itself
+    // changed) or there was no such parameter at all (a plain field mid-typing
+    // elsewhere is never disturbed), which simply leaves focus wherever it
+    // already was rather than throwing.
+    if (restoreFocusParam) bar.focusMultiSelectTrigger(restoreFocusParam);
   }
 
   const filterDiagnosticsHost = h('div', { class: 'dash-filter-diagnostics' });

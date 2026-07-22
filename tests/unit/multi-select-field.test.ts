@@ -290,6 +290,38 @@ describe('buildMultiSelectField — Apply semantics', () => {
     expect(document.activeElement).toBe(t);
   });
 
+  // Maintainer merge-gate finding: `onApply` typically routes into
+  // `session.applyFilter`, which publishes SYNCHRONOUSLY (before its first
+  // `await`) — a subscriber that rebuilds the filter bar on that publish can
+  // run inside `onApply` itself. If the popover were still open at that
+  // point, the rebuild would read it as an outgoing bar's popover getting
+  // force-cancelled and announce a false "Filter options were refreshed". The
+  // fix: close BEFORE calling `onApply`, so any synchronous reaction to
+  // `onApply` always observes this popover as already closed.
+  it('closes the popover (draft already captured) BEFORE invoking onApply, not after', () => {
+    const onApply = vi.fn();
+    let openWhenCalled: boolean | null = null;
+    let ariaExpandedWhenCalled: string | null = null;
+    let popoverPresentWhenCalled: boolean | null = null;
+    const handle = buildMultiSelectField(baseOpts({
+      value: ['a'], active: true,
+      onApply: (...args) => {
+        openWhenCalled = handle.isOpen();
+        ariaExpandedWhenCalled = triggerEl(handle.el).getAttribute('aria-expanded');
+        popoverPresentWhenCalled = popover() !== null;
+        onApply(...args);
+      },
+    }));
+    document.body.appendChild(handle.el);
+    click(triggerEl(handle.el));
+    setChecked(optionCbs()[1], true); // add Bravo — a real change, so onApply fires
+    click(applyBtn());
+    expect(onApply).toHaveBeenCalledWith(['a', 'b'], true); // the commit still happened
+    expect(openWhenCalled).toBe(false);
+    expect(ariaExpandedWhenCalled).toBe('false');
+    expect(popoverPresentWhenCalled).toBe(false);
+  });
+
   it('duplicate values in the committed selection do not defeat the no-op Apply check', () => {
     const onApply = vi.fn();
     const handle = buildMultiSelectField(baseOpts({ value: ['a', 'a', 'b'], active: true, onApply }));

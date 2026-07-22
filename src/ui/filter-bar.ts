@@ -259,11 +259,27 @@ export interface FilterBarHandle {
    *  (`focusMultiSelectTrigger` below) rather than leaving focus stranded at
    *  `<body>`. */
   openMultiSelectParam(): string | null;
+  /** Maintainer merge-gate fix (#189): the parameter of a curated MULTISELECT
+   *  field built by THIS bar instance whose trigger (or error-mode fallback
+   *  input) currently HOLDS FOCUS, popover open or not — or `null` when none
+   *  does. Distinct from `openMultiSelectParam` above: an ordinary Apply
+   *  closes its own popover BEFORE calling `onApply` (multi-select-field.ts),
+   *  so by the time a synchronous commit-triggered rebuild reaches this bar,
+   *  `openMultiSelectParam()` already reads `null` even though focus still
+   *  sits on that field's (about-to-be-detached) trigger — this is the only
+   *  remaining signal for which parameter's fresh trigger a rebuild should
+   *  refocus. The caller (`dashboard.ts`) reads BOTH before disposing the
+   *  outgoing bar and restores focus for whichever one is non-null
+   *  (`openMultiSelectParam() ?? focusedMultiSelectParam()`), so a plain
+   *  field mid-typing (focus outside every multiselect control) is never
+   *  disturbed. */
+  focusedMultiSelectParam(): string | null;
   /** #189-F2b: focuses the named parameter's multiselect trigger (or its
    *  error-mode fallback input, if erroring) — a no-op when this bar built no
    *  multiselect field for that parameter. Used by `dashboard.ts` right after
    *  building a FRESH bar, for whichever parameter `openMultiSelectParam()`
-   *  reported on the OUTGOING bar just before disposing it. */
+   *  (or, absent that, `focusedMultiSelectParam()`) reported on the OUTGOING
+   *  bar just before disposing it. */
   focusMultiSelectTrigger(name: string): void;
 }
 
@@ -301,7 +317,8 @@ export function buildFilterBar(
     return {
       el: h('div', { ...attrs, style: { display: 'none' } }),
       dispose: () => {}, updateStatus: () => {},
-      openMultiSelectParam: () => null, focusMultiSelectTrigger: () => {},
+      openMultiSelectParam: () => null, focusedMultiSelectParam: () => null,
+      focusMultiSelectTrigger: () => {},
     };
   }
   const timerClears: Array<() => void> = [];
@@ -511,6 +528,16 @@ export function buildFilterBar(
     // — see `dashboard.ts`'s `rebuildFilterBar`.
     openMultiSelectParam: () => {
       for (const [name, msField] of multiSelectFields) if (msField.isOpen()) return name;
+      return null;
+    },
+    // Maintainer merge-gate fix (#189): `.el` is each field's own control root
+    // (the single node hosting whichever of trigger/error-input is current —
+    // see multi-select-field.ts), so `.contains(activeElement)` catches focus
+    // on either one, regardless of popover state.
+    focusedMultiSelectParam: () => {
+      const active = document.activeElement;
+      if (!active) return null;
+      for (const [name, msField] of multiSelectFields) if (msField.el.contains(active)) return name;
       return null;
     },
     focusMultiSelectTrigger: (name) => { multiSelectFields.get(name)?.focusTrigger(); },

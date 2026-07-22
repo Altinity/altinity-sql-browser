@@ -381,10 +381,24 @@ export function buildMultiSelectField(opts: MultiSelectFieldOpts): MultiSelectFi
       const activeNext = canonical.length > 0;
       // A no-op Apply (same canonical selection AND same active flag) closes
       // silently — `onApply` fires exactly once otherwise.
-      if (!(sameSelection(canonical, prevCanonical) && activeNext === active)) {
-        opts.onApply(canonical, activeNext);
-      }
+      const changed = !(sameSelection(canonical, prevCanonical) && activeNext === active);
+      // Close BEFORE calling `onApply` (maintainer merge-gate finding, #189):
+      // `onApply` typically routes straight into `session.applyFilter`, which
+      // mutates state and `publish()`es SYNCHRONOUSLY before its first
+      // `await` — a caller subscribed to that publish (`dashboard.ts`'s
+      // `rebuildFilterBar`) can run inside this very call stack, before
+      // `applyBtn`'s own click handler ever returns. Closing first means that
+      // synchronous rebuild always observes this popover as already-closed
+      // (`isOpen()` false, `closeCurrent` cleared) — never mistakes an
+      // ordinary Apply's own commit for an outgoing bar's popover getting
+      // force-cancelled out from under the user, which is what used to
+      // trigger a false "Filter options were refreshed" announcement. `close()`
+      // (default, non-`skipFocus`) refocuses the trigger; the rebuild that
+      // `onApply` may synchronously trigger replaces the whole bar out from
+      // under that focus — restoring it onto the FRESH trigger is
+      // `rebuildFilterBar`'s own job (`dashboard.ts`), not this module's.
       close();
+      if (changed) opts.onApply(canonical, activeNext);
     });
     const footer = h('div', { class: 'ms-footer' }, clearBtn, cancelBtn, applyBtn);
 

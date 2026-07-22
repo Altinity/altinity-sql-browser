@@ -2625,6 +2625,61 @@ describe('renderDashboard — searchable multiselect + array-wrapped curated fil
     expect(document.activeElement).toBe(newTrigger);
     rootEl(app).remove();
   });
+
+  // Maintainer merge-gate finding: an ORDINARY Apply — the user's own commit,
+  // not an outgoing bar's popover getting force-cancelled by someone/something
+  // else — must never announce "Filter options were refreshed". Driven end to
+  // end through the real session: the shared source republishes the SAME
+  // option content on every rerun (no genuine option-generation change), so
+  // `optionsRev` never bumps and the announcement must stay silent even though
+  // `session.applyFilter`'s synchronous `publish()` forces this exact
+  // multiselect's own bar to rebuild out from under its own (already-closed)
+  // popover.
+  it('a normal Apply commits through the real session without announcing "Filter options were refreshed", and focuses the fresh trigger', async () => {
+    const { app, calls } = dashApp({
+      responder: (sql) => {
+        if (sql.includes('opts')) {
+          return { columns: [{ name: 'p', type: 'Array(String)' }], rows: [[['x', 'y']]] };
+        }
+        return { columns: [{ name: 'k', type: 'String' }, { name: 'v', type: 'UInt64' }], rows: [['a', 1]] };
+      },
+      workspace: wsWith({
+        queries: [
+          q('q1', 'SELECT k, v FROM a WHERE has(p, {p:Array(String)})'),
+          q('src', "SELECT ['x','y'] AS p -- opts", { dashboard: { role: 'filter' } }),
+        ],
+        tiles: [{ id: 't1', queryId: 'q1' }],
+        filters: [{ id: 'f1', parameter: 'p', sourceQueryId: 'src', defaultValue: ['x'], defaultActive: true }],
+      }),
+    });
+    await render(app);
+    document.body.appendChild(rootEl(app));
+    const field = qs(app.root, '.dash-filter-host .var-field.is-curated');
+    qs<HTMLButtonElement>(field, '.ms-trigger').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(qs(document.body, '.ms-popover')).not.toBeNull();
+    const liveRegionBefore = qs(app.root, '.dash-toolbar > .sr-only').textContent;
+    // Check the second option ('y') too, then Apply — a real value change.
+    const draftCb = qsa<HTMLInputElement>(document.body, '.ms-option input[type="checkbox"]')[1];
+    draftCb.checked = true;
+    draftCb.dispatchEvent(new Event('change', { bubbles: true }));
+    const before = calls.length;
+    qs<HTMLButtonElement>(document.body, '.ms-btn-primary').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // The popover is torn down synchronously (multi-select-field.ts's Apply
+    // handler closes before calling `onApply`) — no macrotask/microtask flush
+    // needed to observe it gone.
+    expect(document.body.querySelector('.ms-popover')).toBeNull();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const tileCalls = calls.slice(before).filter((c) => 'param_p' in c.params);
+    expect(tileCalls.some((c) => c.params.param_p === "['x','y']")).toBe(true); // the commit went through
+    // The live region is untouched — no false "refreshed" announcement.
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).toBe(liveRegionBefore);
+    expect(qs(app.root, '.dash-toolbar > .sr-only').textContent).not.toBe('Filter options were refreshed');
+    // Focus lands on the FRESH bar's trigger for the same parameter (the old
+    // one, focused by `close()`, was detached by the synchronous rebuild).
+    const newTrigger = qs<HTMLButtonElement>(app.root, '.ms-trigger');
+    expect(document.activeElement).toBe(newTrigger);
+    rootEl(app).remove();
+  });
 });
 
 // #359: the shared-source filter wave now publishes `optionsRev` (bumped ONLY

@@ -31,10 +31,21 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   configurations, an explicit `multiple` on a scalar contract, or an unknown
   mode all fall back to the ordinary string input with persistent
   path-precise `filter-selection-*` diagnostics (never a silent downgrade).
+  "Executable consumer" is defined once (`gatherExecutableConsumers`) and
+  shared by contract resolution, the per-wave helper merge, and
+  whole-workspace semantic validation — `validateDashboardSemantics` runs
+  the same resolver at authoring/import time, mapping each diagnostic to
+  its exact document path (`filters[i].selection.mode`,
+  `filters[i].targets[j]`, `filters[i].parameter`), and a declaration
+  outside the resolved consumer set (a presentation-error tile, a
+  never-executing cascading-invalid source, a non-targeted tile) can never
+  suppress a valid helper.
   Committed multiselect values stay real `string[]` arrays end to end —
   through viewer state, localStorage persistence, structural equality, and
   the existing typed `Array(T)` serializer (duplicates removed, empty-string
-  elements valid, never comma-joined). Option refreshes reconcile by bound
+  elements valid, never comma-joined; an active empty array serializes as a
+  real `[]` — activation is decided exclusively by the active flag, never by
+  a value sentinel). Option refreshes reconcile by bound
   value: surviving selections stay active in canonical order (label/order-only
   changes rerun nothing), removals join one reconciled panel wave, an empty
   intersection deactivates the filter keeping its dormant value, and new
