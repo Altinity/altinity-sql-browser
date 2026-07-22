@@ -16,6 +16,11 @@ auto-generated per-PR notes; this file is the curated, human-readable history.
   fallback, shared filters, and focused visible tiles; useful secondary
   analyses remain untiled Library entries. Removed the superseded KPI, logs,
   query-log, System Explorer, and earlier Grafana-port fixtures and generator.
+- CI now classifies pull-request changes before starting expensive jobs:
+  example-only changes run focused bundle/contract checks, while unit coverage,
+  build/size, release-bundle smoke, browser E2E, and Docker jobs run only for
+  relevant paths. Pushes to `main`, release tags, and manual dispatches retain
+  full validation, with a nightly cross-browser E2E safety run and stable gate.
 
 ### Added
 - **Cross-tab workspace consistency: refresh before write and stale-tab
