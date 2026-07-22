@@ -16,7 +16,37 @@ env:
   IMAGE_NAME: altinity/altinity-sql-browser
 
 jobs:
+  # Keep the workflow/check present on every PR, but avoid QEMU + a multi-arch
+  # build when no production-image input changed. Job-level skips satisfy
+  # required checks; workflow-level path filters do not reliably do so.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            docker:
+              - 'Dockerfile'
+              - 'src/**'
+              - 'schemas/**'
+              - 'build/**'
+              - 'deploy/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/docker.yml'
+
   docker:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

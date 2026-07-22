@@ -2,11 +2,107 @@ name: ci
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Path classification is deliberately bypassed for this nightly browser
+    # safety net, catching omissions in the PR path map itself.
+    - cron: '31 2 * * *'
 
 jobs:
+  # Keep the workflow itself unconditional: a required workflow skipped by an
+  # event-level paths filter can remain Pending forever. Conditional jobs are
+  # reported as successful skips by GitHub. The action is pinned to the v3
+  # commit rather than its mutable tag.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      examples: ${{ steps.filter.outputs.examples }}
+      unit: ${{ steps.filter.outputs.unit }}
+      build: ${{ steps.filter.outputs.build }}
+      e2e: ${{ steps.filter.outputs.e2e }}
+      bundle: ${{ steps.filter.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            examples:
+              - 'examples/**'
+              - 'tests/unit/spec-examples.test.js'
+            unit:
+              - 'src/**'
+              - 'schemas/**'
+              - 'tests/unit/**'
+              - '!tests/unit/spec-examples.test.js'
+              - 'tests/vitest.config.ts'
+              - 'build/**'
+              - 'tsconfig.json'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            build:
+              - 'src/**'
+              - 'schemas/**'
+              - 'build/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            e2e:
+              - 'src/**'
+              - 'schemas/**'
+              - 'tests/e2e/**'
+              - 'playwright.config.js'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+            bundle:
+              - 'src/**'
+              - 'schemas/**'
+              - 'build/**'
+              - 'deploy/**'
+              - 'install.sh'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/**'
+
+  # Example-only PRs still validate every portable bundle, authored Dashboard,
+  # filter contract, and generator normalization without paying for coverage,
+  # a production build, or real browsers.
+  examples:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.examples == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Check normalized examples
+        run: node examples/mjs/normalize-examples.mjs --check
+      - name: Test example contracts
+        run: >-
+          npx vitest run tests/unit/spec-examples.test.js
+          --config tests/vitest.config.ts
+          --coverage.enabled=false
+
   test:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.unit == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +129,11 @@ jobs:
   # and deltas vs. the PR base when a base report can be produced. Reporting only:
   # it builds the same bytes as the release, never a budget that fails the build.
   size:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.build == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -81,6 +182,11 @@ jobs:
   # layout, the SPA-path discovery, and config.json generation all work before a
   # tag ever cuts a real release.
   bundle:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.bundle == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -121,6 +227,12 @@ jobs:
   # harness imports /src directly over a python http.server (started by the
   # Playwright config's webServer), so no build step is needed.
   e2e:
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && needs.changes.outputs.e2e == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -139,3 +251,18 @@ jobs:
           name: playwright-results
           path: test-results/
           retention-days: 14
+
+  # Require this stable check in branch protection. It runs even when some
+  # expensive jobs were correctly skipped and fails if any applicable job did.
+  gate:
+    name: CI gate
+    if: always()
+    needs: [changes, examples, test, size, bundle, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify applicable jobs
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo 'All applicable CI jobs passed.'
