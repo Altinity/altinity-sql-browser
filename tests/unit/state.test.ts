@@ -11,8 +11,9 @@ import type {
 } from '../../src/state.js';
 import { queryDescription, queryFavorite, queryName, queryPanel, queryView } from '../../src/core/saved-query.js';
 import { savedQuery as savedQueryUntyped } from '../helpers/saved-query.js';
-import type { DashboardDocumentV1, SavedQueryV2 } from '../../src/generated/json-schema.types.js';
-import { fakeWorkspaceCommit } from '../helpers/fake-app.js';
+import type { DashboardDocumentV1, SavedQueryV2, StoredWorkspaceV1 } from '../../src/generated/json-schema.types.js';
+import { fakeMutateWorkspace } from '../helpers/fake-app.js';
+import type { WorkspaceDiagnostic } from '../../src/dashboard/model/workspace-diagnostics.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -26,11 +27,12 @@ const reader = (over: Record<string, unknown> = {}): StateReader => ({
   loadJSON: (k, dflt) => (k in over ? over[k] : dflt),
 });
 
-// #287 W4: the saved-query CRUD ops now commit through the StoredWorkspaceV1
-// aggregate, whose schema requires a non-empty workspace id — every test
-// below that exercises them builds its state through this helper (instead of
-// bare `createState(reader())`) so the candidate a real `fakeWorkspaceCommit()`
-// validates always has one.
+// #287 W4 / #343: the saved-query CRUD ops now build their candidate over the
+// LATEST committed workspace inside `app.mutateWorkspace` (here the
+// `fakeMutateWorkspace` fake), whose repository validates a non-empty workspace
+// id — every test below that exercises them builds its state through this
+// helper (instead of bare `createState(reader())`) so the candidate always has
+// one.
 function savedTestState(over: Record<string, unknown> = {}): AppState {
   const s = createState(reader(over));
   s.workspaceId = 'w1';
@@ -210,33 +212,33 @@ describe('activeTab / allocTabId', () => {
 describe('saved queries', () => {
   it('createSavedQuery is a no-op for empty SQL or empty name', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     s.tabs.value[0].sqlDraft = '';
-    expect(await createSavedQuery(s, s.tabs.value[0], 'name', '', commit)).toEqual({ ok: false, entry: null });
+    expect(await createSavedQuery(s, s.tabs.value[0], 'name', '', mutate)).toEqual({ ok: false, entry: null });
     s.tabs.value[0].sqlDraft = 'SELECT 1';
-    expect(await createSavedQuery(s, s.tabs.value[0], '  ', '', commit)).toEqual({ ok: false, entry: null });
-    expect(commit).not.toHaveBeenCalled();
+    expect(await createSavedQuery(s, s.tabs.value[0], '  ', '', mutate)).toEqual({ ok: false, entry: null });
+    expect(mutate.commit).not.toHaveBeenCalled();
   });
   it('creates an unsaved query, then atomically commits linked SQL + authoritative Spec', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
     // This Save path is guaranteed `ok: true` here (linked-tab creation with a
     // non-empty name and sql, asserted just below) — same invariant state.ts
     // itself documents at its own `!` sites, now via `okEntry`'s explicit throw.
-    const e1 = okEntry(await createSavedQuery(s, tab, 'My query', '', commit, 100));
+    const e1 = okEntry(await createSavedQuery(s, tab, 'My query', '', mutate, 100));
     expect(e1).toEqual(expect.objectContaining({ sql: 'SELECT 1', specVersion: 1 }));
     expect(e1.spec).toMatchObject({ name: 'My query', favorite: false });
     expect(tab.savedId).toBe(e1.id);
     expect(tab.name).toBe('My query');
     expect(s.savedQueries).toHaveLength(1);
-    expect(commit).toHaveBeenCalledTimes(1);
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
     // Linked Save bypasses popover fields and commits the two drafts directly.
     tab.sqlDraft = 'SELECT 2';
     tab.specParsed!.name = 'My query v2';
     tab.dirtySql = true; tab.dirtySpec = true;
-    const e2 = okEntry(await commitSavedQuery(s, tab, tab.specParsed, commit));
+    const e2 = okEntry(await commitSavedQuery(s, tab, tab.specParsed, mutate));
     expect(e2.id).toBe(e1.id);
     expect(s.savedQueries).toHaveLength(1);
     expect(s.savedQueries[0].sql).toBe('SELECT 2');
@@ -246,20 +248,20 @@ describe('saved queries', () => {
   });
   it('creation stores a description and linked commits normalize/clear it', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
-    const e = okEntry(await createSavedQuery(s, tab, 'Q', '  what it does  ', commit, 100)); // trimmed
+    const e = okEntry(await createSavedQuery(s, tab, 'Q', '  what it does  ', mutate, 100)); // trimmed
     expect(queryDescription(e)).toBe('what it does');
     tab.specParsed!.description = ' changed ';
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryDescription(s.savedQueries[0])).toBe('changed');
     tab.specParsed!.description = '   ';
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect('description' in s.savedQueries[0].spec).toBe(false);
     // create with no description arg → no description field
     const t2 = newTabObj('t2'); t2.sqlDraft = 'SELECT 2'; s.tabs.value.push(t2);
-    const e2 = okEntry(await createSavedQuery(s, t2, 'Q2', undefined, commit, 400));
+    const e2 = okEntry(await createSavedQuery(s, t2, 'Q2', undefined, mutate, 400));
     expect('description' in e2.spec).toBe(false);
   });
   it('savedForTab resolves the linked entry (or null)', () => {
@@ -292,28 +294,28 @@ describe('saved queries', () => {
     const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'old' })];
     s.tabs.value[0].savedId = 's1';
-    const commit = fakeWorkspaceCommit();
-    await renameSaved(s, 's1', '  new  ', undefined, commit);
+    const mutate = fakeMutateWorkspace(s);
+    await renameSaved(s, 's1', '  new  ', undefined, mutate);
     expect(queryName(s.savedQueries[0])).toBe('new');
     expect(s.tabs.value[0].name).toBe('new');
-    await renameSaved(s, 's1', '   ', undefined, commit); // blank ignored
+    await renameSaved(s, 's1', '   ', undefined, mutate); // blank ignored
     expect(queryName(s.savedQueries[0])).toBe('new');
-    await renameSaved(s, 'missing', 'x', undefined, commit); // unknown id ignored
-    expect(commit).toHaveBeenCalledTimes(1);
+    await renameSaved(s, 'missing', 'x', undefined, mutate); // unknown id ignored
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
   });
   it('renameSaved sets/clears description when given, leaves it untouched when undefined', async () => {
     const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'A' })];
-    const commit = fakeWorkspaceCommit();
-    await renameSaved(s, 's1', 'A', '  a note  ', commit); // set (trimmed)
+    const mutate = fakeMutateWorkspace(s);
+    await renameSaved(s, 's1', 'A', '  a note  ', mutate); // set (trimmed)
     expect(queryDescription(s.savedQueries[0])).toBe('a note');
-    await renameSaved(s, 's1', 'A', undefined, commit); // name-only → description kept
+    await renameSaved(s, 's1', 'A', undefined, mutate); // name-only → description kept
     expect(queryDescription(s.savedQueries[0])).toBe('a note');
-    await renameSaved(s, 's1', 'A', '', commit); // explicit empty → cleared
+    await renameSaved(s, 's1', 'A', '', mutate); // explicit empty → cleared
     expect('description' in s.savedQueries[0].spec).toBe(false);
-    await renameSaved(s, 's1', 'A', '  re  ', commit); // re-set
+    await renameSaved(s, 's1', 'A', '  re  ', mutate); // re-set
     expect(queryDescription(s.savedQueries[0])).toBe('re');
-    await renameSaved(s, 's1', 'A', null, commit); // null (not undefined) → cleared, not stored as 'null' (#4 review)
+    await renameSaved(s, 's1', 'A', null, mutate); // null (not undefined) → cleared, not stored as 'null' (#4 review)
     expect('description' in s.savedQueries[0].spec).toBe(false);
   });
   it('rename/description/favorite patches merge into valid linked drafts and persist once per action', async () => {
@@ -338,9 +340,9 @@ describe('saved queries', () => {
     second.savedId = 's1';
     setTabSpecDraft(second, { ...original.spec, secondDraftOnly: ['keep'] });
     s.tabs.value = [tab, second];
-    const commit = fakeWorkspaceCommit();
-    await renameSaved(s, 's1', 'New', 'Description', commit);
-    await toggleFavorite(s, 's1', commit, genTileId());
+    const mutate = fakeMutateWorkspace(s);
+    await renameSaved(s, 's1', 'New', 'Description', mutate);
+    await toggleFavorite(s, 's1', mutate, genTileId());
     for (const spec of [s.savedQueries[0].spec, tab.specParsed]) {
       expect(spec).toMatchObject({
         name: 'New', description: 'Description', favorite: true,
@@ -356,7 +358,7 @@ describe('saved queries', () => {
       name: 'New', description: 'Description', favorite: true, secondDraftOnly: ['keep'],
     });
     expect(second.dirtySpec).toBe(false);
-    expect(commit).toHaveBeenCalledTimes(2);
+    expect(mutate.commit).toHaveBeenCalledTimes(2);
     expect(original.spec.name).toBe('Old');
     expect((original.spec.extension as { nested: { value: number }[] }).nested[0].value).toBe(1);
   });
@@ -367,12 +369,12 @@ describe('saved queries', () => {
       savedQuery({ id: 'b', sql: '2', name: 'B' }),
       savedQuery({ id: 'c', sql: '3', name: 'C' }),
     ];
-    const commit = fakeWorkspaceCommit();
-    await toggleFavorite(s, 'c', commit, genTileId());
+    const mutate = fakeMutateWorkspace(s);
+    await toggleFavorite(s, 'c', mutate, genTileId());
     expect(queryFavorite(s.savedQueries.find((q) => q.id === 'c'))).toBe(true);
-    await toggleFavorite(s, 'missing', commit, genTileId()); // no-op
+    await toggleFavorite(s, 'missing', mutate, genTileId()); // no-op
     expect(sortedSaved(s).map((q) => q.id)).toEqual(['c', 'a', 'b']);
-    expect(commit).toHaveBeenCalledTimes(1);
+    expect(mutate.commit).toHaveBeenCalledTimes(1);
   });
   // #299: the Workbench star also drives Dashboard tile membership, atomically
   // with the favorite flip — only panel-role queries become tiles (mirrors
@@ -391,20 +393,20 @@ describe('saved queries', () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
       s.dashboard = blankDashboard();
-      const commit = fakeWorkspaceCommit();
-      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      const mutate = fakeMutateWorkspace(s);
+      const result = await toggleFavorite(s, 'p1', mutate, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
       expect(s.dashboard!.tiles).toEqual([{ id: 'tile-1', queryId: 'p1' }]);
-      expect(commit).toHaveBeenCalledTimes(1);
+      expect(mutate.commit).toHaveBeenCalledTimes(1);
     });
 
     it('favorite ON is idempotent when a tile already references the query', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', favorite: false, dashboard: { role: 'panel' } })];
       s.dashboard = { ...blankDashboard(), tiles: [{ id: 't1', queryId: 'p1' }] };
-      const commit = fakeWorkspaceCommit();
-      await toggleFavorite(s, 'p1', commit, genTileId());
+      const mutate = fakeMutateWorkspace(s);
+      await toggleFavorite(s, 'p1', mutate, genTileId());
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
       expect(s.dashboard!.tiles).toEqual([{ id: 't1', queryId: 'p1' }]); // no duplicate
     });
@@ -413,8 +415,8 @@ describe('saved queries', () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'f1', sql: "SELECT ['a','b'] AS country", dashboard: { role: 'filter' } })];
       s.dashboard = blankDashboard();
-      const commit = fakeWorkspaceCommit();
-      const result = await toggleFavorite(s, 'f1', commit, genTileId());
+      const mutate = fakeMutateWorkspace(s);
+      const result = await toggleFavorite(s, 'f1', mutate, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
       expect(s.dashboard!.tiles).toEqual([]);
@@ -436,28 +438,28 @@ describe('saved queries', () => {
         tiles: [{ id: 't1', queryId: 'p1' }],
         filters: [{ id: 'flt', parameter: 'country', targets: ['t1'] }],
       };
-      const commit = fakeWorkspaceCommit();
-      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      const mutate = fakeMutateWorkspace(s);
+      const result = await toggleFavorite(s, 'p1', mutate, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(false);
       expect(s.dashboard!.tiles).toEqual([]);
       expect(s.dashboard!.filters[0].targets).toEqual([]);
-      expect(commit).toHaveBeenCalledTimes(1);
+      expect(mutate.commit).toHaveBeenCalledTimes(1);
     });
 
     it('a null state.dashboard mints the Dashboard and first tile atomically', async () => {
       const s = savedTestState();
       s.savedQueries = [savedQuery({ id: 'p1', sql: 'SELECT 1', dashboard: { role: 'panel' } })];
       expect(s.dashboard).toBeNull();
-      const commit = fakeWorkspaceCommit();
-      const result = await toggleFavorite(s, 'p1', commit, genTileId());
+      const mutate = fakeMutateWorkspace(s);
+      const result = await toggleFavorite(s, 'p1', mutate, genTileId());
       expect(result).toMatchObject({ ok: true });
       expect(queryFavorite(s.savedQueries[0])).toBe(true);
       expect(s.dashboard).toMatchObject({
         id: 'tile-1', tiles: [{ id: 'tile-2', queryId: 'p1' }],
         layout: { type: 'grafana-grid' },
       });
-      expect(commit).toHaveBeenCalledTimes(1);
+      expect(mutate.commit).toHaveBeenCalledTimes(1);
     });
   });
   it('invalid JSON blocks pencil/favorite persistence and identifies the affected tab', async () => {
@@ -470,12 +472,12 @@ describe('saved queries', () => {
     tab.specParsed = null;
     tab.specDiagnostics = [{ severity: 'error', code: 'invalid-json', message: 'invalid JSON' }];
     tab.dirtySpec = true;
-    const commit = fakeWorkspaceCommit();
-    expect(await renameSaved(s, 's1', 'Overwrite', undefined, commit)).toMatchObject({ ok: false, invalidTab: tab });
-    expect(await toggleFavorite(s, 's1', commit, genTileId())).toMatchObject({ ok: false, invalidTab: tab });
+    const mutate = fakeMutateWorkspace(s);
+    expect(await renameSaved(s, 's1', 'Overwrite', undefined, mutate)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', mutate, genTileId())).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryName(s.savedQueries[0])).toBe('Original');
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
-    expect(commit).not.toHaveBeenCalled();
+    expect(mutate.commit).not.toHaveBeenCalled();
   });
   it('external writers validate the persisted entry and every linked draft before mutating', async () => {
     const s = savedTestState();
@@ -483,11 +485,11 @@ describe('saved queries', () => {
     s.savedQueries = [savedQuery({ id: 's1', name: 'Original', favorite: false, sql: 'SELECT 1' })];
     tab.savedId = 's1';
     setTabSpecDraft(tab, { ...s.savedQueries[0].spec, draftOnly: true }, { dirty: true });
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const entryBlocked: SpecValidationService = {
       validate: () => [{ path: ['favorite'], severity: 'error', code: 'blocked', message: 'blocked' }],
     };
-    expect(await toggleFavorite(s, 's1', commit, genTileId(), entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
+    expect(await toggleFavorite(s, 's1', mutate, genTileId(), entryBlocked)).toMatchObject({ ok: false, invalidTab: null });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
 
     const draftBlocked: SpecValidationService = {
@@ -495,10 +497,24 @@ describe('saved queries', () => {
         ? [{ path: ['draftOnly'], severity: 'error', code: 'blocked-draft', message: 'blocked draft' }]
         : [],
     };
-    expect(await toggleFavorite(s, 's1', commit, genTileId(), draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
+    expect(await toggleFavorite(s, 's1', mutate, genTileId(), draftBlocked)).toMatchObject({ ok: false, invalidTab: tab });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
     expect(tab.specParsed!.favorite).toBe(false);
-    expect(commit).not.toHaveBeenCalled();
+    expect(mutate.commit).not.toHaveBeenCalled();
+  });
+  it('renameSaved/toggleFavorite abort (never recreate) a query deleted in another tab (#343)', async () => {
+    const s = savedTestState();
+    const tab = s.tabs.value[0];
+    s.savedQueries = [savedQuery({ id: 's1', name: 'Local', sql: 'SELECT 1' })];
+    tab.savedId = 's1';
+    // Another tab already committed a workspace where s1 is gone — the mutation
+    // resolves the target against THAT latest, not the stale local projection.
+    const latest: StoredWorkspaceV1 = { storageVersion: 1, id: 'w1', name: 'SQL Library', queries: [], dashboard: null };
+    const mutate = fakeMutateWorkspace(s, { loadCurrent: async () => latest });
+    expect(await renameSaved(s, 's1', 'New', undefined, mutate)).toEqual({ ok: false, invalidTab: null, entry: null });
+    expect(await toggleFavorite(s, 's1', mutate, genTileId())).toEqual({ ok: false, invalidTab: null, entry: null });
+    expect(mutate.commit).not.toHaveBeenCalled(); // never recreated
+    expect(s.savedQueries.map((q) => q.id)).toEqual(['s1']); // local projection untouched (refresh is #343 step 4/5)
   });
   it('a rejected aggregate commit mutates nothing and surfaces diagnostics (#287 W4 strict commit)', async () => {
     const s = savedTestState();
@@ -506,7 +522,8 @@ describe('saved queries', () => {
     tab.sqlDraft = 'SELECT 1';
     const diagnostics = [{ path: ['id'], severity: 'error' as const, code: 'test-fail', message: 'boom' }];
     const failingCommit = vi.fn(async () => ({ ok: false as const, diagnostics }));
-    const result = await createSavedQuery(s, tab, 'Q', '', failingCommit, 100);
+    const mutate = fakeMutateWorkspace(s, { commit: failingCommit });
+    const result = await createSavedQuery(s, tab, 'Q', '', mutate, 100);
     expect(result).toEqual({ ok: false, entry: null, diagnostics });
     expect(s.savedQueries).toEqual([]);
     expect(tab.savedId).toBeNull();
@@ -520,17 +537,18 @@ describe('saved queries', () => {
     s.savedQueries = [entry];
     tab.savedId = 's1';
     const diagnostics = [{ path: [], severity: 'error' as const, code: 'test-fail', message: 'nope' }];
-    const failingCommit = async () => ({ ok: false as const, diagnostics });
+    const failingCommit = async (): Promise<{ ok: false; diagnostics: WorkspaceDiagnostic[] }> => ({ ok: false, diagnostics });
+    const mutate = fakeMutateWorkspace(s, { commit: failingCommit });
 
-    const renamed = await renameSaved(s, 's1', 'New name', undefined, failingCommit);
+    const renamed = await renameSaved(s, 's1', 'New name', undefined, mutate);
     expect(renamed).toEqual({ ok: false, invalidTab: null, entry: null, diagnostics: expect.any(Array) });
     expect(queryName(s.savedQueries[0])).toBe('Original');
 
-    const favorited = await toggleFavorite(s, 's1', failingCommit, genTileId());
+    const favorited = await toggleFavorite(s, 's1', mutate, genTileId());
     expect(favorited).toMatchObject({ ok: false, invalidTab: null, entry: null });
     expect(queryFavorite(s.savedQueries[0])).toBe(false);
 
-    const deleted = await deleteSaved(s, 's1', failingCommit);
+    const deleted = await deleteSaved(s, 's1', mutate);
     expect(deleted).toEqual({ ok: false, diagnostics });
     expect(s.savedQueries).toHaveLength(1);
     expect(tab.savedId).toBe('s1');
@@ -558,23 +576,23 @@ describe('saved queries', () => {
     const tab = s.tabs.value[0];
     s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
     tab.savedId = 's1'; tab.sqlDraft = 'SELECT 2'; tab.dirtySql = true; tab.dirtySpec = true;
-    const commit = fakeWorkspaceCommit();
-    expect(await commitSavedQuery(s, tab, { name: '  ', extension: true }, commit)).toEqual({ ok: false, entry: null });
+    const mutate = fakeMutateWorkspace(s);
+    expect(await commitSavedQuery(s, tab, { name: '  ', extension: true }, mutate)).toEqual({ ok: false, entry: null });
     expect(s.savedQueries[0].sql).toBe('SELECT 1');
     expect(tabDirty(tab)).toBe(true);
-    expect(commit).not.toHaveBeenCalled();
+    expect(mutate.commit).not.toHaveBeenCalled();
   });
   it("linked Save keeps the existing empty-SQL guard except for text panels", async () => {
     const s = savedTestState();
     const tab = s.tabs.value[0];
     s.savedQueries = [savedQuery({ id: 's1', name: 'Q', sql: 'SELECT 1' })];
     tab.savedId = 's1'; tab.sqlDraft = ''; tab.dirtySql = true;
-    const commit = fakeWorkspaceCommit();
-    expect(await commitSavedQuery(s, tab, { name: 'Q', favorite: false }, commit)).toEqual({ ok: false, entry: null });
+    const mutate = fakeMutateWorkspace(s);
+    expect(await commitSavedQuery(s, tab, { name: 'Q', favorite: false }, mutate)).toEqual({ ok: false, entry: null });
     expect(s.savedQueries[0].sql).toBe('SELECT 1');
-    expect(commit).not.toHaveBeenCalled();
+    expect(mutate.commit).not.toHaveBeenCalled();
     const textSpec = { name: 'Q', favorite: false, panel: { cfg: { type: 'text', content: 'note' } } };
-    expect((await commitSavedQuery(s, tab, textSpec, commit)).ok).toBe(true);
+    expect((await commitSavedQuery(s, tab, textSpec, mutate)).ok).toBe(true);
     expect(s.savedQueries[0].sql).toBe('');
   });
   it('filterSaved matches name/description/sql case-insensitively; blank → unchanged', () => {
@@ -619,40 +637,40 @@ describe('saved queries', () => {
   });
   it('creation/commit persist the complete panel without a legacy mirror', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT a, b';
     tab.specParsed!.panel = {
       cfg: { type: 'pie', x: 0, y: [1], series: null }, key: 'a:String|b:UInt64',
       fieldConfig: { defaults: { color: 'red' } },
     };
-    const e1 = okEntry(await createSavedQuery(s, tab, 'Chartd', '', commit, 100));
+    const e1 = okEntry(await createSavedQuery(s, tab, 'Chartd', '', mutate, 100));
     expect(queryPanel(e1)).toEqual(tab.specParsed!.panel);
     expect(queryPanel(e1)).not.toBe(tab.specParsed!.panel);
     expect('chart' in e1).toBe(false);
     // re-save with a different cfg; future panel siblings remain.
     tab.specParsed!.panel!.cfg = { type: 'line', x: 0, y: [1], series: null };
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryPanel(s.savedQueries[0])!.cfg!.type).toBe('line');
     expect(queryPanel(s.savedQueries[0])!.fieldConfig!.defaults!.color).toBe('red');
     tab.specParsed!.panel!.cfg = { type: 'logs' };
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryPanel(s.savedQueries[0])!.cfg).toEqual({ type: 'logs' });
     // re-save after the whole panel is cleared.
     delete tab.specParsed!.panel;
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryPanel(s.savedQueries[0])).toBeUndefined();
   });
   it("createSavedQuery allows sql:'' for a text panel only (#166 per-type save guard)", async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const tab = s.tabs.value[0];
     tab.sqlDraft = '';
-    expect(await createSavedQuery(s, tab, 'NoSql', '', commit, 100)).toEqual({ ok: false, entry: null }); // no panel → still blocked
+    expect(await createSavedQuery(s, tab, 'NoSql', '', mutate, 100)).toEqual({ ok: false, entry: null }); // no panel → still blocked
     tab.specParsed!.panel = { cfg: { type: 'table' } };
-    expect(await createSavedQuery(s, tab, 'NoSql', '', commit, 150)).toEqual({ ok: false, entry: null }); // non-text panel → blocked
+    expect(await createSavedQuery(s, tab, 'NoSql', '', mutate, 150)).toEqual({ ok: false, entry: null }); // non-text panel → blocked
     tab.specParsed!.panel = { cfg: { type: 'text', content: '# hello' } };
-    const e = okEntry(await createSavedQuery(s, tab, 'Note', '', commit, 200));
+    const e = okEntry(await createSavedQuery(s, tab, 'Note', '', mutate, 200));
     expect(e).not.toBeNull();
     expect(e.sql).toBe('');
     expect(queryPanel(e)!.cfg).toEqual({ type: 'text', content: '# hello' });
@@ -663,26 +681,26 @@ describe('saved queries', () => {
   });
   it('creation and linked commits capture the current persistable result view', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     const tab = s.tabs.value[0];
     tab.sqlDraft = 'SELECT 1';
     s.resultView.value = 'panel';
-    const e = okEntry(await createSavedQuery(s, tab, 'V', '', commit, 100));
+    const e = okEntry(await createSavedQuery(s, tab, 'V', '', mutate, 100));
     expect(queryView(e)).toBe('panel');
     s.resultView.value = 'json';
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryView(s.savedQueries[0])).toBe('json');
     // Filter is a transient role-owned preview: it preserves a dormant view.
     s.resultView.value = 'filter';
-    await commitSavedQuery(s, tab, tab.specParsed, commit);
+    await commitSavedQuery(s, tab, tab.specParsed, mutate);
     expect(queryView(s.savedQueries[0])).toBe('json');
   });
   it('deleteSaved removes + clears tab pointers', async () => {
     const s = savedTestState();
     s.savedQueries = [savedQuery({ id: 's1', sql: 'x', name: 'n' })];
     s.tabs.value[0].savedId = 's1';
-    const commit = fakeWorkspaceCommit();
-    const result = await deleteSaved(s, 's1', commit);
+    const mutate = fakeMutateWorkspace(s);
+    const result = await deleteSaved(s, 's1', mutate);
     expect(result).toEqual({ ok: true });
     expect(s.savedQueries).toHaveLength(0);
     expect(s.tabs.value[0].savedId).toBeNull();
@@ -775,13 +793,13 @@ describe('default persistence', () => {
   });
   it('createSavedQuery/renameSaved/toggleFavorite/deleteSaved always require an injected commit (#287 W4 — no flat-storage default)', async () => {
     const s = savedTestState();
-    const commit = fakeWorkspaceCommit();
+    const mutate = fakeMutateWorkspace(s);
     s.tabs.value[0].sqlDraft = 'SELECT 9';
-    const e = okEntry(await createSavedQuery(s, s.tabs.value[0], 'nine', undefined, commit));
-    await renameSaved(s, e.id, 'nine!', undefined, commit);
-    await toggleFavorite(s, e.id, commit, genTileId());
-    await deleteSaved(s, 'nope', commit);
-    expect(commit).toHaveBeenCalledTimes(4);
+    const e = okEntry(await createSavedQuery(s, s.tabs.value[0], 'nine', undefined, mutate));
+    await renameSaved(s, e.id, 'nine!', undefined, mutate);
+    await toggleFavorite(s, e.id, mutate, genTileId());
+    await deleteSaved(s, 'nope', mutate);
+    expect(mutate.commit).toHaveBeenCalledTimes(4);
     expect(s.savedQueries.some((q) => q.id === e.id)).toBe(true);
   });
 });

@@ -136,7 +136,10 @@ function renderSaved(app: App, list: HTMLElement): void {
       class: 'sv-star' + (favorite ? ' on' : ''), title: favorite ? 'Unfavorite' : 'Favorite',
       onclick: async (e: Event) => {
         e.stopPropagation();
-        const result = await app.serializeWrite(() => toggleFavorite(state, q.id, app.workspace.commit, app.genId, app.specValidators));
+        // #343: star = explicit desired membership over the LATEST workspace.
+        // `toggleFavorite` runs its transform through `app.mutateWorkspace`
+        // (serializes + reads latest at dequeue) — no `serializeWrite` wrapper.
+        const result = await toggleFavorite(state, q.id, app.mutateWorkspace, app.genId, app.specValidators);
         if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
         else if (result && result.ok) {
           app.queryDoc.revalidateSpecDrafts();
@@ -189,7 +192,8 @@ function renderSaved(app: App, list: HTMLElement): void {
           class: 'sv-act', title: 'Delete',
           onclick: async (e: Event) => {
             e.stopPropagation();
-            const result = await app.serializeWrite(() => deleteSaved(state, q.id, app.workspace.commit));
+            // #343: delete over the LATEST workspace via `app.mutateWorkspace`.
+            const result = await deleteSaved(state, q.id, app.mutateWorkspace);
             if (result.ok) {
               app.updateSaveBtn();
               app.updateEditorModeUi?.();
@@ -222,7 +226,8 @@ function savedEditForm(app: App, q: SavedQueryV2): HTMLDivElement {
     if (done) return;
     done = true;
     if (commit && nameInput.value.trim()) {
-      const result = await app.serializeWrite(() => renameSaved(state, q.id, nameInput.value, descInput.value, app.workspace.commit, app.specValidators));
+      // #343: rename/description over the LATEST workspace via `app.mutateWorkspace`.
+      const result = await renameSaved(state, q.id, nameInput.value, descInput.value, app.mutateWorkspace, app.specValidators);
       if (result && result.invalidTab) app.activateInvalidSpecDraft(result.invalidTab);
       else if (result && !result.ok && result.diagnostics?.length) {
         flashToast('Couldn’t rename: ' + result.diagnostics[0].message, { document: app.document });

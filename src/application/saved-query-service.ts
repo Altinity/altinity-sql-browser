@@ -32,7 +32,7 @@ import {
   createSavedQuery, commitSavedQuery, recordHistory as stateRecordHistory,
 } from '../state.js';
 import type {
-  QueryTab, AppState, SaveJSON, SpecValidationService, HistoryResultSnapshot, QuerySpecDraft,
+  QueryTab, AppState, SaveJSON, SpecValidationService, HistoryResultSnapshot, QuerySpecDraft, MutateWorkspace,
 } from '../state.js';
 import { hasBlockingSpecErrors } from '../core/spec-draft.js';
 import type { SpecValidationDiagnostic } from '../core/spec-draft.js';
@@ -40,7 +40,6 @@ import { queryPanel, withQuerySpec } from '../core/saved-query.js';
 import { isQuerylessPanel } from '../core/panel-cfg.js';
 import { encodeShare } from '../core/share.js';
 import type { SavedQueryV2 } from '../generated/json-schema.types.js';
-import type { WorkspaceRepository } from '../workspace/workspace-repository.js';
 import type { WorkspaceDiagnostic } from '../dashboard/model/workspace-diagnostics.js';
 
 // ── Construction deps ────────────────────────────────────────────────────────
@@ -67,11 +66,13 @@ export interface SavedQueryServiceDeps {
    *  `createSavedQuery`/`commitSavedQuery` only ever call `.validate`).
    *  Production passes `app.specValidators` (structurally assignable). */
   specValidators: SpecValidationService;
-  /** The strict aggregate-commit seam (#287 W4) `createSavedQuery`/
-   *  `commitSavedQuery` await instead of the retired flat `asb:saved` write.
-   *  Production passes `app.workspace` (structurally assignable — only
-   *  `.commit` is ever called). */
-  workspace: Pick<WorkspaceRepository, 'commit'>;
+  /** The shared read-before-write mutation primitive (#343) `createSavedQuery`/
+   *  `commitSavedQuery` run their candidate-building transform through, instead
+   *  of the old raw `commit(candidate)` callback that let a candidate be built
+   *  from stale `AppState`. Production passes `app.mutateWorkspace`
+   *  (structurally `MutateWorkspace`): it reads the latest committed aggregate
+   *  at dequeue time, commits, projects, and notifies other tabs. */
+  mutateWorkspace: MutateWorkspace;
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ export interface SavedQueryService {
 export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQueryService {
   async function create(tab: QueryTab, name: unknown, description: unknown): Promise<CreateSavedResult> {
     const result = await createSavedQuery(
-      deps.state, tab, name, description, deps.workspace.commit, deps.now(), deps.specValidators,
+      deps.state, tab, name, description, deps.mutateWorkspace, deps.now(), deps.specValidators,
     );
     return result.ok ? { ok: true, entry: result.entry } : { ok: false, diagnostics: result.diagnostics };
   }
@@ -168,7 +169,7 @@ export function createSavedQueryService(deps: SavedQueryServiceDeps): SavedQuery
       return { ok: false, reason: 'empty' };
     }
     const result = await commitSavedQuery(
-      deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.workspace.commit, deps.specValidators,
+      deps.state, tab, evaluated.parsed as QuerySpecDraft | null, deps.mutateWorkspace, deps.specValidators,
     );
     return result.ok
       ? { ok: true, entry: result.entry }

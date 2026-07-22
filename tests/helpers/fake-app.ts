@@ -22,7 +22,8 @@
 // other sibling fields.
 import { vi } from 'vitest';
 import dagre from '@dagrejs/dagre';
-import { createState, activeTab } from '../../src/state.js';
+import { createState, activeTab, reconcileTabsWithSavedQueries } from '../../src/state.js';
+import type { MutateWorkspace } from '../../src/state.js';
 import { createNoopPort } from '../../src/editor/editor-port.js';
 import { createNoopSpecEditor } from '../../src/editor/spec-editor.js';
 import { createWorkspaceRepository } from '../../src/workspace/workspace-repository.js';
@@ -71,6 +72,46 @@ export function memWorkspaceStore(initial: string | null = null): WorkspaceStore
  *  spy — `vi.fn(impl)` still delegates to the real implementation. */
 export function fakeWorkspaceCommit() {
   return vi.fn(createWorkspaceRepository({ store: memWorkspaceStore() }).commit);
+}
+
+/** A `MutateWorkspace` (`App['mutateWorkspace']`, structurally) over a private
+ *  in-memory repository, for unit-testing the state.ts saved-query planners and
+ *  the SavedQueryService without a full `makeApp()` (#343). It faithfully
+ *  mirrors `app.mutateWorkspace`: read `latest` (default: empty store → `null`,
+ *  so a planner falls back to the passed `state`), run the transform, commit,
+ *  then PROJECT committed truth onto `state` (savedQueries/dashboard/id/name +
+ *  reconcile tab links when `state` carries `tabs`, clearing libraryDirty)
+ *  exactly once. `commit`/`loadCurrent` are `vi.fn` spies (assert call counts as
+ *  with the retired `fakeWorkspaceCommit`); pass `commit`/`loadCurrent`
+ *  overrides to exercise a rejecting commit or a distinct committed `latest`. */
+export function fakeMutateWorkspace(
+  state: Pick<AppState, 'savedQueries' | 'dashboard' | 'workspaceId' | 'libraryName' | 'libraryDirty'>,
+  opts: { commit?: WorkspaceRepository['commit']; loadCurrent?: WorkspaceRepository['loadCurrent'] } = {},
+): MutateWorkspace & { commit: ReturnType<typeof vi.fn>; loadCurrent: ReturnType<typeof vi.fn> } {
+  const repo = createWorkspaceRepository({ store: memWorkspaceStore() });
+  const commit = vi.fn(opts.commit ?? repo.commit);
+  const loadCurrent = vi.fn(opts.loadCurrent ?? repo.loadCurrent);
+  const mutate = (async (transform) => {
+    const latest = await loadCurrent();
+    const input = await transform(latest);
+    if (!input || !input.candidate) {
+      return { ok: false as const, aborted: true as const, data: input ? input.data : undefined };
+    }
+    const result = await commit(input.candidate);
+    if (!result.ok) return { ok: false as const, diagnostics: result.diagnostics, data: input.data };
+    state.savedQueries = result.workspace.queries;
+    const withTabs = state as Partial<Pick<AppState, 'tabs'>> & typeof state;
+    if (withTabs.tabs) reconcileTabsWithSavedQueries(state as Pick<AppState, 'tabs' | 'savedQueries'>);
+    state.dashboard = result.workspace.dashboard;
+    state.workspaceId = result.workspace.id;
+    state.libraryName.value = result.workspace.name;
+    state.libraryDirty.value = false;
+    return {
+      ok: true as const, workspace: result.workspace,
+      dashboardRevision: result.dashboardRevision, data: input.data,
+    };
+  }) as MutateWorkspace;
+  return Object.assign(mutate, { commit, loadCurrent });
 }
 
 /** A STATEFUL in-memory `WorkspaceRepository` fake (#341/#344 review fix):
@@ -521,6 +562,9 @@ export function makeApp<O extends AppOverrides = Record<string, never>>(override
   // primitive projects exactly once so callers no longer do).
   const applyCommittedWorkspace = (workspace: StoredWorkspaceV1): void => {
     state.savedQueries = workspace.queries;
+    // #343: mirror app.ts's own projection — detach any open tab whose linked
+    // saved query is absent from the committed collection (deleted elsewhere).
+    reconcileTabsWithSavedQueries(state);
     state.dashboard = workspace.dashboard;
     state.workspaceId = workspace.id;
     state.libraryName.value = workspace.name;

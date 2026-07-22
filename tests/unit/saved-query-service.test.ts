@@ -8,7 +8,8 @@ import type { SpecValidationDiagnostic } from '../../src/core/spec-draft.js';
 import { encodeShare, decodeShare } from '../../src/core/share.js';
 import { withQuerySpec } from '../../src/core/saved-query.js';
 import type { SavedQueryV2 } from '../../src/generated/json-schema.types.js';
-import { fakeWorkspaceCommit } from '../helpers/fake-app.js';
+import type { WorkspaceRepository } from '../../src/workspace/workspace-repository.js';
+import { fakeMutateWorkspace } from '../helpers/fake-app.js';
 
 // SavedQueryService (#276 Phase 4C) — the saved-query create/commit policy,
 // history recording, and share-URL building extracted from app.ts, unit-
@@ -46,22 +47,29 @@ function makeDeps(over: {
   saveJSON?: ReturnType<typeof vi.fn>;
   now?: () => number;
   specValidators?: SpecValidationService;
-  workspace?: ReturnType<typeof fakeWorkspaceCommit>;
+  /** A `commit` override folded into the shared mutation primitive — pass a
+   *  rejecting one (`async () => ({ ok: false, diagnostics }))`) to exercise a
+   *  whole-workspace commit rejection. */
+  workspace?: WorkspaceRepository['commit'];
 } = {}): {
   deps: SavedQueryServiceDeps; state: StateSlice; saveJSON: ReturnType<typeof vi.fn>;
-  commit: ReturnType<typeof fakeWorkspaceCommit>;
+  commit: ReturnType<typeof vi.fn>;
 } {
   const state = over.state || makeState();
   const saveJSON = over.saveJSON || vi.fn();
-  const commit = over.workspace || fakeWorkspaceCommit();
+  // #343: the service now runs its transform through `app.mutateWorkspace`; this
+  // fake mirrors it (read latest → transform → commit → project onto `state`).
+  // Its `.commit` is the spy the assertions below count, exactly as they used to
+  // count the retired raw `workspace.commit` seam.
+  const mutate = fakeMutateWorkspace(state, over.workspace ? { commit: over.workspace } : {});
   const deps: SavedQueryServiceDeps = {
     state,
     saveJSON: saveJSON as unknown as SaveJSON,
     now: over.now || (() => 1700000000000),
     specValidators: over.specValidators || ALWAYS_VALID,
-    workspace: { commit },
+    mutateWorkspace: mutate,
   };
-  return { deps, state, saveJSON, commit };
+  return { deps, state, saveJSON, commit: mutate.commit };
 }
 
 const validEvaluated = (parsed: unknown = { name: 'Q', favorite: false }): { parsed: unknown; diagnostics: SpecValidationDiagnostic[] } =>

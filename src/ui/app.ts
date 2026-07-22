@@ -339,7 +339,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     saveJSON,
     now: () => Date.now(),
     specValidators,
-    workspace: app.workspace,
+    // A thunk, not `app.mutateWorkspace` directly: the primitive is wired later
+    // in `createApp` (it depends on `serializeWrite`/`applyCommittedWorkspace`
+    // defined below), so defer resolution to call time when it's defined.
+    mutateWorkspace: (transform) => app.mutateWorkspace(transform),
   });
   app.saved = saved;
   app.sqlEditor.onDocChange((value) => {
@@ -1272,10 +1275,11 @@ export function createApp(env: CreateAppEnv = {}): App {
   async function commitLinkedQuery(): Promise<SavedQueryV2 | null> {
     const tab = app.activeTab();
     const evaluated = queryDoc.evaluateSpecDraft(tab, tab.specText, { dirty: tab.dirtySpec });
-    // Serialized with every other saved-query write so a save can't interleave
-    // with a concurrent star/delete and commit a stale whole-workspace candidate
-    // (#287 review fix — see `app.serializeWrite`).
-    const result = await app.serializeWrite(() => saved.commit(tab, evaluated));
+    // #343: `saved.commit` now runs its candidate-building transform through
+    // `app.mutateWorkspace`, which already enters the tab-local write queue and
+    // reads the latest committed aggregate at dequeue — no outer `serializeWrite`
+    // wrapper needed (it would only double-queue).
+    const result = await saved.commit(tab, evaluated);
     if (!result.ok) {
       // 'rejected' (commit's own defensive re-check inside the service, OR the
       // aggregate strictly rejecting the whole-workspace commit — #287 W4)
@@ -1325,7 +1329,10 @@ export function createApp(env: CreateAppEnv = {}): App {
     let close: () => void;
     const commit = async (): Promise<void> => {
       if (!input.value.trim()) return;
-      const result = await app.serializeWrite(() => saved.create(tab, input.value, descInput.value));
+      // #343: `saved.create` runs its transform through `app.mutateWorkspace`,
+      // which already serializes + reads the latest committed aggregate — no
+      // outer `serializeWrite` wrapper needed.
+      const result = await saved.create(tab, input.value, descInput.value);
       if (!result.ok) {
         if (result.diagnostics?.length) flashToast('Save failed: ' + result.diagnostics[0].message, { document: doc });
         return;
